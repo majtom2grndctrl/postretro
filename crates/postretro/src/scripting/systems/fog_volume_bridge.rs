@@ -17,15 +17,20 @@ use postretro_level_format::fog_volumes::FogVolumeRecord;
 /// runtime-settable — these are baked at compile time and live in a side-table
 /// rather than the `FogVolumeComponent`.
 ///
-/// `center`, `inv_half_ext`, `half_diag`, and `shape_mode` are baked into the
-/// PRL by the level compiler; they're cached here so per-frame fog uploads can
-/// copy precomputed values without recomputing them from min/max. `shape_mode`
-/// is a discriminant flag (0.0 = legacy radial sphere/capsule fade against
-/// `half_diag`, 1.0 = ellipsoid using `inv_half_ext`); the shader compares
-/// with `> 0.5` to avoid float precision issues.
+/// `center`, `inv_half_ext`, `half_diag`, `shape_mode`, `anisotropy`, and
+/// `ambient_scatter` are baked into the PRL by the level compiler; they're
+/// cached here so per-frame fog uploads can copy precomputed values without
+/// recomputing them from min/max. `shape_mode` is a discriminant flag (0.0 =
+/// legacy radial sphere/capsule fade against `half_diag`, 1.0 = ellipsoid
+/// using `inv_half_ext`); the shader compares with `> 0.5` to avoid float
+/// precision issues.
 ///
 /// Note: `radial_falloff` lives on `FogVolumeComponent.falloff` (runtime-
 /// settable) and is read from the component at GPU pack time.
+///
+/// `anisotropy` and `ambient_scatter` differ from `radial_falloff`: the
+/// author-facing `scatter_bias` KVP has no runtime component equivalent — the
+/// compiler's HG translation is the only way to change it.
 pub struct FogVolumeAabb {
     pub min: Vec3,
     pub max: Vec3,
@@ -33,6 +38,8 @@ pub struct FogVolumeAabb {
     pub inv_half_ext: Vec3,
     pub half_diag: f32,
     pub shape_mode: f32,
+    pub anisotropy: f32,
+    pub ambient_scatter: f32,
 }
 
 /// Per-entity bookkeeping for the per-frame fog animation evaluator. Stored
@@ -146,6 +153,8 @@ impl FogVolumeBridge {
                     inv_half_ext: Vec3::from(entry.inv_half_ext),
                     half_diag: entry.half_diag,
                     shape_mode: entry.shape_mode,
+                    anisotropy: entry.anisotropy,
+                    ambient_scatter: entry.ambient_scatter,
                 },
             );
             self.canonical_planes.push(entry.planes.clone());
@@ -338,7 +347,8 @@ impl FogVolumeBridge {
                     plane_count,
                     min_brightness: component.min_brightness,
                     light_range: component.light_range,
-                    _pad6: [0.0; 2],
+                    anisotropy: aabb.anisotropy,
+                    ambient_scatter: aabb.ambient_scatter,
                 },
                 _ => FogVolume {
                     min: [0.0; 3],
@@ -357,7 +367,8 @@ impl FogVolumeBridge {
                     plane_count: 0,
                     min_brightness: 0.0,
                     light_range: 1.0,
-                    _pad6: [0.0; 2],
+                    anisotropy: 0.0,
+                    ambient_scatter: 1.0,
                 },
             };
             self.volumes_bytes
@@ -622,6 +633,8 @@ mod tests {
             saturation: 1.0,
             min_brightness: 0.0,
             light_range: 1.0,
+            anisotropy: 0.0,
+            ambient_scatter: 1.0,
             center: [0.0, 1.5, 0.0],
             inv_half_ext: [0.5, 1.0 / 1.5, 0.5],
             half_diag: 2.5,
@@ -654,7 +667,10 @@ mod tests {
     fn populate_from_level_spawns_one_entity_per_record_with_component() {
         let mut registry = EntityRegistry::new();
         let mut bridge = FogVolumeBridge::new();
-        bridge.populate_from_level(&mut registry, &[sample_record()]);
+        let mut record = sample_record();
+        record.anisotropy = 0.35;
+        record.ambient_scatter = 0.6;
+        bridge.populate_from_level(&mut registry, &[record]);
 
         assert_eq!(bridge.entity_ids.len(), 1);
         let id = bridge.entity_ids[0];
@@ -669,6 +685,8 @@ mod tests {
         assert_eq!(aabb.inv_half_ext, Vec3::new(0.5, 1.0 / 1.5, 0.5));
         assert_eq!(aabb.half_diag, 2.5);
         assert_eq!(aabb.shape_mode, 0.0);
+        assert_eq!(aabb.anisotropy, 0.35);
+        assert_eq!(aabb.ambient_scatter, 0.6);
     }
 
     #[test]
@@ -683,7 +701,10 @@ mod tests {
     fn update_volumes_packs_runtime_fields_from_component() {
         let mut registry = EntityRegistry::new();
         let mut bridge = FogVolumeBridge::new();
-        bridge.populate_from_level(&mut registry, &[sample_record()]);
+        let mut record = sample_record();
+        record.anisotropy = 0.35;
+        record.ambient_scatter = 0.6;
+        bridge.populate_from_level(&mut registry, &[record]);
 
         // Mutate via the registry the way a script would.
         let id = bridge.entity_ids[0];
@@ -712,10 +733,31 @@ mod tests {
         assert_eq!(volume.density, 1.25);
         assert_eq!(volume.edge_softness, 0.5);
         assert_eq!(volume.radial_falloff, 3.5);
+        assert_eq!(volume.anisotropy, 0.35);
+        assert_eq!(volume.ambient_scatter, 0.6);
         assert_eq!(
             live_mask, 0b1,
             "single non-zero-density slot should be live"
         );
+    }
+
+    #[test]
+    fn update_volumes_fallback_uses_identity_directional_fog_defaults() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = FogVolumeBridge::new();
+        bridge.populate_from_level(&mut registry, &[sample_record()]);
+
+        let id = bridge.entity_ids[0];
+        registry
+            .remove_component::<FogVolumeComponent>(id)
+            .expect("component should exist");
+
+        let (bytes, _planes, live_mask) = bridge.update_volumes(&registry).expect("one slot");
+        let volume: &FogVolume = bytemuck::from_bytes(bytes);
+        assert_eq!(volume.density, 0.0);
+        assert_eq!(volume.anisotropy, 0.0);
+        assert_eq!(volume.ambient_scatter, 1.0);
+        assert_eq!(live_mask, 0);
     }
 
     #[test]

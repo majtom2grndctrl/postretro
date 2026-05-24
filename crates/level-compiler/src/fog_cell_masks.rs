@@ -143,6 +143,8 @@ mod tests {
             saturation: 1.0,
             min_brightness: 0.0,
             light_range: 1.0,
+            anisotropy: 0.0,
+            ambient_scatter: 1.0,
             is_ellipsoid: false,
         }
     }

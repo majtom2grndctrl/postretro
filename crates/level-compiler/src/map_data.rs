@@ -433,6 +433,12 @@ pub struct MapFogVolume {
     pub min_brightness: f32,
     /// Per-volume light range multiplier. `1.0` = same reach as open air (default).
     pub light_range: f32,
+    /// Henyey-Greenstein anisotropy `g`. The compiler translates the author-facing
+    /// `scatter_bias` KVP (range 0–100) into this value (range 0–0.9 = HG_MAX_G);
+    /// `scatter_bias` does not appear in the PRL wire format.
+    pub anisotropy: f32,
+    /// Static SH ambient scatter scale. `1.0` = full ambient contribution.
+    pub ambient_scatter: f32,
     /// When `true`, the level compiler bakes `shape_mode = 1.0` into the
     /// `FogVolumeRecord` so the raymarch shader fades against an ellipsoid
     /// derived from `inv_half_ext`. When `false` (default for every existing

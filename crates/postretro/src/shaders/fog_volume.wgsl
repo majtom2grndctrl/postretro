@@ -4,7 +4,10 @@
 // Compute pass over a low-resolution scatter target; one thread per low-res texel.
 // Reconstructs a world-space ray from the camera and the full-resolution depth buffer.
 // Marches through the fog volume AABB buffer accumulating:
-//   - Full L2 SH ambient scatter (world-up normal, composed SH volume)
+//   - Full L2 SH ambient scatter: HG-weighted blend of a world-up and a
+//     view-derived SH read (composed SH volume). The blend weight is the
+//     per-volume anisotropy; at runtime the view-derived read sits on the HG
+//     lobe peak, so the weight collapses to saturate(g).
 //   - Dynamic spot-light beam scatter (shadow map occlusion)
 //   - Dynamic point-light scatter
 // Writes accumulated in-scattering radiance to an RGBA16F storage texture.
@@ -103,7 +106,8 @@ const SH_COVERAGE_CELLS: f32 = 4.0;
 // is paired with a trailing scalar so WGSL's 16-byte vec3 alignment slots fill
 // without internal padding holes. `plane_offset / plane_count` indexes into
 // the `fog_planes` storage buffer (group 6 binding 6); `min_brightness`,
-// `light_range`, and two pad floats follow as the final 16-byte block.
+// `light_range`, `anisotropy`, and `ambient_scatter` fill the final 16-byte
+// block.
 //
 // `center` and `half_diag` are shader-active precomputed fields. `inv_half_ext`
 // stores the reciprocal per-axis half-extent and is live on the ellipsoid path
@@ -117,6 +121,8 @@ const SH_COVERAGE_CELLS: f32 = 4.0;
 // >1=boosted. Default 1.0.
 // `min_brightness` sets a scatter floor applied *before* tint, so the glow
 // takes on the fog's color. Default 0.0.
+// `tint`, `saturation`, `min_brightness`, `anisotropy`, and `ambient_scatter`
+// are all baked at compile time — not runtime-settable.
 struct FogVolume {
     min: vec3<f32>,
     density: f32,
@@ -141,8 +147,10 @@ struct FogVolume {
     // per-volume light range multiplier; higher = lights reach farther inside fog.
     // Default 1.0 (same reach as open air).
     light_range: f32,
-    _pad6_a: f32,
-    _pad6_b: f32,
+    // compiler-translated Henyey-Greenstein `g` from the authored scatter_bias KVP.
+    anisotropy: f32,
+    // SH ambient scatter scale. Default 1.0 (full ambient contribution).
+    ambient_scatter: f32,
 }
 
 struct FogPointLight {
@@ -202,22 +210,58 @@ struct FogSpotLight {
 // SH reconstruction and 8-corner blend helpers live in `sh_sample.wgsl`,
 // concatenated after this source at pipeline-build time (fog_pass.rs
 // `FOG_SHADER_SOURCE`). Fog uses the no-depth entry point: no surface normal
-// (the evaluation normal is a fixed world-up isotropic probe), so validity
-// exclusion of in-wall corners applies but backface and depth visibility do not.
+// (the evaluation direction is supplied by the fog pass), so validity exclusion
+// of in-wall corners applies but backface and depth visibility do not.
 
-// World-up normal: fog is directionally isotropic, and an overhead-ambient
-// reading is the most stable single-direction probe for the L2 reconstruction.
+const PI: f32 = 3.141592653589793;
+const HG_MAX_G: f32 = 0.9;
+
+// Henyey-Greenstein phase: the standard cheap, single-parameter scattering lobe
+// for fog/aerosol media — `g` alone shapes forward bias, so it maps directly
+// onto the authored `scatter_bias` with no extra coefficients to bake.
+// Not called in the hot path — `fog_directional_sh_weight` is built from this
+// shape, and both serve as the mathematical derivation exercised by the CPU
+// reference test in fog_pass.rs (see `directional_sh_weight_reference`).
+// At runtime cos_theta is always 1.0, so `saturate(g)` is used directly.
+fn hg_phase(cos_theta: f32, g: f32) -> f32 {
+    let clamped_g = clamp(g, 0.0, HG_MAX_G);
+    let g2 = clamped_g * clamped_g;
+    let denom = 1.0 + g2 - 2.0 * clamped_g * clamp(cos_theta, -1.0, 1.0);
+    return (1.0 - g2) / (4.0 * PI * pow(max(denom, 1.0e-4), 1.5));
+}
+
+// Returns a 0->1 blend weight steering how far the SH ambient shifts from the
+// isotropic (world-up) read toward the view-derived read. The phase ratio gives
+// the lobe's normalized prominence at this angle; multiplying by `g` caps the
+// shift so a weakly-anisotropic volume can never swing fully to the directional
+// read even where the lobe peaks. Not called in the shader — at runtime
+// cos_theta is always 1.0 (the directional read evaluates toward -ray.direction),
+// so the result reduces to `saturate(g)`, which is used directly. Retained as
+// the derivation; see `directional_sh_weight_reference` in fog_pass.rs.
+fn fog_directional_sh_weight(cos_theta: f32, g: f32) -> f32 {
+    let clamped_g = clamp(g, 0.0, HG_MAX_G);
+    if clamped_g <= 0.0 {
+        return 0.0;
+    }
+
+    let uniform_phase = hg_phase(cos_theta, 0.0);
+    let phase = hg_phase(cos_theta, clamped_g);
+    let peak = hg_phase(1.0, clamped_g);
+    let phase_weight = saturate((phase - uniform_phase) / max(peak - uniform_phase, 1.0e-6));
+    return saturate(clamped_g * phase_weight);
+}
+
 // No surface-normal offset — the wall-bleed mitigation in forward.wgsl has no
-// meaning in fog.
+// meaning in fog. The helper still receives a geo-normal argument, but with
+// `reject_backface = false` that slot is intentionally unused.
 //
 // `gi`/`gfrac` clamp the low side to the grid origin; the helper owns high-side
-// edge clamping per corner. With `reject_backface = false` the geo-normal arg is
-// unused, so the world-up shading normal fills both slots.
-fn sample_sh_fog(world_pos: vec3<f32>) -> vec3<f32> {
+// edge clamping per corner.
+fn sample_sh_fog(world_pos: vec3<f32>, eval_direction: vec3<f32>) -> vec3<f32> {
     if sh_grid.has_sh_volume == 0u {
         return vec3<f32>(0.0);
     }
-    let normal = vec3<f32>(0.0, 1.0, 0.0);
+    let normal = normalize(eval_direction);
     let cell_coord = (world_pos - sh_grid.grid_origin) /
         max(sh_grid.cell_size, vec3<f32>(1.0e-6));
     // Clamp before deriving the fraction so a sample below the grid origin
@@ -444,23 +488,23 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var step_count: u32 = 0u;
 
     // SH irradiance is band-limited and the SH grid is much coarser than the
-    // march step size. Sampling 72 textureLoad calls per step (8 corners ×
-    // 9 bands) is wasted bandwidth — we cache one sample and refresh whenever
-    // the march has advanced more than `sh_coverage_dist` world units since the
-    // last sample (reset at each sub-interval boundary) to bound drift without
-    // per-step cost.
+    // march step size. Sampling 72 textureLoad calls per SH read (8 corners ×
+    // 9 bands) is wasted bandwidth — we cache an iso/dir sample pair and
+    // refresh whenever the march has advanced more than `sh_coverage_dist`
+    // world units since the last sample (reset at each sub-interval boundary)
+    // to bound drift without per-step cost.
     // The cache lives in scalar locals (no array, no callee pointer) so it stays
     // in registers and never hits the Metal private-memory trap.
     //
     // Why distance-based, not step-count-based: an animated fog_lamp density
     // shifts the `transmittance < 0.01` early-out break point by ±1 step
     // frame-to-frame. With a step-count schedule, that ±1 step shift changes
-    // which `cached_sh` value governs the final step (up to stride-1 steps
+    // which cached SH value governs the final step (up to stride-1 steps
     // stale) for radial volumes, where per-step `fade` varies sharply with
     // position — producing a frame-to-frame radiance discontinuity (flicker).
     // A distance-based schedule is frame-stable: the t-sequence is
-    // deterministic per ray, so `cached_sh` at step k holds the same value
-    // every frame regardless of where the early-out fires. The animated
+    // deterministic per ray, so the cached SH pair at step k holds the same
+    // value every frame regardless of where the early-out fires. The animated
     // early-out only controls whether a smooth additional contribution lands
     // — it does not alter which cached value governed prior steps.
     //
@@ -485,7 +529,10 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         step,
         f32(MAX_SH_RESAMPLE_STRIDE) * step,
     );
-    var cached_sh: vec3<f32> = vec3<f32>(0.0);
+    var cached_sh_iso: vec3<f32> = vec3<f32>(0.0);
+    var cached_sh_dir: vec3<f32> = vec3<f32>(0.0);
+    let sh_iso_direction = vec3<f32>(0.0, 1.0, 0.0);
+    let sh_view_direction = -ray.direction;
     // Sentinel triggering a fresh sample on the first eligible step. Any value
     // <= -sh_coverage_dist works; -1e30 is safely beyond any plausible `t`.
     var t_last_sh_sample: f32 = -1.0e30;
@@ -533,6 +580,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             // contribution, then divided by total density after the loop.
             var vs_min_brightness_accum: f32 = 0.0;
             var vs_light_range_accum: f32 = 0.0;
+            var vs_aniso_accum: f32 = 0.0;
+            var vs_ambient_scatter_accum: f32 = 0.0;
             for (var rk: u32 = 0u; rk < raw_count; rk = rk + 1u) {
                 let v = fog_volumes[raw_idx[rk]];
                 // AABB still gates entry — the slab-clip prologue narrowed the
@@ -604,6 +653,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 vs_sat_accum = vs_sat_accum + contrib * v.saturation;
                 vs_min_brightness_accum = vs_min_brightness_accum + contrib * v.min_brightness;
                 vs_light_range_accum = vs_light_range_accum + contrib * v.light_range;
+                vs_aniso_accum = vs_aniso_accum + contrib * v.anisotropy;
+                vs_ambient_scatter_accum = vs_ambient_scatter_accum + contrib * v.ambient_scatter;
             }
 
             if vs_density > 0.0 {
@@ -613,6 +664,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let vs_saturation = vs_sat_accum * inv_density;
                 let vs_min_brightness = vs_min_brightness_accum * inv_density;
                 let vs_light_range = vs_light_range_accum * inv_density;
+                let vs_anisotropy = clamp(vs_aniso_accum * inv_density, 0.0, HG_MAX_G);
+                let vs_ambient_scatter = vs_ambient_scatter_accum * inv_density;
 
                 // Glow weight for this step.
                 let weight = vs_density * vs_glow * step;
@@ -628,10 +681,19 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 // at the early-out don't change which cached value governs the
                 // boundary step.
                 if t - t_last_sh_sample >= sh_coverage_dist {
-                    cached_sh = sample_sh_fog(pos);
+                    cached_sh_iso = sample_sh_fog(pos, sh_iso_direction);
+                    cached_sh_dir = sample_sh_fog(pos, sh_view_direction);
                     t_last_sh_sample = t;
                 }
-                step_scatter = step_scatter + cached_sh;
+                // The directional read evaluates SH toward -ray.direction, so the
+                // HG lobe always points along the view ray (cos_theta == 1) and
+                // `fog_directional_sh_weight` collapses to `saturate(g)` for every
+                // step. Use that closed form directly to keep the per-step ALU
+                // off the phase math.
+                let sh_weight = saturate(vs_anisotropy);
+                let sh_iso = cached_sh_iso * vs_ambient_scatter;
+                let sh_dir = cached_sh_dir * vs_ambient_scatter;
+                step_scatter = step_scatter + mix(sh_iso, sh_dir, sh_weight);
 
                 // Dynamic spot beams.
                 for (var li: u32 = 0u; li < spot_count; li = li + 1u) {

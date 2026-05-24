@@ -42,7 +42,8 @@ pub const DEFAULT_FOG_STEP_SIZE: f32 = 0.5;
 /// 16-byte blocks: (1) `min`, `density`; (2) `max_v`, `edge_softness`;
 /// (3) `center`, `half_diag`; (4) `inv_half_ext`, `shape_mode`;
 /// (5) `tint`, `saturation`; (6) `radial_falloff`, `glow`, `plane_offset`,
-/// `plane_count`; (7) `min_brightness`, `light_range`, `_pad6[2]`.
+/// `plane_count`; (7) `min_brightness`, `light_range`, `anisotropy`,
+/// `ambient_scatter`.
 ///
 /// Any PRL file compiled before all fields were present must be recompiled.
 #[repr(C)]
@@ -82,7 +83,11 @@ pub struct FogVolume {
     pub plane_count: u32,
     pub min_brightness: f32,
     pub light_range: f32,
-    pub _pad6: [f32; 2],
+    /// Henyey-Greenstein anisotropy `g`, translated by the compiler from the
+    /// authored `scatter_bias` KVP. `0.0` selects the isotropic world-up SH read.
+    pub anisotropy: f32,
+    /// Static SH ambient scatter scale. `1.0` preserves existing maps.
+    pub ambient_scatter: f32,
 }
 
 /// Per-frame spot-light record consumed by the fog raymarch. 48 bytes;
@@ -243,7 +248,7 @@ mod tests {
         // center(32) half_diag(44) inv_half_ext(48) shape_mode(60)
         // tint(64) saturation(76) radial_falloff(80) glow(84)
         // plane_offset(88) plane_count(92) min_brightness(96)
-        // light_range(100) _pad6(104..112). Total: 112 bytes.
+        // light_range(100) anisotropy(104) ambient_scatter(108). Total: 112 bytes.
         // Spot-checking key baked fields catches silent layout drift between Rust and WGSL.
         let v = FogVolume {
             min: [1.0, 2.0, 3.0],
@@ -262,7 +267,8 @@ mod tests {
             plane_count: 0,
             min_brightness: 0.125,
             light_range: 2.0,
-            _pad6: [0.0; 2],
+            anisotropy: 0.45,
+            ambient_scatter: 0.25,
         };
         let volumes = [v];
         let bytes = pack_fog_volumes(&volumes);
@@ -285,6 +291,8 @@ mod tests {
         let plane_count = u32::from_le_bytes(bytes[92..96].try_into().unwrap());
         let min_brightness = f32::from_le_bytes(bytes[96..100].try_into().unwrap());
         let light_range = f32::from_le_bytes(bytes[100..104].try_into().unwrap());
+        let anisotropy = f32::from_le_bytes(bytes[104..108].try_into().unwrap());
+        let ambient_scatter = f32::from_le_bytes(bytes[108..112].try_into().unwrap());
         assert_eq!(density, 0.75);
         assert_eq!(edge_softness, 0.25);
         assert_eq!(center_x, 2.5);
@@ -301,5 +309,7 @@ mod tests {
         assert_eq!(plane_count, 0);
         assert_eq!(min_brightness, 0.125);
         assert_eq!(light_range, 2.0);
+        assert_eq!(anisotropy, 0.45);
+        assert_eq!(ambient_scatter, 0.25);
     }
 }

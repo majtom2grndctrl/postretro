@@ -253,6 +253,8 @@ pub fn encode_fog_volumes(
                 saturation: v.saturation,
                 min_brightness: v.min_brightness,
                 light_range: v.light_range,
+                anisotropy: v.anisotropy,
+                ambient_scatter: v.ambient_scatter,
                 plane_count: v.planes.len() as u32,
                 planes: v.planes.clone(),
                 tags: v.tags.clone(),

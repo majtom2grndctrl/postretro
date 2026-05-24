@@ -597,6 +597,35 @@ fn clamp_light_range(value: f32, classname: &str) -> f32 {
     MIN.max(value)
 }
 
+fn scatter_bias_to_anisotropy(value: f32, classname: &str) -> f32 {
+    if !value.is_finite() || !(0.0..=100.0).contains(&value) {
+        log::warn!(
+            "[Compiler] {classname}: scatter_bias {value} is outside 0..100 or non-finite; clamping"
+        );
+    }
+    if value.is_finite() {
+        // Maps 0–100 authoring range to HG g ∈ [0, 0.9]; 0.9 matches HG_MAX_G in the
+        // shader (avoids singularity at g=1). Out-of-range inputs trigger the warning
+        // above and clamp: negatives → 0.0, over-range → 0.9.
+        (value / 100.0 * 0.9).clamp(0.0, 0.9)
+    } else {
+        0.0
+    }
+}
+
+fn clamp_ambient_scatter(value: f32, classname: &str) -> f32 {
+    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+        log::warn!(
+            "[Compiler] {classname}: ambient_scatter {value} is outside 0..1 or non-finite; clamping"
+        );
+    }
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        1.0
+    }
+}
+
 /// Compute a fog_volume brush entity's world-space AABB and bounding planes from its brush faces and
 /// parse its KVP-authored parameters. Returns `None` when the brush set
 /// produces no usable vertices (degenerate authoring). Returns `Err` when the
@@ -698,6 +727,16 @@ fn resolve_fog_volume(
         .and_then(|s| s.trim().parse::<f32>().ok())
         .map(|v| clamp_light_range(v, classname))
         .unwrap_or(1.0_f32);
+    let anisotropy = props
+        .get("scatter_bias")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .map(|v| scatter_bias_to_anisotropy(v, classname))
+        .unwrap_or(0.0);
+    let ambient_scatter = props
+        .get("ambient_scatter")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .map(|v| clamp_ambient_scatter(v, classname))
+        .unwrap_or(1.0);
     let tags: Vec<String> = props
         .get("_tags")
         .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
@@ -725,6 +764,8 @@ fn resolve_fog_volume(
         saturation,
         min_brightness,
         light_range,
+        anisotropy,
+        ambient_scatter,
         planes,
         tags,
         is_ellipsoid: false,
@@ -811,6 +852,16 @@ fn resolve_fog_ellipsoid(
         .and_then(|s| s.trim().parse::<f32>().ok())
         .map(|v| clamp_light_range(v, classname))
         .unwrap_or(1.0_f32);
+    let anisotropy = props
+        .get("scatter_bias")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .map(|v| scatter_bias_to_anisotropy(v, classname))
+        .unwrap_or(0.0);
+    let ambient_scatter = props
+        .get("ambient_scatter")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .map(|v| clamp_ambient_scatter(v, classname))
+        .unwrap_or(1.0);
     let tags: Vec<String> = props
         .get("_tags")
         .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
@@ -837,6 +888,8 @@ fn resolve_fog_ellipsoid(
         saturation,
         min_brightness,
         light_range,
+        anisotropy,
+        ambient_scatter,
         planes: Vec::new(),
         tags,
         is_ellipsoid: true,
@@ -893,6 +946,16 @@ fn resolve_fog_lamp(
         .and_then(|s| s.trim().parse::<f32>().ok())
         .map(|v| clamp_light_range(v, classname))
         .unwrap_or(1.0_f32);
+    let anisotropy = props
+        .get("scatter_bias")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .map(|v| scatter_bias_to_anisotropy(v, classname))
+        .unwrap_or(0.0);
+    let ambient_scatter = props
+        .get("ambient_scatter")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .map(|v| clamp_ambient_scatter(v, classname))
+        .unwrap_or(1.0);
     let tags: Vec<String> = props
         .get("_tags")
         .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
@@ -921,6 +984,8 @@ fn resolve_fog_lamp(
         saturation,
         min_brightness,
         light_range,
+        anisotropy,
+        ambient_scatter,
         planes: Vec::new(),
         tags,
         is_ellipsoid: false,
@@ -1018,6 +1083,16 @@ fn resolve_fog_tube(
         .and_then(|s| s.trim().parse::<f32>().ok())
         .map(|v| clamp_light_range(v, classname))
         .unwrap_or(1.0_f32);
+    let anisotropy = props
+        .get("scatter_bias")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .map(|v| scatter_bias_to_anisotropy(v, classname))
+        .unwrap_or(0.0);
+    let ambient_scatter = props
+        .get("ambient_scatter")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .map(|v| clamp_ambient_scatter(v, classname))
+        .unwrap_or(1.0);
     let tags: Vec<String> = props
         .get("_tags")
         .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
@@ -1054,6 +1129,8 @@ fn resolve_fog_tube(
         saturation,
         min_brightness,
         light_range,
+        anisotropy,
+        ambient_scatter,
         planes: Vec::new(),
         tags,
         is_ellipsoid: false,
@@ -1520,6 +1597,89 @@ mod tests {
             .cloned()
             .unwrap_or_default();
         (geo_map, brush_ids)
+    }
+
+    fn simple_fog_volume_map() -> (&'static str, f64) {
+        (
+            r#"
+// entity 0
+{
+"classname" "worldspawn"
+"initialGravity" "-9.81"
+}
+// entity 1
+{
+"classname" "fog_volume"
+{
+( 0 0 -32 ) ( 1 0 -32 ) ( 0 1 -32 ) tex 0 0 0 1 1
+( 0 0  32 ) ( 0 1  32 ) ( 1 0  32 ) tex 0 0 0 1 1
+( -64 0 0 ) ( -64 1 0 ) ( -64 0 1 ) tex 0 0 0 1 1
+(  64 0 0 ) (  64 0 1 ) (  64 1 0 ) tex 0 0 0 1 1
+( 0 -64 0 ) ( 0 -64 1 ) ( 1 -64 0 ) tex 0 0 0 1 1
+( 0  64 0 ) ( 1  64 0 ) ( 0  64 1 ) tex 0 0 0 1 1
+}
+}
+"#,
+            MapFormat::IdTech2.units_to_meters(),
+        )
+    }
+
+    #[test]
+    fn fog_resolvers_default_directional_fields_to_identity_values() {
+        let props = HashMap::new();
+        let lamp = resolve_fog_lamp(&props, DVec3::ZERO, 1.0, "fog_lamp").expect("lamp resolves");
+        assert!((lamp.anisotropy - 0.0).abs() < 1e-6);
+        assert!((lamp.ambient_scatter - 1.0).abs() < 1e-6);
+
+        let tube = resolve_fog_tube(&props, DVec3::ZERO, 1.0, "fog_tube").expect("tube resolves");
+        assert!((tube.anisotropy - 0.0).abs() < 1e-6);
+        assert!((tube.ambient_scatter - 1.0).abs() < 1e-6);
+
+        let (map_text, scale) = simple_fog_volume_map();
+        let (geo_map, brush_ids) = fog_volume_geo_map_from_str(map_text);
+        let plane_volume = resolve_fog_volume(&geo_map, &brush_ids, &props, scale, "fog_volume")
+            .expect("plane volume resolves")
+            .expect("box has vertices");
+        assert!((plane_volume.anisotropy - 0.0).abs() < 1e-6);
+        assert!((plane_volume.ambient_scatter - 1.0).abs() < 1e-6);
+
+        let ellipsoid = resolve_fog_ellipsoid(&geo_map, &brush_ids, &props, scale, "fog_volume")
+            .expect("ellipsoid resolves");
+        assert!((ellipsoid.anisotropy - 0.0).abs() < 1e-6);
+        assert!((ellipsoid.ambient_scatter - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn fog_resolvers_translate_scatter_bias_and_clamp_ambient_scatter() {
+        let mut props = HashMap::new();
+        props.insert("scatter_bias".to_string(), "100".to_string());
+        props.insert("ambient_scatter".to_string(), "0".to_string());
+        let lamp = resolve_fog_lamp(&props, DVec3::ZERO, 1.0, "fog_lamp").expect("lamp resolves");
+        assert!((lamp.anisotropy - 0.9).abs() < 1e-6);
+        assert!((lamp.ambient_scatter - 0.0).abs() < 1e-6);
+
+        props.insert("scatter_bias".to_string(), "0".to_string());
+        props.insert("ambient_scatter".to_string(), "1".to_string());
+        let tube = resolve_fog_tube(&props, DVec3::ZERO, 1.0, "fog_tube").expect("tube resolves");
+        assert!((tube.anisotropy - 0.0).abs() < 1e-6);
+        assert!((tube.ambient_scatter - 1.0).abs() < 1e-6);
+
+        props.insert("scatter_bias".to_string(), "150".to_string());
+        props.insert("ambient_scatter".to_string(), "2".to_string());
+        let (map_text, scale) = simple_fog_volume_map();
+        let (geo_map, brush_ids) = fog_volume_geo_map_from_str(map_text);
+        let plane_volume = resolve_fog_volume(&geo_map, &brush_ids, &props, scale, "fog_volume")
+            .expect("plane volume resolves")
+            .expect("box has vertices");
+        assert!((plane_volume.anisotropy - 0.9).abs() < 1e-6);
+        assert!((plane_volume.ambient_scatter - 1.0).abs() < 1e-6);
+
+        props.insert("scatter_bias".to_string(), "-10".to_string());
+        props.insert("ambient_scatter".to_string(), "-0.5".to_string());
+        let ellipsoid = resolve_fog_ellipsoid(&geo_map, &brush_ids, &props, scale, "fog_volume")
+            .expect("ellipsoid resolves");
+        assert!((ellipsoid.anisotropy - 0.0).abs() < 1e-6);
+        assert!((ellipsoid.ambient_scatter - 0.0).abs() < 1e-6);
     }
 
     #[test]

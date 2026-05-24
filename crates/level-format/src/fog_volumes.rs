@@ -30,9 +30,13 @@ pub const MAX_PLANES_PER_VOLUME: usize = 16;
 /// `tint` multiplies the per-step scatter color after saturation is applied; `[1, 1, 1]` is a
 /// no-op. `saturation` controls color vividness via a luma-mix: 0 = greyscale, 1 = natural
 /// (no effect), >1 = boosted. `min_brightness` sets a scatter floor (0.0 = none); `light_range`
-/// scales how far lights reach inside the volume (1.0 = same reach as open air). All four default
-/// to their identity values so existing maps compiled before these fields were added behave identically.
-#[derive(Debug, Clone, PartialEq, Default)]
+/// scales how far lights reach inside the volume (1.0 = same reach as open air). `anisotropy`
+/// stores the compiler-translated HG `g` value from the FGD-only `scatter_bias` KVP, and
+/// `ambient_scatter` scales the static SH ambient contribution. All six scatter fields
+/// (`tint`, `saturation`, `min_brightness`, `light_range`, `anisotropy`, `ambient_scatter`)
+/// default to their identity values so existing maps recompiled without these KVPs behave
+/// identically.
+#[derive(Debug, Clone, PartialEq)]
 pub struct FogVolumeRecord {
     pub min: [f32; 3],
     pub density: f32,
@@ -69,6 +73,11 @@ pub struct FogVolumeRecord {
     /// increase how far lights reach inside the volume; values below 1.0 reduce it. Clamped
     /// to a small positive minimum at load time.
     pub light_range: f32,
+    /// Henyey-Greenstein anisotropy `g`, translated by the compiler from
+    /// authored `scatter_bias`. `0.0` = isotropic ambient haze.
+    pub anisotropy: f32,
+    /// Static SH ambient scatter scale. `1.0` = full ambient contribution.
+    pub ambient_scatter: f32,
     /// Number of bounding planes; mirrors `planes.len()` and is baked into the
     /// fixed payload so the wire format header is self-describing.
     pub plane_count: u32,
@@ -78,6 +87,32 @@ pub struct FogVolumeRecord {
     pub planes: Vec<[f32; 4]>,
     /// Author-supplied script tags (FGD `_tags`, pre-split on whitespace).
     pub tags: Vec<String>,
+}
+
+impl Default for FogVolumeRecord {
+    fn default() -> Self {
+        Self {
+            min: [0.0; 3],
+            density: 0.0,
+            max: [0.0; 3],
+            edge_softness: 0.0,
+            glow: 0.0,
+            radial_falloff: 0.0,
+            center: [0.0; 3],
+            inv_half_ext: [0.0; 3],
+            half_diag: 0.0,
+            shape_mode: 0.0,
+            tint: [1.0; 3],
+            saturation: 1.0,
+            min_brightness: 0.0,
+            light_range: 1.0,
+            anisotropy: 0.0,
+            ambient_scatter: 1.0,
+            plane_count: 0,
+            planes: Vec::new(),
+            tags: Vec::new(),
+        }
+    }
 }
 
 /// FogVolumes PRL section.
@@ -101,6 +136,8 @@ pub struct FogVolumeRecord {
 ///     f32  saturation
 ///     f32  min_brightness
 ///     f32  light_range
+///     f32  anisotropy
+///     f32  ambient_scatter
 ///     u32  plane_count
 ///     repeat plane_count:
 ///       f32  nx, ny, nz, d
@@ -163,6 +200,8 @@ impl FogVolumesSection {
             buf.extend_from_slice(&v.saturation.to_le_bytes());
             buf.extend_from_slice(&v.min_brightness.to_le_bytes());
             buf.extend_from_slice(&v.light_range.to_le_bytes());
+            buf.extend_from_slice(&v.anisotropy.to_le_bytes());
+            buf.extend_from_slice(&v.ambient_scatter.to_le_bytes());
             buf.extend_from_slice(&(v.planes.len() as u32).to_le_bytes());
             for plane in &v.planes {
                 for c in plane {
@@ -185,10 +224,10 @@ impl FogVolumesSection {
         let initial_gravity = read_f32(data, &mut o, "initial_gravity")?;
         let count = read_u32(data, &mut o, "volume count")? as usize;
 
-        // Sanity-check: each fixed payload is 24 × f32 + 2 × u32 = 104 bytes
+        // Sanity-check: each fixed payload is 26 × f32 + 2 × u32 = 112 bytes
         // (includes plane_count and tag_count headers; planes and tags are
         // variable-length and validated against remaining bytes below).
-        const MIN_RECORD_SIZE: usize = 104;
+        const MIN_RECORD_SIZE: usize = 112;
         let remaining = data.len().saturating_sub(o);
         if count > remaining / MIN_RECORD_SIZE {
             // FormatError has no Parse variant; Io is the closest proxy for
@@ -217,6 +256,8 @@ impl FogVolumesSection {
             let saturation = read_f32(data, &mut o, &format!("volume {i} saturation"))?;
             let min_brightness = read_f32(data, &mut o, &format!("volume {i} min_brightness"))?;
             let light_range = read_f32(data, &mut o, &format!("volume {i} light_range"))?;
+            let anisotropy = read_f32(data, &mut o, &format!("volume {i} anisotropy"))?;
+            let ambient_scatter = read_f32(data, &mut o, &format!("volume {i} ambient_scatter"))?;
 
             let plane_count = read_u32(data, &mut o, &format!("volume {i} plane count"))? as usize;
             const PLANE_SIZE: usize = 16;
@@ -269,6 +310,8 @@ impl FogVolumesSection {
                 saturation,
                 min_brightness,
                 light_range,
+                anisotropy,
+                ambient_scatter,
                 plane_count: plane_count as u32,
                 planes,
                 tags,
@@ -359,6 +402,16 @@ mod tests {
     }
 
     #[test]
+    fn fog_volume_record_default_preserves_identity_scatter_fields() {
+        let record = FogVolumeRecord::default();
+        assert_eq!(record.tint, [1.0; 3]);
+        assert_eq!(record.saturation, 1.0);
+        assert_eq!(record.light_range, 1.0);
+        assert_eq!(record.anisotropy, 0.0);
+        assert_eq!(record.ambient_scatter, 1.0);
+    }
+
+    #[test]
     fn round_trip_two_volumes_one_with_tags_one_without() {
         let section = FogVolumesSection {
             pixel_scale: 8,
@@ -379,6 +432,8 @@ mod tests {
                     saturation: 1.0,
                     min_brightness: 0.0,
                     light_range: 1.0,
+                    anisotropy: 0.0,
+                    ambient_scatter: 1.0,
                     plane_count: 0,
                     planes: vec![],
                     tags: vec!["smoke".to_string(), "ambient".to_string()],
@@ -398,6 +453,8 @@ mod tests {
                     saturation: 1.5,
                     min_brightness: 0.0,
                     light_range: 1.0,
+                    anisotropy: 0.7,
+                    ambient_scatter: 0.25,
                     plane_count: 0,
                     planes: vec![],
                     tags: vec![],
@@ -406,6 +463,49 @@ mod tests {
         };
         let bytes = section.to_bytes();
         let restored = FogVolumesSection::from_bytes(&bytes).unwrap();
+        assert_eq!(section, restored);
+    }
+
+    #[test]
+    fn round_trip_preserves_directional_fog_fields() {
+        let mut volume = make_volume(vec![], vec![]);
+        volume.anisotropy = 0.9;
+        volume.ambient_scatter = 0.25;
+        let section = FogVolumesSection {
+            pixel_scale: 4,
+            initial_gravity: -9.81,
+            volumes: vec![volume],
+        };
+
+        let bytes = section.to_bytes();
+        let record_offset = 12;
+        let anisotropy_offset = record_offset + 24 * 4;
+        let ambient_scatter_offset = record_offset + 25 * 4;
+        assert_eq!(
+            f32::from_le_bytes(
+                bytes[anisotropy_offset..anisotropy_offset + 4]
+                    .try_into()
+                    .unwrap()
+            )
+            .to_bits(),
+            0.9_f32.to_bits()
+        );
+        assert_eq!(
+            f32::from_le_bytes(
+                bytes[ambient_scatter_offset..ambient_scatter_offset + 4]
+                    .try_into()
+                    .unwrap()
+            )
+            .to_bits(),
+            0.25_f32.to_bits()
+        );
+
+        let restored = FogVolumesSection::from_bytes(&bytes).unwrap();
+        assert_eq!(restored.volumes[0].anisotropy.to_bits(), 0.9_f32.to_bits());
+        assert_eq!(
+            restored.volumes[0].ambient_scatter.to_bits(),
+            0.25_f32.to_bits()
+        );
         assert_eq!(section, restored);
     }
 
@@ -468,6 +568,8 @@ mod tests {
             saturation: 1.0,
             min_brightness: 0.0,
             light_range: 1.0,
+            anisotropy: 0.0,
+            ambient_scatter: 1.0,
             plane_count,
             planes,
             tags,
@@ -582,6 +684,8 @@ mod tests {
                 saturation: 1.0,
                 min_brightness: 0.0,
                 light_range: 1.0,
+                anisotropy: 0.0,
+                ambient_scatter: 1.0,
                 plane_count: 0,
                 planes: vec![],
                 tags: vec![],

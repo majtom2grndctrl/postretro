@@ -1422,9 +1422,9 @@
 "_color" "255 255 255"
 "_fade" "900"
 "angles" "-42 -98 167"
-"_cone" "5"
+"_cone" "20"
 "delay" "0"
-"_cone2" "30"
+"_cone2" "40"
 }
 // entity 27
 {
@@ -1520,6 +1520,8 @@
 "_tags" ""
 "edge_softness" "2"
 "glow" "0.25"
+"saturation" "1.5"
+"scatter_bias" "1.0"
 // brush 0
 {
 ( -1824 2720 64 ) ( -1824 1440 64 ) ( -1824 1440 -48 ) concrete_stone_030 0 -0.42857146 0 5 1.75
@@ -1539,6 +1541,7 @@
 "density" "3"
 "glow" "0.4"
 "light_range" "0.5"
+"scatter_bias" "0.8"
 // brush 0
 {
 ( -1616 2720 608 ) ( -1616 1440 608 ) ( -1616 1440 160 ) concrete_stone_030 0 -0.14284527 0 5 7

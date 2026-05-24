@@ -39,6 +39,9 @@ dist/
 .claude/worktrees/
 .venv/
 
+# macOS
+.DS_Store
+
 # Compiled script artifacts (source is .ts/.lua; outputs are generated)
 *.js
 *.lua

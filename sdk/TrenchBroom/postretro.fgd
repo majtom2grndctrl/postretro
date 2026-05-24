@@ -166,6 +166,8 @@
     saturation(float) : "Scatter saturation (0=greyscale, 1=natural, >1=boosted)" : "1.0"
     min_brightness(float) : "Minimum scatter brightness floor — fog stays at least this bright even in unlit areas (0=no floor)" : "0.0"
     light_range(float) : "Scales how far lights reach inside this fog. 1.0 = same range as open air, 2.0 = double range, 0.5 = half range." : "1.0"
+    scatter_bias(float) : "Makes fog brighten when you look toward baked light. Range 0 to 100: 0 = flat haze (default), 100 = strongest directional glow. Out-of-range values clamp." : "0"
+    ambient_scatter(float) : "Controls how much baked ambient light appears in the fog. Range 0.0 to 1.0: 0.0 = only dynamic lights show, 1.0 = full ambient (default). Out-of-range values clamp." : "1.0"
     _tags(string) : "Space-delimited tags for script queries" : ""
 ]
 
@@ -200,6 +202,8 @@
     saturation(float) : "Scatter saturation (0=greyscale, 1=natural, >1=boosted)" : "1.0"
     min_brightness(float) : "Minimum scatter brightness floor — fog stays at least this bright even in unlit areas (0=no floor)" : "0.0"
     light_range(float) : "Scales how far lights reach inside this fog. 1.0 = same range as open air, 2.0 = double range, 0.5 = half range." : "1.0"
+    scatter_bias(float) : "Makes fog brighten when you look toward baked light. Range 0 to 100: 0 = flat haze (default), 100 = strongest directional glow. Out-of-range values clamp." : "0"
+    ambient_scatter(float) : "Controls how much baked ambient light appears in the fog. Range 0.0 to 1.0: 0.0 = only dynamic lights show, 1.0 = full ambient (default). Out-of-range values clamp." : "1.0"
     _tags(string) : "Space-delimited tags for script queries" : ""
 ]
 
@@ -227,6 +231,7 @@
     saturation(float) : "Scatter saturation (0=greyscale, 1=natural, >1=boosted)" : "1.0"
     min_brightness(float) : "Minimum scatter brightness floor — fog stays at least this bright even in unlit areas (0=no floor)" : "0.0"
     light_range(float) : "Scales how far lights reach inside this fog. 1.0 = same range as open air, 2.0 = double range, 0.5 = half range." : "1.0"
+    scatter_bias(float) : "Makes fog brighten when you look toward baked light. Range 0 to 100: 0 = flat haze (default), 100 = strongest directional glow. Out-of-range values clamp." : "0"
+    ambient_scatter(float) : "Controls how much baked ambient light appears in the fog. Range 0.0 to 1.0: 0.0 = only dynamic lights show, 1.0 = full ambient (default). Out-of-range values clamp." : "1.0"
     _tags(string) : "Space-delimited tags for script queries" : ""
 ]
-

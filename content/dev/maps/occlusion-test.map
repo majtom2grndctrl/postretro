@@ -7,6 +7,7 @@
 "wad" ""
 "_tb_def" "external:../../../sdk/TrenchBroom/postretro.fgd"
 "ambient_color" "0 0 0"
+"_tb_mod" "dev"
 // brush 0
 {
 ( -16 272 -16 ) ( -16 -16 0 ) ( -16 -16 -16 ) debug_floor_grey 0 0 0 1 1
@@ -1160,21 +1161,24 @@
 }
 // entity 3
 {
-"classname" "light"
-"origin" "272 1440 202"
-"light" "255"
-"_color" "160 200 255"
-"_fade" "10000"
+"classname" "light_spot"
+"origin" "-240 1312 74"
+"light" "800"
+"_color" "255 170 40"
+"_fade" "900"
 "delay" "0"
 "_bake_only" "0"
+"angles" "0 0 0"
+"_cone" "5"
+"_cone2" "30"
 }
 // entity 4
 {
 "classname" "light"
 "origin" "472 1984 72"
 "light" "300"
-"_color" "255 0 0"
-"_fade" "800"
+"_color" "236 21 142"
+"_fade" "500"
 "delay" "0"
 "_bake_only" "1"
 }
@@ -1183,14 +1187,17 @@
 "classname" "light"
 "origin" "824 1656 120"
 "light" "300"
-"_color" "0 0 255"
-"_fade" "800"
+"_color" "2 114 245"
+"_fade" "500"
 "delay" "0"
 "_bake_only" "1"
 }
 // entity 6
 {
 "classname" "fog_volume"
+"saturation" "3.0"
+"glow" "0.7"
+"density" "0.7"
 // brush 0
 {
 ( 392 2128 288 ) ( 376 2032 288 ) ( 376 2032 48 ) debug_wall_yellow 0 0 0 1 1
@@ -1204,6 +1211,10 @@
 // entity 7
 {
 "classname" "fog_volume"
+"saturation" "3.0"
+"glow" "0.7"
+"density" "0.7"
+"scatter_bias" "1"
 // brush 0
 {
 ( 360 1952 288 ) ( 376 1856 288 ) ( 376 1856 48 ) debug_wall_yellow 0 0 180 1 -1
@@ -1217,6 +1228,9 @@
 // entity 8
 {
 "classname" "fog_volume"
+"glow" "0.7"
+"density" "0.7"
+"saturation" "3"
 // brush 0
 {
 ( 704 1776 288 ) ( 704 1544 288 ) ( 704 1544 48 ) debug_wall_yellow 0 0 0 1 1
@@ -1230,6 +1244,10 @@
 // entity 9
 {
 "classname" "fog_volume"
+"saturation" "3"
+"density" ".7"
+"glow" ".7"
+"scatter_bias" "1"
 // brush 0
 {
 ( 880 1744 288 ) ( 880 1512 288 ) ( 880 1512 48 ) debug_wall_yellow 0 0 0 1 1
@@ -1298,11 +1316,12 @@
 {
 "classname" "fog_volume"
 "glow" "0.4"
-"min_brightness" "0.01"
-"saturation" "0.6"
+"min_brightness" "-.05"
+"saturation" "1.3"
 "tint" "255 255 255"
 "edge_softness" "3"
 "density" "0.4"
+"scatter_bias" "100"
 // brush 0
 {
 ( -180 1696 80 ) ( -180 616 80 ) ( -180 616 -48 ) debug_ceiling_grey 0.67405987 0 0 4.65517 8
@@ -1319,11 +1338,11 @@
 "origin" "152 2120 104"
 "angles" "-90 0 30"
 "_tags" ""
-"style" "1"
-"_fade" "100"
+"style" "2"
+"_fade" "160"
 "light" "400"
 "_color" "245 221 51"
-"_cone" "5"
+"_cone" "15"
 "_cone2" "45"
 }
 // entity 16
@@ -1332,10 +1351,10 @@
 "origin" "152 2232 104"
 "angles" "-90 0 30"
 "_tags" ""
-"style" "1"
-"_fade" "100"
+"style" "2"
+"_fade" "160"
 "light" "400"
 "_color" "245 221 51"
-"_cone" "5"
+"_cone" "15"
 "_cone2" "45"
 }

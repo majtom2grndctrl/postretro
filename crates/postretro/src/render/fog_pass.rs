@@ -80,8 +80,7 @@ pub struct FogPass {
     /// Packed fog-volume AABB + params storage buffer. Sized for
     /// `MAX_FOG_VOLUMES` records so the buffer never has to be reallocated.
     pub volumes_buffer: wgpu::Buffer,
-    /// Fog-params uniform (inv_view_proj, camera position, step size,
-    /// volume count, near/far clip). Rewritten per frame.
+    /// Fog-params uniform. Rewritten per frame. See `FogParams` for layout.
     pub params_buffer: wgpu::Buffer,
     /// Per-frame spot-light subset marched by the fog shader.
     pub spots_buffer: wgpu::Buffer,
@@ -942,6 +941,170 @@ fn build_group6(
 #[cfg(test)]
 mod tests {
     use super::{FOG_HYSTERESIS_SECONDS, FOG_SHADER_SOURCE, compute_active_mask_with_hysteresis};
+    use glam::Vec3;
+    use proptest::prelude::*;
+
+    const TEST_EPSILON: f32 = 1.0e-5;
+    const HG_MAX_G: f32 = 0.9;
+
+    fn hg_phase_reference(cos_theta: f32, g: f32) -> f32 {
+        let clamped_g = g.clamp(0.0, HG_MAX_G);
+        let g2 = clamped_g * clamped_g;
+        let denom = 1.0 + g2 - 2.0 * clamped_g * cos_theta.clamp(-1.0, 1.0);
+        (1.0 - g2) / (4.0 * std::f32::consts::PI * denom.max(1.0e-4).powf(1.5))
+    }
+
+    fn directional_sh_weight_reference(cos_theta: f32, g: f32) -> f32 {
+        let clamped_g = g.clamp(0.0, HG_MAX_G);
+        if clamped_g <= 0.0 {
+            return 0.0;
+        }
+
+        let uniform_phase = hg_phase_reference(cos_theta, 0.0);
+        let phase = hg_phase_reference(cos_theta, clamped_g);
+        let peak = hg_phase_reference(1.0, clamped_g);
+        let phase_weight =
+            ((phase - uniform_phase) / (peak - uniform_phase).max(1.0e-6)).clamp(0.0, 1.0);
+        (clamped_g * phase_weight).clamp(0.0, 1.0)
+    }
+
+    fn blend_sh_reference(iso: Vec3, dir: Vec3, g: f32) -> Vec3 {
+        // cos_theta is hardcoded to 1.0 here, matching the shader's constant
+        // value: `sh_view_direction = -ray.direction`, so
+        // `dot(sh_view_direction, -ray.direction) = 1.0` always. Tests pass
+        // at this fixed angle; if the shader's angle computation ever changes,
+        // this reference function will need to accept a variable cos_theta.
+        let weight = directional_sh_weight_reference(1.0, g);
+        iso + (dir - iso) * weight
+    }
+
+    fn assert_close(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() <= TEST_EPSILON,
+            "expected {actual} to be within {TEST_EPSILON} of {expected}",
+        );
+    }
+
+    fn assert_vec3_close(actual: Vec3, expected: Vec3) {
+        for (actual, expected) in actual.to_array().into_iter().zip(expected.to_array()) {
+            assert_close(actual, expected);
+        }
+    }
+
+    #[test]
+    fn hg_phase_peaks_toward_lobe_direction() {
+        let g = 0.65;
+        let forward = hg_phase_reference(1.0, g);
+        let side = hg_phase_reference(0.0, g);
+        let backward = hg_phase_reference(-1.0, g);
+
+        assert!(forward > side, "HG phase should peak along the lobe");
+        assert!(
+            side > backward,
+            "HG phase should fall off away from the lobe"
+        );
+    }
+
+    #[test]
+    fn hg_phase_falloff_is_symmetric_around_lobe_axis() {
+        let g = 0.55;
+        let cos_theta = 0.35_f32;
+        let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
+        let lobe = Vec3::Y;
+        let sample_a = Vec3::new(sin_theta, cos_theta, 0.0);
+        let sample_b = Vec3::new(0.0, cos_theta, sin_theta);
+
+        assert_close(lobe.dot(sample_a), lobe.dot(sample_b));
+        assert_close(
+            hg_phase_reference(lobe.dot(sample_a), g),
+            hg_phase_reference(lobe.dot(sample_b), g),
+        );
+    }
+
+    #[test]
+    fn hg_phase_g_zero_is_uniform() {
+        let expected = 1.0 / (4.0 * std::f32::consts::PI);
+        for cos_theta in [-1.0, -0.25, 0.0, 0.5, 1.0] {
+            assert_close(hg_phase_reference(cos_theta, 0.0), expected);
+        }
+    }
+
+    #[test]
+    fn hg_phase_is_finite_at_clamp_endpoints() {
+        for g in [0.0, HG_MAX_G] {
+            for cos_theta in [-1.0, 0.0, 1.0] {
+                let phase = hg_phase_reference(cos_theta, g);
+                assert!(
+                    phase.is_finite(),
+                    "phase must be finite for g={g}, cos={cos_theta}"
+                );
+                assert!(phase >= 0.0, "phase must stay non-negative");
+            }
+        }
+    }
+
+    #[test]
+    fn directional_sh_blend_g_zero_returns_isotropic_read() {
+        let iso = Vec3::new(1.25, -0.5, 3.0);
+        let dir = Vec3::new(-4.0, 2.5, 0.75);
+        assert_vec3_close(blend_sh_reference(iso, dir, 0.0), iso);
+    }
+
+    #[test]
+    fn directional_sh_blend_is_finite_and_bounded_at_endpoints() {
+        let iso = Vec3::new(-8.0, 0.25, 10.0);
+        let dir = Vec3::new(4.0, -2.0, 3.0);
+
+        for g in [0.0, HG_MAX_G] {
+            let blended = blend_sh_reference(iso, dir, g);
+            for ((actual, iso), dir) in blended
+                .to_array()
+                .into_iter()
+                .zip(iso.to_array())
+                .zip(dir.to_array())
+            {
+                assert!(actual.is_finite(), "blend component must be finite");
+                let lo = iso.min(dir) - TEST_EPSILON;
+                let hi = iso.max(dir) + TEST_EPSILON;
+                assert!(
+                    actual >= lo && actual <= hi,
+                    "component {actual} must stay within [{lo}, {hi}] for g={g}",
+                );
+            }
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn directional_sh_blend_is_finite_and_componentwise_bounded_for_arbitrary_coefficients(
+            iso_x in -10_000.0f32..10_000.0,
+            iso_y in -10_000.0f32..10_000.0,
+            iso_z in -10_000.0f32..10_000.0,
+            dir_x in -10_000.0f32..10_000.0,
+            dir_y in -10_000.0f32..10_000.0,
+            dir_z in -10_000.0f32..10_000.0,
+            g in 0.0f32..HG_MAX_G,
+        ) {
+            let iso = Vec3::new(iso_x, iso_y, iso_z);
+            let dir = Vec3::new(dir_x, dir_y, dir_z);
+            let blended = blend_sh_reference(iso, dir, g);
+
+            for ((actual, iso), dir) in blended
+                .to_array()
+                .into_iter()
+                .zip(iso.to_array())
+                .zip(dir.to_array())
+            {
+                prop_assert!(actual.is_finite(), "blend component must be finite");
+                let lo = iso.min(dir) - TEST_EPSILON;
+                let hi = iso.max(dir) + TEST_EPSILON;
+                prop_assert!(
+                    actual >= lo && actual <= hi,
+                    "component {actual} must stay within [{lo}, {hi}] for g={g}",
+                );
+            }
+        }
+    }
 
     // Regression: `set_canonical_volumes` runs every frame and previously
     // wiped `last_active_time`, so the 300 ms sticky window never fired and a

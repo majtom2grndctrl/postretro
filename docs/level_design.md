@@ -183,7 +183,7 @@ The engine reads the first part of a texture name (up to the first `_`) to decid
 | `metal` | Metal |
 | `concrete` | Concrete |
 | `grate` | Grate |
-| `neon` | Neon (emissive) |
+| `neon` | Neon |
 | `glass` | Glass |
 | `wood` | Wood |
 

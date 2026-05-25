@@ -4,9 +4,8 @@
 use std::collections::HashSet;
 
 /// Surface material type derived from texture name prefix.
-/// Drives footstep sounds, impact effects, ricochet behavior, decals,
-/// and emissive rendering bypass. Behaviors are stubs until consumed
-/// by later phases.
+/// Drives footstep sounds, impact effects, ricochet behavior, and
+/// decals. Behaviors are stubs until consumed by later phases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Material {
     Metal,
@@ -23,8 +22,6 @@ pub enum Material {
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MaterialProperties {
-    /// Surface bypasses lightmap modulation, rendered at full brightness.
-    pub emissive: bool,
     /// Projectiles bounce off this surface with ricochet sounds.
     pub ricochet: bool,
 }
@@ -52,22 +49,13 @@ impl Material {
     #[allow(dead_code)]
     pub fn properties(self) -> MaterialProperties {
         match self {
-            Material::Metal => MaterialProperties {
-                emissive: false,
-                ricochet: true,
-            },
-            Material::Neon => MaterialProperties {
-                emissive: true,
-                ricochet: false,
-            },
-            Material::Concrete
+            Material::Metal => MaterialProperties { ricochet: true },
+            Material::Neon
+            | Material::Concrete
             | Material::Grate
             | Material::Glass
             | Material::Wood
-            | Material::Default => MaterialProperties {
-                emissive: false,
-                ricochet: false,
-            },
+            | Material::Default => MaterialProperties { ricochet: false },
         }
     }
 }
@@ -176,11 +164,9 @@ mod tests {
     }
 
     #[test]
-    fn derive_material_maps_neon_prefix_with_emissive() {
+    fn derive_material_maps_neon_prefix() {
         let mut warned = HashSet::new();
-        let mat = derive_material("neon_sign_01", &mut warned);
-        assert_eq!(mat, Material::Neon);
-        assert!(mat.properties().emissive);
+        assert_eq!(derive_material("neon_sign_01", &mut warned), Material::Neon);
     }
 
     #[test]
@@ -287,33 +273,19 @@ mod tests {
     #[test]
     fn metal_has_ricochet() {
         assert!(Material::Metal.properties().ricochet);
-        assert!(!Material::Metal.properties().emissive);
     }
 
     #[test]
-    fn neon_has_emissive() {
-        assert!(Material::Neon.properties().emissive);
-        assert!(!Material::Neon.properties().ricochet);
-    }
-
-    #[test]
-    fn default_has_no_special_properties() {
-        let props = Material::Default.properties();
-        assert!(!props.emissive);
-        assert!(!props.ricochet);
-    }
-
-    #[test]
-    fn concrete_grate_glass_wood_have_no_special_properties() {
+    fn non_metal_materials_do_not_ricochet() {
         for mat in [
+            Material::Neon,
             Material::Concrete,
             Material::Grate,
             Material::Glass,
             Material::Wood,
+            Material::Default,
         ] {
-            let props = mat.properties();
-            assert!(!props.emissive, "{:?} should not be emissive", mat);
-            assert!(!props.ricochet, "{:?} should not ricochet", mat);
+            assert!(!mat.properties().ricochet, "{:?} should not ricochet", mat);
         }
     }
 }

@@ -1,5 +1,20 @@
 # Emissive Surfaces
 
+> **Status: superseded draft — never implemented.** This plan was filed under `done/`
+> but no part of it shipped: there is no `Material::Emissive`, no `emissive_` prefix, no
+> `_e` baking or sampling, and no shader bypass. The dead `neon_` emissive flag it
+> referenced has since been removed.
+>
+> **The core model below is wrong.** It specifies lighting *replacement*
+> (`mix(total_light, emissive_intensity, …)`) — the same conceptual error as the old
+> `neon_` bypass, just per-texel. A correct emissive surface contributes *additively* over
+> HDR (`lit + emissive`) and feeds a bloom pass. Rewrite the model before implementing.
+>
+> **Reusable below:** the sibling-texture loader mechanics, bind-group slot wiring,
+> placeholder fallback, and dimension validation (Tasks 2–3) apply regardless of
+> additive-vs-replacement. The `.prm` reserved slot bit (bit 3) is the intended home for
+> baked emissive data. Pair this work with the post-processing/bloom milestone.
+
 ## Goal
 
 Emissive surfaces render at full brightness regardless of scene lighting — no lightmap

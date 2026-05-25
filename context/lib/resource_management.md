@@ -69,7 +69,7 @@ Example prefixes (illustrative, not exhaustive):
 | `metal` | Metal |
 | `concrete` | Concrete |
 | `grate` | Grate |
-| `neon` | Neon — carries the emissive property; surfaces render at full albedo brightness, bypassing lightmap and dynamic light modulation. `emissive_intensity > 1.0` targets bloom brightness for a future bloom pass. The `neon_` prefix is the current bloom opt-in signal — no threshold-driven framebuffer extraction. |
+| `neon` | Neon — aesthetic material type (shininess; planned audio/impact behaviors). Carries no rendering bypass. |
 | `glass` | Glass |
 | `wood` | Wood |
 
@@ -77,7 +77,7 @@ The material enum and prefix derivation are implemented. Behavior hooks are plan
 
 | Behavior | Status |
 |----------|--------|
-| **Emissive rendering bypass** | Implemented via `neon_` prefix — full albedo brightness, bypassing lightmap and dynamic light modulation. A dedicated `emissive_` prefix with per-texel mask pipeline is reserved for a future milestone (see §4.5). |
+| **Emissive surfaces** | Not implemented. No material bypasses or adds to scene lighting. A correct emissive feature (additive HDR contribution + bloom) is deferred — see §4.5. |
 | **Shininess** | Implemented (Milestone 5) — specular exponent on enum variant. |
 | **Footstep sounds** | Planned. |
 | **Bullet impact particles** | Planned. |
@@ -134,11 +134,13 @@ Optional per-texture normal maps for fine surface detail.
 - **Fallback:** without `numpy`, emits flat `(127, 127, 255)` maps with no surface detail.
 - **Linear guarantee:** no `sRGB`, `gAMA`, or `iCCP` chunks — passes `prl-build` validation.
 
-### 4.5 Emissive Masks (Reserved)
+### 4.5 Emissive Surfaces (Reserved)
 
-> **Not yet implemented.** The emissive bit in `.prm` is reserved. No `_e.png` suffix is baked or sampled; no mask binding exists in the forward shader.
+> **Not implemented.** No material bypasses or adds to scene lighting. No `_e` sibling is baked or sampled; no emissive binding exists in the forward shader.
 
-The current emissive path is the `neon_` prefix: full-albedo brightness applied uniformly per surface. A future `emissive_` prefix with per-texel `_e.png` mask pipeline is designed but not built. When implemented, the mask will blend each texel between normal lighting (weight 0.0) and the emissive bypass (weight 1.0), letting a single texture carry both lit and glowing regions. `emissive_intensity > 1.0` will target bloom brightness. No threshold-driven framebuffer extraction is planned.
+The `.prm` slot mask reserves bit 3 for a future emissive slot; the reader rejects any file that sets it. The reserved bit and the sibling-texture baking pipeline (§4.1–4.4) are the foundation a correct implementation builds on.
+
+Design is open and deferred. The intended direction is an *additive* HDR contribution (`lit + emissive`) feeding a bloom pass — not the lighting-replacement model an earlier draft assumed. Open questions for that design: whether emissive data is an RGB map (color independent of albedo) or a single-channel mask, and how intensity maps to bloom brightness. To be specified when emissive is scheduled alongside an HDR/bloom pass.
 
 ---
 

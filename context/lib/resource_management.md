@@ -140,7 +140,7 @@ Optional per-texture normal maps for fine surface detail.
 
 The `.prm` slot mask reserves bit 3 for a future emissive slot; the reader rejects any file that sets it. The reserved bit and the sibling-texture baking pipeline (§4.1–4.4) are the foundation a correct implementation builds on.
 
-Design is open and deferred. The intended direction is an *additive* HDR contribution (`lit + emissive`) feeding a bloom pass — not the lighting-replacement model an earlier draft assumed. Open questions for that design: whether emissive data is an RGB map (color independent of albedo) or a single-channel mask, and how intensity maps to bloom brightness. To be specified when emissive is scheduled alongside an HDR/bloom pass.
+The intended direction is an *additive* HDR contribution (`lit + emissive`) feeding a bloom pass — not the lighting-replacement model an earlier draft assumed. Design and scheduling are deferred to the post-processing/bloom work.
 
 ---
 

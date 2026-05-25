@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/dhiester/Projects/Personal/postretro/.codex/hooks/session-start.sh'"
+          }
+        ]
+      }
+    ]
+  }
+}

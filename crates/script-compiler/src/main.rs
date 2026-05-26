@@ -18,13 +18,16 @@
 //! The sidecar exists so the `postretro` *runtime* binary never links `swc_*`
 //! crates (which add meaningful binary size). Build-time prelude generation
 //! uses this crate as a `[build-dependencies]` entry in `postretro/Cargo.toml`,
-//! which does not affect the shipped engine binary. The hot-reload detection
-//! cascade is described in `context/lib/scripting.md §8`.
+//! which does not affect the shipped engine binary. The `--dep-json` flag emits
+//! a machine-readable dependency report (entry, output, dependencies) consumed
+//! by the engine's staged manifest builder to track which source files belong to
+//! the active mod-init dependency set.
 //!
 //! # CLI
 //!
 //! ```text
 //! scripts-build --in <INPUT.ts> --out <OUTPUT.js>
+//! scripts-build --in <INPUT.ts> --out <OUTPUT.js> --dep-json
 //! scripts-build --prelude --sdk-root <DIR> --out <OUTPUT.js>
 //! ```
 //!
@@ -38,7 +41,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, anyhow, bail};
-use postretro_script_compiler::{bundle_entry, write_prelude};
+use postretro_script_compiler::{bundle_entry, bundle_entry_with_dependencies, write_prelude};
 
 fn main() -> ExitCode {
     match run() {
@@ -54,12 +57,23 @@ fn run() -> Result<()> {
     let mode = parse_args()?;
 
     match mode {
-        CliMode::Bundle { input, output } => {
+        CliMode::Bundle {
+            input,
+            output,
+            dep_json,
+        } => {
             // Canonicalize so swc resolves relative imports against a stable
             // absolute path regardless of the cwd at invocation.
             let entry = std::fs::canonicalize(&input)
                 .with_context(|| format!("failed to locate input `{}`", input.display()))?;
-            let js = bundle_entry(&entry)?;
+            let bundled = if dep_json {
+                bundle_entry_with_dependencies(&entry)?
+            } else {
+                postretro_script_compiler::BundleWithDependencies {
+                    js: bundle_entry(&entry)?,
+                    dependencies: Vec::new(),
+                }
+            };
             if let Some(parent) = output.parent()
                 && !parent.as_os_str().is_empty()
             {
@@ -67,8 +81,19 @@ fn run() -> Result<()> {
                     format!("failed to create output directory `{}`", parent.display())
                 })?;
             }
-            std::fs::write(&output, js)
+            std::fs::write(&output, bundled.js)
                 .with_context(|| format!("failed to write output `{}`", output.display()))?;
+            if dep_json {
+                let output = std::fs::canonicalize(&output).with_context(|| {
+                    format!("failed to canonicalize output `{}`", output.display())
+                })?;
+                let report = serde_json::json!({
+                    "entry": entry,
+                    "output": output,
+                    "dependencies": bundled.dependencies,
+                });
+                println!("{}", serde_json::to_string(&report)?);
+            }
         }
         CliMode::Prelude { sdk_root, output } => {
             write_prelude(&sdk_root, &output)?;
@@ -82,8 +107,15 @@ fn run() -> Result<()> {
 /// the SDK-library prelude. The two modes share output handling but differ in
 /// how the entry is located and how exports survive into the output JS.
 enum CliMode {
-    Bundle { input: PathBuf, output: PathBuf },
-    Prelude { sdk_root: PathBuf, output: PathBuf },
+    Bundle {
+        input: PathBuf,
+        output: PathBuf,
+        dep_json: bool,
+    },
+    Prelude {
+        sdk_root: PathBuf,
+        output: PathBuf,
+    },
 }
 
 fn parse_args() -> Result<CliMode> {
@@ -95,6 +127,7 @@ fn parse_args() -> Result<CliMode> {
     let mut output: Option<PathBuf> = None;
     let mut sdk_root: Option<PathBuf> = None;
     let mut prelude = false;
+    let mut dep_json = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -114,6 +147,9 @@ fn parse_args() -> Result<CliMode> {
             }
             "--prelude" => {
                 prelude = true;
+            }
+            "--dep-json" => {
+                dep_json = true;
             }
             "--sdk-root" => {
                 sdk_root = Some(
@@ -137,6 +173,9 @@ fn parse_args() -> Result<CliMode> {
         if input.is_some() {
             bail!("`--in` is incompatible with `--prelude`");
         }
+        if dep_json {
+            bail!("`--dep-json` is incompatible with `--prelude`");
+        }
         let sdk_root =
             sdk_root.ok_or_else(|| anyhow!("`--prelude` requires `--sdk-root <dir>`"))?;
         Ok(CliMode::Prelude { sdk_root, output })
@@ -145,7 +184,11 @@ fn parse_args() -> Result<CliMode> {
             bail!("`--sdk-root` is only valid with `--prelude`");
         }
         let input = input.ok_or_else(|| anyhow!("missing `--in <path>`"))?;
-        Ok(CliMode::Bundle { input, output })
+        Ok(CliMode::Bundle {
+            input,
+            output,
+            dep_json,
+        })
     }
 }
 
@@ -153,7 +196,7 @@ fn print_usage() {
     eprintln!(
         "scripts-build — bundle and transpile TypeScript to JavaScript (no type checking).\n\
          \n\
-         USAGE:\n    scripts-build --in <INPUT.ts> --out <OUTPUT.js>\n\
+         USAGE:\n    scripts-build --in <INPUT.ts> --out <OUTPUT.js> [--dep-json]\n\
          \n    scripts-build --prelude --sdk-root <DIR> --out <OUTPUT.js>\n\
          \n\
          Run `tsc --noEmit` in your editor or CI for type safety."

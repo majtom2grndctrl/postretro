@@ -290,6 +290,7 @@ fn component_kind_name(k: ComponentKind) -> &'static str {
         ComponentKind::FogVolume => "fog_volume",
         ComponentKind::PlayerMovement => "player_movement",
         ComponentKind::Weapon => "weapon",
+        ComponentKind::DescriptorProvenance => "descriptor_provenance",
     }
 }
 
@@ -548,6 +549,10 @@ impl<'js> IntoJs<'js> for ComponentValue {
                 ctx,
                 "PlayerMovement component is engine-managed and not exposed to scripts",
             )),
+            ComponentValue::DescriptorProvenance(_) => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "Descriptor provenance is engine-managed and not exposed to scripts",
+            )),
         }
     }
 }
@@ -705,6 +710,9 @@ impl IntoLua for ComponentValue {
             }
             ComponentValue::PlayerMovement(_) => Err(mlua::Error::RuntimeError(
                 "PlayerMovement component is engine-managed and not exposed to scripts".to_string(),
+            )),
+            ComponentValue::DescriptorProvenance(_) => Err(mlua::Error::RuntimeError(
+                "Descriptor provenance is engine-managed and not exposed to scripts".to_string(),
             )),
         }
     }

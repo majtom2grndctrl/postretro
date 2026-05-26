@@ -132,7 +132,7 @@ Only the mod-init entry point contributes to this set: `start-script.{ts,js,luau
 
 JavaScript-only mods are entry-only for this plan. Editing `start-script.js` can trigger a staged build. Imported JavaScript dependency discovery is out of scope until the project adds a JavaScript dependency scanner or module system.
 
-Committed dependencies must stay under the active mod root. A TypeScript import or Luau require that resolves outside the mod root is a staged-build failure. Watcher registration expands to every committed dependency path under the mod root, while keeping the existing mod-root and script-tree watches for entry creation and broad edit detection.
+Committed dependencies must stay under the active mod root. A TypeScript import or Luau require that resolves outside the mod root is dropped from the committed set with a diagnostic log — not committed, and not a staged-build failure. Edits to those out-of-root files (e.g. shared `sdk/behaviors/` code) therefore do not trigger hot reload by design; engine owners restart after editing engine-owned SDK code. This fail-open partition keeps in-root mod scripts hot-reloadable even when the start script imports above the mod root. (The Luau require resolver already rejects out-of-root requires outright, so both runtimes end up not hot-reloading out-of-root files.) Watcher registration expands to every committed dependency path under the mod root, while keeping the existing mod-root and script-tree watches for entry creation and broad edit detection.
 
 ### TypeScript Sidecar Contract
 
@@ -169,6 +169,8 @@ Human diagnostics go to stderr. Compiler failure returns a non-zero exit code. S
 Reload commits are transactional.
 
 The worker returns a complete manifest snapshot. The main thread treats it as the next authored descriptor set for the active mod-init manifest, not as a list of descriptor upserts.
+
+A replacement snapshot with duplicate `canonicalName`s is deduped last-write-wins — consistent with startup's `upsert_entity_type` — with a `warn!` diagnostic per collision, not hard-rejected. The later declaration wins, matching the order in which `setupMod()`'s `entities` array spreads descriptors. Both startup and the commit path resolve duplicates the same way.
 
 Commit order:
 
@@ -232,7 +234,7 @@ Refresh planners own component-specific compatibility predicates. Initial predic
 | Component | Incompatible when |
 |---|---|
 | `weapon` | Refreshed descriptor validation fails. |
-| `movement` | Refreshed descriptor validation fails, capsule config is invalid for the current pawn transform, or preserved jump/air state exceeds the refreshed limits. |
+| `movement` | The refreshed capsule does not fit the pawn's current transform (its lower extent would embed the pawn's feet below the world-origin floor at its standing position), or preserved air-jump state exceeds the refreshed limit. Static descriptor field bounds are enforced at parse time in the movement descriptor constructors, so the planner re-parses through them and does not re-validate static fields. |
 | `light` | Refreshed descriptor validation fails. Descriptor-spawned lights remain dynamic even when authored or overridden `is_dynamic` is false. |
 | `emitter` | Refreshed descriptor validation fails, sprite resource identity changes in a way live particles cannot reference, or preserved burst/animation state no longer maps onto the refreshed emitter mode. |
 
@@ -355,6 +357,10 @@ Add regression tests for:
 
 Log enough debug detail to explain why a changed path did or did not trigger a manifest build, why a staged build failed, why a generation was discarded, and why a live component did or did not refresh.
 
+Hardening: a failed startup seed build now logs its diagnostics and a loud `error!` that hot reload is disabled, instead of silently leaving the dependency set `None` so every later change-check returns false.
+
+Hardening: debug startup now emits a `warn!` when the resolved `scripts-build` sidecar is older than its own source (`crates/script-compiler/src`), since `cargo run -p postretro` does not rebuild the sidecar and a stale one breaks hot reload silently. Skips silently when the source dir is absent (shipped distribution).
+
 ## Sequencing
 
 **Phase 1 (sequential):** Task 1 - establishes the staged authoring boundary.
@@ -372,6 +378,7 @@ Log enough debug detail to explain why a changed path did or did not trigger a m
 - [ ] Editing `start-script.ts` starts the same staged reload path.
 - [ ] Editing `start-script.js` in a JavaScript-only mod starts the staged reload path.
 - [ ] Editing an unrelated `.ts`, `.js`, or `.luau` file under `<mod>/scripts/` does not start a manifest build unless it is in the active dependency set.
+- [ ] A start-script dependency that resolves outside the mod root is dropped from the committed set with a diagnostic instead of failing the staged build; in-root dependencies still hot-reload, and the dropped out-of-root file does not.
 - [ ] Editing a Luau file required by `start-script.luau` starts a staged manifest build and refreshes supported live descriptor-authored components.
 - [ ] Editing `start-script.luau` starts the same staged reload path.
 - [ ] A failed compile, failed mod-init run, invalid dependency report, or failed commit leaves the previous descriptor registry, dependency set, and live component state active.

@@ -8,7 +8,7 @@ use crate::camera::Camera;
 use crate::collision::{CollisionWorld, cast_ray};
 use crate::input::{Action, ActionSnapshot, ButtonState};
 use crate::scripting::components::weapon::WeaponComponent;
-use crate::scripting::data_descriptors::{FireMode, ResolutionMode, WeaponDescriptor};
+use crate::scripting::data_descriptors::{FireMode, ResolutionMode};
 use crate::scripting::registry::{EntityId, EntityRegistry};
 
 mod impact;
@@ -112,28 +112,6 @@ pub(crate) fn tick(
     events
 }
 
-pub(crate) fn refresh_active_wieldable_from_descriptor(
-    registry: &mut EntityRegistry,
-    active_wieldable: Option<EntityId>,
-    descriptor_name: &str,
-    descriptor: &WeaponDescriptor,
-) -> bool {
-    let Some(weapon_id) = active_wieldable else {
-        return false;
-    };
-
-    let Ok(existing) = registry.get_component::<WeaponComponent>(weapon_id) else {
-        log::warn!(
-            "[Weapon] active wieldable `{descriptor_name}` no longer has a weapon component; descriptor refresh skipped"
-        );
-        return false;
-    };
-
-    let mut weapon = existing.clone();
-    weapon.refresh_from_descriptor(descriptor);
-    registry.set_component(weapon_id, weapon).is_ok()
-}
-
 fn fire_hitscan(
     camera: &Camera,
     collision_world: &CollisionWorld,
@@ -209,16 +187,6 @@ mod tests {
             fire_mode,
             resolution: ResolutionMode::Hitscan,
         })
-    }
-
-    fn weapon_descriptor(damage: f32, range: f32, cooldown_ms: f32) -> WeaponDescriptor {
-        WeaponDescriptor {
-            damage,
-            range,
-            cooldown_ms,
-            fire_mode: FireMode::Semi,
-            resolution: ResolutionMode::Hitscan,
-        }
     }
 
     fn spawn_weapon(registry: &mut EntityRegistry, component: WeaponComponent) -> EntityId {
@@ -433,39 +401,6 @@ mod tests {
                 .iter_with_kind(ComponentKind::Weapon)
                 .next()
                 .is_none()
-        );
-    }
-
-    #[test]
-    fn descriptor_refresh_updates_active_wieldable_and_preserves_cooldown() {
-        let mut registry = EntityRegistry::new();
-        let weapon_id = spawn_weapon(&mut registry, weapon_component(FireMode::Semi, 100.0));
-        {
-            let mut component = registry
-                .get_component::<WeaponComponent>(weapon_id)
-                .expect("weapon component")
-                .clone();
-            component.cooldown_remaining_ms = 35.0;
-            registry.set_component(weapon_id, component).unwrap();
-        }
-
-        let refreshed = refresh_active_wieldable_from_descriptor(
-            &mut registry,
-            Some(weapon_id),
-            "reference_pistol",
-            &weapon_descriptor(99.0, 256.0, 500.0),
-        );
-
-        assert!(refreshed);
-        let weapon = registry
-            .get_component::<WeaponComponent>(weapon_id)
-            .expect("weapon component should remain attached");
-        assert_eq!(weapon.damage, 99.0);
-        assert_eq!(weapon.range, 256.0);
-        assert_eq!(weapon.cooldown_ms, 500.0);
-        assert_eq!(
-            weapon.cooldown_remaining_ms, 35.0,
-            "hot reload must preserve live per-instance cooldown"
         );
     }
 }

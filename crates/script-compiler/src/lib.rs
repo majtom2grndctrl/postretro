@@ -6,8 +6,10 @@
 //! `write_prelude` directly to avoid a process hop and the engine-wide swc
 //! dependency that would imply if these lived in the engine crate).
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use anyhow::{Context, Result, anyhow, bail};
 use swc_atoms::Atom;
@@ -33,7 +35,20 @@ use swc_ecma_visit::{VisitMut, VisitMutWith};
 /// `entry` if a stable absolute path matters (the bin canonicalizes; build.rs
 /// callers can choose).
 pub fn bundle_entry(entry: &Path) -> Result<String> {
-    bundle(entry, false)
+    Ok(bundle_with_dependencies(entry, false)?.js)
+}
+
+/// Bundled JavaScript plus the canonical real paths of every source file the
+/// bundler loaded, including the entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BundleWithDependencies {
+    pub js: String,
+    pub dependencies: Vec<PathBuf>,
+}
+
+/// Bundle a user entry script and report every loaded source dependency.
+pub fn bundle_entry_with_dependencies(entry: &Path) -> Result<BundleWithDependencies> {
+    bundle_with_dependencies(entry, false)
 }
 
 /// Bundle the SDK prelude rooted at `<sdk_root>/index.ts`. Canonicalizes the
@@ -46,7 +61,7 @@ pub fn bundle_prelude(sdk_root: &Path) -> Result<String> {
             entry_path.display(),
         )
     })?;
-    bundle(&entry, true)
+    Ok(bundle_with_dependencies(&entry, true)?.js)
 }
 
 /// Bundle the SDK prelude and write it to `out_path`, creating the parent
@@ -72,12 +87,16 @@ pub fn write_prelude(sdk_root: &Path, out_path: &Path) -> Result<()> {
 /// surviving named exports are rewritten as `globalThis.<name> = <name>` so
 /// the resulting script can be evaluated as a prelude that installs SDK
 /// vocabulary as globals.
-fn bundle(entry: &Path, prelude: bool) -> Result<String> {
+fn bundle_with_dependencies(entry: &Path, prelude: bool) -> Result<BundleWithDependencies> {
     let cm: Lrc<SourceMap> = Default::default();
     let globals = Globals::new();
+    let dependencies = Rc::new(RefCell::new(Vec::new()));
 
     let module = GLOBALS.set(&globals, || -> Result<swc_ecma_ast::Module> {
-        let loader = TsLoader { cm: cm.clone() };
+        let loader = TsLoader {
+            cm: cm.clone(),
+            dependencies: dependencies.clone(),
+        };
         let resolver_impl = RelativeOnlyResolver;
         let mut bundler = Bundler::new(
             &globals,
@@ -123,7 +142,12 @@ fn bundle(entry: &Path, prelude: bool) -> Result<String> {
         Ok(module)
     })?;
 
-    emit_module(&cm, &module)
+    let js = emit_module(&cm, &module)?;
+    let mut dependencies = dependencies.borrow().clone();
+    dependencies.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
+    dependencies.dedup();
+
+    Ok(BundleWithDependencies { js, dependencies })
 }
 
 fn emit_module(cm: &Lrc<SourceMap>, module: &swc_ecma_ast::Module) -> Result<String> {
@@ -153,6 +177,7 @@ fn emit_module(cm: &Lrc<SourceMap>, module: &swc_ecma_ast::Module) -> Result<Str
 /// reduced to plain JS before the bundler stitches them together.
 struct TsLoader {
     cm: Lrc<SourceMap>,
+    dependencies: Rc<RefCell<Vec<PathBuf>>>,
 }
 
 impl Load for TsLoader {
@@ -178,6 +203,9 @@ impl Load for TsLoader {
             FileName::Real(p) => p.clone(),
             other => bail!("unsupported file source `{other:?}` for swc bundler"),
         };
+        let path = std::fs::canonicalize(&path)
+            .with_context(|| format!("failed to canonicalize `{}`", path.display()))?;
+        self.dependencies.borrow_mut().push(path.clone());
 
         let src = std::fs::read_to_string(&path)
             .with_context(|| format!("failed to read `{}`", path.display()))?;
@@ -774,6 +802,39 @@ mod tests {
             !js.contains(": number"),
             "bundled output retained TS-only type annotation: {js}"
         );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bundle_dependency_report_is_canonical_unique_sorted_and_includes_entry() {
+        let dir = unique_tempdir("deps");
+        let entry = dir.join("entry.ts");
+        let a = dir.join("a.ts");
+        let z = dir.join("z.ts");
+
+        fs::write(&a, "export const a = 1;\n").unwrap();
+        fs::write(&z, "export const z = 2;\n").unwrap();
+        fs::write(
+            &entry,
+            r#"
+            import { z } from "./z";
+            import { a } from "./a";
+            import { a as a2 } from "./a";
+            const total = z + a + a2;
+            "#,
+        )
+        .unwrap();
+
+        let canonical_entry = fs::canonicalize(&entry).unwrap();
+        let report =
+            bundle_entry_with_dependencies(&canonical_entry).expect("bundle should succeed");
+
+        let expected = [a, entry, z]
+            .into_iter()
+            .map(|p| fs::canonicalize(p).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(report.dependencies, expected);
 
         let _ = fs::remove_dir_all(&dir);
     }

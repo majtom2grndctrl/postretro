@@ -12,7 +12,7 @@
 // that appears in BOTH dispatch tables logs a `warn!` once per classname and
 // keeps the built-in result (built-in wins).
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use glam::Vec3;
 
@@ -22,6 +22,10 @@ use crate::scripting::components::light::{FalloffKind, LightComponent, LightKind
 use crate::scripting::components::player_movement::PlayerMovementComponent;
 use crate::scripting::components::weapon::WeaponComponent;
 use crate::scripting::data_descriptors::{EntityTypeDescriptor, LightDescriptor};
+use crate::scripting::provenance::{
+    DescriptorComponentKind, DescriptorMapOverride, DescriptorProvenance, DescriptorSpawnPath,
+    parse_bool,
+};
 use crate::scripting::registry::{EntityId, EntityRegistry, Transform};
 
 /// Apply the `initial_<field>` KVP override convention to the descriptor's
@@ -29,20 +33,60 @@ use crate::scripting::registry::{EntityId, EntityRegistry, Transform};
 /// `[f32; 3]` parses as three space-delimited floats. Parse failures
 /// `warn!` with the diagnostic origin and offending key/value pair, leaving
 /// the descriptor default in place.
-fn apply_emitter_kvp_overrides(component: &mut BillboardEmitterComponent, entity: &MapEntity) {
+///
+/// Returns the set of overrides that actually landed (parse succeeded and
+/// the field was written). The caller accumulates these into
+/// `DescriptorProvenance.map_overrides` so the hot-reload refresh planner
+/// knows which overrides to reapply when a descriptor is refreshed at runtime.
+/// Only successful overrides are included — a bad parse leaves neither the
+/// field nor a provenance entry. Uses `BTreeSet` to match
+/// `DescriptorProvenance.map_overrides` (deterministic order for serde and
+/// test equality).
+fn apply_emitter_kvp_overrides(
+    component: &mut BillboardEmitterComponent,
+    entity: &MapEntity,
+) -> BTreeSet<DescriptorMapOverride> {
+    let mut applied = BTreeSet::new();
     for (key, raw) in entity.key_values.iter() {
         let Some(field) = key.strip_prefix("initial_") else {
             continue;
         };
         match field {
-            "rate" => parse_into_f32(raw, &mut component.rate, entity, key),
-            "spread" => parse_into_f32(raw, &mut component.spread, entity, key),
-            "lifetime" => parse_into_f32(raw, &mut component.lifetime, entity, key),
-            "buoyancy" => parse_into_f32(raw, &mut component.buoyancy, entity, key),
-            "drag" => parse_into_f32(raw, &mut component.drag, entity, key),
-            "spin_rate" => parse_into_f32(raw, &mut component.spin_rate, entity, key),
+            "rate" => {
+                if parse_into_f32(raw, &mut component.rate, entity, key) {
+                    applied.insert(DescriptorMapOverride::EmitterInitialRate);
+                }
+            }
+            "spread" => {
+                if parse_into_f32(raw, &mut component.spread, entity, key) {
+                    applied.insert(DescriptorMapOverride::EmitterInitialSpread);
+                }
+            }
+            "lifetime" => {
+                if parse_into_f32(raw, &mut component.lifetime, entity, key) {
+                    applied.insert(DescriptorMapOverride::EmitterInitialLifetime);
+                }
+            }
+            "buoyancy" => {
+                if parse_into_f32(raw, &mut component.buoyancy, entity, key) {
+                    applied.insert(DescriptorMapOverride::EmitterInitialBuoyancy);
+                }
+            }
+            "drag" => {
+                if parse_into_f32(raw, &mut component.drag, entity, key) {
+                    applied.insert(DescriptorMapOverride::EmitterInitialDrag);
+                }
+            }
+            "spin_rate" => {
+                if parse_into_f32(raw, &mut component.spin_rate, entity, key) {
+                    applied.insert(DescriptorMapOverride::EmitterInitialSpinRate);
+                }
+            }
             "burst" => match raw.trim().parse::<u32>() {
-                Ok(v) => component.burst = Some(v),
+                Ok(v) => {
+                    component.burst = Some(v);
+                    applied.insert(DescriptorMapOverride::EmitterInitialBurst);
+                }
                 Err(_) => warn_parse(entity, key, raw),
             },
             "sprite" => {
@@ -50,16 +94,37 @@ fn apply_emitter_kvp_overrides(component: &mut BillboardEmitterComponent, entity
                     warn_parse(entity, key, raw);
                 } else {
                     component.sprite = raw.clone();
+                    applied.insert(DescriptorMapOverride::EmitterInitialSprite);
                 }
             }
-            "color" => parse_into_vec3(raw, &mut component.color, entity, key),
-            "velocity" => parse_into_vec3(raw, &mut component.velocity, entity, key),
+            "color" => {
+                if parse_into_vec3(raw, &mut component.color, entity, key) {
+                    applied.insert(DescriptorMapOverride::EmitterInitialColor);
+                }
+            }
+            "velocity" => {
+                if parse_into_vec3(raw, &mut component.velocity, entity, key) {
+                    applied.insert(DescriptorMapOverride::EmitterInitialVelocity);
+                }
+            }
             _ => {}
         }
     }
+    applied
 }
 
-fn apply_light_kvp_overrides(descriptor: &mut LightDescriptor, entity: &MapEntity) {
+/// Apply the `initial_<field>` KVP override convention to a `LightDescriptor`.
+/// Mirrors `apply_emitter_kvp_overrides`: parse failures `warn!` and leave the
+/// descriptor default in place.
+///
+/// Returns the set of overrides that actually landed. The caller accumulates
+/// these into `DescriptorProvenance.map_overrides` so the hot-reload refresh
+/// planner can reapply them when the descriptor is refreshed at runtime.
+fn apply_light_kvp_overrides(
+    descriptor: &mut LightDescriptor,
+    entity: &MapEntity,
+) -> BTreeSet<DescriptorMapOverride> {
+    let mut applied = BTreeSet::new();
     for (key, raw) in entity.key_values.iter() {
         let Some(field) = key.strip_prefix("initial_") else {
             continue;
@@ -68,52 +133,68 @@ fn apply_light_kvp_overrides(descriptor: &mut LightDescriptor, entity: &MapEntit
             // Mirror the validation applied at descriptor parse time: reject
             // negative or non-finite values at parse time so a bad override
             // never lands on the descriptor (e.g. `initial_intensity -5.0`).
-            "intensity" => parse_into_nonneg_f32(raw, &mut descriptor.intensity, entity, key),
-            "range" => parse_into_nonneg_f32(raw, &mut descriptor.range, entity, key),
+            "intensity" => {
+                if parse_into_nonneg_f32(raw, &mut descriptor.intensity, entity, key) {
+                    applied.insert(DescriptorMapOverride::LightInitialIntensity);
+                }
+            }
+            "range" => {
+                if parse_into_nonneg_f32(raw, &mut descriptor.range, entity, key) {
+                    applied.insert(DescriptorMapOverride::LightInitialRange);
+                }
+            }
             "is_dynamic" => match parse_bool(raw) {
-                Some(v) => descriptor.is_dynamic = v,
+                Some(v) => {
+                    descriptor.is_dynamic = v;
+                    applied.insert(DescriptorMapOverride::LightInitialIsDynamic);
+                }
                 None => warn_parse(entity, key, raw),
             },
-            "color" => parse_into_vec3(raw, &mut descriptor.color, entity, key),
+            "color" => {
+                if parse_into_vec3(raw, &mut descriptor.color, entity, key) {
+                    applied.insert(DescriptorMapOverride::LightInitialColor);
+                }
+            }
             _ => {}
         }
     }
+    applied
 }
 
-/// Parse a boolean KVP value. Accepts TrenchBroom's `"0"`/`"1"` switch
-/// representation in addition to `"true"`/`"false"` (case-insensitive).
-/// Any other input returns `None`, matching the parse-failure fallback used
-/// by other field types.
-fn parse_bool(raw: &str) -> Option<bool> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" => Some(true),
-        "0" | "false" => Some(false),
-        _ => None,
-    }
-}
-
-fn parse_into_f32(raw: &str, slot: &mut f32, entity: &MapEntity, key: &str) {
+fn parse_into_f32(raw: &str, slot: &mut f32, entity: &MapEntity, key: &str) -> bool {
     match raw.trim().parse::<f32>() {
-        Ok(v) if v.is_finite() => *slot = v,
-        _ => warn_parse(entity, key, raw),
+        Ok(v) if v.is_finite() => {
+            *slot = v;
+            true
+        }
+        _ => {
+            warn_parse(entity, key, raw);
+            false
+        }
     }
 }
 
 /// Like `parse_into_f32` but additionally rejects negative values, mirroring
 /// `LightDescriptor::validate()`. Bad values warn and leave the descriptor
 /// default in place — the `slot` is only written on success.
-fn parse_into_nonneg_f32(raw: &str, slot: &mut f32, entity: &MapEntity, key: &str) {
+fn parse_into_nonneg_f32(raw: &str, slot: &mut f32, entity: &MapEntity, key: &str) -> bool {
     match raw.trim().parse::<f32>() {
-        Ok(v) if v.is_finite() && v >= 0.0 => *slot = v,
-        _ => warn_parse(entity, key, raw),
+        Ok(v) if v.is_finite() && v >= 0.0 => {
+            *slot = v;
+            true
+        }
+        _ => {
+            warn_parse(entity, key, raw);
+            false
+        }
     }
 }
 
-fn parse_into_vec3(raw: &str, slot: &mut [f32; 3], entity: &MapEntity, key: &str) {
+fn parse_into_vec3(raw: &str, slot: &mut [f32; 3], entity: &MapEntity, key: &str) -> bool {
     let parts: Vec<&str> = raw.split_whitespace().collect();
     if parts.len() != 3 {
         warn_parse(entity, key, raw);
-        return;
+        return false;
     }
     let mut out = [0.0f32; 3];
     for (i, part) in parts.iter().enumerate() {
@@ -121,11 +202,12 @@ fn parse_into_vec3(raw: &str, slot: &mut [f32; 3], entity: &MapEntity, key: &str
             Ok(v) if v.is_finite() => out[i] = v,
             _ => {
                 warn_parse(entity, key, raw);
-                return;
+                return false;
             }
         }
     }
     *slot = out;
+    true
 }
 
 fn warn_parse(entity: &MapEntity, key: &str, raw: &str) {
@@ -171,17 +253,22 @@ fn attach_descriptor_components(
     descriptor: &EntityTypeDescriptor,
     entity: &MapEntity,
     attach_weapon: bool,
+    spawn_path: DescriptorSpawnPath,
 ) {
+    let mut owned_components = BTreeSet::new();
+    let mut map_overrides = BTreeSet::new();
+
     if let Some(emitter) = descriptor.emitter.clone() {
         let mut component = emitter;
-        apply_emitter_kvp_overrides(&mut component, entity);
+        map_overrides.extend(apply_emitter_kvp_overrides(&mut component, entity));
         // `set_component` only fails on a stale id — the id was just returned.
         let _ = registry.set_component(id, component);
+        owned_components.insert(DescriptorComponentKind::Emitter);
     }
 
     if let Some(light_desc) = descriptor.light.clone() {
         let mut light_desc = light_desc;
-        apply_light_kvp_overrides(&mut light_desc, entity);
+        map_overrides.extend(apply_light_kvp_overrides(&mut light_desc, entity));
 
         if !light_desc.is_dynamic {
             log::warn!(
@@ -208,18 +295,31 @@ fn attach_descriptor_components(
             animation: None,
         };
         let _ = registry.set_component(id, component);
+        owned_components.insert(DescriptorComponentKind::Light);
     }
 
     if let Some(movement_desc) = descriptor.movement.as_ref() {
         let component = PlayerMovementComponent::from_descriptor(movement_desc);
         let _ = registry.set_component(id, component);
+        owned_components.insert(DescriptorComponentKind::Movement);
     }
 
     if attach_weapon {
         if let Some(weapon_desc) = descriptor.weapon.as_ref() {
             let component = WeaponComponent::from_descriptor(weapon_desc);
             let _ = registry.set_component(id, component);
+            owned_components.insert(DescriptorComponentKind::Weapon);
         }
+    }
+
+    if let Some(canonical_name) = descriptor.canonical_name.clone() {
+        let provenance = DescriptorProvenance {
+            canonical_name,
+            owned_components,
+            map_overrides,
+            spawn_path,
+        };
+        let _ = registry.set_component(id, provenance);
     }
 }
 
@@ -228,6 +328,7 @@ fn spawn_descriptor_instance(
     descriptor: &EntityTypeDescriptor,
     entity: &MapEntity,
     attach_weapon: bool,
+    spawn_path: DescriptorSpawnPath,
 ) -> Option<EntityId> {
     let transform = Transform {
         position: entity.origin,
@@ -237,7 +338,7 @@ fn spawn_descriptor_instance(
 
     let id = registry.try_spawn(transform, &entity.tags)?;
 
-    attach_descriptor_components(registry, id, descriptor, entity, attach_weapon);
+    attach_descriptor_components(registry, id, descriptor, entity, attach_weapon, spawn_path);
     Some(id)
 }
 
@@ -315,7 +416,13 @@ pub(crate) fn apply_data_archetype_dispatch(
             continue;
         }
 
-        let Some(id) = spawn_descriptor_instance(registry, descriptor, entity, false) else {
+        let Some(id) = spawn_descriptor_instance(
+            registry,
+            descriptor,
+            entity,
+            false,
+            DescriptorSpawnPath::MapPlacement,
+        ) else {
             log::warn!(
                 "[Loader] {origin}: entity registry exhausted; dropping descriptor-spawned `{cls}`",
                 origin = entity.diagnostic_origin(),
@@ -380,7 +487,13 @@ pub(crate) fn spawn_from_player_starts(
             continue;
         };
 
-        let Some(id) = spawn_descriptor_instance(registry, descriptor, entity, true) else {
+        let Some(id) = spawn_descriptor_instance(
+            registry,
+            descriptor,
+            entity,
+            true,
+            DescriptorSpawnPath::PlayerSpawn,
+        ) else {
             log::warn!(
                 "[Loader] {origin}: entity registry exhausted; dropping player spawn `{entity_class}`",
                 origin = entity.diagnostic_origin(),
@@ -420,7 +533,13 @@ pub(crate) fn spawn_from_player_starts(
                 key_values: Default::default(),
                 tags: vec![],
             };
-            match spawn_descriptor_instance(registry, weapon_descriptor, &weapon_entity, true) {
+            match spawn_descriptor_instance(
+                registry,
+                weapon_descriptor,
+                &weapon_entity,
+                true,
+                DescriptorSpawnPath::DefaultWeapon,
+            ) {
                 Some(weapon_id) => {
                     let _ = registry.set_map_kvps(weapon_id, Default::default());
                     if active_wieldable.is_none() {
@@ -510,6 +629,64 @@ mod tests {
     }
 
     #[test]
+    fn descriptor_spawn_records_provenance_with_owned_components_and_overrides() {
+        let mut reg = EntityRegistry::new();
+        let mut descriptor = light_descriptor("torch", true);
+        descriptor.emitter = Some(BillboardEmitterComponent {
+            rate: 6.0,
+            burst: None,
+            spread: 0.4,
+            lifetime: 3.0,
+            velocity: [0.0, 1.0, 0.0],
+            buoyancy: 0.2,
+            drag: 0.5,
+            size_over_lifetime: vec![1.0],
+            opacity_over_lifetime: vec![1.0, 0.0],
+            color: [1.0, 1.0, 1.0],
+            sprite: "smoke".to_string(),
+            spin_rate: 0.0,
+            spin_animation: None,
+        });
+        let descriptors = vec![descriptor];
+        let placements = vec![placement(
+            "torch",
+            &[
+                ("initial_intensity", "5.5"),
+                ("initial_rate", "20.5"),
+                ("initial_burst", "not-a-u32"),
+            ],
+        )];
+        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+
+        let (id, _) = reg
+            .iter_with_kind(crate::scripting::registry::ComponentKind::DescriptorProvenance)
+            .next()
+            .expect("provenance should be recorded");
+        let provenance = reg.get_component::<DescriptorProvenance>(id).unwrap();
+
+        assert_eq!(provenance.canonical_name, "torch");
+        assert_eq!(provenance.spawn_path, DescriptorSpawnPath::MapPlacement);
+        assert!(provenance.owns(DescriptorComponentKind::Light));
+        assert!(provenance.owns(DescriptorComponentKind::Emitter));
+        assert!(
+            provenance
+                .map_overrides
+                .contains(&DescriptorMapOverride::LightInitialIntensity)
+        );
+        assert!(
+            provenance
+                .map_overrides
+                .contains(&DescriptorMapOverride::EmitterInitialRate)
+        );
+        assert!(
+            !provenance
+                .map_overrides
+                .contains(&DescriptorMapOverride::EmitterInitialBurst),
+            "invalid overrides should not be recorded as reappliable"
+        );
+    }
+
+    #[test]
     fn map_sweep_skips_weapon_only_descriptors() {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![weapon_descriptor("reference_pistol")];
@@ -548,6 +725,9 @@ mod tests {
             .next()
             .expect("placeable sibling component still spawns");
         assert!(reg.get_component::<LightComponent>(id).unwrap().is_dynamic);
+        let provenance = reg.get_component::<DescriptorProvenance>(id).unwrap();
+        assert!(provenance.owns(DescriptorComponentKind::Light));
+        assert!(!provenance.owns(DescriptorComponentKind::Weapon));
     }
 
     #[test]
@@ -1072,6 +1252,45 @@ mod tests {
         spawn_from_player_starts(&points, &descriptors, &mut reg);
 
         assert_eq!(live_count(&reg), 1);
+    }
+
+    #[test]
+    fn player_spawn_and_default_weapon_record_spawn_paths() {
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![
+            player_with_default_weapon("player", "reference_pistol"),
+            weapon_descriptor("reference_pistol"),
+        ];
+        let points = vec![spawn_point(&[])];
+
+        let result = spawn_from_player_starts(&points, &descriptors, &mut reg);
+
+        let player_id = reg
+            .iter_with_kind(crate::scripting::registry::ComponentKind::Transform)
+            .map(|(id, _)| id)
+            .find(|id| Some(*id) != result.active_wieldable)
+            .expect("player entity should spawn");
+        let player_provenance = reg
+            .get_component::<DescriptorProvenance>(player_id)
+            .expect("player provenance should be recorded");
+        assert_eq!(
+            player_provenance.spawn_path,
+            DescriptorSpawnPath::PlayerSpawn
+        );
+        assert_eq!(player_provenance.canonical_name, "player");
+
+        let weapon_id = result
+            .active_wieldable
+            .expect("default weapon should spawn as active wieldable");
+        let weapon_provenance = reg
+            .get_component::<DescriptorProvenance>(weapon_id)
+            .expect("weapon provenance should be recorded");
+        assert_eq!(
+            weapon_provenance.spawn_path,
+            DescriptorSpawnPath::DefaultWeapon
+        );
+        assert_eq!(weapon_provenance.canonical_name, "reference_pistol");
+        assert!(weapon_provenance.owns(DescriptorComponentKind::Weapon));
     }
 
     // --- spawn_from_player_starts -------------------------------------------

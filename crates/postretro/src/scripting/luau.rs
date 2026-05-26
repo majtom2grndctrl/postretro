@@ -6,6 +6,7 @@
 // file extension.
 
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -297,6 +298,39 @@ pub(crate) struct LuauSubsystem {
     archetypes: ArchetypeAccumulator,
 }
 
+/// Opt-in dependency recorder for short-lived mod-init Luau builds.
+///
+/// `build_lua_state` (startup/data-script path) uses no tracker.
+/// `build_lua_state_with_require_tracking` (staged manifest builds) accepts
+/// one so only those `require` calls contribute to the hot-reload dependency
+/// set.
+#[derive(Clone, Debug)]
+pub(crate) struct LuauRequireTracker {
+    mod_root: PathBuf,
+    paths: Rc<RefCell<BTreeSet<PathBuf>>>,
+}
+
+impl LuauRequireTracker {
+    pub(crate) fn new(mod_root: &Path) -> Result<Self, ScriptError> {
+        let mod_root = mod_root
+            .canonicalize()
+            .map_err(|e| ScriptError::InvalidArgument {
+                reason: format!(
+                    "mod-init: failed to canonicalize `{}`: {e}",
+                    mod_root.display()
+                ),
+            })?;
+        Ok(Self {
+            mod_root,
+            paths: Rc::new(RefCell::new(BTreeSet::new())),
+        })
+    }
+
+    pub(crate) fn dependency_paths(&self) -> Vec<PathBuf> {
+        self.paths.borrow().iter().cloned().collect()
+    }
+}
+
 /// Scope selector passed to `run_source` and to the top-level dispatcher.
 /// Lives here rather than in `runtime.rs` so the subsystem can be exercised
 /// in isolation from tests.
@@ -436,6 +470,15 @@ pub(crate) fn build_lua_state(
     archetypes: Option<&ArchetypeAccumulator>,
     mod_root: Option<&Path>,
 ) -> Result<Lua, ScriptError> {
+    build_lua_state_with_require_tracking(primitives, archetypes, mod_root, None)
+}
+
+pub(crate) fn build_lua_state_with_require_tracking(
+    primitives: &[ScriptPrimitive],
+    archetypes: Option<&ArchetypeAccumulator>,
+    mod_root: Option<&Path>,
+    require_tracker: Option<&LuauRequireTracker>,
+) -> Result<Lua, ScriptError> {
     let lua = Lua::new();
 
     // 1. Deny-list scrub.
@@ -459,7 +502,7 @@ pub(crate) fn build_lua_state(
     //    correctly. Without a mod root, `require` stays nil — matching the
     //    definition-context contract.
     if let Some(root) = mod_root {
-        install_require_resolver(&lua, root)?;
+        install_require_resolver(&lua, root, require_tracker)?;
     }
 
     // 6. SDK prelude — installs `world`, `timeline`, `sequence`,
@@ -498,12 +541,22 @@ pub(crate) fn build_lua_state(
 /// to wire `start-script.luau` to its sibling domain scripts. Richer semantics
 /// (caching, upward search) can be added when mods require them — see
 /// `context/lib/scripting.md` §2.
-fn install_require_resolver(lua: &Lua, mod_root: &Path) -> Result<(), ScriptError> {
+fn install_require_resolver(
+    lua: &Lua,
+    mod_root: &Path,
+    require_tracker: Option<&LuauRequireTracker>,
+) -> Result<(), ScriptError> {
     let mod_root: PathBuf = mod_root.to_path_buf();
+    let tracker = require_tracker.cloned();
     let f = lua
         .create_function(move |lua, path: String| -> mlua::Result<mlua::Value> {
             let resolved =
                 resolve_require_path(&mod_root, &path).map_err(mlua::Error::RuntimeError)?;
+            if let Some(tracker) = &tracker {
+                let canonical = canonical_require_dependency(&tracker.mod_root, &resolved, &path)
+                    .map_err(mlua::Error::RuntimeError)?;
+                tracker.paths.borrow_mut().insert(canonical);
+            }
             let source = std::fs::read_to_string(&resolved).map_err(|e| {
                 mlua::Error::RuntimeError(format!(
                     "require(`{path}`): failed to read `{}`: {e}",
@@ -527,6 +580,27 @@ fn install_require_resolver(lua: &Lua, mod_root: &Path) -> Result<(), ScriptErro
             reason: e.to_string(),
         })?;
     Ok(())
+}
+
+fn canonical_require_dependency(
+    canonical_mod_root: &Path,
+    resolved: &Path,
+    request_path: &str,
+) -> Result<PathBuf, String> {
+    let canonical = resolved.canonicalize().map_err(|e| {
+        format!(
+            "require(`{request_path}`): failed to canonicalize `{}`: {e}",
+            resolved.display()
+        )
+    })?;
+    if !canonical.starts_with(canonical_mod_root) {
+        return Err(format!(
+            "require(`{request_path}`): resolved path `{}` is outside mod root `{}`",
+            canonical.display(),
+            canonical_mod_root.display()
+        ));
+    }
+    Ok(canonical)
 }
 
 /// Resolve a `require(...)` argument to an absolute path under `mod_root`.
@@ -698,6 +772,7 @@ mod tests {
     use crate::scripting::ctx::ScriptCtx;
     use crate::scripting::primitives::register_all;
     use crate::scripting::primitives_registry::ContextScope;
+    use std::fs;
 
     // 15 `type(...)` strings returned by `sdk_prelude_installs_globals`.
     type PreludeTypeNames = (
@@ -724,6 +799,35 @@ mod tests {
         register_all(&mut registry, ctx.clone());
         let subsys = LuauSubsystem::new(&registry, &LuauConfig::default()).unwrap();
         (subsys, ctx)
+    }
+
+    struct TempModRoot(PathBuf);
+
+    impl std::ops::Deref for TempModRoot {
+        type Target = Path;
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+
+    impl Drop for TempModRoot {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn temp_mod_root(name: &str) -> TempModRoot {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "postretro_luau_test_{}_{}_{name}",
+            std::process::id(),
+            n,
+        ));
+        fs::create_dir_all(&p).unwrap();
+        TempModRoot(p)
     }
 
     #[test]
@@ -1124,5 +1228,46 @@ mod tests {
         let err = resolve_require_path(mod_root, "../escape")
             .expect_err("`..` traversal must be rejected");
         assert!(err.contains(".."), "got: {err}");
+    }
+
+    #[test]
+    fn require_tracker_records_unique_sorted_canonical_paths() {
+        let dir = temp_mod_root("require_tracker");
+        fs::create_dir_all(dir.join("modules")).unwrap();
+        fs::write(dir.join("modules/a.luau"), "return { name = 'a' }\n").unwrap();
+        fs::write(dir.join("modules/b.luau"), "return { name = 'b' }\n").unwrap();
+
+        let tracker = LuauRequireTracker::new(&dir).unwrap();
+        let lua = build_lua_state_with_require_tracking(&[], None, Some(&dir), Some(&tracker))
+            .expect("lua state");
+        lua.load(
+            r#"
+            local a1 = require("./modules/a")
+            local b = require("./modules/b")
+            local a2 = require("./modules/a.luau")
+            assert(a1.name == "a")
+            assert(a2.name == "a")
+            assert(b.name == "b")
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let expected_a = dir.join("modules/a.luau").canonicalize().unwrap();
+        let expected_b = dir.join("modules/b.luau").canonicalize().unwrap();
+        assert_eq!(tracker.dependency_paths(), vec![expected_a, expected_b]);
+    }
+
+    #[test]
+    fn require_tracker_rejects_canonical_path_outside_mod_root() {
+        let dir = temp_mod_root("require_tracker_root");
+        let outside = temp_mod_root("require_tracker_outside");
+        let outside_file = outside.join("module.luau");
+        fs::write(&outside_file, "return {}\n").unwrap();
+
+        let err =
+            canonical_require_dependency(&dir.canonicalize().unwrap(), &outside_file, "./module")
+                .expect_err("outside canonical path must be rejected");
+        assert!(err.contains("outside mod root"), "got: {err}");
     }
 }

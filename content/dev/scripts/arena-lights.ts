@@ -1,23 +1,8 @@
 import {
-  type EntityTypeDescriptor,
   type NamedReactionDescriptor,
-  defineEntity,
   defineReaction,
   world,
 } from "postretro";
-
-// Reference behavior archetype descriptors. Components are intentionally
-// empty: both archetypes are pure tag/transform carriers and the behavior
-// scripts (`rotator-driver.ts`, `damage-source.ts`) locate their work via
-// tag-filtered `worldQuery` rather than component data.
-export const arenaLightEntities: EntityTypeDescriptor[] = [
-  defineEntity({
-    canonicalName: "game_rotator_driver",
-  }),
-  defineEntity({
-    canonicalName: "game_damage_source",
-  }),
-];
 
 export function setupLevel(_ctx: unknown) {
   const reactions: NamedReactionDescriptor[] = [];

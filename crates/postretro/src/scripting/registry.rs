@@ -15,6 +15,7 @@ use super::components::particle::ParticleState;
 use super::components::player_movement::PlayerMovementComponent;
 use super::components::sprite_visual::SpriteVisual;
 use super::components::weapon::WeaponComponent;
+use super::provenance::DescriptorProvenance;
 
 /// Packed entity identifier: `index: 16 | generation: 16`.
 ///
@@ -93,6 +94,7 @@ pub(crate) enum ComponentKind {
     FogVolume = 5,
     PlayerMovement = 6,
     Weapon = 7,
+    DescriptorProvenance = 8,
 }
 
 impl ComponentKind {
@@ -110,6 +112,7 @@ impl ComponentKind {
             ComponentKind::FogVolume,
             ComponentKind::PlayerMovement,
             ComponentKind::Weapon,
+            ComponentKind::DescriptorProvenance,
         ];
         VARIANTS.len()
     };
@@ -153,6 +156,23 @@ pub(crate) enum ComponentValue {
     FogVolume(FogVolumeComponent),
     PlayerMovement(PlayerMovementComponent),
     Weapon(WeaponComponent),
+    DescriptorProvenance(DescriptorProvenance),
+}
+
+impl ComponentValue {
+    pub(crate) fn kind(&self) -> ComponentKind {
+        match self {
+            ComponentValue::Transform(_) => ComponentKind::Transform,
+            ComponentValue::Light(_) => ComponentKind::Light,
+            ComponentValue::BillboardEmitter(_) => ComponentKind::BillboardEmitter,
+            ComponentValue::ParticleState(_) => ComponentKind::ParticleState,
+            ComponentValue::SpriteVisual(_) => ComponentKind::SpriteVisual,
+            ComponentValue::FogVolume(_) => ComponentKind::FogVolume,
+            ComponentValue::PlayerMovement(_) => ComponentKind::PlayerMovement,
+            ComponentValue::Weapon(_) => ComponentKind::Weapon,
+            ComponentValue::DescriptorProvenance(_) => ComponentKind::DescriptorProvenance,
+        }
+    }
 }
 
 fn default_fog_tint() -> [f32; 3] {
@@ -343,6 +363,21 @@ impl Component for WeaponComponent {
 
     fn into_value(self) -> ComponentValue {
         ComponentValue::Weapon(self)
+    }
+}
+
+impl Component for DescriptorProvenance {
+    const KIND: ComponentKind = ComponentKind::DescriptorProvenance;
+
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::DescriptorProvenance(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::DescriptorProvenance(self)
     }
 }
 
@@ -618,6 +653,26 @@ impl EntityRegistry {
         Ok(())
     }
 
+    pub(crate) fn set_component_value(
+        &mut self,
+        id: EntityId,
+        value: ComponentValue,
+    ) -> Result<(), RegistryError> {
+        let index = self.validate(id)?;
+        let kind = value.kind();
+        self.components[kind as usize][index] = Some(value);
+        Ok(())
+    }
+
+    pub(crate) fn has_component_kind(
+        &self,
+        id: EntityId,
+        kind: ComponentKind,
+    ) -> Result<bool, RegistryError> {
+        let index = self.validate(id)?;
+        Ok(self.components[kind as usize][index].is_some())
+    }
+
     pub(crate) fn remove_component<T: Component>(
         &mut self,
         id: EntityId,
@@ -626,6 +681,20 @@ impl EntityRegistry {
         let cell = &mut self.components[T::KIND as usize][index];
         if cell.is_none() {
             return Err(RegistryError::ComponentNotFound { id, kind: T::KIND });
+        }
+        *cell = None;
+        Ok(())
+    }
+
+    pub(crate) fn remove_component_kind(
+        &mut self,
+        id: EntityId,
+        kind: ComponentKind,
+    ) -> Result<(), RegistryError> {
+        let index = self.validate(id)?;
+        let cell = &mut self.components[kind as usize][index];
+        if cell.is_none() {
+            return Err(RegistryError::ComponentNotFound { id, kind });
         }
         *cell = None;
         Ok(())

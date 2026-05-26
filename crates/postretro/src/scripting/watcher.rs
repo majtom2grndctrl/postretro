@@ -14,27 +14,25 @@
 //! ┌─────────────────────────────────┐
 //! │ watcher thread                  │   FS events → internal mpsc
 //! │  (notify + debouncer-full)      │──────────────────────────────┐
-//! │  forwarder only, never compiles │                              │
+//! │  forwarder only, never classifies│                              │
 //! └─────────────────────────────────┘                              │
 //!                                                                  ▼
 //!                                            ┌──────────────────────────────┐
-//!                                            │ compile-worker thread        │
-//!                                            │  - .ts → spawn compiler      │
-//!                                            │  - .luau → straight through  │
-//!                                            │  - logs stderr on failure    │
+//!                                            │ event-forwarder thread       │
+//!                                            │  - batches changed paths     │
+//!                                            │  - no compilation/classify   │
 //!                                            └──────────────┬───────────────┘
 //!                                                           │ ReloadRequest
 //!                                                           ▼
 //!                                            ┌──────────────────────────────┐
-//!                                            │ frame loop                   │
-//!                                            │  drain_reload_requests()     │
+//!                                            │ frame loop/runtime           │
+//!                                            │  dependency membership check │
 //!                                            └──────────────────────────────┘
 //! ```
 //!
-//! Separation matters: a `scripts-build` subprocess can take hundreds of
-//! milliseconds; blocking the debouncer's delivery thread would drop events
-//! during a compile. The watcher thread forwards immediately; the
-//! compile-worker owns the slow path.
+//! Separation matters: filesystem event delivery must never block on script
+//! work. The watcher records changed paths only; `ScriptRuntime` decides
+//! whether those paths affect the active mod-init dependency set.
 
 // Belt-and-braces: the `mod watcher;` in `scripting::mod` is already
 // `#[cfg(debug_assertions)]`, but gating the module itself ensures a release
@@ -50,6 +48,7 @@ use std::time::Duration;
 use log::{error, info, warn};
 use notify::{Config as NotifyConfig, EventKind, PollWatcher, RecursiveMode};
 use notify_debouncer_full::{DebouncedEvent, RecommendedCache, new_debouncer_opt};
+use serde::Deserialize;
 
 use super::error::ScriptError;
 
@@ -60,28 +59,11 @@ const DEBOUNCE_MS: u64 = 200;
 /// and still keeps debug hot reload comfortably under the one-second target.
 const POLL_INTERVAL_MS: u64 = 100;
 
-/// What kind of reload was triggered.
-///
-/// `Scripts` — a file under the scripts root changed. The frame loop treats
-/// this as a conservative mod-init reload because domain scripts under
-/// `<mod>/scripts/` can feed `setupMod()` through imports/requires.
-///
-/// `ModInit` — `start-script.{ts,js,luau}` (or a `.ts` sibling at the mod
-/// root, treated as a likely import) changed; the engine should re-run
-/// `run_mod_init` so the mod manifest stays current without restarting.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ReloadKind {
-    Scripts,
-    ModInit,
-}
-
-/// One reload request enqueued by the compile-worker for the frame loop.
+/// One reload request enqueued by the event-forwarder for the frame loop.
 #[derive(Debug, Clone)]
 pub(crate) struct ReloadRequest {
-    pub(crate) kind: ReloadKind,
+    pub(crate) paths: Vec<PathBuf>,
 }
-
-pub(crate) use super::runtime::ReloadSummary;
 
 /// Where to find the `scripts-build` sidecar, chosen once at startup via the
 /// detection cascade in [`TsCompilerPath::detect`].
@@ -109,8 +91,7 @@ impl TsCompilerPath {
     // level-compiler runs offline and cannot depend on this module
     // (`#[cfg(debug_assertions)]`-gated, also pulls in wgpu via the engine
     // crate). Consolidate into a shared `postretro-scripts-tools` crate when
-    // the level-compiler gains more scripting integration. See:
-    // context/plans/drafts/scripting-tools-dedup/index.md
+    // the level-compiler gains more scripting integration.
     pub(crate) fn detect() -> Option<Self> {
         let exe_dir = std::env::current_exe()
             .ok()
@@ -145,6 +126,79 @@ impl TsCompilerPath {
             Self::ScriptsBuildOnPath(p) => format!("scripts-build (from PATH: {})", p.display()),
         }
     }
+
+    fn binary_path(&self) -> &Path {
+        match self {
+            Self::ScriptsBuildNextToEngine(p) | Self::ScriptsBuildOnPath(p) => p,
+        }
+    }
+
+    /// Warn if the resolved sidecar predates its own source. `cargo run -p
+    /// postretro` rebuilds the engine but not the `scripts-build` sidecar, so a
+    /// developer editing `crates/script-compiler` launches against a stale
+    /// binary — hot reload then breaks silently while the game boots fine.
+    ///
+    /// The compiler source dir is found via `CARGO_MANIFEST_DIR` (baked at
+    /// engine compile time = `crates/postretro`); its sibling holds the
+    /// compiler. That baked path only exists on the dev checkout that compiled
+    /// the engine — exactly where the footgun lives. Anything missing or
+    /// unreadable (e.g. a shipped distribution) skips silently: this is a
+    /// best-effort heuristic, never a startup gate.
+    pub(crate) fn warn_if_stale(&self) {
+        let source_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("script-compiler")
+            .join("src");
+        if !source_dir.is_dir() {
+            return;
+        }
+        let (Some(sidecar_mtime), Some(newest_source_mtime)) = (
+            file_mtime(self.binary_path()),
+            newest_mtime_under(&source_dir),
+        ) else {
+            return;
+        };
+        if sidecar_is_stale(sidecar_mtime, newest_source_mtime) {
+            warn!(
+                "[Scripting] `scripts-build` looks stale (older than its source). \
+                 `cargo run -p postretro` does not rebuild the sidecar — hot reload \
+                 may silently fail. Rebuild it: `cargo build -p postretro-script-compiler`."
+            );
+        }
+    }
+}
+
+/// Pure staleness comparator. Stale when source was modified after the binary.
+fn sidecar_is_stale(
+    sidecar_mtime: std::time::SystemTime,
+    newest_source_mtime: std::time::SystemTime,
+) -> bool {
+    newest_source_mtime > sidecar_mtime
+}
+
+fn file_mtime(path: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// Newest `modified()` time across all files under `dir`, recursively. `None`
+/// if the walk yields no readable file mtime.
+fn newest_mtime_under(dir: &Path) -> Option<std::time::SystemTime> {
+    let mut newest: Option<std::time::SystemTime> = None;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if let Some(mtime) = file_mtime(&path) {
+                newest = Some(newest.map_or(mtime, |cur| cur.max(mtime)));
+            }
+        }
+    }
+    newest
 }
 
 /// Probe a directory for `scripts-build[.exe]`.
@@ -181,20 +235,20 @@ fn which_in(path_var: Option<&std::ffi::OsStr>, name: &str) -> Option<PathBuf> {
 }
 
 /// The hot-reload watcher. Owns two background threads (watcher,
-/// compile-worker) plus the channel the frame loop drains each tick.
+/// event-forwarder) plus the channel the frame loop drains each tick.
 ///
-/// Dropping `ScriptWatcher` shuts the debouncer down; the compile-worker
+/// Dropping `ScriptWatcher` shuts the debouncer down; the event-forwarder
 /// thread observes its channel closing and exits on the next iteration.
 pub(crate) struct ScriptWatcher {
     /// Kept alive so the debouncer thread keeps running. On drop, the
     /// debouncer stops, the internal event channel closes, and the
-    /// compile-worker loop exits naturally when its `recv` returns an error.
+    /// event-forwarder loop exits naturally when its `recv` returns an error.
     _debouncer: notify_debouncer_full::Debouncer<PollWatcher, RecommendedCache>,
     reload_rx: Receiver<ReloadRequest>,
-    /// Join handle for the compile-worker. Not joined explicitly — the thread
+    /// Join handle for the event-forwarder. Not joined explicitly — the thread
     /// exits once the event-channel sender side drops. Kept in the struct so
     /// its lifetime is tied to `ScriptWatcher`.
-    _compile_worker: std::thread::JoinHandle<()>,
+    _event_forwarder: std::thread::JoinHandle<()>,
 }
 
 impl ScriptWatcher {
@@ -203,10 +257,8 @@ impl ScriptWatcher {
     /// `script_root` is watched recursively for `.ts`/`.luau` changes
     /// (definition scripts under `<mod>/scripts/`).
     ///
-    /// `mod_root` is watched non-recursively so changes to
-    /// `start-script.{ts,js,luau}` (and any `.ts` siblings, treated as likely
-    /// start-script imports) trigger a `ReloadKind::ModInit` request.
-    /// Non-recursive watching avoids double-watching `<mod>/scripts/`.
+    /// `mod_root` is watched non-recursively so changes to entry candidates
+    /// are observed without double-watching `<mod>/scripts/`.
     ///
     /// `ts_compiler = None` is valid — `.ts` files fail to reload with a
     /// logged message, `.luau` still works.
@@ -228,14 +280,14 @@ impl ScriptWatcher {
             );
         }
 
-        // Channel 1: watcher (debouncer) thread → compile-worker.
+        // Channel 1: watcher (debouncer) thread → event-forwarder.
         let (event_tx, event_rx) = mpsc::channel::<DebouncedEvent>();
-        // Channel 2: compile-worker → frame loop.
+        // Channel 2: event-forwarder → frame loop.
         let (reload_tx, reload_rx) = mpsc::channel::<ReloadRequest>();
 
         // The closure passed to `new_debouncer_opt` runs on the debouncer's
         // internal thread. Its only job: forward each `DebouncedEvent` to the
-        // compile-worker. Never blocks on compilation.
+        // event-forwarder. Never blocks on runtime classification.
         let watcher_config = NotifyConfig::default()
             .with_poll_interval(Duration::from_millis(POLL_INTERVAL_MS))
             .with_compare_contents(true);
@@ -245,7 +297,7 @@ impl ScriptWatcher {
             move |res: notify_debouncer_full::DebounceEventResult| match res {
                 Ok(events) => {
                     for ev in events {
-                        // `send` fails only if the compile-worker has exited,
+                        // `send` fails only if the event-forwarder has exited,
                         // which happens during shutdown. Drop quietly.
                         let _ = event_tx.send(ev);
                     }
@@ -281,186 +333,71 @@ impl ScriptWatcher {
                 })?;
         }
 
-        // The compile-worker classifies events by comparing the parent of
-        // each changed path against `mod_root`. On macOS, `notify` reports
-        // canonical paths (e.g. `/private/tmp/...`) while a caller may pass
-        // a symlinked path (`/tmp/...`). Canonicalize once up front so the
-        // comparison is path-form-agnostic; fall back to the original on
-        // failure (e.g. directory removed).
-        let mod_root_for_worker =
-            std::fs::canonicalize(&mod_root).unwrap_or_else(|_| mod_root.clone());
-        let compile_worker = std::thread::Builder::new()
-            .name("postretro-scripting-compile-worker".to_string())
-            .spawn(move || {
-                compile_worker_loop(event_rx, reload_tx, ts_compiler, mod_root_for_worker)
-            })
+        let event_forwarder = std::thread::Builder::new()
+            .name("postretro-scripting-event-forwarder".to_string())
+            .spawn(move || event_forwarder_loop(event_rx, reload_tx))
             .map_err(|e| ScriptError::InvalidArgument {
-                reason: format!("failed to spawn compile-worker thread: {e}"),
+                reason: format!("failed to spawn script event-forwarder thread: {e}"),
             })?;
 
         Ok(Self {
             _debouncer: debouncer,
             reload_rx,
-            _compile_worker: compile_worker,
+            _event_forwarder: event_forwarder,
         })
     }
 
-    /// Drain pending reload requests non-blockingly. Returns a
-    /// [`ReloadSummary`] describing which kinds of reload were observed.
-    ///
-    /// A `Scripts` reload sets `summary.scripts = true`; the frame loop
-    /// handles it by re-running mod-init because imported domain scripts can
-    /// affect the returned descriptor manifest. A `ModInit` reload signals
-    /// the same path for start-script edits.
-    pub(crate) fn drain_reload_requests(&mut self) -> Result<ReloadSummary, ScriptError> {
-        let mut summary = ReloadSummary::default();
+    /// Drain pending changed-path batches non-blockingly. Classification
+    /// intentionally lives in `ScriptRuntime`, which owns the active
+    /// dependency set.
+    pub(crate) fn drain_reload_requests(&mut self) -> Result<Vec<ReloadRequest>, ScriptError> {
+        let mut requests = Vec::new();
         loop {
             match self.reload_rx.try_recv() {
-                Ok(req) => match req.kind {
-                    ReloadKind::Scripts => summary.scripts = true,
-                    ReloadKind::ModInit => summary.mod_init = true,
-                },
-                Err(TryRecvError::Empty) => return Ok(summary),
+                Ok(req) => requests.push(req),
+                Err(TryRecvError::Empty) => return Ok(requests),
                 Err(TryRecvError::Disconnected) => {
-                    // Compile-worker exited; channel is closed.
-                    return Ok(summary);
+                    // Event-forwarder exited; channel is closed.
+                    return Ok(requests);
                 }
             }
         }
     }
 }
 
-/// Body of the compile-worker thread. Loops until the event channel closes
-/// (debouncer dropped). Compiles `.ts` files and forwards `.luau` files as-is.
-fn compile_worker_loop(
-    event_rx: Receiver<DebouncedEvent>,
-    reload_tx: Sender<ReloadRequest>,
-    ts_compiler: Option<TsCompilerPath>,
-    mod_root: PathBuf,
-) {
+/// Body of the event-forwarder thread. Loops until the event channel closes
+/// (debouncer dropped). It forwards changed paths without deciding whether
+/// those paths affect mod-init.
+fn event_forwarder_loop(event_rx: Receiver<DebouncedEvent>, reload_tx: Sender<ReloadRequest>) {
     while let Ok(ev) = event_rx.recv() {
-        // Filter out event kinds that can't represent a content edit. Modify
-        // and Create are the interesting ones. `Remove` is ignored — a file
-        // being removed is not a reload trigger.
+        // Include Remove so deletion/rename-away of an active dependency can
+        // be classified against the previous committed dependency set.
         if !matches!(
             ev.event.kind,
-            EventKind::Create(_) | EventKind::Modify(_) | EventKind::Any | EventKind::Other
+            EventKind::Create(_)
+                | EventKind::Modify(_)
+                | EventKind::Remove(_)
+                | EventKind::Any
+                | EventKind::Other
         ) {
             continue;
         }
 
-        for path in &ev.event.paths {
-            handle_path(path, &reload_tx, ts_compiler.as_ref(), &mod_root);
+        if ev.event.paths.is_empty() {
+            continue;
         }
+
+        let _ = reload_tx.send(ReloadRequest {
+            paths: ev.event.paths,
+        });
     }
 }
 
-/// Classify a changed path as a `ModInit` or `Scripts` reload.
-///
-/// A path counts as `ModInit` if its parent directory equals `mod_root` and
-/// its file stem is `start-script` (any extension), OR if it is any `.ts`
-/// file directly at the mod root (treated as a likely start-script import).
-/// `.luau` siblings at the mod root are not treated as likely imports — only
-/// `start-script.luau` itself triggers `ModInit` (Luau scripts are loaded by
-/// the VM at require-time, not pre-watched as separate FS events).
-/// Everything else under the watched scripts subtree is a `Scripts` reload.
-fn same_path(left: &Path, right: &Path) -> bool {
-    if left == right {
-        return true;
-    }
-
-    let Ok(left) = std::fs::canonicalize(left) else {
-        return false;
-    };
-    let Ok(right) = std::fs::canonicalize(right) else {
-        return false;
-    };
-    left == right
-}
-
-fn classify_reload(path: &Path, mod_root: &Path) -> ReloadKind {
-    if path
-        .parent()
-        .is_some_and(|parent| same_path(parent, mod_root))
-    {
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or_default();
-        let ext = path
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or_default();
-        if stem == "start-script" || ext == "ts" {
-            return ReloadKind::ModInit;
-        }
-    }
-    ReloadKind::Scripts
-}
-
-/// Handle one changed path. Decides by extension whether to compile or
-/// forward, enqueues a `ReloadRequest` on success, logs on failure.
-fn handle_path(
-    path: &Path,
-    reload_tx: &Sender<ReloadRequest>,
-    ts_compiler: Option<&TsCompilerPath>,
-    mod_root: &Path,
-) {
-    let ext = path
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or_default();
-    let kind = classify_reload(path, mod_root);
-
-    match ext {
-        "luau" => {
-            // Straight-through: Luau reads source directly.
-            let _ = reload_tx.send(ReloadRequest { kind });
-        }
-        "js" => {
-            // A mod-root `start-script.js` write triggers a mod-init re-run
-            // *only* when no `start-script.ts` source sits beside it.
-            //
-            // When a `.ts` source exists, `start-script.js` is a build
-            // artifact: both the startup scan and every `run_mod_init` invoke
-            // `compile_start_script`, which rewrites it unconditionally (see
-            // runtime.rs). Reacting to that write would loop —
-            // rebuild → write → FS event → rebuild — re-running mod-init on
-            // repeat until the engine is killed. The `.ts` arm below is the
-            // authoritative ModInit trigger for source edits; the artifact
-            // write must be ignored. With no `.ts` present the `.js` is
-            // hand-shipped or pre-compiled source and stays a valid trigger.
-            if kind == ReloadKind::ModInit && !path.with_extension("ts").is_file() {
-                let _ = reload_tx.send(ReloadRequest { kind });
-            }
-        }
-        "ts" => {
-            let Some(compiler) = ts_compiler else {
-                error!(
-                    "scripts: `.ts` file changed but no TypeScript compiler was detected at \
-                     startup — cannot hot-reload `{}`",
-                    path.display(),
-                );
-                return;
-            };
-
-            let out_path = compiled_output_for(path);
-            match run_ts_compiler(compiler, path, &out_path) {
-                Ok(()) => {
-                    let _ = reload_tx.send(ReloadRequest { kind });
-                }
-                Err(msg) => {
-                    // Compiler stderr already logged inside run_ts_compiler;
-                    // this is the summary line. The prior archetype set stays
-                    // active because no ReloadRequest was enqueued.
-                    error!("scripts: TS compile failed for `{}`: {msg}", path.display());
-                }
-            }
-        }
-        _ => {
-            // Not a definition script — ignore.
-        }
-    }
+#[cfg(test)]
+fn handle_path(path: &Path, reload_tx: &Sender<ReloadRequest>) {
+    let _ = reload_tx.send(ReloadRequest {
+        paths: vec![path.to_path_buf()],
+    });
 }
 
 /// The `.js` artifact path for a given `.ts` source: same directory, same stem.
@@ -476,12 +413,49 @@ pub(crate) fn run_ts_compiler(
     input: &Path,
     output: &Path,
 ) -> Result<(), String> {
+    run_ts_compiler_command(compiler, input, output, false).map(|_| ())
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub(crate) struct TsDependencyReport {
+    pub(crate) entry: PathBuf,
+    pub(crate) output: PathBuf,
+    pub(crate) dependencies: Vec<PathBuf>,
+}
+
+/// Spawn the configured TS compiler in dependency-report mode and parse its
+/// machine-readable stdout. Malformed JSON, extra stdout text, or missing
+/// fields are reported as compile failures so staged manifest builds can keep
+/// the previous committed snapshot active.
+pub(crate) fn run_ts_compiler_with_dependency_report(
+    compiler: &TsCompilerPath,
+    input: &Path,
+    output: &Path,
+) -> Result<TsDependencyReport, String> {
+    let stdout = run_ts_compiler_command(compiler, input, output, true)?;
+    parse_ts_dependency_report(&stdout)
+}
+
+fn parse_ts_dependency_report(stdout: &[u8]) -> Result<TsDependencyReport, String> {
+    serde_json::from_slice::<TsDependencyReport>(stdout)
+        .map_err(|e| format!("invalid dependency report from scripts-build: {e}"))
+}
+
+fn run_ts_compiler_command(
+    compiler: &TsCompilerPath,
+    input: &Path,
+    output: &Path,
+    dep_json: bool,
+) -> Result<Vec<u8>, String> {
     use std::process::Command;
 
     let mut cmd = match compiler {
         TsCompilerPath::ScriptsBuildNextToEngine(p) | TsCompilerPath::ScriptsBuildOnPath(p) => {
             let mut c = Command::new(p);
             c.arg("--in").arg(input).arg("--out").arg(output);
+            if dep_json {
+                c.arg("--dep-json");
+            }
             c
         }
     };
@@ -498,7 +472,7 @@ pub(crate) fn run_ts_compiler(
         }
         return Err(format!("exit status {}", out.status));
     }
-    Ok(())
+    Ok(out.stdout)
 }
 
 #[cfg(test)]
@@ -537,12 +511,12 @@ mod tests {
         false
     }
 
-    /// Like [`wait_for_reload`] but returns the kind of the first request.
-    fn wait_for_reload_kind(watcher: &ScriptWatcher, deadline: Duration) -> Option<ReloadKind> {
+    /// Like [`wait_for_reload`] but returns the paths from the first request.
+    fn wait_for_reload_paths(watcher: &ScriptWatcher, deadline: Duration) -> Option<Vec<PathBuf>> {
         let start = Instant::now();
         while start.elapsed() < deadline {
             if let Ok(req) = watcher.reload_rx.try_recv() {
-                return Some(req.kind);
+                return Some(req.paths);
             }
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -550,72 +524,20 @@ mod tests {
     }
 
     #[test]
-    fn classify_reload_mod_root_start_script_is_mod_init() {
-        let mod_root = PathBuf::from("/tmp/fake-mod");
-        // start-script.{ts,js,luau} at the mod root → ModInit.
-        for name in ["start-script.ts", "start-script.js", "start-script.luau"] {
-            let p = mod_root.join(name);
-            assert_eq!(
-                classify_reload(&p, &mod_root),
-                ReloadKind::ModInit,
-                "{name} at mod root should classify as ModInit"
-            );
-        }
-        // Any `.ts` at the mod root is a likely start-script import → ModInit.
-        let import = mod_root.join("helpers.ts");
-        assert_eq!(classify_reload(&import, &mod_root), ReloadKind::ModInit);
-    }
-
-    #[test]
-    fn classify_reload_scripts_subdir_is_scripts() {
-        let mod_root = PathBuf::from("/tmp/fake-mod");
-        let p = mod_root.join("scripts").join("archetypes.ts");
-        assert_eq!(classify_reload(&p, &mod_root), ReloadKind::Scripts);
-        let p = mod_root.join("scripts").join("nested").join("a.luau");
-        assert_eq!(classify_reload(&p, &mod_root), ReloadKind::Scripts);
-    }
-
-    // Regression: dropping the start-script mtime gate made `run_mod_init`
-    // rewrite `start-script.js` on every call; the watcher then re-fired
-    // ModInit on its own build artifact, looping mod-init until the engine
-    // was killed.
-    #[test]
-    fn start_script_js_write_does_not_retrigger_when_ts_source_present() {
-        let mod_root = temp_dir("js_artifact_no_retrigger");
-        // A `.ts` source marks `start-script.js` as a build artifact.
-        fs::write(mod_root.join("start-script.ts"), "export {};\n").unwrap();
-        let js = mod_root.join("start-script.js");
-        fs::write(&js, "/* built */\n").unwrap();
-
+    fn watcher_forwards_changed_path_without_classifying_js_artifact() {
+        let js = PathBuf::from("/tmp/fake-mod/start-script.js");
         let (tx, rx) = mpsc::channel::<ReloadRequest>();
-        handle_path(&js, &tx, None, &mod_root);
-
-        assert!(
-            rx.try_recv().is_err(),
-            "start-script.js write must NOT enqueue a reload when start-script.ts \
-             exists — it is the engine's own build artifact and reacting loops",
-        );
-    }
-
-    #[test]
-    fn start_script_js_write_triggers_mod_init_without_ts_source() {
-        let mod_root = temp_dir("js_handshipped_triggers");
-        // No `.ts` — `start-script.js` is hand-shipped / pre-compiled source.
-        let js = mod_root.join("start-script.js");
-        fs::write(&js, "/* hand-shipped */\n").unwrap();
-
-        let (tx, rx) = mpsc::channel::<ReloadRequest>();
-        handle_path(&js, &tx, None, &mod_root);
+        handle_path(&js, &tx);
 
         assert_eq!(
-            rx.try_recv().map(|r| r.kind).ok(),
-            Some(ReloadKind::ModInit),
-            "hand-shipped start-script.js (no .ts source) must still trigger ModInit",
+            rx.try_recv().map(|r| r.paths).ok(),
+            Some(vec![js]),
+            "watcher forwards paths only; runtime classifies JS artifacts against dependencies",
         );
     }
 
     #[test]
-    fn start_script_luau_edit_at_mod_root_triggers_mod_init_reload() {
+    fn start_script_luau_edit_at_mod_root_forwards_changed_path() {
         // mod_root has a `scripts/` subdir (watched recursively) and a
         // `start-script.luau` at the mod root (covered by the non-recursive
         // mod-root watch).
@@ -630,11 +552,12 @@ mod tests {
 
         fs::write(&start, "-- edited\n").unwrap();
 
-        let kind = wait_for_reload_kind(&watcher, Duration::from_secs(2));
-        assert_eq!(
-            kind,
-            Some(ReloadKind::ModInit),
-            "editing start-script.luau at the mod root should produce a ModInit reload",
+        let paths = wait_for_reload_paths(&watcher, Duration::from_secs(2));
+        assert!(
+            paths
+                .as_ref()
+                .is_some_and(|paths| paths.iter().any(|path| path == &start)),
+            "editing start-script.luau at the mod root should forward its path, got {paths:?}",
         );
     }
 
@@ -659,8 +582,8 @@ mod tests {
     #[test]
     fn luau_rename_triggers_reload() {
         // Atomic-rename save pattern (editors like vim, VS Code on some
-        // platforms). `notify-debouncer-full` is expected to surface this as
-        // an event the compile-worker treats as a modify.
+        // platforms). The watcher forwards event paths; runtime classifies
+        // both old and new paths when notify supplies both.
         let dir = temp_dir("luau_rename");
         let file = dir.join("archetypes.luau");
         fs::write(&file, "-- initial\n").unwrap();
@@ -720,18 +643,12 @@ mod tests {
     }
 
     #[test]
-    fn ts_edit_triggers_reload_via_scripts_build() {
-        let compiler_path = ensure_scripts_build();
+    fn ts_edit_forwards_path_without_running_scripts_build() {
         let dir = temp_dir("ts_edit");
         let file = dir.join("archetypes.ts");
         fs::write(&file, "export const x: number = 1;\n").unwrap();
 
-        let watcher = ScriptWatcher::spawn(
-            &dir,
-            &dir,
-            Some(TsCompilerPath::ScriptsBuildOnPath(compiler_path.clone())),
-        )
-        .unwrap();
+        let watcher = ScriptWatcher::spawn(&dir, &dir, None).unwrap();
         std::thread::sleep(Duration::from_millis(100));
 
         fs::write(&file, "export const x: number = 2;\n").unwrap();
@@ -740,43 +657,48 @@ mod tests {
             wait_for_reload(&watcher, Duration::from_secs(5)),
             "expected a reload request after editing a .ts file"
         );
+    }
 
-        let js = dir.join("archetypes.js");
+    #[test]
+    fn ts_syntax_error_still_forwards_path_for_runtime_classification() {
+        let dir = temp_dir("ts_broken");
+        let file = dir.join("archetypes.ts");
+        fs::write(&file, "export const x: number = 1;\n").unwrap();
+
+        let watcher = ScriptWatcher::spawn(&dir, &dir, None).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+
+        fs::write(&file, "export const x: = = broken !@#$\n").unwrap();
+
         assert!(
-            js.is_file(),
-            "expected compiled output `{}` to exist",
-            js.display()
+            wait_for_reload(&watcher, Duration::from_secs(2)),
+            "watcher should forward syntactically broken TS; staged build reports compile failure",
         );
     }
 
     #[test]
-    fn ts_syntax_error_does_not_enqueue_reload() {
-        let compiler_path = ensure_scripts_build();
-        let dir = temp_dir("ts_broken");
-        let file = dir.join("archetypes.ts");
-        // Valid first, just so the file exists before we start watching.
-        fs::write(&file, "export const x: number = 1;\n").unwrap();
-
-        let watcher = ScriptWatcher::spawn(
-            &dir,
-            &dir,
-            Some(TsCompilerPath::ScriptsBuildOnPath(compiler_path.clone())),
+    fn ts_dependency_report_parser_rejects_missing_fields() {
+        let err = parse_ts_dependency_report(
+            br#"{"entry":"/tmp/start-script.ts","dependencies":["/tmp/start-script.ts"]}"#,
         )
-        .unwrap();
-        std::thread::sleep(Duration::from_millis(100));
-
-        // Overwrite with garbage. The compiler should reject this and NOT
-        // enqueue a ReloadRequest.
-        fs::write(&file, "export const x: = = broken !@#$\n").unwrap();
-
-        // Give the compile worker time to try and fail.
-        std::thread::sleep(Duration::from_millis(1500));
-
-        // Drain any pending requests. We expect none.
-        let got = watcher.reload_rx.try_recv().ok();
+        .unwrap_err();
         assert!(
-            got.is_none(),
-            "syntax-error save must not enqueue a ReloadRequest (got {got:?})"
+            err.contains("missing field `output`"),
+            "expected missing output field error, got {err}"
+        );
+    }
+
+    #[test]
+    fn ts_dependency_report_parser_rejects_extra_stdout_text() {
+        let err = parse_ts_dependency_report(
+            br#"{"entry":"/tmp/start-script.ts","output":"/tmp/start-script.js","dependencies":["/tmp/start-script.ts"]}
+human diagnostic
+"#,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("trailing characters"),
+            "expected trailing stdout text error, got {err}"
         );
     }
 
@@ -798,6 +720,64 @@ mod tests {
                 panic!("expected detect_with() to return ScriptsBuildNextToEngine; got {other:?}")
             }
         }
+    }
+
+    #[test]
+    fn sidecar_stale_when_source_newer_than_binary() {
+        let dir = temp_dir("stale_source_newer");
+        let binary = dir.join("scripts-build");
+        let source = dir.join("lib.rs");
+        fs::write(&binary, b"bin").unwrap();
+        fs::write(&source, b"src").unwrap();
+        set_mtime(&binary, 1_000);
+        set_mtime(&source, 2_000);
+
+        let sidecar = file_mtime(&binary).unwrap();
+        let newest = newest_mtime_under(&dir).unwrap();
+        assert!(
+            sidecar_is_stale(sidecar, newest),
+            "source modified after the binary is stale",
+        );
+    }
+
+    #[test]
+    fn sidecar_fresh_when_binary_newer_than_source() {
+        let dir = temp_dir("fresh_binary_newer");
+        let binary = dir.join("scripts-build");
+        let source_dir = dir.join("src");
+        fs::create_dir_all(&source_dir).unwrap();
+        let source = source_dir.join("lib.rs");
+        fs::write(&binary, b"bin").unwrap();
+        fs::write(&source, b"src").unwrap();
+        set_mtime(&source, 1_000);
+        set_mtime(&binary, 2_000);
+
+        let sidecar = file_mtime(&binary).unwrap();
+        let newest = newest_mtime_under(&source_dir).unwrap();
+        assert!(
+            !sidecar_is_stale(sidecar, newest),
+            "binary modified after the source is fresh",
+        );
+    }
+
+    #[test]
+    fn missing_source_dir_yields_no_mtime() {
+        // A shipped distribution has no compiler source dir; the walk yields
+        // nothing and the caller skips the check rather than warning.
+        let dir = temp_dir("missing_source");
+        let absent = dir.join("does-not-exist");
+        assert!(
+            newest_mtime_under(&absent).is_none(),
+            "walking an absent dir yields no mtime",
+        );
+    }
+
+    /// Pin a file's mtime so stale-vs-fresh ordering is deterministic rather
+    /// than depending on wall-clock write order.
+    fn set_mtime(path: &Path, secs: u64) {
+        let when = std::time::UNIX_EPOCH + Duration::from_secs(secs);
+        let f = fs::OpenOptions::new().write(true).open(path).unwrap();
+        f.set_modified(when).unwrap();
     }
 
     #[test]

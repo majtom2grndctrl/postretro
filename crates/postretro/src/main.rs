@@ -89,8 +89,10 @@ fn content_root_from_map(map_path: &str) -> PathBuf {
         .to_path_buf()
 }
 
+// Policy chokepoint: the frame loop queues a staged build only when a changed
+// path matched the active mod-init dependency set (classified by ScriptRuntime).
 fn reload_summary_requires_mod_init(summary: ReloadSummary) -> bool {
-    summary.mod_init || summary.scripts
+    summary.mod_init
 }
 
 fn main() -> Result<()> {
@@ -127,6 +129,9 @@ fn main() -> Result<()> {
         &script_ctx,
     )
     .context("failed to construct script runtime")?;
+    // See `ScriptRuntime::new` for why this runs here rather than in the constructor.
+    // See: context/lib/scripting.md §7.
+    crate::scripting::typedef::emit_sdk_types_in_debug(&script_registry);
     boot_timings.record("script_runtime_ctor");
 
     let event_loop = EventLoop::new().context("failed to create event loop")?;
@@ -653,38 +658,27 @@ impl ApplicationHandler for App {
                 let frame_dt = frame_result.frame_dt;
                 let ticks = frame_result.ticks;
 
-                // Drain pending reload requests so the watcher channel does
-                // not back up. Live scripting VMs are gone, so hot reload
-                // re-runs mod-init conservatively for start-script edits and
-                // scripts under `<mod>/scripts/` that can feed descriptor
-                // declarations through imports/requires. The refreshed
-                // manifest upserts descriptors and refreshes the live
-                // equipped weapon from its descriptor. See:
-                // context/lib/scripting.md
+                // Drain changed paths every frame — unconditionally — so the
+                // watcher channel does not back up even when the summary is
+                // empty. ScriptRuntime checks them against the active
+                // dependency set before queuing the serialized staged build.
                 match self.script_runtime.drain_reload_requests() {
                     Ok(summary) => {
                         if reload_summary_requires_mod_init(summary) {
-                            log::info!("[Scripting] scripts changed — re-running mod init",);
-                            if let Err(err) = self.script_runtime.run_mod_init(&self.content_root) {
-                                log::error!("[Scripting] mod-init re-run failed: {err}",);
-                            } else if let Some(manifest) = self.script_runtime.mod_manifest_mut() {
-                                // Hot-reload path: drain entity descriptors
-                                // from the refreshed manifest into the
-                                // engine-global `DataRegistry`. Identical
-                                // re-inserts are silent; differing ones
-                                // overwrite. Runtime parses; caller owns
-                                // lifecycle. See:
-                                // context/lib/boot_sequence.md §3.
-                                let mut data_registry = self.script_ctx.data_registry.borrow_mut();
-                                for desc in std::mem::take(&mut manifest.entities) {
-                                    data_registry.upsert_entity_type(desc);
+                            match self
+                                .script_runtime
+                                .enqueue_staged_manifest_build(&self.content_root)
+                            {
+                                Ok(Some(generation)) => log::info!(
+                                    "[Scripting] active mod-init dependency changed - queued staged generation {generation}",
+                                ),
+                                Ok(None) => {}
+                                Err(err) => {
+                                    log::error!(
+                                        "[Scripting] failed to queue staged mod-init: {err}",
+                                    );
                                 }
-                                drop(data_registry);
-                                self.refresh_active_wieldable_from_descriptors();
                             }
-                            // `pending_splash_override` is intentionally not checked here:
-                            // we are in `Running` state, the splash phase is over, and
-                            // registering an override has no effect by design.
                         }
                     }
                     Err(err) => {
@@ -821,7 +815,7 @@ impl ApplicationHandler for App {
                             }
                         }
 
-                        let weapon_events = self.run_weapon_fire_tick(&snapshot, tick_dt);
+                        let weapon_events = self.run_weapon_fire_tick(snapshot, tick_dt);
                         pending_weapon_events.extend(weapon_events);
 
                         self.frame_timing
@@ -1110,6 +1104,12 @@ impl ApplicationHandler for App {
                             self.pending_level_log = false;
                         }
                     }
+                }
+
+                for result in self.script_runtime.poll_staged_manifest_builds() {
+                    let _ = self
+                        .script_runtime
+                        .commit_staged_manifest_result(&result, &self.script_ctx);
                 }
 
                 if let VisibleCells::Culled(mut cells) = visible_cells {
@@ -1867,53 +1867,6 @@ impl App {
         events.event_names()
     }
 
-    fn refresh_active_wieldable_from_descriptors(&mut self) {
-        let Some(descriptor_name) = self.active_wieldable_descriptor.clone() else {
-            return;
-        };
-        let Some(active_wieldable) = self.active_wieldable else {
-            return;
-        };
-
-        let descriptor = {
-            let data_registry = self.script_ctx.data_registry.borrow();
-            data_registry
-                .entities
-                .iter()
-                .find(|d| d.canonical_name.as_deref() == Some(descriptor_name.as_str()))
-                .cloned()
-        };
-
-        let Some(descriptor) = descriptor else {
-            log::warn!(
-                "[Weapon] active wieldable descriptor `{descriptor_name}` disappeared after hot reload; player is now unarmed"
-            );
-            self.active_wieldable = None;
-            self.active_wieldable_descriptor = None;
-            return;
-        };
-
-        let Some(weapon_descriptor) = descriptor.weapon.as_ref() else {
-            log::warn!(
-                "[Weapon] active wieldable descriptor `{descriptor_name}` no longer declares a weapon component after hot reload; player is now unarmed"
-            );
-            self.active_wieldable = None;
-            self.active_wieldable_descriptor = None;
-            return;
-        };
-
-        let mut registry = self.script_ctx.registry.borrow_mut();
-        if !weapon::refresh_active_wieldable_from_descriptor(
-            &mut registry,
-            Some(active_wieldable),
-            &descriptor_name,
-            weapon_descriptor,
-        ) {
-            self.active_wieldable = None;
-            self.active_wieldable_descriptor = None;
-        }
-    }
-
     /// Transition input focus, acquiring or releasing the cursor as required
     /// and clearing carry-over input state so keys/mouse held during the
     /// transition do not stick in the new mode.
@@ -2129,16 +2082,10 @@ mod tests {
     }
 
     #[test]
-    fn scripts_reload_requests_rerun_mod_init() {
-        // Regression: descriptor domain scripts under `<mod>/scripts/` can be
-        // imported by start-script, so draining them without rerunning mod-init
-        // left `DataRegistry` and the active weapon stale.
+    fn dependency_reload_requests_rerun_mod_init() {
+        // Dependency classification happens in ScriptRuntime; the frame loop
+        // queues staged mod-init only for paths that matched that active set.
         assert!(reload_summary_requires_mod_init(ReloadSummary {
-            scripts: true,
-            mod_init: false,
-        }));
-        assert!(reload_summary_requires_mod_init(ReloadSummary {
-            scripts: false,
             mod_init: true,
         }));
         assert!(!reload_summary_requires_mod_init(ReloadSummary::default()));

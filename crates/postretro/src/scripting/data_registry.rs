@@ -1,9 +1,11 @@
-// Data-script registries: per-level reactions from setupLevel() and
-// engine-global entity types drained from setupMod()'s `entities` return field.
+// Data-script registries: per-level reactions, engine-global entity types, and
+// hot-reload descriptor replacement via replace_entity_types().
 // See: context/lib/scripting.md §2 (Data context lifecycle)
 //
 // Held inside `ScriptCtx` (not directly on `App`) so primitive closures can
 // access it via the same captured handle they use for the entity registry.
+
+use std::collections::HashMap;
 
 use super::data_descriptors::{EntityTypeDescriptor, LevelManifest, NamedReaction};
 
@@ -63,6 +65,50 @@ impl DataRegistry {
             }
         }
         self.entities.push(descriptor);
+    }
+
+    /// Dedup a complete entity descriptor snapshot before hot-reload commit,
+    /// keeping the LAST occurrence per `canonical_name` so the result matches
+    /// startup's `upsert_entity_type` last-write-wins (where a descriptor
+    /// spread later in `setupMod`'s `entities` array overwrites an earlier one
+    /// with the same name). Each collision logs at `warn!`. Descriptors with
+    /// no `canonical_name` pass through untouched. Surviving entries keep their
+    /// last-appearance order.
+    pub(crate) fn dedup_entity_type_snapshot(
+        descriptors: Vec<EntityTypeDescriptor>,
+    ) -> Vec<EntityTypeDescriptor> {
+        // First pass records the last index each name appears at; second pass
+        // keeps only that occurrence, preserving last-appearance order.
+        let mut last_index: HashMap<String, usize> = HashMap::new();
+        for (index, descriptor) in descriptors.iter().enumerate() {
+            if let Some(name) = descriptor.canonical_name.as_deref() {
+                if last_index.insert(name.to_string(), index).is_some() {
+                    log::warn!(
+                        "[Loader] duplicate entity descriptor canonicalName `{name}` in replacement snapshot; later declaration wins"
+                    );
+                }
+            }
+        }
+        descriptors
+            .into_iter()
+            .enumerate()
+            .filter(
+                |(index, descriptor)| match descriptor.canonical_name.as_deref() {
+                    Some(name) => last_index.get(name) == Some(index),
+                    None => true,
+                },
+            )
+            .map(|(_, descriptor)| descriptor)
+            .collect()
+    }
+
+    /// Replace the engine-global descriptor snapshot as one complete commit.
+    /// Used by dev hot reload after a staged manifest has validated and its
+    /// live refresh plan has applied. Startup may continue to use upsert.
+    /// Duplicate `canonical_name`s are deduped last-write-wins to match
+    /// startup, so this is infallible.
+    pub(crate) fn replace_entity_types(&mut self, descriptors: Vec<EntityTypeDescriptor>) {
+        self.entities = Self::dedup_entity_type_snapshot(descriptors);
     }
 
     /// Drop every registered reaction. `entities` outlives the clear
@@ -168,5 +214,60 @@ mod tests {
         r.upsert_entity_type(next.clone());
         assert_eq!(r.entities.len(), 1);
         assert_eq!(r.entities[0], next);
+    }
+
+    #[test]
+    fn replace_entity_types_removes_absent_descriptors() {
+        let mut r = DataRegistry::new();
+        r.upsert_entity_type(grunt_descriptor());
+        let mut replacement = grunt_descriptor();
+        replacement.canonical_name = Some("enforcer".to_string());
+
+        r.replace_entity_types(vec![replacement.clone()]);
+
+        assert_eq!(r.entities, vec![replacement]);
+    }
+
+    #[test]
+    fn replace_entity_types_dedups_duplicate_canonical_names_last_wins() {
+        let mut r = DataRegistry::new();
+        r.upsert_entity_type(grunt_descriptor());
+        let earlier = grunt_descriptor();
+        let mut later = grunt_descriptor();
+        later.light = Some(crate::scripting::data_descriptors::LightDescriptor {
+            color: [1.0, 0.0, 0.0],
+            intensity: 1.0,
+            range: 5.0,
+            is_dynamic: true,
+        });
+
+        r.replace_entity_types(vec![earlier, later.clone()]);
+
+        assert_eq!(
+            r.entities,
+            vec![later],
+            "later declaration wins on collision"
+        );
+    }
+
+    #[test]
+    fn dedup_entity_type_snapshot_keeps_last_occurrence_and_passes_through_unnamed() {
+        let earlier = grunt_descriptor();
+        let mut later = grunt_descriptor();
+        later.light = Some(crate::scripting::data_descriptors::LightDescriptor {
+            color: [0.0, 1.0, 0.0],
+            intensity: 2.0,
+            range: 8.0,
+            is_dynamic: false,
+        });
+        let mut unnamed = grunt_descriptor();
+        unnamed.canonical_name = None;
+
+        let deduped =
+            DataRegistry::dedup_entity_type_snapshot(vec![earlier, unnamed.clone(), later.clone()]);
+
+        // The named collision collapses to its last occurrence (last-appearance
+        // order), and the unnamed descriptor passes through untouched.
+        assert_eq!(deduped, vec![unnamed, later]);
     }
 }

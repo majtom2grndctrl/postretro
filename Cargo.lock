@@ -3329,6 +3329,7 @@ name = "postretro-script-compiler"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "serde_json",
  "swc_atoms",
  "swc_bundler",
  "swc_common",

@@ -20,12 +20,15 @@ pub(crate) mod luau;
 pub(crate) mod map_entity;
 pub(crate) mod primitives;
 pub(crate) mod primitives_registry;
+pub(crate) mod provenance;
 pub(crate) mod quickjs;
 pub(crate) mod reaction_dispatch;
 pub(crate) mod reactions;
+pub(crate) mod refresh_plan;
 pub(crate) mod registry;
 pub(crate) mod runtime;
 pub(crate) mod sequence;
+pub(crate) mod staged_manifest;
 pub(crate) mod typedef;
 
 // Dev-mode hot reload. Compiled in debug builds only; the module itself has a

@@ -1,8 +1,14 @@
 // Top-level scripting runtime: owns both subsystems and dispatches by file
 // extension. See: context/lib/scripting.md
 
+#[cfg(debug_assertions)]
+use std::collections::BTreeSet;
+#[cfg(debug_assertions)]
+use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
+#[cfg(debug_assertions)]
+use std::path::PathBuf;
 
 use postretro_level_format::data_script::DataScriptSection;
 use rquickjs::{
@@ -19,7 +25,12 @@ use super::luau::{LuauConfig, LuauSubsystem, Which as LuauWhich};
 use super::primitives_registry::{PrimitiveRegistry, ScriptPrimitive};
 use super::quickjs::{QuickJsConfig, QuickJsSubsystem, run_script};
 #[cfg(debug_assertions)]
-use super::typedef;
+use super::refresh_plan::{apply_descriptor_refresh_plan, plan_descriptor_refresh};
+use super::staged_manifest::StagedManifestBuildResult;
+#[cfg(debug_assertions)]
+use super::staged_manifest::{StagedManifestBuildConfig, StagedManifestBuildLane};
+#[cfg(debug_assertions)]
+use super::staged_manifest::{StagedManifestBuildStatus, StagedManifestDiagnosticSeverity};
 
 /// Validated `setupMod()` return value. Construct via
 /// [`ScriptRuntime::run_mod_init`].
@@ -38,14 +49,210 @@ pub(crate) struct ModManifestResult {
 /// without `cfg` gates at every call site.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ReloadSummary {
-    /// At least one definition-script change was observed under
-    /// `<mod>/scripts/`. The frame loop treats this as a conservative
-    /// mod-init reload because these files can be imported/required by
-    /// `start-script` and affect descriptor declarations.
-    pub(crate) scripts: bool,
-    /// At least one change touched `start-script.{ts,js,luau}` (or a likely
-    /// import sibling) at the mod root; the engine should re-run mod-init.
+    /// At least one changed path matched the active mod-init dependency set;
+    /// the engine should queue a staged manifest build.
     pub(crate) mod_init: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StagedManifestCommitOutcome {
+    Committed {
+        generation: u64,
+        descriptor_count: usize,
+        applied_actions: usize,
+        dropped_missing_targets: usize,
+    },
+    DiscardedStale {
+        generation: u64,
+        latest_requested: Option<u64>,
+    },
+    FailedBuild {
+        generation: u64,
+    },
+    Rejected {
+        generation: u64,
+        reason: String,
+    },
+    ReleaseNoop,
+}
+
+#[cfg(debug_assertions)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ActiveModInitDependencies {
+    mod_root: PathBuf,
+    state: ActiveModInitDependencyState,
+}
+
+#[cfg(debug_assertions)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ActiveModInitDependencyState {
+    Active {
+        dependencies: BTreeSet<PathBuf>,
+    },
+    NoStartScript {
+        candidate_entries: BTreeSet<PathBuf>,
+    },
+}
+
+#[cfg(debug_assertions)]
+impl ActiveModInitDependencies {
+    fn from_dependencies<'a>(
+        mod_root: &Path,
+        dependency_paths: impl IntoIterator<Item = &'a PathBuf>,
+    ) -> Result<Self, String> {
+        let mod_root = normalize_existing_path(mod_root)?;
+        let mut dependencies = BTreeSet::new();
+        for path in dependency_paths {
+            let normalized = normalize_changed_path(path)?;
+            // Out-of-root deps (e.g. shared `sdk/behaviors/` code) are dropped, not
+            // committed: editing them will not hot-reload, but they must not fail the
+            // whole staged build and disable hot reload for the in-root mod scripts.
+            if !normalized.starts_with(&mod_root) {
+                log::debug!(
+                    "[Scripting] dependency `{}` dropped: outside active mod root `{}`; edits to it will not trigger hot reload",
+                    normalized.display(),
+                    mod_root.display(),
+                );
+                continue;
+            }
+            dependencies.insert(normalized);
+        }
+        Ok(Self {
+            mod_root,
+            state: ActiveModInitDependencyState::Active { dependencies },
+        })
+    }
+
+    fn no_start_script(mod_root: &Path) -> Result<Self, String> {
+        let mod_root = normalize_existing_path(mod_root)?;
+        let candidate_entries = candidate_start_script_paths(&mod_root);
+        Ok(Self {
+            mod_root,
+            state: ActiveModInitDependencyState::NoStartScript { candidate_entries },
+        })
+    }
+
+    fn len(&self) -> usize {
+        match &self.state {
+            ActiveModInitDependencyState::Active { dependencies } => dependencies.len(),
+            ActiveModInitDependencyState::NoStartScript { candidate_entries } => {
+                candidate_entries.len()
+            }
+        }
+    }
+
+    fn changed_paths_affect_mod_init(&self, paths: &[PathBuf]) -> bool {
+        let mut matched = false;
+        for raw_path in paths {
+            let normalized = match normalize_changed_path(raw_path) {
+                Ok(path) => path,
+                Err(err) => {
+                    log::debug!(
+                        "[Scripting] changed path `{}` ignored: could not normalize path: {err}",
+                        raw_path.display(),
+                    );
+                    continue;
+                }
+            };
+
+            if !normalized.starts_with(&self.mod_root) {
+                log::debug!(
+                    "[Scripting] changed path `{}` ignored: outside active mod root `{}`",
+                    normalized.display(),
+                    self.mod_root.display(),
+                );
+                continue;
+            }
+
+            match &self.state {
+                ActiveModInitDependencyState::Active { dependencies } => {
+                    if dependencies.contains(&normalized) {
+                        log::debug!(
+                            "[Scripting] changed path `{}` triggers staged mod-init: active dependency",
+                            normalized.display(),
+                        );
+                        matched = true;
+                    } else {
+                        log::debug!(
+                            "[Scripting] changed path `{}` ignored: not in active mod-init dependency set",
+                            normalized.display(),
+                        );
+                    }
+                }
+                ActiveModInitDependencyState::NoStartScript { candidate_entries } => {
+                    if candidate_entries.contains(&normalized) {
+                        log::debug!(
+                            "[Scripting] changed path `{}` triggers staged mod-init: start-script appeared after debug no-op",
+                            normalized.display(),
+                        );
+                        matched = true;
+                    } else {
+                        log::debug!(
+                            "[Scripting] changed path `{}` ignored: no active start-script and not an entry candidate",
+                            normalized.display(),
+                        );
+                    }
+                }
+            }
+        }
+        matched
+    }
+}
+
+#[cfg(debug_assertions)]
+fn candidate_start_script_paths(mod_root: &Path) -> BTreeSet<PathBuf> {
+    ["start-script.ts", "start-script.js", "start-script.luau"]
+        .into_iter()
+        .map(|name| mod_root.join(name))
+        .collect()
+}
+
+#[cfg(debug_assertions)]
+fn normalize_existing_path(path: &Path) -> Result<PathBuf, String> {
+    path.canonicalize()
+        .map_err(|e| format!("failed to canonicalize `{}`: {e}", path.display()))
+}
+
+#[cfg(debug_assertions)]
+fn normalize_changed_path(path: &Path) -> Result<PathBuf, String> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|e| format!("failed to read current directory: {e}"))?
+            .join(path)
+    };
+
+    if let Ok(canonical) = absolute.canonicalize() {
+        return Ok(canonical);
+    }
+
+    let mut probe = absolute.clone();
+    let mut missing_segments: Vec<OsString> = Vec::new();
+    loop {
+        if probe.exists() {
+            let mut normalized = probe
+                .canonicalize()
+                .map_err(|e| format!("failed to canonicalize `{}`: {e}", probe.display()))?;
+            for segment in missing_segments.iter().rev() {
+                normalized.push(segment);
+            }
+            return Ok(normalized);
+        }
+
+        if let Some(name) = probe.file_name() {
+            missing_segments.push(name.to_os_string());
+        }
+
+        if !probe.pop() {
+            break;
+        }
+    }
+
+    Err(format!(
+        "no existing parent found while normalizing `{}`",
+        path.display()
+    ))
 }
 
 /// Which scripting scope a given call targets. The subsystem-level `Which`
@@ -81,11 +288,24 @@ pub(crate) struct ScriptRuntime {
     /// the field so `drain_reload_requests` is a no-op with no extra code.
     #[cfg(debug_assertions)]
     watcher: Option<super::watcher::ScriptWatcher>,
+    #[cfg(debug_assertions)]
+    staged_manifest_lane: Option<StagedManifestBuildLane>,
+    #[cfg(debug_assertions)]
+    active_mod_init_dependencies: Option<ActiveModInitDependencies>,
+    cfg: ScriptRuntimeConfig,
 }
 
 impl ScriptRuntime {
-    /// IO failure during SDK type-definition emission is logged and swallowed —
-    /// a missing `sdk/types` directory must not prevent startup.
+    /// Construction is side-effect-free with respect to the working tree.
+    ///
+    /// The debug-build SDK type regeneration (`emit_sdk_types_in_debug`) was
+    /// pulled out of this constructor and into the engine startup path so it
+    /// runs exactly once. Constructing a runtime no longer writes
+    /// `sdk/types/postretro.d.{ts,luau}`: every test that builds a runtime was
+    /// otherwise racing the committed-types reader test, which intermittently
+    /// observed a truncated file mid-write. The dev convenience lives at the
+    /// real startup site; the `gen-script-types` bin remains the explicit
+    /// regeneration entry point. See: context/lib/scripting.md §7.
     pub(crate) fn new(
         registry: &PrimitiveRegistry,
         cfg: &ScriptRuntimeConfig,
@@ -94,15 +314,17 @@ impl ScriptRuntime {
         let quickjs = QuickJsSubsystem::new(registry, &cfg.quickjs)?;
         let luau = LuauSubsystem::new(registry, &cfg.luau)?;
 
-        #[cfg(debug_assertions)]
-        typedef::emit_sdk_types_in_debug(registry);
-
         Ok(Self {
             quickjs,
             luau,
             mod_manifest: None,
             #[cfg(debug_assertions)]
             watcher: None,
+            #[cfg(debug_assertions)]
+            staged_manifest_lane: None,
+            #[cfg(debug_assertions)]
+            active_mod_init_dependencies: None,
+            cfg: *cfg,
         })
     }
 
@@ -120,7 +342,11 @@ impl ScriptRuntime {
     ) -> Result<(), ScriptError> {
         #[cfg(debug_assertions)]
         {
+            self.seed_active_mod_init_dependencies(mod_root);
             let ts_compiler = super::watcher::TsCompilerPath::detect();
+            if let Some(ref c) = ts_compiler {
+                c.warn_if_stale();
+            }
             let w = super::watcher::ScriptWatcher::spawn(script_root, mod_root, ts_compiler)?;
             self.watcher = Some(w);
         }
@@ -141,10 +367,314 @@ impl ScriptRuntime {
         #[cfg(debug_assertions)]
         {
             if let Some(w) = self.watcher.as_mut() {
-                return w.drain_reload_requests();
+                let requests = w.drain_reload_requests()?;
+                let mut mod_init = false;
+                for request in &requests {
+                    mod_init |= self.changed_paths_affect_active_mod_init_manifest(&request.paths);
+                }
+                return Ok(ReloadSummary { mod_init });
             }
         }
         Ok(ReloadSummary::default())
+    }
+
+    /// Queue a staged mod-init manifest build on the serialized debug worker
+    /// lane. Release builds keep hot reload unavailable and return `None`.
+    pub(crate) fn enqueue_staged_manifest_build(
+        &mut self,
+        mod_root: &Path,
+    ) -> Result<Option<u64>, ScriptError> {
+        #[cfg(debug_assertions)]
+        {
+            let lane = self
+                .staged_manifest_lane
+                .get_or_insert_with(StagedManifestBuildLane::new);
+            let generation = lane.enqueue(
+                mod_root.to_path_buf(),
+                StagedManifestBuildConfig {
+                    quickjs: self.cfg.quickjs,
+                    luau: self.cfg.luau,
+                },
+            )?;
+            Ok(Some(generation))
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            let _ = mod_root;
+            Ok(None)
+        }
+    }
+
+    /// Poll completed staged manifest jobs without blocking. Release builds
+    /// return an empty list.
+    pub(crate) fn poll_staged_manifest_builds(&mut self) -> Vec<StagedManifestBuildResult> {
+        #[cfg(debug_assertions)]
+        {
+            if let Some(lane) = self.staged_manifest_lane.as_mut() {
+                return lane.poll_completed();
+            }
+        }
+        Vec::new()
+    }
+
+    pub(crate) fn latest_staged_manifest_generation(&self) -> Option<u64> {
+        #[cfg(debug_assertions)]
+        {
+            self.staged_manifest_lane
+                .as_ref()
+                .map(|lane| lane.latest_requested_generation())
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            None
+        }
+    }
+
+    /// Commit a completed staged manifest result on the main thread.
+    ///
+    /// Latest successful results replace the descriptor registry snapshot,
+    /// update the active dependency classifier, and apply the precomputed live
+    /// refresh plan while the entity registry is mutably owned. Stale or
+    /// failed results preserve the previous committed snapshot.
+    pub(crate) fn commit_staged_manifest_result(
+        &mut self,
+        result: &StagedManifestBuildResult,
+        ctx: &ScriptCtx,
+    ) -> StagedManifestCommitOutcome {
+        #[cfg(debug_assertions)]
+        {
+            let latest = self.latest_staged_manifest_generation();
+            if latest != Some(result.generation) {
+                log::info!(
+                    "[Scripting] discarded stale staged mod-init generation {} (latest {:?})",
+                    result.generation,
+                    latest,
+                );
+                return StagedManifestCommitOutcome::DiscardedStale {
+                    generation: result.generation,
+                    latest_requested: latest,
+                };
+            }
+
+            self.log_staged_manifest_diagnostics(result);
+
+            let (next_descriptors, next_dependencies, descriptor_label) = match &result.status {
+                StagedManifestBuildStatus::Built(manifest) => {
+                    let dependencies = match ActiveModInitDependencies::from_dependencies(
+                        &result.mod_root,
+                        manifest.dependency_paths.iter(),
+                    ) {
+                        Ok(dependencies) => dependencies,
+                        Err(err) => {
+                            log::error!(
+                                "[Scripting] staged mod-init generation {} rejected before commit: {err}",
+                                result.generation,
+                            );
+                            return StagedManifestCommitOutcome::Rejected {
+                                generation: result.generation,
+                                reason: err,
+                            };
+                        }
+                    };
+                    (
+                        manifest.entities.clone(),
+                        dependencies,
+                        format!("mod `{}`", manifest.name),
+                    )
+                }
+                StagedManifestBuildStatus::NoStartScript => {
+                    let dependencies = match ActiveModInitDependencies::no_start_script(
+                        &result.mod_root,
+                    ) {
+                        Ok(dependencies) => dependencies,
+                        Err(err) => {
+                            log::error!(
+                                "[Scripting] staged mod-init generation {} rejected before commit: {err}",
+                                result.generation,
+                            );
+                            return StagedManifestCommitOutcome::Rejected {
+                                generation: result.generation,
+                                reason: err,
+                            };
+                        }
+                    };
+                    (
+                        Vec::new(),
+                        dependencies,
+                        "debug no-start-script state".to_string(),
+                    )
+                }
+                StagedManifestBuildStatus::Failed => {
+                    log::error!(
+                        "[Scripting] staged mod-init generation {} failed; keeping current descriptor registry",
+                        result.generation,
+                    );
+                    return StagedManifestCommitOutcome::FailedBuild {
+                        generation: result.generation,
+                    };
+                }
+            };
+
+            // Dedup once up front (last-write-wins, matching startup's upsert)
+            // so the warning fires a single time and both the refresh plan and
+            // the registry replace observe the same deduped snapshot.
+            let next_descriptors =
+                super::data_registry::DataRegistry::dedup_entity_type_snapshot(next_descriptors);
+
+            let old_descriptors = ctx.data_registry.borrow().entities.clone();
+            let refresh_plan = {
+                let registry = ctx.registry.borrow();
+                plan_descriptor_refresh(&old_descriptors, &next_descriptors, &registry)
+            };
+            for diagnostic in &refresh_plan.diagnostics {
+                log::debug!(
+                    "[Scripting] descriptor refresh diagnostic for entity {} `{}`: {}",
+                    diagnostic.entity,
+                    diagnostic.descriptor,
+                    diagnostic.message,
+                );
+            }
+
+            let apply_summary = {
+                let mut registry = ctx.registry.borrow_mut();
+                match apply_descriptor_refresh_plan(&refresh_plan, &mut registry) {
+                    Ok(summary) => summary,
+                    Err(err) => {
+                        let reason = err.to_string();
+                        log::error!(
+                            "[Scripting] staged mod-init generation {} refresh apply failed; keeping descriptor registry and dependency set active: {reason}",
+                            result.generation,
+                        );
+                        return StagedManifestCommitOutcome::Rejected {
+                            generation: result.generation,
+                            reason,
+                        };
+                    }
+                }
+            };
+
+            ctx.data_registry
+                .borrow_mut()
+                .replace_entity_types(next_descriptors);
+            let dependency_count = next_dependencies.len();
+            self.active_mod_init_dependencies = Some(next_dependencies);
+            log::info!(
+                "[Scripting] committed staged mod-init generation {} for {descriptor_label}: {} descriptor(s), {} refresh action(s), {} dropped missing target(s), {} dependency candidate(s)",
+                result.generation,
+                ctx.data_registry.borrow().entities.len(),
+                apply_summary.applied_actions,
+                apply_summary.dropped_missing_targets,
+                dependency_count,
+            );
+            return StagedManifestCommitOutcome::Committed {
+                generation: result.generation,
+                descriptor_count: ctx.data_registry.borrow().entities.len(),
+                applied_actions: apply_summary.applied_actions,
+                dropped_missing_targets: apply_summary.dropped_missing_targets,
+            };
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            let _ = result;
+            let _ = ctx;
+            StagedManifestCommitOutcome::ReleaseNoop
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    fn seed_active_mod_init_dependencies(&mut self, mod_root: &Path) {
+        let result = super::staged_manifest::build_staged_manifest(
+            mod_root,
+            0,
+            &StagedManifestBuildConfig {
+                quickjs: self.cfg.quickjs,
+                luau: self.cfg.luau,
+            },
+        );
+        self.log_staged_manifest_diagnostics(&result);
+        self.install_active_dependencies_from_staged_result(&result);
+    }
+
+    #[cfg(debug_assertions)]
+    fn install_active_dependencies_from_staged_result(
+        &mut self,
+        result: &StagedManifestBuildResult,
+    ) {
+        match &result.status {
+            StagedManifestBuildStatus::Built(manifest) => {
+                match ActiveModInitDependencies::from_dependencies(
+                    &result.mod_root,
+                    manifest.dependency_paths.iter(),
+                ) {
+                    Ok(dependencies) => {
+                        log::debug!(
+                            "[Scripting] active mod-init dependency set now has {} paths",
+                            dependencies.len(),
+                        );
+                        self.active_mod_init_dependencies = Some(dependencies);
+                    }
+                    Err(err) => {
+                        log::error!(
+                            "[Scripting] staged mod-init dependencies rejected; keeping previous dependency set: {err}"
+                        );
+                    }
+                }
+            }
+            StagedManifestBuildStatus::NoStartScript => {
+                match ActiveModInitDependencies::no_start_script(&result.mod_root) {
+                    Ok(dependencies) => {
+                        log::debug!(
+                            "[Scripting] active mod-init dependency set is absent-start-script candidates"
+                        );
+                        self.active_mod_init_dependencies = Some(dependencies);
+                    }
+                    Err(err) => {
+                        log::error!(
+                            "[Scripting] failed to install absent-start-script dependency candidates: {err}"
+                        );
+                    }
+                }
+            }
+            StagedManifestBuildStatus::Failed => {
+                log::error!(
+                    "[Scripting] initial staged mod-init build failed; hot reload is disabled. Script saves will not take effect until the build error above is fixed and the engine is restarted."
+                );
+            }
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    fn log_staged_manifest_diagnostics(&self, result: &StagedManifestBuildResult) {
+        for diagnostic in &result.diagnostics {
+            match diagnostic.severity {
+                StagedManifestDiagnosticSeverity::Info => log::debug!(
+                    "[Scripting] staged mod-init generation {} diagnostic: {:?}: {}",
+                    result.generation,
+                    diagnostic.severity,
+                    diagnostic.message,
+                ),
+                StagedManifestDiagnosticSeverity::Error => log::error!(
+                    "[Scripting] staged mod-init generation {} diagnostic: {:?}: {}",
+                    result.generation,
+                    diagnostic.severity,
+                    diagnostic.message,
+                ),
+            }
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    fn changed_paths_affect_active_mod_init_manifest(&self, paths: &[PathBuf]) -> bool {
+        let Some(dependencies) = self.active_mod_init_dependencies.as_ref() else {
+            for path in paths {
+                log::debug!(
+                    "[Scripting] changed path `{}` ignored: no active mod-init dependency set",
+                    path.display(),
+                );
+            }
+            return false;
+        };
+        dependencies.changed_paths_affect_mod_init(paths)
     }
 
     /// In debug builds: walk `script_root` recursively and `mod_root`
@@ -1045,8 +1575,16 @@ fn run_mod_init_luau(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
+
+    use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
     use crate::scripting::ctx::ScriptCtx;
     use crate::scripting::primitives::register_all;
+    use crate::scripting::provenance::{
+        DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath,
+    };
+    use crate::scripting::registry::{ComponentKind, RegistryError, Transform};
+    use crate::scripting::staged_manifest::StagedManifest;
 
     fn runtime() -> (ScriptRuntime, ScriptCtx) {
         let ctx = ScriptCtx::new();
@@ -1054,6 +1592,67 @@ mod tests {
         register_all(&mut registry, ctx.clone());
         let rt = ScriptRuntime::new(&registry, &ScriptRuntimeConfig::default(), &ctx).unwrap();
         (rt, ctx)
+    }
+
+    fn descriptor(name: &str) -> EntityTypeDescriptor {
+        EntityTypeDescriptor {
+            canonical_name: Some(name.to_string()),
+            default_weapon: None,
+            light: None,
+            emitter: None,
+            movement: None,
+            weapon: None,
+        }
+    }
+
+    fn emitter_component(sprite: &str, rate: f32) -> BillboardEmitterComponent {
+        BillboardEmitterComponent {
+            rate,
+            burst: Some(1),
+            spread: 0.0,
+            lifetime: 1.0,
+            velocity: [0.0, 1.0, 0.0],
+            buoyancy: 0.0,
+            drag: 0.0,
+            size_over_lifetime: vec![1.0],
+            opacity_over_lifetime: vec![1.0],
+            color: [1.0, 1.0, 1.0],
+            sprite: sprite.to_string(),
+            spin_rate: 0.0,
+            spin_animation: None,
+        }
+    }
+
+    fn emitter_descriptor(name: &str) -> EntityTypeDescriptor {
+        EntityTypeDescriptor {
+            emitter: Some(emitter_component("smoke", 5.0)),
+            ..descriptor(name)
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    fn set_latest_staged_generation(rt: &mut ScriptRuntime, generation: u64) {
+        rt.staged_manifest_lane = Some(StagedManifestBuildLane::new_for_test_latest(generation));
+    }
+
+    #[cfg(debug_assertions)]
+    fn built_result(
+        generation: u64,
+        mod_root: &Path,
+        name: &str,
+        entities: Vec<EntityTypeDescriptor>,
+        dependency_paths: Vec<PathBuf>,
+    ) -> StagedManifestBuildResult {
+        StagedManifestBuildResult {
+            generation,
+            mod_root: mod_root.to_path_buf(),
+            status: StagedManifestBuildStatus::Built(StagedManifest {
+                name: name.to_string(),
+                entities,
+                dependency_paths,
+            }),
+            diagnostics: Vec::new(),
+        }
     }
 
     /// Write `content` to a temp file under the target test directory and
@@ -1335,6 +1934,494 @@ mod tests {
         ));
         std::fs::create_dir_all(&p).unwrap();
         TempModRoot(p)
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn active_dependencies_trigger_only_member_paths() {
+        let dir = temp_mod_root("dependency_membership");
+        let entry = dir.join("start-script.ts");
+        let active = dir.join("actors/player.ts");
+        let output = dir.join("start-script.js");
+        let unrelated_ts = dir.join("actors/unrelated.ts");
+        let unrelated_js = dir.join("actors/unrelated.js");
+        let unrelated_luau = dir.join("actors/unrelated.luau");
+        fs::create_dir_all(dir.join("actors")).unwrap();
+        for path in [
+            &entry,
+            &active,
+            &output,
+            &unrelated_ts,
+            &unrelated_js,
+            &unrelated_luau,
+        ] {
+            fs::write(path, "").unwrap();
+        }
+
+        let deps = ActiveModInitDependencies::from_dependencies(
+            &dir,
+            vec![entry.clone(), active.clone()].iter(),
+        )
+        .unwrap();
+
+        assert!(deps.changed_paths_affect_mod_init(&[entry]));
+        assert!(deps.changed_paths_affect_mod_init(&[active]));
+        assert!(
+            !deps.changed_paths_affect_mod_init(&[output]),
+            "generated start-script.js is compiler output when TS is active"
+        );
+        assert!(!deps.changed_paths_affect_mod_init(&[unrelated_ts]));
+        assert!(!deps.changed_paths_affect_mod_init(&[unrelated_js]));
+        assert!(!deps.changed_paths_affect_mod_init(&[unrelated_luau]));
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn javascript_only_dependency_set_is_entry_only() {
+        let dir = temp_mod_root("js_entry_only");
+        let entry = dir.join("start-script.js");
+        let helper = dir.join("helper.js");
+        fs::write(&entry, "").unwrap();
+        fs::write(&helper, "").unwrap();
+
+        let deps =
+            ActiveModInitDependencies::from_dependencies(&dir, vec![entry.clone()].iter()).unwrap();
+
+        assert!(deps.changed_paths_affect_mod_init(&[entry]));
+        assert!(
+            !deps.changed_paths_affect_mod_init(&[helper]),
+            "JS dependency discovery is intentionally entry-only"
+        );
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn luau_dependency_set_matches_entry_and_required_files() {
+        let dir = temp_mod_root("luau_deps");
+        let entry = dir.join("start-script.luau");
+        let required = dir.join("actors/player.luau");
+        let unrelated = dir.join("actors/unrelated.luau");
+        fs::create_dir_all(dir.join("actors")).unwrap();
+        fs::write(&entry, "").unwrap();
+        fs::write(&required, "").unwrap();
+        fs::write(&unrelated, "").unwrap();
+
+        let deps = ActiveModInitDependencies::from_dependencies(
+            &dir,
+            vec![entry.clone(), required.clone()].iter(),
+        )
+        .unwrap();
+
+        assert!(deps.changed_paths_affect_mod_init(&[entry]));
+        assert!(deps.changed_paths_affect_mod_init(&[required]));
+        assert!(!deps.changed_paths_affect_mod_init(&[unrelated]));
+    }
+
+    // Regression: a start script importing a file above the mod root (e.g.
+    // `../../sdk/behaviors/...`) made from_dependencies fail the whole set, leaving
+    // the active dependency set empty so no in-root edit ever triggered hot reload.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn out_of_root_import_does_not_disable_in_root_hot_reload() {
+        // Mod root `<tmp>/mod/content/dev` with a sibling `sdk/behaviors` above it,
+        // mirroring `content/dev/start-script.ts` importing `../../sdk/behaviors/...`.
+        let base = temp_mod_root("partition_e2e");
+        let mod_root = base.join("content/dev");
+        let in_root_import = mod_root.join("scripts/reference-pistol.ts");
+        let entry = mod_root.join("start-script.ts");
+        let unrelated = mod_root.join("scripts/unrelated.ts");
+        let out_of_root = base.join("sdk/behaviors/reference/entities.ts");
+        for path in [&entry, &in_root_import, &unrelated, &out_of_root] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "").unwrap();
+        }
+
+        let deps = ActiveModInitDependencies::from_dependencies(
+            &mod_root,
+            vec![entry.clone(), in_root_import.clone(), out_of_root.clone()].iter(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            deps.len(),
+            2,
+            "in-root entry and import are committed; out-of-root dep is dropped"
+        );
+        assert!(deps.changed_paths_affect_mod_init(&[entry]));
+        assert!(
+            deps.changed_paths_affect_mod_init(&[in_root_import]),
+            "editing the in-root imported script must trigger hot reload"
+        );
+        assert!(
+            !deps.changed_paths_affect_mod_init(&[out_of_root]),
+            "the dropped out-of-root dependency must not trigger hot reload"
+        );
+        assert!(
+            !deps.changed_paths_affect_mod_init(&[unrelated]),
+            "an in-root file that is not a dependency must not trigger hot reload"
+        );
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn rename_classification_checks_old_and_new_paths() {
+        let dir = temp_mod_root("rename_membership");
+        let active = dir.join("actors/player.luau");
+        let renamed = dir.join("actors/player-renamed.luau");
+        fs::create_dir_all(dir.join("actors")).unwrap();
+        fs::write(&active, "").unwrap();
+        let deps = ActiveModInitDependencies::from_dependencies(&dir, vec![active.clone()].iter())
+            .unwrap();
+
+        fs::rename(&active, &renamed).unwrap();
+
+        assert!(
+            deps.changed_paths_affect_mod_init(&[active, renamed]),
+            "rename should trigger when either the old or new path is active"
+        );
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn atomic_rename_classification_covers_entries_dependencies_and_unrelated_files() {
+        fn write_file(path: &Path) {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(path, "").unwrap();
+        }
+
+        fn rename_affects(
+            deps: &ActiveModInitDependencies,
+            old_path: &Path,
+            new_path: &Path,
+        ) -> bool {
+            fs::rename(old_path, new_path).unwrap();
+            deps.changed_paths_affect_mod_init(&[old_path.to_path_buf(), new_path.to_path_buf()])
+        }
+
+        let ts_root = temp_mod_root("rename_ts_matrix");
+        let ts_entry = ts_root.join("start-script.ts");
+        let ts_dep = ts_root.join("actors/player.ts");
+        let ts_unrelated = ts_root.join("actors/unrelated.ts");
+        for path in [&ts_entry, &ts_dep, &ts_unrelated] {
+            write_file(path);
+        }
+        let ts_deps = ActiveModInitDependencies::from_dependencies(
+            &ts_root,
+            vec![ts_entry.clone(), ts_dep.clone()].iter(),
+        )
+        .unwrap();
+        assert!(rename_affects(
+            &ts_deps,
+            &ts_dep,
+            &ts_root.join("actors/player.ts.tmp")
+        ));
+        assert!(rename_affects(
+            &ts_deps,
+            &ts_entry,
+            &ts_root.join("start-script.ts.tmp")
+        ));
+        assert!(!rename_affects(
+            &ts_deps,
+            &ts_unrelated,
+            &ts_root.join("actors/unrelated.ts.tmp")
+        ));
+
+        let luau_root = temp_mod_root("rename_luau_matrix");
+        let luau_entry = luau_root.join("start-script.luau");
+        let luau_dep = luau_root.join("actors/player.luau");
+        let luau_unrelated = luau_root.join("actors/unrelated.luau");
+        for path in [&luau_entry, &luau_dep, &luau_unrelated] {
+            write_file(path);
+        }
+        let luau_deps = ActiveModInitDependencies::from_dependencies(
+            &luau_root,
+            vec![luau_entry.clone(), luau_dep.clone()].iter(),
+        )
+        .unwrap();
+        assert!(rename_affects(
+            &luau_deps,
+            &luau_dep,
+            &luau_root.join("actors/player.luau.tmp")
+        ));
+        assert!(rename_affects(
+            &luau_deps,
+            &luau_entry,
+            &luau_root.join("start-script.luau.tmp")
+        ));
+        assert!(!rename_affects(
+            &luau_deps,
+            &luau_unrelated,
+            &luau_root.join("actors/unrelated.luau.tmp")
+        ));
+
+        let js_root = temp_mod_root("rename_js_matrix");
+        let js_entry = js_root.join("start-script.js");
+        let js_helper = js_root.join("helper.js");
+        for path in [&js_entry, &js_helper] {
+            write_file(path);
+        }
+        let js_deps =
+            ActiveModInitDependencies::from_dependencies(&js_root, vec![js_entry.clone()].iter())
+                .unwrap();
+        assert!(rename_affects(
+            &js_deps,
+            &js_entry,
+            &js_root.join("start-script.js.tmp")
+        ));
+        assert!(!rename_affects(
+            &js_deps,
+            &js_helper,
+            &js_root.join("helper.js.tmp")
+        ));
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn absent_start_script_state_triggers_only_entry_candidates() {
+        let dir = temp_mod_root("absent_entry");
+        let deps = ActiveModInitDependencies::no_start_script(&dir).unwrap();
+        let entry = dir.join("start-script.ts");
+        let inactive = dir.join("actors/player.ts");
+        fs::create_dir_all(dir.join("actors")).unwrap();
+        fs::write(&entry, "").unwrap();
+        fs::write(&inactive, "").unwrap();
+
+        assert!(deps.changed_paths_affect_mod_init(&[entry]));
+        assert!(!deps.changed_paths_affect_mod_init(&[inactive]));
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn staged_manifest_commit_discards_stale_generation_without_mutating() {
+        let (mut rt, ctx) = runtime();
+        let dir = temp_mod_root("commit_stale");
+        set_latest_staged_generation(&mut rt, 2);
+        ctx.data_registry
+            .borrow_mut()
+            .replace_entity_types(vec![descriptor("old")]);
+
+        let outcome = rt.commit_staged_manifest_result(
+            &built_result(
+                1,
+                &dir,
+                "Stale",
+                vec![descriptor("new")],
+                vec![dir.join("start-script.js")],
+            ),
+            &ctx,
+        );
+
+        assert_eq!(
+            outcome,
+            StagedManifestCommitOutcome::DiscardedStale {
+                generation: 1,
+                latest_requested: Some(2),
+            }
+        );
+        assert_eq!(
+            ctx.data_registry.borrow().entities,
+            vec![descriptor("old")],
+            "stale result must leave committed descriptors active",
+        );
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn staged_manifest_commit_failed_latest_preserves_snapshot() {
+        let (mut rt, ctx) = runtime();
+        let dir = temp_mod_root("commit_failed");
+        set_latest_staged_generation(&mut rt, 3);
+        ctx.data_registry
+            .borrow_mut()
+            .replace_entity_types(vec![descriptor("old")]);
+
+        let outcome = rt.commit_staged_manifest_result(
+            &StagedManifestBuildResult {
+                generation: 3,
+                mod_root: dir.to_path_buf(),
+                status: StagedManifestBuildStatus::Failed,
+                diagnostics: Vec::new(),
+            },
+            &ctx,
+        );
+
+        assert_eq!(
+            outcome,
+            StagedManifestCommitOutcome::FailedBuild { generation: 3 }
+        );
+        assert_eq!(ctx.data_registry.borrow().entities, vec![descriptor("old")]);
+    }
+
+    // Regression: a failed seed build left the dependency set None silently, so
+    // every later change-check returned false and hot reload was dead but the
+    // game booted fine. The failure is now logged; this pins the observable
+    // contract that no dependency set is installed.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn failed_seed_install_leaves_no_active_dependency_set() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("seed_failed");
+
+        rt.install_active_dependencies_from_staged_result(&StagedManifestBuildResult {
+            generation: 0,
+            mod_root: dir.to_path_buf(),
+            status: StagedManifestBuildStatus::Failed,
+            diagnostics: Vec::new(),
+        });
+
+        assert!(rt.active_mod_init_dependencies.is_none());
+        assert!(!rt.changed_paths_affect_active_mod_init_manifest(&[dir.join("start-script.ts")]));
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn staged_manifest_commit_built_snapshot_replaces_whole_descriptor_manifest() {
+        let (mut rt, ctx) = runtime();
+        let dir = temp_mod_root("commit_replacement");
+        let entry = dir.join("start-script.js");
+        fs::write(&entry, "").unwrap();
+        set_latest_staged_generation(&mut rt, 5);
+        ctx.data_registry
+            .borrow_mut()
+            .replace_entity_types(vec![descriptor("removed"), descriptor("kept_old_shape")]);
+        let replacement = descriptor("kept_new_shape");
+
+        let outcome = rt.commit_staged_manifest_result(
+            &built_result(
+                5,
+                &dir,
+                "Replacement",
+                vec![replacement.clone()],
+                vec![entry.clone()],
+            ),
+            &ctx,
+        );
+
+        assert_eq!(
+            outcome,
+            StagedManifestCommitOutcome::Committed {
+                generation: 5,
+                descriptor_count: 1,
+                applied_actions: 0,
+                dropped_missing_targets: 0,
+            }
+        );
+        assert_eq!(ctx.data_registry.borrow().entities, vec![replacement]);
+        assert!(rt.changed_paths_affect_active_mod_init_manifest(&[entry]));
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn staged_manifest_commit_no_start_script_replaces_descriptors_and_applies_removal() {
+        let (mut rt, ctx) = runtime();
+        let dir = temp_mod_root("commit_no_start");
+        fs::create_dir_all(dir.join("actors")).unwrap();
+        set_latest_staged_generation(&mut rt, 4);
+        ctx.data_registry
+            .borrow_mut()
+            .replace_entity_types(vec![emitter_descriptor("smoke")]);
+        let id = {
+            let mut registry = ctx.registry.borrow_mut();
+            let id = registry.spawn(Transform::default());
+            registry
+                .set_component(id, emitter_component("smoke", 5.0))
+                .unwrap();
+            registry
+                .set_component(
+                    id,
+                    DescriptorProvenance {
+                        canonical_name: "smoke".to_string(),
+                        owned_components: BTreeSet::from([DescriptorComponentKind::Emitter]),
+                        map_overrides: BTreeSet::new(),
+                        spawn_path: DescriptorSpawnPath::MapPlacement,
+                    },
+                )
+                .unwrap();
+            id
+        };
+
+        let outcome = rt.commit_staged_manifest_result(
+            &StagedManifestBuildResult {
+                generation: 4,
+                mod_root: dir.to_path_buf(),
+                status: StagedManifestBuildStatus::NoStartScript,
+                diagnostics: Vec::new(),
+            },
+            &ctx,
+        );
+
+        assert_eq!(
+            outcome,
+            StagedManifestCommitOutcome::Committed {
+                generation: 4,
+                descriptor_count: 0,
+                applied_actions: 1,
+                dropped_missing_targets: 0,
+            }
+        );
+        assert!(ctx.data_registry.borrow().entities.is_empty());
+        assert!(matches!(
+            ctx.registry
+                .borrow()
+                .get_component::<BillboardEmitterComponent>(id),
+            Err(RegistryError::ComponentNotFound {
+                kind: ComponentKind::BillboardEmitter,
+                ..
+            })
+        ));
+        assert!(rt.changed_paths_affect_active_mod_init_manifest(&[dir.join("start-script.ts")]));
+        assert!(!rt.changed_paths_affect_active_mod_init_manifest(&[dir.join("actors/smoke.ts")]));
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn normalize_changed_path_appends_missing_segments_to_canonical_parent() {
+        let dir = temp_mod_root("missing_normalization");
+        let existing_parent = dir.join("scripts");
+        fs::create_dir_all(&existing_parent).unwrap();
+        let missing = existing_parent.join("nested").join("start-script.ts");
+
+        let normalized = normalize_changed_path(&missing).unwrap();
+        let expected = dir
+            .canonicalize()
+            .unwrap()
+            .join("scripts")
+            .join("nested")
+            .join("start-script.ts");
+
+        assert_eq!(normalized, expected);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[cfg(debug_assertions)]
+    fn out_of_root_dependencies_are_dropped_not_fatal() {
+        use std::os::unix::fs::symlink;
+
+        let dir = temp_mod_root("dep_under_root");
+        let entry = dir.join("start-script.ts");
+        fs::write(&entry, "").unwrap();
+        let outside = temp_mod_root("dep_outside_root");
+        let outside_file = outside.join("outside.ts");
+        fs::write(&outside_file, "").unwrap();
+        let linked = dir.join("linked.ts");
+        symlink(&outside_file, &linked).unwrap();
+
+        // The symlink resolves above the mod root: it must be dropped, while the
+        // in-root entry is still committed and the call succeeds.
+        let deps = ActiveModInitDependencies::from_dependencies(
+            &dir,
+            vec![entry.clone(), linked.clone()].iter(),
+        )
+        .unwrap();
+
+        assert!(deps.changed_paths_affect_mod_init(&[entry]));
+        assert!(
+            !deps.changed_paths_affect_mod_init(&[linked]),
+            "out-of-root dependency should not trigger hot reload"
+        );
     }
 
     #[test]

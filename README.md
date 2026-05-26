@@ -12,7 +12,7 @@
 
 Postretro is a Quake-style FPS engine in Rust that looks and feels “like they used to make,” but embellishes the past with updated, lean technologies under the hood that enable game builders to **bring more boom to the boomer shooter.**
 
-The visual target is something like Prodeus — chunky pixels, baked lighting, specular maps, cyberpunk atmosphere. But the goal is to earn that look through low-cost rendering techniques, resulting in _a game that **feels like** you remember_ but _**looks better** than the real thing._
+The visual target is something like Turbo Overkill or Moros Protocol — chunky pixels, baked lighting, specular maps, cyberpunk atmosphere. But the goal is to earn that look through low-cost rendering techniques, resulting in _a game that **feels like** you remember_ but _**looks better** than the real thing._
 
 For example: we want to bring back monster closets, but make them more theatrical and visually polished than was feasible in the 90s, while still retaining a vintage low-poly and blocky texture art direction.
 

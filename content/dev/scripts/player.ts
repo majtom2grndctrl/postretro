@@ -7,7 +7,7 @@ export const playerEntity = defineEntity({
     movement: {
       capsule: { radius: 0.2, halfHeight: 0.8, eyeHeight: 0.5 },
       ground: {
-        speed: 7.0,
+        speed: { walk: 7.0, run: 11.0 },
         accel: 8.0,
         jumpVelocity: 9,
         stepHeight: 0.5,

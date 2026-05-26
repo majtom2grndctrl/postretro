@@ -232,11 +232,17 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
     registry
         .register_type("GroundParams")
         .doc("On-ground locomotion parameters. `maxSlope` is in degrees on the wire and converted to a cosine at materialization.")
-        .field("speed", "f32", "Target ground speed in world units/sec.")
+        .field("speed", "SpeedParams", "Walk/run ground speeds in world units/sec.")
         .field("accel", "f32", "Ground acceleration in world units/sec².")
         .field("jumpVelocity", "f32", "Vertical launch velocity applied on jump.")
         .field("stepHeight", "f32", "Maximum step-up height in world units.")
         .field("maxSlope", "f32", "Maximum walkable slope in degrees; must lie in [0, 90].")
+        .finish();
+    registry
+        .register_type("SpeedParams")
+        .doc("Walk and run ground speeds in world units/sec. The movement tick uses `run` while sprint is held and `walk` otherwise, applied omnidirectionally. Both required and must be finite and ≥ 0.")
+        .field("walk", "f32", "Steady-state ground speed when not sprinting.")
+        .field("run", "f32", "Steady-state ground speed while the sprint input is held.")
         .finish();
     registry
         .register_type("AirParams")

@@ -789,8 +789,13 @@ impl ApplicationHandler for App {
                         // Order 1: movement-component tick (all entities carrying
                         // PlayerMovementComponent, per entity_model.md §5).
                         let jump_pressed = snapshot.button(Action::Jump).is_active();
-                        let movement_events =
-                            self.run_movement_tick(forward_axis, right_axis, jump_pressed, tick_dt);
+                        let movement_events = self.run_movement_tick(
+                            forward_axis,
+                            right_axis,
+                            jump_pressed,
+                            sprint,
+                            tick_dt,
+                        );
                         pending_movement_events.extend(movement_events);
 
                         // Camera follows the first pawn's position (eye-height
@@ -1787,6 +1792,7 @@ impl App {
         forward_axis: f32,
         right_axis: f32,
         jump_pressed: bool,
+        running: bool,
         tick_dt: f32,
     ) -> Vec<&'static str> {
         use crate::movement::{MovementInput, tick as movement_tick};
@@ -1817,6 +1823,7 @@ impl App {
         let input = MovementInput {
             wish_dir: glam::Vec2::new(right_axis, forward_axis),
             jump_pressed,
+            running,
             facing_yaw: self.camera.yaw,
         };
 

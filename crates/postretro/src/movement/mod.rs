@@ -51,6 +51,10 @@ const SLIDE_REMAINING_EPSILON_SQ: f32 = 1.0e-10;
 pub(crate) struct MovementInput {
     pub(crate) wish_dir: Vec2, // x = right, y = forward
     pub(crate) jump_pressed: bool,
+    /// Sprint held this tick. Selects `ground.speed.run` over `.walk` as the
+    /// omnidirectional horizontal speed target; affects strafe and forward
+    /// motion equally (standard shooter sprint, not forward-only).
+    pub(crate) running: bool,
     pub(crate) facing_yaw: f32,
 }
 
@@ -205,14 +209,21 @@ pub(crate) fn tick(
         events.jumped = true;
     }
 
-    // 4 + 5. Locomotion: ground vs air branch on the same input.
+    // 4 + 5. Locomotion: ground vs air branch on the same input. Sprint picks
+    // the run speed; the same value caps airborne horizontal speed so a
+    // sprint-then-jump arc doesn't instantly decelerate mid-air.
+    let ground_speed = if input.running {
+        component.ground.speed.run
+    } else {
+        component.ground.speed.walk
+    };
     let input_dir_3d = wish_dir_from_input(input.wish_dir, input.facing_yaw);
     if component.is_grounded {
         if input_dir_3d.length_squared() > 0.0 {
             pm_accelerate(
                 &mut component.velocity,
                 input_dir_3d,
-                component.ground.speed,
+                ground_speed,
                 component.ground.accel,
                 dt,
             );
@@ -244,7 +255,7 @@ pub(crate) fn tick(
             // Cap horizontal speed; vertical velocity (jump/gravity) untouched.
             let horiz = Vec2::new(component.velocity.x, component.velocity.z);
             let h_speed = horiz.length();
-            let cap = component.ground.speed;
+            let cap = ground_speed;
             if h_speed > cap {
                 let scale = cap / h_speed;
                 component.velocity.x *= scale;
@@ -583,7 +594,7 @@ pub(crate) fn tick(
 mod tests {
     use super::*;
     use crate::scripting::data_descriptors::{
-        AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementDescriptor,
+        AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementDescriptor, SpeedParams,
     };
     use parry3d::math::Isometry;
     use parry3d::shape::TriMesh;
@@ -602,7 +613,10 @@ mod tests {
                 eye_height: 0.5,
             },
             ground: GroundParams {
-                speed: 7.0,
+                speed: SpeedParams {
+                    walk: 7.0,
+                    run: 11.0,
+                },
                 accel: 10.0,
                 jump_velocity: 5.5,
                 step_height: 0.3,
@@ -726,6 +740,7 @@ mod tests {
         let idle = MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
+            running: false,
             facing_yaw: 0.0,
         };
         // Let gravity settle the capsule onto the floor.
@@ -743,6 +758,7 @@ mod tests {
         let walk = MovementInput {
             wish_dir: Vec2::new(1.0, 0.0),
             jump_pressed: false,
+            running: false,
             facing_yaw: 0.0,
         };
         let x_phase1_start = pos.x;
@@ -778,12 +794,13 @@ mod tests {
             h_speed
         );
         // The Quake-style projection cap means horizontal speed cannot exceed
-        // ground.speed; the bounded-from-below value depends on how many ticks
-        // were spent in the ground accel branch versus airborne (gravity-only),
-        // so we assert the cap, not a specific reached value.
+        // the active speed — walk speed here, since this phase does not sprint.
+        // The bounded-from-below value depends on how many ticks were spent in
+        // the ground accel branch versus airborne (gravity-only), so we assert
+        // the cap, not a specific reached value.
         assert!(
-            h_speed <= desc.ground.speed + VEL_EPS,
-            "horizontal speed should not exceed ground.speed, got {}",
+            h_speed <= desc.ground.speed.walk + VEL_EPS,
+            "horizontal speed should not exceed walk speed, got {}",
             h_speed
         );
 
@@ -791,6 +808,7 @@ mod tests {
         let jump = MovementInput {
             wish_dir: Vec2::new(1.0, 0.0),
             jump_pressed: true,
+            running: false,
             facing_yaw: 0.0,
         };
         // Find a tick where the player is grounded (oscillates per tick during
@@ -954,6 +972,7 @@ mod tests {
         let idle = MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
+            running: false,
             facing_yaw: 0.0,
         };
         run_ticks(&mut comp, &world, &mut pos, 5, &idle);
@@ -961,6 +980,7 @@ mod tests {
         let walk = MovementInput {
             wish_dir: Vec2::new(1.0, 0.0),
             jump_pressed: false,
+            running: false,
             facing_yaw: 0.0,
         };
         for _ in 0..300 {
@@ -1014,6 +1034,7 @@ mod tests {
         let idle = MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
+            running: false,
             facing_yaw: 0.0,
         };
         run_ticks(&mut comp, &world, &mut pos, 5, &idle);
@@ -1021,6 +1042,7 @@ mod tests {
         let walk = MovementInput {
             wish_dir: Vec2::new(1.0, 0.0),
             jump_pressed: false,
+            running: false,
             facing_yaw: 0.0,
         };
         for _ in 0..300 {
@@ -1035,6 +1057,7 @@ mod tests {
         let diag = MovementInput {
             wish_dir: Vec2::new(1.0, 1.0).normalize(),
             jump_pressed: false,
+            running: false,
             facing_yaw: 0.0,
         };
         for _ in 0..120 {
@@ -1042,7 +1065,7 @@ mod tests {
             pos = next;
         }
         let z_advance = (pos.z - z_start).abs();
-        let min_z_advance = desc.ground.speed * (120.0 / 60.0) * 0.5;
+        let min_z_advance = desc.ground.speed.walk * (120.0 / 60.0) * 0.5;
         assert!(
             z_advance >= min_z_advance,
             "tangential -Z advance should be >= {}, got {}",
@@ -1051,9 +1074,9 @@ mod tests {
         );
         let h_speed = (comp.velocity.x.powi(2) + comp.velocity.z.powi(2)).sqrt();
         assert!(
-            h_speed > desc.ground.speed * 0.4,
+            h_speed > desc.ground.speed.walk * 0.4,
             "horizontal speed after 120 ticks should exceed {}, got {}",
-            desc.ground.speed * 0.4,
+            desc.ground.speed.walk * 0.4,
             h_speed
         );
     }
@@ -1068,6 +1091,7 @@ mod tests {
         let idle = MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
+            running: false,
             facing_yaw: 0.0,
         };
         run_ticks(&mut comp, &world, &mut pos, 5, &idle);
@@ -1075,6 +1099,7 @@ mod tests {
         let walk = MovementInput {
             wish_dir: Vec2::new(1.0, 0.0),
             jump_pressed: false,
+            running: false,
             facing_yaw: 0.0,
         };
         for _ in 0..300 {
@@ -1128,7 +1153,7 @@ mod tests {
         // forward probe hits it on the first cast. Lifted slightly above the
         // floor so the forward probe finds the wall (not the floor contact).
         let current_pos = Vec3::new(5.0 - desc.capsule.radius - 0.05, floor_y + 0.05, 0.0);
-        let horiz_vel = Vec3::new(desc.ground.speed, 0.0, 0.0);
+        let horiz_vel = Vec3::new(desc.ground.speed.walk, 0.0, 0.0);
         let horiz_speed = horiz_vel.length();
 
         let result = step_up_lift(
@@ -1166,7 +1191,7 @@ mod tests {
         // return the floor contact (toi=0, normal +Y) before reaching the
         // riser.
         let current_pos = Vec3::new(5.0 - desc.capsule.radius - 0.05, floor_y + 0.05, 0.0);
-        let horiz_vel = Vec3::new(desc.ground.speed, 0.0, 0.0);
+        let horiz_vel = Vec3::new(desc.ground.speed.walk, 0.0, 0.0);
         let horiz_speed = horiz_vel.length();
 
         let result = step_up_lift(
@@ -1208,6 +1233,7 @@ mod tests {
         let idle = MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
+            running: false,
             facing_yaw: 0.0,
         };
         run_ticks(&mut comp, &world, &mut pos, 10, &idle);
@@ -1222,6 +1248,7 @@ mod tests {
         let walk = MovementInput {
             wish_dir: Vec2::new(1.0, 0.0),
             jump_pressed: false,
+            running: false,
             facing_yaw: 0.0,
         };
         let wall_contact_x = 5.0 - desc.capsule.radius - 0.05;
@@ -1262,6 +1289,7 @@ mod tests {
         let idle = MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
+            running: false,
             facing_yaw: 0.0,
         };
         run_ticks(&mut comp, &world, &mut pos, 10, &idle);
@@ -1269,6 +1297,7 @@ mod tests {
         let walk = MovementInput {
             wish_dir: Vec2::new(1.0, 0.0),
             jump_pressed: false,
+            running: false,
             facing_yaw: 0.0,
         };
         // Run 120 ticks; the player reaches the wall well within the first
@@ -1316,6 +1345,7 @@ mod tests {
         let idle = MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
+            running: false,
             facing_yaw: 0.0,
         };
         run_ticks(&mut comp, &world, &mut pos, 5, &idle);
@@ -1323,6 +1353,7 @@ mod tests {
         let diag = MovementInput {
             wish_dir: Vec2::new(1.0, 1.0).normalize(),
             jump_pressed: false,
+            running: false,
             facing_yaw: 0.0,
         };
 
@@ -1416,6 +1447,7 @@ mod tests {
         let idle = MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
+            running: false,
             facing_yaw: 0.0,
         };
         run_ticks(comp, world, pos, 10, &idle);
@@ -1425,6 +1457,7 @@ mod tests {
         let toward_corner = MovementInput {
             wish_dir: Vec2::new(1.0, -1.0).normalize(),
             jump_pressed: false,
+            running: false,
             facing_yaw: 0.0,
         };
         // Approach and reach the corner.
@@ -1533,6 +1566,7 @@ mod tests {
         let idle = MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
+            running: false,
             facing_yaw: 0.0,
         };
         run_ticks(&mut comp, &world, &mut pos, 5, &idle);
@@ -1540,6 +1574,7 @@ mod tests {
         let diag = MovementInput {
             wish_dir: Vec2::new(1.0, 1.0).normalize(),
             jump_pressed: false,
+            running: false,
             facing_yaw: 0.0,
         };
         for _ in 0..200 {
@@ -1576,6 +1611,7 @@ mod tests {
         let idle = MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
+            running: false,
             facing_yaw: 0.0,
         };
         run_ticks(&mut comp, &world, &mut pos, 10, &idle);
@@ -1583,6 +1619,7 @@ mod tests {
         let walk = MovementInput {
             wish_dir: Vec2::new(1.0, 0.0),
             jump_pressed: false,
+            running: false,
             facing_yaw: 0.0,
         };
         let x_start = pos.x;
@@ -1599,10 +1636,145 @@ mod tests {
         );
         let h_speed = (comp.velocity.x.powi(2) + comp.velocity.z.powi(2)).sqrt();
         assert!(
-            h_speed > desc.ground.speed * 0.8,
+            h_speed > desc.ground.speed.walk * 0.8,
             "flat-floor walk should keep h_speed near ground.speed={}, got {}",
-            desc.ground.speed,
+            desc.ground.speed.walk,
             h_speed
+        );
+    }
+
+    /// Steady-state horizontal speed on flat ground after enough ticks to
+    /// reach the projection cap, given a fixed input direction.
+    fn steady_state_ground_speed(running: bool) -> f32 {
+        let desc = canonical_descriptor();
+        let world = flat_floor_and_wall_world();
+        let (mut comp, mut pos) = settle_player(&desc);
+
+        let idle = MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: false,
+            running: false,
+            facing_yaw: 0.0,
+        };
+        run_ticks(&mut comp, &world, &mut pos, 10, &idle);
+
+        // Walk along -Z (away from the wall at x=5) so the move never contacts
+        // geometry and the projection cap is the only speed limiter. 60 ticks
+        // (~11 m at run speed) reaches the cap while staying on the floor
+        // (z ∈ [-20, 20]).
+        let mv = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: false,
+            running,
+            facing_yaw: 0.0,
+        };
+        run_ticks(&mut comp, &world, &mut pos, 60, &mv);
+        (comp.velocity.x.powi(2) + comp.velocity.z.powi(2)).sqrt()
+    }
+
+    // Sprint is omnidirectional and selects `ground.speed.run`: steady-state
+    // horizontal speed while running must reach the run cap and exceed the
+    // walk steady-state.
+    #[test]
+    fn running_reaches_higher_steady_state_than_walking() {
+        let desc = canonical_descriptor();
+        let walk_speed = steady_state_ground_speed(false);
+        let run_speed = steady_state_ground_speed(true);
+
+        assert!(
+            approx_eq(walk_speed, desc.ground.speed.walk, 0.05),
+            "walk steady-state should reach walk cap {}, got {}",
+            desc.ground.speed.walk,
+            walk_speed
+        );
+        assert!(
+            approx_eq(run_speed, desc.ground.speed.run, 0.05),
+            "run steady-state should reach run cap {}, got {}",
+            desc.ground.speed.run,
+            run_speed
+        );
+        assert!(
+            run_speed > walk_speed + 1.0,
+            "running ({run_speed}) should be meaningfully faster than walking ({walk_speed})"
+        );
+    }
+
+    // Regression: the airborne horizontal speed cap used `ground.speed` (now
+    // `.walk` after the rename). Sprinting then jumping must not instantly
+    // decelerate mid-air — the cap honors run speed while running is held.
+    #[test]
+    fn airborne_cap_honors_run_speed_while_sprinting() {
+        let desc = canonical_descriptor();
+        // bunny_hop must be off for the air cap to apply at all.
+        assert!(!desc.air.bunny_hop, "canonical descriptor has air cap on");
+        let world = flat_floor_and_wall_world();
+        let (mut comp, mut pos) = settle_player(&desc);
+
+        let idle = MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: false,
+            running: false,
+            facing_yaw: 0.0,
+        };
+        run_ticks(&mut comp, &world, &mut pos, 10, &idle);
+
+        // Build up to the run cap on the ground (heading -Z, away from the
+        // wall). Keep the buildup short enough that the player stays on the
+        // floor (floor spans z ∈ [-20, 20]; ~30 ticks at 11 m/s ≈ 5.5 m).
+        let run = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: false,
+            running: true,
+            facing_yaw: 0.0,
+        };
+        run_ticks(&mut comp, &world, &mut pos, 30, &run);
+        let h_ground = (comp.velocity.x.powi(2) + comp.velocity.z.powi(2)).sqrt();
+        assert!(
+            h_ground > desc.ground.speed.walk + 0.5,
+            "setup: ground run speed should exceed walk cap, got {h_ground}"
+        );
+
+        // Jump while still sprinting, then run several airborne ticks. The cap
+        // is the run speed, so horizontal speed must stay above the walk cap —
+        // a walk-capped airborne path would bleed it down to ~7. Flat-floor
+        // walking can clear `is_grounded` for a tick, so find a grounded tick
+        // before jumping (mirrors the walk/jump/step integration test).
+        let run_jump = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: true,
+            running: true,
+            facing_yaw: 0.0,
+        };
+        let mut jumped = false;
+        for _ in 0..60 {
+            if comp.is_grounded {
+                let (next, ev) = tick(&mut comp, &run_jump, &world, GRAVITY, DT, pos);
+                pos = next;
+                assert!(ev.jumped, "grounded + jump should emit jumped");
+                jumped = true;
+                break;
+            }
+            let (next, _ev) = tick(&mut comp, &run, &world, GRAVITY, DT, pos);
+            pos = next;
+        }
+        assert!(jumped, "setup: should have jumped from a grounded tick");
+
+        // A few airborne ticks with sprint held; jump_pressed released so we
+        // don't re-trigger (air.jumps = 0 anyway).
+        for _ in 0..5 {
+            let (next, _ev) = tick(&mut comp, &run, &world, GRAVITY, DT, pos);
+            pos = next;
+        }
+        let h_air = (comp.velocity.x.powi(2) + comp.velocity.z.powi(2)).sqrt();
+        assert!(
+            h_air > desc.ground.speed.walk + 0.5,
+            "airborne sprint speed should stay above the walk cap (run cap honored), got {h_air}"
+        );
+        assert!(
+            h_air <= desc.ground.speed.run + VEL_EPS,
+            "airborne sprint speed should not exceed the run cap {}, got {}",
+            desc.ground.speed.run,
+            h_air
         );
     }
 }

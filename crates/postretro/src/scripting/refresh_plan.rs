@@ -718,7 +718,7 @@ mod tests {
     use crate::scripting::components::particle::ParticleState;
     use crate::scripting::data_descriptors::{
         AirParams, CapsuleParams, FallParams, FireMode, GroundParams, PlayerMovementDescriptor,
-        ResolutionMode, WeaponDescriptor,
+        ResolutionMode, SpeedParams, WeaponDescriptor,
     };
     use crate::scripting::provenance::{DescriptorMapOverride, DescriptorSpawnPath};
     use crate::scripting::registry::Transform;
@@ -808,7 +808,10 @@ mod tests {
                     eye_height,
                 },
                 ground: GroundParams {
-                    speed: 7.0,
+                    speed: SpeedParams {
+                        walk: 7.0,
+                        run: 11.0,
+                    },
                     accel: 12.0,
                     jump_velocity: 5.0,
                     step_height: 0.35,

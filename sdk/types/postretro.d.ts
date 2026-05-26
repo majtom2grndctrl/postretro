@@ -161,8 +161,8 @@ declare module "postretro" {
 
   /** On-ground locomotion parameters. `maxSlope` is in degrees on the wire and converted to a cosine at materialization. */
   export type GroundParams = {
-    /** Target ground speed in world units/sec. */
-    speed: number;
+    /** Walk/run ground speeds in world units/sec. */
+    speed: SpeedParams;
     /** Ground acceleration in world units/sec². */
     accel: number;
     /** Vertical launch velocity applied on jump. */
@@ -171,6 +171,14 @@ declare module "postretro" {
     stepHeight: number;
     /** Maximum walkable slope in degrees; must lie in [0, 90]. */
     maxSlope: number;
+  };
+
+  /** Walk and run ground speeds in world units/sec. The movement tick uses `run` while sprint is held and `walk` otherwise, applied omnidirectionally. Both required and must be finite and ≥ 0. */
+  export type SpeedParams = {
+    /** Steady-state ground speed when not sprinting. */
+    walk: number;
+    /** Steady-state ground speed while the sprint input is held. */
+    run: number;
   };
 
   /** Mid-air control parameters. `forwardSteer` blends forward steering authority between 0 (pure strafe-only Quake air control) and 1 (full forward authority). `jumpCeiling` is required when `jumps > 0`. */

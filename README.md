@@ -16,7 +16,7 @@ The visual target is something like Prodeus — chunky pixels, baked lighting, s
 
 For example: we want to bring back monster closets, but make them more theatrical and visually polished than was feasible in the 90s, while still retaining a vintage low-poly and blocky texture art direction.
 
-Nine milestones in, the engine foundation is solid. The rendering pipeline is GPU-driven end-to-end, lighting is fully baked and dynamic, scripted entities and grounded movement work, and the material pipeline is dialed in. The next milestone is the first playable slice — weapons, enemies, and enough combat feel to answer whether this is worth committing a full game to.
+Nine milestones in, the engine foundation is solid. The rendering pipeline is GPU-driven end-to-end, lighting is fully baked and dynamic, scripted entities and grounded movement work, and the material pipeline is dialed in. Milestone 10 answers the question that actually matters now: how much effort does it take to get past rendering levels to something substantial? It builds the net-new per-entity mesh and skinning render path plus the combat layer that rides on it — animated 3D-model enemies that walk a level, attack, take weapon damage, and die.
 
 ## Planned Milestones
 
@@ -34,7 +34,7 @@ The scripting and entity system is live. TypeScript/JavaScript (via QuickJS) and
 
 Player movement is grounded: wall slide, step-up, jump, and Quake-style air control, all backed by a parry3d collision world against the level geometry. The movement behavior itself is a modder-replaceable script.
 
-**Up next: Milestone 10 — the First Playable.** Weapons, enemies, navigation, and placeholder sound — enough to start feeling a little game-y!
+**Up next: Milestone 10 — Animated Enemies.** A skinned-model enemy spawns from a map, walks toward you, attacks, takes weapon damage, and dies — the net-new per-entity mesh + skinning render path plus the combat layer (enemy, navigation, AI) that rides on it. The jump from rendering levels to something you can play against.
 
 The full phased plan with acceptance criteria lives in `context/plans/roadmap.md`.
 

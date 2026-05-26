@@ -20,7 +20,8 @@
 - **Resource management / textures / materials** → `resource_management.md`
 - **Scripting / primitives / SDK types** → `scripting.md`
 - **Game / mod author docs (human-facing, not agent context)** → `docs/`
-- **Collision / player movement** → `entity_model.md` §7
+- **Collision (world/entity)** → `entity_model.md` §7
+- **Player movement / movement states / FPS feel** → `movement.md`
 - **Frame timing / game loop** → `rendering_pipeline.md` §1 · `entity_model.md` §5
 - **Boot / startup / splash / level-load sequence / mod loading** → `boot_sequence.md`
 - **Roadmap / implementation phases** → `plans/roadmap.md`

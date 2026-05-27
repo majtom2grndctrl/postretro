@@ -188,7 +188,7 @@ The first combat-capable enemy, and the per-entity 3D mesh render path it rides 
 
 **Contracts first.** A few runtime decisions are expensive to reverse: the GPU vertex layout (rigid + skinned), the bone-palette layout, the mesh render-pass shape (reusable in the depth/shadow pass), and the `MeshComponent` entity surface. Design these to the endpoint now — including to scale. Enemies arrive in waves, so the pass and palette are built **instance-friendly** (per-instance transform plus a palette index into a shared buffer), continuous with the Milestone 3.5 GPU-driven indirect draw path. A front-loaded spike locks them. The render path is **skinned-capable from the start**; a rigid mesh is the degenerate single-bone case, so future props, pickups, and weapon viewmodels reuse the same pass without a separate tier.
 
-**Behavior stays shallow.** The animation state machine, navigation, and AI are named here but detailed on open (the M12-UI / detail-on-open pattern). Navigation is the highest-uncertainty system on the roadmap — isolated so it can't quietly balloon, front-loaded to surface any foundation problem early.
+**Behavior stays shallow.** The animation state machine, navigation, and AI are named here but detailed on open (the M13-UI / detail-on-open pattern). Navigation is the highest-uncertainty system on the roadmap — isolated so it can't quietly balloon, front-loaded to surface any foundation problem early.
 
 **Lean rule:** smallest primitive surface that reads as game-y. Defer richness (projectile variety, line-of-sight queries, patrol graphs, multiple archetypes) to later passes. Each plan ships a foundation to grow, not a throwaway stub and not a finished feature.
 
@@ -208,7 +208,7 @@ Plans ship in this sequence. The render foundation and combat tracks converge tw
 **Combat** (script-led, on the Milestone 6/7 foundation):
 
 - [x] **Weapon primitives** — script-declared weapon archetype + Rust hitscan fire system against the Milestone 7 collision world; spawns an impact, emits a typed `Hit(DamagePayload)` activation outcome and `activate`/`impact` sound events. Hitscan only; projectile, ammo, viewmodel deferred. `context/plans/done/M10--weapon-primitives/`
-- [ ] **Stub sound layer (Nintendo-style SFX)** — placeholder retro SFX (fire, impact, footstep, alert, pain, death) wired through the entity-emitted sound events weapons and enemies already raise — a live sink, not dead wiring. Explicitly a stub: the generic sound-event hook is durable; assets and backend are placeholder. Real spatial audio lands in Milestone 11.
+- [ ] **Stub sound layer (Nintendo-style SFX)** — placeholder retro SFX (fire, impact, footstep, alert, pain, death) wired through the entity-emitted sound events weapons and enemies already raise — a live sink, not dead wiring. Explicitly a stub: the generic sound-event hook is durable; assets and backend are placeholder. Real spatial audio lands in Milestone 12.
 - [ ] **Entity health + damage surface** — minimal health/damage primitive on the Milestone 6 entity model: an entity carries HP, consumes a `DamagePayload`, dies at zero HP. Demonstrated on the enemy (the weapon's target) and reused for the player (the enemy's target), so the damage loop closes both ways. Pure Milestone 6 — no render, nav, or AI dependency. Shootable as a static proxy, so it gives the shipped weapon a target the day it lands.
 - [ ] **Navigation representation (baked)** — resolve the expensive, hard-to-reverse question first: where do walkable surfaces come from? Lead candidate is an offline bake in prl-build — derive a navmesh from world geometry (agent radius/height, slope filter), emitted as a new PRL section, kin to the baked BVH and collision trimesh. This is also the seed of a broader baked spatial-AI layer: the navmesh is the first hint data, and later intelligent-interaction data (cover points, jump links, hint nodes) extends the same section additively, no format break. The heavy, uncertain piece — front-loaded to surface any foundation problem early. Depends only on world geometry.
 - [ ] **Pathfinding + path following** — runtime query and steering: A* (or equivalent) over the baked representation, plus path following that moves an agent toward a target around obstacles without clipping. Smallest workable primitive that actually routes past walls and corners — naive steer-to-target would snag on the first concave wall. Richer queries (line-of-sight, patrol paths) deferred. Depends on the navigation representation and a movable agent entity (Milestone 6 transform + Milestone 7 collider).
@@ -219,7 +219,29 @@ Plans ship in this sequence. The render foundation and combat tracks converge tw
 
 ---
 
-## Milestone 11: Sound Foundation
+## Milestone 11: Advanced Movement
+
+Modern-FPS movement layered on the Milestone 7 grounded controller. A movement state machine splits the player tick into a shared physics substrate plus per-state velocity-intent functions. A sequence of traversal states — dash, crouch, slide, wall-run, vault — plug into that seam. The author surface is declarative: native Rust states tuned through descriptor data, not per-tick script. Design intent lives in `context/lib/movement.md`.
+
+This earns a milestone because the later specs cannot be fully written until earlier ones ship and reveal emergent implementation details. Chiefly two cross-cutting policies — momentum conservation across state transitions, and input forgiveness (coyote time, jump buffering) — must be settled before the states that depend on them. This milestone tracks those specs-to-be-written under the detail-on-open pattern already used for Milestone 10's behavior layer and Milestone 13 UI.
+
+**Prerequisite:** Milestone 7 (grounded movement + collision world) ✓.
+
+Plans ship in this sequence:
+
+- [ ] **movement--state-machine** — split the monolithic player tick into a shared physics substrate (sweep-and-slide, step-up, ground-stick — moved intact) plus a per-state velocity-intent seam; refactor current walk/run/jump into a behavior-identical `Normal` state; ship dash/air-dash/double-jump on the new seam; establish the declarative descriptor author surface. Drafted, in review. `context/plans/drafts/movement--state-machine/`
+- [ ] **Cross-cutting movement policies** — settle momentum conservation (velocity carry across transitions) and input forgiveness (coyote time, jump buffering) as explicit foundations before the states that consume them. Detail-on-open from the state-machine seam. See `movement.md` §6.
+- [ ] **movement--crouch** — capsule resize plus stand-up ceiling probe. Independent thin slice; draftable early.
+- [ ] **movement--slide** — speed-preserving slide (Titanfall model); owns and consumes the momentum-conservation policy. Detail-on-open: depends on that policy and crouch's capsule resize.
+- [ ] **movement--wall-run** — first environment-probe state; consumes the momentum policy. Detail-on-open.
+- [ ] **movement--vault** — environment-probe state; parallelizable with wall-run once the momentum policy is fixed. Detail-on-open.
+- Grapple is explicitly deferred — constraint physics, renderer rope, and aiming make it its own future draft (the one place a scoped Rapier solver may earn a place; see `movement.md` §1).
+
+**Testable outcome:** the player chains modern-FPS traversal — dash, crouch, slide, wall-run, vault — on top of grounded movement, all tuned through descriptor data; movement identity stays composable (Ultrakill / Neon White are the flexibility-band yardstick) without engine internals becoming convoluted.
+
+---
+
+## Milestone 12: Sound Foundation
 
 Replace the Milestone 10 stub SFX layer with a real audio foundation: kira integration, spatial/3D audio, and reverb zones. The Milestone 10 sound-event hooks were designed so this swaps in behind them — no weapon or enemy code should need to change.
 
@@ -236,7 +258,7 @@ Plans ship in this sequence:
 
 ---
 
-## Milestone 12: UI
+## Milestone 13: UI
 
 The full UI/HUD layer — health, ammo, crosshair, and menus — replacing the debug egui stand-in used during the vertical slice. The detailed design is captured in `context/research/ui-layer.md`; it is promoted to a ready plan when this milestone opens.
 
@@ -280,8 +302,8 @@ Features below are intended but not yet sequenced. Rough priority ordering withi
 
 - **Sector Graph + Portal Culling** — replace BSP-as-runtime-scaffolding with an author-defined sector graph. Latent portals (activate on event) support destruction reveals. Prerequisite for kinematic clusters that need their own sector graphs.
 - **Chunk Primitive** — unify static world geometry, kinematic clusters, and dynamic debris into one record type (mesh + collider + transform + sector membership). Deferred until two or more of those consumers exist and the duplication cost is clear.
-- **Audio foundation** — kira integration, spatial audio, reverb zones. → Sequenced as Milestone 11 (real layer replacing the Milestone 10 stub SFX).
-- **HUD and UI** — health, ammo, crosshair, menus. → Sequenced as Milestone 12 (see `context/research/ui-layer.md`).
+- **Audio foundation** — kira integration, spatial audio, reverb zones. → Sequenced as Milestone 12 (real layer replacing the Milestone 10 stub SFX).
+- **HUD and UI** — health, ammo, crosshair, menus. → Sequenced as Milestone 13 (see `context/research/ui-layer.md`).
 - **`canonicalName` rename** — rename `classname` to `canonicalName` in scripting API and PRL. Source formats translate their identifier (Quake `.map` `classname`, UDMF thing-type, Blender prop) to this canonical name at compile time. Absence on an archetype means not directly placeable from source — script-spawned or marker-indirected only. Subsumes the `spawn_only` / `map_entity_classname` patterns into one field's presence.
 - **FGD generated from script registry** — scripts are the single source of truth for entity archetypes. FGD emitted at script compile time, not hand-edited. Removes the divergence class of bug where registry and FGD describe different archetypes.
 - **Composable archetypes via `@BaseClass` mixins** — `@BaseClass` declarations map to component lists; property bags drive behavior instead of proliferating archetype names. Reference patterns from `bevy_trenchbroom`: `Default::default()` as the property-fallback source, recursive depth-first base spawn with TypeId dedup, two-phase spawn (component insertion at load, subsystem registration at lifecycle hook).

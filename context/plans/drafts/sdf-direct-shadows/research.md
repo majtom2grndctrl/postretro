@@ -15,19 +15,55 @@ Each `sample_sdf` step is a *dependent* 3D-texture fetch (each fetch waits on th
 
 So the revival is a *subtraction*: SDF comes back only for **direct shadows** (job #1), running alone, never re-adding indirect SDF visibility. That is the core architectural decision and the reason the perf story is now tractable.
 
-## Branch comparison unlocks static SDF shadows
+## The split is by occluder, not by light
 
-Earlier drafts deferred static-light SDF shadows. The blocker: the lightmap bakes static-light shadows **into** irradiance (`lightmap_bake.rs`: `shadow_visible` zeroes occluded texels before accumulation). A runtime A/B that ran both the shadowed lightmap and an SDF shadow term in one build would double-count — the shadow appears once in the baked irradiance and again in the SDF factor.
+The decisive reframing. An earlier draft had SDF *replace* the shadow-map path entirely — "SpotShadowPool machinery is bypassed," SDF the single direct-shadow source. **That is wrong, and Milestone 10 is why.**
 
-The owner's decision: build the full static-SDF version on a **dedicated git branch** and compare by switching branches (`main` = baked-lightmap shadows + spot-map dynamic shadows; branch = SDF for everything). Branch isolation removes the coexistence requirement, which is what unlocks the correct design:
+M10 (the active milestone) adds animated enemies and the engine's first per-entity skinned-mesh render path. Enemies cast shadows by rendering into the spot-shadow depth pass — the 12-slot `SpotShadowPool` (`SHADOW_POOL_SIZE = 12`, ranked by projected influence area among influence+frustum-culled lights; `crates/postretro/src/lighting/spot_shadow.rs`). The baked SDF contains **static geometry only** — enemies are not in it and never will be in v1. A branch that bypassed shadow maps and relied on the static SDF would make enemies cast **no shadows** the moment M10 lands. Unacceptable regression.
 
-- The branch's lightmap bake produces **unshadowed irradiance** — `shadow_visible` is bypassed so every light is treated as fully visible during accumulation. The atlas then holds the static-light irradiance/bounce integral *without* a visibility term.
-- SDF supplies the visibility (shadow) scalar at runtime, multiplied into the static-light term in the forward shader. This is the standard "baked irradiance × runtime visibility" split (the same factorization DDGI/RTXGI and UE Lumen use for their irradiance-cache + screen-trace occlusion).
-- Result: SDF is the single direct-shadow source on the branch — static and dynamic, point and spot. The static baked SDF shadows are cast off entirely.
+So split by the **occluder**, not the light:
 
-**Runtime toggle reconsidered.** The prior draft carried a 3-way `ShadowMode` (baseline spot maps / SDF / SDF-visualize) whose central purpose was a within-build spot-maps-vs-SDF A/B. With the branch as the A/B, that purpose is gone, and the branch has no spot-map path to compare against. Kept: a debug `SdfShadowMode` (SDF on / off / visualize) — "off" and "visualize" earn their place as debugging aids, not as a comparison mechanism. Dropped: any machinery that existed solely to flip between the spot-map and SDF *production* paths in one build. This also matches the current `LightingIsolation` convention — panel-only, no keyboard chord (the chord was removed).
+- **Static geometry casts via SDF** — for static *and* dynamic lights, point *and* spot. A dynamic spot light throwing a static wall's shadow is an SDF query, not a shadow-map render. This is the Quake-impossible win set: off-screen static occluders (on-theme for monster closets and scripted reveals), point-light static shadows (the engine has none today), soft penumbra, and shadows not frozen into the bake.
+- **Dynamic geometry casts via shadow maps** — enemies and moving meshes render into the existing 12-slot pool. Crucially this is now *cheaper* than today: if SDF owns static-occluder shadows, the shadow-map pass need only render *dynamic* meshes into its maps, not the whole static world. Budget freed for M10.
 
-**Cost caveat.** Shadowing static lights via SDF every frame is strictly more runtime work than baked shadows that cost nothing at runtime. The comparison is fidelity/flexibility vs. that cost. If static SDF proves too expensive, the fallback ("bake static shadows, SDF only dynamic") needs the shadowed bake and so loses the clean branch split — flagged as an open question, not designed for here.
+This is also how Unreal splits it: movable/dynamic occluders use shadow maps and screen-space traces; large-scale static occlusion uses mesh/global distance fields (see External research). Distance fields for static/large-scale, shadow maps for dynamic detail.
+
+**Net effect on the branch A/B.** The branch cleanly isolates the **static-occluder shadow technique**: `main` = static-occluder shadows baked into the lightmap; branch = unshadowed lightmap × runtime SDF visibility. Dynamic/enemy shadows stay on shadow maps on **both** branches — neither part of the A/B nor broken by it.
+
+## Branch comparison unlocks the unshadowed-lightmap split
+
+The blocker for runtime static-occluder shadows: the lightmap bakes static-light shadows **into** irradiance (`lightmap_bake.rs`: `shadow_visible` zeroes occluded texels before accumulation). A within-build A/B running both the shadowed lightmap and an SDF static-occluder term would double-count — the shadow appears once in the baked irradiance and again in the SDF factor.
+
+The owner's decision: build on a **dedicated git branch** and compare by switching branches. Branch isolation removes the coexistence requirement:
+
+- The branch's lightmap bake produces **unshadowed irradiance** — `shadow_visible` is bypassed so every static light is treated as fully visible during accumulation. The atlas holds the static-light irradiance/bounce integral *without* a visibility term.
+- SDF supplies the visibility (shadow) scalar at runtime, multiplied into the static-light term in the forward shader. Standard "baked irradiance × runtime visibility" split — the same factorization DDGI/RTXGI and UE Lumen use for their irradiance-cache + screen-trace occlusion.
+
+**The dominant-direction fusion — O(1) in static-light count.** The lightmap does not store per-static-light irradiance; it fuses *all* static lights into one irradiance value plus one dominant incoming direction per texel (`rendering_pipeline.md` §4: "ray-casts per-texel irradiance and a dominant incoming light direction from all static lights"). So the runtime visibility term is a *single* SDF trace toward that one dominant direction, covering the entire static-light term regardless of how many static lights contributed. This is what keeps the static-occluder cost flat: O(1) per pixel, not O(static lights). The cost is an approximation — a texel lit by two static lights from different directions gets one shadow, traced toward their luminance-weighted mean — but the hard, pixelated retro shadow aesthetic absorbs it (see *Retro aesthetic as a budget* below). The per-light-exact alternative is to move static lights into the runtime dynamic loop, which multiplies the trace cost per light and blows the budget; it is named as an escape hatch only, not designed here.
+
+**Runtime toggle reconsidered.** The prior draft's 3-way `ShadowMode` (baseline spot maps / SDF / SDF-visualize) existed to A/B spot-maps vs. SDF *within a build*. With the branch as the A/B — and with shadow maps staying live on both branches — that purpose is gone. Kept: a debug `SdfShadowMode` (SDF on / off / visualize), where "off" and "visualize" earn their place as debugging aids. Matches the `LightingIsolation` convention — panel-only, no keyboard chord (the chord was removed).
+
+**Cost caveat.** Tracing the static term every frame is strictly more runtime work than baked-into-lightmap shadows (free at runtime). The dominant-direction fusion holds it to one trace, but the comparison still weighs fidelity/flexibility vs. that cost. If too expensive, the fallback (static lights stay baked-shadowed; SDF shadows only dynamic-light-vs-static-occluder terms) needs the shadowed bake and loses the clean branch split — flagged as an open question, not designed here.
+
+## Retro aesthetic as a budget
+
+The hard, pixelated, nearest-filtered shadow look is not just a style choice — it is a **budget** that licenses cheaper approximations a photoreal engine could not ship:
+
+- **Dominant-direction static fusion** (above): one trace for the whole static-light term. A photoreal engine would shadow each static light separately; the retro look hides the single-shadow approximation.
+- **Half-resolution shadow pass** + depth-aware bilateral upsample: the established production shape (RTSDF, UE), and the chunky aesthetic tolerates the half-res factor better than a soft-shadow photoreal target would.
+- **Nearest-ish filtering / low march counts**: `rendering_pipeline.md` §4 already establishes nearest-neighbor lightmap filtering as "arguably more correct on octahedral-encoded directions." Low SDF step counts plus the free closest-passing-distance penumbra estimate (Inigo-Quilez `k·d/t`) carry softness without high sample counts.
+
+Frame every quality/cost tradeoff in this feature through this lens: the question is not "is this physically exact" but "does the retro look absorb the approximation." The dominant-direction fusion is the load-bearing example.
+
+## M10 / enemy budget interaction
+
+M10 brings a net-new per-entity skinned-mesh pass — the engine's first dynamic mesh render path (today only billboards/particles are dynamic). This feature must not break or compete with it:
+
+- **Enemies cast** via shadow maps, not SDF — they render into the 12-slot spot-shadow depth pass. With SDF owning static-occluder shadows, that pass renders *dynamic meshes only*, not the static world, so adding enemies to it costs less than rendering the full world per slot did.
+- **Enemies receive** indirect via the SH volume (M9's depth-aware Chebyshev interpolant already handles dynamic entities) plus the runtime dynamic direct loop. The SDF shadow factor is a screen-space static-occluder visibility term; it does not touch enemy shadow-map results.
+- **Dynamic occluders in the SDF** (capsule/mesh insertion so enemies cast SDF shadows) stays a non-goal / room-to-grow. In v1, enemy shadows come from shadow maps, full stop.
+
+The two systems are orthogonal by construction: SDF answers "is this pixel occluded from this light by *static* geometry," shadow maps answer "by *dynamic* geometry." They multiply independently into different light terms.
 
 ## Quality-slider feasibility and the fog-knob source audit
 
@@ -46,6 +82,8 @@ SDF knobs are all pure uniform scalars — max march steps, open-space skip thre
 **RTSDF (NUS, 2022)** — soft-shadow SDF technique. Confirms the standard production shape: **half-resolution shadow compute + depth-aware upsample**; cone-trace softness approximated *for free* by tracking the closest passing distance during the march (the Inigo-Quilez `k·d/t` penumbra estimate the old `sample_sdf_shadow` already used). Coarse + fine SDF resolutions (128³ / 256³) with the march preferring fine near surfaces and falling back to coarse in open space — mirrors the old brick atlas + coarse-distance texture split.
 
 **Unreal Distance Field Shadows** — movable lights shadow off per-object/static distance fields; "by tracking the closest distance a ray passed by an occluding object, an approximate cone intersection can be computed with no extra cost… intersections determined with a small number of steps." Near samples use the per-object field; far samples use a camera-clipmap Global Distance Field. Validates: (a) static-baked SDF shadowing dynamic lights is the established use, (b) cone softness is free, (c) low step counts suffice.
+
+**Static/dynamic occluder split (UE).** UE does not use distance fields for everything. Distance-field shadows cover **static/large-scale** occluders; **movable/dynamic** occluders (characters) fall back to conventional shadow maps and screen-space techniques — distance fields are too coarse and too expensive to rebuild per-frame for animated meshes. This is exactly the split this feature adopts: SDF for static-occluder shadows, the existing 12-slot `SpotShadowPool` for dynamic-occluder (enemy) shadows. The retro engine's version is simpler (one baked static field, no per-object fields, no global clipmap) but the partition is the same.
 
 Takeaways folded into the spec: decouple to half-res + depth-aware upsample; keep the brick/coarse split; use the baked DDGI `E[d]` moment as a cheap open-space skip (our analogue to UE's coarse-region fallback); keep step counts low and let the penumbra estimate carry softness.
 

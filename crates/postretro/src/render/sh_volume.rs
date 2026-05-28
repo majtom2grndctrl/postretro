@@ -94,6 +94,12 @@ pub struct ShVolumeResources {
     pub base_band_views: Vec<wgpu::TextureView>,
     /// Storage-writeable views over the total SH band textures; consumed by the compose pass as `textureStore` outputs.
     pub total_band_storage_views: Vec<wgpu::TextureView>,
+    /// Per-probe depth-moment texture (Rg16Float — R = E[d], G = E[d²]).
+    /// Already bound on group 3 binding 14 for the forward/billboard/fog
+    /// passes; held here so the SDF shadow pass (Task 4) can mint its own
+    /// `TextureView` via `make_depth_moment_view` (wgpu views aren't `Clone`,
+    /// and the SDF pass rebuilds its bind group on resize / level reload).
+    depth_moment_texture: wgpu::Texture,
     /// Owned here but shared with the compose pass — one upload, two bind groups.
     /// CPU mirror kept alongside so per-frame `active` edits patch bytes and flush in one `write_buffer`.
     pub animation: AnimatedLightBuffers,
@@ -121,11 +127,14 @@ pub struct ShVolumeResources {
     /// markers. Invalid probes store zero, matching the band-texture upload.
     #[cfg(feature = "dev-tools")]
     pub probe_l0: Vec<[f32; 3]>,
-    /// CPU copies of grid origin and cell size for `sh_diagnostics` (CPU-side probe-marker emission);
-    /// `grid_info_buffer` is the canonical GPU-side source for the shader.
-    #[cfg(feature = "dev-tools")]
+    /// CPU copies of grid origin and cell size. `grid_info_buffer` is the
+    /// canonical GPU-side source for the forward / fog / billboard shaders;
+    /// these mirror the values consumed by `sh_diagnostics` (probe-marker
+    /// emission) and remain available to any future CPU-side consumer (the
+    /// SDF shadow pass reads them from the section directly).
+    #[allow(dead_code)]
     pub grid_origin: [f32; 3],
-    #[cfg(feature = "dev-tools")]
+    #[allow(dead_code)]
     pub cell_size: [f32; 3],
     /// Band-0 (L0) "total" texture handle, retained so the diagnostics readback
     /// can copy it back to CPU each frame. Carries `COPY_SRC`. Band 0 alone is
@@ -466,6 +475,7 @@ impl ShVolumeResources {
             grid_dimensions,
             base_band_views,
             total_band_storage_views,
+            depth_moment_texture,
             animation,
             scripted_light_descriptors: scripted_light_descriptors_buffer,
             scripted_light_count: map_light_count as u32,
@@ -474,13 +484,22 @@ impl ShVolumeResources {
             validity,
             #[cfg(feature = "dev-tools")]
             probe_l0,
-            #[cfg(feature = "dev-tools")]
             grid_origin,
-            #[cfg(feature = "dev-tools")]
             cell_size,
             #[cfg(feature = "dev-tools")]
             total_band0_texture,
         }
+    }
+
+    /// Mint a fresh sampled view over the per-probe depth-moment texture for
+    /// the SDF shadow pass (Task 4). Consumed during pass construction and on
+    /// each level reload — the moment texture is recreated whenever the SH
+    /// section changes, so the pass needs a new handle.
+    pub fn make_depth_moment_view(&self) -> wgpu::TextureView {
+        self.depth_moment_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("SH Depth Moment Shadow View"),
+            ..Default::default()
+        })
     }
 }
 

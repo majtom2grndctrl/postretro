@@ -35,6 +35,12 @@ pub struct LightmapResources {
     /// elimination in release builds.
     #[allow(dead_code)]
     pub present: bool,
+    /// Static dominant-direction atlas texture (Rgba8Unorm, octahedral in rg).
+    /// Held so the SDF shadow pass (Task 4 of sdf-static-occluder-shadows) can
+    /// mint its own `TextureView` via `make_direction_view`. Stored as the
+    /// texture rather than a view because `wgpu::TextureView` isn't `Clone`
+    /// and the pass rebuilds its bind group on resize / level reload.
+    direction_texture: wgpu::Texture,
 }
 
 /// Build the lightmap bind group layout. Callable before resources exist so
@@ -108,7 +114,19 @@ impl LightmapResources {
         Self {
             bind_group,
             present,
+            direction_texture: direction_tex,
         }
+    }
+
+    /// Mint a fresh sampled view over the static lightmap dominant-direction
+    /// atlas. `wgpu::TextureView` isn't `Clone`, so consumers needing their
+    /// own handle (the SDF shadow pass rebuilds its bind group on resize /
+    /// level reload) call this rather than borrowing from the resource.
+    pub fn make_direction_view(&self) -> wgpu::TextureView {
+        self.direction_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("Lightmap Direction Shadow View"),
+            ..Default::default()
+        })
     }
 }
 

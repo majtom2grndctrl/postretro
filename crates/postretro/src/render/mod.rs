@@ -10,6 +10,7 @@ pub mod fog_pass;
 pub mod frame_timing;
 pub mod loaded_texture;
 pub mod sdf_atlas;
+pub mod sdf_shadow;
 pub mod sh_compose;
 #[cfg(feature = "dev-tools")]
 pub mod sh_diagnostics;
@@ -51,6 +52,7 @@ use fog_pass::FogPass;
 use frame_timing::FrameTiming;
 use sh_compose::ShComposeResources;
 use sdf_atlas::SdfAtlasResources;
+use sdf_shadow::{SdfShadowFrameInputs, SdfShadowPass, SdfShadowShGrid};
 use sh_volume::ShVolumeResources;
 use smoke::SmokePass;
 
@@ -161,8 +163,9 @@ const SPOT_SHADOW_SHADER_SOURCE: &str = include_str!("../shaders/spot_shadow.wgs
 const TIMING_PAIR_CULL: usize = 0;
 const TIMING_PAIR_ANIMATED_LM_COMPOSE: usize = 1;
 const TIMING_PAIR_DEPTH_PREPASS: usize = 2;
-const TIMING_PAIR_FORWARD: usize = 3;
-const TIMING_PAIR_COUNT: usize = 4;
+const TIMING_PAIR_SDF_SHADOW: usize = 3;
+const TIMING_PAIR_FORWARD: usize = 4;
+const TIMING_PAIR_COUNT: usize = 5;
 
 // Must match `Uniforms` in forward.wgsl and wireframe.wgsl (both bind the same buffer).
 // std140: vec3<f32> aligns to 16 bytes; camera_position and ambient_floor share a slot.
@@ -497,6 +500,11 @@ pub struct Renderer {
     /// texture in group 5, Task 5). `present` is false when no SDF section
     /// is in the PRL; the shadow pass skips its dispatch in that case.
     sdf_atlas_resources: SdfAtlasResources,
+    /// Half-resolution SDF shadow pass (Task 4 of sdf-static-occluder-shadows).
+    /// Always allocated. Dispatch is gated on `sdf_atlas_resources.present`
+    /// and the SDF shadow mode (Task 6 wires the mode selector; for now any
+    /// loaded SDF atlas activates the pass).
+    sdf_shadow_pass: SdfShadowPass,
     /// Read from the PRL by Task 2a (the bake records whether the lightmap
     /// has visibility folded in). Task 5's forward pass reads this to
     /// decide whether to multiply the SDF visibility factor into the
@@ -1292,6 +1300,25 @@ impl Renderer {
             &animated_lightmap.forward_view,
         );
 
+        // SDF half-res shadow pass (Task 4). Always allocated — dispatch is
+        // gated on `sdf_atlas_resources.present`. Owns the half-res factor
+        // target and its own group-1 bind group.
+        let sdf_shadow_sh_grid = build_sdf_shadow_sh_grid(
+            geometry.and_then(|g| g.sh_volume),
+            sh_volume_resources.present,
+        );
+        let sdf_shadow_pass = SdfShadowPass::new(
+            &device,
+            &sdf_atlas_resources.bind_group_layout,
+            &depth_view,
+            lightmap_resources.make_direction_view(),
+            animated_lightmap.make_direction_view(),
+            sh_volume_resources.make_depth_moment_view(),
+            sdf_shadow_sh_grid,
+            surface_config.width,
+            surface_config.height,
+        );
+
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Textured Pipeline Layout"),
             bind_group_layouts: &[
@@ -1639,6 +1666,7 @@ impl Renderer {
             pass_labels[TIMING_PAIR_CULL] = "cull";
             pass_labels[TIMING_PAIR_ANIMATED_LM_COMPOSE] = "animated_lm_compose";
             pass_labels[TIMING_PAIR_DEPTH_PREPASS] = "depth_prepass";
+            pass_labels[TIMING_PAIR_SDF_SHADOW] = "sdf_shadow";
             pass_labels[TIMING_PAIR_FORWARD] = "forward";
             Some(FrameTiming::new(&device, &queue, pass_labels))
         } else {
@@ -1715,6 +1743,7 @@ impl Renderer {
             indirect_scale: DEFAULT_INDIRECT_SCALE,
             sh_volume_resources,
             sdf_atlas_resources,
+            sdf_shadow_pass,
             lightmap_mode,
             #[cfg(feature = "dev-tools")]
             sh_delta_volumes_meta,
@@ -2020,6 +2049,23 @@ impl Renderer {
                 );
             }
         }
+
+        // SDF half-res shadow pass — rebind to the freshly-loaded direction
+        // textures + new SH depth-moment texture. The pass itself is always
+        // allocated; the dispatch is gated on `sdf_atlas_resources.present`,
+        // which `install_level_geometry` may have just flipped.
+        let sdf_shadow_sh_grid = build_sdf_shadow_sh_grid(
+            geometry.sh_volume,
+            self.sh_volume_resources.present,
+        );
+        self.sdf_shadow_pass.rebuild_for_level(
+            &self.device,
+            &self.depth_view,
+            self.lightmap_resources.make_direction_view(),
+            self.animated_lightmap.make_direction_view(),
+            self.sh_volume_resources.make_depth_moment_view(),
+            sdf_shadow_sh_grid,
+        );
 
         // --- BVH + compute cull ---
         self.bvh_leaves = bvh_leaves;
@@ -2392,6 +2438,10 @@ impl Renderer {
         self.depth_view = depth_view;
         self.fog
             .resize(&self.device, width, height, &self.depth_view);
+        // SDF shadow target is half-res relative to the surface; depth view
+        // also changed so the pass bind group has to be rebuilt.
+        self.sdf_shadow_pass
+            .resize(&self.device, &self.depth_view, width, height);
         if self.splash_pipeline.has_splash() {
             self.splash_pipeline
                 .update_screen_size(&self.queue, [width, height]);
@@ -3032,6 +3082,30 @@ impl Renderer {
             }
         }
 
+        // SDF half-res shadow pass — Task 4. Runs after the depth pre-pass
+        // (consumes its texture) and before the forward pass (which will
+        // bilateral-upsample the factor in Task 5). Skipped when no SDF
+        // atlas is loaded; Task 6 will also gate on the mode selector. When
+        // skipped, the half-res target retains its prior contents — Task 5's
+        // forward multiply is responsible for gating on the same mode.
+        if self.sdf_atlas_resources.present {
+            let sdf_ts = self
+                .frame_timing
+                .as_ref()
+                .map(|t| t.compute_pass_writes(TIMING_PAIR_SDF_SHADOW));
+            let inv_view_proj = view_proj.inverse();
+            self.sdf_shadow_pass.dispatch(
+                &self.queue,
+                &mut encoder,
+                &self.sdf_atlas_resources,
+                SdfShadowFrameInputs {
+                    inv_view_proj,
+                    camera_position: self.last_camera_position.into(),
+                },
+                sdf_ts,
+            );
+        }
+
         {
             let forward_ts = self
                 .frame_timing
@@ -3375,6 +3449,30 @@ fn bytemuck_cast_slice_u32(data: &[u32]) -> Vec<u8> {
         bytes.extend_from_slice(&val.to_ne_bytes());
     }
     bytes
+}
+
+/// Pack the SH grid metadata the SDF shadow pass needs for its open-space
+/// skip uniform. Mirrors what the forward pass reads from `ShGridInfo` (group
+/// 3) — replicating it here lets the shadow pass keep group 3 off its
+/// pipeline layout. Returns the "empty SH" defaults when the section is
+/// absent or marked not-present, matching the dummy 1×1×1 path in
+/// `ShVolumeResources`.
+fn build_sdf_shadow_sh_grid(
+    sh_volume: Option<&postretro_level_format::sh_volume::ShVolumeSection>,
+    present: bool,
+) -> SdfShadowShGrid {
+    if !present {
+        return SdfShadowShGrid::default();
+    }
+    let Some(sec) = sh_volume else {
+        return SdfShadowShGrid::default();
+    };
+    SdfShadowShGrid {
+        origin: sec.grid_origin,
+        cell_size: sec.cell_size,
+        dimensions: sec.grid_dimensions,
+        has_volume: true,
+    }
 }
 
 #[cfg(feature = "dev-tools")]

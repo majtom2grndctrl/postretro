@@ -484,6 +484,27 @@ impl AnimatedLightmapResources {
         &self.direction_view
     }
 
+    /// Create a fresh sampled view over the direction atlas. wgpu's
+    /// `TextureView` is not `Clone`, so consumers that need their own owned
+    /// handle (e.g. the SDF shadow pass's bind group, which is rebuilt on
+    /// resize / level reload) request one from here rather than borrowing
+    /// `direction_view`. Points at the real direction atlas when allocated;
+    /// otherwise the 1×1 dummy.
+    pub fn make_direction_view(&self) -> wgpu::TextureView {
+        match &self.direction_atlas_texture {
+            Some(tex) => tex.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("Animated LM Direction Shadow View"),
+                ..Default::default()
+            }),
+            None => self
+                .dummy_direction_texture
+                .create_view(&wgpu::TextureViewDescriptor {
+                    label: Some("Animated LM Direction Dummy Shadow View"),
+                    ..Default::default()
+                }),
+        }
+    }
+
     /// Dispatch the per-frame compose pass.
     ///
     /// No-op when the map has no animated weight maps. Filters the master tile

@@ -54,11 +54,11 @@ Five candidates surveyed. The spec picks B and names the others so future reader
 
 A pixel may have no usable lightmap UV in three cases: depth = clear sentinel (sky / no geometry), the visible surface has no lightmap UV (e.g. dynamic geometry that participates in the pre-pass in the future — none today), or the legacy degradation path (pre-Task 2a PRL with no animated-lightmap directions).
 
-**Clear value.** The pre-pass clears the lightmap-UV target to `(0.0, 0.0)`. Format is `Rg16Unorm` — UVs are stored as `u16/65535` (matching `forward.wgsl:273–275`) and `Rg16Unorm` is a literal round-trip with uniform ~1.5e-5 precision across [0,1]. `Rg16Float`'s mantissa loses precision near 1.0, where edge-packed charts sit — see recommendation. The negative-value sentinel is impossible with unorm. Instead, `(0.0, 0.0)` is the sentinel: `chart_raster.rs:13` sets `CHART_PADDING_TEXELS = 1`, so true `(0,0)` is unreachable by any real chart texel.
+**Clear value.** The pre-pass clears the lightmap-UV target to `(0.0, 0.0)`. `(0.0, 0.0)` is the sentinel: `chart_raster.rs:20` sets `CHART_PADDING_TEXELS = 2`, so true `(0,0)` is unreachable by any real chart texel. See *Resolved decisions — MRT format* for the format choice rationale.
 
 Verify on `campaign-test.prl` that chart-edge precision is acceptable; if visible artifacts appear, fall back to `Rg16Float` with a `(-1.0, -1.0)` negative sentinel.
 
-**Shadow-pass consumer behavior.** Already covered by the existing path: the half-res shadow shader skips the trace when `reconstruct_world` returns `valid = 0` (depth at clear sentinel). For pixels where depth is valid but the UV reads `(0.0, 0.0)` — should not happen given pre-pass writes every fragment that wrote depth, but defensively — the shadow pass returns `FULLY_LIT` for that pixel (same path as `sdf_meta.present == 0`). No new visual artifact: `FULLY_LIT` means "no SDF factor applied," which is what v1 already does for sky / no-atlas cases.
+**Shadow-pass consumer behavior.** Already covered by the existing path: the half-res shadow shader skips the trace when `reconstruct_world` returns `.w == 0.0` (the existing `recon.w > 0.5` check at `sdf_shadow.wgsl:248`) (depth at clear sentinel). For pixels where depth is valid but the UV reads `(0.0, 0.0)` — should not happen given pre-pass writes every fragment that wrote depth — confirmed: today's `depth_prepass.wgsl` has no fragment stage, no `discard`, and no alpha-test, and the new fragment stage added by this spec adds none either, so depth-write ↔ color-write is 1:1 — but defensively — the shadow pass returns `FULLY_LIT` for that pixel (same path as `sdf_meta.present == 0`). No new visual artifact: `FULLY_LIT` means "no SDF factor applied," which is what v1 already does for sky / no-atlas cases.
 
 **Pre-pass + forward consistency.** The pre-pass and forward share a vertex layout and use `@invariant` on clip-space position to guarantee `depth_compare: Equal` matches bit-for-bit. Confirmed correct on Metal (`[[position, invariant]]`) and Vulkan (SPIR-V `Invariant` decoration); v1 already ships `@invariant` for `depth_compare: Equal`. The lightmap-UV write follows the same vertex path, so the UV written at pre-pass equals the UV interpolated at forward for the same fragment. This holds because the spec targets 1× sample rate with no MSAA; `@invariant` covers fragment identity, and at identical viewport + 1× rate, the interpolator produces the same per-fragment UV. If MSAA is added later, this assumption must be re-examined.
 
@@ -67,17 +67,18 @@ Verify on `campaign-test.prl` that chart-edge precision is acceptable; if visibl
 Automated (test- or tooling-gated):
 
 - [ ] The depth pre-pass pipeline declares one color target of format `Rg16Unorm`; the renderer allocates a matching texture at surface size and recreates it on resize. Asserted via the pipeline descriptor and a resize-path unit test. [T1, T2]
-- [ ] The pre-pass shader exports a fragment stage that writes the unpacked lightmap UV at `@location(0)`. Naga parse + descriptor inspection. [T1]
-- [ ] The SDF shadow pass's pipeline layout adds the lightmap-UV target binding inside the pass-owned bind group (group 1), not in a globally-shared group. Asserted on the BGL. [T3]
-- [ ] With no PRL loaded (no geometry), the pre-pass clears to `(0.0, 0.0)` everywhere; the shadow pass reads the sentinel and produces `FULLY_LIT` for those pixels. Asserted via GPU readback on a head-less test surface, if practical; otherwise covered by the manual visual AC. [T3]
+- [ ] The pre-pass shader exports a fragment stage that writes the unpacked lightmap UV at `@location(0)`. Asserted via source-string check that `@location(0)` appears on the pre-pass fragment return (matches the existing test style in `render/sdf_shadow.rs` tests). [T1]
+- [ ] The SDF shadow pass's pipeline layout adds the lightmap-UV target binding at `@group(1) @binding(6)` inside the pass-owned bind group (group 1), not in a globally-shared group. Asserted on the BGL. [T3]
 - [ ] `sdf_shadow.wgsl` no longer references screen-UV sampling of `static_lm_direction` / `animated_lm_direction`; both are indexed via a UV value sourced from the new lightmap-UV target. Asserted by source-string check (matches the existing test style in `render/sdf_shadow.rs` tests). [T3]
-- [ ] On a map with the SDF atlas loaded, GPU timing for the depth pre-pass increases by no more than a small fraction of frame time on the 2020 MBP target (budget: ≤0.3 ms at 1080p; if it exceeds, the feature is not shippable and the perf-gate retreats in *Resolved decisions* apply). Measured via `POSTRETRO_GPU_TIMING=1`. [T1, T2]
+- [ ] The pre-pass color attachment uses `LoadOp::Clear` with `r = 0.0` and `g = 0.0`. Asserted via render-pass descriptor inspection in a unit test. [T2]
+- [ ] On a map with the SDF atlas loaded, GPU timing for the depth pre-pass increases by no more than a small fraction of frame time on the 2020 MBP target (budget: ≤0.3 ms *delta* over the current pre-pass time at 1080p; if it exceeds, the feature is not shippable and the perf-gate retreats in *Resolved decisions* apply). Measured via `POSTRETRO_GPU_TIMING=1` (measured on the 2020 MBP target adapter, which supports `TIMESTAMP_QUERY`; absence of measurement on other adapters does not trigger the retreats — only measured failure on the target adapter does). [T1, T2]
 
 Manual / visual (observed by a human running the engine — not machine-verified):
 
 - [ ] In `SdfShadowMode::Visualize` on `content/dev/maps/campaign-test.prl`, the static-aggregate shadow factor follows wall and ceiling geometry rather than splotching independently of screen position. Concretely: a wall-floor crease shows a continuous shadow band along the geometry edge, not isolated patches near the screen-top region.
 - [ ] In `SdfShadowMode::On`, static-occluder shadows are recognizably attached to occluder geometry — an off-screen static occluder casts a shadow that lands where the occluder's projected silhouette predicts (one of v1's stated Quake-impossible wins, currently broken by the screen-UV bug).
 - [ ] The animated-baked sweep in the arena now casts a shadow that both **tracks the brightness phase** (already in v1) **and lands on the correct surfaces** (the v2 fix). Both effects visible simultaneously.
+- [ ] With no PRL loaded (no geometry), `SdfShadowMode::Visualize` shows uniformly fully-lit output (the sentinel + `FULLY_LIT` fallback path is exercised everywhere).
 - [ ] No visible regression in non-SDF passes (forward shading, fog composite, smoke) — the only consumers of the pre-pass depth attachment are unchanged, and forward gains no new binding.
 
 ### Task ↔ AC cross-check
@@ -85,40 +86,42 @@ Manual / visual (observed by a human running the engine — not machine-verified
 | Task | Covering ACs |
 |---|---|
 | T1 | pipeline declares Rg16Unorm MRT; shader exports fragment; GPU timing budget |
-| T2 | resize allocates new target; GPU timing budget |
-| T3 | shadow-pass binding in group 1; sentinel/readback; shader-side substitution; visual ACs |
+| T2 | resize allocates new target; clear color = (0,0,_,_); GPU timing budget |
+| T3 | shadow-pass binding in group 1; shader-side substitution; visual ACs (incl. sentinel path) |
 
 ## Tasks
 
 ### Task 1: Lightmap-UV gbuffer plumbing (pre-pass)
 
-`crates/postretro/src/shaders/depth_prepass.wgsl` gains a fragment stage. The vertex stage adds `@location(4) lightmap_uv_packed: vec2<u32>` to its `VertexInput` (it is already in the bound vertex buffer at offset 28; the pre-pass currently declares offsets 0–24 only and must add the location-4 attribute to its `VertexBufferLayout` to satisfy the WGSL `@location(4)` input). A vertex output carries the unpacked UV; the fragment writes it to `@location(0)`.
+`crates/postretro/src/shaders/depth_prepass.wgsl` gains a fragment stage. The vertex stage adds `@location(4) lightmap_uv_packed: vec2<u32>` to its `VertexInput` (it is already in the bound vertex buffer at offset 28; the pre-pass currently declares attributes at offsets 0, 12, 20, 24 (locations 0–3); the new lightmap-UV attribute is added at offset 28, location 4, format `Uint16x2`). Unpack in the vertex stage (mirroring `forward.wgsl:273`), pass `vec2<f32>` as a vertex output, and have the fragment passthrough to `@location(0)`.
 
-Pipeline-side: `depth_prepass_pipeline` (`render/mod.rs:1635`) gains a `fragment: Some(...)` block declaring one color target of format `Rg16Unorm`, no blend. The pipeline layout is unchanged — fragment stage reads from no resources.
+Pipeline-side: `depth_prepass_pipeline` (`render/mod.rs:1635`) gains a `fragment: Some(...)` block declaring one color target of format `Rg16Unorm`, no blend. The pipeline layout is unchanged — fragment stage reads from no resources. Depth-stencil state is unchanged — still `depth_compare: Less` with `depth_write_enabled: true` (do not mirror forward's `Equal`).
 
 The unpacked-UV computation mirrors `forward.wgsl:273`. The interpolated value at the fragment is the correct lightmap UV at the visible surface — the `@invariant` clip-Z and `depth_compare: Equal` guarantee from §7.2 of `rendering_pipeline.md` keeps the visible-surface fragment fixed.
 
 ### Task 2: Renderer resource ownership + resize
 
-A new `lightmap_uv_view: wgpu::TextureView` field on `Renderer`, allocated by a helper analogous to `create_depth_texture` (`render/mod.rs:446`). Cleared each frame via the pre-pass `LoadOp::Clear` with sentinel `(0.0, 0.0)` (unorm clear color). Resized in the surface-resize path alongside the depth view (`render/mod.rs:2568–2570`). The SDF shadow pass's bind-group rebuild on resize already exists for the depth view; this target rides the same rebuild path.
+A new `lightmap_uv_view: wgpu::TextureView` field on `Renderer`, allocated by a helper analogous to `create_depth_texture` (`render/mod.rs:446`). Cleared each frame via `LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 })` — only `r`/`g` are read by the `Rg16Unorm` target; `b`/`a` are ignored. Resized in the surface-resize path alongside the depth view (`render/mod.rs:2568–2570`). `SdfShadowPass::resize` gains a `&lightmap_uv_view` parameter; the call site at `render/mod.rs:2574–2575` is updated in the same pass.
 
 The pre-pass render-pass descriptor (`render/mod.rs:3284`) gains a `color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &lightmap_uv_view, ... })]` entry.
 
 ### Task 3: SDF shadow pass consumption
 
-`SdfShadowPass` gains a `lightmap_uv_tex` field on its pass-owned bind group, layout entry, and BGL — group 1 in `sdf_shadow.wgsl`, where the depth texture already lives (binding 1). Add at the next free binding in that group; pin the exact index during implementation. The pass's `update_targets` / resize path threads the new view alongside the existing depth view.
+`SdfShadowPass` gains a `lightmap_uv_tex` field on its pass-owned bind group, layout entry, and BGL — group 1 in `sdf_shadow.wgsl`, where the depth texture already lives (binding 1). Group 1 in `sdf_shadow.wgsl` is the SDF shadow pass's own BGL — all six existing bindings (lines 71–81: params, depth, static/animated direction textures, sh_depth_moments, shadow_factor write target) are pass-private, not shared. Bind `lightmap_uv_tex` at `@group(1) @binding(6)`. The pass's `update_targets` / resize path threads the new view alongside the existing depth view.
 
-Shader-side, `sdf_shadow.wgsl` replaces lines 251–273 (the SAMPLING APPROXIMATION block):
+Shader-side, `sdf_shadow.wgsl` replaces the SAMPLING APPROXIMATION block (the `let uv = ...` through `let animated_dir = ...` span inside the `if (recon.w > 0.5)` body); the `trace_shadow` calls that follow are unchanged:
 
 ```wgsl
-// Proposed design — replace screen-UV sampling with pre-pass-written UV.
+// Replace screen-UV sampling with pre-pass-written UV.
 let lm_dims = textureDimensions(lightmap_uv_tex);
+let scale_x = f32(lm_dims.x) / f32(params.half_res_size_x);
+let scale_y = f32(lm_dims.y) / f32(params.half_res_size_y);
 let full_x = i32(min((f32(half_xy.x) + 0.5) * scale_x, f32(lm_dims.x) - 1.0));
 let full_y = i32(min((f32(half_xy.y) + 0.5) * scale_y, f32(lm_dims.y) - 1.0));
 let lm_uv = textureLoad(lightmap_uv_tex, vec2<i32>(full_x, full_y), 0).rg;
 if (lm_uv.x == 0.0 && lm_uv.y == 0.0) {
     // Pre-pass sentinel (Rg16Unorm cleared to (0,0)) — no fragment wrote this pixel. Bail to fully lit.
-    textureStore(shadow_factor, ..., vec4<f32>(FULLY_LIT, FULLY_LIT, 1.0, 1.0));
+    textureStore(shadow_factor, vec2<i32>(i32(half_xy.x), i32(half_xy.y)), vec4<f32>(FULLY_LIT, FULLY_LIT, 1.0, 1.0));
     return;
 }
 let static_dims = textureDimensions(static_lm_direction, 0);
@@ -126,7 +129,7 @@ let static_coord = vec2<i32>(i32(lm_uv.x * f32(static_dims.x)), i32(lm_uv.y * f3
 // ...same for animated_lm_direction
 ```
 
-`scale_x` / `scale_y` are the existing half-to-full-res ratios computed for the depth lookup; the lightmap-UV target shares full-res with depth, so no separate scale is needed. The trace, penumbra, and write paths are untouched. The "SAMPLING APPROXIMATION" header comment is removed and replaced with a one-line note pointing at the pre-pass MRT.
+Recomputing `scale_x` / `scale_y` here mirrors the existing block in `reconstruct_world` — they are local to that function and not visible at `cs_main` scope. The lightmap-UV target shares full-res dimensions with depth, so the ratios are identical. The trace, penumbra, and write paths are untouched. The "SAMPLING APPROXIMATION" header comment is removed and replaced with a one-line note pointing at the pre-pass MRT.
 
 ### Sequencing
 
@@ -139,7 +142,7 @@ No PRL changes. This is a pure runtime-pipeline addition: no baked data, no sect
 ## Rough sketch
 
 - **One MRT, full-res, Rg16Unorm.** ~8 MB at 1080p; ~500 MB/s bandwidth at 60 fps. Well within the 2020 MBP budget — pre-pass writes hit early-Z so the per-fragment cost is effectively one ROP write. `Rg16Unorm` is a round-trip for the `u16/65535` packing in `forward.wgsl:273–275`; uniform ~1.5e-5 precision across [0,1].
-- **Sentinel = (0.0, 0.0).** `chart_raster.rs:13` sets `CHART_PADDING_TEXELS = 1` so true `(0,0)` is never written by a real chart. The shadow-pass consumer reads the sentinel and bails to `FULLY_LIT`.
+- **Sentinel = (0.0, 0.0).** True `(0,0)` is unreachable by any real chart texel — see *Resolved decisions — MRT format*. The shadow-pass consumer reads the sentinel and bails to `FULLY_LIT`.
 - **Same fix covers both direction textures.** Static-lightmap and animated-baked atlases are both keyed on lightmap UV — one UV reconstruction substitutes both indexings.
 - **No new top-level bind group.** The new binding lives inside the SDF shadow pass's own group 1 layout. Group 7 (last free) stays free.
 - **No forward changes.** Forward neither writes nor reads the new target. The cost lives entirely in the pre-pass (write) and the half-res shadow pass (one `textureLoad`).
@@ -148,7 +151,7 @@ No PRL changes. This is a pure runtime-pipeline addition: no baked data, no sect
 
 All five open questions from the initial draft are resolved. No unresolved questions remain.
 
-**MRT format — `Rg16Unorm`, not `Rg16Float`.** Lightmap UVs are born as `u16/65535` (`forward.wgsl:273–275`). `Rg16Unorm` is a literal round-trip with uniform ~1.5e-5 precision. `Rg16Float` loses mantissa precision near 1.0 — exactly where edge-packed charts sit. `Rgba16Float` doubles memory for no gain. `Rg11B10` loses precision below 0.0005 — too tight. Sentinel is `(0.0, 0.0)` (negative sentinel is impossible with unorm; `(0,0)` is safe because `CHART_PADDING_TEXELS = 1`, `chart_raster.rs:13`). Verify on `campaign-test.prl` that chart-edge precision is acceptable; fall back to `Rg16Float` with `(-1.0, -1.0)` sentinel if artifacts appear.
+**MRT format — `Rg16Unorm`, not `Rg16Float`.** Lightmap UVs are born as `u16/65535` (`forward.wgsl:273–275`). `Rg16Unorm` is a literal round-trip with uniform ~1.5e-5 precision. `Rg16Float` loses mantissa precision near 1.0 — exactly where edge-packed charts sit. `Rgba16Float` doubles memory for no gain. `Rg11B10` loses precision below 0.0005 — too tight. Sentinel is `(0.0, 0.0)` (negative sentinel is impossible with unorm; `(0,0)` is safe because `CHART_PADDING_TEXELS = 2`, `chart_raster.rs:20`). Verify on `campaign-test.prl` that chart-edge precision is acceptable; fall back to `Rg16Float` with `(-1.0, -1.0)` sentinel if artifacts appear.
 
 **Option A (SH L1) — analyzed and rejected on correctness grounds.** SH L1 encodes hemispheric irradiance direction; lightmap dominant direction is luminance-weighted shadow-caster direction (`done/sdf-static-occluder-shadows/research.md:5–46`). Different quantities — substituting SH L1 breaks the v1 trace's correctness contract. Additionally, `sh_bake.rs:23` sets `DEFAULT_PROBE_SPACING = 1.0` m — still too coarse for per-texel direction even if the quantity were right. Option A remains named only as a last-resort perf-gate retreat that accepts a quality compromise (see below).
 

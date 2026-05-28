@@ -98,6 +98,14 @@ pub struct SpotShadowPool {
 
 impl SpotShadowPool {
     /// Build the bind group layout for `@group(5)` of the forward shader.
+    ///
+    /// Task 5 (`sdf-static-occluder-shadows`) extends group 5 with two more
+    /// bindings consumed by the forward shader's bilateral upsample:
+    ///   3 = half-res SDF shadow factor target (Rgba8Unorm; R = static, G = animated)
+    ///   4 = full-res scene depth (Depth32Float; sampled via `textureLoad`)
+    /// The fog volume compute pass also binds group 5 but does not reference
+    /// these slots — unused BGL entries are valid. Visibility is FRAGMENT only
+    /// for the new bindings; if a future pass needs them in compute, widen.
     pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Spot Shadow BGL"),
@@ -128,6 +136,28 @@ impl SpotShadowPool {
                     },
                     count: None,
                 },
+                // Binding 3: SDF shadow factor (half-res Rgba8Unorm).
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                // Binding 4: full-res scene depth, read via `textureLoad`.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         })
     }
@@ -138,7 +168,20 @@ impl SpotShadowPool {
     /// each `SHADOW_MAP_RESOLUTION × SHADOW_MAP_RESOLUTION` Depth32Float,
     /// along with the sampler, matrix buffer, and bind group that the
     /// forward shader's `@group(5)` layout expects.
-    pub fn new(device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> Self {
+    ///
+    /// Task 5 plumbing: the BGL now includes two extra bindings (3 = SDF
+    /// shadow factor, 4 = scene depth) owned outside the pool — the SDF
+    /// shadow pass creates the half-res factor target and the renderer owns
+    /// the scene depth view. The caller passes both in here so the pool can
+    /// build a complete bind group at construction time. Both views must be
+    /// re-supplied on resize (via `rebuild_bind_group`) since both targets
+    /// get re-created when the surface changes size.
+    pub fn new(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        sdf_shadow_factor_view: &wgpu::TextureView,
+        scene_depth_view: &wgpu::TextureView,
+    ) -> Self {
         let array_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Spot Shadow Map Array"),
             size: wgpu::Extent3d {
@@ -199,24 +242,15 @@ impl SpotShadowPool {
             mapped_at_creation: false,
         });
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Spot Shadow Bind Group"),
+        let bind_group = build_bind_group(
+            device,
             layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&array_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&compare_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: matrices_buffer.as_entire_binding(),
-                },
-            ],
-        });
+            &array_view,
+            &compare_sampler,
+            &matrices_buffer,
+            sdf_shadow_factor_view,
+            scene_depth_view,
+        );
 
         Self {
             array_texture,
@@ -227,6 +261,28 @@ impl SpotShadowPool {
             bind_group,
             slot_assignment: Vec::new(),
         }
+    }
+
+    /// Rebuild the group-5 bind group after one of the external views
+    /// (SDF shadow factor target or scene depth) has been re-created — both
+    /// flip on a surface resize. The pool-owned resources (array view,
+    /// sampler, matrix buffer) are stable across resizes.
+    pub fn rebuild_bind_group(
+        &mut self,
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        sdf_shadow_factor_view: &wgpu::TextureView,
+        scene_depth_view: &wgpu::TextureView,
+    ) {
+        self.bind_group = build_bind_group(
+            device,
+            layout,
+            &self.array_view,
+            &self.compare_sampler,
+            &self.matrices_buffer,
+            sdf_shadow_factor_view,
+            scene_depth_view,
+        );
     }
 
     /// Compute the slot-assignment ranking for visible entity-shadow-casting spot lights.
@@ -324,6 +380,43 @@ impl SpotShadowPool {
 
         slot_assignment
     }
+}
+
+fn build_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    array_view: &wgpu::TextureView,
+    compare_sampler: &wgpu::Sampler,
+    matrices_buffer: &wgpu::Buffer,
+    sdf_shadow_factor_view: &wgpu::TextureView,
+    scene_depth_view: &wgpu::TextureView,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Spot Shadow Bind Group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(array_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(compare_sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: matrices_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(sdf_shadow_factor_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::TextureView(scene_depth_view),
+            },
+        ],
+    })
 }
 
 #[cfg(test)]

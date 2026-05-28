@@ -22,6 +22,24 @@ struct Uniforms {
     // lightmap shadow contrast. Forced to 1.0 in indirect-only isolation
     // modes so debug views aren't affected by runtime suppression.
     indirect_scale: f32,
+    // Bitset gating the SDF static-occluder shadow multiplies (Task 5 of
+    // sdf-static-occluder-shadows). See `SDF_SHADOW_FLAG_*` in render/mod.rs:
+    //   bit 0 — multiply animated-baked term by the G channel of the
+    //           half-res factor target (always on when an SDF atlas is loaded).
+    //   bit 1 — multiply static-lightmap term by the R channel (requires
+    //           the lightmap to be baked unshadowed; else the multiply would
+    //           double-shadow the term).
+    // Both bits clear (legacy PRL, no SDF atlas) → no multiply, identical to `main`.
+    sdf_shadow_flags: u32,
+    // Three u32 padding slots — keeps the trailing 16-byte vec4 row of the
+    // struct fully accounted for and reserved for upcoming SDF/debug fields
+    // (Task 6's `SdfShadowMode` selector likely takes the next slot). Three
+    // separate u32s (not `vec3<u32>`) so the struct's natural alignment stays
+    // 4 bytes and total stride lands exactly at 112 bytes — wgpu rejects the
+    // pipeline if the CPU-side `UNIFORM_SIZE` and WGSL-derived stride drift.
+    _sdf_pad0: u32,
+    _sdf_pad1: u32,
+    _sdf_pad2: u32,
 };
 
 // Four vec4<f32> slots — see postretro/src/lighting/mod.rs for field semantics.
@@ -175,6 +193,23 @@ struct LightSpaceMatrices {
     m: array<mat4x4<f32>, 12>,
 };
 @group(5) @binding(2) var<uniform> light_space_matrices: LightSpaceMatrices;
+// SDF static-occluder shadow factor (Task 4): half-res Rgba8Unorm.
+//   R = static-lightmap aggregate factor (one trace toward the static
+//       lightmap dominant baked direction; covers the whole static-light
+//       term in O(1)).
+//   G = animated-baked aggregate factor (one trace toward the per-frame
+//       dominant direction the compose pass writes, Task 2b).
+//   B, A = reserved for future geometry-moving per-light terms.
+// Bilaterally upsampled per-channel inside this shader (Task 5). Read via
+// `textureLoad` — non-filterable on most adapters, and the bilateral filter
+// re-derives its own weights so a hardware sampler buys nothing.
+@group(5) @binding(3) var sdf_shadow_factor: texture_2d<f32>;
+// Full-res scene depth (Depth32Float). Sampled via `textureLoad` to drive
+// the depth-aware weight of each 2×2 bilateral tap so the upsample
+// preserves the hard shadow edges that match the depth discontinuities of
+// the geometry. The forward render pass binds the depth attachment as
+// read-only (`depth_ops: None`) so this binding is legal alongside it.
+@group(5) @binding(4) var sdf_shadow_depth: texture_depth_2d;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -419,6 +454,101 @@ fn sample_normal(tex: texture_2d<f32>, uv: vec2<f32>, ddx: vec2<f32>, ddy: vec2<
     return normalize(vec3<f32>(rg, z));
 }
 
+// Depth-aware 2×2 bilateral upsample of the half-res SDF shadow factor at
+// the current fragment. Returns the per-channel sampled factor (R = static,
+// G = animated, B/A = reserved). Re-derived locally — the fog_composite
+// upsample was reverted in commit f50314d for perf; see
+// `context/plans/in-progress/sdf-static-occluder-shadows/research.md`.
+//
+// Approach:
+//   1. Map the fragment's pixel coord (`frag_pos`) into half-res space. The
+//      4 nearest half-res taps are the integer neighbours of the projected
+//      half-res coordinate.
+//   2. Each tap contributes with the standard bilinear weight (from the
+//      sub-pixel fraction) times an `exp(-|Δdepth|/sigma)` depth weight.
+//      The depth at a tap is the full-res depth at the tap's half-res
+//      center mapped back to full-res — same lookup the SDF pass used when
+//      it wrote the factor, so the bilateral preserves true scene edges.
+//   3. Renormalize by the summed weights; degenerate (all-zero) cases fall
+//      back to the nearest-tap value so the multiply stays sane in tiny
+//      surfaces where every weight collapses.
+//
+// Why `textureLoad` rather than a hardware bilinear sampler: the half-res
+// target is `Rgba8Unorm` and `sdf_shadow_depth` is `Depth32Float`; both are
+// typed as non-filterable in the group-5 BGL so a sampler would buy nothing
+// here, and the bilateral weights are computed explicitly anyway.
+fn upsample_shadow_factor(frag_xy: vec2<f32>, frag_depth: f32) -> vec4<f32> {
+    let depth_dims_u = textureDimensions(sdf_shadow_depth);
+    let depth_dims = vec2<f32>(depth_dims_u);
+    let half_dims_u = textureDimensions(sdf_shadow_factor);
+    let half_dims = vec2<f32>(half_dims_u);
+
+    // Full-res → half-res projection. The SDF pass used `(half_xy + 0.5) *
+    // (depth/half)` to sample the depth texture; invert that here so each
+    // full-res fragment finds its 2×2 half-res neighbours.
+    let half_uv = (frag_xy / depth_dims) * half_dims;
+    let h_floor = floor(half_uv - 0.5);
+    let frac = clamp(half_uv - 0.5 - h_floor, vec2<f32>(0.0), vec2<f32>(1.0));
+
+    // The 4 half-res taps. Clamp to the texture bounds so an edge fragment
+    // duplicates the boundary tap rather than wrapping.
+    let h_max = vec2<f32>(half_dims) - vec2<f32>(1.0);
+    let h00 = vec2<i32>(clamp(h_floor, vec2<f32>(0.0), h_max));
+    let h10 = vec2<i32>(clamp(h_floor + vec2<f32>(1.0, 0.0), vec2<f32>(0.0), h_max));
+    let h01 = vec2<i32>(clamp(h_floor + vec2<f32>(0.0, 1.0), vec2<f32>(0.0), h_max));
+    let h11 = vec2<i32>(clamp(h_floor + vec2<f32>(1.0, 1.0), vec2<f32>(0.0), h_max));
+
+    let s00 = textureLoad(sdf_shadow_factor, h00, 0);
+    let s10 = textureLoad(sdf_shadow_factor, h10, 0);
+    let s01 = textureLoad(sdf_shadow_factor, h01, 0);
+    let s11 = textureLoad(sdf_shadow_factor, h11, 0);
+
+    // Depth at each tap — same `half→full` mapping the SDF pass used when it
+    // wrote the factor, so the bilateral preserves the exact scene edges the
+    // half-res shadow respects.
+    let scale = depth_dims / half_dims;
+    let d_max = depth_dims - vec2<f32>(1.0);
+    let d00 = textureLoad(sdf_shadow_depth, vec2<i32>(clamp((vec2<f32>(h00) + vec2<f32>(0.5)) * scale, vec2<f32>(0.0), d_max)), 0);
+    let d10 = textureLoad(sdf_shadow_depth, vec2<i32>(clamp((vec2<f32>(h10) + vec2<f32>(0.5)) * scale, vec2<f32>(0.0), d_max)), 0);
+    let d01 = textureLoad(sdf_shadow_depth, vec2<i32>(clamp((vec2<f32>(h01) + vec2<f32>(0.5)) * scale, vec2<f32>(0.0), d_max)), 0);
+    let d11 = textureLoad(sdf_shadow_depth, vec2<i32>(clamp((vec2<f32>(h11) + vec2<f32>(0.5)) * scale, vec2<f32>(0.0), d_max)), 0);
+
+    // Bilinear weights from the sub-pixel fraction.
+    let bw00 = (1.0 - frac.x) * (1.0 - frac.y);
+    let bw10 = frac.x * (1.0 - frac.y);
+    let bw01 = (1.0 - frac.x) * frac.y;
+    let bw11 = frac.x * frac.y;
+
+    // Depth weight: exponential falloff with a sigma scaled by the
+    // fragment's own depth so far geometry (where small Δdepth still flags a
+    // true edge) doesn't blur shadows across silhouettes. The 0.05 ratio
+    // matches the half-res sample step the SDF pass uses.
+    let sigma = max(frag_depth * 0.05, 1.0e-4);
+    let dw00 = exp(-abs(d00 - frag_depth) / sigma);
+    let dw10 = exp(-abs(d10 - frag_depth) / sigma);
+    let dw01 = exp(-abs(d01 - frag_depth) / sigma);
+    let dw11 = exp(-abs(d11 - frag_depth) / sigma);
+
+    let w00 = bw00 * dw00;
+    let w10 = bw10 * dw10;
+    let w01 = bw01 * dw01;
+    let w11 = bw11 * dw11;
+    let w_sum = w00 + w10 + w01 + w11;
+
+    // Degenerate sum — all 4 taps rejected by the depth weight. Fall back to
+    // the nearest tap (by bilinear fraction) so the multiply stays sane on
+    // silhouettes where every neighbour spans a depth discontinuity.
+    if (w_sum <= 1.0e-6) {
+        if (frac.x < 0.5 && frac.y < 0.5) { return s00; }
+        if (frac.x >= 0.5 && frac.y < 0.5) { return s10; }
+        if (frac.x < 0.5 && frac.y >= 0.5) { return s01; }
+        return s11;
+    }
+
+    let inv = 1.0 / w_sum;
+    return (s00 * w00 + s10 * w10 + s01 * w01 + s11 * w11) * inv;
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // UV footprint derivatives — computed once here in uniform control flow.
@@ -484,6 +614,22 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         indirect = sample_sh_indirect(in.world_position, N_bump, mesh_n) * indirect_scale;
     }
 
+    // SDF static-occluder shadow factor (Task 5). Computed once per fragment
+    // and reused for both the static-lightmap and animated-baked terms below.
+    // `vec4(1.0)` when the bits are off (no atlas / legacy lightmap), so the
+    // multiply downstream is a no-op.
+    var sdf_factor = vec4<f32>(1.0, 1.0, 1.0, 1.0);
+    if uniforms.sdf_shadow_flags != 0u {
+        sdf_factor = upsample_shadow_factor(in.clip_position.xy, in.clip_position.z);
+    }
+    // Per-term gates. `apply_static` additionally requires the static
+    // lightmap to be baked unshadowed — else the bake already encodes
+    // visibility and the multiply would double-shadow.
+    let apply_static_sdf = (uniforms.sdf_shadow_flags & 2u) != 0u;
+    let apply_animated_sdf = (uniforms.sdf_shadow_flags & 1u) != 0u;
+    let static_sdf = select(1.0, sdf_factor.r, apply_static_sdf);
+    let animated_sdf = select(1.0, sdf_factor.g, apply_animated_sdf);
+
     // Static direct term: baked directional lightmap. NdotL is already folded
     // in by the baker — sampling gives correct static direct contribution for
     // a mesh-normal surface.
@@ -511,7 +657,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // Cap at 4.0: prevents unbounded spike when N_bump tilts toward the light
         // on a near-backfacing mesh surface.
         let scale = select(1.0, min(n_dot_l_bump / max(n_dot_l_mesh, NDOTL_EPS), 4.0), use_correction);
-        static_direct = lm_irr * scale + lm_anim;
+        // Multiply each lightmap term by its own upsampled SDF factor (R for
+        // the static-light aggregate, G for the animated-baked aggregate);
+        // these are 1.0 when the per-term gate is off, so a shadowed-mode
+        // lightmap stays unmodified. Per Task 5 of sdf-static-occluder-shadows,
+        // shadow-map (enemy) results are never multiplied by these factors —
+        // those carry their own dynamic-occluder shadow and live in the
+        // dynamic-light loop below.
+        static_direct = lm_irr * scale * static_sdf + lm_anim * animated_sdf;
     }
 
     var total_light = vec3<f32>(uniforms.ambient_floor) + indirect + static_direct;

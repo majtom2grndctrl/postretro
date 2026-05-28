@@ -171,8 +171,25 @@ const TIMING_PAIR_COUNT: usize = 5;
 // std140: vec3<f32> aligns to 16 bytes; camera_position and ambient_floor share a slot.
 //   0..64    view_proj  64..76   camera_position  76..80   ambient_floor
 //   80..84   light_count  84..88  time  88..92   lighting_isolation  92..96  indirect_scale
-// The layout ends at 96, already 16-byte aligned — no trailing padding needed.
-const UNIFORM_SIZE: usize = 96;
+//   96..100  sdf_shadow_flags  100..112 _pad
+// `sdf_shadow_flags` (Task 5 of sdf-static-occluder-shadows) is a bitset
+// gating the bilateral upsample multiply in the forward shader:
+//   bit 0 = apply animated-baked aggregate factor (G channel).
+//   bit 1 = apply static-lightmap aggregate factor (R channel).
+// Bit 0 is set whenever a baked SDF atlas is loaded; bit 1 additionally
+// requires the static lightmap to be baked unshadowed (else the multiply
+// would double-shadow the static term — see `Renderer::lightmap_mode()`).
+// Task 6 will overlay the SdfShadowMode debug selector through the same field.
+// Struct stride rounds up to 112 (multiple of mat4 alignment).
+const UNIFORM_SIZE: usize = 112;
+
+/// Bit 0 of `Uniforms.sdf_shadow_flags` — apply the animated-baked aggregate
+/// factor (G channel of the half-res target) to the animated-baked term.
+pub const SDF_SHADOW_FLAG_ANIMATED: u32 = 1 << 0;
+/// Bit 1 of `Uniforms.sdf_shadow_flags` — apply the static-lightmap aggregate
+/// factor (R channel) to the static lightmap term. Requires the lightmap to
+/// have been baked unshadowed; else the bake already contains visibility.
+pub const SDF_SHADOW_FLAG_STATIC: u32 = 1 << 1;
 
 /// Lighting-term isolation mode for leak/bleed debugging.
 /// The ambient floor always contributes so interior geometry is never pitch black.
@@ -251,6 +268,11 @@ struct FrameUniforms {
     time: f32,
     lighting_isolation: LightingIsolation,
     indirect_scale: f32,
+    /// Bitset of `SDF_SHADOW_FLAG_*` controlling the forward shader's SDF
+    /// shadow-factor multiplies. Bit 0 gates the animated-baked term; bit 1
+    /// gates the static-lightmap term (independent because the static-term
+    /// multiply must skip a shadowed-mode lightmap to avoid double shadows).
+    sdf_shadow_flags: u32,
 }
 
 fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
@@ -269,6 +291,8 @@ fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
     let isolation: u32 = u.lighting_isolation as u32;
     bytes[88..92].copy_from_slice(&isolation.to_ne_bytes());
     bytes[92..96].copy_from_slice(&u.indirect_scale.to_ne_bytes());
+    bytes[96..100].copy_from_slice(&u.sdf_shadow_flags.to_ne_bytes());
+    // 100..112 stays zero — explicit pad matching the WGSL `_pad: vec3<u32>`.
     bytes
 }
 
@@ -958,6 +982,10 @@ impl Renderer {
             time: 0.0,
             lighting_isolation: LightingIsolation::Normal,
             indirect_scale: DEFAULT_INDIRECT_SCALE,
+            // No level loaded yet — per-frame uniform upload in
+            // `update_per_frame_uniforms` reflects `has_sdf_atlas()` +
+            // `lightmap_mode()` once geometry installs.
+            sdf_shadow_flags: 0,
         });
 
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1110,11 +1138,11 @@ impl Renderer {
         });
 
         // BGL owned here so forward pipeline layout and shadow pool bind group share it.
+        // Task 5 extended the BGL with bindings 3 (SDF shadow factor) and 4
+        // (scene depth) — both owned outside the pool. The pool itself is
+        // built later (after depth_view + sdf_shadow_pass exist) so its bind
+        // group can reference those targets directly at construction.
         let spot_shadow_bgl = SpotShadowPool::bind_group_layout(&device);
-        let spot_shadow_pool = SpotShadowPool::new(&device, &spot_shadow_bgl);
-        log::info!(
-            "[Renderer] Spot shadow pool initialized (8 × 1024×1024 Depth32Float = 32 MiB VRAM)"
-        );
 
         // Influence volume buffer — same dummy strategy as lights.
         let influence_data = if !dynamic_influences.is_empty() {
@@ -1317,6 +1345,19 @@ impl Renderer {
             sdf_shadow_sh_grid,
             surface_config.width,
             surface_config.height,
+        );
+
+        // Now that the SDF shadow factor target + scene depth view both
+        // exist, build the spot-shadow pool — its bind group references
+        // both targets at bindings 3/4. See `SpotShadowPool::new` docs.
+        let spot_shadow_pool = SpotShadowPool::new(
+            &device,
+            &spot_shadow_bgl,
+            &sdf_shadow_pass.shadow_view,
+            &depth_view,
+        );
+        log::info!(
+            "[Renderer] Spot shadow pool initialized (8 × 1024×1024 Depth32Float = 32 MiB VRAM)"
         );
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -2442,6 +2483,15 @@ impl Renderer {
         // also changed so the pass bind group has to be rebuilt.
         self.sdf_shadow_pass
             .resize(&self.device, &self.depth_view, width, height);
+        // Group-5 bind group references both the SDF shadow factor target
+        // and the scene depth — both just got recreated, so rebuild.
+        let spot_shadow_bgl = SpotShadowPool::bind_group_layout(&self.device);
+        self.spot_shadow_pool.rebuild_bind_group(
+            &self.device,
+            &spot_shadow_bgl,
+            &self.sdf_shadow_pass.shadow_view,
+            &self.depth_view,
+        );
         if self.splash_pipeline.has_splash() {
             self.splash_pipeline
                 .update_screen_size(&self.queue, [width, height]);
@@ -2461,6 +2511,23 @@ impl Renderer {
             self.frozen_time = self.app_start.elapsed().as_secs_f32();
             self.frozen_time
         };
+        // SDF shadow-factor multiplies are gated per-term:
+        //   - Animated-baked aggregate (G) multiplies whenever an SDF atlas
+        //     is loaded — the animated-lightmap atlas never had visibility
+        //     folded into its bake.
+        //   - Static-lightmap aggregate (R) additionally requires the
+        //     lightmap to have been baked unshadowed (Task 2a) — a
+        //     legacy/shadowed bake already carries baked visibility, so
+        //     multiplying again would double-shadow.
+        // Both bits clear → forward skips the multiply outright (legacy PRL
+        // path, identical to `main`).
+        let mut sdf_shadow_flags: u32 = 0;
+        if self.sdf_atlas_resources.present {
+            sdf_shadow_flags |= SDF_SHADOW_FLAG_ANIMATED;
+            if matches!(self.lightmap_mode, crate::prl::LightmapMode::Unshadowed) {
+                sdf_shadow_flags |= SDF_SHADOW_FLAG_STATIC;
+            }
+        }
         let data = build_uniform_data(&FrameUniforms {
             view_proj,
             camera_position,
@@ -2469,6 +2536,7 @@ impl Renderer {
             time,
             lighting_isolation: self.lighting_isolation,
             indirect_scale: self.indirect_scale,
+            sdf_shadow_flags,
         });
         self.queue.write_buffer(&self.uniform_buffer, 0, &data);
         self.last_camera_position = camera_position;
@@ -3129,11 +3197,16 @@ impl Renderer {
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Load, // pre-pass filled it; wireframe reads it below
-
-                        store: wgpu::StoreOp::Store,
-                    }),
+                    // Forward pass uses `depth_compare: Equal` with depth
+                    // writes disabled — the depth buffer is read-only here.
+                    // Task 5 of sdf-static-occluder-shadows samples this
+                    // same depth texture via group 5 binding 4 (the
+                    // bilateral upsample's depth-aware weights); wgpu
+                    // requires `depth_ops: None` so the attachment doesn't
+                    // alias a writable resource with a sampled-texture
+                    // binding. The depth contents the pre-pass wrote
+                    // persist for the wireframe pass that follows.
+                    depth_ops: None,
                     stencil_ops: None,
                 }),
                 timestamp_writes: forward_ts,
@@ -3803,8 +3876,28 @@ mod tests {
             time: 0.0,
             lighting_isolation: LightingIsolation::Normal,
             indirect_scale: 1.0,
+            sdf_shadow_flags: 0,
         });
         assert_eq!(data.len(), UNIFORM_SIZE);
+    }
+
+    /// `sdf_shadow_flags` packs to bytes 96..100 — confirm the bitset round-trips.
+    #[test]
+    fn uniform_data_encodes_sdf_shadow_flags_at_correct_offset() {
+        let data = build_uniform_data(&FrameUniforms {
+            view_proj: Mat4::IDENTITY,
+            camera_position: Vec3::ZERO,
+            ambient_floor: 0.0,
+            light_count: 0,
+            time: 0.0,
+            lighting_isolation: LightingIsolation::Normal,
+            indirect_scale: 1.0,
+            sdf_shadow_flags: SDF_SHADOW_FLAG_ANIMATED | SDF_SHADOW_FLAG_STATIC,
+        });
+        let flags = u32::from_ne_bytes(data[96..100].try_into().unwrap());
+        assert_eq!(flags, 0b11);
+        // Trailing pad bytes 100..112 stay zero.
+        assert!(data[100..112].iter().all(|&b| b == 0));
     }
 
     #[test]
@@ -3873,6 +3966,56 @@ mod tests {
             crate::lighting::GPU_LIGHT_SIZE,
             "forward.wgsl GpuLight stride ({light_span}) must match GPU_LIGHT_SIZE ({})",
             crate::lighting::GPU_LIGHT_SIZE,
+        );
+    }
+
+    /// Task 5 (sdf-static-occluder-shadows): the forward shader must parse
+    /// cleanly with the new SDF shadow-factor bindings (`sdf_shadow_factor`
+    /// + `sdf_shadow_depth` on group 5 bindings 3 and 4) and must declare
+    /// the inline bilateral upsample helper. Mirrors the parse-and-binding
+    /// shape of Task 2b's `compose_shader_parses_and_declares_debug_binding`.
+    #[test]
+    fn forward_shader_parses_and_declares_sdf_shadow_upsample() {
+        let src = SHADER_SOURCE;
+        let module = naga::front::wgsl::parse_str(src)
+            .expect("forward.wgsl should parse as WGSL after Task 5 plumbing");
+
+        // The upsample function is the public surface of the bilateral filter.
+        let has_upsample = module
+            .functions
+            .iter()
+            .any(|(_h, f)| f.name.as_deref() == Some("upsample_shadow_factor"));
+        assert!(
+            has_upsample,
+            "forward.wgsl must declare `upsample_shadow_factor` (Task 5 bilateral upsample)",
+        );
+
+        // The bilateral filter is depth-aware — both the factor target and
+        // the scene depth texture must be declared.
+        assert!(
+            src.contains("sdf_shadow_factor"),
+            "forward.wgsl must bind the half-res SDF shadow factor target",
+        );
+        assert!(
+            src.contains("sdf_shadow_depth"),
+            "forward.wgsl must bind the scene depth texture for the depth-aware bilateral",
+        );
+
+        // The fragment entry point must reference the upsample helper — else
+        // the wiring is dead and the multiply never lands.
+        let fs = src
+            .find("fn fs_main(")
+            .expect("forward.wgsl must declare fs_main");
+        let fs_tail = &src[fs..];
+        assert!(
+            fs_tail.contains("upsample_shadow_factor("),
+            "fs_main must call upsample_shadow_factor (otherwise the multiply is dead)",
+        );
+
+        // The gating bitset must be wired into the Uniforms struct.
+        assert!(
+            src.contains("sdf_shadow_flags"),
+            "forward.wgsl Uniforms must include the `sdf_shadow_flags` gate field",
         );
     }
 
@@ -4100,6 +4243,7 @@ mod tests {
             time: 0.0,
             lighting_isolation: LightingIsolation::Normal,
             indirect_scale,
+            sdf_shadow_flags: 0,
         });
 
         // view_proj: first 64 bytes = 16 f32 identity columns.

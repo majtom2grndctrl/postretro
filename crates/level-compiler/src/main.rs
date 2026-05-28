@@ -1,6 +1,7 @@
 // postretro-level-compiler: level compiler entry point.
 // See: context/lib/build_pipeline.md §PRL
 
+pub mod affinity_grid;
 pub mod animated_light_chunks;
 pub mod animated_light_weight_maps;
 pub mod bc5;
@@ -447,6 +448,7 @@ fn main() -> anyhow::Result<()> {
             geometry: &geo_result,
             tree: &result.tree,
             exterior_leaves: &exterior_leaves,
+            portals: &generated_portals,
             animated_lights: &animated_baked_lights,
         };
         delta_sh_bake::bake_delta_sh_volumes(&inputs, &sh_config)

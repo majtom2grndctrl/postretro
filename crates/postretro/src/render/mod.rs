@@ -3706,22 +3706,16 @@ fn build_sdf_shadow_sh_grid(
     }
 }
 
+/// Per-light delta AABB overlays no longer have a source: the sparse CSR delta
+/// format (v2) is keyed by affinity cell, not per-light AABB grids, so there are
+/// no per-light origin/dims to draw. Returns empty; the diagnostics consumer
+/// skips the delta-AABB loop. A future affinity-cell overlay could repopulate
+/// this from `affinity_dims` + the base grid origin/cell-size.
 #[cfg(feature = "dev-tools")]
 fn collect_delta_volume_meta(
-    section: Option<&postretro_level_format::delta_sh_volumes::DeltaShVolumesSection>,
+    _section: Option<&postretro_level_format::delta_sh_volumes::DeltaShVolumesSection>,
 ) -> Vec<sh_volume::DeltaVolumeMeta> {
-    let Some(sec) = section else {
-        return Vec::new();
-    };
-    sec.grids
-        .iter()
-        .map(|g| sh_volume::DeltaVolumeMeta {
-            origin: g.aabb_origin,
-            // Delta grids store a single scalar cell size; broadcast to per-axis.
-            cell_size: [g.cell_size; 3],
-            grid_dimensions: g.grid_dimensions,
-        })
-        .collect()
+    Vec::new()
 }
 
 // Static lights are baked — including them would double-apply their contribution.

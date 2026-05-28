@@ -13,7 +13,7 @@ use postretro_level_format::bsp::{BspLeavesSection, BspNodesSection};
 use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhSection};
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::data_script::DataScriptSection;
-use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
+use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSection};
 use postretro_level_format::fog_cell_masks::FogCellMasksSection;
 use postretro_level_format::fog_volumes::{FogVolumeRecord, FogVolumesSection};
 use postretro_level_format::geometry::{GeometrySection, NO_TEXTURE};
@@ -54,6 +54,23 @@ pub enum PrlLoadError {
         "PRL file has no TextureCacheKeys section (section 32) — file is corrupt or was produced by a writer that omits the section; recompile with `prl-build`"
     )]
     NoTextureCacheKeys,
+    #[error(
+        "DeltaShVolumes affinity_factor {found} != engine AFFINITY_FACTOR {expected} — recompile the .prl with the current `prl-build`"
+    )]
+    DeltaShAffinityFactorMismatch { found: u8, expected: u8 },
+    #[error(
+        "DeltaShVolumes affinity_dims {found:?} != ceil(base ShVolume dims {base_dims:?} / {factor}) = {expected:?} — recompile the .prl with the current `prl-build`"
+    )]
+    DeltaShAffinityDimsMismatch {
+        found: [u32; 3],
+        base_dims: [u32; 3],
+        factor: u32,
+        expected: [u32; 3],
+    },
+    #[error(
+        "PRL file has a DeltaShVolumes section (id 27) but no base ShVolume section (id 20) — the compose pass cannot derive affinity dims without the base grid; recompile with `prl-build`"
+    )]
+    DeltaShMissingBaseVolume,
 }
 
 /// Face → index-range mapping lives on BVH leaves; `FaceMeta` carries only
@@ -218,8 +235,9 @@ pub struct LevelWorld {
     pub animated_light_chunks: Option<AnimatedLightChunksSection>,
     /// `None` when no animated lights — renderer binds a 1×1 zero atlas.
     pub animated_light_weight_maps: Option<AnimatedLightWeightMapsSection>,
-    /// Peak SH delta grids (brightness=1.0) per animated light, accumulated weighted by curve.
-    /// `None` when no animated lights — compose pass falls back to base→total copy.
+    /// Sparse, affinity-cell-indexed (CSR) per-animated-light SH deltas at peak
+    /// brightness. `None` when no animated lights — compose pass falls back to
+    /// base→total copy.
     pub delta_sh_volumes: Option<DeltaShVolumesSection>,
     /// `None` when level has no `data_script` worldspawn KVP.
     /// See: context/lib/scripting.md §2 (Data context lifecycle)
@@ -368,6 +386,58 @@ fn convert_bvh_section(section: BvhSection) -> BvhTree {
         leaves,
         root_node_index: section.root_node_index,
     }
+}
+
+/// Expected DeltaShVolumes affinity grid dims for a given base SH grid:
+/// `ceil(base_dims / factor)` along each axis. The compiler bakes the affinity
+/// grid this way; the loader rejects any section whose stored dims disagree.
+/// Pure so the validation rule is unit-testable without a `.prl` file.
+pub(crate) fn expected_affinity_dims(base_dims: [u32; 3], factor: u8) -> [u32; 3] {
+    let f = factor as u32;
+    [
+        base_dims[0].div_ceil(f),
+        base_dims[1].div_ceil(f),
+        base_dims[2].div_ceil(f),
+    ]
+}
+
+/// Validate a loaded DeltaShVolumes section against the engine's invariants.
+/// `base_dims` is the base ShVolume (id 20) grid dimensions, or `None` if that
+/// section was absent. Pure so the reject paths are unit-testable.
+///
+/// Rejects (clear typed error, no panic):
+/// - `affinity_factor` != the engine's compiled-in `AFFINITY_FACTOR`,
+/// - base ShVolume absent while a delta section is present,
+/// - `affinity_dims` != `ceil(base_dims / affinity_factor)`.
+pub(crate) fn validate_delta_sh(
+    section: &DeltaShVolumesSection,
+    base_dims: Option<[u32; 3]>,
+) -> Result<(), PrlLoadError> {
+    // affinity_factor is locked to the compose pass `@workgroup_size(4,4,4)`.
+    if section.affinity_factor != AFFINITY_FACTOR {
+        return Err(PrlLoadError::DeltaShAffinityFactorMismatch {
+            found: section.affinity_factor,
+            expected: AFFINITY_FACTOR,
+        });
+    }
+
+    // The base grid's dims derive the expected affinity dims; the compose pass
+    // cannot run without it.
+    let Some(base_dims) = base_dims else {
+        return Err(PrlLoadError::DeltaShMissingBaseVolume);
+    };
+
+    let expected = expected_affinity_dims(base_dims, AFFINITY_FACTOR);
+    if section.affinity_dims != expected {
+        return Err(PrlLoadError::DeltaShAffinityDimsMismatch {
+            found: section.affinity_dims,
+            base_dims,
+            factor: AFFINITY_FACTOR as u32,
+            expected,
+        });
+    }
+
+    Ok(())
 }
 
 pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
@@ -754,11 +824,21 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
     )? {
         Some(data) => {
             let section = DeltaShVolumesSection::from_bytes(&data)?;
-            let total_probes: usize = section.grids.iter().map(|g| g.total_probes()).sum();
+
+            // Validation (mirrors the section-version reject path): a mismatched
+            // bake must fail the load with a clear error rather than feed the
+            // compose pass garbage. `sh_volume` (id 20) was loaded above.
+            validate_delta_sh(&section, sh_volume.as_ref().map(|s| s.grid_dimensions))?;
+
             log::info!(
-                "[PRL] DeltaShVolumes: {} animated light(s), {} total probes",
-                section.grids.len(),
-                total_probes,
+                "[PRL] DeltaShVolumes: {} animated light(s), affinity grid {}×{}×{} \
+                 ({} CSR entr(y/ies), {} delta subblock halves)",
+                section.animation_descriptor_indices.len(),
+                section.affinity_dims[0],
+                section.affinity_dims[1],
+                section.affinity_dims[2],
+                section.affinity_lights.len(),
+                section.delta_subblocks.len(),
             );
             Some(section)
         }
@@ -999,6 +1079,77 @@ mod tests {
         BvhLeaf as FormatBvhLeaf, BvhNode as FormatBvhNode, BvhSection,
     };
     use postretro_level_format::geometry::{FaceMeta as FormatFaceMeta, GeometrySection, Vertex};
+
+    use postretro_level_format::delta_sh_volumes::{
+        AFFINITY_FACTOR, DeltaShVolumesSection, PROBES_PER_CELL, PROBE_F16_STRIDE,
+    };
+
+    /// A minimal valid delta section for `base_dims`, with one CSR entry.
+    fn delta_section_for(affinity_dims: [u32; 3]) -> DeltaShVolumesSection {
+        let cell_count =
+            (affinity_dims[0] * affinity_dims[1] * affinity_dims[2]) as usize;
+        let mut offsets = vec![0u32; cell_count + 1];
+        // One light touching cell 0.
+        for o in offsets.iter_mut().skip(1) {
+            *o = 1;
+        }
+        DeltaShVolumesSection {
+            affinity_factor: AFFINITY_FACTOR,
+            affinity_dims,
+            animation_descriptor_indices: vec![0],
+            affinity_offsets: offsets,
+            affinity_lights: vec![0],
+            delta_subblocks: vec![0u16; PROBES_PER_CELL * PROBE_F16_STRIDE],
+        }
+    }
+
+    #[test]
+    fn expected_affinity_dims_ceil_divides_per_axis() {
+        // factor 4: 8→2, 9→3, 1→1, 4→1, 5→2.
+        assert_eq!(expected_affinity_dims([8, 9, 1], 4), [2, 3, 1]);
+        assert_eq!(expected_affinity_dims([4, 5, 16], 4), [1, 2, 4]);
+    }
+
+    #[test]
+    fn validate_delta_sh_accepts_matching_dims() {
+        let base_dims = [8u32, 5, 1];
+        let section = delta_section_for(expected_affinity_dims(base_dims, AFFINITY_FACTOR));
+        assert!(validate_delta_sh(&section, Some(base_dims)).is_ok());
+    }
+
+    #[test]
+    fn validate_delta_sh_rejects_wrong_affinity_factor() {
+        let base_dims = [8u32, 8, 8];
+        let mut section = delta_section_for(expected_affinity_dims(base_dims, AFFINITY_FACTOR));
+        section.affinity_factor = AFFINITY_FACTOR + 1;
+        let err = validate_delta_sh(&section, Some(base_dims)).unwrap_err();
+        assert!(
+            matches!(err, PrlLoadError::DeltaShAffinityFactorMismatch { .. }),
+            "expected affinity-factor error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_delta_sh_rejects_affinity_dims_mismatch() {
+        let base_dims = [8u32, 8, 8]; // expected affinity dims [2,2,2]
+        // Build a section whose affinity_dims disagree with the base grid.
+        let section = delta_section_for([3, 2, 2]);
+        let err = validate_delta_sh(&section, Some(base_dims)).unwrap_err();
+        assert!(
+            matches!(err, PrlLoadError::DeltaShAffinityDimsMismatch { .. }),
+            "expected affinity-dims error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_delta_sh_rejects_missing_base_volume() {
+        let section = delta_section_for([2, 2, 2]);
+        let err = validate_delta_sh(&section, None).unwrap_err();
+        assert!(
+            matches!(err, PrlLoadError::DeltaShMissingBaseVolume),
+            "expected missing-base error, got {err:?}"
+        );
+    }
 
     fn simple_face_meta() -> FaceMeta {
         FaceMeta {

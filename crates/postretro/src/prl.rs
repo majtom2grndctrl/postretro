@@ -1081,13 +1081,12 @@ mod tests {
     use postretro_level_format::geometry::{FaceMeta as FormatFaceMeta, GeometrySection, Vertex};
 
     use postretro_level_format::delta_sh_volumes::{
-        AFFINITY_FACTOR, DeltaShVolumesSection, PROBES_PER_CELL, PROBE_F16_STRIDE,
+        AFFINITY_FACTOR, DeltaShVolumesSection, PROBE_F16_STRIDE, PROBES_PER_CELL,
     };
 
     /// A minimal valid delta section for `base_dims`, with one CSR entry.
     fn delta_section_for(affinity_dims: [u32; 3]) -> DeltaShVolumesSection {
-        let cell_count =
-            (affinity_dims[0] * affinity_dims[1] * affinity_dims[2]) as usize;
+        let cell_count = (affinity_dims[0] * affinity_dims[1] * affinity_dims[2]) as usize;
         let mut offsets = vec![0u32; cell_count + 1];
         // One light touching cell 0.
         for o in offsets.iter_mut().skip(1) {

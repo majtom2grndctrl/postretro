@@ -82,11 +82,12 @@ impl ShComposeResources {
             contents: &subblock_bytes,
             usage: wgpu::BufferUsages::STORAGE,
         });
-        let affinity_offsets_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("SH Compose Affinity Offsets"),
-            contents: &offsets_bytes,
-            usage: wgpu::BufferUsages::STORAGE,
-        });
+        let affinity_offsets_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("SH Compose Affinity Offsets"),
+                contents: &offsets_bytes,
+                usage: wgpu::BufferUsages::STORAGE,
+            });
         let affinity_lights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("SH Compose Affinity Lights"),
             contents: &lights_bytes,
@@ -579,7 +580,7 @@ mod tests {
     }
 
     use postretro_level_format::delta_sh_volumes::{
-        AFFINITY_FACTOR, DeltaShVolumesSection, PROBES_PER_CELL, PROBE_F16_STRIDE,
+        AFFINITY_FACTOR, DeltaShVolumesSection, PROBE_F16_STRIDE, PROBES_PER_CELL,
     };
 
     /// One stride-28 sub-block (64 probes) of deterministic f16 halves.
@@ -665,6 +666,9 @@ mod tests {
     fn pad_storage_bytes_pads_empty_to_min() {
         assert_eq!(pad_storage_bytes(Vec::new(), 4), vec![0u8; 4]);
         // Non-empty payloads pass through unchanged.
-        assert_eq!(pad_storage_bytes(vec![1, 2, 3, 4, 5], 4), vec![1, 2, 3, 4, 5]);
+        assert_eq!(
+            pad_storage_bytes(vec![1, 2, 3, 4, 5], 4),
+            vec![1, 2, 3, 4, 5]
+        );
     }
 }

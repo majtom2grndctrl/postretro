@@ -341,8 +341,7 @@ mod tests {
     }
 
     fn empty_section(affinity_dims: [u32; 3]) -> DeltaShVolumesSection {
-        let cell_count =
-            (affinity_dims[0] * affinity_dims[1] * affinity_dims[2]) as usize;
+        let cell_count = (affinity_dims[0] * affinity_dims[1] * affinity_dims[2]) as usize;
         DeltaShVolumesSection {
             affinity_factor: AFFINITY_FACTOR,
             affinity_dims,

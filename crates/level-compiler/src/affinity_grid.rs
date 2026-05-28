@@ -230,12 +230,7 @@ fn cells_for_light(
 }
 
 /// Clamp a world coordinate to an inclusive affinity-cell index per axis.
-fn cell_range(
-    p: DVec3,
-    base_min: DVec3,
-    cell_meters: f64,
-    dims: [u32; 3],
-) -> [usize; 3] {
+fn cell_range(p: DVec3, base_min: DVec3, cell_meters: f64, dims: [u32; 3]) -> [usize; 3] {
     let idx = |v: f64, lo: f64, n: u32| -> usize {
         let c = ((v - lo) / cell_meters).floor();
         if c < 0.0 {

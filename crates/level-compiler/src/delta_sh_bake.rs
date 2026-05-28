@@ -31,8 +31,8 @@ use std::collections::HashSet;
 use bvh::bvh::Bvh;
 use glam::{DVec3, Vec3};
 use postretro_level_format::delta_sh_volumes::{
-    AFFINITY_FACTOR as FORMAT_AFFINITY_FACTOR, DeltaShProbe, DeltaShVolumesSection, PROBE_F16_COUNT,
-    PROBE_F16_STRIDE, PROBES_PER_CELL,
+    AFFINITY_FACTOR as FORMAT_AFFINITY_FACTOR, DeltaShProbe, DeltaShVolumesSection,
+    PROBE_F16_COUNT, PROBE_F16_STRIDE, PROBES_PER_CELL,
 };
 use rayon::prelude::*;
 
@@ -130,7 +130,12 @@ pub fn bake_delta_sh_volumes(
     }
 
     // --- Per-light logging (AC #2): emitted-cell vs full-AABB probe counts.
-    log_per_light_culling(inputs, &decomposition.per_light_cells, base_origin, probe_spacing);
+    log_per_light_culling(
+        inputs,
+        &decomposition.per_light_cells,
+        base_origin,
+        probe_spacing,
+    );
 
     // --- Sub-blocks: one dense 64-probe block per CSR entry, index-parallel to
     // `affinity_lights`. The cell each entry belongs to is recovered from the
@@ -276,8 +281,8 @@ fn bake_subblock(
     };
 
     // Affinity-cell coords (x-fastest) from the linear cell index.
-    let nx = affinity_dims[0] as u32;
-    let ny = affinity_dims[1] as u32;
+    let nx = affinity_dims[0];
+    let ny = affinity_dims[1];
     let cell_x = cell % nx;
     let cell_y = (cell / nx) % ny;
     let cell_z = cell / (nx * ny);
@@ -414,11 +419,7 @@ fn world_aabb_min(inputs: &DeltaBakeInputs<'_>) -> DVec3 {
             v.position[2] as f64,
         ));
     }
-    if !min.x.is_finite() {
-        DVec3::ZERO
-    } else {
-        min
-    }
+    if !min.x.is_finite() { DVec3::ZERO } else { min }
 }
 
 /// Substitute world AABB used as the directional-light influence volume — the

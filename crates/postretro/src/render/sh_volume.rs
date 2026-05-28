@@ -3,15 +3,13 @@
 
 use postretro_level_format::sh_volume::{AnimationDescriptor, ShProbe, ShVolumeSection};
 
-/// 9 SH band textures + 1 depth-moment texture + 1 grid-info uniform + 3
-/// animation storage buffers in group 3. The shared `sh_sample.wgsl` helper
-/// loads probes with `textureLoad`, so no sampler is bound; binding index 0 is
-/// intentionally vacant. WGSL/wgpu binding indices need not be contiguous, so
-/// the textures stay at 1..=SH_BAND_COUNT. Combined with the lightmap, shadow,
-/// and material textures, the forward pass binds 17 sampled textures per stage
-/// — past the WebGPU spec floor of 16 — so the renderer requests a raised
-/// `max_sampled_textures_per_shader_stage` limit at device creation (see
-/// `RendererState::new`).
+/// SH band textures occupy group 3 bindings 1..=SH_BAND_COUNT. Binding 0 is
+/// intentionally vacant: `sh_sample.wgsl` uses `textureLoad`, so no sampler is
+/// bound. Indices need not be contiguous in WGSL/wgpu.
+///
+/// Adding bands increases the sampled-texture count consumed per shader stage.
+/// `render::mod::REQUIRED_SAMPLED_TEXTURES` is the matching adapter pre-check;
+/// a change here requires a coordinated bump there.
 pub const SH_BAND_COUNT: usize = 9;
 
 /// Binding indices for the group 3 animation storage buffers. These sit
@@ -96,9 +94,9 @@ pub struct ShVolumeResources {
     pub total_band_storage_views: Vec<wgpu::TextureView>,
     /// Per-probe depth-moment texture (Rg16Float — R = E[d], G = E[d²]).
     /// Already bound on group 3 binding 14 for the forward/billboard/fog
-    /// passes; held here so the SDF shadow pass (Task 4) can mint its own
+    /// passes; held here so the SDF shadow pass can mint its own
     /// `TextureView` via `make_depth_moment_view` (wgpu views aren't `Clone`,
-    /// and the SDF pass rebuilds its bind group on resize / level reload).
+    /// and the SDF shadow pass rebuilds its bind group on resize / level reload).
     depth_moment_texture: wgpu::Texture,
     /// Owned here but shared with the compose pass — one upload, two bind groups.
     /// CPU mirror kept alongside so per-frame `active` edits patch bytes and flush in one `write_buffer`.

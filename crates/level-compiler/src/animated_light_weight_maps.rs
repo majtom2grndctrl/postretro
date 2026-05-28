@@ -271,12 +271,10 @@ fn contribution_to_weight(contribution: Vec3, color: [f32; 3], intensity: f32) -
 
 /// Center-based half-open ownership: a chart-interior texel `t` (whose center
 /// projects to UV `chart.uv_min + (t + 0.5) / interior * uv_extent`) belongs to
-/// a chunk iff its center UV is in `[chunk.uv_min, chunk.uv_max)`. Sibling
-/// chunks from the chunk subdivider share UV boundaries exactly (A.uv_max ==
-/// B.uv_min); under this rule they pack into adjacent atlas rects with no
-/// overlap and no gap. Earlier outward-rounding (floor min, ceil max) inflated
-/// both siblings outward by a texel each and produced 1-texel atlas overlaps
-/// — see the `assert_no_overlapping_rects_per_face` postcondition.
+/// a chunk iff its center UV is in `[chunk.uv_min, chunk.uv_max)`. Siblings
+/// share UV boundaries exactly (A.uv_max == B.uv_min) and under this rule pack
+/// into adjacent atlas rects with no overlap and no gap. The
+/// `assert_no_overlapping_rects_per_face` postcondition guards the invariant.
 fn chunk_atlas_rect(
     chart: &Chart,
     placement: ChartPlacement,
@@ -296,14 +294,38 @@ fn chunk_atlas_rect(
     let scale_u = interior_w as f32 / chart.uv_extent[0];
     let scale_v = interior_h as f32 / chart.uv_extent[1];
 
-    // Interior-relative texel coordinate where `chunk.uv_min` projects to a
-    // texel center is `tx = (chunk_uv_min - chart.uv_min) * scale - 0.5`.
-    // Texels with center >= chunk.uv_min are those with `tx >= fx_min_interior`,
-    // i.e. integer indices `ceil(fx_min_interior)`. Likewise for max (exclusive).
-    let fx_min_interior = (chunk_uv_min[0] - chart.uv_min[0]) * scale_u - 0.5;
-    let fx_max_interior = (chunk_uv_max[0] - chart.uv_min[0]) * scale_u - 0.5;
-    let fy_min_interior = (chunk_uv_min[1] - chart.uv_min[1]) * scale_v - 0.5;
-    let fy_max_interior = (chunk_uv_max[1] - chart.uv_min[1]) * scale_v - 0.5;
+    // Interior-relative texel coord `tx = (chunk_uv - chart.uv_min) * scale - 0.5`
+    // is the center-space position of the chunk boundary; texels owned by the
+    // chunk are integer indices `>= ceil(fx_min_interior)` (and `< ceil(fx_max)`
+    // for the exclusive max).
+    //
+    // Shared boundaries on siblings are not bit-exact: recursive halving of a
+    // non-dyadic chart extent leaves the two sides drifting by ~1e-7 in f32.
+    // When that drift straddles an integer, the two `ceil`s disagree by one
+    // and adjacent atlas rects overlap by a texel row/column. Snap to absorb
+    // the drift before rounding.
+    //
+    // Epsilon is in interior-texel units; observed drift is ~1e-5 there.
+    // The nearest a genuine (non-shared) split can land to an integer in
+    // interior-texel space is 0.5: the subdivider only cuts at UV midpoints,
+    // and a midpoint of any sub-range maps to the midpoint between two adjacent
+    // texel-boundary integers — so 1e-4 is above the noise floor but at least
+    // 5000x clear of any real boundary. See
+    // `sibling_chunks_with_drifted_shared_uv_edge_pack_without_overlap` for a
+    // worked example with the precise drift values the subdivider produces.
+    const BOUNDARY_SNAP_EPS: f32 = 1.0e-4;
+    let snap_to_int = |x: f32| -> f32 {
+        let r = x.round();
+        if (x - r).abs() < BOUNDARY_SNAP_EPS {
+            r
+        } else {
+            x
+        }
+    };
+    let fx_min_interior = snap_to_int((chunk_uv_min[0] - chart.uv_min[0]) * scale_u - 0.5);
+    let fx_max_interior = snap_to_int((chunk_uv_max[0] - chart.uv_min[0]) * scale_u - 0.5);
+    let fy_min_interior = snap_to_int((chunk_uv_min[1] - chart.uv_min[1]) * scale_v - 0.5);
+    let fy_max_interior = snap_to_int((chunk_uv_max[1] - chart.uv_min[1]) * scale_v - 0.5);
 
     let fx_min_unclamped = placement.x as f32 + padding + fx_min_interior.ceil();
     let fx_max_unclamped = placement.x as f32 + padding + fx_max_interior.ceil();
@@ -357,25 +379,30 @@ fn assert_no_overlapping_rects_per_face(
                 let overlap_x = a.atlas_x < b.atlas_x + b.width && b.atlas_x < a.atlas_x + a.width;
                 let overlap_y =
                     a.atlas_y < b.atlas_y + b.height && b.atlas_y < a.atlas_y + a.height;
-                assert!(
-                    !(overlap_x && overlap_y),
-                    "animated-light chunks {i} and {j} on face {face_index} produced \
-                     overlapping atlas rects under center-based half-open ownership \
-                     ({}x{}+{}+{} vs {}x{}+{}+{}). Fix the UV chunk packer — \
-                     adjacent chunks within a face must own disjoint texel-center \
-                     sets, which requires the chunk subdivider to floor its UV \
-                     extent at the chart's per-axis UV-per-texel pitch so no chunk \
-                     ends up with an empty interior that collapses to a 1x1 atlas \
-                     fallback rect.",
-                    a.width,
-                    a.height,
-                    a.atlas_x,
-                    a.atlas_y,
-                    b.width,
-                    b.height,
-                    b.atlas_x,
-                    b.atlas_y,
-                );
+                if overlap_x && overlap_y {
+                    let ca = &chunks[i];
+                    let cb = &chunks[j];
+                    panic!(
+                        "animated-light chunks {i} and {j} on face {face_index} produced \
+                         overlapping atlas rects under center-based half-open ownership \
+                         ({}x{}+{}+{} vs {}x{}+{}+{}); chunk UVs [{:?}..{:?}] vs \
+                         [{:?}..{:?}]. Likely causes: subdivider emitted truly \
+                         overlapping UV ranges, or shared-boundary float drift exceeded \
+                         `chunk_atlas_rect`'s BOUNDARY_SNAP_EPS.",
+                        a.width,
+                        a.height,
+                        a.atlas_x,
+                        a.atlas_y,
+                        b.width,
+                        b.height,
+                        b.atlas_x,
+                        b.atlas_y,
+                        ca.uv_min,
+                        ca.uv_max,
+                        cb.uv_min,
+                        cb.uv_max,
+                    );
+                }
             }
         }
     }
@@ -934,6 +961,51 @@ mod tests {
             "sibling chunks split at uv=0.4 must not overlap: A ends at {} but B starts at {}",
             ax_a2 + w_a2,
             ax_b2,
+        );
+    }
+
+    /// Sibling chunks share a UV boundary that can drift by ~1e-7 in f32 due to
+    /// recursive halving of a non-dyadic chart extent. Without the boundary
+    /// snap in `chunk_atlas_rect`, the two sides straddle an integer in
+    /// interior-texel space, `ceil` disagrees by one, and the atlas rects
+    /// overlap by a single texel row.
+    #[test]
+    fn sibling_chunks_with_drifted_shared_uv_edge_pack_without_overlap() {
+        // Chart geometry chosen so V has a fine interior pitch (~0.0254 m),
+        // which is where the drift surfaces in practice.
+        let chart = Chart {
+            origin: glam::Vec3::ZERO,
+            u_axis: glam::Vec3::X,
+            v_axis: glam::Vec3::Z,
+            uv_min: [0.0, 0.0],
+            uv_extent: [0.0508, 8.128],
+            normal: glam::Vec3::Y,
+            width_texels: 3,
+            height_texels: 322,
+        };
+        let placement = ChartPlacement { x: 0, y: 0 };
+        let atlas_size = 4096u32;
+
+        // A.uv_max and B.uv_min are intended-equal but drift apart by ~2e-7;
+        // this is the pattern recursive halving produces at sibling seams.
+        let a_uv_min = [0.0, 2.3876];
+        let a_uv_max = [0.0508, 2.4384];
+        let b_uv_min = [0.0, 2.4383998];
+        let b_uv_max = [0.0508, 2.4891999];
+
+        let (ax_a, ay_a, w_a, h_a) = chunk_atlas_rect(
+            &chart, placement, a_uv_min, a_uv_max, atlas_size, atlas_size,
+        );
+        let (ax_b, ay_b, w_b, h_b) = chunk_atlas_rect(
+            &chart, placement, b_uv_min, b_uv_max, atlas_size, atlas_size,
+        );
+
+        let overlap_x = ax_a < ax_b + w_b && ax_b < ax_a + w_a;
+        let overlap_y = ay_a < ay_b + h_b && ay_b < ay_a + h_a;
+        assert!(
+            !(overlap_x && overlap_y),
+            "drifted-boundary siblings must not overlap: A={ax_a}+{ay_a}+{w_a}x{h_a} \
+             vs B={ax_b}+{ay_b}+{w_b}x{h_b}",
         );
     }
 

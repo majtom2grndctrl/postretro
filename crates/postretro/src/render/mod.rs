@@ -346,7 +346,8 @@ fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
 /// Minimum useful ambient. Default value seeded into the Diagnostics panel slider on first open.
 pub const DEFAULT_AMBIENT_FLOOR: f32 = 0.001;
 
-pub const DEFAULT_INDIRECT_SCALE: f32 = 0.10;
+/// Full SH contribution weight — production default. Default value seeded into the Diagnostics panel slider on first open.
+pub const DEFAULT_INDIRECT_SCALE: f32 = 1.0;
 
 struct GpuTexture {
     bind_group: wgpu::BindGroup,
@@ -888,29 +889,43 @@ impl Renderer {
             );
         }
 
-        // Forward pipeline uses groups 0–5 (camera, material, lights, SH, lightmap, shadow).
-        // Fragment shader binds 17 sampled textures: 3 material + 9 SH bands +
-        // 1 SH depth-moment + 3 lightmap + 1 shadow. The WebGPU spec floor is 16,
-        // so we raise max_sampled_textures_per_shader_stage past it; desktop
-        // backends report far higher (e.g. Metal/AMD = 128). SH compose also
-        // writes 9 storage textures (spec floor 4). These are hard requirements:
-        // we request exactly what the pipelines need and pre-check the adapter
-        // (below) so an under-spec adapter fails early and clearly instead of
-        // silently clamping low and crashing at pipeline-creation time.
-        const REQUIRED_SAMPLED_TEXTURES: u32 = 17;
+        // Forward pass and SH compose both exceed WebGPU spec floors for
+        // per-stage sampled (16) and storage (4) texture bindings. Desktop
+        // backends report far higher (Metal/AMD = 128), so we request the
+        // counts the pipelines need.
+        //
+        // Sampled texture inventory (19 total across the forward shader stage):
+        //   Group 1 — material (3): diffuse, specular, normal
+        //   Group 3 — SH volume (10): 9 band textures (bindings 1–9) + depth-moments (binding 14)
+        //   Group 4 — lightmap (3): static irradiance, static dominant-direction, animated-contribution atlas
+        //   Group 5 — shadow (3): spot-shadow depth array (binding 0), SDF shadow factor (binding 3), scene depth (binding 4)
+        //
+        // The two entries at Group 5 bindings 3 and 4 (SDF shadow factor and
+        // scene depth) raised the count from 17 to 19 when the SDF
+        // static-occluder shadow pass was added.
+        const REQUIRED_SAMPLED_TEXTURES: u32 = 19;
         const REQUIRED_STORAGE_TEXTURES: u32 = 9;
+        // Stopgap: SH compose's flat delta-probe storage buffer outgrows the
+        // WebGPU spec floor (128 MiB) on maps with many animated lights because
+        // it bakes a dense AABB grid per light. 512 MiB covers current maps on
+        // mainstream desktop adapters (which report 2 GiB+), but it is a
+        // load-bearing dependency on above-spec hardware.
+        // context/plans/drafts/perf-animated-sh-light-culling/index.md
+        // tracks the fix: sparse per-light delta storage that keeps the total
+        // binding under the 128 MiB spec floor regardless of light count.
+        const REQUIRED_STORAGE_BUFFER_BINDING_SIZE: u64 = 512 * 1024 * 1024;
         let adapter_limits = adapter.limits();
         let required_limits = wgpu::Limits {
             max_bind_groups: 8,
             max_sampled_textures_per_shader_stage: REQUIRED_SAMPLED_TEXTURES,
             max_storage_textures_per_shader_stage: REQUIRED_STORAGE_TEXTURES,
+            max_storage_buffer_binding_size: REQUIRED_STORAGE_BUFFER_BINDING_SIZE,
             ..wgpu::Limits::default()
         };
 
-        // Explicit pre-checks so an under-spec adapter fails with a clear,
-        // named error here rather than the opaque `request_device` rejection
-        // (unsupported feature) or deferred pipeline-creation failure (limit
-        // requested above the adapter's reported max) that wgpu returns otherwise.
+        // Pre-check so an under-spec adapter fails with a named error here
+        // rather than an opaque `request_device` rejection or a deferred
+        // pipeline-creation crash.
         if !adapter_features.contains(wgpu::Features::TEXTURE_COMPRESSION_BC) {
             anyhow::bail!(
                 "GPU adapter lacks required feature TEXTURE_COMPRESSION_BC \
@@ -932,6 +947,16 @@ impl Renderer {
                  the SH compose pass requires {}",
                 adapter_limits.max_storage_textures_per_shader_stage,
                 REQUIRED_STORAGE_TEXTURES
+            );
+        }
+        if adapter_limits.max_storage_buffer_binding_size < REQUIRED_STORAGE_BUFFER_BINDING_SIZE {
+            anyhow::bail!(
+                "GPU adapter supports only {} bytes per storage buffer binding; \
+                 the SH compose delta-probe buffer requires {} (stopgap limit — \
+                 see context/plans/drafts/perf-animated-sh-light-culling/index.md \
+                 for the sparse-storage fix that removes this requirement)",
+                adapter_limits.max_storage_buffer_binding_size,
+                REQUIRED_STORAGE_BUFFER_BINDING_SIZE
             );
         }
 

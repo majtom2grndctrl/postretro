@@ -292,6 +292,7 @@ fn attach_descriptor_components(
             cone_direction: None,
             cast_shadows: false,
             is_dynamic: true,
+            animated_slot: None,
             animation: None,
         };
         let _ = registry.set_component(id, component);

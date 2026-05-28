@@ -1158,7 +1158,7 @@
 "_fade" "1024"
 "_bake_only" "0"
 "_tags" "arena_1_light"
-"_dynamic" "1"
+"_animated" "1"
 "angles" "-15 -38.7 0"
 "_light_radius" "800"
 }
@@ -1180,7 +1180,7 @@
 "_fade" "325"
 "_bake_only" "0"
 "_tags" "arena_wave_2"
-"_dynamic" "1"
+"_animated" "1"
 }
 // entity 6
 {
@@ -1200,7 +1200,7 @@
 "_fade" "325"
 "_bake_only" "0"
 "_tags" "arena_wave_2"
-"_dynamic" "1"
+"_animated" "1"
 }
 // entity 8
 {
@@ -1211,7 +1211,7 @@
 "_fade" "1024"
 "_bake_only" "0"
 "_tags" "arena_1_light"
-"_dynamic" "1"
+"_animated" "1"
 "angles" "-15 -60.6 0"
 "_light_radius" "800"
 }
@@ -1224,7 +1224,7 @@
 "_fade" "1024"
 "_bake_only" "0"
 "_tags" "arena_1_light"
-"_dynamic" "1"
+"_animated" "1"
 "angles" "-15 -130.6 0"
 "_light_radius" "800"
 }
@@ -1237,7 +1237,7 @@
 "_fade" "1024"
 "_bake_only" "0"
 "_tags" "arena_1_light"
-"_dynamic" "1"
+"_animated" "1"
 "angles" "-15 -100.3 0"
 "_light_radius" "800"
 }
@@ -1250,7 +1250,7 @@
 "_fade" "1024"
 "_bake_only" "0"
 "_tags" "arena_1_light"
-"_dynamic" "1"
+"_animated" "1"
 "angles" "-15 -154.7 0"
 "_light_radius" "800"
 }
@@ -1263,7 +1263,7 @@
 "_fade" "1024"
 "_bake_only" "0"
 "_tags" "arena_1_light"
-"_dynamic" "1"
+"_animated" "1"
 "angles" "-15 159.6 0"
 "_light_radius" "800"
 }
@@ -1276,7 +1276,7 @@
 "_fade" "1024"
 "_bake_only" "0"
 "_tags" "arena_1_light"
-"_dynamic" "1"
+"_animated" "1"
 "angles" "-15 131.7 0"
 "_light_radius" "800"
 }
@@ -1289,7 +1289,7 @@
 "_fade" "1024"
 "_bake_only" "0"
 "_tags" "arena_1_light"
-"_dynamic" "1"
+"_animated" "1"
 "angles" "-15 44.0 0"
 "_light_radius" "800"
 }
@@ -1302,7 +1302,7 @@
 "_fade" "1024"
 "_bake_only" "0"
 "_tags" "arena_1_light"
-"_dynamic" "1"
+"_animated" "1"
 "angles" "-15 66.5 0"
 "_light_radius" "800"
 }
@@ -1315,7 +1315,7 @@
 "_fade" "1024"
 "_bake_only" "0"
 "_tags" "arena_1_light"
-"_dynamic" "1"
+"_animated" "1"
 "angles" "-15 106.1 0"
 "_light_radius" "800"
 }
@@ -1368,7 +1368,7 @@
 "_fade" "325"
 "_bake_only" "0"
 "_tags" "arena_wave_2"
-"_dynamic" "1"
+"_animated" "1"
 }
 // entity 22
 {
@@ -1379,7 +1379,7 @@
 "_fade" "325"
 "_bake_only" "0"
 "_tags" "arena_wave_2"
-"_dynamic" "1"
+"_animated" "1"
 }
 // entity 23
 {
@@ -1390,7 +1390,7 @@
 "_fade" "325"
 "_bake_only" "0"
 "_tags" "arena_wave_2"
-"_dynamic" "1"
+"_animated" "1"
 }
 // entity 24
 {
@@ -1401,7 +1401,7 @@
 "_fade" "325"
 "_bake_only" "0"
 "_tags" "arena_wave_2"
-"_dynamic" "1"
+"_animated" "1"
 }
 // entity 25
 {
@@ -1412,7 +1412,7 @@
 "_fade" "325"
 "_bake_only" "0"
 "_tags" "arena_wave_2"
-"_dynamic" "1"
+"_animated" "1"
 }
 // entity 26
 {

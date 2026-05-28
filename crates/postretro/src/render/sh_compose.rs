@@ -600,6 +600,7 @@ mod tests {
                 };
                 2
             ],
+            slot_for_map_light: Vec::new(),
         };
         let probe_a = DeltaShProbe {
             sh_coefficients_f16: [0; PROBE_F16_COUNT],

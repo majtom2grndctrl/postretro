@@ -9,7 +9,7 @@ use glam::{DVec3, Vec3};
 use nalgebra::{Point3, Vector3};
 use postretro_level_format::lightmap::f32_to_f16_bits;
 use postretro_level_format::sh_volume::{
-    AnimationDescriptor, PROBE_STRIDE, ShProbe, ShVolumeSection,
+    ANIMATED_SLOT_NONE, AnimationDescriptor, PROBE_STRIDE, ShProbe, ShVolumeSection,
 };
 use rayon::prelude::*;
 
@@ -57,6 +57,9 @@ pub struct ShBakeCtx<'a> {
     pub exterior_leaves: &'a HashSet<usize>,
     pub static_lights: &'a StaticBakedLights<'a>,
     pub animated_lights: &'a AnimatedBakedLights<'a>,
+    /// Total `MapLight` count (full pre-filter list length). Used to size the
+    /// `slot_for_map_light` trailer in the emitted `ShVolumeSection`. Task 2c.
+    pub total_light_count: usize,
 }
 
 impl<'a> ShBakeCtx<'a> {
@@ -101,6 +104,7 @@ pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> ShVolumeSect
             probe_stride: PROBE_STRIDE,
             probes: Vec::new(),
             animation_descriptors: Vec::new(),
+            slot_for_map_light: vec![ANIMATED_SLOT_NONE; inputs.total_light_count],
         };
     }
 
@@ -170,6 +174,15 @@ pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> ShVolumeSect
         .map(|l| animation_descriptor_for(l))
         .collect();
 
+    // Task 2c: emit the map-light-index → animated-slot table. Inverse of
+    // the envelope-slot assignment in `AnimatedBakedLights::from_lights`.
+    let mut slot_for_map_light = vec![ANIMATED_SLOT_NONE; inputs.total_light_count];
+    for (slot, entry) in inputs.animated_lights.entries().iter().enumerate() {
+        if entry.source_index < slot_for_map_light.len() {
+            slot_for_map_light[entry.source_index] = slot as u32;
+        }
+    }
+
     ShVolumeSection {
         grid_origin: [world_min.x as f32, world_min.y as f32, world_min.z as f32],
         cell_size,
@@ -177,6 +190,7 @@ pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> ShVolumeSect
         probe_stride: PROBE_STRIDE,
         probes: base_probes,
         animation_descriptors,
+        slot_for_map_light,
     }
 }
 
@@ -878,6 +892,7 @@ mod tests {
             bake_only: false,
             is_dynamic: false,
             casts_entity_shadows: false,
+            is_animated: false,
             tags: vec![],
         }
     }
@@ -1046,10 +1061,52 @@ mod tests {
             exterior_leaves: &exterior,
             static_lights: &static_lights,
             animated_lights: &animated_lights,
+            total_light_count: 0,
         };
         let section = bake_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 });
         assert_eq!(section.grid_dimensions, [0, 0, 0]);
         assert!(section.probes.is_empty());
+    }
+
+    /// Task 2c: even on empty geometry, the slot table sizes to
+    /// `total_light_count`. Every entry is `ANIMATED_SLOT_NONE`.
+    #[test]
+    fn empty_geometry_emits_sized_slot_table_when_lights_present() {
+        use postretro_level_format::sh_volume::ANIMATED_SLOT_NONE;
+        let geo = GeometryResult {
+            geometry: GeometrySection {
+                vertices: Vec::new(),
+                indices: Vec::new(),
+                faces: Vec::new(),
+            },
+            texture_names: TextureNamesSection { names: Vec::new() },
+            face_index_ranges: Vec::new(),
+        };
+        let tree = tree_all_empty();
+        let bvh = bvh::bvh::Bvh { nodes: Vec::new() };
+        let primitives: Vec<BvhPrimitive> = Vec::new();
+        let exterior: HashSet<usize> = HashSet::new();
+        let lights: &[MapLight] = &[];
+        let static_lights = StaticBakedLights::from_lights(lights);
+        let animated_lights = AnimatedBakedLights::from_lights(lights);
+        let inputs = ShBakeCtx {
+            bvh: &bvh,
+            primitives: &primitives,
+            geometry: &geo,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
+            total_light_count: 7,
+        };
+        let section = bake_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 });
+        assert_eq!(section.slot_for_map_light.len(), 7);
+        assert!(
+            section
+                .slot_for_map_light
+                .iter()
+                .all(|&s| s == ANIMATED_SLOT_NONE)
+        );
     }
 
     #[test]
@@ -1158,6 +1215,7 @@ mod tests {
             bake_only: false,
             is_dynamic: false,
             casts_entity_shadows: false,
+            is_animated: false,
             tags: vec![],
         };
         let exterior: HashSet<usize> = HashSet::new();
@@ -1172,6 +1230,7 @@ mod tests {
             exterior_leaves: &exterior,
             static_lights: &static_lights,
             animated_lights: &animated_lights,
+            total_light_count: 0,
         };
         let a = bake_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 });
         let b = bake_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 });
@@ -1217,6 +1276,7 @@ mod tests {
                 bake_only: false,
                 is_dynamic: false,
                 casts_entity_shadows: false,
+                is_animated: false,
                 tags: vec![],
             },
             MapLight {
@@ -1234,6 +1294,7 @@ mod tests {
                 bake_only: false,
                 is_dynamic: false,
                 casts_entity_shadows: false,
+                is_animated: false,
                 tags: vec![],
             },
         ];
@@ -1248,6 +1309,7 @@ mod tests {
             exterior_leaves: &exterior,
             static_lights: &static_lights,
             animated_lights: &animated_lights,
+            total_light_count: 0,
         };
         let config = ShConfig { probe_spacing: 1.0 };
 
@@ -1284,6 +1346,7 @@ mod tests {
             exterior_leaves: &exterior,
             static_lights: &static_lights,
             animated_lights: &animated_lights,
+            total_light_count: 0,
         };
         let static_light_refs: Vec<&MapLight> = Vec::new();
 
@@ -1335,6 +1398,7 @@ mod tests {
             exterior_leaves: &exterior,
             static_lights: &static_lights,
             animated_lights: &animated_lights,
+            total_light_count: 0,
         };
         let section = bake_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 });
 
@@ -1403,6 +1467,7 @@ mod tests {
             bake_only: false,
             is_dynamic: false,
             casts_entity_shadows: false,
+            is_animated: false,
             tags: vec![],
         };
         let exterior: HashSet<usize> = HashSet::new();
@@ -1417,6 +1482,7 @@ mod tests {
             exterior_leaves: &exterior,
             static_lights: &static_lights,
             animated_lights: &animated_lights,
+            total_light_count: 0,
         };
         let section = bake_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 });
         assert_eq!(section.animation_descriptors.len(), 1);
@@ -1459,6 +1525,7 @@ mod tests {
             bake_only: false,
             is_dynamic: false,
             casts_entity_shadows: false,
+            is_animated: false,
             tags: vec![],
         };
         let exterior: HashSet<usize> = HashSet::new();
@@ -1473,6 +1540,7 @@ mod tests {
             exterior_leaves: &exterior,
             static_lights: &static_lights,
             animated_lights: &animated_lights,
+            total_light_count: 0,
         };
         let section = bake_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 });
         assert_eq!(section.animation_descriptors.len(), 1);
@@ -1504,6 +1572,7 @@ mod tests {
             exterior_leaves: &exterior,
             static_lights: &static_lights,
             animated_lights: &animated_lights,
+            total_light_count: 0,
         };
         let section = bake_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 });
         assert!(section.animation_descriptors.is_empty());
@@ -1540,6 +1609,7 @@ mod tests {
             exterior_leaves: &exterior,
             static_lights: &static_lights,
             animated_lights: &animated_lights,
+            total_light_count: 0,
         };
         let section = bake_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 });
         for probe in &section.probes {
@@ -1631,6 +1701,7 @@ mod tests {
             exterior_leaves: &exterior,
             static_lights: &static_lights,
             animated_lights: &animated_lights,
+            total_light_count: 0,
         };
         let section = bake_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 });
         assert!(
@@ -1673,6 +1744,7 @@ mod tests {
                 exterior_leaves: &exterior,
                 static_lights: &static_lights,
                 animated_lights: &animated_lights,
+                total_light_count: 0,
             };
             bake_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 })
         };
@@ -1692,6 +1764,7 @@ mod tests {
             bake_only: false,
             is_dynamic: false,
             casts_entity_shadows: false,
+            is_animated: false,
             tags: vec![],
         };
         dyn_light.is_dynamic = true;
@@ -1708,6 +1781,7 @@ mod tests {
                 exterior_leaves: &exterior,
                 static_lights: &static_lights,
                 animated_lights: &animated_lights,
+                total_light_count: 0,
             };
             bake_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 })
         };

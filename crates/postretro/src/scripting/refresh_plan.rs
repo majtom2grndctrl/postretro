@@ -892,6 +892,7 @@ mod tests {
             cone_direction: None,
             cast_shadows: false,
             is_dynamic: true,
+            animated_slot: None,
             animation: None,
         };
         live.is_dynamic = false;
@@ -1160,6 +1161,7 @@ mod tests {
                     cone_direction: None,
                     cast_shadows: false,
                     is_dynamic: true,
+                    animated_slot: None,
                     animation: None,
                 },
             )

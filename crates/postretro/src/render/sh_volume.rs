@@ -172,6 +172,40 @@ impl AnimatedLightBuffers {
         self.animated_light_count
     }
 
+    /// Overwrite the entire 48-byte `ANIMATION_DESCRIPTOR` for an animated
+    /// light at `slot`. Used by the scripting → animated-baked bridge to
+    /// route a `setLightAnimation` curve into the compose-side descriptor
+    /// buffer (Task 2c). Marks the mirror dirty when the bytes change.
+    /// Out-of-range `slot` is a silent no-op after the first warn-level log
+    /// line — mirrors `set_active`'s behavior for descriptor-buffer writes
+    /// against a light that never made it into the bake.
+    pub fn write_descriptor(
+        &mut self,
+        slot: usize,
+        bytes: &[u8; ANIMATION_DESCRIPTOR_SIZE],
+    ) {
+        if slot >= self.animated_light_count as usize {
+            if !self.oor_warned {
+                self.oor_warned = true;
+                log::warn!(
+                    "[AnimatedLightBuffers] write_descriptor called with out-of-range slot {} \
+                     (animated_light_count = {}); call ignored. Further out-of-range \
+                     warnings suppressed.",
+                    slot,
+                    self.animated_light_count,
+                );
+            }
+            return;
+        }
+        let start = slot * ANIMATION_DESCRIPTOR_SIZE;
+        if self.descriptor_mirror[start..start + ANIMATION_DESCRIPTOR_SIZE] == bytes[..] {
+            return;
+        }
+        self.descriptor_mirror[start..start + ANIMATION_DESCRIPTOR_SIZE]
+            .copy_from_slice(bytes);
+        self.dirty = true;
+    }
+
     /// Toggle the runtime `active` flag for an animated light.
     /// Marks the mirror dirty only when the state actually changes.
     /// Out-of-range `slot` is a silent no-op after the first warn-level log line
@@ -1068,6 +1102,7 @@ mod tests {
                     start_active: 0,
                 },
             ],
+            slot_for_map_light: Vec::new(),
         };
 
         let (descriptors, samples, count) = build_animation_buffers(Some(&section));
@@ -1621,6 +1656,7 @@ mod tests {
             probe_stride: PROBE_STRIDE,
             probes: vec![ShProbe::default()],
             animation_descriptors: vec![desc.clone()],
+            slot_for_map_light: Vec::new(),
         };
 
         let (descriptors, _samples, count) = build_animation_buffers(Some(&section));
@@ -1701,6 +1737,7 @@ mod tests {
                 direction: vec![dir0, dir1, dir2, dir3],
                 start_active: 1,
             }],
+            slot_for_map_light: Vec::new(),
         };
 
         let (descriptors, samples_bytes, count) = build_animation_buffers(Some(&section));

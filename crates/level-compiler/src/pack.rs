@@ -783,6 +783,7 @@ mod tests {
             probe_stride: postretro_level_format::sh_volume::PROBE_STRIDE,
             probes: Vec::new(),
             animation_descriptors: Vec::new(),
+            slot_for_map_light: Vec::new(),
         }
     }
 
@@ -952,6 +953,7 @@ mod tests {
             exterior_leaves: &exterior,
             static_lights: &static_lights,
             animated_lights: &animated_lights,
+            total_light_count: map_data.lights.len(),
         };
         let sh_volume = crate::sh_bake::bake_sh_volume(
             &sh_inputs,
@@ -1064,6 +1066,7 @@ mod tests {
                 exterior_leaves: &exterior,
                 static_lights: &static_lights,
                 animated_lights: &animated_lights,
+                total_light_count: map_data.lights.len(),
             };
             let section = crate::sh_bake::bake_sh_volume(
                 &sh_inputs,
@@ -1113,6 +1116,7 @@ mod tests {
                 bake_only: false,
                 is_dynamic: false,
                 casts_entity_shadows: false,
+                is_animated: false,
                 tags: vec![],
             },
             MapLight {
@@ -1130,6 +1134,7 @@ mod tests {
                 bake_only: false,
                 is_dynamic: false,
                 casts_entity_shadows: false,
+                is_animated: false,
                 tags: vec![],
             },
             MapLight {
@@ -1147,6 +1152,7 @@ mod tests {
                 bake_only: false,
                 is_dynamic: false,
                 casts_entity_shadows: false,
+                is_animated: false,
                 tags: vec![],
             },
         ];
@@ -1216,6 +1222,7 @@ mod tests {
             bake_only: false,
             is_dynamic: false,
             casts_entity_shadows: false,
+            is_animated: false,
             tags: vec![],
         };
 

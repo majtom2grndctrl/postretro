@@ -1101,6 +1101,7 @@ mod tests {
             bake_only: false,
             is_dynamic: false,
             casts_entity_shadows: false,
+            is_animated: false,
             tags: vec![],
         }
     }
@@ -1566,6 +1567,7 @@ mod tests {
             bake_only: false,
             is_dynamic: false,
             casts_entity_shadows: false,
+            is_animated: false,
             tags: vec![],
         };
         let lights = vec![light];
@@ -1726,6 +1728,7 @@ mod tests {
             bake_only: false,
             is_dynamic: false,
             casts_entity_shadows: false,
+            is_animated: false,
             tags: vec![],
         };
         let lights = vec![light];

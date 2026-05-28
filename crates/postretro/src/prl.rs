@@ -140,6 +140,14 @@ pub struct MapLight {
     /// `_cast_entity_shadows`. Default `false`. Legacy PRLs without this
     /// field deserialize with `casts_entity_shadows == false` (opt-in).
     pub casts_entity_shadows: bool,
+    /// Slot into the SH-volume animated-light descriptor table when the
+    /// compiler reserved one for this map light, else `None`. Resolved once
+    /// at load from `ShVolumeSection.slot_for_map_light` and cached on the
+    /// runtime `LightComponent` so `setLightAnimation` can write the
+    /// descriptor through the compose-side buffer without a per-call lookup.
+    /// `None` for non-animated lights and for legacy PRLs that lack the slot
+    /// table. Task 2c of `sdf-static-occluder-shadows`.
+    pub animated_slot: Option<u32>,
     /// From LightTags section (ID 26). Space-delimited on wire; split here.
     /// `world.query({ tag: "t" })` matches when any tag equals `"t"`.
     pub tags: Vec<String>,
@@ -319,6 +327,7 @@ fn convert_alpha_lights(section: AlphaLightsSection) -> Vec<MapLight> {
                 cast_shadows: r.cast_shadows,
                 is_dynamic: r.is_dynamic,
                 casts_entity_shadows: r.casts_entity_shadows,
+                animated_slot: None, // populated from ShVolume slot table later in load
                 tags: vec![], // populated by LightTags section pass below
                 leaf_index: r.leaf_index,
             }
@@ -595,6 +604,34 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
                 None
             }
         };
+
+    // Task 2c: populate `MapLight.animated_slot` from the SH-volume slot
+    // table. Resolution happens once here (load time), not per
+    // `setLightAnimation` call. Legacy PRLs lack the table — every slot stays
+    // `None` and the bridge takes the legacy `is_dynamic`-gated path.
+    if let Some(sh) = sh_volume.as_ref()
+        && !sh.slot_for_map_light.is_empty()
+    {
+        use postretro_level_format::sh_volume::ANIMATED_SLOT_NONE;
+        if sh.slot_for_map_light.len() != lights.len() {
+            log::warn!(
+                "[PRL] ShVolume slot_for_map_light count ({}) != AlphaLights count ({}); skipping animated-slot resolution",
+                sh.slot_for_map_light.len(),
+                lights.len(),
+            );
+        } else {
+            let mut resolved = 0usize;
+            for (light, &slot) in lights.iter_mut().zip(sh.slot_for_map_light.iter()) {
+                if slot != ANIMATED_SLOT_NONE {
+                    light.animated_slot = Some(slot);
+                    resolved += 1;
+                }
+            }
+            log::info!(
+                "[PRL] Resolved {resolved} map-light → animated-slot mapping(s)"
+            );
+        }
+    }
 
     // Optional — absent → 1×1 white placeholder; bumped-Lambert degrades to flat white.
     let lightmap: Option<LightmapSection> =

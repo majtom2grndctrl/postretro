@@ -943,6 +943,11 @@ impl ApplicationHandler for App {
                                 renderer.upload_bridge_lights(&update.lights_bytes);
                                 renderer.upload_bridge_descriptors(&update.descriptor_bytes);
                                 renderer.upload_bridge_samples(&update.samples_bytes);
+                                // Task 2c: also fan out `_animated` descriptor
+                                // updates to the animated-compose buffer.
+                                for (slot, bytes) in &update.compose_descriptor_writes {
+                                    renderer.write_animated_compose_descriptor(*slot, bytes);
+                                }
                             }
                             renderer.set_light_effective_brightness(&update.effective_brightness);
                         }

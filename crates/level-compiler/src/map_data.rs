@@ -249,6 +249,20 @@ pub struct MapLight {
     /// See `context/plans/in-progress/sdf-static-occluder-shadows/`.
     pub casts_entity_shadows: bool,
 
+    /// Declarative authoring: the light has **static geometry** but its
+    /// intensity arrives from script at runtime. Authored as FGD `_animated`.
+    /// Default `false`. Reserves a baked animated-lightmap weight map (so the
+    /// runtime compose path can radiance-weight the light's contribution) and
+    /// a slot in the SH-volume animation-descriptor table — but the GPU
+    /// curves stay empty until the bridge writes them on a `setLightAnimation`
+    /// call. (Task 2c of `sdf-static-occluder-shadows`.)
+    ///
+    /// Mutually compatible with `bake_only` — both can be true for a light
+    /// that bakes its weight map but has no forward runtime presence. Mutually
+    /// orthogonal to `is_dynamic` (which is geometry-motion only and stays
+    /// `false` in v1 for authored content).
+    pub is_animated: bool,
+
     /// Author-supplied script tags (FGD `_tags`, space-delimited). Carried
     /// through the PRL `LightTags` section so the runtime can register each
     /// light with the scripting entity registry. An entity matches

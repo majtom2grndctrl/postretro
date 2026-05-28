@@ -659,6 +659,7 @@ mod tests {
             cast_shadows: false,
             is_dynamic: dynamic,
             casts_entity_shadows: false,
+            animated_slot: None,
             tags: vec![],
             leaf_index: 0,
         }

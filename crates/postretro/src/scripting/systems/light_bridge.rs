@@ -59,6 +59,12 @@ pub(crate) struct LightBridgeUpdate {
     /// must track the live animation curve every frame. Static lights and
     /// color-only animations report `1.0`; `start_active: Some(false)` reports `0.0`.
     pub(crate) effective_brightness: Vec<f32>,
+    /// Compose-side descriptor writes for `_animated` (and other slot-bearing)
+    /// lights. Each entry is `(animated_slot, 48-byte ANIMATION_DESCRIPTOR
+    /// bytes)` — the renderer overwrites the compose descriptor buffer at the
+    /// slot. Populated only when the bridge is dirty AND the affected light
+    /// has a cached `animated_slot`. Empty otherwise. Task 2c.
+    pub(crate) compose_descriptor_writes: Vec<(u32, [u8; ANIMATION_DESCRIPTOR_SIZE])>,
 }
 
 /// State carried across frames. Owned by the game layer so the renderer never
@@ -91,6 +97,10 @@ pub(crate) struct LightBridge {
 struct MapLightShape {
     is_dynamic: bool,
     leaf_index: u32,
+    /// Cached `MapLight.animated_slot` so the bridge can route
+    /// `setLightAnimation` writes to the animated-compose descriptor buffer
+    /// without re-querying the source. Task 2c.
+    animated_slot: Option<u32>,
 }
 
 impl LightBridge {
@@ -193,6 +203,7 @@ impl LightBridge {
             self.shape.push(MapLightShape {
                 is_dynamic: light.is_dynamic,
                 leaf_index: light.leaf_index,
+                animated_slot: light.animated_slot,
             });
             self.cached_origins_f64.push(light.origin);
         }
@@ -254,6 +265,9 @@ impl LightBridge {
             self.shape.push(MapLightShape {
                 is_dynamic: true,
                 leaf_index: u32::MAX,
+                // Script-spawned dynamic lights have no baked slot; the
+                // bridge routes them via the legacy forward path.
+                animated_slot: None,
             });
             self.cached_origins_f64.push(origin_f64);
         }
@@ -361,6 +375,7 @@ impl LightBridge {
                 descriptor_bytes: Vec::new(),
                 samples_bytes: Vec::new(),
                 effective_brightness,
+                compose_descriptor_writes: Vec::new(),
             });
         }
         self.dirty = false;
@@ -368,6 +383,7 @@ impl LightBridge {
         let mut lights_bytes: Vec<u8> = Vec::with_capacity(self.entity_ids.len() * GPU_LIGHT_SIZE);
         let mut descriptor_bytes: Vec<u8> =
             Vec::with_capacity(self.entity_ids.len() * ANIMATION_DESCRIPTOR_SIZE);
+        let mut compose_descriptor_writes: Vec<(u32, [u8; ANIMATION_DESCRIPTOR_SIZE])> = Vec::new();
 
         self.scripted_sample_buf.fill(0.0);
 
@@ -416,6 +432,17 @@ impl LightBridge {
 
             let desc = pack_animation_descriptor(component, brightness_offset, color_offset);
             descriptor_bytes.extend_from_slice(&desc);
+
+            // Task 2c: for `_animated` (and other slot-bearing) lights,
+            // also queue a write into the animated-compose descriptor buffer
+            // at the cached section slot. The compose pass reads the same
+            // 48-byte stride from its own descriptor buffer (group 1
+            // binding 4) — the offsets we just baked point into the shared
+            // `anim_samples` scripted region, which both the forward and
+            // compose paths sample.
+            if let Some(slot) = self.shape[map_idx].animated_slot {
+                compose_descriptor_writes.push((slot, desc));
+            }
         }
 
         // Native endian matches `f32_slice_to_bytes` in sh_volume.rs.
@@ -431,6 +458,7 @@ impl LightBridge {
             descriptor_bytes,
             samples_bytes,
             effective_brightness,
+            compose_descriptor_writes,
         })
     }
 }
@@ -482,6 +510,7 @@ fn map_light_to_component(light: &MapLight) -> LightComponent {
         },
         cast_shadows: light.cast_shadows,
         is_dynamic: light.is_dynamic,
+        animated_slot: light.animated_slot,
         animation: None,
     }
 }
@@ -520,6 +549,7 @@ fn component_to_map_light(
         // shadow-pool opt-in (Task 1b); default `false`. Wired later if a
         // script-side API for entity-shadow opt-in lands.
         casts_entity_shadows: false,
+        animated_slot: None,
         tags: vec![],
         leaf_index,
     }
@@ -698,6 +728,7 @@ mod tests {
             cast_shadows: false,
             is_dynamic: false,
             casts_entity_shadows: false,
+            animated_slot: None,
             tags: vec![],
             leaf_index: 0,
         }
@@ -717,6 +748,7 @@ mod tests {
             cast_shadows: true,
             is_dynamic: true,
             casts_entity_shadows: true,
+            animated_slot: None,
             tags: vec![],
             leaf_index: 0,
         }
@@ -996,6 +1028,7 @@ mod tests {
             cone_direction: None,
             cast_shadows: false,
             is_dynamic: true,
+            animated_slot: None,
             animation: Some(LightAnimation {
                 period_ms: 500.0,
                 phase: None,
@@ -1104,6 +1137,7 @@ mod tests {
             cone_direction: None,
             cast_shadows: false,
             is_dynamic: true,
+            animated_slot: None,
             animation: None,
         };
         registry.set_component(new_id, component).unwrap();
@@ -1171,6 +1205,90 @@ mod tests {
             bright.effective_brightness[0] > 0.5,
             "light is bright at T=1.0s (cycle wrap); got {}",
             bright.effective_brightness[0]
+        );
+    }
+
+    /// Task 2c: `setLightAnimation` on a static `_animated` light (one with a
+    /// cached `animated_slot`) feeds a compose-side descriptor write. The
+    /// bridge produces `compose_descriptor_writes` keyed on the cached slot,
+    /// not on map-light index; the descriptor bytes carry the live brightness
+    /// count. Asserted: brightness-only animation reaches the compose
+    /// descriptor without going through the `is_dynamic` forward path.
+    #[test]
+    fn animated_light_routes_set_animation_through_compose_buffer() {
+        let mut light = sample_point_light();
+        // Static geometry; intensity arrives from script. Compiler assigned
+        // slot 3 (arbitrary; the bridge keys on this value).
+        light.is_dynamic = false;
+        light.animated_slot = Some(3);
+
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[light], &mut registry, 0);
+        // Flush the initial dirty upload (no script animation yet — bytes
+        // present but they're the sentinel descriptor for the slot).
+        let initial = bridge.update(&mut registry, 0.0).expect("initial dirty");
+        assert!(initial.has_dirty_data);
+        assert_eq!(
+            initial.compose_descriptor_writes.len(),
+            1,
+            "every populated `_animated` light writes its initial descriptor"
+        );
+        assert_eq!(initial.compose_descriptor_writes[0].0, 3);
+
+        // Now run a setLightAnimation on the light.
+        let id = bridge.entity_for_map_index(0).unwrap();
+        let mut component = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .clone();
+        component.animation = Some(LightAnimation {
+            period_ms: 1000.0,
+            phase: None,
+            play_count: None,
+            start_active: None,
+            brightness: Some(vec![0.0, 1.0, 0.0]),
+            color: None,
+            direction: None,
+        });
+        registry.set_component(id, component).unwrap();
+
+        let update = bridge
+            .update(&mut registry, 0.0)
+            .expect("dirty after setLightAnimation");
+        assert!(update.has_dirty_data);
+        assert_eq!(
+            update.compose_descriptor_writes.len(),
+            1,
+            "dirty frame emits one compose-side write for the slot-bearing light"
+        );
+        let (slot, bytes) = &update.compose_descriptor_writes[0];
+        assert_eq!(*slot, 3, "write targets the cached `animated_slot`");
+        // Bytes[12..16] = brightness_count (matches `pack_animation_descriptor`).
+        let brightness_count = u32::from_ne_bytes(bytes[12..16].try_into().unwrap());
+        assert_eq!(
+            brightness_count, 3,
+            "compose descriptor carries the scripted brightness curve length"
+        );
+        // active (bytes[36..40]) = 1: animation is live, not sentinel.
+        let active = u32::from_ne_bytes(bytes[36..40].try_into().unwrap());
+        assert_eq!(active, 1);
+    }
+
+    /// Task 2c: a light without a baked slot (legacy / non-`_animated`)
+    /// produces no compose-side descriptor writes — the bridge falls back to
+    /// the legacy forward path entirely.
+    #[test]
+    fn non_animated_light_produces_no_compose_descriptor_writes() {
+        let light = sample_point_light(); // animated_slot = None
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[light], &mut registry, 0);
+        let update = bridge.update(&mut registry, 0.0).unwrap();
+        assert!(update.has_dirty_data);
+        assert!(
+            update.compose_descriptor_writes.is_empty(),
+            "lights without `animated_slot` must not feed the compose buffer"
         );
     }
 }

@@ -93,6 +93,15 @@ pub(crate) struct LightComponent {
     /// error before the primitive call.
     #[serde(default)]
     pub(crate) is_dynamic: bool,
+    /// Slot into the animated-compose descriptor buffer (group 1 binding 4
+    /// of the animated-lightmap compose pass) when the compiler reserved one
+    /// for this map light, else `None`. Resolved once at level load from
+    /// `MapLight.animated_slot`; never mutated by scripts. The light bridge
+    /// keys on this to route `setLightAnimation` writes through the
+    /// compose-side path instead of the legacy `is_dynamic`-gated forward
+    /// path. Task 2c of `sdf-static-occluder-shadows`.
+    #[serde(default)]
+    pub(crate) animated_slot: Option<u32>,
     #[serde(default)]
     pub(crate) animation: Option<LightAnimation>,
 }
@@ -115,6 +124,7 @@ mod tests {
             cone_direction: Some([0.0, -1.0, 0.0]),
             cast_shadows: true,
             is_dynamic: true,
+            animated_slot: None,
             animation: Some(LightAnimation {
                 period_ms: 1000.0,
                 phase: Some(0.25),

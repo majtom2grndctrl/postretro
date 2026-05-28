@@ -318,6 +318,7 @@ mod tests {
             bake_only: false,
             is_dynamic: false,
             casts_entity_shadows: false,
+            is_animated: false,
             tags: vec![],
         }
     }
@@ -424,6 +425,7 @@ mod tests {
             MapLight {
                 is_dynamic: true,
                 casts_entity_shadows: false,
+                is_animated: false,
                 ..animated_point_light(DVec3::new(6.0, 0.0, 0.0), 2.0)
             },
         ];

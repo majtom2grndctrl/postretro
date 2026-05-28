@@ -376,6 +376,7 @@ mod tests {
                     cone_direction: None,
                     cast_shadows: true,
                     is_dynamic,
+                    animated_slot: None,
                     animation: None,
                 },
             )
@@ -436,6 +437,7 @@ mod tests {
                     cone_direction: None,
                     cast_shadows: false,
                     is_dynamic: true,
+                    animated_slot: None,
                     animation: None,
                 },
             )
@@ -660,6 +662,7 @@ mod tests {
                     cone_direction: None,
                     cast_shadows: false,
                     is_dynamic: true,
+                    animated_slot: None,
                     animation: None,
                 },
             )

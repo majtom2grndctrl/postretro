@@ -424,6 +424,7 @@ fn main() -> anyhow::Result<()> {
                 exterior_leaves: &exterior_leaves,
                 static_lights: &static_baked_lights,
                 animated_lights: &animated_baked_lights,
+                total_light_count: map_data.lights.len(),
             };
             let section = sh_bake::bake_sh_volume(&sh_ctx, &sh_config);
             if let Some(ref c) = stage_cache {
@@ -1277,6 +1278,7 @@ mod tests {
             bake_only: false,
             is_dynamic: false,
             casts_entity_shadows: false,
+            is_animated: false,
             tags: vec![],
         }
     }
@@ -1631,6 +1633,7 @@ mod tests {
             exterior_leaves: &exterior,
             static_lights: &static_lights,
             animated_lights: &animated_lights,
+            total_light_count: 0,
         };
         let section = sh_bake::bake_sh_volume(&ctx, &config);
 

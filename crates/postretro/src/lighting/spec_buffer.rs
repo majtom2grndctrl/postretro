@@ -59,6 +59,7 @@ mod tests {
             cast_shadows: false,
             is_dynamic: false,
             casts_entity_shadows: false,
+            animated_slot: None,
             tags: vec![],
             leaf_index: 0,
         }

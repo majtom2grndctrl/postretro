@@ -288,6 +288,68 @@ fn recurse(
         )
     };
 
+    // Subdivision-progress guard. If both halves cover every current hit (the
+    // entire face is uniformly inside every overlapping light's influence),
+    // recursing produces two overfull leaves that round outward to overlapping
+    // atlas rects — which trips `assert_no_overlapping_rects_per_face` in the
+    // weight-map baker. Detect the "no candidate would drop" case and emit a
+    // single overfull chunk here, mirroring the at_min_extent branch above.
+    // (Task 2c surfaced this on campaign-test: 17 `_animated` arena lights all
+    // covering the same face.)
+    let (left_aabb_min, left_aabb_max) = project_uv_to_world_aabb(chart, left_min, left_extent);
+    let (right_aabb_min, right_aabb_max) =
+        project_uv_to_world_aabb(chart, right_min, right_extent);
+    let mut left_keeps_all = true;
+    let mut right_keeps_all = true;
+    for &i in &hits {
+        let al = &animated[i as usize];
+        if left_keeps_all
+            && !sphere_overlaps_aabb(al.center, al.radius, left_aabb_min, left_aabb_max)
+        {
+            left_keeps_all = false;
+        }
+        if right_keeps_all
+            && !sphere_overlaps_aabb(al.center, al.radius, right_aabb_min, right_aabb_max)
+        {
+            right_keeps_all = false;
+        }
+        if !left_keeps_all && !right_keeps_all {
+            break;
+        }
+    }
+    if left_keeps_all && right_keeps_all {
+        if hits.len() > MAX_ANIMATED_LIGHTS_PER_CHUNK {
+            *overflow_chunks += 1;
+            let dropped = hits.len() - MAX_ANIMATED_LIGHTS_PER_CHUNK;
+            *overflow_drops += dropped as u64;
+            if *overflow_log_count < MAX_OVERFLOW_LOG_LINES {
+                *overflow_log_count += 1;
+                log::warn!(
+                    "[AnimatedLightChunks] face {face_index} chunk made no subdivision \
+                     progress with {} animated lights (cap {}); emitting as overfull",
+                    hits.len(),
+                    MAX_ANIMATED_LIGHTS_PER_CHUNK,
+                );
+            }
+        }
+        hits.sort_by_key(|&i| animated[i as usize].filtered_index);
+        let index_offset = light_indices.len() as u32;
+        for &i in &hits {
+            light_indices.push(animated[i as usize].filtered_index);
+        }
+        chunks.push(AnimatedLightChunk {
+            aabb_min: aabb_min.to_array(),
+            face_index,
+            aabb_max: aabb_max.to_array(),
+            index_offset,
+            uv_min,
+            uv_max: [uv_min[0] + uv_extent[0], uv_min[1] + uv_extent[1]],
+            index_count: hits.len() as u32,
+            _padding: 0,
+        });
+        return;
+    }
+
     recurse(
         face_index,
         chart,
@@ -461,6 +523,7 @@ mod tests {
             bake_only: false,
             is_dynamic: false,
             casts_entity_shadows: false,
+            is_animated: false,
             tags: vec![],
         }
     }

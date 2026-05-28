@@ -56,12 +56,12 @@ pub enum TranslateError {
     /// Color animation on a static-baked light is rejected because the SH
     /// irradiance volume is baked at a static color; runtime color drift
     /// would visibly diverge from the baked indirect contribution. `_dynamic`
-    /// is no longer an authoring key (Task 1b retired it); the only admit
-    /// condition that survives in 1b is `_bake_only`. Task 2c adds the
-    /// `_animated` (script-driven intensity) class which will also admit
-    /// `color_curve` — until 2c lands, only `_bake_only` is accepted.
+    /// was retired as an authoring key (Task 1b). Task 2c admits the
+    /// `_animated` (script-driven intensity) class — its color comes from
+    /// the runtime compose path, not the SH bake, so color drift is fine.
+    /// Surviving admit conditions: `_bake_only` OR `_animated`.
     #[error(
-        "light {light_ref}: 'color_curve' — color animation is only valid on `_bake_only` lights. Either set `_bake_only 1` or remove `color_curve`."
+        "light {light_ref}: 'color_curve' — color animation is only valid on `_bake_only` or `_animated` lights. Either set `_bake_only 1` / `_animated 1`, or remove `color_curve`."
     )]
     ColorCurveOnBakedLight { light_ref: String },
 }
@@ -256,6 +256,23 @@ pub fn translate_light(
     // that set is empty in 1b-authored content).
     let is_dynamic = false;
 
+    // `_animated` declares "static geometry, intensity arrives at runtime;
+    // reserve a baked weight map." The compiler bakes an animated-lightmap
+    // weight map and an `AnimationDescriptor` slot for the light; the runtime
+    // bridge writes the actual brightness/color curve into the section slot
+    // on `setLightAnimation`. Task 2c of `sdf-static-occluder-shadows`.
+    let is_animated = match parse_optional_int(props, "_animated")? {
+        None | Some(0) => false,
+        Some(1) => true,
+        Some(other) => {
+            return Err(TranslateError::InvalidProperty {
+                key: "_animated",
+                value: other.to_string(),
+                reason: "expected 0 (off) or 1 (on)",
+            });
+        }
+    };
+
     // Per-light opt-in for shadow-map-pool eligibility for dynamic entities
     // (enemies / moving meshes). Default `false` — dynamic-occluder shadows
     // are strictly opt-in.
@@ -338,11 +355,12 @@ pub fn translate_light(
         };
 
         let color = if let Some(raw) = props.get("color_curve") {
-            // Task 1b: `_dynamic` retired as an authoring key — only
-            // `_bake_only` admits `color_curve` in 1b. Task 2c will extend
-            // this gate to also admit the `_animated` (script-driven
-            // intensity) light class.
-            if !bake_only {
+            // Task 2c: admit `color_curve` on `_bake_only` OR `_animated`
+            // lights. `_animated` lights route their color curve through the
+            // runtime compose pass (Task 2b/2c), so per-frame color drift no
+            // longer mismatches the SH bake — the bake never sees their color
+            // as static.
+            if !bake_only && !is_animated {
                 return Err(TranslateError::ColorCurveOnBakedLight { light_ref });
             }
             let keyframes = parse_vec3_curve(raw, "color_curve", &light_ref)?;
@@ -409,6 +427,28 @@ pub fn translate_light(
         );
     }
 
+    // `_animated` lights without an authored curve still need to enter the
+    // animated-baked namespace (weight-map bake + SH section slot). Synthesize
+    // a placeholder `LightAnimation` so downstream stages — which key on
+    // `animation.is_some()` — treat the light as animated-baked. The runtime
+    // bridge overwrites the GPU descriptor with the real curve on the first
+    // `setLightAnimation` call. Empty sample vectors mean the GPU evaluator
+    // falls back to `base_color` (= `color * intensity`) until then.
+    let animation = if is_animated && animation.is_none() {
+        Some(LightAnimation {
+            // Period > 0 (sh_volume enforces a 1e-6 floor anyway); phase 0;
+            // all channels empty (compose pass guards on `count == 0`).
+            period: 1.0,
+            phase: 0.0,
+            brightness: None,
+            color: None,
+            direction: None,
+            start_active: !start_inactive,
+        })
+    } else {
+        animation
+    };
+
     let tags: Vec<String> = props
         .get("_tags")
         .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
@@ -429,6 +469,7 @@ pub fn translate_light(
         bake_only,
         is_dynamic,
         casts_entity_shadows,
+        is_animated,
         tags,
     })
 }
@@ -1519,6 +1560,81 @@ mod tests {
         let got = quake_to_engine_angles(&p, "ent");
         // `angles` wins.
         assert!((got[1] - (-45.0_f32).to_radians()).abs() < 1e-6);
+    }
+
+    /// Task 2c: `_animated 1` parses with `is_animated == true` and the
+    /// translator synthesizes a placeholder `LightAnimation` so the light
+    /// enters the animated-baked namespace (weight-map bake + SH descriptor
+    /// slot) even without authored curve keys.
+    #[test]
+    fn animated_one_parses_with_placeholder_animation() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+            ("_animated", "1"),
+        ]);
+        let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
+        assert!(light.is_animated, "_animated 1 must set is_animated");
+        assert!(
+            !light.is_dynamic,
+            "_animated lights are static (geometry doesn't move)"
+        );
+        let anim = light
+            .animation
+            .expect("_animated must synthesize a placeholder animation");
+        assert!(anim.brightness.is_none());
+        assert!(anim.color.is_none());
+        assert!(anim.direction.is_none());
+        assert!(anim.period > 0.0);
+    }
+
+    #[test]
+    fn animated_default_is_false() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+        ]);
+        let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
+        assert!(!light.is_animated);
+        assert!(light.animation.is_none());
+    }
+
+    /// Task 2c: `_animated` lights admit `color_curve`. Combined with the
+    /// `_bake_only`-admits rule (Task 1b), the gate now accepts either flag.
+    #[test]
+    fn color_curve_on_animated_light_is_accepted() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+            ("_animated", "1"),
+            ("color_curve", "[0, 1, 0, 0] [500, 0, 1, 0]"),
+            ("period_ms", "500"),
+        ]);
+        let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
+        assert!(light.is_animated);
+        let anim = light.animation.expect("animation present");
+        assert!(anim.color.is_some());
+    }
+
+    #[test]
+    fn animated_invalid_errors() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+            ("_animated", "2"),
+        ]);
+        let err = translate_light(&p, DVec3::ZERO, "light").expect_err("should error");
+        assert!(matches!(
+            err,
+            TranslateError::InvalidProperty {
+                key: "_animated",
+                ..
+            }
+        ));
     }
 
     #[test]

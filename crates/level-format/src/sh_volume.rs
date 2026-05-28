@@ -49,10 +49,19 @@ impl Default for ShProbe {
 /// in the descriptor table; version 2 — `start_active: u32` lives
 /// alongside the brightness/color counts; version 3 — direction
 /// channel samples serialized after color samples, with a `direction_count`
-/// field in the descriptor header; version 4 (current) — two f16 depth
+/// field in the descriptor header; version 4 — two f16 depth
 /// moments (`mean_distance`, `mean_sq_distance`) appended inside the per-probe
-/// record after `validity`, growing `PROBE_STRIDE` 112 → 116.
-pub const SH_VOLUME_VERSION: u32 = 4;
+/// record after `validity`, growing `PROBE_STRIDE` 112 → 116; version 5
+/// (current) — trailing `map-light-index → animated-light section slot` table
+/// (Task 2c of `sdf-static-occluder-shadows`), `u32::MAX` = no slot. The
+/// runtime resolves each map light's animated-compose-descriptor slot at load
+/// from this table.
+pub const SH_VOLUME_VERSION: u32 = 5;
+
+/// Sentinel for "this map light has no animated-light section slot" in
+/// `ShVolumeSection.slot_for_map_light`. Non-animated lights and any light
+/// the bake excluded from the animated-baked namespace use this value.
+pub const ANIMATED_SLOT_NONE: u32 = u32::MAX;
 
 /// Byte stride of a single serialized base probe record: 27 f32 + 1 u8
 /// (validity) + 2 f16 (depth moments) + 3 bytes of padding to land on a
@@ -138,6 +147,9 @@ impl Default for AnimationDescriptor {
 ///       f32 × 3 × color_count       (RGB color samples)
 ///       f32 × 3 × direction_count   (unit aim-vector samples)
 ///
+///   Map-light → animated-slot table (v5+, omitted iff no trailer is written):
+///     u32      map_light_count      (length of slot_for_map_light)
+///     u32 × map_light_count         (ANIMATED_SLOT_NONE = u32::MAX for non-animated)
 /// ```
 ///
 /// A section with `animated_light_count == 0` is valid: the loader produces
@@ -155,6 +167,17 @@ pub struct ShVolumeSection {
     pub probes: Vec<ShProbe>,
     /// One descriptor per animated light.
     pub animation_descriptors: Vec<AnimationDescriptor>,
+    /// One `u32` per **map light** (full `MapLight` array, not just animated):
+    /// the slot into `animation_descriptors` the map light occupies, or
+    /// [`ANIMATED_SLOT_NONE`] when the light has no animated-baked slot. The
+    /// inverse of the envelope-slot assignment the compiler performs while
+    /// building the animated-light namespace. Runtime resolves
+    /// `LightComponent.animated_slot` once at load from this table. (Task 2c.)
+    ///
+    /// Empty `Vec` is the legacy / no-slot-table state; loaders treat that as
+    /// "no map light has a slot" and the bridge writes via the
+    /// `is_dynamic`-gated forward path (legacy behavior).
+    pub slot_for_map_light: Vec<u32>,
 }
 
 impl ShVolumeSection {
@@ -224,6 +247,12 @@ impl ShVolumeSection {
                     buf.extend_from_slice(&ch.to_le_bytes());
                 }
             }
+        }
+
+        // Map-light → animated-slot trailer (v5+).
+        buf.extend_from_slice(&(self.slot_for_map_light.len() as u32).to_le_bytes());
+        for slot in &self.slot_for_map_light {
+            buf.extend_from_slice(&slot.to_le_bytes());
         }
 
         buf
@@ -398,6 +427,26 @@ impl ShVolumeSection {
             });
         }
 
+        // Map-light → animated-slot trailer (v5+). The version gate above
+        // already enforces v5 readers / v5 files only — but treat a truncated
+        // trailer (zero remaining bytes) as a defensive "empty table" rather
+        // than erroring, so an empty-volume `to_bytes` ↔ `from_bytes` round
+        // trip still works when no animation table follows.
+        let slot_for_map_light = if data.len() < o + 4 {
+            Vec::new()
+        } else {
+            let map_light_count = read_u32(data, o) as usize;
+            o += 4;
+            if data.len() < o + map_light_count * 4 {
+                return Err(truncated("map-light slot table"));
+            }
+            let mut slots = Vec::with_capacity(map_light_count);
+            for i in 0..map_light_count {
+                slots.push(read_u32(data, o + i * 4));
+            }
+            slots
+        };
+
         Ok(Self {
             grid_origin,
             cell_size,
@@ -405,6 +454,7 @@ impl ShVolumeSection {
             probe_stride,
             probes,
             animation_descriptors,
+            slot_for_map_light,
         })
     }
 }
@@ -457,6 +507,7 @@ mod tests {
             probe_stride: PROBE_STRIDE,
             probes: (0..total).map(|i| sample_probe(i as f32)).collect(),
             animation_descriptors: Vec::new(),
+            slot_for_map_light: Vec::new(),
         }
     }
 
@@ -469,9 +520,11 @@ mod tests {
             probe_stride: PROBE_STRIDE,
             probes: Vec::new(),
             animation_descriptors: Vec::new(),
+            slot_for_map_light: Vec::new(),
         };
         let bytes = section.to_bytes();
-        assert_eq!(bytes.len(), ShVolumeSection::HEADER_SIZE);
+        // Header + 4-byte map_light_count = 0.
+        assert_eq!(bytes.len(), ShVolumeSection::HEADER_SIZE + 4);
         let restored = ShVolumeSection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);
     }
@@ -480,7 +533,8 @@ mod tests {
     fn round_trip_probes_only() {
         let section = empty_section([2, 3, 4]);
         let bytes = section.to_bytes();
-        let expected_len = ShVolumeSection::HEADER_SIZE + (2 * 3 * 4) * PROBE_STRIDE as usize;
+        let expected_len =
+            ShVolumeSection::HEADER_SIZE + (2 * 3 * 4) * PROBE_STRIDE as usize + 4;
         assert_eq!(bytes.len(), expected_len);
         let restored = ShVolumeSection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);
@@ -495,6 +549,7 @@ mod tests {
             grid_dimensions: [2, 2, 2],
             probe_stride: PROBE_STRIDE,
             probes: (0..total).map(|i| sample_probe(i as f32)).collect(),
+            slot_for_map_light: vec![ANIMATED_SLOT_NONE, 0, ANIMATED_SLOT_NONE, 1],
             animation_descriptors: vec![
                 AnimationDescriptor {
                     period: 1.5,
@@ -541,7 +596,10 @@ mod tests {
     fn rejects_truncated_probe_records() {
         let section = empty_section([1, 1, 1]);
         let bytes = section.to_bytes();
-        let truncated = &bytes[..bytes.len() - 4];
+        // Cut into the probe-record region (post-header, pre-trailer). Cutting
+        // only the 4-byte slot-table count is the defensive "empty trailer"
+        // path, not a truncation error — so trim past PROBE_STRIDE / 2.
+        let truncated = &bytes[..ShVolumeSection::HEADER_SIZE + 4];
         let err = ShVolumeSection::from_bytes(truncated).unwrap_err();
         assert!(matches!(err, FormatError::Io(_)));
     }
@@ -687,15 +745,40 @@ mod tests {
     fn zero_animated_count_emits_no_descriptor_bytes() {
         let section = empty_section([1, 1, 1]);
         let bytes = section.to_bytes();
-        // Header + 1 probe_stride
+        // Header + 1 probe_stride + 4-byte empty slot-table trailer.
         assert_eq!(
             bytes.len(),
-            ShVolumeSection::HEADER_SIZE + PROBE_STRIDE as usize
+            ShVolumeSection::HEADER_SIZE + PROBE_STRIDE as usize + 4
         );
         // animated_light_count bytes at offset 44..48 should be zero
         // (header layout: version[0..4], origin[4..16], cell[16..28],
         // dims[28..40], probe_stride[40..44], animated_light_count[44..48]).
         assert_eq!(&bytes[44..48], &0u32.to_le_bytes());
+    }
+
+    /// Task 2c: round-trip the map-light → animated-slot trailer.
+    /// Non-animated lights carry `ANIMATED_SLOT_NONE`; animated lights carry
+    /// their compose-buffer slot. Bytes survive serialize ↔ deserialize and
+    /// the slot count matches the map-light count.
+    #[test]
+    fn slot_for_map_light_round_trips() {
+        let mut section = empty_section([1, 1, 1]);
+        // 5 map lights, slots [NONE, 0, NONE, 1, NONE].
+        section.slot_for_map_light = vec![
+            ANIMATED_SLOT_NONE,
+            0,
+            ANIMATED_SLOT_NONE,
+            1,
+            ANIMATED_SLOT_NONE,
+        ];
+        section.animation_descriptors = vec![
+            AnimationDescriptor::default(),
+            AnimationDescriptor::default(),
+        ];
+        let bytes = section.to_bytes();
+        let restored = ShVolumeSection::from_bytes(&bytes).unwrap();
+        assert_eq!(restored.slot_for_map_light, section.slot_for_map_light);
+        assert_eq!(restored.to_bytes(), bytes);
     }
 
     /// Loader-side degradation contract: a PRL with the ShVolume section

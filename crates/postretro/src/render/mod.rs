@@ -2435,6 +2435,22 @@ impl Renderer {
         self.sh_volume_resources.animation.set_active(slot, active);
     }
 
+    /// Overwrite the entire 48-byte animation descriptor at `slot` in the
+    /// animated-compose descriptor buffer. Used by the scripting bridge to
+    /// route a `setLightAnimation` curve through the animated-baked compose
+    /// path (Task 2c of `sdf-static-occluder-shadows`). Out-of-range slots
+    /// log once then no-op (mirrors the dormant `set_active` behavior).
+    /// Flushed to GPU on the next `update_per_frame_uniforms` call.
+    pub fn write_animated_compose_descriptor(
+        &mut self,
+        slot: u32,
+        bytes: &[u8; sh_volume::ANIMATION_DESCRIPTOR_SIZE],
+    ) {
+        self.sh_volume_resources
+            .animation
+            .write_descriptor(slot as usize, bytes);
+    }
+
     /// Must run before `update_dynamic_light_slots` — slot assignment reads then rewrites this buffer.
     pub fn upload_bridge_lights(&mut self, lights_bytes: &[u8]) {
         debug_assert_eq!(
@@ -4055,6 +4071,7 @@ mod tests {
                 cast_shadows: false,
                 is_dynamic,
                 casts_entity_shadows: false,
+                animated_slot: None,
                 tags: vec![],
                 leaf_index: 0,
             }

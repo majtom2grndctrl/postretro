@@ -25,6 +25,7 @@
 - **Frame timing / game loop** → `rendering_pipeline.md` §1 · `entity_model.md` §5
 - **Boot / startup / splash / level-load sequence / mod loading** → `boot_sequence.md`
 - **Roadmap / implementation phases** → `plans/roadmap.md`
+- **Experimental spikes / build-to-learn specs** → `experimental_spikes.md`
 - **Draft plans / future features** → `plans/drafts/`
 - **Shipped plans** → `plans/done/` — historical record, frozen at ship time. May describe stale state. Read only when explicitly referenced.
 - **Research archive** → `research/` — past research, not current design. Do not read unless explicitly instructed. See also: `research/weapon-model.md` for weapon-model / weapon-instance design intent.

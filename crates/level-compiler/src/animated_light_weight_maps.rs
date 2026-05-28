@@ -360,10 +360,13 @@ fn assert_no_overlapping_rects_per_face(
                 assert!(
                     !(overlap_x && overlap_y),
                     "animated-light chunks {i} and {j} on face {face_index} produced \
-                     overlapping atlas rects after outward rounding \
-                     ({}x{}+{}+{} vs {}x{}+{}+{}). Fix the UV chunk packer — it must \
-                     leave a 1-atlas-texel gap between adjacent chunk UV boundaries \
-                     within a face.",
+                     overlapping atlas rects under center-based half-open ownership \
+                     ({}x{}+{}+{} vs {}x{}+{}+{}). Fix the UV chunk packer — \
+                     adjacent chunks within a face must own disjoint texel-center \
+                     sets, which requires the chunk subdivider to floor its UV \
+                     extent at the chart's per-axis UV-per-texel pitch so no chunk \
+                     ends up with an empty interior that collapses to a 1x1 atlas \
+                     fallback rect.",
                     a.width,
                     a.height,
                     a.atlas_x,

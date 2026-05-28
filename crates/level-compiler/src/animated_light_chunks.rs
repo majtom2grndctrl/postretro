@@ -39,8 +39,18 @@ pub fn build_animated_light_chunks(
         "face_charts and face_index_ranges must be parallel per-face slices",
     );
 
-    // One lightmap texel in meters; finer UV subdivision can't be addressed by the weight-map baker.
-    let min_uv_extent = lightmap_texel_density.max(1.0e-4);
+    // Global floor: one lightmap texel in meters. Used as the minimum
+    // per-chart UV-per-texel pitch so a chart with `lightmap_texel_density`
+    // (or coarser) resolution never produces sub-texel chunks. Per-chart
+    // pitches are derived inside the leaf loop below so the floor matches the
+    // chart's actual atlas resolution rather than the global target — a
+    // coarser-than-target chart (small UV extent, padded `width_texels`) has
+    // a UV-per-texel pitch larger than `lightmap_texel_density`, and
+    // subdividing below its own pitch produces chunks whose UV range contains
+    // zero texel centers. Under `chunk_atlas_rect`'s center-based ownership,
+    // those chunks fall back to identical 1x1 atlas rects and trip
+    // `assert_no_overlapping_rects_per_face`.
+    let global_min_uv_extent = lightmap_texel_density.max(1.0e-4);
 
     let animated: Vec<AnimatedLight> = animated_lights
         .entries()
@@ -134,6 +144,27 @@ pub fn build_animated_light_chunks(
                 })
                 .collect();
             if !candidates.is_empty() {
+                // Per-axis UV-per-texel pitch for this chart. The chart's
+                // interior resolution is what `chunk_atlas_rect` rounds against,
+                // so the floor must match that (not the global target density).
+                let (interior_w, interior_h) =
+                    crate::chart_raster::chart_interior_dims(chart);
+                let chart_u_pitch = if interior_w > 0 {
+                    chart.uv_extent[0] / interior_w as f32
+                } else {
+                    chart.uv_extent[0]
+                };
+                let chart_v_pitch = if interior_h > 0 {
+                    chart.uv_extent[1] / interior_h as f32
+                } else {
+                    chart.uv_extent[1]
+                };
+                // Per-axis floor: never subdivide below the chart's own
+                // UV-per-texel pitch (otherwise the resulting chunk's UV range
+                // contains zero texel centers). Take the max with the global
+                // floor so a degenerate chart still bottoms out reasonably.
+                let min_u_extent = chart_u_pitch.max(global_min_uv_extent);
+                let min_v_extent = chart_v_pitch.max(global_min_uv_extent);
                 recurse(
                     face_index,
                     chart,
@@ -141,7 +172,8 @@ pub fn build_animated_light_chunks(
                     chart.uv_extent,
                     &candidates,
                     &animated,
-                    min_uv_extent,
+                    min_u_extent,
+                    min_v_extent,
                     &mut chunks,
                     &mut light_indices,
                     &mut overflow_chunks,
@@ -202,7 +234,8 @@ fn recurse(
     uv_extent: [f32; 2],
     candidate_indices: &[u32],
     animated: &[AnimatedLight],
-    min_uv_extent: f32,
+    min_u_extent: f32,
+    min_v_extent: f32,
     chunks: &mut Vec<AnimatedLightChunk>,
     light_indices: &mut Vec<u32>,
     overflow_chunks: &mut u64,
@@ -225,13 +258,16 @@ fn recurse(
     }
 
     // Termination floor: the face's (u_axis, v_axis) basis is orthonormal
-    // (see lightmap_bake.rs), so `uv_extent` is already the world-meter
-    // extent along the face's own basis. A world-axis min-extent check would
-    // trip on the (always-zero) thickness dimension of any axis-aligned
-    // planar face — walls, floors, ceilings — and defeat subdivision on the
-    // common case. Subdivide until UV extent drops below one lightmap texel.
-    let uv_extent_min = uv_extent[0].min(uv_extent[1]);
-    let at_min_extent = uv_extent_min <= min_uv_extent;
+    // (see lightmap_bake.rs), so `uv_extent` is along the face's own basis.
+    // An axis is "splittable" if halving it leaves each half >= the chart's
+    // per-axis UV-per-texel pitch — otherwise the resulting chunks contain
+    // zero texel centers and collapse to identical 1x1 atlas rects in
+    // `chunk_atlas_rect` (tripping the overlap assertion). Use a small
+    // epsilon so floating-point halving doesn't flake at exactly 2x pitch.
+    let split_eps = 1.0e-5;
+    let u_splittable = uv_extent[0] * 0.5 >= min_u_extent - split_eps;
+    let v_splittable = uv_extent[1] * 0.5 >= min_v_extent - split_eps;
+    let at_min_extent = !u_splittable && !v_splittable;
 
     if hits.len() <= MAX_ANIMATED_LIGHTS_PER_CHUNK || at_min_extent {
         if hits.len() > MAX_ANIMATED_LIGHTS_PER_CHUNK {
@@ -268,8 +304,17 @@ fn recurse(
         return;
     }
 
-    // Tie-break → U (axis 0) for determinism.
-    let split_u = uv_extent[0] >= uv_extent[1];
+    // Prefer the bigger axis (tie-break → U for determinism), but fall back
+    // to the other when the preferred axis can no longer be split below its
+    // chart-pitch floor. `at_min_extent` above guarantees at least one axis
+    // is splittable here.
+    let prefer_u = uv_extent[0] >= uv_extent[1];
+    let split_u = match (u_splittable, v_splittable) {
+        (true, true) => prefer_u,
+        (true, false) => true,
+        (false, true) => false,
+        (false, false) => unreachable!("at_min_extent guard above"),
+    };
     let (left_min, left_extent, right_min, right_extent) = if split_u {
         let half = uv_extent[0] * 0.5;
         (
@@ -288,68 +333,6 @@ fn recurse(
         )
     };
 
-    // Subdivision-progress guard. If both halves cover every current hit (the
-    // entire face is uniformly inside every overlapping light's influence),
-    // recursing produces two overfull leaves that round outward to overlapping
-    // atlas rects — which trips `assert_no_overlapping_rects_per_face` in the
-    // weight-map baker. Detect the "no candidate would drop" case and emit a
-    // single overfull chunk here, mirroring the at_min_extent branch above.
-    // (Task 2c surfaced this on campaign-test: 17 `_animated` arena lights all
-    // covering the same face.)
-    let (left_aabb_min, left_aabb_max) = project_uv_to_world_aabb(chart, left_min, left_extent);
-    let (right_aabb_min, right_aabb_max) =
-        project_uv_to_world_aabb(chart, right_min, right_extent);
-    let mut left_keeps_all = true;
-    let mut right_keeps_all = true;
-    for &i in &hits {
-        let al = &animated[i as usize];
-        if left_keeps_all
-            && !sphere_overlaps_aabb(al.center, al.radius, left_aabb_min, left_aabb_max)
-        {
-            left_keeps_all = false;
-        }
-        if right_keeps_all
-            && !sphere_overlaps_aabb(al.center, al.radius, right_aabb_min, right_aabb_max)
-        {
-            right_keeps_all = false;
-        }
-        if !left_keeps_all && !right_keeps_all {
-            break;
-        }
-    }
-    if left_keeps_all && right_keeps_all {
-        if hits.len() > MAX_ANIMATED_LIGHTS_PER_CHUNK {
-            *overflow_chunks += 1;
-            let dropped = hits.len() - MAX_ANIMATED_LIGHTS_PER_CHUNK;
-            *overflow_drops += dropped as u64;
-            if *overflow_log_count < MAX_OVERFLOW_LOG_LINES {
-                *overflow_log_count += 1;
-                log::warn!(
-                    "[AnimatedLightChunks] face {face_index} chunk made no subdivision \
-                     progress with {} animated lights (cap {}); emitting as overfull",
-                    hits.len(),
-                    MAX_ANIMATED_LIGHTS_PER_CHUNK,
-                );
-            }
-        }
-        hits.sort_by_key(|&i| animated[i as usize].filtered_index);
-        let index_offset = light_indices.len() as u32;
-        for &i in &hits {
-            light_indices.push(animated[i as usize].filtered_index);
-        }
-        chunks.push(AnimatedLightChunk {
-            aabb_min: aabb_min.to_array(),
-            face_index,
-            aabb_max: aabb_max.to_array(),
-            index_offset,
-            uv_min,
-            uv_max: [uv_min[0] + uv_extent[0], uv_min[1] + uv_extent[1]],
-            index_count: hits.len() as u32,
-            _padding: 0,
-        });
-        return;
-    }
-
     recurse(
         face_index,
         chart,
@@ -357,7 +340,8 @@ fn recurse(
         left_extent,
         &hits,
         animated,
-        min_uv_extent,
+        min_u_extent,
+        min_v_extent,
         chunks,
         light_indices,
         overflow_chunks,
@@ -371,7 +355,8 @@ fn recurse(
         right_extent,
         &hits,
         animated,
-        min_uv_extent,
+        min_u_extent,
+        min_v_extent,
         chunks,
         light_indices,
         overflow_chunks,
@@ -522,8 +507,8 @@ mod tests {
             cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
-            casts_entity_shadows: false,
             is_animated: false,
+            casts_entity_shadows: false,
             tags: vec![],
         }
     }
@@ -726,6 +711,83 @@ mod tests {
         );
         for c in &section.chunks {
             assert!((c.index_count as usize) <= MAX_ANIMATED_LIGHTS_PER_CHUNK);
+        }
+    }
+
+    /// Regression: when a chart's UV-per-texel pitch is coarser than the
+    /// global `lightmap_texel_density` (small `width_texels` / `height_texels`
+    /// relative to `uv_extent`), the chunk subdivider must floor at the
+    /// chart's own pitch — not the global target. Otherwise sibling chunks
+    /// can end up with UV ranges narrower than one chart-texel, contain zero
+    /// texel centers, and collapse to identical 1x1 atlas rects under
+    /// `chunk_atlas_rect`'s center-based ownership rule (tripping
+    /// `assert_no_overlapping_rects_per_face` in the weight-map baker).
+    #[test]
+    fn coarse_chart_chunks_stay_wider_than_one_chart_texel() {
+        // 1m x 1m chart but only 4 interior texels per side (8 - 2*padding).
+        // UV-per-texel pitch = 0.25, far coarser than min_uv_extent = 0.01.
+        let chart = Chart {
+            origin: Vec3::ZERO,
+            u_axis: Vec3::X,
+            v_axis: Vec3::Z,
+            uv_min: [0.0, 0.0],
+            uv_extent: [1.0, 1.0],
+            normal: Vec3::Y,
+            width_texels: 8,
+            height_texels: 8,
+        };
+        // Eight lights spread across the face → forces subdivision below cap.
+        let uv_centers = [
+            (0.1, 0.1),
+            (0.3, 0.1),
+            (0.5, 0.1),
+            (0.7, 0.1),
+            (0.9, 0.1),
+            (0.1, 0.9),
+            (0.5, 0.9),
+            (0.9, 0.9),
+        ];
+        let lights: Vec<_> = uv_centers.iter().map(|_| mk_animated_light()).collect();
+        let influence: Vec<_> = uv_centers
+            .iter()
+            .map(|&(u, v)| InfluenceRecord {
+                center: [u, 0.0, v],
+                radius: 0.1,
+            })
+            .collect();
+        let bvh = make_bvh_with_one_leaf();
+        let envelope = AnimatedBakedLights::from_parallel_slices(&lights, &influence);
+        let (section, _ranges) = build_animated_light_chunks(
+            &bvh,
+            &envelope,
+            &[chart],
+            &one_face_range(),
+            // Far finer than the chart's pitch — the per-chart floor must
+            // still hold.
+            0.001,
+        );
+
+        let chart_pitch_u = 1.0_f32 / 4.0;
+        let chart_pitch_v = 1.0_f32 / 4.0;
+        for c in &section.chunks {
+            let w = c.uv_max[0] - c.uv_min[0];
+            let h = c.uv_max[1] - c.uv_min[1];
+            assert!(
+                w + 1.0e-5 >= chart_pitch_u && h + 1.0e-5 >= chart_pitch_v,
+                "chunk uv extent ({w} x {h}) narrower than chart pitch \
+                 ({chart_pitch_u} x {chart_pitch_v})",
+            );
+        }
+
+        // And: no two chunks on the same face share the same UV rect (which
+        // is what the old packer collapse looked like upstream).
+        for i in 0..section.chunks.len() {
+            for j in (i + 1)..section.chunks.len() {
+                let a = &section.chunks[i];
+                let b = &section.chunks[j];
+                let same = a.uv_min == b.uv_min && a.uv_max == b.uv_max;
+                assert!(!same, "chunks {i} and {j} share the same UV rect");
+            }
         }
     }
 

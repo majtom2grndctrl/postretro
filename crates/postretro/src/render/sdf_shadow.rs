@@ -292,7 +292,7 @@ impl SdfShadowPass {
     ) {
         self.half_res = compute_half_res(full_res_width, full_res_height);
         // The renderer recreates the lightmap-UV gbuffer in lockstep with the
-        // depth view, so capture the new view here. Task 3 binds it.
+        // depth view, so capture the new view here.
         self.lightmap_uv_view = lightmap_uv_view.clone();
         let (shadow_texture, shadow_view, shadow_storage_view) =
             create_shadow_target(device, self.half_res.0, self.half_res.1);
@@ -527,7 +527,7 @@ fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 7] {
             },
             count: None,
         },
-        // Binding 6: full-res lightmap-UV gbuffer (Rg16Unorm, non-filterable
+        // Binding 6: full-res lightmap-UV gbuffer (Rg16Float, non-filterable
         // load). Read via textureLoad to index the direction atlases per-texel.
         wgpu::BindGroupLayoutEntry {
             binding: 6,
@@ -623,7 +623,7 @@ mod tests {
         );
     }
 
-    /// Task 3: the lightmap-UV gbuffer is bound at `@group(1) @binding(6)` in
+    /// The lightmap-UV gbuffer is bound at `@group(1) @binding(6)` in
     /// the pass-owned BGL, and the shader sources its direction-atlas UV from
     /// that target via `textureLoad` rather than the v1 screen-space UV.
     #[test]
@@ -644,7 +644,7 @@ mod tests {
                     multisampled: false,
                 }
             ),
-            "binding 6 must be a non-filterable 2D float texture (Rg16Unorm via textureLoad)",
+            "binding 6 must be a non-filterable 2D float texture (Rg16Float via textureLoad)",
         );
 
         let src = include_str!("../shaders/sdf_shadow.wgsl");

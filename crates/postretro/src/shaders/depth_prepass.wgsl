@@ -1,7 +1,7 @@
 // Depth pre-pass — populates the shared depth buffer so the subsequent
 // forward pass can run with a Equal depth test and zero overdraw in the
 // fragment shader. It also writes a full-res lightmap-UV gbuffer (one
-// Rg16Unorm MRT slot) that the half-res SDF shadow pass samples for
+// Rg16Float MRT slot) that the half-res SDF shadow pass samples for
 // per-texel direction-texture lookups. The fragment stage does no shading
 // work — one ROP write behind early-Z — so it stays cheap.
 //
@@ -42,8 +42,9 @@ struct VertexOutput {
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
     out.clip_position = uniforms.view_proj * vec4<f32>(in.position, 1.0);
-    // Unpack identically to forward.wgsl so the value written into the
-    // Rg16Unorm target round-trips the u16/65535 lightmap-UV packing.
+    // Unpack identically to forward.wgsl. The UV is born as u16/65535; the
+    // resulting float is stored in the Rg16Float target (16-bit float loses a
+    // little mantissa precision near 1.0 vs an exact u16 round-trip).
     out.lightmap_uv = vec2<f32>(
         f32(in.lightmap_uv_packed.x) / 65535.0,
         f32(in.lightmap_uv_packed.y) / 65535.0,

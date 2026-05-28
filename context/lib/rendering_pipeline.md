@@ -106,7 +106,7 @@ UVs computed from face projection data at compile time; GPU sampler uses repeat 
 
 ### 7.2 Depth Pre-Pass
 
-Vertex-only pass over the same indirect draw list as the forward pass. Runs the same view-projection transform and writes depth only — no fragment stage. Populates the shared depth buffer so the forward pass can eliminate overdraw.
+Runs over the same indirect draw list as the forward pass with the same view-projection transform. Writes two outputs: the shared depth buffer (eliminates forward-pass overdraw) and a full-res `Rg16Float` lightmap-UV gbuffer as a single MRT color slot. The fragment stage does no shading — one cheap ROP write behind early-Z. The lightmap-UV gbuffer is consumed by the half-res SDF shadow pass to index per-texel direction atlases.
 
 Both the depth pre-pass and the forward vertex shader declare `@invariant` on `clip_position`. Without it, some GPUs reassociate the `mat4 × vec4` multiply differently across pipelines, producing Z-fighting dropout when the forward pass tests `Equal`.
 

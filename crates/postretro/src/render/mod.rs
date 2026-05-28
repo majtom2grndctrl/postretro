@@ -153,7 +153,8 @@ const SHADER_SOURCE: &str = concat!(
 
 const WIREFRAME_SHADER_SOURCE: &str = include_str!("../shaders/wireframe.wgsl");
 
-// Depth pre-pass: vertex-only; enables Equal depth compare → zero shading overdraw.
+// Depth pre-pass: writes depth (enables Equal depth compare → zero shading
+// overdraw) + the full-res lightmap-UV gbuffer (Rg16Float MRT slot).
 const DEPTH_PREPASS_SHADER_SOURCE: &str = include_str!("../shaders/depth_prepass.wgsl");
 
 // Spot shadow: vertex-only; per-slot matrix selected via dynamic-offset uniform.
@@ -444,11 +445,14 @@ fn build_material_uniform(shininess: f32) -> [u8; MATERIAL_UNIFORM_SIZE] {
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// Full-res lightmap-UV gbuffer format written by the depth pre-pass MRT slot
-/// and read by the half-res SDF shadow pass. `Rg16Unorm` is a literal
-/// round-trip for the `u16/65535` lightmap-UV packing (see `forward.wgsl`),
-/// with uniform ~1.5e-5 precision across [0,1]. Cleared to (0,0), which is an
-/// unreachable sentinel given `CHART_PADDING_TEXELS = 2`.
-const LIGHTMAP_UV_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Unorm;
+/// and read by the half-res SDF shadow pass. `Rg16Float` is used because
+/// `Rg16Unorm` is not renderable as a color attachment on AMD/discrete
+/// adapters (validation rejects `RENDER_ATTACHMENT` on `Rg16Unorm`), whereas
+/// `Rg16Float` is a baseline renderable color format needing no wgpu feature.
+/// Precision tradeoff: 16-bit float loses mantissa precision near UV=1.0 vs the
+/// exact u16/65535 round-trip — acceptable, verify visually. Cleared to the
+/// negative sentinel (-1,-1), impossible for real chart UVs (always in [0,1]).
+const LIGHTMAP_UV_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
 
 /// Usage flags for the lightmap-UV gbuffer: written by the pre-pass MRT slot
 /// (`RENDER_ATTACHMENT`) and sampled by the half-res SDF shadow pass
@@ -491,13 +495,13 @@ fn create_depth_texture(
     (depth_texture, view)
 }
 
-/// Clear value for the lightmap-UV pre-pass target. `(0,0)` is the sentinel for
-/// "no chart texel here" — unreachable by any real chart because
-/// `CHART_PADDING_TEXELS = 2`. Only `r`/`g` are read by the `Rg16Unorm` target;
-/// `b`/`a` are ignored.
+/// Clear value for the lightmap-UV pre-pass target. The clear writes the
+/// (-1,-1) sentinel: a pixel with no fragment stays at the sentinel, and real
+/// chart UVs are in [0,1] so they are never negative. Only `r`/`g` are read by
+/// the `Rg16Float` target; `b`/`a` are ignored.
 const LIGHTMAP_UV_CLEAR: wgpu::Color = wgpu::Color {
-    r: 0.0,
-    g: 0.0,
+    r: -1.0,
+    g: -1.0,
     b: 0.0,
     a: 0.0,
 };
@@ -1734,7 +1738,7 @@ impl Renderer {
                                 format: wgpu::VertexFormat::Uint16x2,
                             },
                             // Lightmap UV — consumed by the fragment stage and
-                            // written to the Rg16Unorm gbuffer slot below.
+                            // written to the Rg16Float gbuffer slot below.
                             wgpu::VertexAttribute {
                                 offset: 28,
                                 shader_location: 4,
@@ -4522,29 +4526,29 @@ mod tests {
         );
     }
 
-    /// The pre-pass gbuffer MRT slot must use the round-trip-exact
-    /// `Rg16Unorm` format — the shadow pass relies on the UV value surviving
-    /// the write/read cycle unchanged.
+    /// The pre-pass gbuffer MRT slot must use `Rg16Float` — `Rg16Unorm` is not
+    /// renderable as a color attachment on AMD/discrete adapters, while
+    /// `Rg16Float` is a baseline renderable format needing no wgpu feature.
     #[test]
-    fn lightmap_uv_format_is_rg16unorm() {
-        assert_eq!(LIGHTMAP_UV_FORMAT, wgpu::TextureFormat::Rg16Unorm);
+    fn lightmap_uv_format_is_rg16float() {
+        assert_eq!(LIGHTMAP_UV_FORMAT, wgpu::TextureFormat::Rg16Float);
     }
 
-    /// The pre-pass clears the lightmap-UV target to the `(0,0)` sentinel —
-    /// unreachable by any real chart texel given `CHART_PADDING_TEXELS = 2`.
-    /// Only `r`/`g` are read by the `Rg16Unorm` target. `cargo test` has no GPU
+    /// The pre-pass clears the lightmap-UV target to the negative `(-1,-1)`
+    /// sentinel — impossible for real chart UVs, which are always in [0,1].
+    /// Only `r`/`g` are read by the `Rg16Float` target. `cargo test` has no GPU
     /// device, so the clear color is factored into a named const asserted here;
     /// the pre-pass render-pass descriptor references `LIGHTMAP_UV_CLEAR`
     /// directly (see the "Depth Pre-Pass" `begin_render_pass`).
     #[test]
-    fn lightmap_uv_clear_is_zero_sentinel() {
+    fn lightmap_uv_clear_is_negative_sentinel() {
         assert_eq!(
-            LIGHTMAP_UV_CLEAR.r, 0.0,
-            "clear r must be the (0,0) sentinel"
+            LIGHTMAP_UV_CLEAR.r, -1.0,
+            "clear r must be the (-1,-1) sentinel"
         );
         assert_eq!(
-            LIGHTMAP_UV_CLEAR.g, 0.0,
-            "clear g must be the (0,0) sentinel"
+            LIGHTMAP_UV_CLEAR.g, -1.0,
+            "clear g must be the (-1,-1) sentinel"
         );
     }
 

@@ -17,7 +17,7 @@
 //
 // Direction sampling (v2). The dominant-direction atlases are baked per-texel
 // keyed on lightmap UV. The visible surface's lightmap UV is read from the
-// depth pre-pass MRT (`lightmap_uv_tex`, Rg16Unorm), so both direction reads
+// depth pre-pass MRT (`lightmap_uv_tex`, Rg16Float), so both direction reads
 // are now per-texel correct. The trace and penumbra math are unchanged.
 //
 // Group 0: SDF atlas (owned by SdfAtlasResources — Task 3). Bindings 0..3.
@@ -76,7 +76,7 @@ struct ShadowPassParams {
 @group(1) @binding(4) var sh_depth_moments: texture_3d<f32>;
 // Half-res output: R = static aggregate factor, G = animated aggregate factor.
 @group(1) @binding(5) var shadow_factor: texture_storage_2d<rgba8unorm, write>;
-// Full-res lightmap-UV gbuffer (Rg16Unorm) written by the depth pre-pass MRT.
+// Full-res lightmap-UV gbuffer (Rg16Float) written by the depth pre-pass MRT.
 // Read via textureLoad to recover the visible surface's lightmap UV per pixel.
 @group(1) @binding(6) var lightmap_uv_tex: texture_2d<f32>;
 
@@ -249,7 +249,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let world = recon.xyz;
 
             // Sample the visible surface's lightmap UV from the depth pre-pass
-            // MRT (Rg16Unorm), then index the dominant-direction atlases
+            // MRT (Rg16Float), then index the dominant-direction atlases
             // per-texel. Replaces the v1 screen-UV approximation. scale_x/y are
             // recomputed here (the ones in reconstruct_world are local to it);
             // the lightmap-UV target shares full-res dims with depth, so the
@@ -260,9 +260,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let full_x = i32(min((f32(half_xy.x) + 0.5) * scale_x, f32(lm_dims.x) - 1.0));
             let full_y = i32(min((f32(half_xy.y) + 0.5) * scale_y, f32(lm_dims.y) - 1.0));
             let lm_uv = textureLoad(lightmap_uv_tex, vec2<i32>(full_x, full_y), 0).rg;
-            if (lm_uv.x == 0.0 && lm_uv.y == 0.0) {
-                // Pre-pass sentinel (Rg16Unorm cleared to (0,0)) — no fragment
-                // wrote this pixel. Bail to fully lit.
+            if (lm_uv.x < 0.0) {
+                // Pre-pass sentinel (Rg16Float target cleared to (-1,-1)) — no
+                // fragment wrote this pixel. Bail to fully lit.
                 textureStore(
                     shadow_factor,
                     vec2<i32>(i32(half_xy.x), i32(half_xy.y)),

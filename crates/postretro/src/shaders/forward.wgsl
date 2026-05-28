@@ -780,7 +780,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                     ),
                     0.0,
                 );
-                effective_color = scripted_desc.base_color * brightness;
+                effective_color = light.color_and_falloff_model.xyz * brightness;
             }
             if light_type == 1u && scripted_desc.direction_count > 0u {
                 effective_aim = sample_animated_direction(scripted_desc, cycle_t, effective_aim);

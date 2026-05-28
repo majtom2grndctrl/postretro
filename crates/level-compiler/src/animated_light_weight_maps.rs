@@ -269,7 +269,14 @@ fn contribution_to_weight(contribution: Vec3, color: [f32; 3], intensity: f32) -
     (c_contrib / denom).max(0.0)
 }
 
-/// Outward-round (floor min, ceil max) so no covered texel is lost; clamp to atlas extent.
+/// Center-based half-open ownership: a chart-interior texel `t` (whose center
+/// projects to UV `chart.uv_min + (t + 0.5) / interior * uv_extent`) belongs to
+/// a chunk iff its center UV is in `[chunk.uv_min, chunk.uv_max)`. Sibling
+/// chunks from the chunk subdivider share UV boundaries exactly (A.uv_max ==
+/// B.uv_min); under this rule they pack into adjacent atlas rects with no
+/// overlap and no gap. Earlier outward-rounding (floor min, ceil max) inflated
+/// both siblings outward by a texel each and produced 1-texel atlas overlaps
+/// — see the `assert_no_overlapping_rects_per_face` postcondition.
 fn chunk_atlas_rect(
     chart: &Chart,
     placement: ChartPlacement,
@@ -289,14 +296,19 @@ fn chunk_atlas_rect(
     let scale_u = interior_w as f32 / chart.uv_extent[0];
     let scale_v = interior_h as f32 / chart.uv_extent[1];
 
-    let fx_min_unclamped =
-        placement.x as f32 + padding + (chunk_uv_min[0] - chart.uv_min[0]) * scale_u;
-    let fx_max_unclamped =
-        placement.x as f32 + padding + (chunk_uv_max[0] - chart.uv_min[0]) * scale_u;
-    let fy_min_unclamped =
-        placement.y as f32 + padding + (chunk_uv_min[1] - chart.uv_min[1]) * scale_v;
-    let fy_max_unclamped =
-        placement.y as f32 + padding + (chunk_uv_max[1] - chart.uv_min[1]) * scale_v;
+    // Interior-relative texel coordinate where `chunk.uv_min` projects to a
+    // texel center is `tx = (chunk_uv_min - chart.uv_min) * scale - 0.5`.
+    // Texels with center >= chunk.uv_min are those with `tx >= fx_min_interior`,
+    // i.e. integer indices `ceil(fx_min_interior)`. Likewise for max (exclusive).
+    let fx_min_interior = (chunk_uv_min[0] - chart.uv_min[0]) * scale_u - 0.5;
+    let fx_max_interior = (chunk_uv_max[0] - chart.uv_min[0]) * scale_u - 0.5;
+    let fy_min_interior = (chunk_uv_min[1] - chart.uv_min[1]) * scale_v - 0.5;
+    let fy_max_interior = (chunk_uv_max[1] - chart.uv_min[1]) * scale_v - 0.5;
+
+    let fx_min_unclamped = placement.x as f32 + padding + fx_min_interior.ceil();
+    let fx_max_unclamped = placement.x as f32 + padding + fx_max_interior.ceil();
+    let fy_min_unclamped = placement.y as f32 + padding + fy_min_interior.ceil();
+    let fy_max_unclamped = placement.y as f32 + padding + fy_max_interior.ceil();
 
     // Clamp before `f32 as u32`: a misplaced chart can put coordinates below 0,
     // and `(-n as u32)` saturates to 0 (wrong). Clamping pins rogue rects to
@@ -308,10 +320,10 @@ fn chunk_atlas_rect(
     let fy_min = fy_min_unclamped.clamp(0.0, atlas_h_f);
     let fy_max = fy_max_unclamped.clamp(0.0, atlas_h_f);
 
-    let ax_min_raw = fx_min.floor() as u32;
-    let ay_min_raw = fy_min.floor() as u32;
-    let ax_max_raw = (fx_max.ceil() as u32).max(ax_min_raw + 1);
-    let ay_max_raw = (fy_max.ceil() as u32).max(ay_min_raw + 1);
+    let ax_min_raw = fx_min as u32;
+    let ay_min_raw = fy_min as u32;
+    let ax_max_raw = (fx_max as u32).max(ax_min_raw + 1);
+    let ay_max_raw = (fy_max as u32).max(ay_min_raw + 1);
 
     // Clamp the min corner: without this, a chart past the atlas bound can make
     // `ax_max - ax_min` underflow, handing a 1-texel rect to `textureStore` at
@@ -512,8 +524,8 @@ mod tests {
             cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
-            casts_entity_shadows: false,
             is_animated: false,
+            casts_entity_shadows: false,
             tags: vec![],
         }
     }
@@ -852,6 +864,77 @@ mod tests {
         assert_eq!(loaded, rebaked);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Regression: with outward rounding (floor min, ceil max), two sibling
+    /// chunks sharing a UV boundary inflated outward into the same atlas texel
+    /// column/row, tripping `assert_no_overlapping_rects_per_face`. Center-based
+    /// half-open ownership packs them adjacent with no overlap.
+    #[test]
+    fn sibling_chunks_with_shared_uv_edge_pack_without_overlap() {
+        let chart = Chart {
+            origin: glam::Vec3::ZERO,
+            u_axis: glam::Vec3::X,
+            v_axis: glam::Vec3::Z,
+            uv_min: [0.0, 0.0],
+            uv_extent: [1.0, 1.0],
+            normal: glam::Vec3::Y,
+            width_texels: 8,
+            height_texels: 8,
+        };
+        let placement = ChartPlacement { x: 0, y: 0 };
+        let atlas_size = 64u32;
+
+        // Splits the chart's U range at uv=0.5 — what `recurse` does on a
+        // U-split. Pre-fix, both rects shared the same atlas texel column.
+        let (ax_a, _ay_a, w_a, _h_a) = chunk_atlas_rect(
+            &chart,
+            placement,
+            [0.0, 0.0],
+            [0.5, 1.0],
+            atlas_size,
+            atlas_size,
+        );
+        let (ax_b, _ay_b, _w_b, _h_b) = chunk_atlas_rect(
+            &chart,
+            placement,
+            [0.5, 0.0],
+            [1.0, 1.0],
+            atlas_size,
+            atlas_size,
+        );
+        assert!(
+            ax_a + w_a <= ax_b,
+            "sibling chunks must not overlap: A ends at {} but B starts at {}",
+            ax_a + w_a,
+            ax_b,
+        );
+
+        // Non-integer-texel boundary at uv=0.4 (i.e. fx = 1.6, on a 4-texel
+        // interior) — the original failure mode where outward rounding put A's
+        // ax_max=2 and B's ax_min=1 into the same column.
+        let (ax_a2, _, w_a2, _) = chunk_atlas_rect(
+            &chart,
+            placement,
+            [0.0, 0.0],
+            [0.4, 1.0],
+            atlas_size,
+            atlas_size,
+        );
+        let (ax_b2, _, _w_b2, _) = chunk_atlas_rect(
+            &chart,
+            placement,
+            [0.4, 0.0],
+            [1.0, 1.0],
+            atlas_size,
+            atlas_size,
+        );
+        assert!(
+            ax_a2 + w_a2 <= ax_b2,
+            "sibling chunks split at uv=0.4 must not overlap: A ends at {} but B starts at {}",
+            ax_a2 + w_a2,
+            ax_b2,
+        );
     }
 
     /// Regression: previously only ax_max/ay_max were clamped; a misplaced chart

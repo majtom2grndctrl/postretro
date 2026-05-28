@@ -60,6 +60,11 @@ struct TexelOffsetCount {
 struct TexelLight {
     light_index: u32,
     weight: f32,
+    // Octahedral-encoded incoming direction from the texel toward the light,
+    // baked at compile time (the light's geometry is static, so this is
+    // constant). Low 16 bits = x, high 16 bits = y. See Task 2b of
+    // sdf-static-occluder-shadows. Decoded via `decode_oct_packed` below.
+    direction_oct_packed: u32,
 };
 
 struct DispatchTile {
@@ -93,6 +98,51 @@ struct DebugConfig {
 @group(1) @binding(5) var<storage, read> anim_samples: array<f32>;
 @group(1) @binding(6) var animated_lm_atlas: texture_storage_2d<rgba16float, write>;
 @group(1) @binding(7) var<uniform> debug_config: DebugConfig;
+// Per-frame dominant-direction atlas. Task 2b: each contributing light's
+// per-texel baked incoming direction is weighted by its current radiance,
+// summed, normalized, and octahedral-encoded into rg here. The SDF shadow
+// pass (Task 4) traces toward this direction.
+@group(1) @binding(8) var animated_lm_direction_atlas: texture_storage_2d<rgba8unorm, write>;
+
+// Decode a u32-packed pair of u16 octahedral components into a unit vector.
+// Mirrors `crate::level_format::octahedral::decode`: each u16 is mapped
+// [0, 65535] -> [-1, 1], z is recovered from |x|+|y|+|z|=1, lower hemisphere
+// undoes the reflection.
+fn decode_oct_packed(packed: u32) -> vec3<f32> {
+    let ux = packed & 0xffffu;
+    let uy = packed >> 16u;
+    let ox = (f32(ux) / 65535.0) * 2.0 - 1.0;
+    let oy = (f32(uy) / 65535.0) * 2.0 - 1.0;
+    let z = 1.0 - abs(ox) - abs(oy);
+    var x: f32;
+    var y: f32;
+    if (z < 0.0) {
+        x = (1.0 - abs(oy)) * select(-1.0, 1.0, ox >= 0.0);
+        y = (1.0 - abs(ox)) * select(-1.0, 1.0, oy >= 0.0);
+    } else {
+        x = ox;
+        y = oy;
+    }
+    return normalize(vec3<f32>(x, y, z));
+}
+
+// Encode a unit direction into 2-channel octahedral, return rg in [0, 1] for
+// storing into the Rgba8Unorm direction atlas. Mirrors
+// `forward.wgsl::decode_lightmap_direction` on the reverse side. Caller is
+// responsible for `normalize`ing first; near-zero vectors should be replaced
+// with a safe default before calling.
+fn encode_oct_to_rg(dir: vec3<f32>) -> vec2<f32> {
+    let inv_l1 = 1.0 / (abs(dir.x) + abs(dir.y) + abs(dir.z));
+    var ox = dir.x * inv_l1;
+    var oy = dir.y * inv_l1;
+    if (dir.z < 0.0) {
+        let nx = (1.0 - abs(oy)) * select(-1.0, 1.0, ox >= 0.0);
+        let ny = (1.0 - abs(ox)) * select(-1.0, 1.0, oy >= 0.0);
+        ox = nx;
+        oy = ny;
+    }
+    return vec2<f32>(ox * 0.5 + 0.5, oy * 0.5 + 0.5);
+}
 
 @compute @workgroup_size(8, 8, 1)
 fn compose_main(
@@ -127,6 +177,13 @@ fn compose_main(
     }
 
     var accum = vec3<f32>(0.0);
+    // Task 2b: fuse a per-frame dominant incoming direction. Each light's
+    // baked per-texel direction is weighted by its current radiance scalar
+    // (luminance of the same `c * b * weight` term that drives `accum`), so
+    // the fused direction tracks the radiance-weighted sweep — the SDF
+    // shadow swings with whichever animated-baked light is brightest right
+    // now, instead of pointing at a frozen baked mean.
+    var dir_accum = vec3<f32>(0.0);
     for (var i: u32 = 0u; i < oc.count; i = i + 1u) {
         let entry = texel_lights[oc.offset + i];
         // Debug mode 2: isolate a single descriptor slot.
@@ -145,11 +202,30 @@ fn compose_main(
             sample_color_catmull_rom(desc.color_offset, desc.color_count, t, desc.base_color),
             vec3<f32>(0.0),
         );
-        accum = accum + c * b * entry.weight;
+        let radiance = c * b * entry.weight;
+        accum = accum + radiance;
+        // Rec. 709 luminance — single scalar weight so the fused direction
+        // is the same vector for every consumer (not channel-dependent).
+        let lum = dot(radiance, vec3<f32>(0.2126, 0.7152, 0.0722));
+        let dir = decode_oct_packed(entry.direction_oct_packed);
+        dir_accum = dir_accum + dir * lum;
     }
     textureStore(
         animated_lm_atlas,
         vec2<i32>(i32(rect.atlas_x + rect_x), i32(rect.atlas_y + rect_y)),
         vec4<f32>(accum, 1.0),
+    );
+    // Normalize the fused direction. Fallback to a neutral upward vector if
+    // the accumulated direction is near-zero (no active lights / all directions
+    // canceled) — the irradiance is zero there so the SDF factor won't be
+    // multiplied into a visible term, but downstream sampling still expects a
+    // valid unit vector.
+    let dir_len = length(dir_accum);
+    let fused_dir = select(vec3<f32>(0.0, 1.0, 0.0), dir_accum / max(dir_len, 1.0e-12), dir_len > 1.0e-8);
+    let rg = encode_oct_to_rg(fused_dir);
+    textureStore(
+        animated_lm_direction_atlas,
+        vec2<i32>(i32(rect.atlas_x + rect_x), i32(rect.atlas_y + rect_y)),
+        vec4<f32>(rg.x, rg.y, 0.5, 1.0),
     );
 }

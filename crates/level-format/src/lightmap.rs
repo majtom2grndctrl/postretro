@@ -54,6 +54,12 @@ pub struct LightmapSection {
     pub irradiance: Vec<u8>,
     /// Raw bytes for direction texels (Rgba8Unorm, octahedral, row-major).
     pub direction: Vec<u8>,
+    /// Which bake produced the irradiance. `Shadowed` (default) folds static-light
+    /// shadows into irradiance — the `main` behavior, written without a trailer so
+    /// output is byte-identical to `main`. `Unshadowed` writes a trailer recording
+    /// the mode so the runtime can multiply runtime SDF visibility into the static
+    /// term without double-shadowing.
+    pub mode: LightmapMode,
 }
 
 /// Format tag for the irradiance blob. Only `Rgba16Float` exists today; the
@@ -64,6 +70,56 @@ pub const IRRADIANCE_FORMAT_RGBA16F: u32 = 0;
 /// Format tag for the direction blob. Only octahedral-in-Rgba8Unorm exists
 /// today; same forward-compat rationale as `IRRADIANCE_FORMAT_RGBA16F`.
 pub const DIRECTION_FORMAT_OCT_RGBA8: u32 = 0;
+
+/// Magic tag introducing the bake-mode trailer, ASCII `"LMOD"` little-endian.
+/// Trailer layout (8 bytes total) appended *after* the direction blob:
+///
+/// ```text
+///   u32 trailer_magic (= LIGHTMAP_MODE_TRAILER_MAGIC)
+///   u32 mode          (LightmapMode discriminant — 0 = shadowed, 1 = unshadowed)
+/// ```
+///
+/// The base `from_bytes` parser only consumes `HEADER_SIZE + irr_len + dir_len`
+/// bytes; trailing bytes are silently ignored. Legacy PRLs (no trailer) parse
+/// as `LightmapMode::Shadowed` — `main`'s baked-shadow behavior. The shadowed
+/// bake writes no trailer, preserving byte-for-byte parity with `main`.
+pub const LIGHTMAP_MODE_TRAILER_MAGIC: u32 = u32::from_le_bytes(*b"LMOD");
+
+/// Selects how the lightmap atlas was baked.
+///
+/// - `Shadowed` (default): static-light shadows are folded into the irradiance
+///   value — the `main` bake. Texels occluded from a static light are dark.
+/// - `Unshadowed`: full static-light irradiance + bounce with **no** visibility
+///   term. Texels occluded from a static light still receive its full irradiance.
+///   Runtime SDF supplies visibility separately to avoid double-shadowing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LightmapMode {
+    Shadowed,
+    Unshadowed,
+}
+
+impl Default for LightmapMode {
+    fn default() -> Self {
+        Self::Shadowed
+    }
+}
+
+impl LightmapMode {
+    pub const fn as_u32(self) -> u32 {
+        match self {
+            LightmapMode::Shadowed => 0,
+            LightmapMode::Unshadowed => 1,
+        }
+    }
+
+    pub fn from_u32(v: u32) -> Option<Self> {
+        match v {
+            0 => Some(Self::Shadowed),
+            1 => Some(Self::Unshadowed),
+            _ => None,
+        }
+    }
+}
 
 impl LightmapSection {
     /// Build an empty placeholder section: 1×1 white irradiance + neutral
@@ -85,14 +141,23 @@ impl LightmapSection {
             texel_density: 1.0,
             irradiance,
             direction,
+            mode: LightmapMode::Shadowed,
         }
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
         let irr_len = self.irradiance.len() as u32;
         let dir_len = self.direction.len() as u32;
-        let mut buf =
-            Vec::with_capacity(HEADER_SIZE + self.irradiance.len() + self.direction.len());
+        // Shadowed mode is the legacy/default — write no trailer so output is
+        // byte-identical to `main` for the same bake inputs.
+        let trailer_bytes = if self.mode == LightmapMode::Shadowed {
+            0
+        } else {
+            8
+        };
+        let mut buf = Vec::with_capacity(
+            HEADER_SIZE + self.irradiance.len() + self.direction.len() + trailer_bytes,
+        );
         buf.extend_from_slice(&self.width.to_le_bytes());
         buf.extend_from_slice(&self.height.to_le_bytes());
         buf.extend_from_slice(&self.texel_density.to_le_bytes());
@@ -102,6 +167,10 @@ impl LightmapSection {
         buf.extend_from_slice(&dir_len.to_le_bytes());
         buf.extend_from_slice(&self.irradiance);
         buf.extend_from_slice(&self.direction);
+        if self.mode != LightmapMode::Shadowed {
+            buf.extend_from_slice(&LIGHTMAP_MODE_TRAILER_MAGIC.to_le_bytes());
+            buf.extend_from_slice(&self.mode.as_u32().to_le_bytes());
+        }
         buf
     }
 
@@ -149,12 +218,41 @@ impl LightmapSection {
         let irradiance = data[irr_start..dir_start].to_vec();
         let direction = data[dir_start..dir_start + dir_len].to_vec();
 
+        // Optional bake-mode trailer. Legacy PRLs (and shadowed-bake output) omit
+        // it entirely; absence reads as `Shadowed` so missing-marker behavior
+        // matches `main`. A present trailer's magic must match to be honored; any
+        // other trailing bytes are ignored as forward-compat slack.
+        let trailer_start = dir_start + dir_len;
+        let mode = if data.len() >= trailer_start + 8 {
+            let magic = u32::from_le_bytes(
+                data[trailer_start..trailer_start + 4].try_into().unwrap(),
+            );
+            if magic == LIGHTMAP_MODE_TRAILER_MAGIC {
+                let raw = u32::from_le_bytes(
+                    data[trailer_start + 4..trailer_start + 8]
+                        .try_into()
+                        .unwrap(),
+                );
+                LightmapMode::from_u32(raw).ok_or_else(|| {
+                    FormatError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("unsupported lightmap mode: {raw}"),
+                    ))
+                })?
+            } else {
+                LightmapMode::Shadowed
+            }
+        } else {
+            LightmapMode::Shadowed
+        };
+
         Ok(Self {
             width,
             height,
             texel_density,
             irradiance,
             direction,
+            mode,
         })
     }
 }
@@ -274,10 +372,49 @@ mod tests {
             texel_density: 0.04,
             irradiance,
             direction,
+            mode: LightmapMode::Shadowed,
         };
         let bytes = section.to_bytes();
         let restored = LightmapSection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);
+    }
+
+    #[test]
+    fn shadowed_mode_writes_no_trailer_byte_identical_to_pre_trailer_layout() {
+        // The shadowed bake is `main`'s behavior. Output must be byte-identical to
+        // the pre-trailer encoding (header + irradiance + direction, nothing more)
+        // so a build with neither new prl-build flag set produces no output drift.
+        let section = LightmapSection::placeholder();
+        let bytes = section.to_bytes();
+        let expected_len = HEADER_SIZE + section.irradiance.len() + section.direction.len();
+        assert_eq!(
+            bytes.len(),
+            expected_len,
+            "shadowed mode must write zero trailer bytes",
+        );
+    }
+
+    #[test]
+    fn unshadowed_mode_round_trips_via_trailer() {
+        let mut section = LightmapSection::placeholder();
+        section.mode = LightmapMode::Unshadowed;
+        let bytes = section.to_bytes();
+        let restored = LightmapSection::from_bytes(&bytes).unwrap();
+        assert_eq!(restored.mode, LightmapMode::Unshadowed);
+        assert_eq!(section, restored);
+    }
+
+    #[test]
+    fn legacy_section_without_trailer_reads_as_shadowed() {
+        // Bytes produced by a pre-trailer encoder: no magic, no mode field.
+        let section = LightmapSection::placeholder();
+        let bytes = section.to_bytes(); // shadowed → no trailer
+        let restored = LightmapSection::from_bytes(&bytes).unwrap();
+        assert_eq!(
+            restored.mode,
+            LightmapMode::Shadowed,
+            "missing trailer must read as shadowed (main's behavior)",
+        );
     }
 
     #[test]

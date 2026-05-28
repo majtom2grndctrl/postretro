@@ -7,8 +7,12 @@
 
 use crate::FormatError;
 
-/// Current section version.
-pub const ANIMATED_LIGHT_WEIGHT_MAPS_VERSION: u32 = 1;
+/// Current section version. Bumped to 2 in the sdf-static-occluder-shadows
+/// branch when `TexelLight` grew a per-light per-texel `direction_oct` field
+/// (Task 2b). The animated-lightmap compose pass fuses these directions per
+/// frame, weighted by current radiance, into a runtime direction atlas the
+/// SDF shadow pass traces toward.
+pub const ANIMATED_LIGHT_WEIGHT_MAPS_VERSION: u32 = 2;
 
 /// Atlas rectangle for one chunk: position and dimensions within the lightmap
 /// atlas, plus an offset into the per-texel offset-count table.
@@ -37,7 +41,7 @@ pub struct TexelLightEntry {
     pub count: u32,
 }
 
-/// One light-weight entry: (light_index, weight).
+/// One light-weight entry: (light_index, weight, direction_oct).
 ///
 /// `light_index`: direct slot into the GPU `AnimationDescriptor` buffer —
 /// the same namespace as `AnimatedLightChunks.chunks[i].light_indices`,
@@ -45,10 +49,18 @@ pub struct TexelLightEntry {
 /// bake time because the chunk-list builder and the descriptor buffer use
 /// the same filter and iteration order. `weight`: per-texel contribution
 /// magnitude (0.0..1.0, normalized after bake).
+///
+/// `direction_oct`: octahedral-encoded unit vector from the texel toward
+/// the light (`[u16; 2]`, same encoding as `crate::octahedral::encode`).
+/// Baked because the light's geometry is static — its per-texel incoming
+/// direction never changes. The compose pass weights it by the light's
+/// per-frame radiance to fuse a runtime dominant-direction atlas the SDF
+/// shadow pass traces toward (Task 2b of sdf-static-occluder-shadows).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TexelLight {
     pub light_index: u32,
     pub weight: f32,
+    pub direction_oct: [u16; 2],
 }
 
 /// AnimatedLightWeightMaps section (ID 25).
@@ -73,9 +85,11 @@ pub struct TexelLight {
 ///     u32      offset             (into texel_lights)
 ///     u32      count
 ///
-///   Light weights (8 bytes × texel_lights_len):
+///   Light weights (12 bytes × texel_lights_len):
 ///     u32      light_index
 ///     f32      weight
+///     u16      direction_oct[0]
+///     u16      direction_oct[1]
 /// ```
 ///
 /// Invariants verified at load time:
@@ -93,7 +107,7 @@ pub struct AnimatedLightWeightMapsSection {
 const HEADER_SIZE: usize = 16;
 const CHUNK_RECT_SIZE: usize = 20;
 const OFFSET_ENTRY_SIZE: usize = 8;
-const TEXEL_LIGHT_SIZE: usize = 8;
+const TEXEL_LIGHT_SIZE: usize = 12;
 
 impl AnimatedLightWeightMapsSection {
     /// Empty section — used when a map has no animated lights or no weight maps.
@@ -170,6 +184,8 @@ impl AnimatedLightWeightMapsSection {
         for light in &self.texel_lights {
             buf.extend_from_slice(&light.light_index.to_le_bytes());
             buf.extend_from_slice(&light.weight.to_le_bytes());
+            buf.extend_from_slice(&light.direction_oct[0].to_le_bytes());
+            buf.extend_from_slice(&light.direction_oct[1].to_le_bytes());
         }
 
         buf
@@ -244,9 +260,12 @@ impl AnimatedLightWeightMapsSection {
         for _ in 0..texel_lights_len {
             let light_index = read_u32(data, cursor);
             let weight = read_f32(data, cursor + 4);
+            let dx = read_u16(data, cursor + 8);
+            let dy = read_u16(data, cursor + 10);
             texel_lights.push(TexelLight {
                 light_index,
                 weight,
+                direction_oct: [dx, dy],
             });
             cursor += TEXEL_LIGHT_SIZE;
         }
@@ -265,6 +284,10 @@ fn read_u32(data: &[u8], at: usize) -> u32 {
 
 fn read_f32(data: &[u8], at: usize) -> f32 {
     f32::from_le_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]])
+}
+
+fn read_u16(data: &[u8], at: usize) -> u16 {
+    u16::from_le_bytes([data[at], data[at + 1]])
 }
 
 #[cfg(test)]
@@ -324,34 +347,42 @@ mod tests {
                 TexelLight {
                     light_index: 0,
                     weight: 0.8,
+                    direction_oct: [32768, 65535],
                 },
                 TexelLight {
                     light_index: 1,
                     weight: 0.2,
+                    direction_oct: [65535, 32768],
                 },
                 TexelLight {
                     light_index: 2,
                     weight: 1.0,
+                    direction_oct: [0, 32768],
                 },
                 TexelLight {
                     light_index: 3,
                     weight: 0.5,
+                    direction_oct: [32768, 0],
                 },
                 TexelLight {
                     light_index: 4,
                     weight: 0.6,
+                    direction_oct: [32768, 32768],
                 },
                 TexelLight {
                     light_index: 5,
                     weight: 0.3,
+                    direction_oct: [16384, 49152],
                 },
                 TexelLight {
                     light_index: 6,
                     weight: 0.9,
+                    direction_oct: [49152, 16384],
                 },
                 TexelLight {
                     light_index: 7,
                     weight: 0.4,
+                    direction_oct: [12345, 54321],
                 },
             ],
         }
@@ -460,6 +491,25 @@ mod tests {
         let section = sample_section();
         let expected_len: u32 = section.chunk_rects.iter().map(|r| r.width * r.height).sum();
         assert_eq!(section.offset_counts.len() as u32, expected_len);
+    }
+
+    #[test]
+    fn direction_oct_round_trips_per_texel_light() {
+        // Each per-texel light entry must carry its octahedral-encoded direction
+        // through serialize → deserialize. Task 2b of sdf-static-occluder-shadows
+        // bakes this; the compose pass reads it to fuse a per-frame dominant
+        // direction.
+        let section = sample_section();
+        let bytes = section.to_bytes();
+        let restored = AnimatedLightWeightMapsSection::from_bytes(&bytes).unwrap();
+        assert_eq!(section.texel_lights.len(), restored.texel_lights.len());
+        for (a, b) in section
+            .texel_lights
+            .iter()
+            .zip(restored.texel_lights.iter())
+        {
+            assert_eq!(a.direction_oct, b.direction_oct);
+        }
     }
 
     #[test]

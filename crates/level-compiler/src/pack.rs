@@ -24,6 +24,7 @@ use postretro_level_format::light_tags::LightTagsSection;
 use postretro_level_format::lightmap::LightmapSection;
 use postretro_level_format::map_entity::{MapEntityRecord, MapEntitySection};
 use postretro_level_format::portals::{PortalRecord, PortalsSection};
+use postretro_level_format::sdf_atlas::SdfAtlasSection;
 use postretro_level_format::sh_volume::ShVolumeSection;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::{
@@ -344,6 +345,7 @@ pub fn pack_and_write_portals(
     map_entities: Option<&MapEntitySection>,
     fog_volumes: &FogVolumesSection,
     fog_cell_masks: Option<&FogCellMasksSection>,
+    sdf_atlas: Option<&SdfAtlasSection>,
 ) -> anyhow::Result<()> {
     let geometry_bytes = geo_result.geometry.to_bytes();
     let texture_names_bytes = geo_result.texture_names.to_bytes();
@@ -373,6 +375,7 @@ pub fn pack_and_write_portals(
     let map_entities_bytes = map_entities.map(|s| s.to_bytes());
     let fog_volumes_bytes = fog_volumes.to_bytes();
     let fog_cell_masks_bytes = fog_cell_masks.map(|s| s.to_bytes());
+    let sdf_atlas_bytes = sdf_atlas.map(|s| s.to_bytes());
 
     let mut sections = vec![
         SectionBlob {
@@ -487,6 +490,13 @@ pub fn pack_and_write_portals(
         sections.push(SectionBlob {
             section_id: SectionId::FogCellMasks as u32,
             version: 1,
+            data: bytes.clone(),
+        });
+    }
+    if let Some(ref bytes) = sdf_atlas_bytes {
+        sections.push(SectionBlob {
+            section_id: SectionId::SdfAtlas as u32,
+            version: postretro_level_format::sdf_atlas::SDF_ATLAS_VERSION as u16,
             data: bytes.clone(),
         });
     }
@@ -828,6 +838,7 @@ mod tests {
             None,
             &FogVolumesSection::default(),
             None,
+            None,
         )
         .expect("pack_and_write_portals should succeed");
 
@@ -895,6 +906,7 @@ mod tests {
             None,
             None,
             &FogVolumesSection::default(),
+            None,
             None,
         );
         assert!(result.is_err());
@@ -976,6 +988,7 @@ mod tests {
             None,
             None,
             &FogVolumesSection::default(),
+            None,
             None,
         )
         .expect("full pipeline portal pack should succeed");

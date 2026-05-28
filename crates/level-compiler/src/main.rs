@@ -21,6 +21,7 @@ pub mod pack;
 pub mod parse;
 pub mod partition;
 pub mod portals;
+pub mod sdf_bake;
 pub mod sh_bake;
 pub mod texture_mips;
 pub mod texture_validation;
@@ -244,8 +245,14 @@ fn main() -> anyhow::Result<()> {
     progress.start_stage("Lightmap bake...");
     let stage_start = Instant::now();
     let static_light_count = map_data.lights.iter().filter(|l| !l.is_dynamic).count();
+    let bake_mode = if args.unshadowed_lightmap {
+        lightmap_bake::BakeMode::Unshadowed
+    } else {
+        lightmap_bake::BakeMode::Shadowed
+    };
     let lightmap_config = lightmap_bake::LightmapConfig {
         lightmap_density: args.lightmap_density,
+        mode: bake_mode,
     };
     let final_lightmap_density;
     let lightmap_bake_output = {
@@ -314,6 +321,7 @@ fn main() -> anyhow::Result<()> {
                     &mut lm_ctx,
                     &lightmap_bake::LightmapConfig {
                         lightmap_density: density,
+                        mode: bake_mode,
                     },
                 ) {
                     Ok(result) => {
@@ -529,6 +537,60 @@ fn main() -> anyhow::Result<()> {
         Some(animated_light_chunks_section)
     };
 
+    let sdf_atlas_section = if args.bake_sdf {
+        progress.start_stage("SDF atlas bake...");
+        let stage_start = Instant::now();
+        let sdf_config = sdf_bake::SdfConfig::default();
+        let section = {
+            // Build serialisable inputs for the cache key. Geometry hash also
+            // captures triangle order, so a deterministic geometry result
+            // means a deterministic cache key.
+            let sdf_inputs = sdf_bake::SdfInputs {
+                geometry: geo_result.clone(),
+            };
+            let sdf_input_hash = {
+                let mut buf =
+                    postcard::to_allocvec(&sdf_inputs).expect("postcard serialize SdfInputs");
+                buf.extend_from_slice(
+                    &postcard::to_allocvec(&sdf_config).expect("postcard serialize SdfConfig"),
+                );
+                *blake3::hash(&buf).as_bytes()
+            };
+            let sdf_key =
+                cache::CacheKey::new("sdf_atlas", sdf_bake::STAGE_VERSION, &sdf_input_hash);
+
+            let cached = stage_cache.as_ref().and_then(|c| c.get(&sdf_key));
+            let cached_section = cached.and_then(|bytes| {
+                postretro_level_format::sdf_atlas::SdfAtlasSection::from_bytes(&bytes)
+                    .map_err(|e| log::warn!("[cache] corrupt sdf_atlas entry, re-baking: {e}"))
+                    .ok()
+            });
+
+            if let Some(section) = cached_section {
+                log::info!("[cache] sdf_atlas hit");
+                section
+            } else {
+                log::info!("[cache] sdf_atlas miss");
+                let ctx = sdf_bake::SdfBakeCtx {
+                    geometry: &geo_result,
+                    tree: &result.tree,
+                };
+                let section = sdf_bake::bake_sdf_atlas(&ctx, &sdf_config);
+                if let Some(ref c) = stage_cache {
+                    c.put(&sdf_key, &section.to_bytes());
+                }
+                section
+            }
+        };
+        timings.push(("SDF Atlas Bake", stage_start.elapsed()));
+        if args.verbose {
+            sdf_bake::log_stats(&section);
+        }
+        Some(section)
+    } else {
+        None
+    };
+
     progress.start_stage("Texture mip bake...");
     let stage_start = Instant::now();
     let prm_cache_root = resolve_prm_cache_root_via_cargo(&args.input);
@@ -565,6 +627,7 @@ fn main() -> anyhow::Result<()> {
         map_entities_section.as_ref(),
         &fog_volumes_section,
         fog_cell_masks_section.as_ref(),
+        sdf_atlas_section.as_ref(),
     )?;
     timings.push(("Packing", stage_start.elapsed()));
 
@@ -592,6 +655,14 @@ struct Args {
     probe_spacing: f32,
     /// Starting density in meters; baker retries at coarser densities on atlas overflow.
     lightmap_density: f32,
+    /// When true, skip the per-texel visibility test during the lightmap bake so the
+    /// atlas carries full static-light irradiance + bounce with no baked shadows.
+    /// Default (false) reproduces `main`'s shadowed bake byte-for-byte.
+    unshadowed_lightmap: bool,
+    /// When true, run the SDF static-occluder atlas bake and emit
+    /// `SectionId::SdfAtlas`. Default false — leaving the section absent
+    /// preserves byte-identity with main for the same map.
+    bake_sdf: bool,
     /// Override cache directory. None = use the workspace-root default.
     cache_dir: Option<PathBuf>,
     /// When true, bypass cache reads and writes entirely.
@@ -612,6 +683,8 @@ where
     let mut format = DEFAULT_MAP_FORMAT;
     let mut probe_spacing = sh_bake::DEFAULT_PROBE_SPACING;
     let mut lightmap_density = lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS;
+    let mut unshadowed_lightmap = false;
+    let mut bake_sdf = false;
     let mut cache_dir: Option<PathBuf> = None;
     let mut no_cache = false;
 
@@ -667,6 +740,12 @@ where
             "--no-cache" => {
                 no_cache = true;
             }
+            "--unshadowed-lightmap" => {
+                unshadowed_lightmap = true;
+            }
+            "--bake-sdf" => {
+                bake_sdf = true;
+            }
             _ if input.is_none() => {
                 input = Some(PathBuf::from(arg));
             }
@@ -680,7 +759,7 @@ where
         anyhow::anyhow!(
             "usage: prl-build <input.map> [-o <output.prl>] [-v|--verbose] \
              [--format <FORMAT>] [--probe-spacing <METERS>] [--lightmap-density <METERS>] \
-             [--cache-dir <PATH>] [--no-cache]"
+             [--unshadowed-lightmap] [--bake-sdf] [--cache-dir <PATH>] [--no-cache]"
         )
     })?;
 
@@ -693,6 +772,8 @@ where
         format,
         probe_spacing,
         lightmap_density,
+        unshadowed_lightmap,
+        bake_sdf,
         cache_dir,
         no_cache,
     })
@@ -1229,6 +1310,7 @@ mod tests {
         };
         let config = LightmapConfig {
             lightmap_density: 0.25,
+            mode: lightmap_bake::BakeMode::Shadowed,
         };
         let hash = lightmap_input_hash(&inputs, &config);
         let key = CacheKey::new("lightmap", lightmap_bake::STAGE_VERSION, &hash);
@@ -1352,6 +1434,7 @@ mod tests {
         };
         let config = LightmapConfig {
             lightmap_density: 0.25,
+            mode: lightmap_bake::BakeMode::Shadowed,
         };
         let key_a = CacheKey::new(
             "lightmap",
@@ -1406,6 +1489,7 @@ mod tests {
         };
         let config = LightmapConfig {
             lightmap_density: 0.25,
+            mode: lightmap_bake::BakeMode::Shadowed,
         };
 
         let key_first = CacheKey::new(
@@ -1475,6 +1559,7 @@ mod tests {
         };
         let config = LightmapConfig {
             lightmap_density: 0.25,
+            mode: lightmap_bake::BakeMode::Shadowed,
         };
         let hash = lightmap_input_hash(&inputs, &config);
         let key = CacheKey::new("lightmap", lightmap_bake::STAGE_VERSION, &hash);

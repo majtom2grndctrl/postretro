@@ -9,6 +9,7 @@ pub mod debug_ui;
 pub mod fog_pass;
 pub mod frame_timing;
 pub mod loaded_texture;
+pub mod sdf_atlas;
 pub mod sh_compose;
 #[cfg(feature = "dev-tools")]
 pub mod sh_diagnostics;
@@ -49,6 +50,7 @@ use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use fog_pass::FogPass;
 use frame_timing::FrameTiming;
 use sh_compose::ShComposeResources;
+use sdf_atlas::SdfAtlasResources;
 use sh_volume::ShVolumeResources;
 use smoke::SmokePass;
 
@@ -415,6 +417,15 @@ pub struct LevelGeometry<'a> {
     /// `None` → compose pass falls back to a base→total copy.
     pub delta_sh_volumes:
         Option<&'a postretro_level_format::delta_sh_volumes::DeltaShVolumesSection>,
+    /// `None` → no SDF static-occluder atlas; runtime SDF shadow pass disabled.
+    /// An empty-geometry section (zero grid dims) is treated the same way.
+    pub sdf_atlas: Option<&'a postretro_level_format::sdf_atlas::SdfAtlasSection>,
+    /// Whether the lightmap atlas was baked with the static-light visibility
+    /// term included (Shadowed — `main`-equivalent) or removed (Unshadowed,
+    /// Task 2a). The renderer surfaces this so the forward pass (Task 5)
+    /// knows whether to multiply the SDF visibility factor into the static
+    /// term. Defaults to `Shadowed` for legacy PRLs.
+    pub lightmap_mode: crate::prl::LightmapMode,
     pub texture_materials: &'a [crate::material::Material],
 }
 
@@ -479,6 +490,20 @@ pub struct Renderer {
 
     /// Absent SH section → dummy 1×1×1 textures; `has_sh_volume == 0` skips sampling.
     sh_volume_resources: ShVolumeResources,
+
+    /// Static-occluder SDF atlas + bind group. Owned by the renderer; the
+    /// bind-group layout is consumed only by the (future) Task 4 shadow
+    /// pass — NOT bound by forward (forward gets only the shadow-factor
+    /// texture in group 5, Task 5). `present` is false when no SDF section
+    /// is in the PRL; the shadow pass skips its dispatch in that case.
+    sdf_atlas_resources: SdfAtlasResources,
+    /// Read from the PRL by Task 2a (the bake records whether the lightmap
+    /// has visibility folded in). Task 5's forward pass reads this to
+    /// decide whether to multiply the SDF visibility factor into the
+    /// static-lightmap term. Defaults to `Shadowed` so legacy PRLs and
+    /// pre-Task-2a builds behave like `main`.
+    #[allow(dead_code)]
+    lightmap_mode: crate::prl::LightmapMode,
 
     /// CPU mirror of animated-light delta volume placements, one entry per
     /// animated light. Empty when the map has no delta SH volumes. Sourced
@@ -1220,6 +1245,15 @@ impl Renderer {
             level_lights.len(),
         );
 
+        let sdf_atlas_resources = SdfAtlasResources::new(
+            &device,
+            &queue,
+            geometry.and_then(|g| g.sdf_atlas),
+        );
+        let lightmap_mode = geometry
+            .map(|g| g.lightmap_mode)
+            .unwrap_or(crate::prl::LightmapMode::Shadowed);
+
         let sh_compose = ShComposeResources::new(
             &device,
             &sh_volume_resources,
@@ -1680,6 +1714,8 @@ impl Renderer {
             ambient_floor,
             indirect_scale: DEFAULT_INDIRECT_SCALE,
             sh_volume_resources,
+            sdf_atlas_resources,
+            lightmap_mode,
             #[cfg(feature = "dev-tools")]
             sh_delta_volumes_meta,
             #[cfg(feature = "dev-tools")]
@@ -1933,6 +1969,10 @@ impl Renderer {
             geometry.sh_volume,
             self.level_lights.len(),
         );
+
+        self.sdf_atlas_resources =
+            SdfAtlasResources::new(&self.device, &self.queue, geometry.sdf_atlas);
+        self.lightmap_mode = geometry.lightmap_mode;
         self.sh_compose = ShComposeResources::new(
             &self.device,
             &self.sh_volume_resources,
@@ -2190,6 +2230,36 @@ impl Renderer {
     #[cfg(feature = "dev-tools")]
     pub fn has_sh_volume(&self) -> bool {
         self.sh_volume_resources.present
+    }
+
+    /// `true` when the loaded map carries a baked SDF static-occluder atlas.
+    /// The (future) Task 4 shadow pass reads this to decide whether to
+    /// dispatch; the (future) Task 5 forward pass reads this together with
+    /// `lightmap_mode` to decide whether to multiply the SDF visibility
+    /// factor into the static-lightmap term. Legacy PRLs report `false` and
+    /// the renderer degrades cleanly to `main`-equivalent lighting.
+    #[allow(dead_code)]
+    pub fn has_sdf_atlas(&self) -> bool {
+        self.sdf_atlas_resources.present
+    }
+
+    /// Borrow the SDF atlas resources. The (future) Task 4 shadow pass
+    /// consumes the bind group + layout here; no other pass should bind
+    /// these — forward gets only an upsampled shadow-factor texture in
+    /// group 5 (Task 5).
+    #[allow(dead_code)]
+    pub fn sdf_atlas_resources(&self) -> &SdfAtlasResources {
+        &self.sdf_atlas_resources
+    }
+
+    /// Lightmap bake mode (Shadowed = visibility baked in, Unshadowed = SDF
+    /// supplies visibility at runtime). Task 2a wires this through from the
+    /// lightmap section; today it is `Shadowed` for every PRL, matching
+    /// `main`-equivalent behavior so the forward pass skips the SDF multiply
+    /// on the static term.
+    #[allow(dead_code)]
+    pub fn lightmap_mode(&self) -> crate::prl::LightmapMode {
+        self.lightmap_mode
     }
 
     /// Per-animated-light delta-volume metadata for the SH diagnostic overlay.
@@ -3425,6 +3495,8 @@ pub fn level_world_to_geometry<'a>(
         animated_light_chunks: world.animated_light_chunks.as_ref(),
         animated_light_weight_maps: world.animated_light_weight_maps.as_ref(),
         delta_sh_volumes: world.delta_sh_volumes.as_ref(),
+        sdf_atlas: world.sdf_atlas.as_ref(),
+        lightmap_mode: world.lightmap_mode,
         texture_materials,
     }
 }

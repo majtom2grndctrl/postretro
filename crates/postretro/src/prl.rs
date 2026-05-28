@@ -22,6 +22,7 @@ use postretro_level_format::light_tags::LightTagsSection;
 use postretro_level_format::lightmap::LightmapSection;
 use postretro_level_format::map_entity::{MapEntityRecord, MapEntitySection};
 use postretro_level_format::portals::PortalsSection;
+use postretro_level_format::sdf_atlas::SdfAtlasSection;
 use postretro_level_format::sh_volume::ShVolumeSection;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::texture_names::TextureNamesSection;
@@ -147,6 +148,26 @@ pub struct MapLight {
     pub leaf_index: u32,
 }
 
+/// Whether the lightmap section's baked irradiance already includes the
+/// static-light visibility (shadow) term, or carries unshadowed irradiance
+/// for runtime SDF visibility to multiply in (Task 2a).
+///
+/// Task 2a will add an on-disk marker to the lightmap section. Until that
+/// lands, every legacy PRL parses as `Shadowed` — matching `main`-equivalent
+/// behavior so the forward pass (Task 5) knows not to multiply the SDF
+/// visibility factor into an already-shadowed term and double-shadow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LightmapMode {
+    /// Static-light visibility folded into the bake (today's `main`). Forward
+    /// must NOT multiply by SDF visibility.
+    #[default]
+    Shadowed,
+    /// Visibility term removed from the bake. Forward MUST multiply by SDF
+    /// visibility to recover shadowed lighting. Set by Task 2a's bake flag.
+    #[allow(dead_code)]
+    Unshadowed,
+}
+
 #[derive(Debug)]
 pub struct LevelWorld {
     pub vertices: Vec<WorldVertex>,
@@ -174,6 +195,15 @@ pub struct LevelWorld {
     pub sh_volume: Option<ShVolumeSection>,
     /// `None` → 1×1 white placeholder; bumped-Lambert degrades to flat white.
     pub lightmap: Option<LightmapSection>,
+    /// Whether the lightmap bake includes static-light visibility (Shadowed,
+    /// today's `main`) or is unshadowed irradiance awaiting runtime SDF
+    /// multiplication (Task 2a). Legacy PRLs without the on-disk marker
+    /// parse as `Shadowed` — Task 5's forward shader uses this to decide
+    /// whether to multiply the SDF visibility factor into the static term.
+    pub lightmap_mode: LightmapMode,
+    /// `None` → no static-occluder SDF atlas (legacy PRL or empty-geometry
+    /// bake). The runtime SDF shadow pass (Task 4) is skipped entirely.
+    pub sdf_atlas: Option<SdfAtlasSection>,
     /// `None` → full spec-buffer scan fallback. See `ChunkGrid::fallback`.
     pub chunk_light_list: Option<ChunkLightListSection>,
     /// Emitted by `prl-build` for animated-light maps; cross-checked against weight-map chunk count.
@@ -588,6 +618,32 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             }
         };
 
+    // Optional — absent → no static-occluder SDF; runtime shadow pass disabled.
+    // An empty-geometry section (zero grid dims) is also a valid "no SDF"
+    // marker; the renderer collapses it to the same disabled state.
+    let sdf_atlas: Option<SdfAtlasSection> =
+        match prl_format::read_section_data(&mut cursor, &meta, SectionId::SdfAtlas as u32)? {
+            Some(data) => {
+                let section = SdfAtlasSection::from_bytes(&data)?;
+                log::info!(
+                    "[PRL] SdfAtlas: grid={}×{}×{}, voxel_size={:.4}m, brick={} voxels, {} surface bricks",
+                    section.grid_dims[0],
+                    section.grid_dims[1],
+                    section.grid_dims[2],
+                    section.voxel_size_m,
+                    section.brick_size_voxels,
+                    section.surface_brick_count,
+                );
+                Some(section)
+            }
+            None => {
+                log::info!(
+                    "[PRL] SdfAtlas section missing — runtime SDF shadow pass disabled (legacy PRL or no SDF bake)"
+                );
+                None
+            }
+        };
+
     // Optional — absent → full spec-buffer scan fallback.
     let chunk_light_list: Option<ChunkLightListSection> = match prl_format::read_section_data(
         &mut cursor,
@@ -877,6 +933,11 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         light_influences,
         sh_volume,
         lightmap,
+        // Task 2a will read this from the lightmap section's mode marker.
+        // Until then every PRL parses as Shadowed — `main`-equivalent so
+        // Task 5's forward pass skips the SDF visibility multiply.
+        lightmap_mode: LightmapMode::default(),
+        sdf_atlas,
         chunk_light_list,
         animated_light_chunks,
         animated_light_weight_maps,
@@ -973,6 +1034,8 @@ mod tests {
             light_influences: vec![],
             sh_volume: None,
             lightmap: None,
+            lightmap_mode: LightmapMode::Shadowed,
+            sdf_atlas: None,
             chunk_light_list: None,
             animated_light_chunks: None,
             animated_light_weight_maps: None,
@@ -1029,6 +1092,8 @@ mod tests {
             light_influences: vec![],
             sh_volume: None,
             lightmap: None,
+            lightmap_mode: LightmapMode::Shadowed,
+            sdf_atlas: None,
             chunk_light_list: None,
             animated_light_chunks: None,
             animated_light_weight_maps: None,
@@ -1078,6 +1143,8 @@ mod tests {
             light_influences: vec![],
             sh_volume: None,
             lightmap: None,
+            lightmap_mode: LightmapMode::Shadowed,
+            sdf_atlas: None,
             chunk_light_list: None,
             animated_light_chunks: None,
             animated_light_weight_maps: None,
@@ -1116,6 +1183,8 @@ mod tests {
             light_influences: vec![],
             sh_volume: None,
             lightmap: None,
+            lightmap_mode: LightmapMode::Shadowed,
+            sdf_atlas: None,
             chunk_light_list: None,
             animated_light_chunks: None,
             animated_light_weight_maps: None,
@@ -1862,6 +1931,107 @@ mod tests {
             "oversized FogCellMasks should be dropped to None"
         );
         assert_eq!(world.leaves.len(), 1);
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// AC [T3]: an old `.prl` without the SDF section loads without error;
+    /// the parsed `LevelWorld` reports `sdf_atlas == None` so the renderer
+    /// can degrade to the "no SDF atlas" state and skip the shadow pass.
+    #[test]
+    fn load_prl_absent_sdf_atlas_section_yields_none() {
+        let geom = sample_geometry();
+        let bvh = sample_bvh_section();
+
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geom.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_no_sdf_atlas.prl");
+        let world = load_prl(tmp.to_str().unwrap()).expect("legacy PRL without SDF must load");
+        assert!(
+            world.sdf_atlas.is_none(),
+            "absent SDF atlas section should yield None (legacy / no-bake degrade path)"
+        );
+        // Lightmap mode defaults to Shadowed until Task 2a adds the marker,
+        // so legacy PRLs degrade to `main`-equivalent forward behavior.
+        assert_eq!(world.lightmap_mode, LightmapMode::Shadowed);
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// AC [T3]: an SDF section that round-trips through the PRL container
+    /// is parsed by the loader and surfaced on `LevelWorld`.
+    #[test]
+    fn load_prl_parses_sdf_atlas_section() {
+        use postretro_level_format::sdf_atlas::{
+            BRICK_SLOT_EMPTY, BRICK_SLOT_INTERIOR, SDF_ATLAS_VERSION, SdfAtlasSection,
+        };
+
+        let brick_size = 4u32;
+        let voxels_per_brick = (brick_size * brick_size * brick_size) as usize;
+        let section = SdfAtlasSection {
+            world_min: [-1.0, -1.0, -1.0],
+            world_max: [1.0, 1.0, 1.0],
+            voxel_size_m: 0.125,
+            brick_size_voxels: brick_size,
+            grid_dims: [1, 1, 1],
+            atlas_bricks_per_axis: [1, 1, 1],
+            surface_brick_count: 1,
+            // One brick cell, marked as a surface brick.
+            top_level: vec![0],
+            atlas: vec![0i16; voxels_per_brick],
+            coarse_distances: vec![0.5],
+        };
+        // Spot-check the sentinels round-trip — separate cell with sentinel
+        // marker isn't needed for this loader test, but confirm the const
+        // imports compile.
+        let _: u32 = BRICK_SLOT_EMPTY;
+        let _: u32 = BRICK_SLOT_INTERIOR;
+
+        let geom = sample_geometry();
+        let bvh = sample_bvh_section();
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geom.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::SdfAtlas as u32,
+                version: SDF_ATLAS_VERSION as u16,
+                data: section.to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_with_sdf_atlas.prl");
+        let world = load_prl(tmp.to_str().unwrap()).expect("PRL with SDF atlas must load");
+        let parsed = world
+            .sdf_atlas
+            .as_ref()
+            .expect("SDF atlas section must round-trip into LevelWorld");
+        assert_eq!(parsed.grid_dims, [1, 1, 1]);
+        assert_eq!(parsed.brick_size_voxels, brick_size);
+        assert_eq!(parsed.surface_brick_count, 1);
+        assert_eq!(parsed.atlas.len(), voxels_per_brick);
 
         std::fs::remove_file(&tmp).ok();
     }

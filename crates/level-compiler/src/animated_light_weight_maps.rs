@@ -21,6 +21,14 @@ use crate::map_data::MapLight;
 /// contributions too dim to matter.
 const WEIGHT_EPSILON: f32 = 1.0e-6;
 
+/// Cache stage version for the animated-light weight-map bake. Bumped to 2 on
+/// the sdf-static-occluder-shadows branch when the bake started retaining the
+/// per-light per-texel incoming direction (Task 2b). Bumps invalidate any
+/// prior cache entries (the `animated_lm_weight_maps` cache key folds this in
+/// alongside the input hash — same shape as `lightmap_bake::STAGE_VERSION` and
+/// `sh_bake::STAGE_VERSION`).
+pub const STAGE_VERSION: u32 = 2;
+
 pub struct WeightMapInputs<'a> {
     pub bvh: &'a Bvh<f32, 3>,
     pub primitives: &'a [BvhPrimitive],
@@ -85,11 +93,12 @@ pub fn bake_animated_light_weight_maps(
         chunk_rects.push(rect);
     }
 
-    // Byte formula mirrors the section encoder.
+    // Byte formula mirrors the section encoder. TexelLight grew to 12 bytes
+    // when the per-texel direction was added (Task 2b).
     const HEADER_SIZE: usize = 16;
     const CHUNK_RECT_SIZE: usize = 20;
     const OFFSET_ENTRY_SIZE: usize = 8;
-    const TEXEL_LIGHT_SIZE: usize = 8;
+    const TEXEL_LIGHT_SIZE: usize = 12;
     let byte_size = HEADER_SIZE
         + chunk_rects.len() * CHUNK_RECT_SIZE
         + offset_counts.len() * OFFSET_ENTRY_SIZE
@@ -194,7 +203,7 @@ fn bake_one_chunk(
             let mut count: u32 = 0;
             for &light_index in chunk_light_indices {
                 let light = &inputs.lights[light_index as usize];
-                let (contribution, _dir) =
+                let (contribution, dir) =
                     light_contribution_and_direction(light, world_p, surface_normal);
                 let weight = contribution_to_weight(contribution, light.color, light.intensity);
                 if weight <= WEIGHT_EPSILON {
@@ -210,9 +219,20 @@ fn bake_one_chunk(
                 ) {
                     continue;
                 }
+                // Retain the per-light per-texel incoming direction the
+                // contribution calculation already computed (Task 2b of
+                // sdf-static-occluder-shadows). The light's geometry is
+                // static, so this direction is bakeable; the compose pass
+                // weights it by the light's per-frame radiance to fuse a
+                // runtime dominant-direction atlas the SDF traces toward.
+                // `light_contribution_and_direction` returns `Vec3::Y` for
+                // degenerate (zero-distance) cases — `weight > EPSILON`
+                // already gates those out, so `dir` here is meaningful.
+                let direction_oct = postretro_level_format::octahedral::encode(dir.x, dir.y, dir.z);
                 texel_lights.push(TexelLight {
                     light_index,
                     weight,
+                    direction_oct,
                 });
                 count += 1;
             }
@@ -517,6 +537,7 @@ mod tests {
             &mut lm_ctx,
             &crate::lightmap_bake::LightmapConfig {
                 lightmap_density: 0.25,
+                mode: crate::lightmap_bake::BakeMode::Shadowed,
             },
         )
         .unwrap();
@@ -726,6 +747,110 @@ mod tests {
             mean <= 2.5,
             "mean lights per covered texel {mean} exceeded 2.5 target",
         );
+    }
+
+    /// Task 2b: a static-geometry animated light's per-texel incoming
+    /// direction is bakeable (it never changes). This anchors that the
+    /// weight-map baker retains what `light_contribution_and_direction`
+    /// computes rather than discarding it.
+    #[test]
+    fn weight_map_retains_per_light_per_texel_incoming_direction() {
+        let light = animated_point_light_above();
+        let section = bake_with_geometry_and_chunks(
+            unit_floor_geometry(),
+            vec![light.clone()],
+            |charts| full_face_chunk(charts, 0, vec![0]),
+        );
+
+        assert!(
+            !section.texel_lights.is_empty(),
+            "expected at least one covered texel — fixture is broken otherwise",
+        );
+
+        // Every covered entry must decode to a roughly-unit vector pointing
+        // upward (the light sits above a floor with normal +Y).
+        for tl in &section.texel_lights {
+            let decoded = postretro_level_format::octahedral::decode(tl.direction_oct);
+            let len = (decoded[0] * decoded[0]
+                + decoded[1] * decoded[1]
+                + decoded[2] * decoded[2])
+                .sqrt();
+            assert!(
+                (len - 1.0).abs() < 1.0e-3,
+                "decoded direction {:?} not unit-length (len={})",
+                decoded,
+                len,
+            );
+            assert!(
+                decoded[1] > 0.0,
+                "expected +Y dominant direction (light above floor), got {:?}",
+                decoded,
+            );
+        }
+    }
+
+    /// Anchors the cache-bump contract: bumping `STAGE_VERSION` invalidates
+    /// the prior `animated_lm_weight_maps` cache entry. Mirrors
+    /// `sh_volume_stage_version_bump_misses_then_hits` in `main.rs`.
+    #[test]
+    fn stage_version_bump_changes_cache_key() {
+        use crate::cache::CacheKey;
+
+        let input_hash = b"fake-animated-weight-maps-input-fingerprint";
+        let stale = CacheKey::new("animated_lm_weight_maps", STAGE_VERSION - 1, input_hash);
+        let current = CacheKey::new("animated_lm_weight_maps", STAGE_VERSION, input_hash);
+
+        assert_ne!(
+            stale.as_filename(),
+            current.as_filename(),
+            "a STAGE_VERSION bump must change the cache key — a stale entry \
+             must not be reachable under the bumped version",
+        );
+    }
+
+    #[test]
+    fn stage_version_bump_misses_then_hits() {
+        use crate::cache::{CacheKey, StageCache};
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        // Unique temp dir so parallel test runs don't collide.
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let nonce = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "postretro_anim_lm_stage_bump_{stamp}_{nonce}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let cache = StageCache::new(&dir).expect("create cache dir");
+
+        let input_hash = b"anim-lm-weight-maps-input-fingerprint";
+
+        // A pre-bump entry baked by the previous version (no direction field).
+        let stale_key = CacheKey::new("animated_lm_weight_maps", STAGE_VERSION - 1, input_hash);
+        cache.put(&stale_key, b"old-baked-weight-maps-without-direction");
+
+        // Same inputs, current version: the version is folded into the key,
+        // so the stale entry must not be reachable — first build is a miss.
+        let current_key = CacheKey::new("animated_lm_weight_maps", STAGE_VERSION, input_hash);
+        assert!(
+            cache.get(&current_key).is_none(),
+            "first build after STAGE_VERSION bump must miss and rebake",
+        );
+
+        // The rebake stores the direction-bearing section; the second build hits.
+        let rebaked = b"weight-maps-with-direction".to_vec();
+        cache.put(&current_key, &rebaked);
+        let loaded = cache
+            .get(&current_key)
+            .expect("second build under the bumped version must hit the cache");
+        assert_eq!(loaded, rebaked);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Regression: previously only ax_max/ay_max were clamped; a misplaced chart

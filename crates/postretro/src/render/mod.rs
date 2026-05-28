@@ -443,16 +443,38 @@ fn build_material_uniform(shininess: f32) -> [u8; MATERIAL_UNIFORM_SIZE] {
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
+/// Full-res lightmap-UV gbuffer format written by the depth pre-pass MRT slot
+/// and read by the half-res SDF shadow pass. `Rg16Unorm` is a literal
+/// round-trip for the `u16/65535` lightmap-UV packing (see `forward.wgsl`),
+/// with uniform ~1.5e-5 precision across [0,1]. Cleared to (0,0), which is an
+/// unreachable sentinel given `CHART_PADDING_TEXELS = 2`.
+const LIGHTMAP_UV_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Unorm;
+
+/// Usage flags for the lightmap-UV gbuffer: written by the pre-pass MRT slot
+/// (`RENDER_ATTACHMENT`) and sampled by the half-res SDF shadow pass
+/// (`TEXTURE_BINDING`).
+const LIGHTMAP_UV_USAGE: wgpu::TextureUsages =
+    wgpu::TextureUsages::RENDER_ATTACHMENT.union(wgpu::TextureUsages::TEXTURE_BINDING);
+
+/// Extent for the full-res pre-pass attachments (depth + lightmap-UV gbuffer).
+/// Both are recreated at the surface size in lockstep on resize; sharing this
+/// helper keeps their sizes identical (a precondition for the shadow pass's
+/// full-res ↔ half-res scale math). `0` is clamped to `1` to keep texture
+/// creation valid during transient zero-size resize events.
+fn prepass_attachment_extent(width: u32, height: u32) -> wgpu::Extent3d {
+    wgpu::Extent3d {
+        width: width.max(1),
+        height: height.max(1),
+        depth_or_array_layers: 1,
+    }
+}
+
 fn create_depth_texture(
     device: &wgpu::Device,
     width: u32,
     height: u32,
 ) -> (wgpu::Texture, wgpu::TextureView) {
-    let size = wgpu::Extent3d {
-        width: width.max(1),
-        height: height.max(1),
-        depth_or_array_layers: 1,
-    };
+    let size = prepass_attachment_extent(width, height);
 
     let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Depth Texture"),
@@ -467,6 +489,44 @@ fn create_depth_texture(
 
     let view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
     (depth_texture, view)
+}
+
+/// Clear value for the lightmap-UV pre-pass target. `(0,0)` is the sentinel for
+/// "no chart texel here" — unreachable by any real chart because
+/// `CHART_PADDING_TEXELS = 2`. Only `r`/`g` are read by the `Rg16Unorm` target;
+/// `b`/`a` are ignored.
+const LIGHTMAP_UV_CLEAR: wgpu::Color = wgpu::Color {
+    r: 0.0,
+    g: 0.0,
+    b: 0.0,
+    a: 0.0,
+};
+
+/// Allocate the full-res lightmap-UV gbuffer written by the depth pre-pass MRT
+/// slot and sampled by the half-res SDF shadow pass. The named chokepoint for
+/// the pre-pass color attachment: the pre-pass is locked to {depth, lightmap
+/// UV}; a future MRT consumer requires its own draft-plan. Analogous to
+/// `create_depth_texture` — same surface size, recreated in lockstep on resize.
+fn create_lightmap_uv_texture(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let size = prepass_attachment_extent(width, height);
+
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Lightmap UV Pre-Pass Texture"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: LIGHTMAP_UV_FORMAT,
+        usage: LIGHTMAP_UV_USAGE,
+        view_formats: &[],
+    });
+
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
 }
 
 pub struct LevelGeometry<'a> {
@@ -663,6 +723,11 @@ pub struct Renderer {
     shadow_vs_stride: u32,
 
     depth_view: wgpu::TextureView,
+
+    /// Full-res lightmap-UV gbuffer written by the depth pre-pass MRT slot and
+    /// sampled by the SDF shadow pass. Recreated in lockstep with `depth_view`
+    /// on surface resize.
+    lightmap_uv_view: wgpu::TextureView,
 
     /// GPU textures indexed by texture index.
     gpu_textures: Vec<GpuTexture>,
@@ -1352,6 +1417,8 @@ impl Renderer {
 
         let (_depth_texture, depth_view) =
             create_depth_texture(&device, surface_config.width, surface_config.height);
+        let (_lightmap_uv_texture, lightmap_uv_view) =
+            create_lightmap_uv_texture(&device, surface_config.width, surface_config.height);
 
         let sh_volume_resources = ShVolumeResources::new(
             &device,
@@ -1415,6 +1482,7 @@ impl Renderer {
             &device,
             &sdf_atlas_resources.bind_group_layout,
             &depth_view,
+            &lightmap_uv_view,
             lightmap_resources.make_direction_view(),
             animated_lightmap.make_direction_view(),
             sh_volume_resources.make_depth_moment_view(),
@@ -1665,6 +1733,13 @@ impl Renderer {
                                 shader_location: 3,
                                 format: wgpu::VertexFormat::Uint16x2,
                             },
+                            // Lightmap UV — consumed by the fragment stage and
+                            // written to the Rg16Unorm gbuffer slot below.
+                            wgpu::VertexAttribute {
+                                offset: 28,
+                                shader_location: 4,
+                                format: wgpu::VertexFormat::Uint16x2,
+                            },
                         ],
                     }],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -1675,6 +1750,8 @@ impl Renderer {
                     cull_mode: Some(wgpu::Face::Back),
                     ..Default::default()
                 },
+                // Unchanged from the vertex-only pre-pass: writes depth with a
+                // `Less` test. The forward pass still re-tests with `Equal`.
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: DEPTH_FORMAT,
                     depth_write_enabled: Some(true),
@@ -1683,7 +1760,18 @@ impl Renderer {
                     bias: wgpu::DepthBiasState::default(),
                 }),
                 multisample: wgpu::MultisampleState::default(),
-                fragment: None,
+                // One MRT slot: the full-res lightmap-UV gbuffer. The fragment
+                // stage reads no resources, so the pipeline layout is unchanged.
+                fragment: Some(wgpu::FragmentState {
+                    module: &depth_prepass_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: LIGHTMAP_UV_FORMAT,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
                 multiview_mask: None,
                 cache: None,
             });
@@ -1890,6 +1978,7 @@ impl Renderer {
             shadow_depth_pipeline,
             shadow_vs_stride,
             depth_view,
+            lightmap_uv_view,
             gpu_textures,
             bvh_leaves,
             compute_cull,
@@ -2569,12 +2658,22 @@ impl Renderer {
         self.surface.configure(&self.device, &self.surface_config);
         let (_depth_texture, depth_view) = create_depth_texture(&self.device, width, height);
         self.depth_view = depth_view;
+        // Lightmap-UV gbuffer is recreated in lockstep with the depth view at
+        // the new surface size — both are full-res pre-pass attachments.
+        let (_lightmap_uv_texture, lightmap_uv_view) =
+            create_lightmap_uv_texture(&self.device, width, height);
+        self.lightmap_uv_view = lightmap_uv_view;
         self.fog
             .resize(&self.device, width, height, &self.depth_view);
-        // SDF shadow target is half-res relative to the surface; depth view
-        // also changed so the pass bind group has to be rebuilt.
-        self.sdf_shadow_pass
-            .resize(&self.device, &self.depth_view, width, height);
+        // SDF shadow target is half-res relative to the surface; depth and
+        // lightmap-UV views also changed so the pass bind group has to be rebuilt.
+        self.sdf_shadow_pass.resize(
+            &self.device,
+            &self.depth_view,
+            &self.lightmap_uv_view,
+            width,
+            height,
+        );
         // Group-5 bind group references both the SDF shadow factor target
         // and the scene depth — both just got recreated, so rebuild.
         let spot_shadow_bgl = SpotShadowPool::bind_group_layout(&self.device);
@@ -3285,7 +3384,17 @@ impl Renderer {
                 .map(|t| t.render_pass_writes(TIMING_PAIR_DEPTH_PREPASS));
             let mut depth_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Depth Pre-Pass"),
-                color_attachments: &[],
+                // MRT slot: full-res lightmap-UV gbuffer. Cleared to the (0,0)
+                // sentinel; the pre-pass fragment writes the unpacked UV.
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.lightmap_uv_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(LIGHTMAP_UV_CLEAR),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth_view,
                     depth_ops: Some(wgpu::Operations {
@@ -4394,6 +4503,92 @@ mod tests {
         assert!(
             has_vs_main,
             "depth_prepass.wgsl must export @vertex vs_main"
+        );
+        // The lightmap-UV gbuffer write requires a fragment stage (`fs_main`)
+        // that the pipeline binds for its single MRT slot.
+        let has_fs_main = module
+            .entry_points
+            .iter()
+            .any(|ep| ep.name == "fs_main" && ep.stage == naga::ShaderStage::Fragment);
+        assert!(
+            has_fs_main,
+            "depth_prepass.wgsl must export @fragment fs_main for the lightmap-UV MRT"
+        );
+        // Source-string check (matches the sdf_shadow.rs test idiom): the
+        // fragment return must write `@location(0)` — the lightmap-UV target.
+        assert!(
+            DEPTH_PREPASS_SHADER_SOURCE.contains("@location(0) vec2<f32>"),
+            "depth_prepass.wgsl fragment must return @location(0) vec2<f32>"
+        );
+    }
+
+    /// The pre-pass gbuffer MRT slot must use the round-trip-exact
+    /// `Rg16Unorm` format — the shadow pass relies on the UV value surviving
+    /// the write/read cycle unchanged.
+    #[test]
+    fn lightmap_uv_format_is_rg16unorm() {
+        assert_eq!(LIGHTMAP_UV_FORMAT, wgpu::TextureFormat::Rg16Unorm);
+    }
+
+    /// The pre-pass clears the lightmap-UV target to the `(0,0)` sentinel —
+    /// unreachable by any real chart texel given `CHART_PADDING_TEXELS = 2`.
+    /// Only `r`/`g` are read by the `Rg16Unorm` target. `cargo test` has no GPU
+    /// device, so the clear color is factored into a named const asserted here;
+    /// the pre-pass render-pass descriptor references `LIGHTMAP_UV_CLEAR`
+    /// directly (see the "Depth Pre-Pass" `begin_render_pass`).
+    #[test]
+    fn lightmap_uv_clear_is_zero_sentinel() {
+        assert_eq!(
+            LIGHTMAP_UV_CLEAR.r, 0.0,
+            "clear r must be the (0,0) sentinel"
+        );
+        assert_eq!(
+            LIGHTMAP_UV_CLEAR.g, 0.0,
+            "clear g must be the (0,0) sentinel"
+        );
+    }
+
+    /// The lightmap-UV gbuffer is recreated at the surface size in lockstep
+    /// with the depth view on resize. Actual texture creation needs a GPU
+    /// device (unavailable in `cargo test`); the size decision both attachments
+    /// share is factored into `prepass_attachment_extent`, asserted here. A
+    /// resize to (w,h) produces a (w,h,1) extent, identical for both
+    /// attachments, and clamps zero-size transients to 1.
+    #[test]
+    fn prepass_attachment_extent_matches_surface_size() {
+        let e = prepass_attachment_extent(1920, 1080);
+        assert_eq!(
+            (e.width, e.height, e.depth_or_array_layers),
+            (1920, 1080, 1)
+        );
+        // Lockstep: depth and lightmap-UV attachments derive the same extent.
+        assert_eq!(prepass_attachment_extent(1920, 1080), e);
+        // Zero-size transients clamp to 1 so texture creation stays valid.
+        assert_eq!(
+            prepass_attachment_extent(0, 0),
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+
+    /// The lightmap-UV gbuffer is both written by the pre-pass MRT slot and
+    /// sampled by the SDF shadow pass, so its texture usage must include both
+    /// `RENDER_ATTACHMENT` and `TEXTURE_BINDING`. Texture creation itself needs
+    /// a GPU device (unavailable in `cargo test`); this asserts the usage-flag
+    /// decision the resize/construction paths depend on, which lives in
+    /// `create_lightmap_uv_texture`.
+    #[test]
+    fn lightmap_uv_usage_is_attachment_plus_binding() {
+        assert!(
+            LIGHTMAP_UV_USAGE.contains(wgpu::TextureUsages::RENDER_ATTACHMENT),
+            "pre-pass writes the gbuffer — needs RENDER_ATTACHMENT",
+        );
+        assert!(
+            LIGHTMAP_UV_USAGE.contains(wgpu::TextureUsages::TEXTURE_BINDING),
+            "shadow pass samples the gbuffer — needs TEXTURE_BINDING",
         );
     }
 

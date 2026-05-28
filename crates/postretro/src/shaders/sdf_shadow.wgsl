@@ -15,13 +15,10 @@
 //   B, A = reserved for the future geometry-moving per-light factors (see plan
 //          §Goal — no v1 consumer; documented seam, not coded here).
 //
-// SAMPLING APPROXIMATION (v1, deliberate). The static-lightmap dominant
-// direction is baked per-texel keyed on lightmap UV, which isn't reconstructible
-// from depth alone without a thicker pre-pass. v1 samples the texture in
-// screen-space UV — wrong direction at every pixel but binding-complete and
-// budget-cheap; refining this is a follow-up. The animated direction atlas is
-// sampled the same way for symmetry. The trace and penumbra math are not
-// approximations; only the sampled-direction source is.
+// Direction sampling (v2). The dominant-direction atlases are baked per-texel
+// keyed on lightmap UV. The visible surface's lightmap UV is read from the
+// depth pre-pass MRT (`lightmap_uv_tex`, Rg16Unorm), so both direction reads
+// are now per-texel correct. The trace and penumbra math are unchanged.
 //
 // Group 0: SDF atlas (owned by SdfAtlasResources — Task 3). Bindings 0..3.
 // Group 1: this pass's own bind group. Bindings 0..6 (see below).
@@ -79,6 +76,9 @@ struct ShadowPassParams {
 @group(1) @binding(4) var sh_depth_moments: texture_3d<f32>;
 // Half-res output: R = static aggregate factor, G = animated aggregate factor.
 @group(1) @binding(5) var shadow_factor: texture_storage_2d<rgba8unorm, write>;
+// Full-res lightmap-UV gbuffer (Rg16Unorm) written by the depth pre-pass MRT.
+// Read via textureLoad to recover the visible surface's lightmap UV per pixel.
+@group(1) @binding(6) var lightmap_uv_tex: texture_2d<f32>;
 
 // ---- Helpers ----
 
@@ -248,26 +248,40 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (recon.w > 0.5) {
             let world = recon.xyz;
 
-            // SAMPLING APPROXIMATION (see header). Lightmap UV isn't
-            // reconstructible from depth alone; v1 reads the direction
-            // textures at screen-space UV. The trace + penumbra are correct;
-            // only the direction source is provisional.
-            let uv = vec2<f32>(
-                (f32(half_xy.x) + 0.5) / f32(params.half_res_size_x),
-                (f32(half_xy.y) + 0.5) / f32(params.half_res_size_y),
-            );
+            // Sample the visible surface's lightmap UV from the depth pre-pass
+            // MRT (Rg16Unorm), then index the dominant-direction atlases
+            // per-texel. Replaces the v1 screen-UV approximation. scale_x/y are
+            // recomputed here (the ones in reconstruct_world are local to it);
+            // the lightmap-UV target shares full-res dims with depth, so the
+            // ratios are identical.
+            let lm_dims = textureDimensions(lightmap_uv_tex);
+            let scale_x = f32(lm_dims.x) / f32(params.half_res_size_x);
+            let scale_y = f32(lm_dims.y) / f32(params.half_res_size_y);
+            let full_x = i32(min((f32(half_xy.x) + 0.5) * scale_x, f32(lm_dims.x) - 1.0));
+            let full_y = i32(min((f32(half_xy.y) + 0.5) * scale_y, f32(lm_dims.y) - 1.0));
+            let lm_uv = textureLoad(lightmap_uv_tex, vec2<i32>(full_x, full_y), 0).rg;
+            if (lm_uv.x == 0.0 && lm_uv.y == 0.0) {
+                // Pre-pass sentinel (Rg16Unorm cleared to (0,0)) — no fragment
+                // wrote this pixel. Bail to fully lit.
+                textureStore(
+                    shadow_factor,
+                    vec2<i32>(i32(half_xy.x), i32(half_xy.y)),
+                    vec4<f32>(FULLY_LIT, FULLY_LIT, 1.0, 1.0),
+                );
+                return;
+            }
             let static_dims = textureDimensions(static_lm_direction, 0);
             let static_coord = vec2<i32>(
-                i32(uv.x * f32(static_dims.x)),
-                i32(uv.y * f32(static_dims.y)),
+                i32(lm_uv.x * f32(static_dims.x)),
+                i32(lm_uv.y * f32(static_dims.y)),
             );
             let static_enc = textureLoad(static_lm_direction, static_coord, 0);
             let static_dir = decode_lm_direction(static_enc);
 
             let animated_dims = textureDimensions(animated_lm_direction, 0);
             let animated_coord = vec2<i32>(
-                i32(uv.x * f32(animated_dims.x)),
-                i32(uv.y * f32(animated_dims.y)),
+                i32(lm_uv.x * f32(animated_dims.x)),
+                i32(lm_uv.y * f32(animated_dims.y)),
             );
             let animated_enc = textureLoad(animated_lm_direction, animated_coord, 0);
             let animated_dir = decode_lm_direction(animated_enc);

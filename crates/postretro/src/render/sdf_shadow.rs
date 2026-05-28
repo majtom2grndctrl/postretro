@@ -137,6 +137,11 @@ pub struct SdfShadowPass {
     animated_lm_direction_view: wgpu::TextureView,
     /// SH depth moment texture (`E[d]`, `E[d²]`) — open-space skip lookup.
     sh_depth_moments_view: wgpu::TextureView,
+    /// Full-res lightmap-UV gbuffer written by the depth pre-pass MRT slot.
+    /// Recreated by the renderer on resize, so the bind group must be rebuilt
+    /// too (handled in `resize`). Bound at `@group(1) @binding(6)`; the shader
+    /// samples it to reconstruct per-texel lightmap UV.
+    lightmap_uv_view: wgpu::TextureView,
     /// SH grid metadata mirrored into the params uniform.
     sh_grid: SdfShadowShGrid,
     /// Live tuning knobs. Mutated by Task 7's sliders; uploaded each frame.
@@ -158,6 +163,7 @@ impl SdfShadowPass {
         device: &wgpu::Device,
         sdf_atlas_layout: &wgpu::BindGroupLayout,
         depth_view: &wgpu::TextureView,
+        lightmap_uv_view: &wgpu::TextureView,
         static_lm_direction_view: wgpu::TextureView,
         animated_lm_direction_view: wgpu::TextureView,
         sh_depth_moments_view: wgpu::TextureView,
@@ -210,6 +216,7 @@ impl SdfShadowPass {
             &animated_lm_direction_view,
             &sh_depth_moments_view,
             &shadow_storage_view,
+            lightmap_uv_view,
         );
 
         Self {
@@ -224,6 +231,7 @@ impl SdfShadowPass {
             static_lm_direction_view,
             animated_lm_direction_view,
             sh_depth_moments_view,
+            lightmap_uv_view: lightmap_uv_view.clone(),
             sh_grid,
             tuning: SdfShadowTuning::default(),
         }
@@ -278,10 +286,14 @@ impl SdfShadowPass {
         &mut self,
         device: &wgpu::Device,
         depth_view: &wgpu::TextureView,
+        lightmap_uv_view: &wgpu::TextureView,
         full_res_width: u32,
         full_res_height: u32,
     ) {
         self.half_res = compute_half_res(full_res_width, full_res_height);
+        // The renderer recreates the lightmap-UV gbuffer in lockstep with the
+        // depth view, so capture the new view here. Task 3 binds it.
+        self.lightmap_uv_view = lightmap_uv_view.clone();
         let (shadow_texture, shadow_view, shadow_storage_view) =
             create_shadow_target(device, self.half_res.0, self.half_res.1);
         self.shadow_texture = shadow_texture;
@@ -296,6 +308,7 @@ impl SdfShadowPass {
             &self.animated_lm_direction_view,
             &self.sh_depth_moments_view,
             &self.shadow_storage_view,
+            &self.lightmap_uv_view,
         );
     }
 
@@ -326,6 +339,7 @@ impl SdfShadowPass {
             &self.animated_lm_direction_view,
             &self.sh_depth_moments_view,
             &self.shadow_storage_view,
+            &self.lightmap_uv_view,
         );
     }
 
@@ -406,6 +420,7 @@ fn build_bind_group(
     animated_lm_direction_view: &wgpu::TextureView,
     sh_depth_moments_view: &wgpu::TextureView,
     shadow_storage_view: &wgpu::TextureView,
+    lightmap_uv_view: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("SDF Shadow Bind Group"),
@@ -435,11 +450,15 @@ fn build_bind_group(
                 binding: 5,
                 resource: wgpu::BindingResource::TextureView(shadow_storage_view),
             },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: wgpu::BindingResource::TextureView(lightmap_uv_view),
+            },
         ],
     })
 }
 
-fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
+fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 7] {
     let vis = wgpu::ShaderStages::COMPUTE;
     [
         // Binding 0: params uniform.
@@ -505,6 +524,18 @@ fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
                 access: wgpu::StorageTextureAccess::WriteOnly,
                 format: SHADOW_FACTOR_FORMAT,
                 view_dimension: wgpu::TextureViewDimension::D2,
+            },
+            count: None,
+        },
+        // Binding 6: full-res lightmap-UV gbuffer (Rg16Unorm, non-filterable
+        // load). Read via textureLoad to index the direction atlases per-texel.
+        wgpu::BindGroupLayoutEntry {
+            binding: 6,
+            visibility: vis,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
             },
             count: None,
         },
@@ -589,6 +620,51 @@ mod tests {
         assert!(
             static_trace >= 2,
             "expected both static and animated `trace_shadow` calls; found {static_trace}",
+        );
+    }
+
+    /// Task 3: the lightmap-UV gbuffer is bound at `@group(1) @binding(6)` in
+    /// the pass-owned BGL, and the shader sources its direction-atlas UV from
+    /// that target via `textureLoad` rather than the v1 screen-space UV.
+    #[test]
+    fn sdf_shadow_binds_and_samples_lightmap_uv_gbuffer() {
+        // BGL entry: binding 6 is present as a non-filterable float texture in
+        // the pass-owned group-1 layout.
+        let entries = bind_group_layout_entries();
+        let entry6 = entries
+            .iter()
+            .find(|e| e.binding == 6)
+            .expect("BGL must declare @group(1) @binding(6) for the lightmap-UV gbuffer");
+        assert!(
+            matches!(
+                entry6.ty,
+                wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                }
+            ),
+            "binding 6 must be a non-filterable 2D float texture (Rg16Unorm via textureLoad)",
+        );
+
+        let src = include_str!("../shaders/sdf_shadow.wgsl");
+        assert!(
+            src.contains("@group(1) @binding(6)") && src.contains("lightmap_uv_tex"),
+            "sdf_shadow.wgsl must declare lightmap_uv_tex at @group(1) @binding(6)",
+        );
+        assert!(
+            src.contains("textureLoad(lightmap_uv_tex"),
+            "direction atlases must be indexed via a UV loaded from lightmap_uv_tex",
+        );
+        // The v1 screen-UV approximation expression must be gone: the direction
+        // coords no longer derive from a screen-space `uv` divided by half-res.
+        assert!(
+            !src.contains("SAMPLING APPROXIMATION"),
+            "the v1 SAMPLING APPROXIMATION block must be removed",
+        );
+        assert!(
+            !src.contains("i32(uv.x * f32(static_dims.x))"),
+            "direction coords must no longer come from the screen-space `uv`",
         );
     }
 

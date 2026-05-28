@@ -188,11 +188,7 @@ impl AnimatedLightBuffers {
     /// Out-of-range `slot` is a silent no-op after the first warn-level log
     /// line — mirrors `set_active`'s behavior for descriptor-buffer writes
     /// against a light that never made it into the bake.
-    pub fn write_descriptor(
-        &mut self,
-        slot: usize,
-        bytes: &[u8; ANIMATION_DESCRIPTOR_SIZE],
-    ) {
+    pub fn write_descriptor(&mut self, slot: usize, bytes: &[u8; ANIMATION_DESCRIPTOR_SIZE]) {
         if slot >= self.animated_light_count as usize {
             if !self.oor_warned {
                 self.oor_warned = true;
@@ -210,8 +206,7 @@ impl AnimatedLightBuffers {
         if self.descriptor_mirror[start..start + ANIMATION_DESCRIPTOR_SIZE] == bytes[..] {
             return;
         }
-        self.descriptor_mirror[start..start + ANIMATION_DESCRIPTOR_SIZE]
-            .copy_from_slice(bytes);
+        self.descriptor_mirror[start..start + ANIMATION_DESCRIPTOR_SIZE].copy_from_slice(bytes);
         self.dirty = true;
     }
 
@@ -496,10 +491,11 @@ impl ShVolumeResources {
     /// each level reload — the moment texture is recreated whenever the SH
     /// section changes, so the pass needs a new handle.
     pub fn make_depth_moment_view(&self) -> wgpu::TextureView {
-        self.depth_moment_texture.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("SH Depth Moment Shadow View"),
-            ..Default::default()
-        })
+        self.depth_moment_texture
+            .create_view(&wgpu::TextureViewDescriptor {
+                label: Some("SH Depth Moment Shadow View"),
+                ..Default::default()
+            })
     }
 }
 

@@ -342,12 +342,7 @@ impl SdfShadowPass {
         frame: SdfShadowFrameInputs,
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
     ) {
-        let bytes = pack_params_bytes(
-            frame,
-            self.half_res,
-            self.tuning,
-            self.sh_grid,
-        );
+        let bytes = pack_params_bytes(frame, self.half_res, self.tuning, self.sh_grid);
         queue.write_buffer(&self.params_buffer, 0, &bytes);
 
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {

@@ -33,9 +33,7 @@
 use std::time::Instant;
 
 use glam::{DVec3, Vec3};
-use postretro_level_format::sdf_atlas::{
-    BRICK_SLOT_EMPTY, BRICK_SLOT_INTERIOR, SdfAtlasSection,
-};
+use postretro_level_format::sdf_atlas::{BRICK_SLOT_EMPTY, BRICK_SLOT_INTERIOR, SdfAtlasSection};
 
 use crate::geometry::GeometryResult;
 use crate::partition::{BspTree, find_leaf_for_point};
@@ -165,8 +163,12 @@ pub fn bake_sdf_atlas(ctx: &SdfBakeCtx<'_>, config: &SdfConfig) -> SdfAtlasSecti
                         for vx in 0..brick_size {
                             let p = voxel_center(
                                 grid_origin,
-                                bx, by, bz,
-                                vx, vy, vz,
+                                bx,
+                                by,
+                                bz,
+                                vx,
+                                vy,
+                                vz,
                                 brick_size,
                                 voxel_size,
                             );
@@ -183,8 +185,7 @@ pub fn bake_sdf_atlas(ctx: &SdfBakeCtx<'_>, config: &SdfConfig) -> SdfAtlasSecti
                             signed_sum += signed as f64;
 
                             let q_raw = (signed * inv_quant_step).round();
-                            let q_clamped =
-                                q_raw.clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                            let q_clamped = q_raw.clamp(i16::MIN as f32, i16::MAX as f32) as i16;
                             brick_samples.push(q_clamped);
                             max_abs_quant = max_abs_quant.max(q_clamped.unsigned_abs() as f32);
                         }
@@ -196,8 +197,7 @@ pub fn bake_sdf_atlas(ctx: &SdfBakeCtx<'_>, config: &SdfConfig) -> SdfAtlasSecti
                 // where the fine atlas data carries non-redundant info.
                 let near_surface = min_unsigned <= surface_band_m;
 
-                let coarse_signed =
-                    (signed_sum / voxels_per_brick as f64) as f32;
+                let coarse_signed = (signed_sum / voxels_per_brick as f64) as f32;
 
                 if !near_surface {
                     // Pure-empty or pure-solid brick — no atlas slot. Pick
@@ -311,7 +311,13 @@ fn collect_triangles(geo: &GeometryResult) -> Vec<Triangle> {
         let c = Vec3::from(g.vertices[i2].position);
         let aabb_min = a.min(b).min(c);
         let aabb_max = a.max(b).max(c);
-        tris.push(Triangle { a, b, c, aabb_min, aabb_max });
+        tris.push(Triangle {
+            a,
+            b,
+            c,
+            aabb_min,
+            aabb_max,
+        });
     }
     tris
 }
@@ -360,6 +366,7 @@ fn grid_extents(
     (origin, brick_dims)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn voxel_center(
     origin: DVec3,
     bx: u32,
@@ -487,7 +494,7 @@ fn pack_atlas_dimensions(n: u32) -> [u32; 3] {
     let cbrt = (n as f32).cbrt().ceil() as u32;
     let x = cbrt.max(1);
     let y = cbrt.max(1);
-    let z = ((n + x * y - 1) / (x * y)).max(1);
+    let z = n.div_ceil(x * y).max(1);
     [x, y, z]
 }
 
@@ -519,13 +526,13 @@ mod tests {
         // index buffer never references indices 4..7.
         let vertices = vec![
             v(0.0, -1.0, -1.0),
-            v(0.0,  1.0, -1.0),
-            v(0.0,  1.0,  1.0),
-            v(0.0, -1.0,  1.0),
-            v( 3.0, -3.0, -3.0),
-            v( 3.0,  3.0, -3.0),
-            v( 3.0,  3.0,  3.0),
-            v( 3.0, -3.0,  3.0),
+            v(0.0, 1.0, -1.0),
+            v(0.0, 1.0, 1.0),
+            v(0.0, -1.0, 1.0),
+            v(3.0, -3.0, -3.0),
+            v(3.0, 3.0, -3.0),
+            v(3.0, 3.0, 3.0),
+            v(3.0, -3.0, 3.0),
         ];
         let indices = vec![0u32, 1, 2, 0, 2, 3];
         let faces = vec![FaceMeta {
@@ -694,16 +701,8 @@ mod tests {
 
         // Sign axis: the brick must contain both negative (solid side) and
         // positive (open side) samples — a true "straddling" brick.
-        let has_negative = section
-            .atlas
-            .iter()
-            .take(voxels_per_brick)
-            .any(|q| *q < 0);
-        let has_positive = section
-            .atlas
-            .iter()
-            .take(voxels_per_brick)
-            .any(|q| *q > 0);
+        let has_negative = section.atlas.iter().take(voxels_per_brick).any(|q| *q < 0);
+        let has_positive = section.atlas.iter().take(voxels_per_brick).any(|q| *q > 0);
         assert!(
             has_negative && has_positive,
             "wall-straddling brick must contain samples on both sides of the \

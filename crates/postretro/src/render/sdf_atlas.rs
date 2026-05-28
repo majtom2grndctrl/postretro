@@ -108,9 +108,8 @@ impl SdfAtlasResources {
         // Filter out empty-geometry sections — the bake encodes "no SDF" as
         // zero grid dims, mirroring `ShVolumeSection`'s empty-volume
         // convention. Treat it the same as a missing section.
-        let usable = section.filter(|s| {
-            s.grid_dims[0] > 0 && s.grid_dims[1] > 0 && s.grid_dims[2] > 0
-        });
+        let usable =
+            section.filter(|s| s.grid_dims[0] > 0 && s.grid_dims[1] > 0 && s.grid_dims[2] > 0);
 
         let present = usable.is_some();
 
@@ -425,6 +424,7 @@ impl SdfAtlasResources {
 /// Pack the SDF meta uniform. See the `SDF_ATLAS_META_SIZE` doc for the
 /// 64-byte field layout. Kept as a free function so it can be unit-tested
 /// without a wgpu device.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_meta_bytes(
     world_min: [f32; 3],
     world_max: [f32; 3],
@@ -495,16 +495,7 @@ mod tests {
 
     #[test]
     fn meta_bytes_present_flag_zero_when_absent() {
-        let bytes = build_meta_bytes(
-            [0.0; 3],
-            [0.0; 3],
-            0.0,
-            0,
-            [0; 3],
-            [0; 3],
-            0,
-            false,
-        );
+        let bytes = build_meta_bytes([0.0; 3], [0.0; 3], 0.0, 0, [0; 3], [0; 3], 0, false);
         let present = u32::from_le_bytes(bytes[60..64].try_into().unwrap());
         assert_eq!(present, 0);
     }

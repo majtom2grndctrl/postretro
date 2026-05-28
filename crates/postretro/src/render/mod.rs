@@ -50,9 +50,9 @@ use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 
 use fog_pass::FogPass;
 use frame_timing::FrameTiming;
-use sh_compose::ShComposeResources;
 use sdf_atlas::SdfAtlasResources;
 use sdf_shadow::{SdfShadowFrameInputs, SdfShadowPass, SdfShadowShGrid};
+use sh_compose::ShComposeResources;
 use sh_volume::ShVolumeResources;
 use smoke::SmokePass;
 
@@ -1334,11 +1334,8 @@ impl Renderer {
             level_lights.len(),
         );
 
-        let sdf_atlas_resources = SdfAtlasResources::new(
-            &device,
-            &queue,
-            geometry.and_then(|g| g.sdf_atlas),
-        );
+        let sdf_atlas_resources =
+            SdfAtlasResources::new(&device, &queue, geometry.and_then(|g| g.sdf_atlas));
         let lightmap_mode = geometry
             .map(|g| g.lightmap_mode)
             .unwrap_or(crate::prl::LightmapMode::Shadowed);
@@ -2149,10 +2146,8 @@ impl Renderer {
         // textures + new SH depth-moment texture. The pass itself is always
         // allocated; the dispatch is gated on `sdf_atlas_resources.present`,
         // which `install_level_geometry` may have just flipped.
-        let sdf_shadow_sh_grid = build_sdf_shadow_sh_grid(
-            geometry.sh_volume,
-            self.sh_volume_resources.present,
-        );
+        let sdf_shadow_sh_grid =
+            build_sdf_shadow_sh_grid(geometry.sh_volume, self.sh_volume_resources.present);
         self.sdf_shadow_pass.rebuild_for_level(
             &self.device,
             &self.depth_view,
@@ -2924,8 +2919,11 @@ impl Renderer {
         // shadow-map render targets below via the candidate-indexed matrix
         // upload, but the forward shader cannot sample their shadow until
         // a separate forward/shadow bridge lands (post-1b).
-        let level_slots =
-            slot_assignment_for_level_lights(&self.level_lights, &self.shadow_candidate_lights, &slot_assignment);
+        let level_slots = slot_assignment_for_level_lights(
+            &self.level_lights,
+            &self.shadow_candidate_lights,
+            &slot_assignment,
+        );
 
         // Skip write_buffer when packed bytes are unchanged (common case: no light moved).
         // Scratch Vec reused across frames — pack doesn't allocate.
@@ -4062,11 +4060,9 @@ mod tests {
             });
             let decoded = u32::from_ne_bytes(data[100..104].try_into().unwrap());
             assert_eq!(
-                decoded,
-                mode as u32,
+                decoded, mode as u32,
                 "SdfShadowMode::{:?} should encode to {} at offset 100..104",
-                mode,
-                mode as u32,
+                mode, mode as u32,
             );
             // Tail pad 104..112 stays zero regardless of mode.
             assert!(

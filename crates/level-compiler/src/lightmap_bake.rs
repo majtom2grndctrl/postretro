@@ -34,8 +34,9 @@ pub const STAGE_VERSION: u32 = 2;
 /// the mode in via `postcard::to_allocvec(&LightmapConfig)` (the format crate's
 /// enum has no `Serialize` impl by design — it is the on-disk parse target,
 /// not a build-cache key input).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, Default)]
 pub enum BakeMode {
+    #[default]
     Shadowed,
     Unshadowed,
 }
@@ -46,12 +47,6 @@ impl BakeMode {
             BakeMode::Shadowed => LightmapMode::Shadowed,
             BakeMode::Unshadowed => LightmapMode::Unshadowed,
         }
-    }
-}
-
-impl Default for BakeMode {
-    fn default() -> Self {
-        BakeMode::Shadowed
     }
 }
 
@@ -1782,10 +1777,8 @@ mod tests {
         let texel_count = (shadowed.width * shadowed.height) as usize;
         let mut occluded_now_lit = 0usize;
         for t in 0..texel_count {
-            let s_r = u16::from_le_bytes([
-                shadowed.irradiance[t * 8],
-                shadowed.irradiance[t * 8 + 1],
-            ]);
+            let s_r =
+                u16::from_le_bytes([shadowed.irradiance[t * 8], shadowed.irradiance[t * 8 + 1]]);
             let u_r = u16::from_le_bytes([
                 unshadowed.irradiance[t * 8],
                 unshadowed.irradiance[t * 8 + 1],
@@ -1801,15 +1794,13 @@ mod tests {
         );
 
         // Mode round-trips through the on-disk section bytes.
-        let unshadowed_round = postretro_level_format::lightmap::LightmapSection::from_bytes(
-            &unshadowed.to_bytes(),
-        )
-        .unwrap();
+        let unshadowed_round =
+            postretro_level_format::lightmap::LightmapSection::from_bytes(&unshadowed.to_bytes())
+                .unwrap();
         assert_eq!(unshadowed_round.mode, LightmapMode::Unshadowed);
-        let shadowed_round = postretro_level_format::lightmap::LightmapSection::from_bytes(
-            &shadowed.to_bytes(),
-        )
-        .unwrap();
+        let shadowed_round =
+            postretro_level_format::lightmap::LightmapSection::from_bytes(&shadowed.to_bytes())
+                .unwrap();
         assert_eq!(shadowed_round.mode, LightmapMode::Shadowed);
     }
 

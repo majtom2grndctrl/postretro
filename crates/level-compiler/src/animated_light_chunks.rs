@@ -147,8 +147,7 @@ pub fn build_animated_light_chunks(
                 // Per-axis UV-per-texel pitch for this chart. The chart's
                 // interior resolution is what `chunk_atlas_rect` rounds against,
                 // so the floor must match that (not the global target density).
-                let (interior_w, interior_h) =
-                    crate::chart_raster::chart_interior_dims(chart);
+                let (interior_w, interior_h) = crate::chart_raster::chart_interior_dims(chart);
                 let chart_u_pitch = if interior_w > 0 {
                     chart.uv_extent[0] / interior_w as f32
                 } else {

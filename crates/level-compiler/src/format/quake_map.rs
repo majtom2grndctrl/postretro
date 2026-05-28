@@ -1411,10 +1411,7 @@ mod tests {
             ("period_ms", "500"),
         ]);
         let err = translate_light(&p, DVec3::ZERO, "light").expect_err("should error");
-        assert!(matches!(
-            err,
-            TranslateError::ColorCurveOnBakedLight { .. }
-        ));
+        assert!(matches!(err, TranslateError::ColorCurveOnBakedLight { .. }));
     }
 
     #[test]

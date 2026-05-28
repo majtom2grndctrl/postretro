@@ -772,11 +772,10 @@ mod tests {
     #[test]
     fn weight_map_retains_per_light_per_texel_incoming_direction() {
         let light = animated_point_light_above();
-        let section = bake_with_geometry_and_chunks(
-            unit_floor_geometry(),
-            vec![light.clone()],
-            |charts| full_face_chunk(charts, 0, vec![0]),
-        );
+        let section =
+            bake_with_geometry_and_chunks(unit_floor_geometry(), vec![light.clone()], |charts| {
+                full_face_chunk(charts, 0, vec![0])
+            });
 
         assert!(
             !section.texel_lights.is_empty(),
@@ -787,9 +786,7 @@ mod tests {
         // upward (the light sits above a floor with normal +Y).
         for tl in &section.texel_lights {
             let decoded = postretro_level_format::octahedral::decode(tl.direction_oct);
-            let len = (decoded[0] * decoded[0]
-                + decoded[1] * decoded[1]
-                + decoded[2] * decoded[2])
+            let len = (decoded[0] * decoded[0] + decoded[1] * decoded[1] + decoded[2] * decoded[2])
                 .sqrt();
             assert!(
                 (len - 1.0).abs() < 1.0e-3,

@@ -533,8 +533,7 @@ mod tests {
     fn round_trip_probes_only() {
         let section = empty_section([2, 3, 4]);
         let bytes = section.to_bytes();
-        let expected_len =
-            ShVolumeSection::HEADER_SIZE + (2 * 3 * 4) * PROBE_STRIDE as usize + 4;
+        let expected_len = ShVolumeSection::HEADER_SIZE + (2 * 3 * 4) * PROBE_STRIDE as usize + 4;
         assert_eq!(bytes.len(), expected_len);
         let restored = ShVolumeSection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);

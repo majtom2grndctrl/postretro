@@ -92,16 +92,11 @@ pub const LIGHTMAP_MODE_TRAILER_MAGIC: u32 = u32::from_le_bytes(*b"LMOD");
 /// - `Unshadowed`: full static-light irradiance + bounce with **no** visibility
 ///   term. Texels occluded from a static light still receive its full irradiance.
 ///   Runtime SDF supplies visibility separately to avoid double-shadowing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LightmapMode {
+    #[default]
     Shadowed,
     Unshadowed,
-}
-
-impl Default for LightmapMode {
-    fn default() -> Self {
-        Self::Shadowed
-    }
 }
 
 impl LightmapMode {
@@ -224,9 +219,8 @@ impl LightmapSection {
         // other trailing bytes are ignored as forward-compat slack.
         let trailer_start = dir_start + dir_len;
         let mode = if data.len() >= trailer_start + 8 {
-            let magic = u32::from_le_bytes(
-                data[trailer_start..trailer_start + 4].try_into().unwrap(),
-            );
+            let magic =
+                u32::from_le_bytes(data[trailer_start..trailer_start + 4].try_into().unwrap());
             if magic == LIGHTMAP_MODE_TRAILER_MAGIC {
                 let raw = u32::from_le_bytes(
                     data[trailer_start + 4..trailer_start + 8]

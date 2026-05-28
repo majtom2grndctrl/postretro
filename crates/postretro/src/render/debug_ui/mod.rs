@@ -329,8 +329,7 @@ pub fn draw_diagnostics_panel(
                     ))
                     .changed()
                 {
-                    renderer
-                        .set_sdf_open_space_skip_threshold(state.sdf_open_space_skip_threshold);
+                    renderer.set_sdf_open_space_skip_threshold(state.sdf_open_space_skip_threshold);
                 }
 
                 ui.label("SDF penumbra k (larger = harder shadow)");

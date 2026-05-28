@@ -123,10 +123,11 @@ impl LightmapResources {
     /// own handle (the SDF shadow pass rebuilds its bind group on resize /
     /// level reload) call this rather than borrowing from the resource.
     pub fn make_direction_view(&self) -> wgpu::TextureView {
-        self.direction_texture.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("Lightmap Direction Shadow View"),
-            ..Default::default()
-        })
+        self.direction_texture
+            .create_view(&wgpu::TextureViewDescriptor {
+                label: Some("Lightmap Direction Shadow View"),
+                ..Default::default()
+            })
     }
 }
 

@@ -328,7 +328,7 @@ fn convert_alpha_lights(section: AlphaLightsSection) -> Vec<MapLight> {
                 is_dynamic: r.is_dynamic,
                 casts_entity_shadows: r.casts_entity_shadows,
                 animated_slot: None, // populated from ShVolume slot table later in load
-                tags: vec![], // populated by LightTags section pass below
+                tags: vec![],        // populated by LightTags section pass below
                 leaf_index: r.leaf_index,
             }
         })
@@ -627,9 +627,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
                     resolved += 1;
                 }
             }
-            log::info!(
-                "[PRL] Resolved {resolved} map-light → animated-slot mapping(s)"
-            );
+            log::info!("[PRL] Resolved {resolved} map-light → animated-slot mapping(s)");
         }
     }
 
@@ -658,28 +656,31 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
     // Optional — absent → no static-occluder SDF; runtime shadow pass disabled.
     // An empty-geometry section (zero grid dims) is also a valid "no SDF"
     // marker; the renderer collapses it to the same disabled state.
-    let sdf_atlas: Option<SdfAtlasSection> =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::SdfAtlas as u32)? {
-            Some(data) => {
-                let section = SdfAtlasSection::from_bytes(&data)?;
-                log::info!(
-                    "[PRL] SdfAtlas: grid={}×{}×{}, voxel_size={:.4}m, brick={} voxels, {} surface bricks",
-                    section.grid_dims[0],
-                    section.grid_dims[1],
-                    section.grid_dims[2],
-                    section.voxel_size_m,
-                    section.brick_size_voxels,
-                    section.surface_brick_count,
-                );
-                Some(section)
-            }
-            None => {
-                log::info!(
-                    "[PRL] SdfAtlas section missing — runtime SDF shadow pass disabled (legacy PRL or no SDF bake)"
-                );
-                None
-            }
-        };
+    let sdf_atlas: Option<SdfAtlasSection> = match prl_format::read_section_data(
+        &mut cursor,
+        &meta,
+        SectionId::SdfAtlas as u32,
+    )? {
+        Some(data) => {
+            let section = SdfAtlasSection::from_bytes(&data)?;
+            log::info!(
+                "[PRL] SdfAtlas: grid={}×{}×{}, voxel_size={:.4}m, brick={} voxels, {} surface bricks",
+                section.grid_dims[0],
+                section.grid_dims[1],
+                section.grid_dims[2],
+                section.voxel_size_m,
+                section.brick_size_voxels,
+                section.surface_brick_count,
+            );
+            Some(section)
+        }
+        None => {
+            log::info!(
+                "[PRL] SdfAtlas section missing — runtime SDF shadow pass disabled (legacy PRL or no SDF bake)"
+            );
+            None
+        }
+    };
 
     // Optional — absent → full spec-buffer scan fallback.
     let chunk_light_list: Option<ChunkLightListSection> = match prl_format::read_section_data(

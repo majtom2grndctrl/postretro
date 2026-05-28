@@ -341,8 +341,8 @@ mod tests {
         let atlas_len = voxels_per_brick * surface_brick_count as usize;
 
         let top_level: Vec<u32> = vec![
-            0,                    // surface brick 0
-            1,                    // surface brick 1
+            0, // surface brick 0
+            1, // surface brick 1
             BRICK_SLOT_EMPTY,
             BRICK_SLOT_INTERIOR,
             BRICK_SLOT_EMPTY,
@@ -361,8 +361,9 @@ mod tests {
             })
             .collect();
 
-        let coarse_distances: Vec<f32> =
-            (0..top_level.len()).map(|i| 0.25 + i as f32 * 0.125).collect();
+        let coarse_distances: Vec<f32> = (0..top_level.len())
+            .map(|i| 0.25 + i as f32 * 0.125)
+            .collect();
 
         SdfAtlasSection {
             world_min: [-8.0, -2.0, -8.0],

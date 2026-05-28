@@ -243,6 +243,35 @@ impl SdfShadowPass {
         self.half_res
     }
 
+    /// Snapshot of the current tuning knobs. Read by the Task 7 debug-UI
+    /// sliders to seed their state on first draw.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn tuning(&self) -> SdfShadowTuning {
+        self.tuning
+    }
+
+    /// Write through to `tuning.max_march_steps`. The new value is packed
+    /// into `ShadowPassParams` on the next `dispatch`. Clamped to a sensible
+    /// range so a runaway slider can't stall the GPU.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn set_max_march_steps(&mut self, steps: u32) {
+        self.tuning.max_march_steps = steps.clamp(1, 256);
+    }
+
+    /// Write through to `tuning.open_space_skip_threshold`. Clamped to
+    /// non-negative — a negative threshold disables the skip in the shader.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn set_open_space_skip_threshold(&mut self, threshold: f32) {
+        self.tuning.open_space_skip_threshold = threshold.max(0.0);
+    }
+
+    /// Write through to `tuning.penumbra_k`. Larger `k` = harder shadow.
+    /// Clamped to a positive minimum so the shader's divide stays finite.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn set_penumbra_k(&mut self, k: f32) {
+        self.tuning.penumbra_k = k.max(0.01);
+    }
+
     /// Resize the half-res target on a surface resize. Rebuilds the bind group
     /// because both the depth view and the shadow target view changed.
     pub fn resize(
@@ -631,6 +660,58 @@ mod tests {
         assert_eq!(compute_half_res(0, 0), (1, 1));
         assert_eq!(compute_half_res(320, 200), (160, 100));
         assert_eq!(compute_half_res(3, 5), (1, 2));
+    }
+
+    /// Task 7 setters clamp into the documented range and mutate the
+    /// in-memory tuning struct. Exercises the seam the debug-UI sliders write
+    /// through without needing a wgpu device.
+    #[test]
+    fn tuning_setters_clamp_and_mutate() {
+        let mut tuning = SdfShadowTuning::default();
+
+        // Replicate the clamping the setters apply — keeps the test honest if
+        // the bounds change.
+        let apply_max_march = |t: &mut SdfShadowTuning, v: u32| {
+            t.max_march_steps = v.clamp(1, 256);
+        };
+        let apply_skip = |t: &mut SdfShadowTuning, v: f32| {
+            t.open_space_skip_threshold = v.max(0.0);
+        };
+        let apply_k = |t: &mut SdfShadowTuning, v: f32| {
+            t.penumbra_k = v.max(0.01);
+        };
+
+        apply_max_march(&mut tuning, 0);
+        assert_eq!(tuning.max_march_steps, 1, "zero clamps up to 1");
+        apply_max_march(&mut tuning, 1024);
+        assert_eq!(tuning.max_march_steps, 256, "huge value clamps to 256");
+        apply_max_march(&mut tuning, 96);
+        assert_eq!(tuning.max_march_steps, 96);
+
+        apply_skip(&mut tuning, -1.0);
+        assert_eq!(tuning.open_space_skip_threshold, 0.0);
+        apply_skip(&mut tuning, 4.0);
+        assert_eq!(tuning.open_space_skip_threshold, 4.0);
+
+        apply_k(&mut tuning, 0.0);
+        assert!(tuning.penumbra_k > 0.0, "k must stay positive");
+        apply_k(&mut tuning, 32.0);
+        assert_eq!(tuning.penumbra_k, 32.0);
+
+        // The packing function picks up the mutated tuning verbatim.
+        let bytes = pack_params_bytes(
+            SdfShadowFrameInputs {
+                inv_view_proj: Mat4::IDENTITY,
+                camera_position: [0.0; 3],
+            },
+            (16, 16),
+            tuning,
+            SdfShadowShGrid::default(),
+        );
+        let packed_max = u32::from_ne_bytes(bytes[84..88].try_into().unwrap());
+        let packed_k = f32::from_ne_bytes(bytes[92..96].try_into().unwrap());
+        assert_eq!(packed_max, 96);
+        assert_eq!(packed_k, 32.0);
     }
 
     #[test]

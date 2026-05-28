@@ -31,15 +31,21 @@ struct Uniforms {
     //           double-shadow the term).
     // Both bits clear (legacy PRL, no SDF atlas) → no multiply, identical to `main`.
     sdf_shadow_flags: u32,
-    // Three u32 padding slots — keeps the trailing 16-byte vec4 row of the
-    // struct fully accounted for and reserved for upcoming SDF/debug fields
-    // (Task 6's `SdfShadowMode` selector likely takes the next slot). Three
-    // separate u32s (not `vec3<u32>`) so the struct's natural alignment stays
-    // 4 bytes and total stride lands exactly at 112 bytes — wgpu rejects the
-    // pipeline if the CPU-side `UNIFORM_SIZE` and WGSL-derived stride drift.
+    // `SdfShadowMode` debug selector (Task 6 of sdf-static-occluder-shadows):
+    //   0 = On        — apply the SDF shadow factor multiplies normally.
+    //   1 = Off       — short-circuit both multiplies to 1.0 (no SDF factor).
+    //                   Shadow-map (enemy) shadows are unaffected; they never
+    //                   ran through this multiply path in the first place.
+    //   2 = Visualize — replace the final shaded color with a grayscale view
+    //                   of the static-aggregate (R) shadow factor.
+    sdf_shadow_mode: u32,
+    // Two u32 padding slots — keeps the trailing 16-byte vec4 row of the
+    // struct fully accounted for. Separate u32s (not `vec2<u32>`) so the
+    // struct's natural alignment stays 4 bytes and total stride lands
+    // exactly at 112 bytes — wgpu rejects the pipeline if the CPU-side
+    // `UNIFORM_SIZE` and WGSL-derived stride drift.
     _sdf_pad0: u32,
     _sdf_pad1: u32,
-    _sdf_pad2: u32,
 };
 
 // Four vec4<f32> slots — see postretro/src/lighting/mod.rs for field semantics.
@@ -622,11 +628,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if uniforms.sdf_shadow_flags != 0u {
         sdf_factor = upsample_shadow_factor(in.clip_position.xy, in.clip_position.z);
     }
-    // Per-term gates. `apply_static` additionally requires the static
+    // Task 6: `SdfShadowMode::Off` (1) short-circuits both multiplies to 1.0
+    // (no SDF factor). Per-term gates below additionally require the static
     // lightmap to be baked unshadowed — else the bake already encodes
     // visibility and the multiply would double-shadow.
-    let apply_static_sdf = (uniforms.sdf_shadow_flags & 2u) != 0u;
-    let apply_animated_sdf = (uniforms.sdf_shadow_flags & 1u) != 0u;
+    let sdf_mode_off = uniforms.sdf_shadow_mode == 1u;
+    let apply_static_sdf = (uniforms.sdf_shadow_flags & 2u) != 0u && !sdf_mode_off;
+    let apply_animated_sdf = (uniforms.sdf_shadow_flags & 1u) != 0u && !sdf_mode_off;
     let static_sdf = select(1.0, sdf_factor.r, apply_static_sdf);
     let animated_sdf = select(1.0, sdf_factor.g, apply_animated_sdf);
 
@@ -821,5 +829,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     let rgb = base_color.rgb * total_light;
+    // Task 6: `SdfShadowMode::Visualize` (2) replaces the shaded color with a
+    // grayscale view of the static-aggregate (R) shadow factor — sampled
+    // through the same bilateral upsample as the shading path. White = lit,
+    // black = fully occluded. When no SDF atlas is loaded `sdf_factor` is
+    // `vec4(1.0)`, so Visualize on a legacy PRL renders a flat white frame —
+    // self-documenting "nothing to visualize".
+    if uniforms.sdf_shadow_mode == 2u {
+        let g = sdf_factor.r;
+        return vec4<f32>(g, g, g, base_color.a);
+    }
     return vec4<f32>(rgb, base_color.a);
 }

@@ -171,7 +171,7 @@ const TIMING_PAIR_COUNT: usize = 5;
 // std140: vec3<f32> aligns to 16 bytes; camera_position and ambient_floor share a slot.
 //   0..64    view_proj  64..76   camera_position  76..80   ambient_floor
 //   80..84   light_count  84..88  time  88..92   lighting_isolation  92..96  indirect_scale
-//   96..100  sdf_shadow_flags  100..112 _pad
+//   96..100  sdf_shadow_flags  100..104 sdf_shadow_mode  104..112 _pad
 // `sdf_shadow_flags` (Task 5 of sdf-static-occluder-shadows) is a bitset
 // gating the bilateral upsample multiply in the forward shader:
 //   bit 0 = apply animated-baked aggregate factor (G channel).
@@ -190,6 +190,46 @@ pub const SDF_SHADOW_FLAG_ANIMATED: u32 = 1 << 0;
 /// factor (R channel) to the static lightmap term. Requires the lightmap to
 /// have been baked unshadowed; else the bake already contains visibility.
 pub const SDF_SHADOW_FLAG_STATIC: u32 = 1 << 1;
+
+/// Debug selector for the SDF static-occluder shadow path (Task 6 of
+/// `sdf-static-occluder-shadows`). Mirrors the `LightingIsolation` pattern:
+/// panel-only dropdown, encoded into the per-frame uniform.
+///
+/// - `On` applies the shadow factor multiply normally — gated per term by
+///   `SDF_SHADOW_FLAG_*` (so a shadowed-mode lightmap still skips it).
+/// - `Off` short-circuits both the static and animated-baked SDF multiplies
+///   to 1.0 (no SDF factor applied). Shadow-map (enemy) shadows are
+///   unaffected — they don't run through the SDF multiply in the first place.
+/// - `Visualize` replaces the shaded fragment color with a grayscale view of
+///   the static-aggregate (R) shadow factor — interpretable for spotting
+///   artifacts without needing a separate march-step heatmap binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+#[repr(u32)]
+pub enum SdfShadowMode {
+    On = 0,
+    Off = 1,
+    Visualize = 2,
+}
+
+impl SdfShadowMode {
+    /// All variants in display order. Used by the debug UI dropdown.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub const ALL_VARIANTS: [SdfShadowMode; 3] = [
+        SdfShadowMode::On,
+        SdfShadowMode::Off,
+        SdfShadowMode::Visualize,
+    ];
+
+    #[allow(dead_code)]
+    pub fn label(self) -> &'static str {
+        match self {
+            SdfShadowMode::On => "On",
+            SdfShadowMode::Off => "Off",
+            SdfShadowMode::Visualize => "Visualize",
+        }
+    }
+}
 
 /// Lighting-term isolation mode for leak/bleed debugging.
 /// The ambient floor always contributes so interior geometry is never pitch black.
@@ -273,6 +313,11 @@ struct FrameUniforms {
     /// gates the static-lightmap term (independent because the static-term
     /// multiply must skip a shadowed-mode lightmap to avoid double shadows).
     sdf_shadow_flags: u32,
+    /// `SdfShadowMode` debug selector (Task 6). Encoded as the enum's `u32`
+    /// repr (0=On, 1=Off, 2=Visualize). Overlays the per-term flags above:
+    /// `Off` forces both SDF multiplies to 1.0; `Visualize` replaces the
+    /// shaded color output with a grayscale R-channel view.
+    sdf_shadow_mode: SdfShadowMode,
 }
 
 fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
@@ -292,7 +337,9 @@ fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
     bytes[88..92].copy_from_slice(&isolation.to_ne_bytes());
     bytes[92..96].copy_from_slice(&u.indirect_scale.to_ne_bytes());
     bytes[96..100].copy_from_slice(&u.sdf_shadow_flags.to_ne_bytes());
-    // 100..112 stays zero — explicit pad matching the WGSL `_pad: vec3<u32>`.
+    let mode: u32 = u.sdf_shadow_mode as u32;
+    bytes[100..104].copy_from_slice(&mode.to_ne_bytes());
+    // 104..112 stays zero — explicit pad matching the WGSL `_pad: vec2<u32>`.
     bytes
 }
 
@@ -631,6 +678,11 @@ pub struct Renderer {
     debug_lines: debug_lines::DebugLineRenderer,
 
     lighting_isolation: LightingIsolation,
+
+    /// Debug selector for the SDF static-occluder shadow path. Mirrors
+    /// `lighting_isolation` — panel-only dropdown, surfaces through
+    /// `FrameUniforms.sdf_shadow_mode`.
+    sdf_shadow_mode: SdfShadowMode,
 
     /// Toggled by Alt+Shift+V; `true` = AutoVsync, `false` = AutoNoVsync.
     vsync_enabled: bool,
@@ -986,6 +1038,7 @@ impl Renderer {
             // `update_per_frame_uniforms` reflects `has_sdf_atlas()` +
             // `lightmap_mode()` once geometry installs.
             sdf_shadow_flags: 0,
+            sdf_shadow_mode: SdfShadowMode::On,
         });
 
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1825,6 +1878,7 @@ impl Renderer {
             #[cfg(feature = "dev-tools")]
             debug_lines,
             lighting_isolation: LightingIsolation::Normal,
+            sdf_shadow_mode: SdfShadowMode::On,
             vsync_enabled: true,
             has_geometry,
             debug_frame: 0,
@@ -2418,6 +2472,22 @@ impl Renderer {
         self.lighting_isolation
     }
 
+    /// Direct setter used by the debug-panel `SdfShadowMode` dropdown (Task 6
+    /// of `sdf-static-occluder-shadows`). Logs only on transition so spam
+    /// clicks on the current mode stay quiet.
+    #[cfg(feature = "dev-tools")]
+    pub fn set_sdf_shadow_mode(&mut self, mode: SdfShadowMode) {
+        if self.sdf_shadow_mode != mode {
+            self.sdf_shadow_mode = mode;
+            log::info!("[Renderer] SDF shadow mode: {}", mode.label());
+        }
+    }
+
+    #[cfg(feature = "dev-tools")]
+    pub fn sdf_shadow_mode(&self) -> SdfShadowMode {
+        self.sdf_shadow_mode
+    }
+
     #[cfg(feature = "dev-tools")]
     pub fn freeze_time(&self) -> bool {
         self.freeze_time
@@ -2537,6 +2607,7 @@ impl Renderer {
             lighting_isolation: self.lighting_isolation,
             indirect_scale: self.indirect_scale,
             sdf_shadow_flags,
+            sdf_shadow_mode: self.sdf_shadow_mode,
         });
         self.queue.write_buffer(&self.uniform_buffer, 0, &data);
         self.last_camera_position = camera_position;
@@ -2924,6 +2995,70 @@ impl Renderer {
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn set_indirect_scale(&mut self, value: f32) {
         self.indirect_scale = value.clamp(0.0, 1.0);
+    }
+
+    // --- Task 7: SDF / Fog quality-slider seams ---
+    //
+    // The SDF knobs live on `SdfShadowPass.tuning` — pure uniform scalars
+    // packed each frame in `pack_params_bytes` (no resource rebuild). The fog
+    // knobs split: `step_size` is a per-frame uniform repacked in
+    // `upload_params`; `fog_pixel_scale` is a resource-rebuild knob already
+    // owned by `set_fog_pixel_scale` above.
+
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn sdf_max_march_steps(&self) -> u32 {
+        self.sdf_shadow_pass.tuning().max_march_steps
+    }
+
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn set_sdf_max_march_steps(&mut self, steps: u32) {
+        self.sdf_shadow_pass.set_max_march_steps(steps);
+    }
+
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn sdf_open_space_skip_threshold(&self) -> f32 {
+        self.sdf_shadow_pass.tuning().open_space_skip_threshold
+    }
+
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn set_sdf_open_space_skip_threshold(&mut self, threshold: f32) {
+        self.sdf_shadow_pass
+            .set_open_space_skip_threshold(threshold);
+    }
+
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn sdf_penumbra_k(&self) -> f32 {
+        self.sdf_shadow_pass.tuning().penumbra_k
+    }
+
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn set_sdf_penumbra_k(&mut self, k: f32) {
+        self.sdf_shadow_pass.set_penumbra_k(k);
+    }
+
+    /// Current per-frame fog raymarch step size (world units). Read by the
+    /// debug-UI slider on first draw so it shows the live value rather than
+    /// the construction default.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn fog_step_size(&self) -> f32 {
+        self.fog.step_size
+    }
+
+    /// Update the fog raymarch step size in place. `FogPass.step_size` is
+    /// read by `upload_params` on the next frame, so this is a pure uniform
+    /// write — no resource rebuild. Clamped to a positive minimum to guard
+    /// against a runaway slider stalling the raymarch.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn set_fog_step_size(&mut self, step_size: f32) {
+        self.fog.step_size = step_size.max(0.01);
+    }
+
+    /// Current `fog_pixel_scale` — read by the debug-UI slider on first draw.
+    /// The setter (`set_fog_pixel_scale` above) drives a scatter-target
+    /// rebuild rather than a per-frame uniform write.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn fog_pixel_scale(&self) -> u32 {
+        self.fog.pixel_scale
     }
 
     pub fn is_ready(&self) -> bool {
@@ -3877,6 +4012,7 @@ mod tests {
             lighting_isolation: LightingIsolation::Normal,
             indirect_scale: 1.0,
             sdf_shadow_flags: 0,
+            sdf_shadow_mode: SdfShadowMode::On,
         });
         assert_eq!(data.len(), UNIFORM_SIZE);
     }
@@ -3893,11 +4029,52 @@ mod tests {
             lighting_isolation: LightingIsolation::Normal,
             indirect_scale: 1.0,
             sdf_shadow_flags: SDF_SHADOW_FLAG_ANIMATED | SDF_SHADOW_FLAG_STATIC,
+            sdf_shadow_mode: SdfShadowMode::On,
         });
         let flags = u32::from_ne_bytes(data[96..100].try_into().unwrap());
         assert_eq!(flags, 0b11);
-        // Trailing pad bytes 100..112 stay zero.
-        assert!(data[100..112].iter().all(|&b| b == 0));
+        // `sdf_shadow_mode` at 100..104 — `On` encodes to 0; tail pad 104..112 stays zero.
+        assert_eq!(
+            u32::from_ne_bytes(data[100..104].try_into().unwrap()),
+            SdfShadowMode::On as u32,
+        );
+        assert!(data[104..112].iter().all(|&b| b == 0));
+    }
+
+    /// Task 6 of `sdf-static-occluder-shadows`: the `SdfShadowMode` selector
+    /// must round-trip through the `FrameUniforms` byte packer — every
+    /// variant encodes to its `u32` repr at offset 100..104 with the
+    /// trailing pad bytes zeroed. Mirrors
+    /// `uniform_data_encodes_sdf_shadow_flags_at_correct_offset`.
+    #[test]
+    fn sdf_shadow_mode_round_trips_through_uniform() {
+        for mode in SdfShadowMode::ALL_VARIANTS {
+            let data = build_uniform_data(&FrameUniforms {
+                view_proj: Mat4::IDENTITY,
+                camera_position: Vec3::ZERO,
+                ambient_floor: 0.0,
+                light_count: 0,
+                time: 0.0,
+                lighting_isolation: LightingIsolation::Normal,
+                indirect_scale: 1.0,
+                sdf_shadow_flags: 0,
+                sdf_shadow_mode: mode,
+            });
+            let decoded = u32::from_ne_bytes(data[100..104].try_into().unwrap());
+            assert_eq!(
+                decoded,
+                mode as u32,
+                "SdfShadowMode::{:?} should encode to {} at offset 100..104",
+                mode,
+                mode as u32,
+            );
+            // Tail pad 104..112 stays zero regardless of mode.
+            assert!(
+                data[104..112].iter().all(|&b| b == 0),
+                "tail pad bytes 104..112 must stay zero for {:?}",
+                mode,
+            );
+        }
     }
 
     #[test]
@@ -4244,6 +4421,7 @@ mod tests {
             lighting_isolation: LightingIsolation::Normal,
             indirect_scale,
             sdf_shadow_flags: 0,
+            sdf_shadow_mode: SdfShadowMode::On,
         });
 
         // view_proj: first 64 bytes = 16 f32 identity columns.

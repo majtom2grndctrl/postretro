@@ -7,14 +7,14 @@
 // region — instead of looping over every animated light at every probe.
 //
 // This module only computes the in-memory decomposition (`per_light_cells` +
-// dims). It does not change the delta wire format; Tasks 2 & 3 consume this
-// structure to build the sparse representation and affinity index.
+// dims). It does not change the delta wire format; `delta_sh_bake` consumes
+// this structure to build the CSR index and bake the sparse sub-blocks.
 //
 // Reachability reuses the SAME inline per-light portal flood-fill pattern as
 // `chunk_light_list_bake` (BFS over the `Portal` adjacency graph seeded at the
 // light's containing leaf), including the solid/exterior-seed bypass.
 //
-// See: context/plans/drafts/perf-animated-sh-light-culling/
+// See: context/plans/in-progress/perf-animated-sh-light-culling/
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -34,12 +34,17 @@ use crate::portals::Portal;
 /// shader's workgroup geometry.
 pub const AFFINITY_FACTOR: u32 = 4;
 
-/// AABB padding past the light's falloff sphere, meters. Mirrors
-/// `delta_sh_bake`'s padding so the affinity coverage matches the delta grid's
-/// extent (the trilinear reconstruction needs probes slightly past the sphere).
+/// AABB padding past the light's falloff sphere, meters. Extends affinity-cell
+/// coverage slightly beyond the falloff radius so boundary probes are included
+/// in the sub-block — the light still contributes a small amount there, and
+/// dropping those probes would silently under-cull the region. Must match
+/// `delta_sh_bake`'s padding so affinity cells and baked sub-blocks cover the
+/// same volume.
 const AABB_PADDING_METERS: f32 = 0.5;
 
-/// Hard cap on directional-light AABB size, meters — mirrors `delta_sh_bake`.
+/// Hard cap on directional-light AABB size, meters. MUST equal `delta_sh_bake`'s
+/// value — if they diverge, affinity cells cover a different volume than the
+/// baked sub-blocks, producing silently wrong culling for directional lights.
 const DIRECTIONAL_FALLBACK_RANGE_METERS: f32 = 100.0;
 
 /// Inputs for the affinity decomposition. The base SH volume's AABB and probe

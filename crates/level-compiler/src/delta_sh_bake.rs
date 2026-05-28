@@ -24,7 +24,7 @@
 // `animation_descriptor_indices[affinity_lights[i]]` both index
 // `AnimatedBakedLights.entries()` — same iteration order, no remap.
 //
-// See: context/plans/drafts/perf-animated-sh-light-culling/
+// See: context/plans/in-progress/perf-animated-sh-light-culling/
 
 use std::collections::HashSet;
 
@@ -47,9 +47,15 @@ use crate::sh_bake::{
     RaytracingCtx, bake_probe_direct_rgb, bake_probe_indirect_rgb, probe_is_valid_pub,
 };
 
-/// AABB padding past the light's falloff sphere, meters. The trilinear
-/// reconstruction at the boundary needs probes slightly outside the sphere
-/// or it darkens the rim of the light's influence. Mirrors `affinity_grid`.
+// The compiler-side affinity factor (cell geometry) and the format-side
+// factor (written into the section, validated by the loader) must agree, or
+// the bake would emit a section whose stored factor matches the engine while
+// its actual cell geometry used a different one.
+const _: () = assert!(AFFINITY_FACTOR as u8 == FORMAT_AFFINITY_FACTOR);
+
+/// AABB padding past the light's falloff sphere, meters. Extends coverage
+/// slightly beyond the falloff radius so boundary probes inside included
+/// cells aren't dropped from their sub-block. Mirrors `affinity_grid`.
 const AABB_PADDING_METERS: f64 = 0.5;
 
 /// Hard cap on directional-light AABB size, meters. Directional lights

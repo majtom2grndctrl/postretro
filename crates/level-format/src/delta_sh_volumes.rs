@@ -4,7 +4,7 @@
 // for the affinity cells it actually touches. Consumed by the runtime compose
 // pass that blends animated lights into the SH irradiance volume.
 //
-// See: context/plans/in-progress/lighting-animated-sh/
+// See: context/plans/done/lighting-animated-sh/
 
 use crate::FormatError;
 use crate::lightmap::f32_to_f16_bits;
@@ -238,6 +238,21 @@ impl DeltaShVolumesSection {
             o += 4;
         }
 
+        // Validate that offsets are non-decreasing. A non-monotonic offset would
+        // allow the compose shader's `affinity_offsets[cell]..affinity_offsets[cell+1]`
+        // range to overflow or index out of bounds on corrupt/adversarial input.
+        for k in 0..affinity_offsets.len() - 1 {
+            if affinity_offsets[k] > affinity_offsets[k + 1] {
+                return Err(invalid_data(format!(
+                    "delta sh volumes affinity_offsets[{k}] ({}) > affinity_offsets[{}] ({}): \
+                     offsets must be non-decreasing",
+                    affinity_offsets[k],
+                    k + 1,
+                    affinity_offsets[k + 1],
+                )));
+            }
+        }
+
         // The trailing offset is the total CSR entry count = affinity_lights len.
         let list_len = *affinity_offsets
             .last()
@@ -459,6 +474,41 @@ mod tests {
         bytes.truncate(bytes.len() - 4);
         let err = DeltaShVolumesSection::from_bytes(&bytes).unwrap_err();
         assert!(matches!(err, FormatError::Io(_)));
+    }
+
+    #[test]
+    fn rejects_non_monotonic_offsets() {
+        // Three affinity cells, one animated light. Serialize a valid section,
+        // then corrupt an intermediate offset so it is larger than the next,
+        // making the offsets non-monotonic. The loader must reject this without
+        // panicking.
+        let section = DeltaShVolumesSection {
+            affinity_factor: AFFINITY_FACTOR,
+            affinity_dims: [3, 1, 1],
+            animation_descriptor_indices: vec![0],
+            // Valid monotonic offsets: cell 0 → [0,1), cells 1&2 → empty.
+            affinity_offsets: vec![0, 1, 1, 1],
+            affinity_lights: vec![0],
+            delta_subblocks: sample_subblock(7),
+        };
+        let mut bytes = section.to_bytes();
+
+        // Locate the affinity_offsets table in the serialized bytes and corrupt
+        // index 1 so it is larger than index 2, breaking the monotonic invariant.
+        // Fixed header: version(1) + affinity_factor(1) + affinity_dims(12) +
+        // animated_light_count(4) + animation_descriptor_indices(4×1) = 22 bytes.
+        let offsets_start = 1 + 1 + 12 + 4 + 4;
+        // offsets[1] lives at offsets_start + 1×4; write a value larger than offsets[2].
+        let corrupt_offset: u32 = 99;
+        let off = offsets_start + 4;
+        bytes[off..off + 4].copy_from_slice(&corrupt_offset.to_le_bytes());
+
+        let err = DeltaShVolumesSection::from_bytes(&bytes).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("non-decreasing"),
+            "expected non-decreasing error: {msg}"
+        );
     }
 
     #[test]

@@ -8,22 +8,23 @@ use super::sh_volume::{
     ANIMATION_DESCRIPTOR_SIZE, AnimatedLightBuffers, SH_BAND_COUNT, ShVolumeResources,
 };
 
-// SH Compose Bind Group (`@group(1)`) binding index assignments. Task 4's shader
-// rewrite mirrors these exactly.
+// SH Compose Bind Group (`@group(1)`) binding index assignments. The shader
+// mirrors these (changing either requires updating both).
 //
 //   @group(1):
 //     0..9   base SH band textures        (sampled, `0..SH_BAND_COUNT`)
 //     9..18  total SH band textures       (storage write, `SH_BAND_COUNT..2*SH_BAND_COUNT`)
 //     18     GridDims uniform             (vec3<u32> grid_dims, f32 delta_scale)
 //     19     GridOrigin uniform           (grid_origin + cell_size)
-//     20     delta_subblocks  (storage)   NEW — f16 payload, raw `u16` halves; shader `unpack2x16float`s
-//     21     affinity_offsets (storage)   NEW — `u32` CSR offsets (affinity_cell_count + 1)
-//     24     affinity_lights  (storage)   NEW — `u32` flat light indices, CSR-parallel to delta subblocks
-//     22     animation descriptors (storage, shared with the SH bind group)
-//     23     animation samples     (storage, shared with the SH bind group)
+//     20     delta_subblocks  (storage)   f16 payload, raw `u16` halves; shader `unpack2x16float`s
+//     21     affinity_offsets (storage)   `u32` CSR offsets (affinity_cell_count + 1)
+//     22     animation descriptors        (storage, shared with the SH bind group)
+//     23     animation samples            (storage, shared with the SH bind group)
+//     24     affinity_lights  (storage)   `u32` flat light indices, CSR-parallel to delta subblocks
 //
-// 20/21 replace the old dense per-light `DeltaLightMeta`/`delta_probes` pair;
-// 24 is appended after the shared 22/23 to avoid renumbering them.
+// 20/21 replace the old dense per-light `DeltaLightMeta`/`delta_probes` pair.
+// 24 is numbered after the shared 22/23 so adding `affinity_lights` doesn't
+// renumber the animation bindings shared with the SH bind group.
 /// Production `delta_scale`: full animated-delta contribution. The dev-tools
 /// slider overrides this in-place over `0.0..=1.0` (`0.0` = base-only copy).
 const DEFAULT_DELTA_SCALE: f32 = 1.0;
@@ -54,8 +55,8 @@ pub struct ShComposeResources {
 
 impl ShComposeResources {
     /// Build the compose pipeline and bind group. When `delta` is `None` or
-    /// empty, the per-light loop bound is 0 and the result is a pure
-    /// base→total copy.
+    /// empty, all CSR offset ranges are empty (`start == end`), so the result is
+    /// a pure base→total copy.
     pub fn new(
         device: &wgpu::Device,
         sh: &ShVolumeResources,
@@ -64,16 +65,23 @@ impl ShComposeResources {
         uniform_bind_group_layout: &wgpu::BindGroupLayout,
     ) -> Self {
         // Build the sparse CSR delta buffers. Probes stay f16 (raw `u16` halves)
-        // in the storage buffer — Task 4's shader `unpack2x16float`s them. No
+        // in the storage buffer — the shader `unpack2x16float`s them. No
         // f16→f32 expansion.
         let buffers = build_delta_buffers(delta);
         let light_count = buffers.animated_light_count;
 
-        // wgpu rejects zero-sized storage buffers; pad each to one slot so the
-        // bind group is always valid. The shader gates on `delta_light_count`,
-        // so the padded contents are never read.
+        // wgpu rejects zero-sized storage buffers; pad each to a minimum size so
+        // the bind group is always valid. The shader's per-cell loop runs zero
+        // times when `affinity_offsets[cell] == affinity_offsets[cell + 1]`, so
+        // the padded `delta_subblocks`/`affinity_lights` contents are never read.
+        //
+        // `affinity_offsets` is the exception: the shader reads both
+        // `affinity_offsets[cell]` and `affinity_offsets[cell + 1]` before
+        // entering the loop, so the empty case must pad to two `u32`s (8 bytes).
+        // Both are zero, so `start == end` and the loop skips — but `[0]` and
+        // `[1]` are genuinely in bounds rather than relying on OOB clamping.
         let subblock_bytes = pad_storage_bytes(u16_slice_to_bytes(&buffers.delta_subblocks), 4);
-        let offsets_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_offsets), 4);
+        let offsets_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_offsets), 8);
         let lights_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_lights), 4);
 
         use wgpu::util::DeviceExt;
@@ -105,10 +113,9 @@ impl ShComposeResources {
         };
         footprint.log();
 
-        // Grid-dims uniform: vec3<u32> grid_dims, f32 delta_scale. The 4th field
-        // was the now-unused `delta_light_count` — the loop bound is now the
-        // affinity-cell CSR list length, so the slot carries the global delta
-        // scale instead. `1.0` = full animated delta (production default).
+        // Grid-dims uniform: vec3<u32> grid_dims, f32 delta_scale. The loop bound
+        // comes from the affinity-cell CSR offsets, so the 4th slot carries the
+        // global delta scale. `1.0` = full animated delta (production default).
         let mut grid_bytes = [0u8; 16];
         grid_bytes[0..4].copy_from_slice(&sh.grid_dimensions[0].to_ne_bytes());
         grid_bytes[4..8].copy_from_slice(&sh.grid_dimensions[1].to_ne_bytes());
@@ -366,7 +373,7 @@ fn build_delta_buffers(delta: Option<&DeltaShVolumesSection>) -> DeltaComposeBuf
     };
     DeltaComposeBuffers {
         animated_light_count: delta.animation_descriptor_indices.len() as u32,
-        // Keep f16 as raw halves — Task 4's shader unpacks them.
+        // Keep f16 as raw halves — the shader unpacks them.
         delta_subblocks: delta.delta_subblocks.clone(),
         affinity_offsets: delta.affinity_offsets.clone(),
         affinity_lights: delta.affinity_lights.clone(),
@@ -390,9 +397,11 @@ fn u32_slice_to_bytes(data: &[u32]) -> Vec<u8> {
 }
 
 /// wgpu rejects zero-sized storage buffer bindings. Pad an empty payload up to
-/// `min_bytes` (a single element) so the bind group stays valid for maps with
-/// no animated lights; the shader gates on `delta_light_count` and never reads
-/// the dummy slot.
+/// `min_bytes` so the bind group stays valid for maps with no animated lights.
+/// `min_bytes` is per-binding: `delta_subblocks`/`affinity_lights` need a single
+/// element (their slots live inside the never-entered per-cell loop), while
+/// `affinity_offsets` needs two `u32`s (8 bytes) because the shader reads both
+/// `[cell]` and `[cell + 1]` before the loop bound is known.
 fn pad_storage_bytes(mut bytes: Vec<u8>, min_bytes: usize) -> Vec<u8> {
     if bytes.is_empty() {
         bytes.resize(min_bytes, 0);
@@ -465,7 +474,7 @@ fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
             count: None,
         });
     }
-    // Binding 18: grid-dimensions + delta_light_count.
+    // Binding 18: grid-dimensions + delta_scale.
     entries.push(wgpu::BindGroupLayoutEntry {
         binding: 18,
         visibility: wgpu::ShaderStages::COMPUTE,
@@ -665,7 +674,10 @@ mod tests {
     #[test]
     fn pad_storage_bytes_pads_empty_to_min() {
         assert_eq!(pad_storage_bytes(Vec::new(), 4), vec![0u8; 4]);
-        // Non-empty payloads pass through unchanged.
+        // affinity_offsets pads to two u32s (8 bytes) so the shader's
+        // `[cell]`/`[cell + 1]` reads are both in bounds (both zero → loop skips).
+        assert_eq!(pad_storage_bytes(Vec::new(), 8), vec![0u8; 8]);
+        // Non-empty payloads pass through unchanged regardless of min_bytes.
         assert_eq!(
             pad_storage_bytes(vec![1, 2, 3, 4, 5], 4),
             vec![1, 2, 3, 4, 5]

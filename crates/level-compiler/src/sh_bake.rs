@@ -877,6 +877,7 @@ mod tests {
             cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
+            casts_entity_shadows: false,
             tags: vec![],
         }
     }
@@ -1156,6 +1157,7 @@ mod tests {
             cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
+            casts_entity_shadows: false,
             tags: vec![],
         };
         let exterior: HashSet<usize> = HashSet::new();
@@ -1214,6 +1216,7 @@ mod tests {
                 cast_shadows: true,
                 bake_only: false,
                 is_dynamic: false,
+                casts_entity_shadows: false,
                 tags: vec![],
             },
             MapLight {
@@ -1230,6 +1233,7 @@ mod tests {
                 cast_shadows: true,
                 bake_only: false,
                 is_dynamic: false,
+                casts_entity_shadows: false,
                 tags: vec![],
             },
         ];
@@ -1398,6 +1402,7 @@ mod tests {
             cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
+            casts_entity_shadows: false,
             tags: vec![],
         };
         let exterior: HashSet<usize> = HashSet::new();
@@ -1453,6 +1458,7 @@ mod tests {
             cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
+            casts_entity_shadows: false,
             tags: vec![],
         };
         let exterior: HashSet<usize> = HashSet::new();
@@ -1685,6 +1691,7 @@ mod tests {
             cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
+            casts_entity_shadows: false,
             tags: vec![],
         };
         dyn_light.is_dynamic = true;

@@ -119,6 +119,7 @@ pub fn encode_alpha_lights(lights: &AlphaLightsNs<'_>, tree: &BspTree) -> AlphaL
                 cone_direction: l.cone_direction.unwrap_or([0.0, 0.0, 0.0]),
                 cast_shadows: l.cast_shadows,
                 is_dynamic: l.is_dynamic,
+                casts_entity_shadows: l.casts_entity_shadows,
                 leaf_index,
             }
         })
@@ -1098,6 +1099,7 @@ mod tests {
                 cast_shadows: false,
                 bake_only: false,
                 is_dynamic: false,
+                casts_entity_shadows: false,
                 tags: vec![],
             },
             MapLight {
@@ -1114,6 +1116,7 @@ mod tests {
                 cast_shadows: true,
                 bake_only: false,
                 is_dynamic: false,
+                casts_entity_shadows: false,
                 tags: vec![],
             },
             MapLight {
@@ -1130,6 +1133,7 @@ mod tests {
                 cast_shadows: false,
                 bake_only: false,
                 is_dynamic: false,
+                casts_entity_shadows: false,
                 tags: vec![],
             },
         ];
@@ -1198,6 +1202,7 @@ mod tests {
             cast_shadows: false,
             bake_only: false,
             is_dynamic: false,
+            casts_entity_shadows: false,
             tags: vec![],
         };
 

@@ -229,13 +229,21 @@ impl SpotShadowPool {
         }
     }
 
-    /// Compute the slot-assignment ranking for visible dynamic spot lights.
+    /// Compute the slot-assignment ranking for visible entity-shadow-casting spot lights.
     ///
-    /// Takes the full light list and camera position. Identifies dynamic spot lights
-    /// that pass frustum culling, ranks by influence-area heuristic, and assigns the
+    /// Takes the candidate light list and camera position. Identifies spot
+    /// lights opted-in via `casts_entity_shadows` that pass visibility +
+    /// frustum culling, ranks by influence-area heuristic, and assigns the
     /// top `SHADOW_POOL_SIZE` to slots.
     ///
-    /// Returns a Vec indexed by light index: entry is the slot index (`0..SHADOW_POOL_SIZE`) or NO_SHADOW_SLOT.
+    /// Task 1b decoupled the candidate set from `level_lights` (which is
+    /// `is_dynamic`-filtered, and goes empty under the geometry-vs-intensity
+    /// reclassification of Task 2c). The caller now hands the
+    /// `casts_entity_shadows`-filtered full-level light slice; the gate
+    /// below is `casts_entity_shadows && Spot`, not `is_dynamic && Spot`.
+    ///
+    /// Returns a Vec indexed by light index (into the slice the caller
+    /// passes): entry is the slot index (`0..SHADOW_POOL_SIZE`) or NO_SHADOW_SLOT.
     pub fn rank_lights(
         lights: &[MapLight],
         camera_position: Vec3,
@@ -245,13 +253,14 @@ impl SpotShadowPool {
     ) -> Vec<u32> {
         let mut slot_assignment = vec![NO_SHADOW_SLOT; lights.len()];
 
-        // Collect visible dynamic spot lights with their scores.
+        // Collect visible entity-shadow-casting spot lights with their scores.
         let mut candidates: Vec<(usize, f32)> = lights
             .iter()
             .enumerate()
             .filter_map(|(idx, light)| {
-                // Only consider dynamic spot lights.
-                if !light.is_dynamic || light.light_type != LightType::Spot {
+                // Per-light opt-in for the shadow-map pool. Default `false` —
+                // enemies / dynamic-occluder shadows are strictly opt-in.
+                if !light.casts_entity_shadows || light.light_type != LightType::Spot {
                     return None;
                 }
 
@@ -306,7 +315,7 @@ impl SpotShadowPool {
 
         if candidates.len() > SHADOW_POOL_SIZE {
             log::debug!(
-                "[ShadowPool] {} dynamic spot lights visible; {} assigned to slots, {} unshadowed",
+                "[ShadowPool] {} entity-shadow-casting spot lights visible; {} assigned to slots, {} unshadowed",
                 candidates.len(),
                 SHADOW_POOL_SIZE,
                 candidates.len() - SHADOW_POOL_SIZE
@@ -321,7 +330,15 @@ impl SpotShadowPool {
 mod tests {
     use super::*;
 
-    fn test_light(_idx: u32, origin: [f64; 3], falloff_range: f32, is_dynamic: bool) -> MapLight {
+    /// `casts_entity_shadows` controls pool eligibility post-1b. `is_dynamic`
+    /// here stays `false` to mirror the post-1b authored-content invariant —
+    /// only the entity-shadow opt-in gates the pool now.
+    fn test_light(
+        _idx: u32,
+        origin: [f64; 3],
+        falloff_range: f32,
+        casts_entity_shadows: bool,
+    ) -> MapLight {
         MapLight {
             origin,
             light_type: LightType::Spot,
@@ -333,7 +350,8 @@ mod tests {
             cone_angle_outer: 0.6,
             cone_direction: [0.0, 0.0, -1.0],
             cast_shadows: true,
-            is_dynamic,
+            is_dynamic: false,
+            casts_entity_shadows,
             tags: vec![],
             leaf_index: 0,
         }
@@ -346,7 +364,7 @@ mod tests {
     }
 
     #[test]
-    fn non_dynamic_lights_are_not_assigned() {
+    fn lights_without_cast_entity_shadows_opt_in_are_not_assigned() {
         let lights = vec![
             test_light(0, [0.0, 0.0, 0.0], 10.0, false),
             test_light(1, [10.0, 0.0, 0.0], 10.0, false),
@@ -354,6 +372,19 @@ mod tests {
         let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &[]);
         assert_eq!(assignment[0], NO_SHADOW_SLOT);
         assert_eq!(assignment[1], NO_SHADOW_SLOT);
+    }
+
+    /// Regression: pre-1b the pool gated on `is_dynamic`. Post-1b
+    /// `is_dynamic` no longer feeds the pool — only `casts_entity_shadows`
+    /// does. A light marked `is_dynamic` but not opted into entity shadows
+    /// must NOT land in a pool slot.
+    #[test]
+    fn is_dynamic_alone_does_not_qualify_for_pool() {
+        let mut light = test_light(0, [0.0, 0.0, 0.0], 10.0, false);
+        light.is_dynamic = true;
+        let lights = vec![light];
+        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &[]);
+        assert_eq!(assignment[0], NO_SHADOW_SLOT);
     }
 
     #[test]
@@ -366,7 +397,7 @@ mod tests {
     }
 
     #[test]
-    fn two_dynamic_spots_both_assigned() {
+    fn two_entity_shadow_spots_both_assigned() {
         let lights = vec![
             test_light(0, [0.0, 0.0, 0.0], 10.0, true),
             test_light(1, [10.0, 0.0, 0.0], 10.0, true),

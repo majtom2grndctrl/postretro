@@ -1051,6 +1051,7 @@ mod tests {
             cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
+            casts_entity_shadows: false,
             tags: vec![],
         }
     }
@@ -1505,6 +1506,7 @@ mod tests {
             cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
+            casts_entity_shadows: false,
             tags: vec![],
         };
         let lights = vec![light];

@@ -516,6 +516,10 @@ fn component_to_map_light(
         cone_direction: component.cone_direction.unwrap_or([0.0, 0.0, 0.0]),
         cast_shadows: component.cast_shadows,
         is_dynamic,
+        // Script-spawned lights have no authoring surface for the
+        // shadow-pool opt-in (Task 1b); default `false`. Wired later if a
+        // script-side API for entity-shadow opt-in lands.
+        casts_entity_shadows: false,
         tags: vec![],
         leaf_index,
     }
@@ -693,6 +697,7 @@ mod tests {
             cone_direction: [0.0, 0.0, 0.0],
             cast_shadows: false,
             is_dynamic: false,
+            casts_entity_shadows: false,
             tags: vec![],
             leaf_index: 0,
         }
@@ -711,6 +716,7 @@ mod tests {
             cone_direction: [0.0, -1.0, 0.0],
             cast_shadows: true,
             is_dynamic: true,
+            casts_entity_shadows: true,
             tags: vec![],
             leaf_index: 0,
         }

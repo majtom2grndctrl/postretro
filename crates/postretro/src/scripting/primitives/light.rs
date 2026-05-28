@@ -69,7 +69,7 @@ pub(super) fn handles_to_json(handles: Vec<LightQueryHandle>) -> serde_json::Val
 
 fn validate_and_normalize(
     mut anim: LightAnimation,
-    target_is_dynamic: bool,
+    _target_is_dynamic: bool,
 ) -> Result<LightAnimation, ScriptError> {
     if !anim.period_ms.is_finite() || anim.period_ms <= 0.0 {
         return Err(ScriptError::InvalidArgument {
@@ -89,13 +89,18 @@ fn validate_and_normalize(
                 reason: "color channel present but empty (use null to omit)".into(),
             });
         }
-        if !target_is_dynamic {
-            return Err(ScriptError::InvalidArgument {
-                reason: "color animation is only permitted on dynamic lights; \
-                         baked lights' SH indirect was computed at compile-time color"
-                    .into(),
-            });
-        }
+        // Task 1b: relax the previous `is_dynamic` gate. The geometry-axis
+        // redefinition of `is_dynamic` (Task 1b spec) plus the
+        // animated-baked compose path (Task 2c) means script-driven
+        // intensity/color on a static light no longer drifts from the SH
+        // bake — animated-baked lights route their per-frame radiance
+        // through the compose pass, which fuses the per-frame dominant
+        // direction and feeds the SDF shadow trace. The old "color
+        // animation requires dynamic" rule is incompatible with that
+        // path; remove it. Brightness-only animation on a now-static
+        // light is admitted unchanged.
+        //
+        // See: context/plans/in-progress/sdf-static-occluder-shadows/index.md §Task 1b
     }
     if let Some(ref mut dirs) = anim.direction {
         if dirs.is_empty() {
@@ -166,7 +171,7 @@ pub(crate) fn apply_light_animation_inner(
 
 const SET_LIGHT_ANIM_DOC: &str = "Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. \
      Non-unit direction samples are silently normalized; zero-length direction samples \
-     and color animations on non-dynamic lights error with InvalidArgument. \
+     and empty channel arrays error with InvalidArgument. \
      Definition context.";
 
 #[allow(clippy::arc_with_non_send_sync)]
@@ -884,10 +889,39 @@ mod tests {
         assert!(matches!(err, ScriptError::InvalidArgument { .. }));
     }
 
+    /// Task 1b: brightness-only animation on a now-static
+    /// (`is_dynamic == false`) script-driven-intensity light is admitted —
+    /// the previous `is_dynamic` gate was incompatible with the
+    /// animated-baked compose path. AC: "`setLightAnimation` accepts
+    /// brightness-only animation on a now-static script-driven-intensity
+    /// light without error."
     #[test]
-    fn set_light_animation_rejects_color_on_non_dynamic() {
+    fn set_light_animation_accepts_brightness_on_static_script_driven_light() {
         let (ctx, id) = test_ctx_with_light(false, None);
-        let err = apply_light_animation(
+        apply_light_animation(
+            &ctx,
+            id,
+            Some(LightAnimation {
+                period_ms: 100.0,
+                phase: None,
+                play_count: None,
+                start_active: None,
+                brightness: Some(vec![0.1, 0.9]),
+                color: None,
+                direction: None,
+            }),
+        )
+        .expect("brightness-only on a static light must be admitted");
+    }
+
+    /// Task 1b: the previous "color animation requires dynamic" gate is
+    /// retired alongside the geometry-axis redefinition of `is_dynamic`.
+    /// Color animation routes through the animated-baked compose path
+    /// (Task 2c), which fuses per-frame radiance — no SH bake drift.
+    #[test]
+    fn set_light_animation_accepts_color_on_static_light_after_task_1b() {
+        let (ctx, id) = test_ctx_with_light(false, None);
+        apply_light_animation(
             &ctx,
             id,
             Some(LightAnimation {
@@ -900,8 +934,7 @@ mod tests {
                 direction: None,
             }),
         )
-        .unwrap_err();
-        assert!(matches!(err, ScriptError::InvalidArgument { .. }));
+        .expect("color animation on a static light is admitted post-1b");
     }
 
     #[test]
@@ -1083,8 +1116,10 @@ mod tests {
         );
     }
 
+    /// Task 1b: sequenced path mirrors the script-side relaxation —
+    /// color animation on a static light is admitted.
     #[test]
-    fn sequenced_set_light_animation_rejects_color_on_non_dynamic() {
+    fn sequenced_set_light_animation_accepts_color_on_static_light_after_task_1b() {
         let (ctx, id) = test_ctx_with_light(false, None);
         let mut seq_reg = SequencedPrimitiveRegistry::new();
         register_sequenced_light_primitives(&mut seq_reg, ctx.clone());
@@ -1093,11 +1128,7 @@ mod tests {
             "periodMs": 100.0,
             "color": [{ "x": 1.0, "y": 0.0, "z": 0.0 }],
         });
-        let err = handler(id, &args).unwrap_err();
-        assert!(
-            matches!(err, SequenceError::InvalidArgument { .. }),
-            "got: {err:?}"
-        );
+        handler(id, &args).expect("color on static light admitted post-1b");
     }
 
     #[test]

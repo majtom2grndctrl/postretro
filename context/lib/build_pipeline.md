@@ -50,7 +50,7 @@ Project deliverable alongside the engine. Defines Postretro-specific entities fo
 
 | Entity | Type | Purpose | Key Properties |
 |--------|------|---------|----------------|
-| `light` | point | Omnidirectional light | `light` (intensity), `_color` (RGB), `_fade` (falloff distance, required), `delay` (falloff model), `style` (animation), `_phase` (style cycle offset), `_dynamic` (static-baked vs. runtime dynamic; default 0 = static) |
+| `light` | point | Omnidirectional light | `light` (intensity), `_color` (RGB), `_fade` (falloff distance, required), `delay` (falloff model), `style` (animation), `_phase` (style cycle offset), `_bake_only` (bakes but no runtime presence; default 0), `_cast_entity_shadows` (opt-in for dynamic-entity shadow-map pool eligibility; default 0). `_dynamic` retired in Task 1b of `sdf-static-occluder-shadows`; `is_dynamic` is now internal/seam-only — no v1 authoring surface (no light moves yet). |
 | `light_spot` | point | Spotlight with cone | + `_cone`, `_cone2` (inner/outer angles), `angles` (direction) |
 | `light_sun` | point | Directional sun light | + `angles` (direction vector) |
 | `fog_volume` | brush | Per-region fog; geometry behaviour auto-detected — axis-aligned brushes (every face normal ±X/±Y/±Z) become an ellipsoid inscribed in the AABB; non-axis-aligned brushes become a plane-bounded convex hull | `density`, `glow`, `edge_softness` (plane-bounded only), `falloff` (axis-aligned only), `tint`, `saturation`, `min_brightness`, `light_range`, `scatter_bias`, `ambient_scatter`, `_tags` (ambient color is SH-derived; no `color` KVP) |

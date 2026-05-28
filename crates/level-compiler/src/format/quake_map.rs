@@ -53,11 +53,15 @@ pub enum TranslateError {
         reason: String,
     },
 
-    /// Color animation on a baked light is rejected because the SH irradiance volume is baked at a
-    /// static color. Letting the direct contribution change color at runtime would cause the animated
-    /// direct light to visibly drift from its own indirect contribution stored in the SH volume.
+    /// Color animation on a static-baked light is rejected because the SH
+    /// irradiance volume is baked at a static color; runtime color drift
+    /// would visibly diverge from the baked indirect contribution. `_dynamic`
+    /// is no longer an authoring key (Task 1b retired it); the only admit
+    /// condition that survives in 1b is `_bake_only`. Task 2c adds the
+    /// `_animated` (script-driven intensity) class which will also admit
+    /// `color_curve` — until 2c lands, only `_bake_only` is accepted.
     #[error(
-        "light {light_ref}: 'color_curve' — color animation is only valid on `_bake_only` or `_dynamic` lights. Either mark the light `_dynamic 1`, set `_bake_only 1`, or remove `color_curve`."
+        "light {light_ref}: 'color_curve' — color animation is only valid on `_bake_only` lights. Either set `_bake_only 1` or remove `color_curve`."
     )]
     ColorCurveOnBakedLight { light_ref: String },
 }
@@ -240,16 +244,29 @@ pub fn translate_light(
         }
     };
 
-    // Static (0): bakes into lightmap + SH, no runtime presence.
-    // Dynamic (1): runtime direct path only, no bake contribution.
-    let is_dynamic = match parse_optional_int(props, "_dynamic")? {
+    // `_dynamic` was retired as an authoring key in Task 1b of the
+    // SDF static-occluder-shadows spec. `is_dynamic` is now an
+    // internal/seam-only flag for the geometry-moving light class, with no
+    // v1 authoring surface (no light moves yet). Intensity-only animation
+    // (brightness/color pulse) is a static light on the animated-baked
+    // compose path (Task 2c), not a dynamic light.
+    //
+    // Consequence: reclassified intensity-pulse lights now contribute to
+    // the static/SH bake (the bake skips only `is_dynamic` lights, and
+    // that set is empty in 1b-authored content).
+    let is_dynamic = false;
+
+    // Per-light opt-in for shadow-map-pool eligibility for dynamic entities
+    // (enemies / moving meshes). Default `false` — dynamic-occluder shadows
+    // are strictly opt-in.
+    let casts_entity_shadows = match parse_optional_int(props, "_cast_entity_shadows")? {
         None | Some(0) => false,
         Some(1) => true,
         Some(other) => {
             return Err(TranslateError::InvalidProperty {
-                key: "_dynamic",
+                key: "_cast_entity_shadows",
                 value: other.to_string(),
-                reason: "expected 0 (Static) or 1 (Dynamic)",
+                reason: "expected 0 (off) or 1 (on)",
             });
         }
     };
@@ -321,7 +338,11 @@ pub fn translate_light(
         };
 
         let color = if let Some(raw) = props.get("color_curve") {
-            if !bake_only && !is_dynamic {
+            // Task 1b: `_dynamic` retired as an authoring key — only
+            // `_bake_only` admits `color_curve` in 1b. Task 2c will extend
+            // this gate to also admit the `_animated` (script-driven
+            // intensity) light class.
+            if !bake_only {
                 return Err(TranslateError::ColorCurveOnBakedLight { light_ref });
             }
             let keyframes = parse_vec3_curve(raw, "color_curve", &light_ref)?;
@@ -407,6 +428,7 @@ pub fn translate_light(
         cast_shadows: true,
         bake_only,
         is_dynamic,
+        casts_entity_shadows,
         tags,
     })
 }
@@ -1126,20 +1148,12 @@ mod tests {
         assert!(!light.is_dynamic);
     }
 
+    /// Task 1b: `_dynamic` is no longer an authoring key. Any value (even
+    /// "1") is silently ignored — the property is not parsed — and
+    /// `is_dynamic` stays `false`. Intensity-only animation is a static
+    /// light on the animated-baked path (Task 2c).
     #[test]
-    fn is_dynamic_zero_is_false() {
-        let p = props(&[
-            ("light", "300"),
-            ("_color", "255 255 255"),
-            ("_fade", "1024"),
-            ("_dynamic", "0"),
-        ]);
-        let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
-        assert!(!light.is_dynamic);
-    }
-
-    #[test]
-    fn is_dynamic_one_is_true() {
+    fn dynamic_authoring_key_is_retired() {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
@@ -1147,22 +1161,79 @@ mod tests {
             ("_dynamic", "1"),
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
-        assert!(light.is_dynamic);
+        assert!(
+            !light.is_dynamic,
+            "`_dynamic` is retired in v1 — every authored light parses as static"
+        );
     }
 
+    /// Geometry-vs-intensity axis split: a brightness-pulse-only light
+    /// (no position/aim animation) parses with `is_dynamic == false`.
     #[test]
-    fn is_dynamic_invalid_errors() {
+    fn brightness_only_animation_parses_static() {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
             ("_fade", "1024"),
-            ("_dynamic", "2"),
+            ("brightness_curve", "[0, 0.2] [500, 1.0]"),
+            ("period_ms", "1000"),
+        ]);
+        let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
+        assert!(
+            !light.is_dynamic,
+            "intensity-only animation is static; only position/aim motion sets is_dynamic"
+        );
+        assert!(light.animation.is_some(), "brightness curve still baked");
+    }
+
+    #[test]
+    fn cast_entity_shadows_default_is_false() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+        ]);
+        let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
+        assert!(!light.casts_entity_shadows);
+    }
+
+    #[test]
+    fn cast_entity_shadows_zero_is_false() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+            ("_cast_entity_shadows", "0"),
+        ]);
+        let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
+        assert!(!light.casts_entity_shadows);
+    }
+
+    #[test]
+    fn cast_entity_shadows_one_is_true() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+            ("_cast_entity_shadows", "1"),
+        ]);
+        let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
+        assert!(light.casts_entity_shadows);
+    }
+
+    #[test]
+    fn cast_entity_shadows_invalid_errors() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+            ("_cast_entity_shadows", "2"),
         ]);
         let err = translate_light(&p, DVec3::ZERO, "light").expect_err("should error");
         assert!(matches!(
             err,
             TranslateError::InvalidProperty {
-                key: "_dynamic",
+                key: "_cast_entity_shadows",
                 ..
             }
         ));
@@ -1285,8 +1356,11 @@ mod tests {
         assert!(anim.color.is_some());
     }
 
+    /// Task 1b: `_dynamic` is retired as an authoring key, so it no longer
+    /// admits `color_curve`. Only `_bake_only` survives as an admit
+    /// condition until Task 2c adds `_animated`.
     #[test]
-    fn color_curve_on_dynamic_light_is_accepted() {
+    fn color_curve_with_dynamic_key_still_errors_now_that_dynamic_is_retired() {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
@@ -1295,9 +1369,11 @@ mod tests {
             ("color_curve", "[0, 1, 0, 0] [500, 0, 1, 0]"),
             ("period_ms", "500"),
         ]);
-        let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
-        let anim = light.animation.expect("animation present");
-        assert!(anim.color.is_some());
+        let err = translate_light(&p, DVec3::ZERO, "light").expect_err("should error");
+        assert!(matches!(
+            err,
+            TranslateError::ColorCurveOnBakedLight { .. }
+        ));
     }
 
     #[test]

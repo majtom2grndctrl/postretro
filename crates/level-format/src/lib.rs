@@ -19,6 +19,7 @@ pub mod map_entity;
 pub mod octahedral;
 pub mod portals;
 pub mod prm;
+pub mod sdf_atlas;
 pub mod sh_volume;
 pub mod texture_cache_keys;
 pub mod texture_names;
@@ -173,6 +174,13 @@ pub enum SectionId {
     /// See `texture_cache_keys::TextureCacheKeysSection` and the `prm` module
     /// for the sidecar wire format.
     TextureCacheKeys = 32,
+
+    /// SDF atlas of static world geometry: brick top-level index + quantized
+    /// `i16` per-brick distances + coarse per-brick `f32` fallback. Consumed
+    /// by the runtime SDF static-occluder shadow pass; absence is a valid
+    /// "no SDF" load (degradation, not an error).
+    /// See `sdf_atlas::SdfAtlasSection`.
+    SdfAtlas = 33,
 }
 
 impl SectionId {
@@ -198,6 +206,7 @@ impl SectionId {
             30 => Some(Self::FogVolumes),
             31 => Some(Self::FogCellMasks),
             32 => Some(Self::TextureCacheKeys),
+            33 => Some(Self::SdfAtlas),
             _ => None,
         }
     }

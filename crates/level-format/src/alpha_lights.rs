@@ -73,10 +73,17 @@ pub struct AlphaLightRecord {
     /// Normalized aim vector; `[0,0,0]` if Point.
     pub cone_direction: [f32; 3],
     pub cast_shadows: bool,
-    /// Marks the light as runtime-dynamic. Used by the spot-shadow scheduler
-    /// to gate shadow-slot eligibility (only dynamic spot lights cast runtime
-    /// shadows). Sourced from the `_dynamic` key in the `.map` file.
+    /// Internal/seam-only flag for the geometry-moving light class
+    /// (position/aim animation). v1 has no authoring surface for this — no
+    /// light moves yet, so authored content always parses `false`. Kept as
+    /// the named seam for the geometry-moving light class. Intensity-only
+    /// animation does **not** set this flag; that lives on the
+    /// animated-baked path (Task 2c).
     pub is_dynamic: bool,
+    /// Per-light opt-in for shadow-map-pool eligibility for dynamic entities
+    /// (enemies / moving meshes). FGD `_cast_entity_shadows`. Default `false`.
+    /// Enemy / dynamic-occluder shadows are strictly opt-in.
+    pub casts_entity_shadows: bool,
     /// BSP leaf index containing the light origin, baked at compile time for
     /// the runtime PVS cull. `u32::MAX` is the reserved sentinel for
     /// "unassigned / cannot determine leaf" (e.g. the light origin landed in
@@ -89,11 +96,17 @@ pub struct AlphaLightRecord {
 /// warning at load.
 pub const ALPHA_LIGHT_LEAF_UNASSIGNED: u32 = u32::MAX;
 
-/// Byte size of a single serialised `AlphaLightRecord`.
+/// Byte size of a single serialised `AlphaLightRecord` in the current
+/// (v2) layout, which adds the trailing `casts_entity_shadows` byte.
 /// 24 (origin) + 1 (type) + 4 (intensity) + 12 (color) + 1 (falloff model)
 /// + 4 (range) + 4 + 4 (cone angles) + 12 (cone dir) + 1 (cast shadows)
-/// + 1 (is_dynamic) + 4 (leaf_index) = 72.
-pub const ALPHA_LIGHT_RECORD_SIZE: usize = 72;
+/// + 1 (is_dynamic) + 1 (casts_entity_shadows) + 4 (leaf_index) = 73.
+pub const ALPHA_LIGHT_RECORD_SIZE: usize = 73;
+
+/// Legacy on-disk record size predating `casts_entity_shadows` (Task 1b of
+/// the SDF static-occluder-shadows spec). Legacy PRLs deserialize with
+/// `casts_entity_shadows = false` and retain their stored `is_dynamic`.
+pub const ALPHA_LIGHT_RECORD_SIZE_LEGACY: usize = 72;
 
 /// AlphaLights section (ID 18).
 ///
@@ -130,6 +143,7 @@ impl AlphaLightsSection {
             buf.extend_from_slice(&l.cone_direction[2].to_le_bytes());
             buf.push(if l.cast_shadows { 1 } else { 0 });
             buf.push(if l.is_dynamic { 1 } else { 0 });
+            buf.push(if l.casts_entity_shadows { 1 } else { 0 });
             buf.extend_from_slice(&l.leaf_index.to_le_bytes());
         }
 
@@ -145,7 +159,22 @@ impl AlphaLightsSection {
         }
 
         let count = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
-        let expected_len = 4 + count * ALPHA_LIGHT_RECORD_SIZE;
+
+        // Legacy stride detection: PRLs predating `casts_entity_shadows`
+        // (Task 1b) wrote `ALPHA_LIGHT_RECORD_SIZE_LEGACY` (72) bytes per
+        // record. Detect by exact body-length match against the legacy
+        // stride; new records default `casts_entity_shadows = false` and
+        // retain their stored `is_dynamic`.
+        let body_len = data.len() - 4;
+        let v2_expected = count * ALPHA_LIGHT_RECORD_SIZE;
+        let legacy_expected = count * ALPHA_LIGHT_RECORD_SIZE_LEGACY;
+        let is_legacy = body_len == legacy_expected && body_len != v2_expected;
+        let record_size = if is_legacy {
+            ALPHA_LIGHT_RECORD_SIZE_LEGACY
+        } else {
+            ALPHA_LIGHT_RECORD_SIZE
+        };
+        let expected_len = 4 + count * record_size;
         if data.len() < expected_len {
             return Err(FormatError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -189,8 +218,17 @@ impl AlphaLightsSection {
             let cdz = read_f32_le(&data[o + 62..o + 66]);
             let cast_shadows = data[o + 66] != 0;
             let is_dynamic = data[o + 67] != 0;
-            let leaf_index =
-                u32::from_le_bytes([data[o + 68], data[o + 69], data[o + 70], data[o + 71]]);
+            let (casts_entity_shadows, leaf_off) = if is_legacy {
+                (false, o + 68)
+            } else {
+                (data[o + 68] != 0, o + 69)
+            };
+            let leaf_index = u32::from_le_bytes([
+                data[leaf_off],
+                data[leaf_off + 1],
+                data[leaf_off + 2],
+                data[leaf_off + 3],
+            ]);
 
             lights.push(AlphaLightRecord {
                 origin: [ox, oy, oz],
@@ -204,10 +242,11 @@ impl AlphaLightsSection {
                 cone_direction: [cdx, cdy, cdz],
                 cast_shadows,
                 is_dynamic,
+                casts_entity_shadows,
                 leaf_index,
             });
 
-            o += ALPHA_LIGHT_RECORD_SIZE;
+            o += record_size;
         }
 
         Ok(Self { lights })
@@ -239,6 +278,7 @@ mod tests {
             cone_direction: [0.0, -1.0, 0.0],
             cast_shadows: true,
             is_dynamic: false,
+            casts_entity_shadows: false,
             leaf_index: 7,
         }
     }
@@ -279,6 +319,7 @@ mod tests {
                     cone_direction: [0.0, 0.0, 0.0],
                     cast_shadows: true,
                     is_dynamic: false,
+                    casts_entity_shadows: false,
                     leaf_index: 0,
                 },
                 sample_record(),
@@ -298,6 +339,7 @@ mod tests {
                     ],
                     cast_shadows: false,
                     is_dynamic: false,
+                    casts_entity_shadows: false,
                     leaf_index: ALPHA_LIGHT_LEAF_UNASSIGNED,
                 },
             ],
@@ -321,6 +363,50 @@ mod tests {
         let err = AlphaLightsSection::from_bytes(&buf).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("truncated"), "unexpected: {msg}");
+    }
+
+    /// Legacy PRLs predating `casts_entity_shadows` (Task 1b) write 72-byte
+    /// records. The body length exactly matches `count * 72`, so the loader
+    /// detects the legacy layout and defaults `casts_entity_shadows = false`
+    /// while preserving the stored `is_dynamic`.
+    #[test]
+    fn legacy_record_layout_parses_with_default_casts_entity_shadows() {
+        // Build a legacy (72-byte) body for two records, with distinct
+        // is_dynamic bytes to assert preservation.
+        let mut buf = Vec::new();
+        let count: u32 = 2;
+        buf.extend_from_slice(&count.to_le_bytes());
+        for (is_dyn_byte, leaf) in [(0u8, 5u32), (1u8, 9u32)] {
+            // origin (24)
+            buf.extend_from_slice(&0.0_f64.to_le_bytes());
+            buf.extend_from_slice(&0.0_f64.to_le_bytes());
+            buf.extend_from_slice(&0.0_f64.to_le_bytes());
+            buf.push(0); // light_type Point
+            buf.extend_from_slice(&1.0_f32.to_le_bytes()); // intensity
+            buf.extend_from_slice(&1.0_f32.to_le_bytes()); // r
+            buf.extend_from_slice(&1.0_f32.to_le_bytes()); // g
+            buf.extend_from_slice(&1.0_f32.to_le_bytes()); // b
+            buf.push(0); // falloff Linear
+            buf.extend_from_slice(&10.0_f32.to_le_bytes()); // range
+            buf.extend_from_slice(&0.0_f32.to_le_bytes()); // cone inner
+            buf.extend_from_slice(&0.0_f32.to_le_bytes()); // cone outer
+            buf.extend_from_slice(&0.0_f32.to_le_bytes()); // cdx
+            buf.extend_from_slice(&0.0_f32.to_le_bytes()); // cdy
+            buf.extend_from_slice(&0.0_f32.to_le_bytes()); // cdz
+            buf.push(1); // cast_shadows
+            buf.push(is_dyn_byte); // is_dynamic
+            buf.extend_from_slice(&leaf.to_le_bytes()); // leaf_index
+        }
+        assert_eq!(buf.len(), 4 + 2 * ALPHA_LIGHT_RECORD_SIZE_LEGACY);
+
+        let section = AlphaLightsSection::from_bytes(&buf).expect("legacy body should parse");
+        assert_eq!(section.lights.len(), 2);
+        assert!(!section.lights[0].is_dynamic);
+        assert!(!section.lights[0].casts_entity_shadows);
+        assert_eq!(section.lights[0].leaf_index, 5);
+        assert!(section.lights[1].is_dynamic);
+        assert!(!section.lights[1].casts_entity_shadows);
+        assert_eq!(section.lights[1].leaf_index, 9);
     }
 
     #[test]

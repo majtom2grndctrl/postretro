@@ -128,8 +128,17 @@ pub struct MapLight {
     pub cone_direction: [f32; 3],
     /// Shadow-map support not yet wired; shader's `shadow_info` slot is zeroed at upload.
     pub cast_shadows: bool,
-    /// Dynamic lights go into the per-frame loop; static lights are baked and excluded.
+    /// Internal/seam-only flag for the geometry-moving light class
+    /// (position/aim animation). v1 has no authoring surface — every
+    /// authored light parses `false`. Intensity-only animation lives on
+    /// the animated-baked path (Task 2c), not here. Legacy PRLs retain
+    /// their stored value on parse.
     pub is_dynamic: bool,
+    /// Per-light opt-in for shadow-map-pool (spot shadow) eligibility for
+    /// dynamic entities (enemies / moving meshes). Mirrors FGD
+    /// `_cast_entity_shadows`. Default `false`. Legacy PRLs without this
+    /// field deserialize with `casts_entity_shadows == false` (opt-in).
+    pub casts_entity_shadows: bool,
     /// From LightTags section (ID 26). Space-delimited on wire; split here.
     /// `world.query({ tag: "t" })` matches when any tag equals `"t"`.
     pub tags: Vec<String>,
@@ -279,6 +288,7 @@ fn convert_alpha_lights(section: AlphaLightsSection) -> Vec<MapLight> {
                 cone_direction: r.cone_direction,
                 cast_shadows: r.cast_shadows,
                 is_dynamic: r.is_dynamic,
+                casts_entity_shadows: r.casts_entity_shadows,
                 tags: vec![], // populated by LightTags section pass below
                 leaf_index: r.leaf_index,
             }
@@ -1368,6 +1378,7 @@ mod tests {
                     cone_direction: [0.0, 0.0, 0.0],
                     cast_shadows: true,
                     is_dynamic: false,
+                    casts_entity_shadows: false,
                     leaf_index: 0,
                 },
                 AlphaLightRecord {
@@ -1382,6 +1393,7 @@ mod tests {
                     cone_direction: [0.0, -1.0, 0.0],
                     cast_shadows: false,
                     is_dynamic: true,
+                    casts_entity_shadows: true,
                     leaf_index: 1,
                 },
                 AlphaLightRecord {
@@ -1396,6 +1408,7 @@ mod tests {
                     cone_direction: [0.0, -0.70710677, -0.70710677],
                     cast_shadows: true,
                     is_dynamic: false,
+                    casts_entity_shadows: false,
                     leaf_index: 2,
                 },
             ],

@@ -226,14 +226,28 @@ pub struct MapLight {
     /// sections). Defaults to false.
     pub bake_only: bool,
 
-    /// When true, the light is treated as dynamic — evaluated at runtime via
-    /// the direct lighting path with an optional shadow-map pool slot — and
-    /// contributes nothing to the offline lightmap / SH bake. When false
-    /// (the default), the light is static: it bakes into the lightmap and SH
-    /// irradiance volume and emits no runtime shadow. Authored via the
-    /// `_dynamic` FGD property on `light`, `light_spot`, and `light_sun`.
-    /// See `context/lib/build_pipeline.md §Custom FGD`.
+    /// Internal/seam-only marker for the geometry-moving light class
+    /// (position/aim animation). v1 has **no authoring surface**: nothing
+    /// moves yet, so every authored light parses `false`. The flag stays in
+    /// the data model as the named seam for future geometry-moving lights.
+    ///
+    /// Intensity-only animation (brightness/color pulse, including
+    /// script-driven sweeps) is **not** dynamic — those are static lights
+    /// on the animated-baked compose path (Task 2c). Today this means
+    /// reclassified intensity-pulse lights bake into the lightmap / SH
+    /// volume normally (the bake skips only `is_dynamic` lights, and that
+    /// set is empty post-1b for authored content). `is_dynamic` composes
+    /// with `bake_only` as orthogonal axes — geometry-moving + bake-only
+    /// is a meaningful combination but has no authored v1 form.
     pub is_dynamic: bool,
+
+    /// Per-light opt-in for shadow-map-pool eligibility for dynamic
+    /// entities (enemies / moving meshes). FGD `_cast_entity_shadows`.
+    /// Default `false`. Enemy / dynamic-occluder shadows are strictly
+    /// opt-in — `casts_entity_shadows == false` excludes the light from
+    /// the spot-shadow pool candidate set in `rank_lights`.
+    /// See `context/plans/in-progress/sdf-static-occluder-shadows/`.
+    pub casts_entity_shadows: bool,
 
     /// Author-supplied script tags (FGD `_tags`, space-delimited). Carried
     /// through the PRL `LightTags` section so the runtime can register each

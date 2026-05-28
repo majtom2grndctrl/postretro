@@ -533,6 +533,17 @@ pub struct Renderer {
     /// Consumed by `SpotShadowPool::rank_lights` to frustum-cull shadow candidates.
     /// Rebuilt in `Renderer::new` and `reload_geometry` from `filter_dynamic_lights`.
     dynamic_light_influences: Vec<LightInfluence>,
+    /// Candidate set for the spot-shadow pool — sourced from the FULL level
+    /// light set filtered by `casts_entity_shadows`, NOT from `level_lights`
+    /// (Task 1b decouples the two). After Task 2c re-tags every authored
+    /// light static, `level_lights` (the `is_dynamic`-filtered forward set)
+    /// goes empty, so gating the pool on it would silently empty the pool.
+    /// `casts_entity_shadows` is the per-light authoring opt-in for
+    /// dynamic-entity (enemy / moving-mesh) shadows.
+    shadow_candidate_lights: Vec<MapLight>,
+    /// Influence volumes parallel to `shadow_candidate_lights`. Built
+    /// alongside it from the full level light set.
+    shadow_candidate_influences: Vec<LightInfluence>,
     /// Lights near zero are excluded from shadow slot ranking. Empty = no suppression.
     light_effective_brightness: Vec<f32>,
     /// Cached from `update_per_frame_uniforms` so the shadow pass can re-rank lights.
@@ -898,10 +909,12 @@ impl Renderer {
         let view_proj = build_default_view_projection(
             surface_config.width as f32 / surface_config.height as f32,
         );
-        let (level_lights, dynamic_influences) = filter_dynamic_lights(
-            geometry.map(|g| g.lights).unwrap_or(&[]),
-            geometry.map(|g| g.light_influences).unwrap_or(&[]),
-        );
+        let full_lights = geometry.map(|g| g.lights).unwrap_or(&[]);
+        let full_influences = geometry.map(|g| g.light_influences).unwrap_or(&[]);
+        let (level_lights, dynamic_influences) =
+            filter_dynamic_lights(full_lights, full_influences);
+        let (shadow_candidate_lights, shadow_candidate_influences) =
+            filter_entity_shadow_candidates(full_lights, full_influences);
         let light_count = level_lights.len() as u32;
         let ambient_floor = DEFAULT_AMBIENT_FLOOR;
         let uniform_data = build_uniform_data(&FrameUniforms {
@@ -1685,6 +1698,8 @@ impl Renderer {
             lights_pack_scratch: Vec::new(),
             level_lights,
             dynamic_light_influences: dynamic_influences,
+            shadow_candidate_lights,
+            shadow_candidate_influences,
             light_effective_brightness: Vec::new(),
             last_camera_position: Vec3::ZERO,
             spot_shadow_pool,
@@ -1802,6 +1817,8 @@ impl Renderer {
         // --- Lights + lighting bind group ---
         let (level_lights, dynamic_influences) =
             filter_dynamic_lights(geometry.lights, geometry.light_influences);
+        let (shadow_candidate_lights, shadow_candidate_influences) =
+            filter_entity_shadow_candidates(geometry.lights, geometry.light_influences);
         self.light_count = level_lights.len() as u32;
 
         let lights_data = if !level_lights.is_empty() {
@@ -1818,6 +1835,8 @@ impl Renderer {
             });
         self.lights_buffer = lights_buffer;
         self.level_lights = level_lights;
+        self.shadow_candidate_lights = shadow_candidate_lights;
+        self.shadow_candidate_influences = shadow_candidate_influences;
 
         let influence_data = if !dynamic_influences.is_empty() {
             influence::pack_influence(&dynamic_influences)
@@ -2562,22 +2581,32 @@ impl Renderer {
     /// `light_reachable_leaf_mask` is the wider fog/light-reachable leaf set
     /// (includes empty `face_count == 0` portal-reachable leaves), not the
     /// face-visible set — lights in empty reachable leaves stay eligible.
+    ///
+    /// Task 1b: the **candidate set** is `self.shadow_candidate_lights`
+    /// (full level lights filtered by `casts_entity_shadows`), NOT
+    /// `self.level_lights` (the `is_dynamic`-filtered forward set).
+    /// `effective_brightness` is keyed on `level_lights` indices though, so
+    /// we re-key the per-candidate eligibility into the candidate index
+    /// space below.
     pub fn update_dynamic_light_slots(
         &mut self,
         camera_position: Vec3,
         camera_near_clip: f32,
-        light_influences: &[LightInfluence],
+        _light_influences: &[LightInfluence],
         effective_brightness: &[f32],
         light_reachable_leaf_mask: &[bool],
     ) {
-        if self.level_lights.is_empty() {
+        // Candidate set is `casts_entity_shadows`-filtered; if no light has
+        // opted in, the pool stays empty. v1 expected state (real enemies
+        // land in M10) — early-return without disturbing previous slots.
+        if self.shadow_candidate_lights.is_empty() {
             return;
         }
 
         // Empty light_reachable_leaf_mask = DrawAll. ALPHA_LIGHT_LEAF_UNASSIGNED = unassigned → always cull.
         const BRIGHTNESS_SUPPRESSION_THRESHOLD: f32 = 0.01;
-        let mut visible_lights = vec![false; self.level_lights.len()];
-        for (i, light) in self.level_lights.iter().enumerate() {
+        let mut visible_lights = vec![false; self.shadow_candidate_lights.len()];
+        for (i, light) in self.shadow_candidate_lights.iter().enumerate() {
             let leaf_visible = if light.leaf_index == ALPHA_LIGHT_LEAF_UNASSIGNED {
                 false
             } else if light_reachable_leaf_mask.is_empty() {
@@ -2589,7 +2618,15 @@ impl Renderer {
             if !leaf_visible {
                 continue;
             }
-            let b = effective_brightness.get(i).copied().unwrap_or(1.0);
+            // Brightness suppression is indexed by `level_lights` (the
+            // forward / scripted-bridge index space). For candidates not in
+            // `level_lights` we have no per-frame brightness — treat as 1.0.
+            let b = level_brightness_for_candidate(
+                &self.level_lights,
+                &self.shadow_candidate_lights[i],
+                effective_brightness,
+            )
+            .unwrap_or(1.0);
             if b < BRIGHTNESS_SUPPRESSION_THRESHOLD {
                 continue;
             }
@@ -2597,17 +2634,28 @@ impl Renderer {
         }
 
         let slot_assignment = SpotShadowPool::rank_lights(
-            &self.level_lights,
+            &self.shadow_candidate_lights,
             camera_position,
             camera_near_clip,
             &visible_lights,
-            light_influences,
+            &self.shadow_candidate_influences,
         );
+
+        // The GPU lights buffer is keyed on `level_lights`. Translate slot
+        // assignments from candidate-index space into `level_lights`-index
+        // space by identity-matching (origin + light_type). Candidates not
+        // in `level_lights` (the common v1 case: opted-in static lights) get
+        // no per-light forward-shader slot — they still drive the
+        // shadow-map render targets below via the candidate-indexed matrix
+        // upload, but the forward shader cannot sample their shadow until
+        // a separate forward/shadow bridge lands (post-1b).
+        let level_slots =
+            slot_assignment_for_level_lights(&self.level_lights, &self.shadow_candidate_lights, &slot_assignment);
 
         // Skip write_buffer when packed bytes are unchanged (common case: no light moved).
         // Scratch Vec reused across frames — pack doesn't allocate.
         let mut scratch = std::mem::take(&mut self.lights_pack_scratch);
-        pack_lights_with_slots_into(&mut scratch, &self.level_lights, &slot_assignment);
+        pack_lights_with_slots_into(&mut scratch, &self.level_lights, &level_slots);
         if scratch != self.last_lights_upload {
             self.queue.write_buffer(&self.lights_buffer, 0, &scratch);
             std::mem::swap(&mut scratch, &mut self.last_lights_upload);
@@ -2615,7 +2663,9 @@ impl Renderer {
         self.lights_pack_scratch = scratch;
 
         // Upload slot matrices to both fragment-side storage (group 5 binding 2)
-        // and vertex-side dynamic-offset uniform buffer.
+        // and vertex-side dynamic-offset uniform buffer. Matrices come from
+        // the candidate list — that's the index space `slot_assignment` is
+        // keyed on.
         const MAT_BYTES: usize = 64;
         let stride = self.shadow_vs_stride as usize;
         let mut fragment_matrices =
@@ -2626,7 +2676,9 @@ impl Renderer {
             if slot == crate::lighting::spot_shadow::NO_SHADOW_SLOT {
                 continue;
             }
-            let m = crate::lighting::spot_shadow::light_space_matrix(&self.level_lights[light_idx]);
+            let m = crate::lighting::spot_shadow::light_space_matrix(
+                &self.shadow_candidate_lights[light_idx],
+            );
             let cols = m.to_cols_array();
             let mut bytes = [0u8; MAT_BYTES];
             for (i, v) in cols.iter().enumerate() {
@@ -3278,6 +3330,84 @@ fn filter_dynamic_lights(
         .unzip()
 }
 
+/// Pull the spot-shadow pool's candidate set from the **full** level light
+/// list filtered by `casts_entity_shadows` (FGD `_cast_entity_shadows`).
+///
+/// Task 1b: this candidate set is intentionally decoupled from the
+/// `is_dynamic`-filtered `level_lights` used by the forward direct-light
+/// loop. After Task 2c re-tags every authored light static, `level_lights`
+/// goes empty for v1 content; ranking the shadow pool from it would
+/// silently drop the entire pool. The pool now ranks this independent
+/// `casts_entity_shadows`-filtered set, layered on top of the existing
+/// `eligible_lights` visibility/brightness slice in `rank_lights`.
+///
+/// In v1 with no light opted in (`_cast_entity_shadows` defaults `false`)
+/// the candidate set is empty — that's the expected v1 state, not a
+/// regression; real enemies land in M10.
+fn filter_entity_shadow_candidates(
+    lights: &[MapLight],
+    influences: &[LightInfluence],
+) -> (Vec<MapLight>, Vec<LightInfluence>) {
+    lights
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.casts_entity_shadows)
+        .map(|(i, l)| {
+            let inf = influences.get(i).cloned().unwrap_or(LightInfluence {
+                center: Vec3::ZERO,
+                radius: 0.0,
+            });
+            (l.clone(), inf)
+        })
+        .unzip()
+}
+
+/// Identity-match a shadow candidate against the `level_lights` slice
+/// (origin + light_type) and return that level-light's per-frame
+/// effective brightness. Returns `None` when the candidate isn't in
+/// `level_lights` (the common v1 case: a static `_cast_entity_shadows`
+/// light not in the `is_dynamic`-filtered forward set).
+fn level_brightness_for_candidate(
+    level_lights: &[MapLight],
+    candidate: &MapLight,
+    effective_brightness: &[f32],
+) -> Option<f32> {
+    level_lights
+        .iter()
+        .enumerate()
+        .find(|(_, l)| l.origin == candidate.origin && l.light_type == candidate.light_type)
+        .and_then(|(i, _)| effective_brightness.get(i).copied())
+}
+
+/// Translate a slot assignment from candidate-index space into
+/// `level_lights`-index space. Returns a Vec the size of `level_lights`,
+/// each entry either a slot or `NO_SHADOW_SLOT`. Used to pack the GPU
+/// lights buffer (`pack_lights_with_slots_into`), which is keyed on
+/// `level_lights`. Candidates not in `level_lights` have no forward-side
+/// slot today — that bridge is post-1b work.
+fn slot_assignment_for_level_lights(
+    level_lights: &[MapLight],
+    candidates: &[MapLight],
+    candidate_slot_assignment: &[u32],
+) -> Vec<u32> {
+    use crate::lighting::spot_shadow::NO_SHADOW_SLOT;
+    let mut out = vec![NO_SHADOW_SLOT; level_lights.len()];
+    for (cand_idx, &slot) in candidate_slot_assignment.iter().enumerate() {
+        if slot == NO_SHADOW_SLOT {
+            continue;
+        }
+        let cand = &candidates[cand_idx];
+        if let Some((level_idx, _)) = level_lights
+            .iter()
+            .enumerate()
+            .find(|(_, l)| l.origin == cand.origin && l.light_type == cand.light_type)
+        {
+            out[level_idx] = slot;
+        }
+    }
+    out
+}
+
 /// See: context/lib/boot_sequence.md §8
 pub fn level_world_to_geometry<'a>(
     world: &'a crate::prl::LevelWorld,
@@ -3852,6 +3982,7 @@ mod tests {
                 cone_direction: [0.0, 0.0, -1.0],
                 cast_shadows: false,
                 is_dynamic,
+                casts_entity_shadows: false,
                 tags: vec![],
                 leaf_index: 0,
             }

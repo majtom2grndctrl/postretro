@@ -291,7 +291,7 @@ declare module "postretro" {
   /** Reads a per-placement KVP value authored on the source `.map` entity. Returns null when the key is absent or the entity has no KVP bag (e.g. runtime-spawned). Available in definition and data contexts. */
   export function getEntityProperty(id: EntityId, key: string): string | null;
 
-  /** Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. Non-unit direction samples are silently normalized; zero-length direction samples and color animations on non-dynamic lights error with InvalidArgument. Definition context. */
+  /** Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. Non-unit direction samples are silently normalized; zero-length direction samples and empty channel arrays error with InvalidArgument. Definition context. */
   export function setLightAnimation(id: EntityId, animation: LightAnimation | null): void;
 
   /** Return the current world gravity in m/s² (negative = downward; positive = upward). Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or a `worldSetGravity` call. The `world.ts` vocabulary module wraps this as `world.getGravity`. */

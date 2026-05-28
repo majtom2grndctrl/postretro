@@ -14,7 +14,7 @@ use super::sh_volume::{
 //   @group(1):
 //     0..9   base SH band textures        (sampled, `0..SH_BAND_COUNT`)
 //     9..18  total SH band textures       (storage write, `SH_BAND_COUNT..2*SH_BAND_COUNT`)
-//     18     GridDims uniform             (vec3<u32> grid_dims, u32 delta_light_count)
+//     18     GridDims uniform             (vec3<u32> grid_dims, f32 delta_scale)
 //     19     GridOrigin uniform           (grid_origin + cell_size)
 //     20     delta_subblocks  (storage)   NEW — f16 payload, raw `u16` halves; shader `unpack2x16float`s
 //     21     affinity_offsets (storage)   NEW — `u32` CSR offsets (affinity_cell_count + 1)
@@ -24,6 +24,10 @@ use super::sh_volume::{
 //
 // 20/21 replace the old dense per-light `DeltaLightMeta`/`delta_probes` pair;
 // 24 is appended after the shared 22/23 to avoid renumbering them.
+/// Production `delta_scale`: full animated-delta contribution. The dev-tools
+/// slider overrides this in-place over `0.0..=1.0` (`0.0` = base-only copy).
+const DEFAULT_DELTA_SCALE: f32 = 1.0;
+
 const BIND_DELTA_SUBBLOCKS: u32 = 20;
 const BIND_AFFINITY_OFFSETS: u32 = 21;
 const BIND_AFFINITY_LIGHTS: u32 = 24;
@@ -38,18 +42,14 @@ pub struct ShComposeResources {
     /// probe, rounded up to the (4,4,4) workgroup size.
     grid_dimensions: [u32; 3],
     /// The `GridDims` uniform (binding 18). Rewritten per dispatch only when the
-    /// dev-tools base-only toggle flips, to override `delta_light_count` — see
+    /// dev-tools `delta_scale` slider moves, to override the baked scale — see
     /// `dispatch`.
     #[cfg(feature = "dev-tools")]
     grid_buffer: wgpu::Buffer,
-    /// True animated-light count baked into `grid_buffer` at build time. The
-    /// base-only override writes 0 in its place and this value back on restore.
+    /// Last `delta_scale` written to `grid_buffer`; lets `dispatch` skip
+    /// redundant uploads so the override costs nothing while the slider is steady.
     #[cfg(feature = "dev-tools")]
-    delta_light_count: u32,
-    /// Last `delta_light_count` written to `grid_buffer`; lets `dispatch` skip
-    /// redundant uploads so the override costs nothing while the toggle is steady.
-    #[cfg(feature = "dev-tools")]
-    grid_light_count_uploaded: u32,
+    grid_scale_uploaded: f32,
 }
 
 impl ShComposeResources {
@@ -104,13 +104,16 @@ impl ShComposeResources {
         };
         footprint.log();
 
-        // Grid-dims uniform: vec3<u32> grid_dims, u32 delta_light_count.
+        // Grid-dims uniform: vec3<u32> grid_dims, f32 delta_scale. The 4th field
+        // was the now-unused `delta_light_count` — the loop bound is now the
+        // affinity-cell CSR list length, so the slot carries the global delta
+        // scale instead. `1.0` = full animated delta (production default).
         let mut grid_bytes = [0u8; 16];
         grid_bytes[0..4].copy_from_slice(&sh.grid_dimensions[0].to_ne_bytes());
         grid_bytes[4..8].copy_from_slice(&sh.grid_dimensions[1].to_ne_bytes());
         grid_bytes[8..12].copy_from_slice(&sh.grid_dimensions[2].to_ne_bytes());
-        grid_bytes[12..16].copy_from_slice(&light_count.to_ne_bytes());
-        // COPY_DST so the dev-tools base-only toggle can rewrite `delta_light_count`
+        grid_bytes[12..16].copy_from_slice(&DEFAULT_DELTA_SCALE.to_ne_bytes());
+        // COPY_DST so the dev-tools `delta_scale` slider can rewrite the scale
         // in place at dispatch time. Release builds never write it post-init.
         let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("SH Compose Grid Dims"),
@@ -242,33 +245,31 @@ impl ShComposeResources {
             #[cfg(feature = "dev-tools")]
             grid_buffer,
             #[cfg(feature = "dev-tools")]
-            delta_light_count: light_count,
-            #[cfg(feature = "dev-tools")]
-            grid_light_count_uploaded: light_count,
+            grid_scale_uploaded: DEFAULT_DELTA_SCALE,
         }
     }
 
     /// Encode the per-frame compose dispatch.
     ///
-    /// `base_only` (dev-tools) overrides the shader's `delta_light_count` to 0,
-    /// making the pass a pure base→total copy. The shader already treats a zero
-    /// count as base-only (see `sh_compose.wgsl`), so no shader change is needed
-    /// — bisecting whether the marker flicker comes from delta application is as
-    /// cheap as one `write_buffer` on the toggle edge. Only the count word is
-    /// rewritten, and only when it actually changes.
+    /// `delta_scale` (dev-tools) overrides the shader's global delta weight: the
+    /// shader multiplies the accumulated animated delta by it before folding
+    /// into the base, so `0.0` is a pure base→total copy (base-only) and `1.0`
+    /// is full delta. The slider blends continuously between — bisecting whether
+    /// marker flicker comes from delta application is as cheap as one
+    /// `write_buffer` on a slider move. Only the scale word is rewritten, and
+    /// only when it actually changes.
     #[cfg(feature = "dev-tools")]
     pub fn dispatch(
         &mut self,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         uniform_bind_group: &wgpu::BindGroup,
-        base_only: bool,
+        delta_scale: f32,
     ) {
-        let want = if base_only { 0 } else { self.delta_light_count };
-        if want != self.grid_light_count_uploaded {
-            // `delta_light_count` is the 4th u32 of `GridDims` (byte offset 12).
-            queue.write_buffer(&self.grid_buffer, 12, &want.to_ne_bytes());
-            self.grid_light_count_uploaded = want;
+        if delta_scale != self.grid_scale_uploaded {
+            // `delta_scale` is the 4th word of `GridDims` (byte offset 12).
+            queue.write_buffer(&self.grid_buffer, 12, &delta_scale.to_ne_bytes());
+            self.grid_scale_uploaded = delta_scale;
         }
         self.encode_dispatch(encoder, uniform_bind_group);
     }

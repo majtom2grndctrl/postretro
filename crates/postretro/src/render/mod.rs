@@ -607,12 +607,13 @@ pub struct Renderer {
     #[cfg(feature = "dev-tools")]
     frozen_time: f32,
 
-    /// Dev-tools toggle: when set, the SH compose skips animated-delta
-    /// contributions and emits the static base bake only. Bisects whether the
-    /// irradiance-marker flicker originates in delta application vs. base
-    /// sampling / compose-target init. See `ShComposeResources::dispatch`.
+    /// Dev-tools knob: global scale on the SH compose animated-delta
+    /// contribution. `0.0` emits the static base bake only (base-only override);
+    /// `1.0` is full animated delta; values between blend continuously. Bisects
+    /// whether irradiance-marker flicker originates in delta application vs.
+    /// base sampling / compose-target init. See `ShComposeResources::dispatch`.
     #[cfg(feature = "dev-tools")]
-    sh_compose_base_only: bool,
+    sh_compose_delta_scale: f32,
 
     /// Composes base SH bands into the total bands consumers sample. Must run
     /// before the depth pre-pass so the storage→sampled barrier resolves first.
@@ -1870,7 +1871,7 @@ impl Renderer {
             #[cfg(feature = "dev-tools")]
             frozen_time: 0.0,
             #[cfg(feature = "dev-tools")]
-            sh_compose_base_only: false,
+            sh_compose_delta_scale: 1.0,
             sh_compose,
             lightmap_resources,
             animated_lightmap,
@@ -2521,15 +2522,16 @@ impl Renderer {
     }
 
     #[cfg(feature = "dev-tools")]
-    pub fn sh_compose_base_only(&self) -> bool {
-        self.sh_compose_base_only
+    pub fn sh_compose_delta_scale(&self) -> f32 {
+        self.sh_compose_delta_scale
     }
 
-    /// Drop animated-delta SH contributions, composing the static base only.
-    /// Debug aid for bisecting irradiance-marker flicker — see the field doc.
+    /// Scale the animated-delta SH contribution. `0.0` composes the static base
+    /// only; `1.0` is full delta. Debug aid for bisecting irradiance-marker
+    /// flicker — see the field doc.
     #[cfg(feature = "dev-tools")]
-    pub fn set_sh_compose_base_only(&mut self, base_only: bool) {
-        self.sh_compose_base_only = base_only;
+    pub fn set_sh_compose_delta_scale(&mut self, delta_scale: f32) {
+        self.sh_compose_delta_scale = delta_scale;
     }
 
     /// Most recent averaged GPU-timing window, or `None` when GPU timing is
@@ -3217,7 +3219,7 @@ impl Renderer {
             &self.queue,
             &mut encoder,
             &self.uniform_bind_group,
-            self.sh_compose_base_only,
+            self.sh_compose_delta_scale,
         );
         #[cfg(not(feature = "dev-tools"))]
         self.sh_compose

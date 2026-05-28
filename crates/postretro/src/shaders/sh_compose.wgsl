@@ -6,14 +6,31 @@
 // animated-delta data this pass writes is automatically picked up without
 // consumer-side branching.
 //
-// Algorithm: for each output probe, load the 9 base SH bands, then iterate
-// the animated lights. For each light, project the probe's world-space
-// position into the light's delta-grid local coordinates, trilinearly
-// sample the 9 delta bands, evaluate the Catmull-Rom animation curve, and
-// accumulate `delta × brightness × color` into the running total.
+// Algorithm (sparse CSR / affinity-cell form): one thread per base probe.
+// The dispatch is `@workgroup_size(4,4,4)` over the base SH grid, so the
+// workgroup grid equals `affinity_dims = ceil(base_dims/4)` and the
+// `workgroup_id` IS this thread's affinity-cell coordinate. The affinity
+// cell's CSR range in `affinity_offsets` names exactly the animated lights
+// that touch this 4×4×4 block of probes; for each such light we read its
+// pre-baked delta sub-block at the probe slot coincident with this thread
+// (a direct 1:1 point read — no trilinear interpolation, no AABB test),
+// evaluate the Catmull-Rom animation curve, and accumulate
+// `delta × brightness × color`. The accumulated delta is scaled by
+// `delta_scale` before being added to the base bands.
 //
-// When `delta_light_count == 0` (no animated lights) the loop is skipped
-// and the result is identical to a base→total copy.
+// Sparse-CSR invariants (validated at bake/load, Task 3) replace the old
+// declared-vs-written probe-count mismatch bug class entirely:
+//   • `affinity_offsets.len() == affinity_cell_count + 1`
+//   • every `affinity_lights[i] < animated_light_count`
+// so the in-shader loop needs no bounds/out-of-range path. An affinity cell
+// with no animated lights has `start == end` and the loop runs zero times —
+// the empty-delta (no animated lights) case is handled entirely by the CSR
+// offsets, NOT by `delta_scale`.
+//
+// `delta_scale` (the repurposed 4th `GridDims` field) doubles as the
+// dev-tools experimentation knob: `0.0` is a pure base→total copy
+// (base-only override), `1.0` is full animated delta, and values between
+// blend continuously.
 //
 // Curve helpers (`sample_curve_catmull_rom`, `sample_color_catmull_rom`)
 // come from `curve_eval.wgsl`, concatenated after this source at
@@ -45,28 +62,13 @@ struct AnimationDescriptor {
     direction_count: u32,
 };
 
-// Per-light delta SH grid light_metadata. Must match the std430 layout produced
-// by `sh_compose.rs::build_delta_buffers` (48-byte stride):
-//   0..12  aabb_origin       vec3<f32>
-//   12..16 cell_size         f32
-//   16..28 grid_dimensions   vec3<u32>
-//   28..32 probe_offset      u32
-//   32..36 descriptor_index  u32
-//   36..48 padding
-struct DeltaLightMeta {
-    aabb_origin: vec3<f32>,
-    cell_size: f32,
-    grid_dimensions: vec3<u32>,
-    probe_offset: u32,
-    descriptor_index: u32,
-    _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
-};
-
 struct GridDims {
     dims: vec3<u32>,
-    delta_light_count: u32,
+    // 4th field repurposed from the old (now-unused) `delta_light_count`:
+    // global scale applied to the accumulated animated delta before it is
+    // added to the base bands. Same slot (byte offset 12), uniform size and
+    // offsets unchanged. `0.0` = base-only, `1.0` = full delta.
+    delta_scale: f32,
 };
 
 struct GridFrame {
@@ -100,112 +102,64 @@ struct GridFrame {
 
 @group(1) @binding(18) var<uniform> grid: GridDims;
 @group(1) @binding(19) var<uniform> grid_frame: GridFrame;
-@group(1) @binding(20) var<storage, read> delta_lights: array<DeltaLightMeta>;
-@group(1) @binding(21) var<storage, read> delta_probes: array<f32>;
+// Sparse delta payload: one stride-28-half sub-block (64 probes) per CSR
+// entry, f16 coeffs packed two-per-`u32` as raw bits; `unpack2x16float`
+// returns `(low, high)` matching the bake's even/odd coeff order.
+@group(1) @binding(20) var<storage, read> delta_subblocks: array<u32>;
+// CSR offsets into `affinity_lights`, indexed by affinity-cell linear index;
+// length is `affinity_cell_count + 1` (trailing total).
+@group(1) @binding(21) var<storage, read> affinity_offsets: array<u32>;
 @group(1) @binding(22) var<storage, read> descriptors: array<AnimationDescriptor>;
 @group(1) @binding(23) var<storage, read> anim_samples: array<f32>;
+// Flat CSR light indices, index-parallel to the delta sub-blocks: CSR entry
+// `i` (light `affinity_lights[i]`) owns sub-block `i`.
+@group(1) @binding(24) var<storage, read> affinity_lights: array<u32>;
 
-// Number of f32 slots per probe in `delta_probes`: 9 SH bands × RGB.
-const PROBE_F32_COUNT: u32 = 27u;
+// f16 halves per probe in `delta_subblocks` (27 logical coeffs + 1 zero pad);
+// the trailing half is discarded. Matches `PROBE_F16_STRIDE` in the bake.
+const PROBE_F16_STRIDE: u32 = 28u;
+// Probes per affinity cell (4×4×4). Matches `PROBES_PER_CELL` in the bake.
+const PROBES_PER_CELL: u32 = 64u;
 
-// Read one probe's 27 SH coefficients from the flat `delta_probes` buffer.
-// `probe_index` is in probe units; `probe_offset` is in f32 units.
-fn read_delta_probe(probe_offset: u32, probe_index: u32) -> array<vec3<f32>, 9> {
-    let base = probe_offset + probe_index * PROBE_F32_COUNT;
+// Read the 27 SH coefficients of one probe slot from the f16 sub-block payload.
+// `entry` is the CSR entry / sub-block index; `local` is the in-cell probe
+// index (x-fastest `lx + ly*4 + lz*16`), coincident 1:1 with this thread's
+// base probe. Coeffs are packed two-per-`u32`: coeff `2k` is the low half,
+// coeff `2k+1` the high half. 14 `u32` reads cover all 28 halves; the final
+// high half (the zero pad) is dropped.
+fn read_delta_subblock(entry: u32, local: u32) -> array<vec3<f32>, 9> {
+    // Half-offset of this probe slot; `delta_subblocks` is `u32`, so divide by 2.
+    let half_base = (entry * PROBES_PER_CELL + local) * PROBE_F16_STRIDE;
+    let word_base = half_base / 2u;
+
+    // Unpack the 27 coeffs into a flat scratch array, then pack into RGB bands.
+    var coeffs: array<f32, 27>;
+    for (var w: u32 = 0u; w < 14u; w = w + 1u) {
+        let pair = unpack2x16float(delta_subblocks[word_base + w]);
+        let lo = w * 2u;
+        if (lo < 27u) {
+            coeffs[lo] = pair.x;
+        }
+        let hi = lo + 1u;
+        if (hi < 27u) {
+            coeffs[hi] = pair.y;
+        }
+    }
+
     var bands: array<vec3<f32>, 9>;
     for (var b: u32 = 0u; b < 9u; b = b + 1u) {
-        let off = base + b * 3u;
-        bands[b] = vec3<f32>(
-            delta_probes[off],
-            delta_probes[off + 1u],
-            delta_probes[off + 2u],
-        );
+        let o = b * 3u;
+        bands[b] = vec3<f32>(coeffs[o], coeffs[o + 1u], coeffs[o + 2u]);
     }
     return bands;
 }
 
-// Trilinearly sample the delta grid for a given animated light at
-// `local_pos` (in cells, AABB-local; e.g. 0.5 means halfway between the
-// origin and the next cell along x). Returns 9 SH bands × RGB.
-//
-// Out-of-bounds positions return zero; the caller's bounds check filters
-// most of those, but corner-clamping inside the function keeps the code
-// safe against sub-cell drift at the AABB edge.
-fn sample_delta_trilinear(
-    light_meta: DeltaLightMeta,
-    local_pos: vec3<f32>,
-) -> array<vec3<f32>, 9> {
-    var result: array<vec3<f32>, 9>;
-    for (var b: u32 = 0u; b < 9u; b = b + 1u) {
-        result[b] = vec3<f32>(0.0);
-    }
-
-    let dims = vec3<i32>(
-        i32(light_meta.grid_dimensions.x),
-        i32(light_meta.grid_dimensions.y),
-        i32(light_meta.grid_dimensions.z),
-    );
-    if (dims.x <= 0 || dims.y <= 0 || dims.z <= 0) {
-        return result;
-    }
-
-    // Clamp the floor and ceil to in-bounds cells.
-    let max_idx = vec3<f32>(f32(dims.x - 1), f32(dims.y - 1), f32(dims.z - 1));
-    let p = clamp(local_pos, vec3<f32>(0.0), max_idx);
-    let p0 = vec3<i32>(i32(floor(p.x)), i32(floor(p.y)), i32(floor(p.z)));
-    let p1 = vec3<i32>(
-        min(p0.x + 1, dims.x - 1),
-        min(p0.y + 1, dims.y - 1),
-        min(p0.z + 1, dims.z - 1),
-    );
-    let f = fract(p);
-
-    // Z-major then Y then X — same convention as the base SH section.
-    let strides = vec3<u32>(
-        1u,
-        light_meta.grid_dimensions.x,
-        light_meta.grid_dimensions.x * light_meta.grid_dimensions.y,
-    );
-
-    let i000 = u32(p0.x) * strides.x + u32(p0.y) * strides.y + u32(p0.z) * strides.z;
-    let i100 = u32(p1.x) * strides.x + u32(p0.y) * strides.y + u32(p0.z) * strides.z;
-    let i010 = u32(p0.x) * strides.x + u32(p1.y) * strides.y + u32(p0.z) * strides.z;
-    let i110 = u32(p1.x) * strides.x + u32(p1.y) * strides.y + u32(p0.z) * strides.z;
-    let i001 = u32(p0.x) * strides.x + u32(p0.y) * strides.y + u32(p1.z) * strides.z;
-    let i101 = u32(p1.x) * strides.x + u32(p0.y) * strides.y + u32(p1.z) * strides.z;
-    let i011 = u32(p0.x) * strides.x + u32(p1.y) * strides.y + u32(p1.z) * strides.z;
-    let i111 = u32(p1.x) * strides.x + u32(p1.y) * strides.y + u32(p1.z) * strides.z;
-
-    let b000 = read_delta_probe(light_meta.probe_offset, i000);
-    let b100 = read_delta_probe(light_meta.probe_offset, i100);
-    let b010 = read_delta_probe(light_meta.probe_offset, i010);
-    let b110 = read_delta_probe(light_meta.probe_offset, i110);
-    let b001 = read_delta_probe(light_meta.probe_offset, i001);
-    let b101 = read_delta_probe(light_meta.probe_offset, i101);
-    let b011 = read_delta_probe(light_meta.probe_offset, i011);
-    let b111 = read_delta_probe(light_meta.probe_offset, i111);
-
-    let w000 = (1.0 - f.x) * (1.0 - f.y) * (1.0 - f.z);
-    let w100 = f.x * (1.0 - f.y) * (1.0 - f.z);
-    let w010 = (1.0 - f.x) * f.y * (1.0 - f.z);
-    let w110 = f.x * f.y * (1.0 - f.z);
-    let w001 = (1.0 - f.x) * (1.0 - f.y) * f.z;
-    let w101 = f.x * (1.0 - f.y) * f.z;
-    let w011 = (1.0 - f.x) * f.y * f.z;
-    let w111 = f.x * f.y * f.z;
-
-    for (var b: u32 = 0u; b < 9u; b = b + 1u) {
-        result[b] =
-            b000[b] * w000 + b100[b] * w100 +
-            b010[b] * w010 + b110[b] * w110 +
-            b001[b] * w001 + b101[b] * w101 +
-            b011[b] * w011 + b111[b] * w111;
-    }
-    return result;
-}
-
 @compute @workgroup_size(4, 4, 4)
-fn compose_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn compose_main(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(workgroup_id) wg: vec3<u32>,
+    @builtin(local_invocation_index) local: u32,
+) {
     if (gid.x >= grid.dims.x || gid.y >= grid.dims.y || gid.z >= grid.dims.z) {
         return;
     }
@@ -229,39 +183,27 @@ fn compose_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     bands[7] = textureLoad(sh_base_band7, p, 0).rgb;
     bands[8] = textureLoad(sh_base_band8, p, 0).rgb;
 
-    // World-space position of this probe (cell center is the index, since
-    // the bake plants probes at integer multiples of cell_size from origin).
-    let world_pos =
-        grid_frame.grid_origin
-        + grid_frame.cell_size * vec3<f32>(f32(gid.x), f32(gid.y), f32(gid.z));
+    // This thread's affinity-cell coordinate IS the workgroup id: the dispatch
+    // is `@workgroup_size(4,4,4)` over the base grid, so the workgroup grid
+    // equals `affinity_dims = ceil(base_dims/4)`. Linearize x-fastest to index
+    // the CSR offsets — do NOT recompute the cell from the base probe index.
+    let affinity_dims = (grid.dims + vec3<u32>(3u)) / vec3<u32>(4u);
+    let cell = wg.x + wg.y * affinity_dims.x + wg.z * affinity_dims.x * affinity_dims.y;
 
-    // Accumulate weighted delta contributions. Empty delta_lights array
-    // (delta_light_count == 0) skips this loop entirely.
-    for (var li: u32 = 0u; li < grid.delta_light_count; li = li + 1u) {
-        let light_meta = delta_lights[li];
+    // Accumulate this affinity cell's animated-delta contributions into a
+    // separate sum so `delta_scale` can weight the whole delta before adding it
+    // to the base. The CSR range names exactly the lights that touch this 4×4×4
+    // block; `start == end` (empty cell / no animated lights) runs zero passes.
+    var delta_sum: array<vec3<f32>, 9>;
+    for (var b: u32 = 0u; b < 9u; b = b + 1u) {
+        delta_sum[b] = vec3<f32>(0.0);
+    }
 
-        // Skip lights flagged with sentinel descriptor index (descriptor
-        // out of range — see `build_delta_buffers`).
-        if (light_meta.descriptor_index == 0xffffffffu) {
-            continue;
-        }
-
-        // Project world position into delta-grid local cell space.
-        let inv_cell = 1.0 / max(light_meta.cell_size, 1.0e-6);
-        let local_pos = (world_pos - light_meta.aabb_origin) * inv_cell;
-
-        // Bounds check: the probe must fall within the AABB cell range.
-        let max_xyz = vec3<f32>(
-            f32(light_meta.grid_dimensions.x - 1u),
-            f32(light_meta.grid_dimensions.y - 1u),
-            f32(light_meta.grid_dimensions.z - 1u),
-        );
-        if (local_pos.x < 0.0 || local_pos.y < 0.0 || local_pos.z < 0.0
-            || local_pos.x > max_xyz.x || local_pos.y > max_xyz.y || local_pos.z > max_xyz.z) {
-            continue;
-        }
-
-        let desc = descriptors[light_meta.descriptor_index];
+    let start = affinity_offsets[cell];
+    let end = affinity_offsets[cell + 1u];
+    for (var i: u32 = start; i < end; i = i + 1u) {
+        let light = affinity_lights[i];
+        let desc = descriptors[light];
         if (desc.is_active == 0u) {
             continue;
         }
@@ -288,14 +230,21 @@ fn compose_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             vec3<f32>(0.0),
         );
 
-        // Trilinearly sample the delta grid and accumulate.
-        let delta = sample_delta_trilinear(light_meta, local_pos);
-        let weight = brightness;
+        // Direct point read: CSR entry `i`'s sub-block, this thread's in-cell
+        // probe slot (`local_invocation_index`), is coincident 1:1 with this
+        // base probe — no interpolation, no AABB test.
+        let delta = read_delta_subblock(i, local);
         for (var b: u32 = 0u; b < 9u; b = b + 1u) {
             // Per-channel modulate by `color` so a colored animation curve
             // tints the delta SH the same way the lightmap pass does.
-            bands[b] = bands[b] + delta[b] * color * weight;
+            delta_sum[b] = delta_sum[b] + delta[b] * color * brightness;
         }
+    }
+
+    // Apply the global delta scale before folding the delta into the base.
+    // `delta_scale == 0` collapses to a pure base→total copy (base-only).
+    for (var b: u32 = 0u; b < 9u; b = b + 1u) {
+        bands[b] = bands[b] + delta_sum[b] * grid.delta_scale;
     }
 
     textureStore(sh_total_band0, p, vec4<f32>(bands[0], base_validity));

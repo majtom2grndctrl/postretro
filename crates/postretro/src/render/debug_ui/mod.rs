@@ -210,15 +210,17 @@ pub fn draw_diagnostics_panel(
                     renderer.set_freeze_time(frozen);
                 }
 
-                // Composes the static base SH only, dropping animated deltas.
-                // Diagnostic aid: bisects whether irradiance-marker flicker
-                // comes from delta application or base sampling / compose init.
-                let mut base_only = renderer.sh_compose_base_only();
+                // Scales the SH compose animated-delta contribution: 0 composes
+                // the static base only, 1 is full delta. Diagnostic aid: bisects
+                // whether irradiance-marker flicker comes from delta application
+                // or base sampling / compose init by sweeping the blend.
+                let mut delta_scale = renderer.sh_compose_delta_scale();
+                ui.label("SH compose: delta scale (0 = base only)");
                 if ui
-                    .checkbox(&mut base_only, "SH compose: base only (no animated deltas)")
+                    .add(egui::Slider::new(&mut delta_scale, 0.0_f32..=1.0))
                     .changed()
                 {
-                    renderer.set_sh_compose_base_only(base_only);
+                    renderer.set_sh_compose_delta_scale(delta_scale);
                 }
             });
 

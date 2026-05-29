@@ -85,20 +85,24 @@
         0 : "Off (default)"
         1 : "On"
     ]
-    // `_shadow_tech` picks which tech casts this light's shadow. The three
-    // sets are disjoint — a light is shadowed by exactly one, so no
+    // `_shadow_type` is a baked-tier sub-choice: it decides only how this
+    // (fixed-position, baking) light's DIRECT shadow resolves. The two sets
+    // are disjoint — a light's direct shadow comes from exactly one, so no
     // contribution is double-counted:
-    //   baked   — shadow baked into the lightmap (free, fixed). The default.
-    //   sdf     — runtime SDF-traced per-light shadow (sparse, tweakable
-    //             without a re-bake). Excluded from the lightmap bake.
-    //   dynamic — shadow-map path (spots / moving / hero). Maps to
-    //             is_dynamic; excluded from the lightmap bake.
+    //   static_light_map — shadow baked into the lightmap (free, fixed). The
+    //                      default. Indirect bounce still bakes into SH.
+    //   sdf              — runtime SDF-traced per-light shadow (sparse,
+    //                      tweakable without a re-bake). Excluded from the
+    //                      direct lightmap bake; indirect bounce still bakes
+    //                      into SH.
+    // The DYNAMIC tier is NOT a shadow-type value — dynamic lights are
+    // authored as their own entities (light_dynamic / light_dynamic_spot),
+    // which set is_dynamic by classname.
     // See context/plans/in-progress/sdf-per-light-shadows/.
-    _shadow_tech(choices) : "Shadow Tech" : "baked" =
+    _shadow_type(choices) : "Shadow Type" : "static_light_map" =
     [
-        "baked"   : "Baked (lightmap; default)"
-        "sdf"     : "SDF (runtime-traced static shadow)"
-        "dynamic" : "Dynamic (shadow map)"
+        "static_light_map" : "Static Lightmap (baked; default)"
+        "sdf"              : "SDF (runtime-traced static shadow)"
     ]
     // Space-delimited list of script tags. An entity matches
     // `world.query({ component: "light", tag: "t" })` when any tag equals
@@ -133,6 +137,57 @@
 [
     origin(origin)
     angles(angles) : "Direction (pitch yaw roll, degrees)" : "-90 0 0"
+]
+
+// Dynamic-tier lights. The primary lighting split is bake participation: these
+// lights bake into NOTHING (no lightmap, no SH) and are evaluated entirely at
+// runtime, rationed by the 12-slot shadow-map pool. They are the only tier that
+// can shadow MOVING entities, and the only path for script-driven (gameplay)
+// intensity/color — a script curve can't be baked.
+//
+// The base deliberately OMITS every bake KVP (`style`, `_phase`, `*_curve`,
+// `period_ms`, `_curve_phase`, `_bake_only`, `_shadow_type`, `_animated`):
+// nothing here bakes, so none of those keys apply. It retains only the shared
+// non-bake KVPs — intensity/color/geometry — plus `_tags` (scripts query
+// lights by tag, e.g. the arena script). Dynamic-only KVPs for light movement
+// and dynamic-entity (enemy) shadow opt-in are deferred until those features
+// land. The parser sets is_dynamic = true from the CLASSNAME, not a KVP.
+// See context/plans/in-progress/sdf-per-light-shadows/.
+@BaseClass = DynamicLight
+[
+    light(integer) : "Intensity" : 300
+    _color(color255) : "Color" : "255 255 255"
+    _fade(integer) : "Falloff Distance (map units)"
+    delay(choices) : "Falloff Model" : 0 =
+    [
+        0 : "Linear"
+        1 : "Inverse Distance (1/x)"
+        2 : "Inverse Squared (1/x^2)"
+    ]
+    // Space-delimited list of script tags. An entity matches
+    // `world.query({ component: "light", tag: "t" })` when any tag equals
+    // `"t"`. Leave blank for no tags. Example: "arena warm"
+    _tags(string) : "Script tags" : ""
+]
+
+@PointClass base(DynamicLight)
+    color(0 200 255)
+    size(-8 -8 -8, 8 8 8)
+    = light_dynamic : "Dynamic Point Light (runtime, unbaked)"
+[
+    origin(origin)
+]
+
+@PointClass base(DynamicLight)
+    color(0 150 255)
+    size(-8 -8 -8, 8 8 8)
+    = light_dynamic_spot : "Dynamic Spotlight (runtime, unbaked)"
+[
+    origin(origin)
+    _cone(integer) : "Inner Cone Angle (degrees)" : 30
+    _cone2(integer) : "Outer Cone Angle (degrees)" : 45
+    angles(angles) : "Direction (pitch yaw roll, degrees)" : "0 0 0"
+    // Named-entity target direction is not yet implemented; use 'angles' for spotlight direction.
 ]
 
 @PointClass

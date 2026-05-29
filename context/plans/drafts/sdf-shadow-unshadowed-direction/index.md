@@ -1,5 +1,11 @@
 # SDF Shadow — Unshadowed-Mode Direction Fix
 
+> **SUBSUMED — do not implement.** Superseded by
+> `context/plans/drafts/sdf-per-light-shadows/`. Per-light SDF tracing removes the
+> per-texel dominant-direction bake this spec fixes, so the animated-direction fix is
+> moot. Retained in git history only; removed from the tree to keep agents from
+> following a retired design. See that plan's `architecture.md` for the current model.
+
 ## Goal
 
 Make the animated-light dominant-direction bake honor the lightmap's `Unshadowed`
@@ -39,7 +45,7 @@ a build/bake-state issue, tracked separately — not this bug.
   retain occluded (texel, light) pairs — both the contribution weight and the
   direction — so the animated irradiance is unshadowed and the direction points
   at the occluded light, symmetric with the static path.
-- Invalidate stale cached animated bakes (stage-version bump).
+- Invalidate stale cached animated bakes (stage-version bump, currently 2 → 3).
 - A behavioral contract test on the animated bake mirroring the existing static
   test: in `Unshadowed` mode an occluded texel keeps a direction toward its light;
   in `Shadowed` mode it is still culled.
@@ -72,8 +78,8 @@ Automated (host-side, deterministic — the bake is pure CPU data logic):
       (texel, light) pairs — existing behavior preserved.
 - [ ] Static path behavior is unchanged: the existing static lightmap and
       direction tests stay green.
-- [ ] Re-bakes are not served stale: the animated-bake stage version is bumped so
-      prior cache entries invalidate.
+- [ ] Re-bakes are not served stale: the animated-bake stage version is bumped
+      (2 → 3) so prior cache entries invalidate.
 - [ ] `cargo fmt` / `clippy` clean; full suite green. No new GPU/pixel-readback
       tests added.
 
@@ -103,15 +109,25 @@ stage version so cached entries invalidate. Add the contract test asserting the
 ### Task 2: Author the SDF shadows contract doc
 
 Promote the sibling `sdf_shadows.md` (drafted alongside this plan) into
-`context/lib/`, add its Agent Router entry in `context/lib/index.md`, and confirm
-the data-flow diagram and invariants match the post-fix code. Decide placement
-(see Open questions).
+`context/lib/`, and add its Agent Router entry in `context/lib/index.md` near the
+rendering/lighting router rows:
+
+```
+- **SDF static-occluder shadows (EXPERIMENTAL) / direction-bake mode** → sdf_shadows.md
+```
+
+This is a canonical-lib doc — distinct from the `experimental_spikes.md` routing
+used for build-to-learn spikes. Confirm the data-flow diagram and invariants
+match the post-fix code once Task 1 has landed (or after, if the two run
+concurrently).
 
 ## Sequencing
 
 **Phase 1 (concurrent):** Task 1, Task 2 — independent. Task 1 is code + test;
-Task 2 is the context doc. The doc describes durable intent, not Task 1's specific
-edits, so it does not depend on Task 1 landing first.
+Task 2 is the context doc. The doc captures durable intent and bake-side data flow
+and does not depend on Task 1 landing first. Its final match-check against landed
+code happens after Task 1 if the two run concurrently — the doc author confirms
+the diagram and invariants still hold once the fix is in.
 
 ## Rough sketch
 
@@ -120,23 +136,40 @@ edits, so it does not depend on Task 1 landing first.
 bake's loop currently reads `if !shadow_visible(...) { continue }` with no mode in
 scope.
 
-- `WeightMapInputs` gains a bake-mode field (reuse `lightmap_bake::BakeMode` — do
-  not introduce a parallel enum). The caller at `main.rs` (where `WeightMapInputs`
-  is built) already chose the mode it passed to the lightmap bake; pass the same
+- `WeightMapInputs` gains a bake-mode field typed as `lightmap_bake::BakeMode`
+  — the input-side enum that `main.rs` already passes to `bake_lightmap` via
+  `LightmapConfig.mode`. Do not use the format crate's `LightmapMode` (which is
+  what PRL sections store, mapped via `BakeMode::to_section_mode`), and do not
+  introduce a parallel enum. The caller at `main.rs` (where `WeightMapInputs` is
+  built) already chose the mode it passed to the lightmap bake; pass the same
   value. Thread it through to the per-chunk loop that runs the cull.
 - Gate the cull on `Shadowed`. In `Unshadowed` mode, retain the pair: this makes
   the animated irradiance (`lm_anim`) unshadowed and the direction point at the
   occluded light — symmetric with the static `lm_irr` path, where the runtime
-  applies the animated SDF factor as the shadow.
-- Bump the animated bake's `STAGE_VERSION` (the cache key folds it in alongside
-  the input hash). Without this, a PRL re-baked after the fix can be served the
-  old culled bake from cache.
+  applies the animated SDF factor as the shadow. The per-pair dominant-direction
+  computation and retention for surviving pairs already exists — the cull at
+  `animated_light_weight_maps.rs:212` runs after the direction is computed. No
+  new direction-storage plumbing is added; the only behavioral change is gating
+  that cull so occluded pairs survive in `Unshadowed` mode.
+- Bump the animated bake's `STAGE_VERSION` from 2 → 3 (currently 2 in
+  `animated_light_weight_maps.rs:30`, last bumped for per-light per-texel
+  direction retention). Update the existing v2 doc-comment so it attributes the
+  new bump to the unshadowed-cull-gate change. The cache key folds `STAGE_VERSION`
+  in alongside the input hash; without this bump, a PRL re-baked after the fix
+  can be served the old culled bake from cache.
+- The new `WeightMapInputs` mode field must also be folded into the weight-map
+  input hash (the `CacheKey` `input_hash`, not only `STAGE_VERSION`), so two PRLs
+  that differ only in bake mode within one compiler version do not collide in
+  cache. `STAGE_VERSION` invalidates across code versions; the input hash
+  discriminates within one.
 
 **The test (Task 1).** Model on the existing static test
 `unshadowed_bake_lights_occluded_texels`: a floor with a blocker between it and a
 single light. Bake the animated weight maps in `Unshadowed` mode; assert the
 occluded texel's light list is non-empty and its decoded direction points toward
-the light (dot with the surface→light vector above a clear threshold), **not** the
+the light — assert the direction decoded from the `animated_lm_direction_atlas`
+(octahedral rg encoding, distinct from the static `lightmap_direction` texture)
+has dot with the normalized surface→light vector **> 0.7** — and **not** the
 world-up axis. Assert the same texel is culled (count 0) under `Shadowed` mode.
 Assert the **outcome** (the emitted direction), never the code path — no
 "`shadow_visible` was/wasn't called" assertions; an implementation-coupled test
@@ -145,9 +178,11 @@ proves nothing and breaks on harmless refactors.
 **Test reach.** The bake is pure host logic — fully testable. The producer↔consumer
 seam (bake direction format ↔ what the trace/compose expect, including the
 world-up sentinel) is partially testable via the testing-guide seam-crossing
-pattern. The GPU tail (atlas upload, trace, composite) and the end visual
-("animated light casts a shadow") are not unit-testable and stay human-verified
-per `testing_guide.md` §3/§5.
+pattern, but a full seam test is **deliberately out of scope for this narrow fix**
+— the existing static seam coverage plus the new bake-outcome test suffice. The
+GPU tail (atlas upload, trace, composite) and the end visual ("animated light
+casts a shadow") are not unit-testable and stay human-verified per
+`testing_guide.md` §3/§5.
 
 ## Open questions
 
@@ -160,10 +195,9 @@ per `testing_guide.md` §3/§5.
   be a per-section flag and therefore a wire change. Current design appears to use
   one bake mode per PRL; verify before implementing, and surface if a section flag
   is actually required (do not add one silently).
-- **Contract-doc placement.** Recommend standalone `context/lib/sdf_shadows.md`,
-  loudly marked EXPERIMENTAL and promotable to canonical if the A/B is won. The
-  alternative is folding it into `rendering_pipeline.md` §7, where the SDF shader
-  header already points. Decision needed at promotion.
+- **Contract-doc placement.** Standalone `context/lib/sdf_shadows.md`, loudly
+  marked EXPERIMENTAL. Folding into `rendering_pipeline.md` §7 is a future option
+  only if SDF wins the A/B and is promoted to canonical.
 - **Experimental status.** SDF is A/B-gated against main's free baked shadows and
   may be reverted to the last pre-SDF commit. This fix is cheap and bake-side, so
   it is worth landing regardless — it removes a confound (animated lights silently

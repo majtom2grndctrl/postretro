@@ -1,5 +1,9 @@
 # SDF Static-Occluder Shadows — EXPERIMENTAL
 
+> **SUPERSEDED — do not implement.** This dominant-direction contract is replaced by
+> the per-light model in `context/plans/drafts/sdf-per-light-shadows/architecture.md`.
+> Retained in git history only.
+
 > **Read this when:** working on the SDF shadow trace, the per-texel dominant-direction bake, or the lightmap shadowed/unshadowed mode.
 > **Key invariant:** the direction bake's visibility must match the lightmap's bake mode. `Unshadowed` lightmap ⇒ unshadowed direction bake.
 > **Status:** EXPERIMENTAL, A/B-gated against `main`'s baked shadows. May be reverted (see *Fail-floor*). Not yet canonical.
@@ -13,6 +17,10 @@ runtime, fully fixed. SDF is the experimental trade: pay a per-fragment march to
 gain runtime-resolved static-occluder shadows that the early SDF attempt couldn't
 afford. The revival is viable now because DDGI carries indirect light, freeing SDF
 to specialize.
+
+The trace sphere-marches a fine per-voxel field (`sample_fine_distance`, ~0.5 m
+voxels driven by `sdf_meta.voxel_size_m`), falling back to the coarse per-brick
+field only in empty bricks.
 
 ## Boundary — what SDF does not do
 
@@ -35,7 +43,8 @@ left this design.
    └────────────────────┘                 └──────────────────────┘
        │           │                          │            │
    irradiance   dominant dir              irradiance    dominant dir
-   (lm_irr)     atlas (r)                 (lm_anim)      atlas (g)
+   (lm_irr)   (lightmap_direction,        (lm_anim)   (animated_lm_direction_atlas,
+               full octahedral rg)                      full octahedral rg)
        │           │                          │            │
        └─── SEAM ──┴──── visibility ≡ bake mode ───┴─── SEAM ──┘
                             │
@@ -43,12 +52,13 @@ left this design.
                   PRL sections → GPU bind
                             │
                             ▼
-        trace marches the SDF of static occluders from each
-        lit texel toward its baked dominant light (r and g rays)
+        trace marches the SDF of static occluders from each lit texel
+        toward its baked dominant direction (static ray, animated ray)
                             │
-                   shadow factor (r, g)
+              shadow-factor atlas: R = static aggregate factor,
+                                   G = animated aggregate factor
                             ▼
-       composite:  lm_irr × r-factor   +   lm_anim × g-factor
+       composite:  lm_irr × R-factor   +   lm_anim × G-factor
 ```
 
 Both branches — static and animated — carry the **same** seam contract. The
@@ -70,9 +80,10 @@ default into open space and finds no occluder — **no shadow, indistinguishable
 from "the feature didn't work."** This invariant must hold for the static and
 animated branches alike.
 
-**2. SDF factor multiplies only baked static-light terms.** Dynamic
-(shadow-mapped) lights carry their own occlusion and are never multiplied by the
-SDF factor.
+**2. SDF factor multiplies only baked light terms (static and animated-baked).**
+At `forward.wgsl:675` the composite is `lm_irr * scale * static_sdf + lm_anim *
+animated_sdf`. Dynamic (shadow-mapped) lights carry their own occlusion and are
+never multiplied by the SDF factor.
 
 ## Two direction failure modes — do not conflate
 

@@ -1,27 +1,5 @@
-// Half-resolution SDF static-occluder shadow pass.
-//
-// Task 4 of sdf-static-occluder-shadows. Per half-res pixel:
-//   1. Reconstruct world position from the depth pre-pass via inverse view-projection.
-//   2. Sample (a) the static-lightmap baked dominant direction and (b) the
-//      animated-baked atlas's per-frame dominant direction; trace one ray
-//      per term against the static SDF.
-//   3. Accumulate the closest-passing-distance penumbra factor along each march.
-//   4. Early-out open regions via the DDGI E[d] depth moment at the pixel's
-//      probe cell — `coarse` SDF distance is the cheap analogue.
-//
-// Writes two channels into one Rgba8Unorm half-res target:
-//   R = static-lightmap aggregate factor
-//   G = animated-baked aggregate factor
-//   B, A = reserved for the future geometry-moving per-light factors —
-//          no current consumer; documented seam, not coded here.
-//
-// Direction sampling (v2). The dominant-direction atlases are baked per-texel
-// keyed on lightmap UV. The visible surface's lightmap UV is read from the
-// depth pre-pass MRT (`lightmap_uv_tex`, Rg16Float), so both direction reads
-// are now per-texel correct. The trace and penumbra math are unchanged.
-//
-// Group 0: SDF atlas (owned by SdfAtlasResources — Task 3). Bindings 0..3.
-// Group 1: this pass's own bind group. Bindings 0..6 (see below).
+// Half-resolution SDF static-occluder shadow compute pass.
+// See: context/lib/rendering_pipeline.md §7
 
 // ---- Group 0: SDF atlas (mirrors crates/postretro/src/render/sdf_atlas.rs) ----
 
@@ -154,14 +132,125 @@ fn sample_coarse_distance(world: vec3<f32>) -> f32 {
         return 1.0e4;
     }
     let grid = vec3<f32>(sdf_meta.grid_dims);
-    let brick_size = max(f32(sdf_meta.brick_size_voxels), 1.0);
-    let voxel = max(sdf_meta.voxel_size_m, 1.0e-4);
-    let brick_world_size = brick_size * voxel;
     let coord = vec3<i32>(clamp(normalized * grid, vec3<f32>(0.0), grid - vec3<f32>(1.0)));
     let coarse = textureLoad(sdf_coarse, coord, 0).r;
-    // Treat the per-brick coarse value as a metric distance lower bound for
-    // the brick's interior. Conservative.
-    return max(coarse, 0.0) * brick_world_size;
+    // The baked coarse value (`sdf_bake.rs::coarse_signed`) is already a metric
+    // signed distance in meters — the per-brick mean of ±nearest-triangle
+    // distance. Return its non-negative part directly; do NOT re-scale by the
+    // brick edge length (that over-stepped the empty-brick fallback by ~4 m and
+    // let the sphere-trace tunnel through sub-brick occluders). It is a mean,
+    // not a tight lower bound, but that is fine here: this fallback only fires
+    // for non-surface bricks — bricks classified EMPTY because their closest
+    // triangle distance exceeds `surface_band_m` (sdf_bake.rs ~line 198:
+    // `near_surface = min_unsigned <= surface_band_m`). Relaxing that threshold
+    // would promote some near-surface bricks to EMPTY and allow this path to
+    // under-count distance into them.
+    return max(coarse, 0.0);
+}
+
+// Sample the fine brick atlas at a world-space point, returning a metric
+// signed distance in meters (negative inside solids). This is the fine voxel
+// field (~0.5 m per voxel by default, driven by `sdf_meta.voxel_size_m`) that
+// resolves sub-brick occluders the coarse field cannot.
+//
+//   - Out of bounds / no atlas  → large positive sentinel ("far open"), the
+//                                  same 1.0e4 literal sample_coarse_distance
+//                                  returns.
+//   - SDF_TOP_LEVEL_EMPTY brick  → reuse the coarse field for a large
+//                                  empty-space step (already meters, >= 0).
+//   - SDF_TOP_LEVEL_INTERIOR     → inside solid; return a negative distance so
+//                                  the march registers a hit.
+//   - surface brick (real slot)  → de-pack the slot to its atlas brick coord,
+//                                  map the brick-local position to a voxel,
+//                                  textureLoad the nearest voxel (the intended
+//                                  retro aesthetic; no trilinear), decode.
+fn sample_fine_distance(world: vec3<f32>) -> f32 {
+    if (sdf_meta.present == 0u) {
+        return 1.0e4;
+    }
+    let extent = sdf_meta.world_max - sdf_meta.world_min;
+    if (extent.x <= 0.0 || extent.y <= 0.0 || extent.z <= 0.0) {
+        return 1.0e4;
+    }
+    let voxel = max(sdf_meta.voxel_size_m, 1.0e-4);
+    let brick_size = max(sdf_meta.brick_size_voxels, 1u);
+    let brick_world_size = f32(brick_size) * voxel;
+
+    // Resolve the world point to its brick cell. Bounds-guard against the brick
+    // grid BEFORE indexing sdf_top_level or the atlas.
+    let local = (world - sdf_meta.world_min) / brick_world_size;
+    let grid_dims = sdf_meta.grid_dims;
+    let grid_f = vec3<f32>(grid_dims);
+    if (any(local < vec3<f32>(0.0)) || any(local >= grid_f)) {
+        return 1.0e4;
+    }
+    let brick_coord = vec3<u32>(clamp(local, vec3<f32>(0.0), grid_f - vec3<f32>(1.0)));
+
+    // z-major flat index — mirrors the baker's `for bz { for by { for bx } }`
+    // top-level traversal (sdf_bake.rs ~line 151) and the on-disk layout.
+    let flat = brick_coord.z * grid_dims.x * grid_dims.y
+        + brick_coord.y * grid_dims.x
+        + brick_coord.x;
+    let slot = sdf_top_level[flat];
+
+    if (slot == SDF_TOP_LEVEL_EMPTY) {
+        // Far from any surface on the open side — defer to the coarse field for
+        // a large positive empty-space step (the fix above keeps this metric).
+        return sample_coarse_distance(world);
+    }
+    if (slot == SDF_TOP_LEVEL_INTERIOR) {
+        // Inside solid. Return a negative distance so the sphere-trace's
+        // `d < voxel * 0.5` hit test fires.
+        return -brick_world_size;
+    }
+
+    // Surface brick: `slot` is the linear surface-brick index. Recover the fine
+    // voxel's atlas texel by mirroring the baker's + uploader's exact byte path,
+    // NOT the brick-tiled formula in the spec sketch.
+    //
+    // WHY linear, not brick-tiled: the baker appends each surface brick's voxels
+    // CONTIGUOUSLY into one flat `atlas` stream in z-major within-brick order
+    // (sdf_bake.rs ~line 222: `atlas.extend_from_slice(&brick_samples)`, where
+    // brick_samples is filled z-major: outer loop vz, inner loop vx). The uploader
+    // (sdf_atlas.rs ~line 237) then `write_texture`s that flat stream into the
+    // 3D atlas as a dense row-major fill of the (aw, ah, ad) extent
+    // (bytes_per_row = 2*aw, rows_per_image = ah). So the flat element index of
+    // a voxel is `slot * voxels_per_brick + (vz*bs*bs + vy*bs + vx)`, and the
+    // texel is the row-major de-interleave of that single linear index:
+    //   x = e % aw,  y = (e / aw) % ah,  z = e / (aw * ah).
+    // The brick is NOT a contiguous bs^3 sub-cube of the texture — the contiguous
+    // run wraps across atlas rows — so the brick-tiled `brick_atlas*bs + voxel`
+    // formula would read the wrong voxels for a near-cube pack. Mirror the bytes.
+    let bricks_per_axis = sdf_meta.atlas_bricks_per_axis;
+    let atlas_w = max(bricks_per_axis.x, 1u) * brick_size;
+    let atlas_h = max(bricks_per_axis.y, 1u) * brick_size;
+    let voxels_per_brick = brick_size * brick_size * brick_size;
+
+    // Brick-local position → voxel index. Half-texel-clamp to
+    // [0.5, brick_size - 0.5]: bricks have NO apron, so the nearest sample must
+    // stay strictly inside this brick to avoid bleeding into its neighbor.
+    let frac = local - vec3<f32>(brick_coord); // [0,1) within the brick
+    let voxel_local = clamp(
+        frac * f32(brick_size),
+        vec3<f32>(0.5),
+        vec3<f32>(f32(brick_size) - 0.5),
+    );
+    let voxel_idx = vec3<u32>(voxel_local); // nearest voxel (floor of clamped)
+
+    // Flat element index into the baked stream (z-major within-brick), then
+    // de-interleave to the dense row-major texel the uploader wrote.
+    let voxel_in_brick = voxel_idx.z * brick_size * brick_size
+        + voxel_idx.y * brick_size
+        + voxel_idx.x;
+    let e = slot * voxels_per_brick + voxel_in_brick;
+    let texel = vec3<i32>(
+        i32(e % atlas_w),
+        i32((e / atlas_w) % atlas_h),
+        i32(e / (atlas_w * atlas_h)),
+    );
+    let raw = textureLoad(sdf_atlas, texel, 0).r;
+    // Decode i16 quant steps → meters: step = voxel_size_m / 256 per i16.
+    return f32(raw) * (voxel / SDF_I16_QUANT_STEPS_PER_VOXEL);
 }
 
 // Sample the SH depth moments E[d] at a world-space point. Returns the mean
@@ -188,10 +277,12 @@ fn sample_open_distance(world: vec3<f32>) -> f32 {
 // Trace the static SDF from `origin` toward `dir` (unit) for shadow occlusion.
 // Returns the closest-passing-distance penumbra factor in [0, 1]; 1 = lit.
 //
-// Uses sphere-tracing against the coarse per-brick distances. The fine atlas
-// is intentionally not consumed in v1 — the coarse fallback alone produces a
-// usable shadow factor and keeps the per-pixel cost bounded. Refining to the
-// fine atlas is the named follow-up (see plan §Open questions).
+// Sphere-traces against the combined fine+coarse distance
+// (`sample_fine_distance`): the fine brick atlas resolves sub-brick occluders
+// near surfaces (pillars, doorways), falling back to the coarse per-brick field
+// in empty bricks. The loop shape — self-shadow start bias, closest-passing
+// penumbra estimate, bounded march length, open-space early-out — is unchanged
+// from the coarse-only v1.
 fn trace_shadow(origin: vec3<f32>, dir: vec3<f32>) -> f32 {
     if (sdf_meta.present == 0u) {
         return FULLY_LIT;
@@ -215,7 +306,7 @@ fn trace_shadow(origin: vec3<f32>, dir: vec3<f32>) -> f32 {
     let steps: u32 = clamp(params.max_march_steps, 1u, 256u);
     for (var i: u32 = 0u; i < steps; i = i + 1u) {
         let p = origin + dir * t;
-        let d = sample_coarse_distance(p);
+        let d = sample_fine_distance(p);
         if (d < voxel * 0.5) {
             return 0.0;
         }

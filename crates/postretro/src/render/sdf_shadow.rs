@@ -32,9 +32,21 @@ pub const HALF_RES_SCALE: u32 = 2;
 pub const SHADOW_FACTOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 /// Default uniform values for the tuning knobs. Task 7 wires sliders to these.
-pub const DEFAULT_MAX_MARCH_STEPS: u32 = 48;
+///
+/// Retuned for the fine-atlas trace (`sdf-shadow-fine-atlas-trace`). With true
+/// per-voxel (0.5 m) distances instead of the ~4 m coarse-brick lower bound,
+/// sphere-trace steps shrink sharply near surfaces, so more steps are needed to
+/// keep the same open-space reach to a distant occluder — bumped 48 → 64
+/// (well under the 256 hard clamp; the open-space early-out keeps the common
+/// case cheap, and the perf AC bounds the worst case). The `k*d/t` penumbra
+/// estimate sharpens once `d` is a real metric distance, so `penumbra_k` is
+/// softened 16 → 8 to keep penumbra width similar rather than over-hard. The
+/// open-space skip threshold is unchanged — it keys off the SH moment, not the
+/// step source. These are SEED values; adjust them live via the "SDF / Fog
+/// Quality" panel in the debug overlay (`dev-tools` feature).
+pub const DEFAULT_MAX_MARCH_STEPS: u32 = 64;
 pub const DEFAULT_OPEN_SPACE_SKIP_THRESHOLD: f32 = 2.5; // multiple of SH cell size
-pub const DEFAULT_PENUMBRA_K: f32 = 16.0;
+pub const DEFAULT_PENUMBRA_K: f32 = 8.0;
 
 /// Size in bytes of the `ShadowPassParams` uniform. Mirrors the WGSL struct
 /// in `shaders/sdf_shadow.wgsl`. std140-aligned: vec3<f32>/u32 pairs share
@@ -665,6 +677,36 @@ mod tests {
         assert!(
             !src.contains("i32(uv.x * f32(static_dims.x))"),
             "direction coords must no longer come from the screen-space `uv`",
+        );
+    }
+
+    /// Fine-path wiring guard (regression guard, not a correctness proof).
+    /// Asserts the fine-atlas sampler exists, that `trace_shadow` steps on it
+    /// (not solely on the coarse sampler), and that the fine atlas (`sdf_atlas`)
+    /// is actually read. It passes even if the index math is wrong — it only
+    /// confirms the fine path is wired in and stays wired; feature correctness
+    /// is proven by the visual ACs. No mirrored-arithmetic test is added (it
+    /// would re-encode the index math and prove nothing).
+    #[test]
+    fn sdf_shadow_traces_on_fine_atlas_sampler() {
+        let src = include_str!("../shaders/sdf_shadow.wgsl");
+        assert!(
+            src.contains("fn sample_fine_distance("),
+            "the fine-atlas distance sampler must be present",
+        );
+        assert!(
+            src.contains("sample_fine_distance(p)"),
+            "trace_shadow must step on sample_fine_distance, not the coarse-only field",
+        );
+        assert!(
+            src.contains("textureLoad(sdf_atlas"),
+            "the fine sampler must read the fine atlas (sdf_atlas) via textureLoad",
+        );
+        // The coarse multiply that over-stepped the empty-brick fallback must
+        // be gone — sample_coarse_distance returns metric meters directly.
+        assert!(
+            !src.contains("max(coarse, 0.0) * brick_world_size"),
+            "the coarse-unit fix must drop the `* brick_world_size` over-scale",
         );
     }
 

@@ -2,14 +2,14 @@
 
 ## Goal
 
-Drive one real skinned glTF model end-to-end through the **live** render path — loaded, SH-lit, animated by one clip, portal-culled, drawn at an entity's transform — as production code that survives, not a throwaway spike. The slice is narrow on purpose: one hardcoded model, one clip, one instance. Its deliverable is the locked runtime contracts (skinned vertex layout, bone-palette layout, mesh-pass shape, `MeshComponent`) every later M10 render task builds on, plus two measured findings that decide whether a mesh bake and a baked pose buffer are warranted.
+Drive one real skinned glTF model end-to-end through the **live** render path — loaded, animated by one clip, portal-culled, drawn at an entity's transform (flat-lit for now; lighting integration waits on the in-flight lighting rewrite) — as production code that survives, not a throwaway spike. The slice is narrow on purpose: one hardcoded model, one clip, one instance. Its deliverable is the locked runtime contracts (skinned vertex layout, bone-palette layout, mesh-pass shape, `MeshComponent`) every later M10 render task builds on, plus two measured findings that decide whether a mesh bake and a baked pose buffer are warranted.
 
 ## Scope
 
 ### In scope
 - New top-level `model` module (CPU-side): glTF parse → engine structs for mesh geometry, skinning attributes, skeleton, and one animation clip. No wgpu here (subsystem boundary).
 - New skinned mesh vertex format (rigid = degenerate single-bone case), mirroring `WorldVertex` encoding conventions where they apply.
-- New `render` mesh pass (GPU-side): uploads the model to GPU buffers in the locked layout, binds the shared SH group, portal/frustum-culls one instance via point→leaf lookup, draws at the entity transform. Built **instance-friendly**: per-instance transform + a palette index into a shared bone-matrix buffer, even at one instance.
+- New `render` mesh pass (GPU-side): uploads the model to GPU buffers in the locked layout, draws **flat-lit** (lighting integration deferred — see non-goals), portal/frustum-culls one instance via point→leaf lookup, draws at the entity transform. Built **instance-friendly**: per-instance transform + a palette index into a shared bone-matrix buffer, even at one instance. Leaves an additive bind slot for lighting so the broadening pass adds it without breaking the locked pass shape.
 - Bone-matrix palette: shared GPU buffer, per-instance base index; filled each frame from a CPU-sampled pose.
 - Single-clip animation sampling (CPU): sample the clip at frame time → local poses → world bone matrices (apply inverse-bind) → palette. No state machine, no blending.
 - `MeshComponent` enum variant + value, a `mesh_bridge` that walks mesh entities and feeds the renderer, and **one** entity spawned through a single hardcoded seam carrying a model handle.
@@ -21,7 +21,8 @@ Drive one real skinned glTF model end-to-end through the **live** render path �
 - Classname spawning from a map. The asset is hardcoded behind one named seam where classname KVP resolution lands later.
 - Build-time automation of model-PNG → `.prm` baking. The slice consumes a **pre-baked** `.prm` for the model's texture; Blender-authored-PNG auto-bake is the *glTF mesh loading* broadening task.
 - Many-instance draw / GPU-driven indirect integration. The pass data shape is instance-friendly and continuous with the Milestone 3.5 indirect path, but the slice draws one instance directly.
-- Shadow casting. The pass is built depth-reusable (mirrors `depth_prepass` / spot-shadow depth pipeline shape) but renders no shadow this slice. See Open questions re: the missing CSM pass.
+- SH-lit / dynamic-entity lighting integration. The dynamic-entity lighting interface is mid-rewrite and not yet settled (lands soon, isolated to lighting modules). Binding against it now would target an undecided interface. The slice renders flat-lit; lighting is a fast-follow in the broadening *Mesh render pass* task, against the settled interface.
+- Shadow casting. The pass is built depth-reusable (mirrors `depth_prepass` shape) but renders no shadow this slice. Shadows land with the lighting rewrite, not here.
 - Animation state machine, clip blending/crossfade, animation time-slicing.
 - LOD / `meshopt`.
 - Multiple archetypes, hit zones, navigation, AI.
@@ -37,7 +38,7 @@ Drive one real skinned glTF model end-to-end through the **live** render path �
 - [ ] Findings note exists at `findings.md` with both measured values and a recommendation.
 
 **Manual-visual** (per honest-visual-acceptance-criteria — a human confirms by running):
-- [ ] The hardcoded model renders in the level at its entity's position, SH-lit (responds to the probe volume like dynamic billboards do).
+- [ ] The hardcoded model renders in the level at its entity's position, flat-lit (lighting integration deferred to the broadening mesh pass).
 - [ ] The model plays its single animation clip (visible skeletal motion), not frozen in bind pose.
 - [ ] Walking the camera so a closed portal occludes the model's cell makes it disappear (portal culling reads visually correct).
 
@@ -54,7 +55,7 @@ Define the locked contracts and create the empty/thin module files they live in,
 Parse one glTF via the `gltf` crate into the Task 1 structs: mesh geometry + skinning attributes (positions, normals, UVs, joint indices, weights), the joint hierarchy + inverse-bind matrices, and one animation clip's keyframes. Resolve the material's external PNG reference to a `blake3` cache key. No wgpu. Narrow: one model, one clip; multi-mesh/multi-clip generality is the broadening task.
 
 ### Task 3: Mesh render pass (GPU)
-New pass in `render/`: upload the Task 2 mesh into GPU buffers in the locked vertex layout; allocate the shared bone-palette buffer; build the pipeline binding camera uniforms, the material bind group (via existing `.prm`→`LoadedTexture` path, pre-baked texture), and the shared SH `@group(3)`. Cull one instance: `find_leaf(entity_position)` → test membership in the current visible-cell set → draw or skip. Draw at the per-instance model matrix. Depth-reusable pipeline shape (mirror `depth_prepass`), but no shadow target this slice. Wire construction + per-frame `record_draw` into the renderer; keep edits to the large `render/mod.rs` / `main.rs` render loop minimal (construct + call only).
+New pass in `render/`: upload the Task 2 mesh into GPU buffers in the locked vertex layout; allocate the shared bone-palette buffer; build the pipeline binding camera uniforms and the material bind group (via existing `.prm`→`LoadedTexture` path, pre-baked texture). Flat-lit — no lighting bind group this slice; leave the slot additive. Cull one instance: `find_leaf(entity_position)` → test membership in the current visible-cell set → draw or skip. Draw at the per-instance model matrix. Depth-reusable pipeline shape (mirror `depth_prepass`), but no shadow target this slice. Wire construction + per-frame `record_draw` into the renderer; keep edits to the large `render/mod.rs` / `main.rs` render loop minimal (construct + call only).
 
 ### Task 4: Animation sampling → palette (CPU)
 Sample the Task 2 clip at the frame's animation time → local joint poses → world bone matrices (compose hierarchy, apply inverse-bind) → write the palette buffer the pass uploads. Raw single-clip sampling; no blend, no state machine. Lives in `model/` (CPU math); palette upload stays in the pass (renderer owns GPU).
@@ -86,7 +87,7 @@ Mostly sequential by nature: a thin vertical slice is one tightly-coupled path, 
 **Key reuse points (confirmed in source):**
 - Point→cell: `LevelWorld::find_leaf(position: Vec3) -> usize` (`prl.rs:263`), already general over arbitrary points.
 - Visible set: `enum VisibleCells { Culled(Vec<u32>), DrawAll }` (`visibility.rs:13`); bitmask membership in `compute_cull.rs`.
-- SH bind: shared `@group(3)` from `render/sh_volume.rs`; include `sh_sample.wgsl` in the mesh shader.
+- Lighting: deferred. The mesh shader is flat-lit this slice; the broadening pass adds the lighting bind group against the settled (rewritten) dynamic-entity lighting interface.
 - Material: `load_textures` / `LoadedTexture` (`render/loaded_texture.rs:295`, `:24`) → `build_material_bind_group` (`render/mod.rs:391`).
 - Pass pattern: `SmokePass::new()/record_draw()` (`render/smoke.rs`); depth shape from `depth_prepass` (`render/mod.rs:1703`).
 - Vertex convention: `WorldVertex` (`geometry.rs:11`), octahedral normal, u16×2 UVs.
@@ -106,7 +107,8 @@ Only the Rust ↔ serde boundary is crossed this slice (scripting/FGD spawning d
 
 ## Open questions
 
-- **Missing CSM pass.** Roadmap M5 marks "CSM sun shadows — 3 cascades" done, but two independent source sweeps find no runtime cascade pass — only the spot-shadow pool (`lighting/spot_shadow.rs`) and baked lightmaps. Shadows are out of scope here, so the slice only requires the pass be *depth-reusable* (mirroring `depth_prepass` / the spot-shadow depth pipeline). But the downstream *Dynamic mesh shadow casting* task assumes a CSM cascade pass to render into — it may have to build that pass first. **Raised to the user as a roadmap-integrity issue, separate from this spec.**
+- **Lighting + shadows deferred to the in-flight rewrite.** The dynamic-entity lighting interface is being rewritten — not yet settled, lands soon, isolated to lighting modules. The slice therefore renders flat-lit and casts no shadow; both integrate in the broadening *Mesh render pass* / *Dynamic mesh shadow casting* tasks against the settled lighting system. (Roadmap M5's "CSM sun shadows" no longer reflects the tree — only the spot-shadow pool + baked lightmaps exist — but that is subsumed by the rewrite, not a separate concern.) The slice keeps the pass depth-reusable and leaves an additive lighting bind slot; adding a bind group later does not break the locked vertex / palette / pass-shape contracts.
+- **Vertex layout vs settled lighting inputs.** The skinned vertex layout is a locked contract. Confirm the settling lighting interface needs no per-vertex inputs beyond position / normal / tangent / UV before treating the layout as final. Low risk — indirect SH and the direct-light loop use normal + world position — and lighting lands in days.
 - **Leaf-index vs cell-id.** `find_leaf` returns a leaf index; `VisibleCells::Culled` holds cell ids. The implementer must confirm the mapping (camera_leaf is stored as the leaf index cast to `u32`) so the membership test compares like for like. Specified behaviorally in AC; mechanism confirmed at implementation.
 - **`gltf` crate version.** Pin at implementation to the current stable release; note it pulls `image` (already a dependency) for embedded textures, though the slice uses external PNG references.
 - **Pre-baked `.prm` provenance.** The slice needs one `.prm` for the model's texture in the cache. Acceptable to produce it via the existing offline baker as a one-time manual step? (Alternative: bind the model to an existing baked world texture for the slice.) Decision affects only how the one texture is staged, not the GPU binding path.

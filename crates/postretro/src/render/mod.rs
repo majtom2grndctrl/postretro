@@ -20,6 +20,8 @@ pub mod splash;
 
 #[cfg(test)]
 mod curve_eval_test;
+#[cfg(test)]
+mod sdf_light_select_test;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -1487,9 +1489,14 @@ impl Renderer {
             &sdf_atlas_resources.bind_group_layout,
             &depth_view,
             &lightmap_uv_view,
-            lightmap_resources.make_direction_view(),
             animated_lightmap.make_direction_view(),
             sh_volume_resources.make_depth_moment_view(),
+            sdf_shadow::SdfShadowLightBuffers {
+                spec_lights: &spec_lights_buffer,
+                chunk_grid_info: &chunk_grid_info_buffer,
+                chunk_offsets: &chunk_grid_offsets_buffer,
+                chunk_indices: &chunk_grid_indices_buffer,
+            },
             sdf_shadow_sh_grid,
             surface_config.width,
             surface_config.height,
@@ -2270,9 +2277,14 @@ impl Renderer {
         self.sdf_shadow_pass.rebuild_for_level(
             &self.device,
             &self.depth_view,
-            self.lightmap_resources.make_direction_view(),
             self.animated_lightmap.make_direction_view(),
             self.sh_volume_resources.make_depth_moment_view(),
+            sdf_shadow::SdfShadowLightBuffers {
+                spec_lights: &spec_lights_buffer,
+                chunk_grid_info: &chunk_grid_info_buffer,
+                chunk_offsets: &chunk_grid_offsets_buffer,
+                chunk_indices: &chunk_grid_indices_buffer,
+            },
             sdf_shadow_sh_grid,
         );
 
@@ -4277,10 +4289,10 @@ mod tests {
     }
 
     /// Task 5 (sdf-static-occluder-shadows): the forward shader must parse
-    /// cleanly with the new SDF shadow-factor bindings (`sdf_shadow_factor`
-    /// + `sdf_shadow_depth` on group 5 bindings 3 and 4) and must declare
-    /// the inline bilateral upsample helper. Mirrors the parse-and-binding
-    /// shape of Task 2b's `compose_shader_parses_and_declares_debug_binding`.
+    /// cleanly with the new SDF shadow-factor bindings (`sdf_shadow_factor` and
+    /// `sdf_shadow_depth` on group 5 bindings 3 and 4) and must declare the
+    /// inline bilateral upsample helper. Mirrors the parse-and-binding shape of
+    /// Task 2b's `compose_shader_parses_and_declares_debug_binding`.
     #[test]
     fn forward_shader_parses_and_declares_sdf_shadow_upsample() {
         let src = SHADER_SOURCE;

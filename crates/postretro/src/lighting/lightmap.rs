@@ -36,10 +36,12 @@ pub struct LightmapResources {
     #[allow(dead_code)]
     pub present: bool,
     /// Static dominant-direction atlas texture (Rgba8Unorm, octahedral in rg).
-    /// Held so the SDF shadow pass (Task 4 of sdf-static-occluder-shadows) can
-    /// mint its own `TextureView` via `make_direction_view`. Stored as the
-    /// texture rather than a view because `wgpu::TextureView` isn't `Clone`
-    /// and the pass rebuilds its bind group on resize / level reload.
+    /// Its sole consumer — the SDF pass's static dominant-direction trace — was
+    /// removed in `sdf-per-light-shadows` Task 2 (per-light static shadows now
+    /// key on light position). The baked atlas is still uploaded; retiring it
+    /// from the bake/upload path is the follow-on once animated lights also
+    /// migrate off the baked trace (see the plan's architecture map "Defers").
+    #[allow(dead_code)]
     direction_texture: wgpu::Texture,
 }
 
@@ -119,9 +121,10 @@ impl LightmapResources {
     }
 
     /// Mint a fresh sampled view over the static lightmap dominant-direction
-    /// atlas. `wgpu::TextureView` isn't `Clone`, so consumers needing their
-    /// own handle (the SDF shadow pass rebuilds its bind group on resize /
-    /// level reload) call this rather than borrowing from the resource.
+    /// atlas. The SDF static dominant-direction trace that consumed this was
+    /// removed in `sdf-per-light-shadows` Task 2; kept until the baked direction
+    /// atlas is retired from the upload path (follow-on, see the struct field).
+    #[allow(dead_code)]
     pub fn make_direction_view(&self) -> wgpu::TextureView {
         self.direction_texture
             .create_view(&wgpu::TextureViewDescriptor {

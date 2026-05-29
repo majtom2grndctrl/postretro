@@ -45,18 +45,41 @@ struct ShadowPassParams {
 
 @group(1) @binding(0) var<uniform> params: ShadowPassParams;
 @group(1) @binding(1) var depth_tex: texture_depth_2d;
-// Static-lightmap dominant direction texture (Rgba8Unorm, octahedral in rg).
-// See `forward.wgsl::decode_lightmap_direction`.
-@group(1) @binding(2) var static_lm_direction: texture_2d<f32>;
-// Animated-baked atlas's per-frame dominant direction (Task 2b).
-@group(1) @binding(3) var animated_lm_direction: texture_2d<f32>;
-// DDGI E[d] / E[d²] depth moments (R = mean, G = mean^2). 3D probe grid.
-@group(1) @binding(4) var sh_depth_moments: texture_3d<f32>;
-// Half-res output: R = static aggregate factor, G = animated aggregate factor.
-@group(1) @binding(5) var shadow_factor: texture_storage_2d<rgba8unorm, write>;
+// Animated-baked atlas's per-frame dominant direction (Task 2b). The retained
+// animated dominant-direction trace reads this; the static dominant-direction
+// trace is gone — per-light static shadows key on light POSITION now (group 2).
+@group(1) @binding(2) var animated_lm_direction: texture_2d<f32>;
+// DDGI E[d] / E[d^2] depth moments (R = mean, G = mean^2). 3D probe grid.
+@group(1) @binding(3) var sh_depth_moments: texture_3d<f32>;
+// Half-res output. R/B/A = per-light SDF visibility slices (K = 3, see
+// sdf_light_select.wgsl); G = animated aggregate factor (unchanged).
+@group(1) @binding(4) var shadow_factor: texture_storage_2d<rgba8unorm, write>;
 // Full-res lightmap-UV gbuffer (Rg16Float) written by the depth pre-pass MRT.
 // Read via textureLoad to recover the visible surface's lightmap UV per pixel.
-@group(1) @binding(6) var lightmap_uv_tex: texture_2d<f32>;
+// KEPT (not dead): the animated trace still indexes animated_lm_direction
+// through this per-texel UV.
+@group(1) @binding(5) var lightmap_uv_tex: texture_2d<f32>;
+
+// ---- Group 2: static light buffers (mirrors forward.wgsl's lighting group) ----
+// Bound here so the SHARED K-selection helper (sdf_light_select.wgsl, appended
+// at pipeline creation) can pick the same lights the forward shader will. The
+// helper reads these by lexical name; this pass binds its own copy.
+
+struct SpecLight {
+    position_and_range: vec4<f32>, // xyz = position, w = falloff_range
+    color_and_pad:      vec4<f32>, // xyz = color × intensity, w = sdf flag (>0.5 ⇒ sdf)
+};
+@group(2) @binding(0) var<storage, read> spec_lights: array<SpecLight>;
+
+struct ChunkGridInfo {
+    grid_origin: vec3<f32>,
+    cell_size: f32,
+    dims: vec3<u32>,
+    has_chunk_grid: u32,
+};
+@group(2) @binding(1) var<uniform> chunk_grid: ChunkGridInfo;
+@group(2) @binding(2) var<storage, read> chunk_offsets: array<vec2<u32>>;
+@group(2) @binding(3) var<storage, read> chunk_indices: array<u32>;
 
 // ---- Helpers ----
 
@@ -320,19 +343,42 @@ fn trace_shadow(origin: vec3<f32>, dir: vec3<f32>) -> f32 {
     return clamp(factor, 0.0, 1.0);
 }
 
+// Trace one per-light static shadow ray toward `light_idx`'s position. Returns
+// the closest-passing-distance visibility factor (1 = lit). The per-light
+// static trace keys on light POSITION — this is what lets it cast a specific
+// light's shadow, unlike the removed single dominant-direction trace.
+fn trace_light_visibility(world: vec3<f32>, light_idx: u32) -> f32 {
+    let sl = spec_lights[light_idx];
+    let to_light = sl.position_and_range.xyz - world;
+    let dist = length(to_light);
+    if (dist < 1.0e-4) {
+        return FULLY_LIT;
+    }
+    return trace_shadow(world, to_light / dist);
+}
+
 // ---- Entry ----
 
+// K-slice channel assignment. K = 3 (SDF_SELECT_K). G stays the animated
+// aggregate factor (the animated dominant-direction trace is unchanged), so the
+// three per-light slices pack into R / B / A:
+//   slice 0 → R   slice 1 → B   slice 2 → A
+// Forward (Task 3) reads each sdf light's slice back through this same mapping.
 @compute @workgroup_size(8, 8, 1)
 fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (gid.x >= params.half_res_size_x || gid.y >= params.half_res_size_y) {
         return;
     }
     let half_xy = gid.xy;
+    let store_xy = vec2<i32>(i32(half_xy.x), i32(half_xy.y));
 
-    // Default: fully lit on both terms. Sky / no-atlas / out-of-volume paths
-    // all degrade to 1.0 so the forward multiply is a no-op there.
-    var r: f32 = FULLY_LIT;
-    var g: f32 = FULLY_LIT;
+    // Default: fully lit on every channel. Sky / no-atlas / out-of-volume paths
+    // all degrade to 1.0 so the forward multiply is a no-op there. Slices map
+    // R = slice0, G = animated, B = slice1, A = slice2.
+    var slice0: f32 = FULLY_LIT; // R
+    var animated: f32 = FULLY_LIT; // G
+    var slice1: f32 = FULLY_LIT; // B
+    var slice2: f32 = FULLY_LIT; // A
 
     if (sdf_meta.present != 0u) {
         let recon = reconstruct_world(half_xy);
@@ -340,11 +386,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let world = recon.xyz;
 
             // Sample the visible surface's lightmap UV from the depth pre-pass
-            // MRT (Rg16Float), then index the dominant-direction atlases
-            // per-texel. Replaces the v1 screen-UV approximation. scale_x/y are
-            // recomputed here (the ones in reconstruct_world are local to it);
-            // the lightmap-UV target shares full-res dims with depth, so the
-            // ratios are identical.
+            // MRT (Rg16Float). The animated dominant-direction trace still
+            // indexes its per-texel direction atlas through this UV.
             let lm_dims = textureDimensions(lightmap_uv_tex);
             let scale_x = f32(lm_dims.x) / f32(params.half_res_size_x);
             let scale_y = f32(lm_dims.y) / f32(params.half_res_size_y);
@@ -353,22 +396,12 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let lm_uv = textureLoad(lightmap_uv_tex, vec2<i32>(full_x, full_y), 0).rg;
             if (lm_uv.x < 0.0) {
                 // Pre-pass sentinel (Rg16Float target cleared to (-1,-1)) — no
-                // fragment wrote this pixel. Bail to fully lit.
-                textureStore(
-                    shadow_factor,
-                    vec2<i32>(i32(half_xy.x), i32(half_xy.y)),
-                    vec4<f32>(FULLY_LIT, FULLY_LIT, 1.0, 1.0),
-                );
+                // fragment wrote this pixel. Bail to fully lit on all channels.
+                textureStore(shadow_factor, store_xy, vec4<f32>(FULLY_LIT));
                 return;
             }
-            let static_dims = textureDimensions(static_lm_direction, 0);
-            let static_coord = vec2<i32>(
-                i32(lm_uv.x * f32(static_dims.x)),
-                i32(lm_uv.y * f32(static_dims.y)),
-            );
-            let static_enc = textureLoad(static_lm_direction, static_coord, 0);
-            let static_dir = decode_lm_direction(static_enc);
 
+            // Animated term (G) — retained dominant-direction trace.
             let animated_dims = textureDimensions(animated_lm_direction, 0);
             let animated_coord = vec2<i32>(
                 i32(lm_uv.x * f32(animated_dims.x)),
@@ -376,17 +409,27 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             );
             let animated_enc = textureLoad(animated_lm_direction, animated_coord, 0);
             let animated_dir = decode_lm_direction(animated_enc);
+            animated = trace_shadow(world, animated_dir);
 
-            r = trace_shadow(world, static_dir);
-            g = trace_shadow(world, animated_dir);
+            // Per-light static terms (R/B/A) — trace one ray toward each of the
+            // K most-influential sdf lights, chosen by the SHARED selection
+            // helper so the forward shader shades exactly these same lights.
+            let sel = select_sdf_lights(world);
+            if (sel.count > 0u) {
+                slice0 = trace_light_visibility(world, sel.indices[0]);
+            }
+            if (sel.count > 1u) {
+                slice1 = trace_light_visibility(world, sel.indices[1]);
+            }
+            if (sel.count > 2u) {
+                slice2 = trace_light_visibility(world, sel.indices[2]);
+            }
         }
     }
 
-    // B/A reserved for the future geometry-moving per-light factors — write 1
-    // (fully lit) so a consumer that adds these later sees an honest default.
     textureStore(
         shadow_factor,
-        vec2<i32>(i32(half_xy.x), i32(half_xy.y)),
-        vec4<f32>(r, g, 1.0, 1.0),
+        store_xy,
+        vec4<f32>(slice0, animated, slice1, slice2),
     );
 }

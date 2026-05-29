@@ -1960,7 +1960,7 @@ mod tests {
 
         let deps = ActiveModInitDependencies::from_dependencies(
             &dir,
-            vec![entry.clone(), active.clone()].iter(),
+            [entry.clone(), active.clone()].iter(),
         )
         .unwrap();
 
@@ -1985,7 +1985,7 @@ mod tests {
         fs::write(&helper, "").unwrap();
 
         let deps =
-            ActiveModInitDependencies::from_dependencies(&dir, vec![entry.clone()].iter()).unwrap();
+            ActiveModInitDependencies::from_dependencies(&dir, [entry.clone()].iter()).unwrap();
 
         assert!(deps.changed_paths_affect_mod_init(&[entry]));
         assert!(
@@ -2008,7 +2008,7 @@ mod tests {
 
         let deps = ActiveModInitDependencies::from_dependencies(
             &dir,
-            vec![entry.clone(), required.clone()].iter(),
+            [entry.clone(), required.clone()].iter(),
         )
         .unwrap();
 
@@ -2038,7 +2038,7 @@ mod tests {
 
         let deps = ActiveModInitDependencies::from_dependencies(
             &mod_root,
-            vec![entry.clone(), in_root_import.clone(), out_of_root.clone()].iter(),
+            [entry.clone(), in_root_import.clone(), out_of_root.clone()].iter(),
         )
         .unwrap();
 
@@ -2070,8 +2070,8 @@ mod tests {
         let renamed = dir.join("actors/player-renamed.luau");
         fs::create_dir_all(dir.join("actors")).unwrap();
         fs::write(&active, "").unwrap();
-        let deps = ActiveModInitDependencies::from_dependencies(&dir, vec![active.clone()].iter())
-            .unwrap();
+        let deps =
+            ActiveModInitDependencies::from_dependencies(&dir, [active.clone()].iter()).unwrap();
 
         fs::rename(&active, &renamed).unwrap();
 
@@ -2109,7 +2109,7 @@ mod tests {
         }
         let ts_deps = ActiveModInitDependencies::from_dependencies(
             &ts_root,
-            vec![ts_entry.clone(), ts_dep.clone()].iter(),
+            [ts_entry.clone(), ts_dep.clone()].iter(),
         )
         .unwrap();
         assert!(rename_affects(
@@ -2137,7 +2137,7 @@ mod tests {
         }
         let luau_deps = ActiveModInitDependencies::from_dependencies(
             &luau_root,
-            vec![luau_entry.clone(), luau_dep.clone()].iter(),
+            [luau_entry.clone(), luau_dep.clone()].iter(),
         )
         .unwrap();
         assert!(rename_affects(
@@ -2163,7 +2163,7 @@ mod tests {
             write_file(path);
         }
         let js_deps =
-            ActiveModInitDependencies::from_dependencies(&js_root, vec![js_entry.clone()].iter())
+            ActiveModInitDependencies::from_dependencies(&js_root, [js_entry.clone()].iter())
                 .unwrap();
         assert!(rename_affects(
             &js_deps,
@@ -2413,7 +2413,7 @@ mod tests {
         // in-root entry is still committed and the call succeeds.
         let deps = ActiveModInitDependencies::from_dependencies(
             &dir,
-            vec![entry.clone(), linked.clone()].iter(),
+            [entry.clone(), linked.clone()].iter(),
         )
         .unwrap();
 

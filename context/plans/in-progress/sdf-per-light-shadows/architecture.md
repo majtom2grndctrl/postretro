@@ -46,9 +46,11 @@ RUNTIME LOAD
         ▼
 FORWARD SHADER  (per fragment, accumulate)
    indirect            : SH / DDGI                         — always, unmodulated
-   baked-tag direct    : lm_irr (+ lm_anim, until migrated) — shadow already baked in
+   baked-tag direct    : lm_irr                            — shadow baked in (shadowed bake)
+   animated direct     : lm_anim × animated SDF factor     — retained dominant-direction
+                           trace (G channel), until migrated
    sdf-tag direct      : Σ over the same K sdf lights of
-                           diffuse(light) × upsample(visibility_slice[light])
+                           diffuse(light) × upsample(visibility_slice[light])  (K=3)
    dynamic-tag direct  : shadow-mapped light loop
    specular            : spec_lights (all static lights)
         │
@@ -69,7 +71,7 @@ pinned by a test — the test is the durable contract record, not the prose.
 | PRL → runtime | the tech tag survives serialize/deserialize; legacy entries decode `baked` | wire round-trip test |
 | K-selection parity | visibility pass and forward select the **same** sdf lights, same order, per tile | K-selection parity test |
 | visibility → forward | each sdf light's diffuse is multiplied by *its own* upsampled slice | shader naga-validation test |
-| no double-count | with visibility forced to 1.0, total direct light == pre-change baseline | SDF-forced-to-1 baseline test |
+| no double-count | a light contributes to exactly one of `lm_irr` / `lm_anim` / sdf / shadow-map | disjoint-set bake test (machine); forced-1.0 render A/B (manual) |
 
 The K-selection parity seam is the load-bearing one: a shared selection helper both
 sides call (keyed on the `chunk_grid` cell) is the only thing that keeps the
@@ -80,12 +82,16 @@ wrong lights with no compile error.
 
 - **Delivers:** the sdf-tag runtime path (diffuse × per-light visibility), the tag
   contract, disjoint bake sets, the K budget, the perf gate.
-- **Keeps as-is:** baked `lm_irr` and animated `lm_anim` (animated lights stay on the
-  weight-map bake for now); the dynamic/shadow-map machinery.
+- **Keeps as-is:** the animated `lm_anim` path *and its SDF shadow* — the animated
+  dominant-direction trace is retained (it keeps reading the per-texel direction atlas via
+  the lightmap-UV gbuffer); the dynamic/shadow-map machinery.
+- **Changes:** baked-tag static lights bake **shadowed** (their shadow lives in `lm_irr`),
+  not `--unshadowed` — the static dominant-direction trace is gone, so the bake is their
+  only shadow source.
 - **Defers (follow-on, gated on the perf result):** migrating animated lights onto
-  runtime per-light curves, which then retires the **Unshadowed** lightmap bake mode
-  entirely — with SDF lights out of the lightmap, baked-tag lights want their shadow
-  baked in (Shadowed mode), so Unshadowed loses its last consumer.
+  runtime per-light curves. That retires the last consumer of the **Unshadowed** bake (the
+  animated `lm_anim` + retained trace) and frees the lightmap-UV gbuffer MRT and the fourth
+  K channel.
 
 ## Invariants (durable)
 

@@ -15,22 +15,17 @@
 // pre-baked delta sub-block at the probe slot coincident with this thread
 // (a direct 1:1 point read — no trilinear interpolation, no AABB test),
 // evaluate the Catmull-Rom animation curve, and accumulate
-// `delta × brightness × color`. The accumulated delta is scaled by
-// `delta_scale` before being added to the base bands.
+// `delta × brightness × color`. The accumulated delta is added to the base
+// bands at full weight (the `delta_scale` dev knob was retired alongside the
+// indirect-only delta — the delta now carries bounce only, so there is no
+// double-count to bisect away).
 //
 // Sparse-CSR invariants (validated at bake/load, Task 3) replace the old
 // declared-vs-written probe-count mismatch bug class entirely:
 //   • `affinity_offsets.len() == affinity_cell_count + 1`
 //   • every `affinity_lights[i] < animated_light_count`
 // so the in-shader loop needs no bounds/out-of-range path. An affinity cell
-// with no animated lights has `start == end` and the loop runs zero times —
-// the empty-delta (no animated lights) case is handled entirely by the CSR
-// offsets, NOT by `delta_scale`.
-//
-// `delta_scale` (the repurposed 4th `GridDims` field) doubles as the
-// dev-tools experimentation knob: `0.0` is a pure base→total copy
-// (base-only override), `1.0` is full animated delta, and values between
-// blend continuously.
+// with no animated lights has `start == end` and the loop runs zero times.
 //
 // Curve helpers (`sample_curve_catmull_rom`, `sample_color_catmull_rom`)
 // come from `curve_eval.wgsl`, concatenated after this source at
@@ -64,11 +59,10 @@ struct AnimationDescriptor {
 
 struct GridDims {
     dims: vec3<u32>,
-    // 4th field repurposed from the old (now-unused) `delta_light_count`:
-    // global scale applied to the accumulated animated delta before it is
-    // added to the base bands. Same slot (byte offset 12), uniform size and
-    // offsets unchanged. `0.0` = base-only, `1.0` = full delta.
-    delta_scale: f32,
+    // 4th field is padding. It once held `delta_light_count`, then the
+    // `delta_scale` knob; both are retired. Kept so the uniform size and the
+    // std140 vec4 row stay unchanged.
+    _pad: f32,
 };
 
 struct GridFrame {
@@ -190,10 +184,10 @@ fn compose_main(
     let affinity_dims = (grid.dims + vec3<u32>(3u)) / vec3<u32>(4u);
     let cell = wg.x + wg.y * affinity_dims.x + wg.z * affinity_dims.x * affinity_dims.y;
 
-    // Accumulate this affinity cell's animated-delta contributions into a
-    // separate sum so `delta_scale` can weight the whole delta before adding it
-    // to the base. The CSR range names exactly the lights that touch this 4×4×4
-    // block; `start == end` (empty cell / no animated lights) runs zero passes.
+    // Accumulate this affinity cell's animated-delta contributions. The CSR
+    // range names exactly the lights that touch this 4×4×4 block; `start == end`
+    // (empty cell / no animated lights) runs zero passes. The delta is
+    // indirect-only (bounce), so it is added to the base at full weight below.
     var delta_sum: array<vec3<f32>, 9>;
     for (var b: u32 = 0u; b < 9u; b = b + 1u) {
         delta_sum[b] = vec3<f32>(0.0);
@@ -241,10 +235,9 @@ fn compose_main(
         }
     }
 
-    // Apply the global delta scale before folding the delta into the base.
-    // `delta_scale == 0` collapses to a pure base→total copy (base-only).
+    // Fold the indirect-only animated delta into the base at full weight.
     for (var b: u32 = 0u; b < 9u; b = b + 1u) {
-        bands[b] = bands[b] + delta_sum[b] * grid.delta_scale;
+        bands[b] = bands[b] + delta_sum[b];
     }
 
     textureStore(sh_total_band0, p, vec4<f32>(bands[0], base_validity));

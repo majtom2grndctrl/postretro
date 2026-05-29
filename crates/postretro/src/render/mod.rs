@@ -185,35 +185,34 @@ const TIMING_PAIR_COUNT: usize = 5;
 //   80..84   light_count  84..88  time  88..92   lighting_isolation  92..96  indirect_scale
 //   96..100  sdf_shadow_flags  100..104 sdf_shadow_mode
 //   104..108 sdf_force_visibility_one  108..112 _pad
-// `sdf_shadow_flags` is a bitset gating the SDF shadow factor in the forward
-// shader. After sdf-per-light-shadows Task 2/3 the R/B/A channels of the
-// half-res target carry per-light visibility slices, so only the animated
-// aggregate is still a bitset-gated multiply:
-//   bit 0 = apply animated-baked aggregate factor (G channel).
-// Bit 0 is set whenever a baked SDF atlas is loaded. The per-light sdf-tag
-// diffuse term reads its visibility slices directly (no flag) — gated instead
-// by `select_sdf_lights` returning lights for the fragment.
+// `sdf_shadow_flags` gates whether the forward samples the half-res SDF
+// visibility target at all:
+//   bit 0 = a baked SDF atlas is loaded, so the four RGBA channels hold valid
+//           per-light visibility slices (K = 4). Set whenever the atlas loads.
+// The per-light sdf-tag diffuse/specular terms read their visibility slices
+// directly (no per-slice flag) — gated instead by `select_sdf_lights` returning
+// lights for the fragment.
 // `sdf_shadow_mode` overlays the debug selector; `sdf_force_visibility_one`
 // is the dev "force visibility to 1.0" toggle for the no-double-count A/B.
 // Struct stride rounds up to 112 (multiple of mat4 alignment).
 const UNIFORM_SIZE: usize = 112;
 
-/// Bit 0 of `Uniforms.sdf_shadow_flags` — apply the animated-baked aggregate
-/// factor (G channel of the half-res target) to the animated-baked term.
-/// Only remaining flag; `SDF_SHADOW_FLAG_STATIC` was removed when the static
-/// dominant-direction trace was replaced by per-light tracing (slices R/B/A
-/// are read directly, not flag-gated).
-pub const SDF_SHADOW_FLAG_ANIMATED: u32 = 1 << 0;
+/// Bit 0 of `Uniforms.sdf_shadow_flags` — an SDF atlas is loaded, so the
+/// half-res factor target holds valid per-light visibility slices and the
+/// forward should sample (bilateral-upsample) it. When clear (legacy PRL / no
+/// SDF atlas) the forward skips the upsample and per-light visibility defaults
+/// to fully lit. The per-light slices (R/G/B/A) are read directly via
+/// `slice_for_visibility`; they are not individually flag-gated.
+pub const SDF_SHADOW_FLAG_ATLAS_PRESENT: u32 = 1 << 0;
 
 /// Debug selector for the SDF shadow path. Mirrors the `LightingIsolation`
 /// pattern: panel-only dropdown, encoded into the per-frame uniform.
 ///
-/// - `On` applies the shadow factor multiply normally — gated per term by
-///   `SDF_SHADOW_FLAG_*` (so a shadowed-mode lightmap still skips it).
-/// - `Off` suppresses the animated-baked G multiply and forces per-light SDF
-///   visibility to 1.0 (no SDF factor applied). Shadow-map (enemy) shadows
-///   are unaffected — they don't run through the SDF multiply in the first
-///   place.
+/// - `On` applies the per-light SDF visibility multiply normally (gated on the
+///   atlas-present flag, `SDF_SHADOW_FLAG_ATLAS_PRESENT`).
+/// - `Off` forces per-light SDF visibility to 1.0 (no SDF factor applied).
+///   Shadow-map (enemy) shadows are unaffected — they don't run through the SDF
+///   multiply in the first place.
 /// - `Visualize` replaces the shaded fragment color with a grayscale view of
 ///   the per-light slice 0 (R channel) shadow factor — interpretable for
 ///   spotting artifacts without needing a separate march-step heatmap binding.
@@ -465,27 +464,9 @@ fn build_material_uniform(shininess: f32) -> [u8; MATERIAL_UNIFORM_SIZE] {
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-/// Full-res lightmap-UV gbuffer format written by the depth pre-pass MRT slot
-/// and read by the half-res SDF shadow pass. `Rg16Float` is used because
-/// `Rg16Unorm` is not renderable as a color attachment on AMD/discrete
-/// adapters (validation rejects `RENDER_ATTACHMENT` on `Rg16Unorm`), whereas
-/// `Rg16Float` is a baseline renderable color format needing no wgpu feature.
-/// Precision tradeoff: 16-bit float loses mantissa precision near UV=1.0 vs the
-/// exact u16/65535 round-trip — acceptable, verify visually. Cleared to the
-/// negative sentinel (-1,-1), impossible for real chart UVs (always in [0,1]).
-const LIGHTMAP_UV_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
-
-/// Usage flags for the lightmap-UV gbuffer: written by the pre-pass MRT slot
-/// (`RENDER_ATTACHMENT`) and sampled by the half-res SDF shadow pass
-/// (`TEXTURE_BINDING`).
-const LIGHTMAP_UV_USAGE: wgpu::TextureUsages =
-    wgpu::TextureUsages::RENDER_ATTACHMENT.union(wgpu::TextureUsages::TEXTURE_BINDING);
-
-/// Extent for the full-res pre-pass attachments (depth + lightmap-UV gbuffer).
-/// Both are recreated at the surface size in lockstep on resize; sharing this
-/// helper keeps their sizes identical (a precondition for the shadow pass's
-/// full-res ↔ half-res scale math). `0` is clamped to `1` to keep texture
-/// creation valid during transient zero-size resize events.
+/// Extent for the full-res depth pre-pass attachment. Recreated at the surface
+/// size on resize. `0` is clamped to `1` to keep texture creation valid during
+/// transient zero-size resize events.
 fn prepass_attachment_extent(width: u32, height: u32) -> wgpu::Extent3d {
     wgpu::Extent3d {
         width: width.max(1),
@@ -514,44 +495,6 @@ fn create_depth_texture(
 
     let view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
     (depth_texture, view)
-}
-
-/// Clear value for the lightmap-UV pre-pass target. The clear writes the
-/// (-1,-1) sentinel: a pixel with no fragment stays at the sentinel, and real
-/// chart UVs are in [0,1] so they are never negative. Only `r`/`g` are read by
-/// the `Rg16Float` target; `b`/`a` are ignored.
-const LIGHTMAP_UV_CLEAR: wgpu::Color = wgpu::Color {
-    r: -1.0,
-    g: -1.0,
-    b: 0.0,
-    a: 0.0,
-};
-
-/// Allocate the full-res lightmap-UV gbuffer written by the depth pre-pass MRT
-/// slot and sampled by the half-res SDF shadow pass. The named chokepoint for
-/// the pre-pass color attachment: the pre-pass is locked to {depth, lightmap
-/// UV}; a future MRT consumer requires its own draft-plan. Analogous to
-/// `create_depth_texture` — same surface size, recreated in lockstep on resize.
-fn create_lightmap_uv_texture(
-    device: &wgpu::Device,
-    width: u32,
-    height: u32,
-) -> (wgpu::Texture, wgpu::TextureView) {
-    let size = prepass_attachment_extent(width, height);
-
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("Lightmap UV Pre-Pass Texture"),
-        size,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: LIGHTMAP_UV_FORMAT,
-        usage: LIGHTMAP_UV_USAGE,
-        view_formats: &[],
-    });
-
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    (texture, view)
 }
 
 pub struct LevelGeometry<'a> {
@@ -692,14 +635,6 @@ pub struct Renderer {
     #[cfg(feature = "dev-tools")]
     frozen_time: f32,
 
-    /// Dev-tools knob: global scale on the SH compose animated-delta
-    /// contribution. `0.0` emits the static base bake only (base-only override);
-    /// `1.0` is full animated delta; values between blend continuously. Bisects
-    /// whether irradiance-marker flicker originates in delta application vs.
-    /// base sampling / compose-target init. See `ShComposeResources::dispatch`.
-    #[cfg(feature = "dev-tools")]
-    sh_compose_delta_scale: f32,
-
     /// Composes base SH bands into the total bands consumers sample. Must run
     /// before the depth pre-pass so the storage→sampled barrier resolves first.
     sh_compose: ShComposeResources,
@@ -748,11 +683,6 @@ pub struct Renderer {
     shadow_vs_stride: u32,
 
     depth_view: wgpu::TextureView,
-
-    /// Full-res lightmap-UV gbuffer written by the depth pre-pass MRT slot and
-    /// sampled by the SDF shadow pass. Recreated in lockstep with `depth_view`
-    /// on surface resize.
-    lightmap_uv_view: wgpu::TextureView,
 
     /// GPU textures indexed by texture index.
     gpu_textures: Vec<GpuTexture>,
@@ -1450,8 +1380,6 @@ impl Renderer {
 
         let (_depth_texture, depth_view) =
             create_depth_texture(&device, surface_config.width, surface_config.height);
-        let (_lightmap_uv_texture, lightmap_uv_view) =
-            create_lightmap_uv_texture(&device, surface_config.width, surface_config.height);
 
         let sh_volume_resources = ShVolumeResources::new(
             &device,
@@ -1515,8 +1443,6 @@ impl Renderer {
             &device,
             &sdf_atlas_resources.bind_group_layout,
             &depth_view,
-            &lightmap_uv_view,
-            animated_lightmap.make_direction_view(),
             sh_volume_resources.make_depth_moment_view(),
             sdf_shadow::SdfShadowLightBuffers {
                 spec_lights: &spec_lights_buffer,
@@ -1798,18 +1724,11 @@ impl Renderer {
                     bias: wgpu::DepthBiasState::default(),
                 }),
                 multisample: wgpu::MultisampleState::default(),
-                // One MRT slot: the full-res lightmap-UV gbuffer. The fragment
-                // stage reads no resources, so the pipeline layout is unchanged.
-                fragment: Some(wgpu::FragmentState {
-                    module: &depth_prepass_shader,
-                    entry_point: Some("fs_main"),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: LIGHTMAP_UV_FORMAT,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
+                // Vertex-only depth pre-pass: no color attachment. The
+                // lightmap-UV gbuffer MRT was removed with the animated
+                // dominant-direction trace (the per-light SDF trace keys on
+                // light position, not lightmap UV).
+                fragment: None,
                 multiview_mask: None,
                 cache: None,
             });
@@ -1996,8 +1915,6 @@ impl Renderer {
             freeze_time: false,
             #[cfg(feature = "dev-tools")]
             frozen_time: 0.0,
-            #[cfg(feature = "dev-tools")]
-            sh_compose_delta_scale: 1.0,
             sh_compose,
             lightmap_resources,
             animated_lightmap,
@@ -2016,7 +1933,6 @@ impl Renderer {
             shadow_depth_pipeline,
             shadow_vs_stride,
             depth_view,
-            lightmap_uv_view,
             gpu_textures,
             bvh_leaves,
             compute_cull,
@@ -2299,8 +2215,8 @@ impl Renderer {
             }
         }
 
-        // SDF half-res shadow pass — rebind to the freshly-loaded direction
-        // textures + new SH depth-moment texture. The pass itself is always
+        // SDF half-res shadow pass — rebind to the freshly-loaded SH
+        // depth-moment texture + static-light buffers. The pass itself is always
         // allocated; the dispatch is gated on `sdf_atlas_resources.present`,
         // which `install_level_geometry` may have just flipped.
         let sdf_shadow_sh_grid =
@@ -2308,7 +2224,6 @@ impl Renderer {
         self.sdf_shadow_pass.rebuild_for_level(
             &self.device,
             &self.depth_view,
-            self.animated_lightmap.make_direction_view(),
             self.sh_volume_resources.make_depth_moment_view(),
             sdf_shadow::SdfShadowLightBuffers {
                 spec_lights: &spec_lights_buffer,
@@ -2673,19 +2588,6 @@ impl Renderer {
         self.freeze_time = freeze;
     }
 
-    #[cfg(feature = "dev-tools")]
-    pub fn sh_compose_delta_scale(&self) -> f32 {
-        self.sh_compose_delta_scale
-    }
-
-    /// Scale the animated-delta SH contribution. `0.0` composes the static base
-    /// only; `1.0` is full delta. Debug aid for bisecting irradiance-marker
-    /// flicker — see the field doc.
-    #[cfg(feature = "dev-tools")]
-    pub fn set_sh_compose_delta_scale(&mut self, delta_scale: f32) {
-        self.sh_compose_delta_scale = delta_scale;
-    }
-
     /// Most recent averaged GPU-timing window, or `None` when GPU timing is
     /// disabled / no window has elapsed yet. The debug panel reads this each
     /// frame; the underlying snapshot is overwritten every
@@ -2721,22 +2623,12 @@ impl Renderer {
         self.surface.configure(&self.device, &self.surface_config);
         let (_depth_texture, depth_view) = create_depth_texture(&self.device, width, height);
         self.depth_view = depth_view;
-        // Lightmap-UV gbuffer is recreated in lockstep with the depth view at
-        // the new surface size — both are full-res pre-pass attachments.
-        let (_lightmap_uv_texture, lightmap_uv_view) =
-            create_lightmap_uv_texture(&self.device, width, height);
-        self.lightmap_uv_view = lightmap_uv_view;
         self.fog
             .resize(&self.device, width, height, &self.depth_view);
-        // SDF shadow target is half-res relative to the surface; depth and
-        // lightmap-UV views also changed so the pass bind group has to be rebuilt.
-        self.sdf_shadow_pass.resize(
-            &self.device,
-            &self.depth_view,
-            &self.lightmap_uv_view,
-            width,
-            height,
-        );
+        // SDF shadow target is half-res relative to the surface; the depth view
+        // also changed, so the pass bind group has to be rebuilt.
+        self.sdf_shadow_pass
+            .resize(&self.device, &self.depth_view, width, height);
         // Group-5 bind group references both the SDF shadow factor target
         // and the scene depth — both just got recreated, so rebuild.
         let spot_shadow_bgl = SpotShadowPool::bind_group_layout(&self.device);
@@ -2765,19 +2657,13 @@ impl Renderer {
             self.frozen_time = self.app_start.elapsed().as_secs_f32();
             self.frozen_time
         };
-        // SDF shadow-factor multiplies are gated per-term:
-        //   - Animated-baked aggregate (G) multiplies whenever an SDF atlas
-        //     is loaded — the animated-lightmap atlas never had visibility
-        //     folded into its bake.
-        //   - Static-lightmap aggregate (R) additionally requires the
-        //     lightmap to have been baked unshadowed (Task 2a) — a
-        //     legacy/shadowed bake already carries baked visibility, so
-        //     multiplying again would double-shadow.
-        // Both bits clear → forward skips the multiply outright (legacy PRL
-        // path, identical to `main`).
+        // The per-light SDF visibility multiply is enabled whenever a baked SDF
+        // atlas is loaded — the half-res target's four channels then hold valid
+        // K = 4 per-light slices. With the flag clear (legacy PRL / no atlas)
+        // the forward skips the upsample and treats every light fully lit.
         let mut sdf_shadow_flags: u32 = 0;
         if self.sdf_atlas_resources.present {
-            sdf_shadow_flags |= SDF_SHADOW_FLAG_ANIMATED;
+            sdf_shadow_flags |= SDF_SHADOW_FLAG_ATLAS_PRESENT;
         }
         let data = build_uniform_data(&FrameUniforms {
             view_proj,
@@ -3374,14 +3260,6 @@ impl Renderer {
         }
 
         // Before depth pre-pass: storage-write → sampled-read barrier for SH.
-        #[cfg(feature = "dev-tools")]
-        self.sh_compose.dispatch(
-            &self.queue,
-            &mut encoder,
-            &self.uniform_bind_group,
-            self.sh_compose_delta_scale,
-        );
-        #[cfg(not(feature = "dev-tools"))]
         self.sh_compose
             .dispatch(&mut encoder, &self.uniform_bind_group);
 
@@ -3445,17 +3323,9 @@ impl Renderer {
                 .map(|t| t.render_pass_writes(TIMING_PAIR_DEPTH_PREPASS));
             let mut depth_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Depth Pre-Pass"),
-                // MRT slot: full-res lightmap-UV gbuffer. Cleared to the (-1,-1)
-                // sentinel (see LIGHTMAP_UV_CLEAR); the pre-pass fragment writes the unpacked UV.
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.lightmap_uv_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(LIGHTMAP_UV_CLEAR),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
+                // Vertex-only: depth attachment only. The lightmap-UV gbuffer
+                // MRT was removed with the animated dominant-direction trace.
+                color_attachments: &[],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth_view,
                     depth_ops: Some(wgpu::Operations {
@@ -4218,12 +4088,12 @@ mod tests {
             time: 0.0,
             lighting_isolation: LightingIsolation::Normal,
             indirect_scale: 1.0,
-            sdf_shadow_flags: SDF_SHADOW_FLAG_ANIMATED,
+            sdf_shadow_flags: SDF_SHADOW_FLAG_ATLAS_PRESENT,
             sdf_shadow_mode: SdfShadowMode::On,
             sdf_force_visibility_one: false,
         });
         let flags = u32::from_ne_bytes(data[96..100].try_into().unwrap());
-        assert_eq!(flags, SDF_SHADOW_FLAG_ANIMATED);
+        assert_eq!(flags, SDF_SHADOW_FLAG_ATLAS_PRESENT);
         // `sdf_shadow_mode` at 100..104 — `On` encodes to 0;
         // `sdf_force_visibility_one` at 104..108 (false ⇒ 0); pad 108..112 zero.
         assert_eq!(
@@ -4664,56 +4534,22 @@ mod tests {
             has_vs_main,
             "depth_prepass.wgsl must export @vertex vs_main"
         );
-        // The lightmap-UV gbuffer write requires a fragment stage (`fs_main`)
-        // that the pipeline binds for its single MRT slot.
-        let has_fs_main = module
+        // Vertex-only: the lightmap-UV gbuffer MRT was removed with the animated
+        // dominant-direction trace, so there must be NO fragment stage.
+        let has_fs = module
             .entry_points
             .iter()
-            .any(|ep| ep.name == "fs_main" && ep.stage == naga::ShaderStage::Fragment);
+            .any(|ep| ep.stage == naga::ShaderStage::Fragment);
         assert!(
-            has_fs_main,
-            "depth_prepass.wgsl must export @fragment fs_main for the lightmap-UV MRT"
-        );
-        // Source-string check (matches the sdf_shadow.rs test idiom): the
-        // fragment return must write `@location(0)` — the lightmap-UV target.
-        assert!(
-            DEPTH_PREPASS_SHADER_SOURCE.contains("@location(0) vec2<f32>"),
-            "depth_prepass.wgsl fragment must return @location(0) vec2<f32>"
+            !has_fs,
+            "depth_prepass.wgsl must be vertex-only — the gbuffer MRT was removed"
         );
     }
 
-    /// The pre-pass gbuffer MRT slot must use `Rg16Float` — `Rg16Unorm` is not
-    /// renderable as a color attachment on AMD/discrete adapters, while
-    /// `Rg16Float` is a baseline renderable format needing no wgpu feature.
-    #[test]
-    fn lightmap_uv_format_is_rg16float() {
-        assert_eq!(LIGHTMAP_UV_FORMAT, wgpu::TextureFormat::Rg16Float);
-    }
-
-    /// The pre-pass clears the lightmap-UV target to the negative `(-1,-1)`
-    /// sentinel — impossible for real chart UVs, which are always in [0,1].
-    /// Only `r`/`g` are read by the `Rg16Float` target. `cargo test` has no GPU
-    /// device, so the clear color is factored into a named const asserted here;
-    /// the pre-pass render-pass descriptor references `LIGHTMAP_UV_CLEAR`
-    /// directly (see the "Depth Pre-Pass" `begin_render_pass`).
-    #[test]
-    fn lightmap_uv_clear_is_negative_sentinel() {
-        assert_eq!(
-            LIGHTMAP_UV_CLEAR.r, -1.0,
-            "clear r must be the (-1,-1) sentinel"
-        );
-        assert_eq!(
-            LIGHTMAP_UV_CLEAR.g, -1.0,
-            "clear g must be the (-1,-1) sentinel"
-        );
-    }
-
-    /// The lightmap-UV gbuffer is recreated at the surface size in lockstep
-    /// with the depth view on resize. Actual texture creation needs a GPU
-    /// device (unavailable in `cargo test`); the size decision both attachments
-    /// share is factored into `prepass_attachment_extent`, asserted here. A
-    /// resize to (w,h) produces a (w,h,1) extent, identical for both
-    /// attachments, and clamps zero-size transients to 1.
+    /// The depth pre-pass attachment is recreated at the surface size on resize.
+    /// Actual texture creation needs a GPU device (unavailable in `cargo test`);
+    /// the size decision is factored into `prepass_attachment_extent`, asserted
+    /// here. Zero-size transients clamp to 1 so texture creation stays valid.
     #[test]
     fn prepass_attachment_extent_matches_surface_size() {
         let e = prepass_attachment_extent(1920, 1080);
@@ -4721,8 +4557,6 @@ mod tests {
             (e.width, e.height, e.depth_or_array_layers),
             (1920, 1080, 1)
         );
-        // Lockstep: depth and lightmap-UV attachments derive the same extent.
-        assert_eq!(prepass_attachment_extent(1920, 1080), e);
         // Zero-size transients clamp to 1 so texture creation stays valid.
         assert_eq!(
             prepass_attachment_extent(0, 0),
@@ -4731,24 +4565,6 @@ mod tests {
                 height: 1,
                 depth_or_array_layers: 1,
             },
-        );
-    }
-
-    /// The lightmap-UV gbuffer is both written by the pre-pass MRT slot and
-    /// sampled by the SDF shadow pass, so its texture usage must include both
-    /// `RENDER_ATTACHMENT` and `TEXTURE_BINDING`. Texture creation itself needs
-    /// a GPU device (unavailable in `cargo test`); this asserts the usage-flag
-    /// decision the resize/construction paths depend on, which lives in
-    /// `create_lightmap_uv_texture`.
-    #[test]
-    fn lightmap_uv_usage_is_attachment_plus_binding() {
-        assert!(
-            LIGHTMAP_UV_USAGE.contains(wgpu::TextureUsages::RENDER_ATTACHMENT),
-            "pre-pass writes the gbuffer — needs RENDER_ATTACHMENT",
-        );
-        assert!(
-            LIGHTMAP_UV_USAGE.contains(wgpu::TextureUsages::TEXTURE_BINDING),
-            "shadow pass samples the gbuffer — needs TEXTURE_BINDING",
         );
     }
 

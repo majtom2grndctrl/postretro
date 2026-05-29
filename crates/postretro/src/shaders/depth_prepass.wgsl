@@ -1,14 +1,13 @@
 // Depth pre-pass — populates the shared depth buffer so the subsequent
 // forward pass can run with an Equal depth test and zero overdraw in the
-// fragment shader. It also writes a full-res lightmap-UV gbuffer (one
-// Rg16Float MRT slot) that the half-res SDF shadow pass samples for
-// per-texel direction-texture lookups. The fragment stage does no shading
-// work — one ROP write behind early-Z — so it stays cheap.
+// fragment shader. Vertex-only: there is no fragment stage and no color
+// attachment. (The lightmap-UV gbuffer MRT this pass once wrote was removed
+// with the animated dominant-direction trace — the per-light SDF trace keys
+// on light position, not lightmap UV.)
 //
 // The vertex layout mirrors `forward.wgsl` so the same vertex buffer can
-// be bound without a separate layout. Only `position` and
-// `lightmap_uv_packed` are consumed; the remaining attributes are declared
-// to satisfy the shared layout but otherwise unused.
+// be bound without a separate layout. Only `position` is consumed; the
+// remaining attributes are declared to satisfy the shared layout but unused.
 
 struct Uniforms {
     view_proj: mat4x4<f32>,
@@ -35,27 +34,11 @@ struct VertexOutput {
     // data, so the `depth_compare: Equal` test doesn't fall victim to
     // fused-multiply-add reassociation drift on some GPUs.
     @invariant @builtin(position) clip_position: vec4<f32>,
-    @location(0) lightmap_uv: vec2<f32>,
 };
 
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
     out.clip_position = uniforms.view_proj * vec4<f32>(in.position, 1.0);
-    // Unpack identically to forward.wgsl. The UV is born as u16/65535; the
-    // resulting float is stored in the Rg16Float target (16-bit float loses a
-    // little mantissa precision near 1.0 vs an exact u16 round-trip).
-    out.lightmap_uv = vec2<f32>(
-        f32(in.lightmap_uv_packed.x) / 65535.0,
-        f32(in.lightmap_uv_packed.y) / 65535.0,
-    );
     return out;
-}
-
-// Pass the interpolated lightmap UV straight to the gbuffer. Behind early-Z
-// the only surviving fragments are the visible surface, so the written UV is
-// the visible-surface UV the shadow pass needs.
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec2<f32> {
-    return in.lightmap_uv;
 }

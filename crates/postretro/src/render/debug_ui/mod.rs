@@ -222,19 +222,6 @@ pub fn draw_diagnostics_panel(
                 if ui.checkbox(&mut frozen, "Freeze animation time").changed() {
                     renderer.set_freeze_time(frozen);
                 }
-
-                // Scales the SH compose animated-delta contribution: 0 composes
-                // the static base only, 1 is full delta. Diagnostic aid: bisects
-                // whether irradiance-marker flicker comes from delta application
-                // or base sampling / compose init by sweeping the blend.
-                let mut delta_scale = renderer.sh_compose_delta_scale();
-                ui.label("SH compose: delta scale (0 = base only)");
-                if ui
-                    .add(egui::Slider::new(&mut delta_scale, 0.0_f32..=1.0))
-                    .changed()
-                {
-                    renderer.set_sh_compose_delta_scale(delta_scale);
-                }
             });
 
         egui::CollapsingHeader::new("GPU Timing")

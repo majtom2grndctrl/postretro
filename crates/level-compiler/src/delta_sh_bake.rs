@@ -1,9 +1,16 @@
 // Per-animated-light sparse delta SH volume baker (CSR / affinity-cell form).
 //
-// For each animated light, bakes the light's full (direct + indirect)
+// For each animated light, bakes the light's **indirect-only** (bounced)
 // contribution at peak brightness (brightness = 1.0, authored color × intensity)
 // into SH L2 RGB coefficients — but ONLY at base-grid probes that fall inside an
 // affinity cell the light reaches (from `affinity_grid::decompose_affinity`).
+//
+// Indirect-only is a deliberate amendment to the shipped `perf-animated-sh-light-culling`
+// plan, which baked direct + indirect into the delta. The animated light's DIRECT
+// contribution already lives in `lm_anim` (the animated weight-map bake, occlusion-
+// tested); folding it into the delta SH too double-counted it. SH is indirect-only:
+// base and delta both store bounce only. See
+// context/plans/in-progress/sdf-per-light-shadows/{architecture.md,index.md} (Task 1).
 // The result is stored as a CSR index keyed by affinity cell:
 //
 //   - `affinity_offsets[c]..affinity_offsets[c+1]` is cell `c`'s slice of
@@ -43,9 +50,7 @@ use crate::light_namespaces::AnimatedBakedLights;
 use crate::map_data::{LightType, MapLight};
 use crate::partition::BspTree;
 use crate::portals::Portal;
-use crate::sh_bake::{
-    RaytracingCtx, bake_probe_direct_rgb, bake_probe_indirect_rgb, probe_is_valid_pub,
-};
+use crate::sh_bake::{RaytracingCtx, bake_probe_indirect_rgb, probe_is_valid_pub};
 
 // The compiler-side affinity factor (cell geometry) and the format-side
 // factor (written into the section, validated by the loader) must agree, or
@@ -325,14 +330,11 @@ fn bake_subblock(
 
         let pos = Vec3::new(pos_d.x as f32, pos_d.y as f32, pos_d.z as f32);
         let lights_slice: [&MapLight; 1] = [light];
-        // Same direct + indirect SH math as the base/dense bake.
+        // Indirect-only: the same bounce math as the base bake. The animated
+        // light's DIRECT contribution lives in `lm_anim` (occlusion-tested),
+        // so baking it here too would double-count. SH is indirect-only.
         let indirect = bake_probe_indirect_rgb(&ctx, pos, &lights_slice);
-        let direct = bake_probe_direct_rgb(&ctx, pos, light);
-        let mut combined = [0f32; PROBE_F16_COUNT];
-        for (o, (a, b)) in combined.iter_mut().zip(direct.iter().zip(indirect.iter())) {
-            *o = a + b;
-        }
-        let probe = DeltaShProbe::from_f32(&combined);
+        let probe = DeltaShProbe::from_f32(&indirect);
 
         // Write 27 logical coeffs at the probe's stride-28 slot; pad half (index
         // 27) stays zero.
@@ -612,24 +614,31 @@ mod tests {
                 assert_eq!(section.delta_subblocks[pad], 0, "pad half must be zero");
             }
         }
-
-        // At least one probe carries nonzero coefficients (light reaches probes).
-        let any_nonzero = section.delta_subblocks.iter().any(|&h| h != 0);
-        assert!(any_nonzero, "light at origin must light some probes");
+        // NOTE: no "any probe nonzero" assertion here. The delta is now
+        // INDIRECT-only (Task 1) — with this sparse single-triangle fixture the
+        // origin probes have no surfaces to bounce off, so an all-zero payload is
+        // correct. The nonzero-coefficient contract is covered by
+        // `subblock_stores_indirect_only_not_direct_plus_indirect` (bit-exact vs
+        // the indirect-only reference) instead.
     }
 
+    /// Delta SH is INDIRECT-ONLY (sdf-per-light-shadows Task 1, amending
+    /// `perf-animated-sh-light-culling`). The baked sub-block at a probe must
+    /// equal the indirect-only bounce SH — NOT direct + indirect. The animated
+    /// light's direct term lives in `lm_anim`; folding it into the delta too
+    /// would double-count. Regression: the shipped delta bake summed
+    /// `direct + indirect`, double-counting the animated direct contribution.
     #[test]
-    fn subblock_writes_nonzero_coeffs_at_local_slot_for_lit_probe() {
-        // Light exactly on a base-probe position inside cell 0's block. The probe
-        // coincident with the light origin must receive nonzero direct coeffs at
-        // its x-fastest local slot.
+    fn subblock_stores_indirect_only_not_direct_plus_indirect() {
+        // Light on a base-probe position inside cell 0's block, with cube
+        // geometry so there is a real bounce to register. base_origin =
+        // (-8,-8,-8), spacing 1 → probe (1,1,1) is at (-7,-7,-7); cell 0 covers
+        // global probes 0..3 per axis, so (1,1,1) is local lx=ly=lz=1 →
+        // local = 1 + 1*4 + 1*16 = 21.
         let geo = cube_geometry();
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let tree = tree_all_empty();
         let exterior: HashSet<usize> = HashSet::new();
-        // base_origin = (-8,-8,-8), spacing 1 → probe (1,1,1) is at (-7,-7,-7).
-        // Cell 0 covers global probes 0..3 on each axis, so (1,1,1) is local
-        // lx=1, ly=1, lz=1 → local = 1 + 1*4 + 1*16 = 21.
         let light_pos = DVec3::new(-7.0, -7.0, -7.0);
         let lights = vec![animated_point_light(light_pos, 1.5)];
         let envelope = AnimatedBakedLights::from_lights(&lights);
@@ -646,14 +655,28 @@ mod tests {
             bake_delta_sh_volumes(&inputs, &crate::sh_bake::ShConfig { probe_spacing: 1.0 })
                 .expect("expected a section");
 
-        // Find the CSR entry for cell 0 (it must exist — the light reaches it).
+        // The CSR entry for cell 0 must exist (the light reaches it).
         assert!(section.affinity_offsets[1] > section.affinity_offsets[0]);
         let entry = section.affinity_offsets[0] as usize;
         let local = 21usize;
         let slot = (entry * PROBES_PER_CELL + local) * PROBE_F16_STRIDE;
-        // The DC band (first coeff) of a directly-lit probe is nonzero.
-        let dc = section.delta_subblocks[slot];
-        assert_ne!(dc, 0, "lit probe must have nonzero DC coefficient");
+
+        // Recompute the reference indirect-only SH at this probe and quantize it
+        // through the same f16 path the baker uses, then compare bit-for-bit.
+        let ctx = RaytracingCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+        };
+        let pos = Vec3::new(-7.0, -7.0, -7.0);
+        let indirect = bake_probe_indirect_rgb(&ctx, pos, &[&lights[0]]);
+        let expected = DeltaShProbe::from_f32(&indirect).sh_coefficients_f16;
+        let stored = &section.delta_subblocks[slot..slot + PROBE_F16_COUNT];
+        assert_eq!(
+            stored,
+            &expected[..],
+            "delta sub-block must store indirect-only SH, not direct + indirect",
+        );
     }
 
     // --- Out-of-region drop (AC #2) ----------------------------------------

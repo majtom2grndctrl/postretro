@@ -14,7 +14,7 @@ use super::sh_volume::{
 //   @group(1):
 //     0..9   base SH band textures        (sampled, `0..SH_BAND_COUNT`)
 //     9..18  total SH band textures       (storage write, `SH_BAND_COUNT..2*SH_BAND_COUNT`)
-//     18     GridDims uniform             (vec3<u32> grid_dims, f32 delta_scale)
+//     18     GridDims uniform             (vec3<u32> grid_dims, f32 _pad)
 //     19     GridOrigin uniform           (grid_origin + cell_size)
 //     20     delta_subblocks  (storage)   f16 payload, raw `u16` halves; shader `unpack2x16float`s
 //     21     affinity_offsets (storage)   `u32` CSR offsets (affinity_cell_count + 1)
@@ -25,9 +25,6 @@ use super::sh_volume::{
 // 20/21 replace the old dense per-light `DeltaLightMeta`/`delta_probes` pair.
 // 24 is numbered after the shared 22/23 so adding `affinity_lights` doesn't
 // renumber the animation bindings shared with the SH bind group.
-/// Production `delta_scale`: full animated-delta contribution. The dev-tools
-/// slider overrides this in-place over `0.0..=1.0` (`0.0` = base-only copy).
-const DEFAULT_DELTA_SCALE: f32 = 1.0;
 
 const BIND_DELTA_SUBBLOCKS: u32 = 20;
 const BIND_AFFINITY_OFFSETS: u32 = 21;
@@ -42,15 +39,6 @@ pub struct ShComposeResources {
     /// Probe grid dimensions. Drives the dispatch shape — one thread per
     /// probe, rounded up to the (4,4,4) workgroup size.
     grid_dimensions: [u32; 3],
-    /// The `GridDims` uniform (binding 18). Rewritten per dispatch only when the
-    /// dev-tools `delta_scale` slider moves, to override the baked scale — see
-    /// `dispatch`.
-    #[cfg(feature = "dev-tools")]
-    grid_buffer: wgpu::Buffer,
-    /// Last `delta_scale` written to `grid_buffer`; lets `dispatch` skip
-    /// redundant uploads so the override costs nothing while the slider is steady.
-    #[cfg(feature = "dev-tools")]
-    grid_scale_uploaded: f32,
 }
 
 impl ShComposeResources {
@@ -113,20 +101,18 @@ impl ShComposeResources {
         };
         footprint.log();
 
-        // Grid-dims uniform: vec3<u32> grid_dims, f32 delta_scale. The loop bound
-        // comes from the affinity-cell CSR offsets, so the 4th slot carries the
-        // global delta scale. `1.0` = full animated delta (production default).
+        // Grid-dims uniform: vec3<u32> grid_dims, f32 _pad. The loop bound comes
+        // from the affinity-cell CSR offsets; the 4th slot is now padding (the
+        // `delta_scale` knob was retired with the indirect-only delta — the full
+        // delta is always added). std140 needs the trailing word, so it stays.
         let mut grid_bytes = [0u8; 16];
         grid_bytes[0..4].copy_from_slice(&sh.grid_dimensions[0].to_ne_bytes());
         grid_bytes[4..8].copy_from_slice(&sh.grid_dimensions[1].to_ne_bytes());
         grid_bytes[8..12].copy_from_slice(&sh.grid_dimensions[2].to_ne_bytes());
-        grid_bytes[12..16].copy_from_slice(&DEFAULT_DELTA_SCALE.to_ne_bytes());
-        // COPY_DST so the dev-tools `delta_scale` slider can rewrite the scale
-        // in place at dispatch time. Release builds never write it post-init.
         let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("SH Compose Grid Dims"),
             contents: &grid_bytes,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::UNIFORM,
         });
 
         // Grid origin uniform: vec3<f32> grid_origin, f32 _pad, vec3<f32> cell_size, f32 _pad.
@@ -250,49 +236,13 @@ impl ShComposeResources {
             pipeline,
             bind_group,
             grid_dimensions: sh.grid_dimensions,
-            #[cfg(feature = "dev-tools")]
-            grid_buffer,
-            #[cfg(feature = "dev-tools")]
-            grid_scale_uploaded: DEFAULT_DELTA_SCALE,
         }
     }
 
-    /// Encode the per-frame compose dispatch.
-    ///
-    /// `delta_scale` (dev-tools) overrides the shader's global delta weight: the
-    /// shader multiplies the accumulated animated delta by it before folding
-    /// into the base, so `0.0` is a pure base→total copy (base-only) and `1.0`
-    /// is full delta. The slider blends continuously between — bisecting whether
-    /// marker flicker comes from delta application is as cheap as one
-    /// `write_buffer` on a slider move. Only the scale word is rewritten, and
-    /// only when it actually changes.
-    #[cfg(feature = "dev-tools")]
+    /// Encode the per-frame compose dispatch. The accumulated animated delta is
+    /// always added to the base at full weight (the `delta_scale` knob was
+    /// retired with the indirect-only delta).
     pub fn dispatch(
-        &mut self,
-        queue: &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
-        uniform_bind_group: &wgpu::BindGroup,
-        delta_scale: f32,
-    ) {
-        if delta_scale != self.grid_scale_uploaded {
-            // `delta_scale` is the 4th word of `GridDims` (byte offset 12).
-            queue.write_buffer(&self.grid_buffer, 12, &delta_scale.to_ne_bytes());
-            self.grid_scale_uploaded = delta_scale;
-        }
-        self.encode_dispatch(encoder, uniform_bind_group);
-    }
-
-    /// Encode the per-frame compose dispatch.
-    #[cfg(not(feature = "dev-tools"))]
-    pub fn dispatch(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        uniform_bind_group: &wgpu::BindGroup,
-    ) {
-        self.encode_dispatch(encoder, uniform_bind_group);
-    }
-
-    fn encode_dispatch(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         uniform_bind_group: &wgpu::BindGroup,
@@ -474,7 +424,7 @@ fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
             count: None,
         });
     }
-    // Binding 18: grid-dimensions + delta_scale.
+    // Binding 18: grid-dimensions (+ trailing pad word; the delta_scale knob was retired).
     entries.push(wgpu::BindGroupLayoutEntry {
         binding: 18,
         visibility: wgpu::ShaderStages::COMPUTE,

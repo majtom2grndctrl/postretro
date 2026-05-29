@@ -673,32 +673,6 @@ fn bake_probe_rgb_with_moments(
     (acc, sum_d, sum_d2)
 }
 
-/// Direct SH L2 RGB for a single light at a probe — used by the delta SH baker.
-/// Projects a delta-direction radiance pulse; cosine-lobe convolution at the end
-/// matches the irradiance convention of `bake_probe_indirect_rgb`.
-pub(crate) fn bake_probe_direct_rgb(
-    ctx: &RaytracingCtx<'_>,
-    probe_pos: Vec3,
-    light: &MapLight,
-) -> [f32; 27] {
-    let mut acc = [0f32; 27];
-    if !shadow_visible_at_point(ctx, probe_pos, light) {
-        return acc;
-    }
-    let radiance = light_radiance_at_point(light, probe_pos);
-    if radiance == Vec3::ZERO {
-        return acc;
-    }
-    let to_light = light_direction_at_point(light, probe_pos);
-    if to_light == Vec3::ZERO {
-        return acc;
-    }
-    // Delta-direction emitter: weight = 1.0 (no sphere integration needed).
-    accumulate_sh_rgb(&mut acc, to_light, radiance, 1.0);
-    apply_cosine_lobe_rgb(&mut acc);
-    acc
-}
-
 /// Indirect (bounced) radiance along one ray plus the ray's hit distance —
 /// direct term is the lightmap's responsibility. Shared by both bake paths: the
 /// SH-volume path consumes the distance for its depth moments, the delta path
@@ -743,67 +717,6 @@ fn shadow_visible(
     // Nudge along the normal to avoid self-intersection with the hit face.
     let probe_end = surface_point + surface_normal * RAY_EPSILON;
     segment_clear(ctx, probe_end, shadow_origin)
-}
-
-/// Like `shadow_visible` but for probe sample points — no host triangle to nudge off.
-fn shadow_visible_at_point(ctx: &RaytracingCtx<'_>, point: Vec3, light: &MapLight) -> bool {
-    if !light.cast_shadows {
-        return true;
-    }
-    let shadow_origin = light_shadow_origin(light, point);
-    segment_clear(ctx, point, shadow_origin)
-}
-
-fn light_direction_at_point(light: &MapLight, point: Vec3) -> Vec3 {
-    match light.light_type {
-        LightType::Point | LightType::Spot => {
-            let to_light = Vec3::new(
-                light.origin.x as f32 - point.x,
-                light.origin.y as f32 - point.y,
-                light.origin.z as f32 - point.z,
-            );
-            to_light.normalize_or_zero()
-        }
-        LightType::Directional => {
-            let dir = Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0]));
-            (-dir).normalize_or_zero()
-        }
-    }
-}
-
-/// Color × intensity × falloff (± cone) without N·L — that is reapplied per sample during projection.
-fn light_radiance_at_point(light: &MapLight, point: Vec3) -> Vec3 {
-    match light.light_type {
-        LightType::Point => {
-            let to_light = Vec3::new(
-                light.origin.x as f32 - point.x,
-                light.origin.y as f32 - point.y,
-                light.origin.z as f32 - point.z,
-            );
-            let dist = to_light.length();
-            if dist < 1.0e-4 {
-                return Vec3::ZERO;
-            }
-            let attenuation = falloff(light, dist);
-            Vec3::from(light.color) * (light.intensity * attenuation)
-        }
-        LightType::Spot => {
-            let to_light = Vec3::new(
-                light.origin.x as f32 - point.x,
-                light.origin.y as f32 - point.y,
-                light.origin.z as f32 - point.z,
-            );
-            let dist = to_light.length();
-            if dist < 1.0e-4 {
-                return Vec3::ZERO;
-            }
-            let l = to_light / dist;
-            let attenuation = falloff(light, dist);
-            let cone = spot_cone_attenuation(light, -l);
-            Vec3::from(light.color) * (light.intensity * attenuation * cone)
-        }
-        LightType::Directional => Vec3::from(light.color) * light.intensity,
-    }
 }
 
 pub(crate) fn probe_is_valid_pub(tree: &BspTree, exterior: &HashSet<usize>, pos: DVec3) -> bool {

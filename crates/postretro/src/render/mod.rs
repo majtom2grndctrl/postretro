@@ -3388,8 +3388,8 @@ impl Renderer {
                 .map(|t| t.render_pass_writes(TIMING_PAIR_DEPTH_PREPASS));
             let mut depth_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Depth Pre-Pass"),
-                // MRT slot: full-res lightmap-UV gbuffer. Cleared to the (0,0)
-                // sentinel; the pre-pass fragment writes the unpacked UV.
+                // MRT slot: full-res lightmap-UV gbuffer. Cleared to the (-1,-1)
+                // sentinel (see LIGHTMAP_UV_CLEAR); the pre-pass fragment writes the unpacked UV.
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &self.lightmap_uv_view,
                     depth_slice: None,

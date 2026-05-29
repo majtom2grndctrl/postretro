@@ -16,7 +16,7 @@
 //
 // Pipeline layout: group 0 = SDF atlas (owned by `SdfAtlasResources`),
 // group 1 = this pass's own bind group (depth, direction textures, SH depth
-// moments, params uniform, shadow factor output).
+// moments, params uniform, shadow factor output, lightmap-UV gbuffer).
 
 use glam::Mat4;
 
@@ -125,9 +125,9 @@ pub struct SdfShadowPass {
     /// Per-frame `ShadowPassParams` uniform.
     params_buffer: wgpu::Buffer,
     /// Bind group built once at construction / rebuilt on resize. References
-    /// `depth_view` (which the renderer recreates on resize, so the bind
-    /// group must be rebuilt too) and the direction / depth-moment views
-    /// (stable across resizes — only rebuilt on level reload).
+    /// `depth_view` and `lightmap_uv_view` (both recreated by the renderer on
+    /// resize, so the bind group must be rebuilt too) and the direction /
+    /// depth-moment views (stable across resizes — only rebuilt on level reload).
     bind_group: wgpu::BindGroup,
     /// Static lightmap dominant direction. Sampled to feed the static-term
     /// trace. Stable across resizes — captured at level load.

@@ -12,8 +12,8 @@
 // Writes two channels into one Rgba8Unorm half-res target:
 //   R = static-lightmap aggregate factor
 //   G = animated-baked aggregate factor
-//   B, A = reserved for the future geometry-moving per-light factors (see plan
-//          §Goal — no v1 consumer; documented seam, not coded here).
+//   B, A = reserved for the future geometry-moving per-light factors —
+//          no current consumer; documented seam, not coded here.
 //
 // Direction sampling (v2). The dominant-direction atlases are baked per-texel
 // keyed on lightmap UV. The visible surface's lightmap UV is read from the

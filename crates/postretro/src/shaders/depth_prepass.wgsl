@@ -1,5 +1,5 @@
 // Depth pre-pass — populates the shared depth buffer so the subsequent
-// forward pass can run with a Equal depth test and zero overdraw in the
+// forward pass can run with an Equal depth test and zero overdraw in the
 // fragment shader. It also writes a full-res lightmap-UV gbuffer (one
 // Rg16Float MRT slot) that the half-res SDF shadow pass samples for
 // per-texel direction-texture lookups. The fragment stage does no shading

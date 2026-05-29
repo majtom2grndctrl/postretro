@@ -22,22 +22,20 @@ struct Uniforms {
     // lightmap shadow contrast. Forced to 1.0 in indirect-only isolation
     // modes so debug views aren't affected by runtime suppression.
     indirect_scale: f32,
-    // Bitset gating the SDF static-occluder shadow multiplies (Task 5 of
-    // sdf-static-occluder-shadows). See `SDF_SHADOW_FLAG_*` in render/mod.rs:
+    // Bitset gating the SDF shadow multiplies. See `SDF_SHADOW_FLAG_*` in render/mod.rs:
     //   bit 0 — multiply animated-baked term by the G channel of the
     //           half-res factor target (always on when an SDF atlas is loaded).
-    //   bit 1 — multiply static-lightmap term by the R channel (requires
-    //           the lightmap to be baked unshadowed; else the multiply would
-    //           double-shadow the term).
-    // Both bits clear (legacy PRL, no SDF atlas) → no multiply, identical to `main`.
+    // R/B/A channels (per-light K-slices) are read directly via
+    // `slice_for_visibility`; they are not flag-gated.
+    // All bits clear (legacy PRL, no SDF atlas) → no animated multiply.
     sdf_shadow_flags: u32,
-    // `SdfShadowMode` debug selector (Task 6 of sdf-static-occluder-shadows):
-    //   0 = On        — apply the SDF shadow factor multiplies normally.
-    //   1 = Off       — short-circuit both multiplies to 1.0 (no SDF factor).
-    //                   Shadow-map (enemy) shadows are unaffected; they never
-    //                   ran through this multiply path in the first place.
+    // `SdfShadowMode` debug selector:
+    //   0 = On        — apply SDF shadow factors normally.
+    //   1 = Off       — suppress the animated-baked G multiply (forces it to
+    //                   1.0) and force all per-light SDF visibility to 1.0.
+    //                   Shadow-map (enemy) shadows are unaffected.
     //   2 = Visualize — replace the final shaded color with a grayscale view
-    //                   of the static-aggregate (R) shadow factor.
+    //                   of the first per-light visibility slice (R = slot 0).
     sdf_shadow_mode: u32,
     // Dev toggle (non-zero ⇒ force per-light SDF visibility to 1.0). Used by
     // the "no double-count" visual AC: with every sdf light's visibility
@@ -93,8 +91,9 @@ struct MaterialUniform {
 // Per-light influence volume: xyz = sphere center, w = radius.
 @group(2) @binding(1) var<storage, read> light_influence: array<vec4<f32>>;
 
-// Spec-only static light buffer. Two vec4 slots (32 B stride); see
-// postretro/src/lighting/spec_buffer.rs for the CPU-side layout.
+// Static light buffer: specular + per-light SDF diffuse for sdf-tagged lights.
+// Two vec4 slots (32 B stride); see postretro/src/lighting/spec_buffer.rs
+// for the CPU-side layout.
 struct SpecLight {
     position_and_range: vec4<f32>, // xyz = position, w = falloff_range
     color_and_pad:      vec4<f32>, // xyz = color × intensity, w = sdf flag (>0.5 ⇒ _shadow_tech sdf)
@@ -204,14 +203,13 @@ struct LightSpaceMatrices {
     m: array<mat4x4<f32>, 12>,
 };
 @group(5) @binding(2) var<uniform> light_space_matrices: LightSpaceMatrices;
-// SDF static-occluder shadow factor (Task 4): half-res Rgba8Unorm.
-//   R = static-lightmap aggregate factor (one trace toward the static
-//       lightmap dominant baked direction; covers the whole static-light
-//       term in O(1)).
-//   G = animated-baked aggregate factor (one trace toward the per-frame
-//       dominant direction the compose pass writes, Task 2b).
-//   B, A = reserved for future geometry-moving per-light terms.
-// Bilaterally upsampled per-channel inside this shader (Task 5). Read via
+// SDF static-occluder shadow factor: half-res Rgba8Unorm.
+//   R = per-light SDF visibility slice 0 (K-selection slot 0).
+//   G = animated-baked aggregate factor (dominant-direction trace from the
+//       compose pass; gated by `SDF_SHADOW_FLAG_ANIMATED`, bit 0).
+//   B = per-light SDF visibility slice 1 (K-selection slot 1).
+//   A = per-light SDF visibility slice 2 (K-selection slot 2).
+// Bilaterally upsampled per-channel inside this shader. Read via
 // `textureLoad` — non-filterable on most adapters, and the bilateral filter
 // re-derives its own weights so a hardware sampler buys nothing.
 @group(5) @binding(3) var sdf_shadow_factor: texture_2d<f32>;
@@ -472,7 +470,7 @@ fn sample_normal(tex: texture_2d<f32>, uv: vec2<f32>, ddx: vec2<f32>, ddy: vec2<
 // factor. `slice_for_visibility` maps a selection slot to its channel.
 // Re-derived locally — the fog_composite upsample was reverted in commit
 // f50314d for perf; see
-// `context/plans/in-progress/sdf-static-occluder-shadows/research.md`.
+// `context/plans/done/sdf-static-occluder-shadows/research.md`.
 //
 // Approach:
 //   1. Map the fragment's pixel coord (`frag_pos`) into half-res space. The
@@ -704,6 +702,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // `slice_for_visibility`). Gated by `use_lightmap` so it shows in exactly
     // the direct-static-light isolation modes the baked term does.
     if use_lightmap {
+        // NOTE (Task 4 visual check): `select_sdf_lights` uses the interpolated
+        // full-res world position; the half-res visibility pass reconstructs
+        // position from half-res depth. Near a `chunk_grid` cell boundary the
+        // two can select a different K-set — watch for boundary seam artifacts.
         let sel = select_sdf_lights(in.world_position);
         for (var s: u32 = 0u; s < sel.count; s = s + 1u) {
             let sl = spec_lights[sel.indices[s]];

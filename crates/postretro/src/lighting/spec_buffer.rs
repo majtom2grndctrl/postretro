@@ -1,6 +1,7 @@
-// Spec-only light buffer: one entry per static light, uploaded once at
-// level load and consumed by the Blinn-Phong path in `forward.wgsl`.
-// See: lighting-chunk-lists/ Task B step 1
+// Static light buffer: one entry per static light, uploaded once at level load.
+// Consumed by the Blinn-Phong specular loop, per-light SDF diffuse loop (both
+// in `forward.wgsl`), and the SDF visibility K-selection helper (`sdf_shadow.wgsl`).
+// See: context/lib/rendering_pipeline.md
 
 use crate::prl::{MapLight, ShadowTech};
 

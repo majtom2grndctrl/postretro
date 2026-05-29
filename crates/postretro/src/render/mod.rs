@@ -200,20 +200,23 @@ const UNIFORM_SIZE: usize = 112;
 
 /// Bit 0 of `Uniforms.sdf_shadow_flags` — apply the animated-baked aggregate
 /// factor (G channel of the half-res target) to the animated-baked term.
+/// Only remaining flag; `SDF_SHADOW_FLAG_STATIC` was removed when the static
+/// dominant-direction trace was replaced by per-light tracing (slices R/B/A
+/// are read directly, not flag-gated).
 pub const SDF_SHADOW_FLAG_ANIMATED: u32 = 1 << 0;
 
-/// Debug selector for the SDF static-occluder shadow path (Task 6 of
-/// `sdf-static-occluder-shadows`). Mirrors the `LightingIsolation` pattern:
-/// panel-only dropdown, encoded into the per-frame uniform.
+/// Debug selector for the SDF shadow path. Mirrors the `LightingIsolation`
+/// pattern: panel-only dropdown, encoded into the per-frame uniform.
 ///
 /// - `On` applies the shadow factor multiply normally — gated per term by
 ///   `SDF_SHADOW_FLAG_*` (so a shadowed-mode lightmap still skips it).
-/// - `Off` short-circuits both the static and animated-baked SDF multiplies
-///   to 1.0 (no SDF factor applied). Shadow-map (enemy) shadows are
-///   unaffected — they don't run through the SDF multiply in the first place.
+/// - `Off` suppresses the animated-baked G multiply and forces per-light SDF
+///   visibility to 1.0 (no SDF factor applied). Shadow-map (enemy) shadows
+///   are unaffected — they don't run through the SDF multiply in the first
+///   place.
 /// - `Visualize` replaces the shaded fragment color with a grayscale view of
-///   the static-aggregate (R) shadow factor — interpretable for spotting
-///   artifacts without needing a separate march-step heatmap binding.
+///   the per-light slice 0 (R channel) shadow factor — interpretable for
+///   spotting artifacts without needing a separate march-step heatmap binding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 #[repr(u32)]
@@ -4415,18 +4418,24 @@ mod tests {
         );
     }
 
-    /// sdf-per-light-shadows Task 3: the forward shader must compose the SHARED
-    /// `select_sdf_lights` K-selection helper (the load-bearing parity seam with
-    /// the visibility pass), call it from `fs_main`, and read the per-light
-    /// visibility slices back through `slice_for_visibility` (R/B/A) so each
-    /// sdf light's diffuse is multiplied by ITS slice. Confirms the composed
-    /// source parses with the helper concatenated in.
+    /// Guards that the forward shader composes `sdf_light_select.wgsl` and
+    /// validates end-to-end: `select_sdf_lights` (K-selection parity seam with
+    /// the visibility pass) and `slice_for_visibility` (per-light diffuse
+    /// multiply via R/B/A slices) must be declared and called from `fs_main`.
+    /// Also confirms the bilateral upsample wiring is intact. Full naga
+    /// validation — not just parse — catches type/binding errors.
     #[test]
     fn forward_shader_composes_sdf_light_selection_and_reads_slices() {
         let src = SHADER_SOURCE;
-        let module = naga::front::wgsl::parse_str(src).expect(
-            "forward + sdf_light_select must parse as one composed WGSL module (Task 3 parity seam)",
-        );
+        let module = naga::front::wgsl::parse_str(src)
+            .expect("forward + sdf_light_select must parse as one composed WGSL module");
+        // Full validation catches type/binding errors a bare parse misses.
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("forward + sdf_light_select composed source should validate");
 
         // The shared selection helper must be present as a function — proving
         // the helper source was concatenated, not reimplemented inline.

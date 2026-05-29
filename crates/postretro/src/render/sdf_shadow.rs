@@ -1,22 +1,22 @@
-// Half-resolution SDF static-occluder shadow pass.
-//
-// Task 4 of `sdf-static-occluder-shadows`. Runs as a compute pass between the
-// depth pre-pass and the forward pass. Per half-res pixel, traces two rays
-// against the static SDF (Task 3) and writes the per-term shadow factors into
-// a `Rgba8Unorm` half-res target:
-//   R = static-lightmap aggregate factor
+// Half-resolution SDF shadow pass. Runs as a compute pass between the depth
+// pre-pass and the forward pass. Per half-res pixel, traces up to K per-light
+// SDF visibility rays plus one animated dominant-direction ray, writing results
+// into a `Rgba8Unorm` half-res target:
+//   R = per-light SDF visibility slice 0
 //   G = animated-baked aggregate factor
-//   B, A = reserved for the geometry-moving per-light terms (documented seam —
-//          no v1 consumer; see plan §Goal).
+//   B = per-light SDF visibility slice 1
+//   A = per-light SDF visibility slice 2  (K = 3 per-light slices total)
 //
-// Forward integration (Task 5) reads this target and multiplies the static and
-// animated-baked terms by R and G respectively. When the SDF atlas isn't
-// present, the pass is skipped and the target stays at its `Clear` color of
-// (1, 1, 1, 1) — the forward multiply degrades cleanly.
+// Forward integration reads this target: the animated G term is multiplied into
+// the animated-baked contribution (flag-gated); per-light slices R/B/A are read
+// directly by the sdf-tag diffuse term — no flag, gated by light selection.
+// When the SDF atlas isn't present the pass is skipped and the target stays at
+// its `Clear` color of (1,1,1,1) — forward degrades cleanly.
 //
 // Pipeline layout: group 0 = SDF atlas (owned by `SdfAtlasResources`),
-// group 1 = this pass's own bind group (depth, direction textures, SH depth
-// moments, params uniform, shadow factor output, lightmap-UV gbuffer).
+// group 1 = this pass's own bind group (params uniform, depth, animated
+// direction texture, SH depth moments, shadow factor output, lightmap-UV
+// gbuffer), group 2 = static-light buffers the shared K-selection helper reads.
 
 use glam::Mat4;
 
@@ -40,8 +40,9 @@ const SDF_SHADOW_SHADER_SOURCE: &str = concat!(
 /// `context/plans/in-progress/sdf-static-occluder-shadows/research.md`).
 pub const HALF_RES_SCALE: u32 = 2;
 
-/// Color format of the shadow-factor target. R = static-lightmap aggregate,
-/// G = animated-baked aggregate, B/A = reserved.
+/// Color format of the shadow-factor target. R = per-light SDF visibility
+/// slice 0; G = animated-baked aggregate; B = per-light slice 1; A = per-light
+/// slice 2 (K = 3 per-light slices total).
 pub const SHADOW_FACTOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 /// Default uniform values for the tuning knobs. Task 7 wires sliders to these.

@@ -100,12 +100,10 @@ pub struct AlphaLightRecord {
     /// Normalized aim vector; `[0,0,0]` if Point.
     pub cone_direction: [f32; 3],
     pub cast_shadows: bool,
-    /// Internal/seam-only flag for the geometry-moving light class
-    /// (position/aim animation). v1 has no authoring surface for this — no
-    /// light moves yet, so authored content always parses `false`. Kept as
-    /// the named seam for the geometry-moving light class. Intensity-only
-    /// animation does **not** set this flag; that lives on the
-    /// animated-baked path (Task 2c).
+    /// Routes this light onto the shadow-map path. Set by the `_shadow_tech
+    /// dynamic` authoring key; `false` for `baked` and `sdf`. Intensity-only
+    /// animation does **not** set this flag — that stays on the animated-baked
+    /// path and needs no per-frame shadow re-render.
     pub is_dynamic: bool,
     /// Per-light opt-in for shadow-map-pool eligibility for dynamic entities
     /// (enemies / moving meshes). FGD `_cast_entity_shadows`. Default `false`.

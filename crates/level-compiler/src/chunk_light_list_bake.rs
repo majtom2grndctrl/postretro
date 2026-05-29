@@ -36,6 +36,11 @@ const RAY_EPSILON: f32 = 1.0e-3;
 /// factor). Beyond K overlapping `sdf` lights in a cell, the runtime drops the
 /// extras (treated lit), so the compiler warns the author. See
 /// `context/plans/in-progress/sdf-per-light-shadows/` (Rough sketch, K-slice).
+///
+/// Raising K requires matching changes in three coupled sites:
+/// `SDF_SELECT_K` in `sdf_light_select.wgsl`, the `indices: array<u32, 3>`
+/// hardcoded size in that same file, and the channel mapping in
+/// `slice_for_visibility` in `forward.wgsl`.
 pub const SDF_SHADOW_K: usize = 3;
 
 #[derive(Debug, Error)]

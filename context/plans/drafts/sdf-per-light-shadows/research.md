@@ -81,3 +81,37 @@ K× the march. The fail-floor (`sdf_shadows.md`): if SDF can't beat baked on cos
 quality on the 2020 MBP, baked wins and SDF reverts. The slice's perf measurement is
 therefore the primary deliverable — a clean visible shadow that blows the frame
 budget is still a fail-floor result.
+
+## Hybrid model + authoring rule (owner guidance, this session)
+
+SDF is not "the" shadow tech for every light — it's one member of a per-light hybrid:
+
+- **Spot lights are SDF's worst case, shadow maps' best.** A spot is one frustum =
+  one cheap 2D depth render + a one-tap compare; SDF would march per-fragment per
+  spot. The engine already has the spot shadow-map path (`spot_shadow_depth:
+  texture_depth_2d_array`, `spot_shadow_compare`, `light_space_matrices`,
+  `forward.wgsl:193-201`; ranked pool via `filter_entity_shadow_candidates` /
+  `rank_lights`). So spots/dynamic/hero → shadow maps.
+- **Truly fixed lights → baked** (free, the engine's "baked over computed" northstar).
+  Dropping the lightmap would delete the cheap path and force every fill light to
+  runtime cost — backwards. Keep baked as the default.
+- **SDF's niche:** a *sparse* set of static lights that want runtime-tweakable cast
+  shadows without a re-bake. Owner authoring rule: **≤ 2 SDF shadows per surface**;
+  more is allowed but risks tanking perf; the intended pattern is a blend of SDF +
+  dynamic (shadow-mapped) lights.
+
+This yields per-light tech selection (`_shadow_tech baked|sdf|dynamic`) and the clean
+double-count story: the bake already filters its light set
+(`!is_dynamic && animation.is_none()`, `lightmap_bake.rs:110`); adding the `sdf`/
+`dynamic` exclusion makes `lm_irr` and the runtime SDF set disjoint by construction.
+
+### Authoring-surface grounding
+
+- `MapLight` (`prl.rs:137`): `light_type`, `intensity`, `is_dynamic` (:154),
+  `casts_entity_shadows` (:159). Per-light authoring-flag pattern established.
+- FGD `_cast_entity_shadows` parsed at `quake_map.rs:279` — the live KVP precedent the
+  new `_shadow_tech` mirrors. `_dynamic` was retired (`quake_map.rs:247,1207`); the
+  `dynamic` tech value re-introduces that routing through one key.
+- Lightmap bake light filter: `StaticBakedLights` = `!is_dynamic && animation.is_none()`
+  (`lightmap_bake.rs:110`). The disjoint-set exclusion extends this.
+- FGD file: `sdk/TrenchBroom/postretro.fgd`.

@@ -39,12 +39,17 @@ struct Uniforms {
     //   2 = Visualize — replace the final shaded color with a grayscale view
     //                   of the static-aggregate (R) shadow factor.
     sdf_shadow_mode: u32,
-    // Two u32 padding slots — keeps the trailing 16-byte vec4 row of the
-    // struct fully accounted for. Separate u32s (not `vec2<u32>`) so the
+    // Dev toggle (non-zero ⇒ force per-light SDF visibility to 1.0). Used by
+    // the "no double-count" visual AC: with every sdf light's visibility
+    // forced fully lit, the per-light diffuse sum must reproduce the
+    // pre-change render with no brightening (disjoint sets guarantee the term
+    // is purely additive). Set via the Diagnostics panel checkbox.
+    sdf_force_visibility_one: u32,
+    // One u32 padding slot — keeps the trailing 16-byte vec4 row of the
+    // struct fully accounted for. A plain u32 (not folded into a vec) so the
     // struct's natural alignment stays 4 bytes and total stride lands
     // exactly at 112 bytes — wgpu rejects the pipeline if the CPU-side
     // `UNIFORM_SIZE` and WGSL-derived stride drift.
-    _sdf_pad0: u32,
     _sdf_pad1: u32,
 };
 
@@ -461,9 +466,12 @@ fn sample_normal(tex: texture_2d<f32>, uv: vec2<f32>, ddx: vec2<f32>, ddy: vec2<
 }
 
 // Depth-aware 2×2 bilateral upsample of the half-res SDF shadow factor at
-// the current fragment. Returns the per-channel sampled factor (R = static,
-// G = animated, B/A = reserved). Re-derived locally — the fog_composite
-// upsample was reverted in commit f50314d for perf; see
+// the current fragment. Returns the per-channel sampled factor: R/B/A carry
+// the K=3 per-light SDF visibility slices (slice 0 → R, slice 1 → B,
+// slice 2 → A, matching `sdf_shadow.wgsl`); G is the animated-baked aggregate
+// factor. `slice_for_visibility` maps a selection slot to its channel.
+// Re-derived locally — the fog_composite upsample was reverted in commit
+// f50314d for perf; see
 // `context/plans/in-progress/sdf-static-occluder-shadows/research.md`.
 //
 // Approach:
@@ -555,6 +563,20 @@ fn upsample_shadow_factor(frag_xy: vec2<f32>, frag_depth: f32) -> vec4<f32> {
     return (s00 * w00 + s10 * w10 + s01 * w01 + s11 * w11) * inv;
 }
 
+// Map a K-selection slot (0..SDF_SELECT_K) to its visibility channel in the
+// upsampled factor. Matches `sdf_shadow.wgsl`'s write layout exactly:
+// slice 0 → R, slice 1 → B, slice 2 → A (G is the animated aggregate, not a
+// per-light slice). The visibility pass and this reader must agree by
+// construction — this is the same mapping documented at `sdf_shadow.wgsl`'s
+// K-slice channel assignment.
+fn slice_for_visibility(factor: vec4<f32>, slot: u32) -> f32 {
+    switch slot {
+        case 0u: { return factor.r; }
+        case 1u: { return factor.b; }
+        default: { return factor.a; } // slot 2
+    }
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // UV footprint derivatives — computed once here in uniform control flow.
@@ -628,14 +650,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if uniforms.sdf_shadow_flags != 0u {
         sdf_factor = upsample_shadow_factor(in.clip_position.xy, in.clip_position.z);
     }
-    // Task 6: `SdfShadowMode::Off` (1) short-circuits both multiplies to 1.0
-    // (no SDF factor). Per-term gates below additionally require the static
-    // lightmap to be baked unshadowed — else the bake already encodes
-    // visibility and the multiply would double-shadow.
+    // `SdfShadowMode::Off` (1) short-circuits the SDF factor to 1.0. The
+    // animated-baked term keeps the G-channel aggregate factor (unchanged
+    // dominant-direction trace). The R/B/A channels are now per-light
+    // visibility slices consumed by the sdf-tag diffuse loop below — `lm_irr`
+    // (baked-tag lights) bakes its own shadow and is no longer SDF-multiplied,
+    // so the disjoint sets stay additive with no re-weighting.
     let sdf_mode_off = uniforms.sdf_shadow_mode == 1u;
-    let apply_static_sdf = (uniforms.sdf_shadow_flags & 2u) != 0u && !sdf_mode_off;
     let apply_animated_sdf = (uniforms.sdf_shadow_flags & 1u) != 0u && !sdf_mode_off;
-    let static_sdf = select(1.0, sdf_factor.r, apply_static_sdf);
     let animated_sdf = select(1.0, sdf_factor.g, apply_animated_sdf);
 
     // Static direct term: baked directional lightmap. NdotL is already folded
@@ -665,14 +687,47 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // Cap at 4.0: prevents unbounded spike when N_bump tilts toward the light
         // on a near-backfacing mesh surface.
         let scale = select(1.0, min(n_dot_l_bump / max(n_dot_l_mesh, NDOTL_EPS), 4.0), use_correction);
-        // Multiply each lightmap term by its own upsampled SDF factor (R for
-        // the static-light aggregate, G for the animated-baked aggregate);
-        // these are 1.0 when the per-term gate is off, so a shadowed-mode
-        // lightmap stays unmodified. Per Task 5 of sdf-static-occluder-shadows,
-        // shadow-map (enemy) results are never multiplied by these factors —
-        // those carry their own dynamic-occluder shadow and live in the
-        // dynamic-light loop below.
-        static_direct = lm_irr * scale * static_sdf + lm_anim * animated_sdf;
+        // `lm_irr` (baked-tag lights) carries its shadow baked in — no SDF
+        // multiply. `lm_anim` keeps the animated-baked G-channel aggregate
+        // factor (unchanged dominant-direction trace). Shadow-map (enemy)
+        // results never run through these factors — they carry their own
+        // dynamic-occluder shadow in the dynamic-light loop below.
+        static_direct = lm_irr * scale + lm_anim * animated_sdf;
+    }
+
+    // Per-light SDF diffuse (sdf-tagged static lights). Disjoint from `lm_irr`
+    // /`lm_anim` by construction (the compiler excludes sdf lights from both
+    // bake sets), so this is purely additive — no re-weighting. Selects the
+    // SAME K lights in the SAME order the half-res visibility pass did (shared
+    // `select_sdf_lights` helper), then multiplies each light's Lambert diffuse
+    // by its upsampled visibility slice (slot i → R/B/A via
+    // `slice_for_visibility`). Gated by `use_lightmap` so it shows in exactly
+    // the direct-static-light isolation modes the baked term does.
+    if use_lightmap {
+        let sel = select_sdf_lights(in.world_position);
+        for (var s: u32 = 0u; s < sel.count; s = s + 1u) {
+            let sl = spec_lights[sel.indices[s]];
+            let to_light = sl.position_and_range.xyz - in.world_position;
+            let dist = length(to_light);
+            let range = sl.position_and_range.w;
+            if range > 0.0 && dist > range {
+                continue;
+            }
+            let L = to_light / max(dist, 0.0001);
+            let n_dot_l = dot(N_bump, L);
+            if n_dot_l <= 0.0 {
+                continue;
+            }
+            let atten = select(1.0, max(1.0 - dist / max(range, 0.001), 0.0), range > 0.0);
+            // Dev toggle: force visibility to 1.0 for the "no double-count"
+            // A/B (forced-1.0 must match the pre-change render — disjoint sets
+            // mean the additive sum is the only thing this loop introduces).
+            // `SdfShadowMode::Off` also forces 1.0 so the diffuse still lands
+            // but unshadowed, mirroring the baked-term Off behavior.
+            let force_lit = uniforms.sdf_force_visibility_one != 0u || sdf_mode_off;
+            let visibility = select(slice_for_visibility(sdf_factor, s), 1.0, force_lit);
+            static_direct = static_direct + sl.color_and_pad.xyz * (n_dot_l * atten * visibility);
+        }
     }
 
     var total_light = vec3<f32>(uniforms.ambient_floor) + indirect + static_direct;
@@ -829,12 +884,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     let rgb = base_color.rgb * total_light;
-    // Task 6: `SdfShadowMode::Visualize` (2) replaces the shaded color with a
-    // grayscale view of the static-aggregate (R) shadow factor — sampled
-    // through the same bilateral upsample as the shading path. White = lit,
-    // black = fully occluded. When no SDF atlas is loaded `sdf_factor` is
-    // `vec4(1.0)`, so Visualize on a legacy PRL renders a flat white frame —
-    // self-documenting "nothing to visualize".
+    // `SdfShadowMode::Visualize` (2) replaces the shaded color with a
+    // grayscale view of the first per-light visibility slice (R = slot 0,
+    // the most-influential sdf light) — sampled through the same bilateral
+    // upsample as the shading path. White = lit, black = fully occluded. When
+    // no SDF atlas is loaded `sdf_factor` is `vec4(1.0)`, so Visualize on a
+    // legacy PRL renders a flat white frame — self-documenting "nothing to
+    // visualize".
     if uniforms.sdf_shadow_mode == 2u {
         let g = sdf_factor.r;
         return vec4<f32>(g, g, g, base_color.a);

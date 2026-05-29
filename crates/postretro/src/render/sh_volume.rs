@@ -1297,6 +1297,11 @@ mod tests {
             include_str!("../shaders/curve_eval.wgsl"),
             "\n",
             include_str!("../shaders/sh_sample.wgsl"),
+            "\n",
+            // sdf-per-light-shadows Task 3: forward now calls the shared
+            // `select_sdf_lights` helper, so the composed source under test
+            // must include it (mirrors the runtime `SHADER_SOURCE`).
+            include_str!("../shaders/sdf_light_select.wgsl"),
         );
         const BILLBOARD_SHADER_SOURCE: &str = concat!(
             include_str!("../shaders/billboard.wgsl"),

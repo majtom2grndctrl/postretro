@@ -202,6 +202,19 @@ pub fn draw_diagnostics_panel(
                     renderer.set_sdf_shadow_mode(sdf_mode);
                 }
 
+                // sdf-per-light-shadows Task 3: force per-light SDF visibility
+                // to 1.0. The no-double-count A/B — with every sdf light fully
+                // lit, the additive per-light diffuse must match the pre-change
+                // render (disjoint sets mean no re-weighting). Also settable
+                // headless via POSTRETRO_SDF_FORCE_VISIBILITY_ONE=1.
+                let mut force_vis = renderer.sdf_force_visibility_one();
+                if ui
+                    .checkbox(&mut force_vis, "SDF: force visibility 1.0")
+                    .changed()
+                {
+                    renderer.set_sdf_force_visibility_one(force_vis);
+                }
+
                 // Pins `uniforms.time` so all curve-driven animation holds still.
                 // Diagnostic aid: if a flickering artifact freezes too, it is
                 // time/animation-driven; if it keeps moving, it is not.

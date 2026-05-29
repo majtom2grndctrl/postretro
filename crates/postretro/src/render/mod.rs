@@ -145,12 +145,21 @@ fn sphere_intersects_any_fog_aabb(center: Vec3, radius: f32, aabbs: &[(Vec3, Vec
 // so appending after is safe. `sh_sample.wgsl` owns the SH reconstruction +
 // 8-corner blend symbols (`sh_irradiance`, `sample_sh_indirect_corners_depth_aware`,
 // `sample_sh_indirect_corners_without_depth`) — forward must not redeclare them.
+//
+// `sdf_light_select.wgsl` is the LOAD-BEARING K-selection parity seam: the same
+// source string is concatenated into the half-res SDF visibility pass
+// (`sdf_shadow.rs`) so both pick the same `sdf`-tagged lights in the same order.
+// It reads `spec_lights` / `chunk_grid` / `chunk_offsets` / `chunk_indices` by
+// name — all already declared in `forward.wgsl` for the static-light loop — and
+// declares no buffers of its own. Never reimplement the selection here.
 const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/forward.wgsl"),
     "\n",
     include_str!("../shaders/curve_eval.wgsl"),
     "\n",
     include_str!("../shaders/sh_sample.wgsl"),
+    "\n",
+    include_str!("../shaders/sdf_light_select.wgsl"),
 );
 
 const WIREFRAME_SHADER_SOURCE: &str = include_str!("../shaders/wireframe.wgsl");
@@ -174,25 +183,24 @@ const TIMING_PAIR_COUNT: usize = 5;
 // std140: vec3<f32> aligns to 16 bytes; camera_position and ambient_floor share a slot.
 //   0..64    view_proj  64..76   camera_position  76..80   ambient_floor
 //   80..84   light_count  84..88  time  88..92   lighting_isolation  92..96  indirect_scale
-//   96..100  sdf_shadow_flags  100..104 sdf_shadow_mode  104..112 _pad
-// `sdf_shadow_flags` (Task 5 of sdf-static-occluder-shadows) is a bitset
-// gating the bilateral upsample multiply in the forward shader:
+//   96..100  sdf_shadow_flags  100..104 sdf_shadow_mode
+//   104..108 sdf_force_visibility_one  108..112 _pad
+// `sdf_shadow_flags` is a bitset gating the SDF shadow factor in the forward
+// shader. After sdf-per-light-shadows Task 2/3 the R/B/A channels of the
+// half-res target carry per-light visibility slices, so only the animated
+// aggregate is still a bitset-gated multiply:
 //   bit 0 = apply animated-baked aggregate factor (G channel).
-//   bit 1 = apply static-lightmap aggregate factor (R channel).
-// Bit 0 is set whenever a baked SDF atlas is loaded; bit 1 additionally
-// requires the static lightmap to be baked unshadowed (else the multiply
-// would double-shadow the static term — see `Renderer::lightmap_mode()`).
-// Task 6 will overlay the SdfShadowMode debug selector through the same field.
+// Bit 0 is set whenever a baked SDF atlas is loaded. The per-light sdf-tag
+// diffuse term reads its visibility slices directly (no flag) — gated instead
+// by `select_sdf_lights` returning lights for the fragment.
+// `sdf_shadow_mode` overlays the debug selector; `sdf_force_visibility_one`
+// is the dev "force visibility to 1.0" toggle for the no-double-count A/B.
 // Struct stride rounds up to 112 (multiple of mat4 alignment).
 const UNIFORM_SIZE: usize = 112;
 
 /// Bit 0 of `Uniforms.sdf_shadow_flags` — apply the animated-baked aggregate
 /// factor (G channel of the half-res target) to the animated-baked term.
 pub const SDF_SHADOW_FLAG_ANIMATED: u32 = 1 << 0;
-/// Bit 1 of `Uniforms.sdf_shadow_flags` — apply the static-lightmap aggregate
-/// factor (R channel) to the static lightmap term. Requires the lightmap to
-/// have been baked unshadowed; else the bake already contains visibility.
-pub const SDF_SHADOW_FLAG_STATIC: u32 = 1 << 1;
 
 /// Debug selector for the SDF static-occluder shadow path (Task 6 of
 /// `sdf-static-occluder-shadows`). Mirrors the `LightingIsolation` pattern:
@@ -321,6 +329,12 @@ struct FrameUniforms {
     /// `Off` forces both SDF multiplies to 1.0; `Visualize` replaces the
     /// shaded color output with a grayscale R-channel view.
     sdf_shadow_mode: SdfShadowMode,
+    /// Dev toggle: force per-light SDF visibility to 1.0 in the forward shader.
+    /// Drives the "no double-count" visual A/B — with every sdf light fully
+    /// lit, the additive per-light diffuse must reproduce the pre-change
+    /// render (disjoint sets guarantee no re-weighting). Encoded as a u32
+    /// (0 = normal, non-zero = forced) into the uniform's first pad slot.
+    sdf_force_visibility_one: bool,
 }
 
 fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
@@ -342,7 +356,9 @@ fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
     bytes[96..100].copy_from_slice(&u.sdf_shadow_flags.to_ne_bytes());
     let mode: u32 = u.sdf_shadow_mode as u32;
     bytes[100..104].copy_from_slice(&mode.to_ne_bytes());
-    // 104..112 stays zero — explicit pad matching the WGSL `_pad: vec2<u32>`.
+    let force_vis: u32 = u.sdf_force_visibility_one as u32;
+    bytes[104..108].copy_from_slice(&force_vis.to_ne_bytes());
+    // 108..112 stays zero — explicit pad matching the WGSL `_sdf_pad1: u32`.
     bytes
 }
 
@@ -757,6 +773,13 @@ pub struct Renderer {
     /// `FrameUniforms.sdf_shadow_mode`.
     sdf_shadow_mode: SdfShadowMode,
 
+    /// Dev toggle: force per-light SDF visibility to 1.0 in the forward shader.
+    /// Panel checkbox; surfaces through `FrameUniforms.sdf_force_visibility_one`.
+    /// Drives the no-double-count visual A/B (forced-1.0 must match the
+    /// pre-change render). Seeded from the `POSTRETRO_SDF_FORCE_VISIBILITY_ONE`
+    /// env flag at construction so a headless/no-UI run can exercise it too.
+    sdf_force_visibility_one: bool,
+
     /// Toggled by Alt+Shift+V; `true` = AutoVsync, `false` = AutoNoVsync.
     vsync_enabled: bool,
 
@@ -1136,6 +1159,7 @@ impl Renderer {
             // `lightmap_mode()` once geometry installs.
             sdf_shadow_flags: 0,
             sdf_shadow_mode: SdfShadowMode::On,
+            sdf_force_visibility_one: false,
         });
 
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -2002,6 +2026,10 @@ impl Renderer {
             debug_lines,
             lighting_isolation: LightingIsolation::Normal,
             sdf_shadow_mode: SdfShadowMode::On,
+            sdf_force_visibility_one: std::env::var("POSTRETRO_SDF_FORCE_VISIBILITY_ONE")
+                .ok()
+                .as_deref()
+                == Some("1"),
             vsync_enabled: true,
             has_geometry,
             debug_frame: 0,
@@ -2614,6 +2642,22 @@ impl Renderer {
         self.sdf_shadow_mode
     }
 
+    /// Dev toggle (panel checkbox): force per-light SDF visibility to 1.0 so
+    /// the forward sdf-tag diffuse term lands unshadowed. The no-double-count
+    /// A/B: forced-1.0 must reproduce the pre-change render.
+    #[cfg(feature = "dev-tools")]
+    pub fn set_sdf_force_visibility_one(&mut self, force: bool) {
+        if self.sdf_force_visibility_one != force {
+            self.sdf_force_visibility_one = force;
+            log::info!("[Renderer] SDF force visibility 1.0: {force}");
+        }
+    }
+
+    #[cfg(feature = "dev-tools")]
+    pub fn sdf_force_visibility_one(&self) -> bool {
+        self.sdf_force_visibility_one
+    }
+
     #[cfg(feature = "dev-tools")]
     pub fn freeze_time(&self) -> bool {
         self.freeze_time
@@ -2731,9 +2775,6 @@ impl Renderer {
         let mut sdf_shadow_flags: u32 = 0;
         if self.sdf_atlas_resources.present {
             sdf_shadow_flags |= SDF_SHADOW_FLAG_ANIMATED;
-            if matches!(self.lightmap_mode, crate::prl::LightmapMode::Unshadowed) {
-                sdf_shadow_flags |= SDF_SHADOW_FLAG_STATIC;
-            }
         }
         let data = build_uniform_data(&FrameUniforms {
             view_proj,
@@ -2745,6 +2786,7 @@ impl Renderer {
             indirect_scale: self.indirect_scale,
             sdf_shadow_flags,
             sdf_shadow_mode: self.sdf_shadow_mode,
+            sdf_force_visibility_one: self.sdf_force_visibility_one,
         });
         self.queue.write_buffer(&self.uniform_buffer, 0, &data);
         self.last_camera_position = camera_position;
@@ -4157,6 +4199,7 @@ mod tests {
             indirect_scale: 1.0,
             sdf_shadow_flags: 0,
             sdf_shadow_mode: SdfShadowMode::On,
+            sdf_force_visibility_one: false,
         });
         assert_eq!(data.len(), UNIFORM_SIZE);
     }
@@ -4172,17 +4215,50 @@ mod tests {
             time: 0.0,
             lighting_isolation: LightingIsolation::Normal,
             indirect_scale: 1.0,
-            sdf_shadow_flags: SDF_SHADOW_FLAG_ANIMATED | SDF_SHADOW_FLAG_STATIC,
+            sdf_shadow_flags: SDF_SHADOW_FLAG_ANIMATED,
             sdf_shadow_mode: SdfShadowMode::On,
+            sdf_force_visibility_one: false,
         });
         let flags = u32::from_ne_bytes(data[96..100].try_into().unwrap());
-        assert_eq!(flags, 0b11);
-        // `sdf_shadow_mode` at 100..104 — `On` encodes to 0; tail pad 104..112 stays zero.
+        assert_eq!(flags, SDF_SHADOW_FLAG_ANIMATED);
+        // `sdf_shadow_mode` at 100..104 — `On` encodes to 0;
+        // `sdf_force_visibility_one` at 104..108 (false ⇒ 0); pad 108..112 zero.
         assert_eq!(
             u32::from_ne_bytes(data[100..104].try_into().unwrap()),
             SdfShadowMode::On as u32,
         );
         assert!(data[104..112].iter().all(|&b| b == 0));
+    }
+
+    /// sdf-per-light-shadows Task 3: the dev "force visibility 1.0" toggle
+    /// packs as a u32 at offset 104..108 (non-zero ⇒ forced) and leaves the
+    /// trailing pad 108..112 zero. Guards the CPU↔WGSL uniform layout drift
+    /// for the new field.
+    #[test]
+    fn uniform_data_encodes_sdf_force_visibility_one_at_correct_offset() {
+        for (force, expected) in [(false, 0u32), (true, 1u32)] {
+            let data = build_uniform_data(&FrameUniforms {
+                view_proj: Mat4::IDENTITY,
+                camera_position: Vec3::ZERO,
+                ambient_floor: 0.0,
+                light_count: 0,
+                time: 0.0,
+                lighting_isolation: LightingIsolation::Normal,
+                indirect_scale: 1.0,
+                sdf_shadow_flags: 0,
+                sdf_shadow_mode: SdfShadowMode::On,
+                sdf_force_visibility_one: force,
+            });
+            assert_eq!(
+                u32::from_ne_bytes(data[104..108].try_into().unwrap()),
+                expected,
+                "sdf_force_visibility_one={force} should encode to {expected} at 104..108",
+            );
+            assert!(
+                data[108..112].iter().all(|&b| b == 0),
+                "tail pad 108..112 must stay zero for force={force}",
+            );
+        }
     }
 
     /// Task 6 of `sdf-static-occluder-shadows`: the `SdfShadowMode` selector
@@ -4203,6 +4279,7 @@ mod tests {
                 indirect_scale: 1.0,
                 sdf_shadow_flags: 0,
                 sdf_shadow_mode: mode,
+                sdf_force_visibility_one: false,
             });
             let decoded = u32::from_ne_bytes(data[100..104].try_into().unwrap());
             assert_eq!(
@@ -4210,10 +4287,10 @@ mod tests {
                 "SdfShadowMode::{:?} should encode to {} at offset 100..104",
                 mode, mode as u32,
             );
-            // Tail pad 104..112 stays zero regardless of mode.
+            // Tail pad 108..112 stays zero regardless of mode.
             assert!(
-                data[104..112].iter().all(|&b| b == 0),
-                "tail pad bytes 104..112 must stay zero for {:?}",
+                data[108..112].iter().all(|&b| b == 0),
+                "tail pad bytes 108..112 must stay zero for {:?}",
                 mode,
             );
         }
@@ -4335,6 +4412,64 @@ mod tests {
         assert!(
             src.contains("sdf_shadow_flags"),
             "forward.wgsl Uniforms must include the `sdf_shadow_flags` gate field",
+        );
+    }
+
+    /// sdf-per-light-shadows Task 3: the forward shader must compose the SHARED
+    /// `select_sdf_lights` K-selection helper (the load-bearing parity seam with
+    /// the visibility pass), call it from `fs_main`, and read the per-light
+    /// visibility slices back through `slice_for_visibility` (R/B/A) so each
+    /// sdf light's diffuse is multiplied by ITS slice. Confirms the composed
+    /// source parses with the helper concatenated in.
+    #[test]
+    fn forward_shader_composes_sdf_light_selection_and_reads_slices() {
+        let src = SHADER_SOURCE;
+        let module = naga::front::wgsl::parse_str(src).expect(
+            "forward + sdf_light_select must parse as one composed WGSL module (Task 3 parity seam)",
+        );
+
+        // The shared selection helper must be present as a function — proving
+        // the helper source was concatenated, not reimplemented inline.
+        let has_select = module
+            .functions
+            .iter()
+            .any(|(_h, f)| f.name.as_deref() == Some("select_sdf_lights"));
+        assert!(
+            has_select,
+            "forward must compose the shared `select_sdf_lights` helper (K-selection parity seam)",
+        );
+
+        // The slice→channel mapper must exist — it is how the forward reads a
+        // selection slot's visibility (slot 0→R, 1→B, 2→A).
+        let has_slice_map = module
+            .functions
+            .iter()
+            .any(|(_h, f)| f.name.as_deref() == Some("slice_for_visibility"));
+        assert!(
+            has_slice_map,
+            "forward must declare `slice_for_visibility` to read per-light slices from R/B/A",
+        );
+
+        // fs_main must actually drive the per-light path: select the lights and
+        // read each one's slice — else the diffuse term attaches to nothing.
+        let fs = src
+            .find("fn fs_main(")
+            .expect("forward.wgsl must declare fs_main");
+        let fs_tail = &src[fs..];
+        assert!(
+            fs_tail.contains("select_sdf_lights("),
+            "fs_main must call select_sdf_lights (parity with the visibility pass)",
+        );
+        assert!(
+            fs_tail.contains("slice_for_visibility("),
+            "fs_main must read per-light visibility via slice_for_visibility (else slices are dead)",
+        );
+
+        // The dev force-visibility-1.0 toggle must be wired into the Uniforms
+        // struct (drives the no-double-count A/B).
+        assert!(
+            src.contains("sdf_force_visibility_one"),
+            "forward.wgsl Uniforms must include the `sdf_force_visibility_one` dev toggle",
         );
     }
 
@@ -4650,6 +4785,7 @@ mod tests {
             indirect_scale,
             sdf_shadow_flags: 0,
             sdf_shadow_mode: SdfShadowMode::On,
+            sdf_force_visibility_one: false,
         });
 
         // view_proj: first 64 bytes = 16 f32 identity columns.

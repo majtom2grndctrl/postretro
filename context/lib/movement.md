@@ -25,6 +25,20 @@ States live natively in Rust. Authors control **which states exist, their tuning
 
 **Why.** Movement runs every tick in the fixed game-logic step (`entity_model.md` §5, update order 1, before camera follow). Driving state logic through QuickJS/Luau per tick would add FFI cost and determinism risk on the hottest path. It also holds the standing invariant that movement is engine-internal — scripts cannot read or write the movement component through `worldQuery` (`entity_model.md` §7b). The seam is shaped so a future script-driven path could resolve behind it without reshaping callers, but that path is not built.
 
+### The shape of the surface
+
+In its full form the declarative surface is a **transition graph** assembled from three engine-owned, *closed* vocabularies — never an expression language. Tuning ships first; author-defined transitions follow across the series.
+
+| Vocabulary | Author picks | Engine owns |
+|---|---|---|
+| **States** | which native states exist + their tuning | each state's per-tick velocity intent (Rust) |
+| **Triggers** | a boolean combination (`all`/`any`) over a closed predicate set — `grounded`, `airborne`, `touchingWall`, `<input>Edge`, `speedAbove/Below`, `cooldownReady`, `chargesRemaining`, `elapsedMs` | predicate evaluation |
+| **Carry-rules** | the velocity transform applied at a transition edge — `keepHorizontal`, `keepBoost`, `zero`, `projectOntoWallPlane`, `reflect`, `scale` | the transforms + momentum-conservation consistency (§6) |
+
+A transition is one data row — `{ from, to, when, carry }`. The author wires native states into chains the engine never pre-built (dash → wall-run → wall-launch); the velocity math under each state and each carry-rule stays native.
+
+**The line — one test:** a declarative element is anything the engine can evaluate each tick *from data alone*, with no author code and no reads outside the movement component. Author-written per-tick expressions, predicates over arbitrary world state (e.g. player health), and free-form velocity math are out — they reintroduce the FFI/determinism cost and break the momentum-carry invariant. New predicates and carry-rules are added deliberately, vetted against the flexibility band (§3) — never via a general escape hatch.
+
 ## 3. The flexibility band
 
 The author surface targets a *band* of expressiveness, not a point.

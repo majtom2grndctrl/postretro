@@ -51,6 +51,33 @@ impl AlphaFalloffModel {
     }
 }
 
+/// Which tech casts this light's shadow. Wire-level `u8`; matches the semantic
+/// `ShadowTech` enum in `postretro-level-compiler::map_data`. The three sets
+/// are disjoint — a light is shadowed by exactly one — so no contribution is
+/// double-counted. See `context/plans/in-progress/sdf-per-light-shadows/`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum AlphaShadowTech {
+    /// Shadow baked into the lightmap (free, fixed). The default.
+    #[default]
+    Baked = 0,
+    /// Runtime SDF-traced per-light shadow (sparse, tweakable, no re-bake).
+    Sdf = 1,
+    /// Shadow-map path (spots / moving / hero); also sets `is_dynamic`.
+    Dynamic = 2,
+}
+
+impl AlphaShadowTech {
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Baked),
+            1 => Some(Self::Sdf),
+            2 => Some(Self::Dynamic),
+            _ => None,
+        }
+    }
+}
+
 /// One serialised light record. Fixed-size on disk: 72 bytes per record.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AlphaLightRecord {
@@ -89,6 +116,10 @@ pub struct AlphaLightRecord {
     /// "unassigned / cannot determine leaf" (e.g. the light origin landed in
     /// a solid leaf — a map-authoring error). Runtime culls these and warns.
     pub leaf_index: u32,
+    /// Which tech casts this light's shadow (FGD `_shadow_tech`). The three
+    /// sets are disjoint, so no light's contribution is double-counted.
+    /// Records from a `.prl` predating the shadow-tech field decode `Baked`.
+    pub shadow_tech: AlphaShadowTech,
 }
 
 /// Sentinel `leaf_index` for lights whose origin could not be assigned to a
@@ -96,21 +127,32 @@ pub struct AlphaLightRecord {
 /// warning at load.
 pub const ALPHA_LIGHT_LEAF_UNASSIGNED: u32 = u32::MAX;
 
-/// Byte size of a single serialised `AlphaLightRecord` in the current
-/// (v2) layout, which adds the trailing `casts_entity_shadows` byte.
+/// Byte size of a single serialised `AlphaLightRecord` in the current layout.
 /// 24 (origin) + 1 (type) + 4 (intensity) + 12 (color) + 1 (falloff model)
 /// + 4 (range) + 4 + 4 (cone angles) + 12 (cone dir) + 1 (cast shadows)
-/// + 1 (is_dynamic) + 1 (casts_entity_shadows) + 4 (leaf_index) = 73.
-pub const ALPHA_LIGHT_RECORD_SIZE: usize = 73;
+/// + 1 (is_dynamic) + 1 (casts_entity_shadows) + 4 (leaf_index)
+/// + 1 (shadow_tech) = 74.
+pub const ALPHA_LIGHT_RECORD_SIZE: usize = 74;
 
-/// Legacy on-disk record size predating `casts_entity_shadows` (Task 1b of
-/// the SDF static-occluder-shadows spec). Legacy PRLs deserialize with
-/// `casts_entity_shadows = false` and retain their stored `is_dynamic`.
-pub const ALPHA_LIGHT_RECORD_SIZE_LEGACY: usize = 72;
+/// AlphaLights section version (per-section, distinct from the PRL header
+/// `CURRENT_VERSION`; mirrors the `SH_VOLUME_VERSION` precedent). Bumped when
+/// the record layout changes so the loader decodes the right fields.
+///
+/// - v1 (legacy): no `shadow_tech` byte — 73-byte records. Decodes
+///   `shadow_tech = Baked`.
+/// - v2 (current): trailing `shadow_tech` byte — 74-byte records.
+///
+/// A version-less `.prl` written before this field existed is treated as v1.
+pub const ALPHA_LIGHTS_VERSION: u32 = 2;
+
+/// v1 record stride (predating the `shadow_tech` byte). Records this length
+/// decode `shadow_tech = Baked`.
+const ALPHA_LIGHT_RECORD_SIZE_V1: usize = 73;
 
 /// AlphaLights section (ID 18).
 ///
 /// On-disk layout (little-endian throughout):
+///   u32  version  (= ALPHA_LIGHTS_VERSION)
 ///   u32  light_count
 ///   AlphaLightRecord[light_count]  (`ALPHA_LIGHT_RECORD_SIZE` bytes each)
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -121,8 +163,9 @@ pub struct AlphaLightsSection {
 impl AlphaLightsSection {
     pub fn to_bytes(&self) -> Vec<u8> {
         let count = self.lights.len() as u32;
-        let mut buf = Vec::with_capacity(4 + self.lights.len() * ALPHA_LIGHT_RECORD_SIZE);
+        let mut buf = Vec::with_capacity(8 + self.lights.len() * ALPHA_LIGHT_RECORD_SIZE);
 
+        buf.extend_from_slice(&ALPHA_LIGHTS_VERSION.to_le_bytes());
         buf.extend_from_slice(&count.to_le_bytes());
 
         for l in &self.lights {
@@ -145,6 +188,7 @@ impl AlphaLightsSection {
             buf.push(if l.is_dynamic { 1 } else { 0 });
             buf.push(if l.casts_entity_shadows { 1 } else { 0 });
             buf.extend_from_slice(&l.leaf_index.to_le_bytes());
+            buf.push(l.shadow_tech as u8);
         }
 
         buf
@@ -158,23 +202,29 @@ impl AlphaLightsSection {
             )));
         }
 
-        let count = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
-
-        // Legacy stride detection: PRLs predating `casts_entity_shadows`
-        // (Task 1b) wrote `ALPHA_LIGHT_RECORD_SIZE_LEGACY` (72) bytes per
-        // record. Detect by exact body-length match against the legacy
-        // stride; new records default `casts_entity_shadows = false` and
-        // retain their stored `is_dynamic`.
-        let body_len = data.len() - 4;
-        let v2_expected = count * ALPHA_LIGHT_RECORD_SIZE;
-        let legacy_expected = count * ALPHA_LIGHT_RECORD_SIZE_LEGACY;
-        let is_legacy = body_len == legacy_expected && body_len != v2_expected;
-        let record_size = if is_legacy {
-            ALPHA_LIGHT_RECORD_SIZE_LEGACY
-        } else {
-            ALPHA_LIGHT_RECORD_SIZE
+        // The section gained a leading `u32 version` (mirroring
+        // `SH_VOLUME_VERSION`). A `.prl` written before that field began with
+        // `u32 light_count` directly and 73-byte records. Disambiguate by
+        // testing the versioned interpretation against the body length: a
+        // current section is `version(4) + count(4) + count*74`. If that
+        // matches, decode versioned; otherwise fall back to the version-less
+        // v1 layout (`count(4) + count*73`, `shadow_tech = Baked`).
+        let first = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        let versioned = data.len() >= 8 && {
+            let count = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+            first == ALPHA_LIGHTS_VERSION && data.len() == 8 + count * ALPHA_LIGHT_RECORD_SIZE
         };
-        let expected_len = 4 + count * record_size;
+
+        let (mut o, count, record_size, has_shadow_tech) = if versioned {
+            let count = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+            (8usize, count, ALPHA_LIGHT_RECORD_SIZE, true)
+        } else {
+            // Version-less legacy section: `first` is the light count, records
+            // are 73 bytes, and `shadow_tech` defaults to `Baked`.
+            (4usize, first as usize, ALPHA_LIGHT_RECORD_SIZE_V1, false)
+        };
+
+        let expected_len = o + count * record_size;
         if data.len() < expected_len {
             return Err(FormatError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -186,7 +236,6 @@ impl AlphaLightsSection {
         }
 
         let mut lights = Vec::with_capacity(count);
-        let mut o = 4;
 
         for i in 0..count {
             let ox = read_f64_le(&data[o..o + 8]);
@@ -218,17 +267,22 @@ impl AlphaLightsSection {
             let cdz = read_f32_le(&data[o + 62..o + 66]);
             let cast_shadows = data[o + 66] != 0;
             let is_dynamic = data[o + 67] != 0;
-            let (casts_entity_shadows, leaf_off) = if is_legacy {
-                (false, o + 68)
+            let casts_entity_shadows = data[o + 68] != 0;
+            let leaf_index =
+                u32::from_le_bytes([data[o + 69], data[o + 70], data[o + 71], data[o + 72]]);
+            // `shadow_tech` trails the record only in v2+; version-less v1
+            // sections default to `Baked`.
+            let shadow_tech = if has_shadow_tech {
+                let raw = data[o + 73];
+                AlphaShadowTech::from_u8(raw).ok_or_else(|| {
+                    FormatError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("alpha light {i}: invalid shadow_tech {raw}"),
+                    ))
+                })?
             } else {
-                (data[o + 68] != 0, o + 69)
+                AlphaShadowTech::Baked
             };
-            let leaf_index = u32::from_le_bytes([
-                data[leaf_off],
-                data[leaf_off + 1],
-                data[leaf_off + 2],
-                data[leaf_off + 3],
-            ]);
 
             lights.push(AlphaLightRecord {
                 origin: [ox, oy, oz],
@@ -244,6 +298,7 @@ impl AlphaLightsSection {
                 is_dynamic,
                 casts_entity_shadows,
                 leaf_index,
+                shadow_tech,
             });
 
             o += record_size;
@@ -280,6 +335,7 @@ mod tests {
             is_dynamic: false,
             casts_entity_shadows: false,
             leaf_index: 7,
+            shadow_tech: AlphaShadowTech::Sdf,
         }
     }
 
@@ -287,7 +343,7 @@ mod tests {
     fn round_trip_empty() {
         let section = AlphaLightsSection::default();
         let bytes = section.to_bytes();
-        assert_eq!(bytes.len(), 4);
+        assert_eq!(bytes.len(), 8); // version + count
         let restored = AlphaLightsSection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);
     }
@@ -298,9 +354,26 @@ mod tests {
             lights: vec![sample_record()],
         };
         let bytes = section.to_bytes();
-        assert_eq!(bytes.len(), 4 + ALPHA_LIGHT_RECORD_SIZE);
+        assert_eq!(bytes.len(), 8 + ALPHA_LIGHT_RECORD_SIZE);
         let restored = AlphaLightsSection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);
+    }
+
+    /// The tech tag survives a serialize → deserialize round-trip across all
+    /// three values. (PRL → runtime contract seam.)
+    #[test]
+    fn shadow_tech_survives_round_trip() {
+        for tech in [
+            AlphaShadowTech::Baked,
+            AlphaShadowTech::Sdf,
+            AlphaShadowTech::Dynamic,
+        ] {
+            let mut rec = sample_record();
+            rec.shadow_tech = tech;
+            let section = AlphaLightsSection { lights: vec![rec] };
+            let restored = AlphaLightsSection::from_bytes(&section.to_bytes()).unwrap();
+            assert_eq!(restored.lights[0].shadow_tech, tech);
+        }
     }
 
     #[test]
@@ -321,6 +394,7 @@ mod tests {
                     is_dynamic: false,
                     casts_entity_shadows: false,
                     leaf_index: 0,
+                    shadow_tech: AlphaShadowTech::Baked,
                 },
                 sample_record(),
                 AlphaLightRecord {
@@ -341,6 +415,7 @@ mod tests {
                     is_dynamic: false,
                     casts_entity_shadows: false,
                     leaf_index: ALPHA_LIGHT_LEAF_UNASSIGNED,
+                    shadow_tech: AlphaShadowTech::Dynamic,
                 },
             ],
         };
@@ -365,14 +440,14 @@ mod tests {
         assert!(msg.contains("truncated"), "unexpected: {msg}");
     }
 
-    /// Legacy PRLs predating `casts_entity_shadows` (Task 1b) write 72-byte
-    /// records. The body length exactly matches `count * 72`, so the loader
-    /// detects the legacy layout and defaults `casts_entity_shadows = false`
-    /// while preserving the stored `is_dynamic`.
+    /// Version-less legacy PRLs predating `_shadow_tech` write a section with
+    /// no leading version field and 73-byte records (no trailing tech byte).
+    /// The loader detects the absence of the version header and defaults every
+    /// record's `shadow_tech` to `Baked`, preserving the stored `is_dynamic`.
     #[test]
-    fn legacy_record_layout_parses_with_default_casts_entity_shadows() {
-        // Build a legacy (72-byte) body for two records, with distinct
-        // is_dynamic bytes to assert preservation.
+    fn legacy_versionless_section_decodes_baked_shadow_tech() {
+        // Build a version-less (count + 73-byte records) body for two records,
+        // with distinct is_dynamic bytes to assert preservation.
         let mut buf = Vec::new();
         let count: u32 = 2;
         buf.extend_from_slice(&count.to_le_bytes());
@@ -395,18 +470,19 @@ mod tests {
             buf.extend_from_slice(&0.0_f32.to_le_bytes()); // cdz
             buf.push(1); // cast_shadows
             buf.push(is_dyn_byte); // is_dynamic
+            buf.push(0); // casts_entity_shadows
             buf.extend_from_slice(&leaf.to_le_bytes()); // leaf_index
         }
-        assert_eq!(buf.len(), 4 + 2 * ALPHA_LIGHT_RECORD_SIZE_LEGACY);
+        assert_eq!(buf.len(), 4 + 2 * ALPHA_LIGHT_RECORD_SIZE_V1);
 
         let section = AlphaLightsSection::from_bytes(&buf).expect("legacy body should parse");
         assert_eq!(section.lights.len(), 2);
         assert!(!section.lights[0].is_dynamic);
-        assert!(!section.lights[0].casts_entity_shadows);
         assert_eq!(section.lights[0].leaf_index, 5);
+        assert_eq!(section.lights[0].shadow_tech, AlphaShadowTech::Baked);
         assert!(section.lights[1].is_dynamic);
-        assert!(!section.lights[1].casts_entity_shadows);
         assert_eq!(section.lights[1].leaf_index, 9);
+        assert_eq!(section.lights[1].shadow_tech, AlphaShadowTech::Baked);
     }
 
     #[test]
@@ -415,8 +491,8 @@ mod tests {
             lights: vec![sample_record()],
         };
         let mut bytes = section.to_bytes();
-        // light_type byte is at offset 4 + 24 = 28.
-        bytes[28] = 99;
+        // light_type byte: version(4) + count(4) + 24 (origin) = 32.
+        bytes[32] = 99;
         let err = AlphaLightsSection::from_bytes(&bytes).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("invalid light_type"), "unexpected: {msg}");
@@ -428,10 +504,23 @@ mod tests {
             lights: vec![sample_record()],
         };
         let mut bytes = section.to_bytes();
-        // falloff_model byte at offset 4 + 24 + 1 + 4 + 12 = 45.
-        bytes[45] = 99;
+        // falloff_model byte: version(4) + count(4) + 24 + 1 + 4 + 12 = 49.
+        bytes[49] = 99;
         let err = AlphaLightsSection::from_bytes(&bytes).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("invalid falloff_model"), "unexpected: {msg}");
+    }
+
+    #[test]
+    fn rejects_unknown_shadow_tech_byte() {
+        let section = AlphaLightsSection {
+            lights: vec![sample_record()],
+        };
+        let mut bytes = section.to_bytes();
+        // shadow_tech is the last byte of the (only) record.
+        *bytes.last_mut().unwrap() = 99;
+        let err = AlphaLightsSection::from_bytes(&bytes).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("invalid shadow_tech"), "unexpected: {msg}");
     }
 }

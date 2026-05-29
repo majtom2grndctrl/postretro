@@ -85,6 +85,21 @@
         0 : "Off (default)"
         1 : "On"
     ]
+    // `_shadow_tech` picks which tech casts this light's shadow. The three
+    // sets are disjoint — a light is shadowed by exactly one, so no
+    // contribution is double-counted:
+    //   baked   — shadow baked into the lightmap (free, fixed). The default.
+    //   sdf     — runtime SDF-traced per-light shadow (sparse, tweakable
+    //             without a re-bake). Excluded from the lightmap bake.
+    //   dynamic — shadow-map path (spots / moving / hero). Maps to
+    //             is_dynamic; excluded from the lightmap bake.
+    // See context/plans/in-progress/sdf-per-light-shadows/.
+    _shadow_tech(choices) : "Shadow Tech" : "baked" =
+    [
+        "baked"   : "Baked (lightmap; default)"
+        "sdf"     : "SDF (runtime-traced static shadow)"
+        "dynamic" : "Dynamic (shadow map)"
+    ]
     // Space-delimited list of script tags. An entity matches
     // `world.query({ component: "light", tag: "t" })` when any tag equals
     // `"t"`. Leave blank for no tags. Example: "ambientFill warm"

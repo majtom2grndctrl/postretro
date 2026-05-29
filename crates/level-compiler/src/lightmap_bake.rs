@@ -27,7 +27,13 @@ pub const DEFAULT_TEXEL_DENSITY_METERS: f32 = 0.04;
 /// trailer the runtime now reads. Re-bakes existing maps so cached entries
 /// carry the explicit mode and so the unshadowed bake's visibility-skip branch
 /// is exercised on a fresh cache miss.
-pub const STAGE_VERSION: u32 = 2;
+///
+/// v3 bump: per-light `_shadow_tech` routing (sdf-per-light-shadows Task 1).
+/// `sdf`- and `dynamic`-tagged lights are now excluded from the static and
+/// animated bake sets, so a stale cached lightmap could carry a shadow for a
+/// light the runtime now resolves separately (double-count). The bump forces a
+/// re-bake of the now-disjoint baked set.
+pub const STAGE_VERSION: u32 = 3;
 
 /// Serializable enum tag for the bake mode. Mirrors `LightmapMode` from
 /// `level-format` but lives here so the cache-key derivation in `main` can fold
@@ -1098,6 +1104,7 @@ mod tests {
             casts_entity_shadows: false,
             is_animated: false,
             tags: vec![],
+            shadow_tech: crate::map_data::ShadowTech::Baked,
         }
     }
 
@@ -1207,6 +1214,7 @@ mod tests {
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let mut dyn_light = point_light_above();
         dyn_light.is_dynamic = true;
+        dyn_light.shadow_tech = crate::map_data::ShadowTech::Dynamic;
         let lights = vec![dyn_light];
         let static_lights = StaticBakedLights::from_lights(&lights);
         let mut inputs = LightmapBakeCtx {
@@ -1261,6 +1269,7 @@ mod tests {
 
         let mut dyn_light = point_light_above();
         dyn_light.is_dynamic = true;
+        dyn_light.shadow_tech = crate::map_data::ShadowTech::Dynamic;
         let mut geo_dyn = unit_quad_geometry();
         let (bvh_d, prims_d, _) = build_bvh(&geo_dyn).unwrap();
         let static_dyn = StaticBakedLights::from_lights(std::slice::from_ref(&dyn_light));
@@ -1564,6 +1573,7 @@ mod tests {
             casts_entity_shadows: false,
             is_animated: false,
             tags: vec![],
+            shadow_tech: crate::map_data::ShadowTech::Baked,
         };
         let lights = vec![light];
         let static_lights = StaticBakedLights::from_lights(&lights);
@@ -1725,6 +1735,7 @@ mod tests {
             casts_entity_shadows: false,
             is_animated: false,
             tags: vec![],
+            shadow_tech: crate::map_data::ShadowTech::Baked,
         };
         let lights = vec![light];
         let static_lights = StaticBakedLights::from_lights(&lights);

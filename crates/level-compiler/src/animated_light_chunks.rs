@@ -509,6 +509,7 @@ mod tests {
             is_animated: false,
             casts_entity_shadows: false,
             tags: vec![],
+            shadow_tech: crate::map_data::ShadowTech::Baked,
         }
     }
 
@@ -521,6 +522,9 @@ mod tests {
     fn mk_dynamic_light() -> MapLight {
         let mut l = mk_animated_light();
         l.is_dynamic = true;
+        // Real dynamic lights carry `_shadow_tech dynamic`; the bake filter now
+        // keys on the tag (not `is_dynamic` alone), so set it to match.
+        l.shadow_tech = crate::map_data::ShadowTech::Dynamic;
         l
     }
 

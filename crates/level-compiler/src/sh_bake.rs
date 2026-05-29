@@ -894,6 +894,7 @@ mod tests {
             casts_entity_shadows: false,
             is_animated: false,
             tags: vec![],
+            shadow_tech: crate::map_data::ShadowTech::Baked,
         }
     }
 
@@ -1217,6 +1218,7 @@ mod tests {
             casts_entity_shadows: false,
             is_animated: false,
             tags: vec![],
+            shadow_tech: crate::map_data::ShadowTech::Baked,
         };
         let exterior: HashSet<usize> = HashSet::new();
         let lights = std::slice::from_ref(&light);
@@ -1278,6 +1280,7 @@ mod tests {
                 casts_entity_shadows: false,
                 is_animated: false,
                 tags: vec![],
+                shadow_tech: crate::map_data::ShadowTech::Baked,
             },
             MapLight {
                 origin: DVec3::new(3.0, 2.0, 3.0),
@@ -1296,6 +1299,7 @@ mod tests {
                 casts_entity_shadows: false,
                 is_animated: false,
                 tags: vec![],
+                shadow_tech: crate::map_data::ShadowTech::Baked,
             },
         ];
         let exterior: HashSet<usize> = HashSet::new();
@@ -1469,6 +1473,7 @@ mod tests {
             casts_entity_shadows: false,
             is_animated: false,
             tags: vec![],
+            shadow_tech: crate::map_data::ShadowTech::Baked,
         };
         let exterior: HashSet<usize> = HashSet::new();
         let lights = std::slice::from_ref(&animated);
@@ -1527,6 +1532,7 @@ mod tests {
             casts_entity_shadows: false,
             is_animated: false,
             tags: vec![],
+            shadow_tech: crate::map_data::ShadowTech::Baked,
         };
         let exterior: HashSet<usize> = HashSet::new();
         let lights = std::slice::from_ref(&light);
@@ -1766,8 +1772,12 @@ mod tests {
             casts_entity_shadows: false,
             is_animated: false,
             tags: vec![],
+            shadow_tech: crate::map_data::ShadowTech::Baked,
         };
         dyn_light.is_dynamic = true;
+        // The bake filter keys on `_shadow_tech` now; a real dynamic light is
+        // tagged `Dynamic`, which excludes it from both bake sets.
+        dyn_light.shadow_tech = crate::map_data::ShadowTech::Dynamic;
 
         let with_dynamic = {
             let lights = std::slice::from_ref(&dyn_light);

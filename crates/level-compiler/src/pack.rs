@@ -8,7 +8,7 @@ use std::path::Path;
 use glam::Vec3;
 use postretro_level_format::alpha_lights::{
     ALPHA_LIGHT_LEAF_UNASSIGNED, AlphaFalloffModel, AlphaLightRecord, AlphaLightType,
-    AlphaLightsSection,
+    AlphaLightsSection, AlphaShadowTech,
 };
 use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
@@ -35,7 +35,7 @@ use std::collections::HashMap;
 
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::AlphaLightsNs;
-use crate::map_data::{FalloffModel, LightType};
+use crate::map_data::{FalloffModel, LightType, ShadowTech};
 use crate::partition::{BspTree, find_leaf_for_point};
 use crate::portals::Portal;
 
@@ -122,6 +122,11 @@ pub fn encode_alpha_lights(lights: &AlphaLightsNs<'_>, tree: &BspTree) -> AlphaL
                 is_dynamic: l.is_dynamic,
                 casts_entity_shadows: l.casts_entity_shadows,
                 leaf_index,
+                shadow_tech: match l.shadow_tech {
+                    ShadowTech::Baked => AlphaShadowTech::Baked,
+                    ShadowTech::Sdf => AlphaShadowTech::Sdf,
+                    ShadowTech::Dynamic => AlphaShadowTech::Dynamic,
+                },
             }
         })
         .collect();
@@ -1118,6 +1123,7 @@ mod tests {
                 casts_entity_shadows: false,
                 is_animated: false,
                 tags: vec![],
+                shadow_tech: crate::map_data::ShadowTech::Baked,
             },
             MapLight {
                 origin: DVec3::new(-4.0, 1.0, 0.5),
@@ -1136,6 +1142,7 @@ mod tests {
                 casts_entity_shadows: false,
                 is_animated: false,
                 tags: vec![],
+                shadow_tech: crate::map_data::ShadowTech::Baked,
             },
             MapLight {
                 origin: DVec3::new(0.0, 100.0, 0.0),
@@ -1154,6 +1161,7 @@ mod tests {
                 casts_entity_shadows: false,
                 is_animated: false,
                 tags: vec![],
+                shadow_tech: crate::map_data::ShadowTech::Baked,
             },
         ];
 
@@ -1224,6 +1232,7 @@ mod tests {
             casts_entity_shadows: false,
             is_animated: false,
             tags: vec![],
+            shadow_tech: crate::map_data::ShadowTech::Baked,
         };
 
         let lights = vec![

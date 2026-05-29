@@ -7,7 +7,7 @@ use glam::DVec3;
 use thiserror::Error;
 
 use crate::map_data::{
-    FalloffModel, KEYFRAME_RESAMPLE_RATE_HZ, LightAnimation, LightType, MapLight,
+    FalloffModel, KEYFRAME_RESAMPLE_RATE_HZ, LightAnimation, LightType, MapLight, ShadowTech,
     resample_keyframes,
 };
 use crate::map_format::MapFormat;
@@ -244,17 +244,29 @@ pub fn translate_light(
         }
     };
 
-    // `_dynamic` was retired as an authoring key in Task 1b of the
-    // SDF static-occluder-shadows spec. `is_dynamic` is now an
-    // internal/seam-only flag for the geometry-moving light class, with no
-    // v1 authoring surface (no light moves yet). Intensity-only animation
-    // (brightness/color pulse) is a static light on the animated-baked
-    // compose path (Task 2c), not a dynamic light.
-    //
-    // Consequence: reclassified intensity-pulse lights now contribute to
-    // the static/SH bake (the bake skips only `is_dynamic` lights, and
-    // that set is empty in 1b-authored content).
-    let is_dynamic = false;
+    // `_shadow_tech` picks the disjoint shadow set this light routes into.
+    // Default `baked`; an unknown value is a hard authoring error. `dynamic`
+    // is the v1 surface that sets `is_dynamic` (the geometry-moving / shadow-
+    // map path) — the old `_dynamic` key was retired in Task 1b of the SDF
+    // static-occluder-shadows spec and `_shadow_tech dynamic` supersedes it.
+    let shadow_tech = match props.get("_shadow_tech").map(|s| s.trim()) {
+        None | Some("") | Some("baked") => ShadowTech::Baked,
+        Some("sdf") => ShadowTech::Sdf,
+        Some("dynamic") => ShadowTech::Dynamic,
+        Some(other) => {
+            return Err(TranslateError::InvalidProperty {
+                key: "_shadow_tech",
+                value: other.to_string(),
+                reason: "expected one of: baked, sdf, dynamic",
+            });
+        }
+    };
+
+    // `dynamic`-tagged lights route onto the existing shadow-map path; every
+    // other tag stays static. Intensity-only animation (brightness/color
+    // pulse) is a static light on the animated-baked compose path (Task 2c),
+    // not a dynamic light — so it is unaffected by this flag.
+    let is_dynamic = matches!(shadow_tech, ShadowTech::Dynamic);
 
     // `_animated` declares "static geometry, intensity arrives at runtime;
     // reserve a baked weight map." The compiler bakes an animated-lightmap
@@ -471,6 +483,7 @@ pub fn translate_light(
         casts_entity_shadows,
         is_animated,
         tags,
+        shadow_tech,
     })
 }
 
@@ -990,6 +1003,75 @@ mod tests {
         let err =
             translate_light(&props(&[]), DVec3::ZERO, "light_banana").expect_err("should error");
         assert!(matches!(err, TranslateError::UnknownClassname(_)));
+    }
+
+    // --- _shadow_tech parsing (sdf-per-light-shadows Task 1) ---
+
+    fn point_light_props(extra: &[(&str, &str)]) -> HashMap<String, String> {
+        let mut pairs = vec![("light", "300"), ("_fade", "2048")];
+        pairs.extend_from_slice(extra);
+        props(&pairs)
+    }
+
+    #[test]
+    fn shadow_tech_defaults_to_baked_when_absent() {
+        let light = translate_light(&point_light_props(&[]), DVec3::ZERO, "light")
+            .expect("should translate");
+        assert_eq!(light.shadow_tech, ShadowTech::Baked);
+        assert!(!light.is_dynamic);
+    }
+
+    #[test]
+    fn shadow_tech_parses_sdf_without_setting_is_dynamic() {
+        let light = translate_light(
+            &point_light_props(&[("_shadow_tech", "sdf")]),
+            DVec3::ZERO,
+            "light",
+        )
+        .expect("should translate");
+        assert_eq!(light.shadow_tech, ShadowTech::Sdf);
+        assert!(!light.is_dynamic);
+    }
+
+    #[test]
+    fn shadow_tech_dynamic_sets_is_dynamic() {
+        let light = translate_light(
+            &point_light_props(&[("_shadow_tech", "dynamic")]),
+            DVec3::ZERO,
+            "light",
+        )
+        .expect("should translate");
+        assert_eq!(light.shadow_tech, ShadowTech::Dynamic);
+        assert!(light.is_dynamic);
+    }
+
+    #[test]
+    fn shadow_tech_baked_leaves_is_dynamic_false() {
+        let light = translate_light(
+            &point_light_props(&[("_shadow_tech", "baked")]),
+            DVec3::ZERO,
+            "light",
+        )
+        .expect("should translate");
+        assert_eq!(light.shadow_tech, ShadowTech::Baked);
+        assert!(!light.is_dynamic);
+    }
+
+    #[test]
+    fn shadow_tech_unknown_value_errors() {
+        let err = translate_light(
+            &point_light_props(&[("_shadow_tech", "raytraced")]),
+            DVec3::ZERO,
+            "light",
+        )
+        .expect_err("unknown _shadow_tech should error at compile");
+        assert!(matches!(
+            err,
+            TranslateError::InvalidProperty {
+                key: "_shadow_tech",
+                ..
+            }
+        ));
     }
 
     #[test]

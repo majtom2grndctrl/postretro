@@ -557,6 +557,7 @@ mod tests {
             is_animated: false,
             casts_entity_shadows: false,
             tags: vec![],
+            shadow_tech: crate::map_data::ShadowTech::Baked,
         }
     }
 

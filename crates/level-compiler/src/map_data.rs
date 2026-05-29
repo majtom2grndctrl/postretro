@@ -155,6 +155,26 @@ pub enum FalloffModel {
     InverseSquared,
 }
 
+/// Which tech casts this light's shadow. The three sets are **disjoint** — a
+/// light is shadowed by exactly one of these, so no contribution is
+/// double-counted. Authored as FGD `_shadow_tech`; default `Baked`.
+///
+/// - `Baked`: shadow baked into the lightmap (free, fixed) — included in the
+///   lightmap bake.
+/// - `Sdf`: runtime SDF-traced per-light shadow (sparse, tweakable without a
+///   re-bake) — excluded from the bake, flagged in the runtime light buffer.
+/// - `Dynamic`: shadow-map path (spots / moving / hero) — maps to
+///   `is_dynamic`, excluded from the bake.
+///
+/// See `context/plans/in-progress/sdf-per-light-shadows/`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ShadowTech {
+    #[default]
+    Baked,
+    Sdf,
+    Dynamic,
+}
+
 /// Curve-based animation over a repeating cycle.
 ///
 /// Each channel holds uniform samples over `period`; runtime linearly
@@ -269,6 +289,14 @@ pub struct MapLight {
     /// `world.query({ component: "light", tag: "t" })` when any of its tags
     /// equals `"t"`. Empty means untagged.
     pub tags: Vec<String>,
+
+    /// Which tech casts this light's shadow (FGD `_shadow_tech`, default
+    /// `Baked`). Routes the light into exactly one of three disjoint sets:
+    /// `Baked` → lightmap bake; `Sdf` → excluded from the bake, runtime
+    /// SDF-traced; `Dynamic` → `is_dynamic`, shadow-map path. The bake
+    /// filters (`StaticBakedLights`, `AnimatedBakedLights`) read this to keep
+    /// the baked atlas disjoint from the runtime SDF set.
+    pub shadow_tech: ShadowTech,
 }
 
 // ---------------------------------------------------------------------------

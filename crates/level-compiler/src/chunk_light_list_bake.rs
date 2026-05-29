@@ -14,7 +14,7 @@ use thiserror::Error;
 use crate::bvh_build::BvhPrimitive;
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::AlphaLightsNs;
-use crate::map_data::{LightType, MapLight};
+use crate::map_data::{LightType, MapLight, ShadowTech};
 use crate::partition::{BspTree, find_leaf_for_point};
 use crate::portals::Portal;
 
@@ -29,6 +29,14 @@ pub const MAX_SECTION_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
 
 /// Offset along ray direction to avoid self-intersection on the emitting surface.
 const RAY_EPSILON: f32 = 1.0e-3;
+
+/// Per-fragment SDF-shadow budget: the runtime traces at most this many
+/// `sdf`-tagged lights' visibility per `chunk_grid` cell (seed K = 3; the
+/// 4-channel half-res shadow target keeps one channel for the animated
+/// factor). Beyond K overlapping `sdf` lights in a cell, the runtime drops the
+/// extras (treated lit), so the compiler warns the author. See
+/// `context/plans/in-progress/sdf-per-light-shadows/` (Rough sketch, K-slice).
+pub const SDF_SHADOW_K: usize = 3;
 
 #[derive(Debug, Error)]
 pub enum ChunkLightListError {
@@ -260,6 +268,18 @@ pub fn bake_chunk_light_list(
         );
     }
 
+    // The runtime resolves `sdf`-tagged lights per-fragment, not from this
+    // baked list — but the `chunk_grid` cell is the unit the runtime's
+    // K-selection operates on, so the over-K warning is framed in cells here.
+    let sdf_lights: Vec<&MapLight> = inputs
+        .lights
+        .entries()
+        .iter()
+        .map(|e| e.light)
+        .filter(|l| l.shadow_tech == ShadowTech::Sdf)
+        .collect();
+    warn_oversubscribed_sdf_cells(&sdf_lights, world_min, cell, dims, SDF_SHADOW_K);
+
     Ok(ChunkLightListSection {
         grid_origin: world_min.to_array(),
         cell_size: cell,
@@ -269,6 +289,68 @@ pub fn bake_chunk_light_list(
         offsets,
         light_indices: indices,
     })
+}
+
+/// Warn when more than `k` `sdf`-tagged lights' influence covers a single
+/// `chunk_grid` cell. The runtime traces at most `k` per fragment and drops the
+/// rest (treated lit), so the author needs to know which cells exceed the
+/// budget. Influence coverage reuses the same `overlaps_chunk` metric the
+/// runtime cull is built on — no new metric is invented. Returns the number of
+/// over-K cells (for tests); logging is the production effect.
+fn warn_oversubscribed_sdf_cells(
+    sdf_lights: &[&MapLight],
+    world_min: Vec3,
+    cell: f32,
+    dims: [u32; 3],
+    k: usize,
+) -> u64 {
+    if sdf_lights.len() <= k {
+        return 0; // cannot exceed k in any cell
+    }
+
+    let nx = dims[0] as usize;
+    let ny = dims[1] as usize;
+    let nz = dims[2] as usize;
+
+    let mut over_cells = 0u64;
+    let mut worst = (0usize, [0u32; 3]);
+    for z in 0..nz {
+        for y in 0..ny {
+            for x in 0..nx {
+                let chunk_min = Vec3::new(
+                    world_min.x + x as f32 * cell,
+                    world_min.y + y as f32 * cell,
+                    world_min.z + z as f32 * cell,
+                );
+                let chunk_max = chunk_min + Vec3::splat(cell);
+                let covering = sdf_lights
+                    .iter()
+                    .filter(|l| overlaps_chunk(l, chunk_min, chunk_max))
+                    .count();
+                if covering > k {
+                    over_cells += 1;
+                    if covering > worst.0 {
+                        worst = (covering, [x as u32, y as u32, z as u32]);
+                    }
+                }
+            }
+        }
+    }
+
+    if over_cells > 0 {
+        log::warn!(
+            "[ChunkLightList] {over_cells} chunk-grid cell(s) are covered by more than \
+             K={k} `_shadow_tech sdf` lights; the runtime traces only K per fragment and \
+             drops the rest (treated lit). Worst cell ({}, {}, {}) is covered by {}. \
+             Re-tag some lights `baked`/`dynamic` or spread them out.",
+            worst.1[0],
+            worst.1[1],
+            worst.1[2],
+            worst.0,
+        );
+    }
+
+    over_cells
 }
 
 fn world_aabb(geo: &GeometryResult) -> (Vec3, Vec3) {
@@ -470,6 +552,7 @@ mod tests {
             casts_entity_shadows: false,
             is_animated: false,
             tags: vec![],
+            shadow_tech: crate::map_data::ShadowTech::Baked,
         }
     }
 
@@ -477,6 +560,58 @@ mod tests {
         let mut l = point_light(origin, range);
         l.is_dynamic = true;
         l
+    }
+
+    fn sdf_point_light(origin: DVec3, range: f32) -> MapLight {
+        let mut l = point_light(origin, range);
+        l.shadow_tech = ShadowTech::Sdf;
+        l
+    }
+
+    /// More than K `sdf`-tagged lights' influence overlapping one cell trips
+    /// the over-budget warning (the runtime traces only K per fragment).
+    #[test]
+    fn warns_when_more_than_k_sdf_lights_cover_a_cell() {
+        // A single 8 m cell at the origin; K+1 sdf lights, all centered inside
+        // it with generous range, so each overlaps the one cell.
+        let world_min = Vec3::ZERO;
+        let cell = 8.0;
+        let dims = [1u32, 1, 1];
+        let k = SDF_SHADOW_K;
+
+        let lights: Vec<MapLight> = (0..=k)
+            .map(|i| sdf_point_light(DVec3::new(4.0, 4.0, 4.0 + i as f64 * 0.1), 100.0))
+            .collect();
+        let refs: Vec<&MapLight> = lights.iter().collect();
+
+        let over = warn_oversubscribed_sdf_cells(&refs, world_min, cell, dims, k);
+        assert_eq!(over, 1, "the single cell should be over budget");
+    }
+
+    /// Exactly K sdf lights in a cell is within budget — no warning.
+    #[test]
+    fn does_not_warn_at_exactly_k_sdf_lights() {
+        let lights: Vec<MapLight> = (0..SDF_SHADOW_K)
+            .map(|i| sdf_point_light(DVec3::new(4.0, 4.0, 4.0 + i as f64 * 0.1), 100.0))
+            .collect();
+        let refs: Vec<&MapLight> = lights.iter().collect();
+
+        let over = warn_oversubscribed_sdf_cells(&refs, Vec3::ZERO, 8.0, [1, 1, 1], SDF_SHADOW_K);
+        assert_eq!(over, 0);
+    }
+
+    /// A light whose influence sphere does not reach the cell is not counted,
+    /// so the warning uses the same overlap metric as the runtime cull.
+    #[test]
+    fn distant_sdf_lights_do_not_oversubscribe_a_cell() {
+        // K+1 sdf lights but each far from the cell with small range.
+        let lights: Vec<MapLight> = (0..=SDF_SHADOW_K)
+            .map(|i| sdf_point_light(DVec3::new(1000.0 + i as f64 * 50.0, 0.0, 0.0), 1.0))
+            .collect();
+        let refs: Vec<&MapLight> = lights.iter().collect();
+
+        let over = warn_oversubscribed_sdf_cells(&refs, Vec3::ZERO, 8.0, [1, 1, 1], SDF_SHADOW_K);
+        assert_eq!(over, 0);
     }
 
     fn directional_light(aim: [f32; 3]) -> MapLight {
@@ -497,6 +632,7 @@ mod tests {
             casts_entity_shadows: false,
             is_animated: false,
             tags: vec![],
+            shadow_tech: crate::map_data::ShadowTech::Baked,
         }
     }
 

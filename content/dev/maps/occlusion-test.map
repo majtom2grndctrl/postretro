@@ -1162,7 +1162,7 @@
 // entity 3
 {
 "classname" "light_spot"
-"origin" "-240 1312 74"
+"origin" "-240 1440 74"
 "light" "800"
 "_color" "255 170 40"
 "_fade" "900"

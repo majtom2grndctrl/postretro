@@ -2,7 +2,7 @@
 // level load and consumed by the Blinn-Phong path in `forward.wgsl`.
 // See: lighting-chunk-lists/ Task B step 1
 
-use crate::prl::MapLight;
+use crate::prl::{MapLight, ShadowTech};
 
 /// Byte size of one `SpecLight` record. WGSL layout is two packed vec4<f32>
 /// slots so struct alignment is 16 and array stride is 32.
@@ -11,13 +11,23 @@ use crate::prl::MapLight;
 ///   0..12   position           (f32x3)
 ///   12..16  range              (f32) — falloff_range meters, 0 for directional
 ///   16..28  color × intensity  (f32x3)
-///   28..32  pad                (0)
+///   28..32  sdf_flag           (f32) — 1.0 if `_shadow_tech sdf`, else 0.0
 pub const SPEC_LIGHT_SIZE: usize = 32;
+
+/// `color_and_pad.w` value flagging an SDF-tagged light so the forward loop
+/// routes it onto the runtime diffuse + SDF-visibility path. Decoded with
+/// `w > 0.5` (see `forward.wgsl`). `baked`/`dynamic` lights carry 0.0 — they
+/// need no `spec_lights` flag (baked → `lm_irr`; dynamic → shadow-map path).
+pub const SPEC_LIGHT_SDF_FLAG: f32 = 1.0;
 
 /// Pack the static subset of `lights` into the shader-facing `SpecLight`
 /// byte layout. Lights with `is_dynamic == true` are skipped — they are
 /// already driven by the dynamic `GpuLight` loop in `forward.wgsl` and
 /// must not appear in the static spec buffer (double-count risk).
+///
+/// `sdf`-tagged lights set the `color_and_pad.w` flag so the forward loop
+/// knows which static lights get the runtime per-light diffuse + SDF
+/// visibility path (Tasks 2–3); all others carry 0.0.
 pub fn pack_spec_lights(lights: &[MapLight]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(lights.len() * SPEC_LIGHT_SIZE);
     for l in lights.iter().filter(|l| !l.is_dynamic) {
@@ -35,7 +45,12 @@ pub fn pack_spec_lights(lights: &[MapLight]) -> Vec<u8> {
         bytes.extend_from_slice(&cr.to_le_bytes());
         bytes.extend_from_slice(&cg.to_le_bytes());
         bytes.extend_from_slice(&cb.to_le_bytes());
-        bytes.extend_from_slice(&0f32.to_le_bytes());
+        let sdf_flag = if l.shadow_tech == ShadowTech::Sdf {
+            SPEC_LIGHT_SDF_FLAG
+        } else {
+            0.0
+        };
+        bytes.extend_from_slice(&sdf_flag.to_le_bytes());
     }
     bytes
 }
@@ -62,6 +77,7 @@ mod tests {
             animated_slot: None,
             tags: vec![],
             leaf_index: 0,
+            shadow_tech: crate::prl::ShadowTech::Baked,
         }
     }
 
@@ -102,5 +118,23 @@ mod tests {
         dyn_light.is_dynamic = true;
         let bytes = pack_spec_lights(&[sample(), dyn_light, sample()]);
         assert_eq!(bytes.len(), 2 * SPEC_LIGHT_SIZE);
+    }
+
+    /// `sdf`-tagged lights set the `color_and_pad.w` flag (decoded `w > 0.5`);
+    /// `baked`/`dynamic` carry 0.0. This is the seam the forward loop reads to
+    /// route the runtime per-light SDF path.
+    #[test]
+    fn sdf_tag_sets_color_and_pad_w_flag() {
+        let read_flag = |bytes: &[u8]| f32::from_le_bytes(bytes[28..32].try_into().unwrap());
+
+        let mut sdf = sample();
+        sdf.shadow_tech = ShadowTech::Sdf;
+        assert!(read_flag(&pack_spec_lights(&[sdf])) > 0.5);
+
+        let baked = sample(); // ShadowTech::Baked
+        assert_eq!(read_flag(&pack_spec_lights(&[baked])), 0.0);
+
+        // Dynamic lights are skipped entirely (is_dynamic), so no record is
+        // emitted — verified separately by `skips_dynamic_lights`.
     }
 }

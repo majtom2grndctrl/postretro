@@ -92,7 +92,7 @@ struct MaterialUniform {
 // postretro/src/lighting/spec_buffer.rs for the CPU-side layout.
 struct SpecLight {
     position_and_range: vec4<f32>, // xyz = position, w = falloff_range
-    color_and_pad:      vec4<f32>, // xyz = color × intensity, w = 0
+    color_and_pad:      vec4<f32>, // xyz = color × intensity, w = sdf flag (>0.5 ⇒ _shadow_tech sdf)
 };
 @group(2) @binding(2) var<storage, read> spec_lights: array<SpecLight>;
 

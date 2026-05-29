@@ -3,7 +3,7 @@
 > **Lifecycle:** reviewed and updated at the start of each milestone. Deleted when all milestones are complete.
 > **Purpose:** milestone-by-milestone plan from "wgpu window exists" through a moddable, playable game. Each milestone produces something visible and testable.
 > **Related:** `context/lib/index.md`, `context/lib/rendering_pipeline.md`
-> **Status markers:** `[x]` shipped and in the tree · `[ ]` not yet built · cut-after-build items keep `[x]`, strike the description, and append **✂ Cut (YYYY-MM):** with the reason — so a "done" item that no longer exists in the tree reads as such.
+> **Status markers:** `[x]` shipped and in the tree · `[ ]` not yet built · cut-after-build items keep `[x]`, strike the description, and append **✂ Cut (YYYY-MM):** with the reason — so a "done" item that no longer exists in the tree reads as such · a later-revived cut item appends **↩ Revived (YYYY-MM):** pointing to the active work.
 
 ---
 
@@ -93,14 +93,14 @@
 - [x] **SH irradiance volume baker** — prl-build stage; ray-casts through the Milestone 4 BVH; SH L2 projection; validity mask.
 - [x] **Direct lighting loop** — flat per-fragment light loop over runtime lights; per-type evaluation; Lambert diffuse.
 - [x] **Light influence volumes** — per-light sphere bounds in PRL; runtime spatial culling; gates CSM slot assignment and SDF sphere-trace per-light activation.
-- [x] ~~**CSM sun shadows** — 3 cascades, 1024², bounding-sphere fit with rotation-invariant texel snapping. Hard edges match aesthetic.~~ **✂ Cut (2026-05):** removed in the static-lighting (SDF) rewrite; no runtime cascade pass remains in the tree.
+- [x] ~~**CSM sun shadows** — 3 cascades, 1024², bounding-sphere fit with rotation-invariant texel snapping. Hard edges match aesthetic.~~ **✂ Cut (2026-04):** retired with the old lighting stack (alongside the SDF sphere-trace) ahead of the lighting rework; no runtime cascade pass remains in the tree.
 - [x] **Runtime probe sampling** — parse SH section as 3D texture; trilinear sample in world shader for both static surfaces and dynamic entities.
 - [x] **Animated SH layers** — per-light monochrome SH layers, animation descriptor + sample buffers, per-frame brightness/color curve evaluation in the fragment shader.
 - [x] **Lightmaps** — per-face baked direct lighting; static surfaces sample lightmap atlas; dynamic entities fall back to probe grid.
 
 **Testable outcome:** textured level with probe-sampled indirect, lightmapped static surfaces, CSM-driven sun shadows, and animated light layers. ✓
 
-**Scope note:** SDF sphere-traced soft shadows and specular maps were descoped. See the future section.
+**Scope note:** SDF sphere-traced soft shadows and specular maps were descoped here. Specular maps later shipped; SDF was cut (2026-04) then revived (2026-05) as the static-lighting rewrite. See the future section.
 
 ---
 
@@ -148,8 +148,8 @@ Texture and material pipeline polish. Move mip generation offline, establish Pos
 Plans ship in this sequence:
 
 - [x] **Baked texture mips** — move mip generation from runtime renderer into prl-build. Gamma-correct linear-space Mitchell-Netravali filtering. Output as `.prm` sidecar files in per-mod `.prl-cache/tex/<blake3>.prm`, not embedded in PRL. `.prm` is a material bundle: per-slot (diffuse / specular / normal) with format tag, mip chain, payload bytes. Source PNGs remain the authoring source of truth; conversion is implicit during prl-build. `context/plans/done/baked-texture-mips/`
-- [x] **Shader anisotropic filtering** — per-pixel manual aniso in `forward.wgsl`, derivative-gated, N taps of `textureSampleGrad` along the major axis. Preserves nearest-filter chunky look in-plane while killing grazing-angle shimmer. Depends on baked texture mips. `context/plans/done/shader-anisotropic-filtering/` (shipped, then retired with True Retro mode)
-- [x] **Graphics mode toggle** — introduced Post Retro and True Retro runtime filtering modes; `GraphicsMode` enum, `defaultGraphicsMode` mod-manifest key, egui combo. Scaffolding subsequently removed by Retire True Retro mode. `context/plans/done/graphics-mode-toggle/`
+- [x] ~~**Shader anisotropic filtering** — per-pixel manual aniso in `forward.wgsl`, derivative-gated, N taps of `textureSampleGrad` along the major axis. Preserves nearest-filter chunky look in-plane while killing grazing-angle shimmer. Depends on baked texture mips. `context/plans/done/shader-anisotropic-filtering/`~~ **✂ Cut (2026-05):** retired with True Retro mode; hardware aniso is the sole path.
+- [x] ~~**Graphics mode toggle** — introduced Post Retro and True Retro runtime filtering modes; `GraphicsMode` enum, `defaultGraphicsMode` mod-manifest key, egui combo.~~ **✂ Cut (2026-05):** True Retro mode + the `GraphicsMode` toggle scaffolding removed by *Retire True Retro mode*; Post Retro survives as the sole filtering path. `context/plans/done/graphics-mode-toggle/`
 - [x] **BC5 normal compression** — BC5 encoder in prl-build, BC5 `format_tag` value in `.prm`, GPU upload path. Normals only — BC1/BC7 fight the pixel-art aesthetic on diffuse. Additive: `format_tag` is extensible from day one, no version bump. Also retires the Post Retro normal-averaging bias under hardware aniso. `context/plans/done/prm-bc5-normals/`
 - [x] **Retire True Retro mode** — deleted manual-aniso shader code and True Retro branches in `forward.wgsl`; unwound `GraphicsMode` enum, `defaultGraphicsMode` mod-manifest key, nearest sampler pool, and egui mode combo. Post Retro normal path retains existing `(rgb*2-1)->normalize` decode unchanged. `context/plans/done/retire-true-retro/`
 - [ ] **Texture pack format (optional)** — shipping consolidation of `.prl-cache/tex/` into a single pack file. **Deferred** until there are more real textures and the iteration-vs-ship tension actually appears. `context/plans/drafts/texture-pack-format/`
@@ -216,7 +216,7 @@ Plans ship in this sequence. The render foundation and combat tracks converge tw
 - [ ] **Skeletal hit zones** — dynamic hittable volumes: bone-parented proxy capsules posed each frame from the skeleton, raycast separately from the static collision world — net-new, since the weapon hitscans only static geometry today. Hit-zone identity comes from glTF `extras` tags (`head`, `limb`); per-archetype damage multipliers live in the descriptor script. Model ships the spatial tag, script ships the balance — mirroring map `_tags` → entity behavior. Depends on the skinned animation runtime's posed palette.
 - [ ] **Enemy AI behavior** — simple state machine (idle → alert → attack → death), authored in the SDK as a reference behavior. Drives navigation (move toward player), attack (emit a damage hit at the player), and animation state (select the clip per logical state). The behavioral convergence: depends on the entity health/damage surface, pathfinding + path following, and the skinned animation runtime. Behavioral time-slicing (distant agents think less often) is named for waves but stays shallow. A foundation to refine, not a stub.
 
-**Testable outcome:** a skinned-model enemy spawns from a map, walks toward the player without clipping playing its locomotion clip, switches to an attack clip and damages the player in range, takes hitscan weapon damage, and plays a death clip then despawns at zero HP — lit by baked SH (optionally casting a CSM shadow), with placeholder SFX selling fire/impact/attack/death.
+**Testable outcome:** a skinned-model enemy spawns from a map, walks toward the player without clipping playing its locomotion clip, switches to an attack clip and damages the player in range, takes hitscan weapon damage, and plays a death clip then despawns at zero HP — lit by baked SH (optionally casting a real-time shadow via the dynamic shadow pool), with placeholder SFX selling fire/impact/attack/death.
 
 ---
 
@@ -295,7 +295,7 @@ Features below are intended but not yet sequenced. Rough priority ordering withi
 - **Per-entity 3D models** — the skinned/rigid mesh render path lands in Milestone 10 (animated enemies). Speculative reuse: rigid props, pickups, and weapon viewmodels build on the same pass — a rigid mesh is the degenerate single-bone case — not yet sequenced.
 - **Specular maps** — ~~per-texel specular highlights in the direct light loop. Shading model decision (Phong vs. PBR) required first.~~ **Shipped.** Blinn-Phong per-texel specular via `_s.png` siblings, chunk-list multi-source loop, bumped-Lambert correction. See `plans/done/normal-maps/`.
 - **Fog volumes** — `env_fog_volume` brush entity wired to a runtime fog pass. Pass is wired and runs each frame (with portal-fog culling — see `plans/done/perf-portal-fog-culling/` and `rendering_pipeline.md` §7.5). Only the **directional fog** term remains, tracked under Milestone 9.
-- **Emissive / fullbright surfaces** — texture-driven self-lit surfaces. Not started. An earlier `neon_`-based lighting-replacement stub was removed as incorrect; the correct approach is additive HDR emissive + bloom, designed alongside the post-processing pass.
+- **Emissive / fullbright surfaces** — texture-driven self-lit surfaces. Not started. An earlier `neon_`-based lighting-replacement stub was built then **✂ Cut (2026-05):** removed as incorrect. The correct approach is additive HDR emissive + bloom, designed alongside the post-processing pass.
 - **Post-processing** — bloom, optional CRT/scanline filter.
 - **Baked cubemap reflections** — `env_cubemap` point entity baked to a cubemap atlas at compile time.
 
@@ -313,5 +313,5 @@ Features below are intended but not yet sequenced. Rough priority ordering withi
 
 ### Dropped
 
-- **SDF atlas + sphere-traced soft shadows** — descoped in favor of the lightmap pipeline. Hard shadow edges fit the aesthetic; SDF complexity not justified.
+- **SDF atlas + sphere-traced soft shadows** — ~~descoped in favor of the lightmap pipeline. Hard shadow edges fit the aesthetic; SDF complexity not justified.~~ **✂ Cut (2026-04):** old sphere-trace retired with the lighting-stack rework. **↩ Revived (2026-05):** SDF is being re-added as the static-lighting *direct-shadow* path (not indirect visibility — that stays on the probe volume) — see the active `drafts/sdf-shadow-*` work. No longer dropped; promote to an active milestone when the rework formalizes.
 - **Cubemap bake tool** — deferred indefinitely; baked cubemap reflections remain on the speculative list above but the standalone tool is dropped.

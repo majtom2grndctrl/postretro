@@ -16,7 +16,7 @@
 
 use postretro_level_format::light_influence::InfluenceRecord;
 
-use crate::map_data::{LightType, MapLight, ShadowTech};
+use crate::map_data::{LightType, MapLight};
 
 /// One slot in the static-baked namespace. `source_index` is the position of
 /// the light in the original `&[MapLight]` array.
@@ -44,13 +44,16 @@ pub struct AlphaLightEntry<'a> {
     pub light: &'a MapLight,
 }
 
-/// Lights consumed by the static lightmap bake and the SH base bake.
+/// Lights consumed by the static lightmap bake **and** the SH base bake.
 ///
-/// Filter: `shadow_tech == Baked && animation.is_none()`. Iteration order
-/// matches the original `&[MapLight]`. `sdf`- and `dynamic`-tagged lights are
-/// excluded so `lm_irr` stays disjoint from the runtime SDF / shadow-map sets
-/// (no double-count). (`Dynamic` ⇒ `is_dynamic`; the `Baked` test subsumes the
-/// old `!is_dynamic` guard.)
+/// Filter: `!is_dynamic && animation.is_none()` — the **position** axis, never
+/// shadow type. This namespace feeds both the direct lightmap bake and the SH
+/// base bake; SH needs *every* baked-tier light (both shadow types) for its
+/// bounce, so filtering on shadow type here would starve SH. The shadow-type
+/// exclusion (drop `sdf`) lives **down** at the direct lightmap consumer (the
+/// static lightmap bake), keeping `lm_irr` disjoint from the runtime SDF set
+/// while SH still sees all baked-tier lights. Iteration order matches the
+/// original `&[MapLight]`.
 #[derive(Debug, Clone)]
 pub struct StaticBakedLights<'a> {
     entries: Vec<StaticBakedEntry<'a>>,
@@ -61,7 +64,7 @@ impl<'a> StaticBakedLights<'a> {
         let entries = lights
             .iter()
             .enumerate()
-            .filter(|(_, l)| l.shadow_tech == ShadowTech::Baked && l.animation.is_none())
+            .filter(|(_, l)| !l.is_dynamic && l.animation.is_none())
             .map(|(i, l)| StaticBakedEntry {
                 source_index: i,
                 light: l,
@@ -84,17 +87,19 @@ impl<'a> StaticBakedLights<'a> {
 }
 
 /// Lights consumed by the animated-light-chunks builder, the animated weight
-/// map baker, and the SH bake's animation-descriptor list.
+/// map baker, **and** the SH bake's animation-descriptor + delta-SH list.
 ///
-/// Filter: `shadow_tech == Baked && animation.is_some()`. Iteration order
-/// matches the original `&[MapLight]`. Indices in this namespace are the same
-/// indices the runtime `AnimationDescriptor` buffer uses.
-///
-/// `bake_only` animated lights are retained — they participate in weight-map
-/// compose at runtime. `sdf`- and `dynamic`-tagged lights are excluded so a
-/// `dynamic`-tagged *animated* light leaves `lm_anim` and routes to the
-/// shadow-map path. (`Dynamic` ⇒ `is_dynamic`; the `Baked` test subsumes the
-/// old `!is_dynamic` guard.)
+/// Filter: `!is_dynamic && animation.is_some()` — the **position** axis, never
+/// shadow type. This namespace feeds both the direct weight-map bake and the
+/// SH delta bake; the delta bake needs every animated baked-tier light (both
+/// shadow types) for its bounce, so filtering on shadow type here would starve
+/// it. The shadow-type exclusion (drop `sdf`) lives **down** at the direct
+/// weight-map consumer, so `lm_anim` stays disjoint from the runtime SDF set
+/// while the delta bake still sees all animated baked-tier lights. Indices in
+/// this namespace are the same indices the runtime `AnimationDescriptor` buffer
+/// and the `AnimatedLightChunks` `light_indices` use — iteration order matches
+/// the original `&[MapLight]`. `bake_only` animated lights are retained — they
+/// participate in weight-map compose at runtime.
 #[derive(Debug, Clone)]
 pub struct AnimatedBakedLights<'a> {
     entries: Vec<AnimatedBakedEntry<'a>>,
@@ -105,7 +110,7 @@ impl<'a> AnimatedBakedLights<'a> {
         let entries = lights
             .iter()
             .enumerate()
-            .filter(|(_, l)| l.shadow_tech == ShadowTech::Baked && l.animation.is_some())
+            .filter(|(_, l)| !l.is_dynamic && l.animation.is_some())
             .map(|(i, l)| AnimatedBakedEntry {
                 source_index: i,
                 light: l,
@@ -217,11 +222,13 @@ fn derive_influence(light: &MapLight) -> InfluenceRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map_data::{FalloffModel, LightAnimation};
+    use crate::map_data::{FalloffModel, LightAnimation, ShadowType};
     use glam::DVec3;
 
-    /// A baked, non-animated point light with the requested tag.
-    fn light(shadow_tech: ShadowTech, animated: bool) -> MapLight {
+    /// A baked-tier point light with the requested shadow type / animation /
+    /// tier. `is_dynamic` is the position axis (set by classname in real
+    /// translator output); shadow type is orthogonal.
+    fn light(shadow_type: ShadowType, animated: bool, is_dynamic: bool) -> MapLight {
         MapLight {
             origin: DVec3::ZERO,
             light_type: LightType::Point,
@@ -242,13 +249,11 @@ mod tests {
             }),
             cast_shadows: true,
             bake_only: false,
-            // The compiler maps `Dynamic` → is_dynamic; mirror that here so the
-            // fixtures match real translator output.
-            is_dynamic: shadow_tech == ShadowTech::Dynamic,
+            is_dynamic,
             casts_entity_shadows: false,
             is_animated: false,
             tags: vec![],
-            shadow_tech,
+            shadow_type,
         }
     }
 
@@ -256,34 +261,36 @@ mod tests {
         entries.iter().map(get).collect()
     }
 
-    /// Disjoint-set contract: only `Baked`-tagged static lights reach the
-    /// static lightmap / SH bake set. `sdf`/`dynamic` are excluded so `lm_irr`
-    /// never shares a light with the runtime SDF or shadow-map sets.
+    /// Indirect-not-starved contract: the namespace keys on the **position**
+    /// axis (`!is_dynamic`), never on shadow type — so `sdf`-typed baked-tier
+    /// lights REMAIN in the static/SH-base set. Only dynamic-tier lights drop.
+    /// (The shadow-type exclusion lives down at the direct lightmap bake, not
+    /// here — guarded by the bake-level disjoint-direct test.)
     #[test]
-    fn static_baked_set_includes_only_baked_tagged_static_lights() {
+    fn static_baked_set_keys_on_position_not_shadow_type() {
         let lights = vec![
-            light(ShadowTech::Baked, false),   // 0: included
-            light(ShadowTech::Sdf, false),     // 1: excluded (runtime SDF)
-            light(ShadowTech::Dynamic, false), // 2: excluded (shadow map)
+            light(ShadowType::StaticLightMap, false, false), // 0: included
+            light(ShadowType::Sdf, false, false),            // 1: included (SH needs its bounce)
+            light(ShadowType::StaticLightMap, false, true),  // 2: excluded (dynamic tier)
         ];
         let ns = StaticBakedLights::from_lights(&lights);
         let idx = source_indices(ns.entries(), |e| e.source_index);
-        assert_eq!(idx, vec![0]);
+        assert_eq!(idx, vec![0, 1]);
     }
 
-    /// A `dynamic`-tagged *animated* light must leave `lm_anim` and route to
-    /// the shadow-map path; an `sdf`-tagged animated light is likewise out.
-    /// Only `Baked` animated lights remain in the animated bake set.
+    /// The animated namespace likewise keys on position: an `sdf`-typed
+    /// animated baked-tier light REMAINS (the delta-SH bake needs its bounce);
+    /// only a dynamic-tier animated light drops.
     #[test]
-    fn animated_baked_set_excludes_sdf_and_dynamic_tagged() {
+    fn animated_baked_set_keys_on_position_not_shadow_type() {
         let lights = vec![
-            light(ShadowTech::Baked, true),   // 0: included
-            light(ShadowTech::Sdf, true),     // 1: excluded
-            light(ShadowTech::Dynamic, true), // 2: excluded (routes to shadow map)
-            light(ShadowTech::Baked, false),  // 3: not animated → not here
+            light(ShadowType::StaticLightMap, true, false), // 0: included
+            light(ShadowType::Sdf, true, false),            // 1: included (SH delta needs bounce)
+            light(ShadowType::StaticLightMap, true, true),  // 2: excluded (dynamic tier)
+            light(ShadowType::StaticLightMap, false, false), // 3: not animated → not here
         ];
         let ns = AnimatedBakedLights::from_lights(&lights);
         let idx = source_indices(ns.entries(), |e| e.source_index);
-        assert_eq!(idx, vec![0]);
+        assert_eq!(idx, vec![0, 1]);
     }
 }

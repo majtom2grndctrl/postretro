@@ -807,7 +807,7 @@ mod tests {
             casts_entity_shadows: false,
             is_animated: false,
             tags: vec![],
-            shadow_tech: crate::map_data::ShadowTech::Baked,
+            shadow_type: crate::map_data::ShadowType::StaticLightMap,
         }
     }
 
@@ -1131,7 +1131,7 @@ mod tests {
             casts_entity_shadows: false,
             is_animated: false,
             tags: vec![],
-            shadow_tech: crate::map_data::ShadowTech::Baked,
+            shadow_type: crate::map_data::ShadowType::StaticLightMap,
         };
         let exterior: HashSet<usize> = HashSet::new();
         let lights = std::slice::from_ref(&light);
@@ -1193,7 +1193,7 @@ mod tests {
                 casts_entity_shadows: false,
                 is_animated: false,
                 tags: vec![],
-                shadow_tech: crate::map_data::ShadowTech::Baked,
+                shadow_type: crate::map_data::ShadowType::StaticLightMap,
             },
             MapLight {
                 origin: DVec3::new(3.0, 2.0, 3.0),
@@ -1212,7 +1212,7 @@ mod tests {
                 casts_entity_shadows: false,
                 is_animated: false,
                 tags: vec![],
-                shadow_tech: crate::map_data::ShadowTech::Baked,
+                shadow_type: crate::map_data::ShadowType::StaticLightMap,
             },
         ];
         let exterior: HashSet<usize> = HashSet::new();
@@ -1386,7 +1386,7 @@ mod tests {
             casts_entity_shadows: false,
             is_animated: false,
             tags: vec![],
-            shadow_tech: crate::map_data::ShadowTech::Baked,
+            shadow_type: crate::map_data::ShadowType::StaticLightMap,
         };
         let exterior: HashSet<usize> = HashSet::new();
         let lights = std::slice::from_ref(&animated);
@@ -1445,7 +1445,7 @@ mod tests {
             casts_entity_shadows: false,
             is_animated: false,
             tags: vec![],
-            shadow_tech: crate::map_data::ShadowTech::Baked,
+            shadow_type: crate::map_data::ShadowType::StaticLightMap,
         };
         let exterior: HashSet<usize> = HashSet::new();
         let lights = std::slice::from_ref(&light);
@@ -1685,12 +1685,12 @@ mod tests {
             casts_entity_shadows: false,
             is_animated: false,
             tags: vec![],
-            shadow_tech: crate::map_data::ShadowTech::Baked,
+            shadow_type: crate::map_data::ShadowType::StaticLightMap,
         };
+        // Dynamic-tier lights are selected by classname → `is_dynamic`; the
+        // namespace filter keys on this position axis, excluding them from both
+        // bake sets (the lightmap and SH base/delta).
         dyn_light.is_dynamic = true;
-        // The bake filter keys on `_shadow_tech` now; a real dynamic light is
-        // tagged `Dynamic`, which excludes it from both bake sets.
-        dyn_light.shadow_tech = crate::map_data::ShadowTech::Dynamic;
 
         let with_dynamic = {
             let lights = std::slice::from_ref(&dyn_light);
@@ -1720,6 +1720,95 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Indirect-not-starved contract (sdf-per-light-shadows Task 3): an
+    /// `sdf`-typed light's *bounce* MUST still bake into SH. The namespace
+    /// filter keys on the position axis, so shadow type never drops a light from
+    /// indirect — tagging a light `sdf` moves only its direct term to runtime.
+    /// A bake with an sdf light therefore diverges from the empty baseline.
+    #[test]
+    fn sdf_typed_light_remains_in_sh_indirect_bake() {
+        let geo = floor_and_walls_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let tree = tree_all_empty();
+        let exterior: HashSet<usize> = HashSet::new();
+
+        let baseline = {
+            let lights: &[MapLight] = &[];
+            let static_lights = StaticBakedLights::from_lights(lights);
+            let animated_lights = AnimatedBakedLights::from_lights(lights);
+            let inputs = ShBakeCtx {
+                bvh: &bvh,
+                primitives: &prims,
+                geometry: &geo,
+                tree: &tree,
+                exterior_leaves: &exterior,
+                static_lights: &static_lights,
+                animated_lights: &animated_lights,
+                total_light_count: 0,
+            };
+            bake_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 })
+        };
+
+        let sdf_light = MapLight {
+            origin: DVec3::new(0.3, 1.0, 0.3),
+            light_type: LightType::Point,
+            intensity: 5.0,
+            color: [1.0, 1.0, 1.0],
+            falloff_model: FalloffModel::Linear,
+            falloff_range: 20.0,
+            cone_angle_inner: None,
+            cone_angle_outer: None,
+            cone_direction: None,
+            animation: None,
+            cast_shadows: true,
+            bake_only: false,
+            is_dynamic: false,
+            casts_entity_shadows: false,
+            is_animated: false,
+            tags: vec![],
+            // Tagged sdf: its DIRECT term goes runtime, but its bounce must
+            // still reach SH — the namespace keeps it (position axis).
+            shadow_type: crate::map_data::ShadowType::Sdf,
+        };
+
+        let with_sdf = {
+            let lights = std::slice::from_ref(&sdf_light);
+            let static_lights = StaticBakedLights::from_lights(lights);
+            assert_eq!(
+                static_lights.len(),
+                1,
+                "sdf light must remain in StaticBakedLights so SH sees its bounce",
+            );
+            let animated_lights = AnimatedBakedLights::from_lights(lights);
+            let inputs = ShBakeCtx {
+                bvh: &bvh,
+                primitives: &prims,
+                geometry: &geo,
+                tree: &tree,
+                exterior_leaves: &exterior,
+                static_lights: &static_lights,
+                animated_lights: &animated_lights,
+                total_light_count: 1,
+            };
+            bake_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 })
+        };
+
+        assert_eq!(with_sdf.probes.len(), baseline.probes.len());
+        let mut diverged = false;
+        'outer: for (a, b) in with_sdf.probes.iter().zip(baseline.probes.iter()) {
+            for (ca, cb) in a.sh_coefficients.iter().zip(b.sh_coefficients.iter()) {
+                if (ca - cb).abs() > 1.0e-4 {
+                    diverged = true;
+                    break 'outer;
+                }
+            }
+        }
+        assert!(
+            diverged,
+            "an sdf-typed light's bounce must bake into SH (indirect not starved)",
+        );
     }
 
     #[test]

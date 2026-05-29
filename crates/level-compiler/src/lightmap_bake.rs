@@ -28,12 +28,14 @@ pub const DEFAULT_TEXEL_DENSITY_METERS: f32 = 0.04;
 /// carry the explicit mode and so the unshadowed bake's visibility-skip branch
 /// is exercised on a fresh cache miss.
 ///
-/// v3 bump: per-light `_shadow_tech` routing (sdf-per-light-shadows Task 1).
-/// `sdf`- and `dynamic`-tagged lights are now excluded from the static and
-/// animated bake sets, so a stale cached lightmap could carry a shadow for a
-/// light the runtime now resolves separately (double-count). The bump forces a
-/// re-bake of the now-disjoint baked set.
-pub const STAGE_VERSION: u32 = 3;
+/// v3: per-light `_shadow_type` routing (sdf-per-light-shadows).
+/// v4 bump (sdf-per-light-shadows Task 3): the shadow-type exclusion moved to
+/// the direct lightmap consumer and keys on the renamed two-value `ShadowType`
+/// (`sdf` dropped here; dynamic-tier lights drop via the position-axis
+/// namespace). A stale cached lightmap could carry a direct shadow for an `sdf`
+/// light the runtime now resolves separately (double-count), so the bump forces
+/// a re-bake of the now-disjoint direct set.
+pub const STAGE_VERSION: u32 = 4;
 
 /// Serializable enum tag for the bake mode. Mirrors `LightmapMode` from
 /// `level-format` but lives here so the cache-key derivation in `main` can fold
@@ -274,7 +276,19 @@ pub fn bake_lightmap(
         });
     }
 
-    let static_lights: Vec<&MapLight> = inputs.lights.entries().iter().map(|e| e.light).collect();
+    // Disjoint-direct exclusion lives HERE, at the direct lightmap consumer —
+    // not in the `StaticBakedLights` namespace (which keys on position so it can
+    // also feed the SH base bake with every baked-tier light). Drop `sdf`-typed
+    // lights so `lm_irr` holds only `static_light_map` lights; the `sdf` lights'
+    // direct term resolves at runtime via the per-light SDF trace. Their SH
+    // bounce is unaffected (the namespace still carries them to SH).
+    let static_lights: Vec<&MapLight> = inputs
+        .lights
+        .entries()
+        .iter()
+        .map(|e| e.light)
+        .filter(|l| l.shadow_type != crate::map_data::ShadowType::Sdf)
+        .collect();
     let charts = prepared.charts;
     let placements = prepared.placements;
     let atlas_w = prepared.atlas_width;
@@ -1104,7 +1118,7 @@ mod tests {
             casts_entity_shadows: false,
             is_animated: false,
             tags: vec![],
-            shadow_tech: crate::map_data::ShadowTech::Baked,
+            shadow_type: crate::map_data::ShadowType::StaticLightMap,
         }
     }
 
@@ -1208,13 +1222,62 @@ mod tests {
         );
     }
 
+    /// Disjoint-direct contract (sdf-per-light-shadows Task 3): an `sdf`-typed
+    /// light stays in the `StaticBakedLights` namespace (it's `!is_dynamic`, so
+    /// SH still bakes its bounce), but the direct lightmap consumer drops it —
+    /// `lm_irr` carries no direct term for it (the runtime SDF trace resolves
+    /// that). The atlas preps to a real size (the namespace is non-empty) yet
+    /// every irradiance texel is zero, in contrast to the `static_light_map`
+    /// case above which produces non-zero irradiance from the same geometry.
+    #[test]
+    fn sdf_typed_light_excluded_from_direct_lightmap() {
+        let mut geo = unit_quad_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let mut sdf_light = point_light_above();
+        sdf_light.shadow_type = crate::map_data::ShadowType::Sdf;
+        let lights = vec![sdf_light];
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        // The sdf light is in the namespace (feeds SH); only the direct bake drops it.
+        assert_eq!(
+            static_lights.len(),
+            1,
+            "sdf light must remain in StaticBakedLights (keys on position, not shadow type)",
+        );
+        let mut inputs = LightmapBakeCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &mut geo,
+            lights: &static_lights,
+        };
+        let section = bake_lightmap(
+            &mut inputs,
+            &LightmapConfig {
+                lightmap_density: 0.25,
+                mode: BakeMode::Shadowed,
+            },
+        )
+        .unwrap()
+        .section;
+        let mut has_nonzero = false;
+        for chunk in section.irradiance.chunks_exact(2).step_by(4) {
+            let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
+            if bits != 0 {
+                has_nonzero = true;
+                break;
+            }
+        }
+        assert!(
+            !has_nonzero,
+            "an sdf-typed light must contribute no direct lightmap irradiance",
+        );
+    }
+
     #[test]
     fn is_dynamic_lights_skipped_by_bake() {
         let mut geo = unit_quad_geometry();
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let mut dyn_light = point_light_above();
         dyn_light.is_dynamic = true;
-        dyn_light.shadow_tech = crate::map_data::ShadowTech::Dynamic;
         let lights = vec![dyn_light];
         let static_lights = StaticBakedLights::from_lights(&lights);
         let mut inputs = LightmapBakeCtx {
@@ -1269,7 +1332,6 @@ mod tests {
 
         let mut dyn_light = point_light_above();
         dyn_light.is_dynamic = true;
-        dyn_light.shadow_tech = crate::map_data::ShadowTech::Dynamic;
         let mut geo_dyn = unit_quad_geometry();
         let (bvh_d, prims_d, _) = build_bvh(&geo_dyn).unwrap();
         let static_dyn = StaticBakedLights::from_lights(std::slice::from_ref(&dyn_light));
@@ -1573,7 +1635,7 @@ mod tests {
             casts_entity_shadows: false,
             is_animated: false,
             tags: vec![],
-            shadow_tech: crate::map_data::ShadowTech::Baked,
+            shadow_type: crate::map_data::ShadowType::StaticLightMap,
         };
         let lights = vec![light];
         let static_lights = StaticBakedLights::from_lights(&lights);
@@ -1735,7 +1797,7 @@ mod tests {
             casts_entity_shadows: false,
             is_animated: false,
             tags: vec![],
-            shadow_tech: crate::map_data::ShadowTech::Baked,
+            shadow_type: crate::map_data::ShadowType::StaticLightMap,
         };
         let lights = vec![light];
         let static_lights = StaticBakedLights::from_lights(&lights);

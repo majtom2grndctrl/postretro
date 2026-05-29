@@ -7,7 +7,7 @@ use std::path::Path;
 
 use glam::Vec3;
 use postretro_level_format::alpha_lights::{
-    AlphaFalloffModel, AlphaLightType, AlphaLightsSection, AlphaShadowTech,
+    AlphaFalloffModel, AlphaLightType, AlphaLightsSection, AlphaShadowType,
 };
 use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
@@ -134,18 +134,19 @@ pub enum FalloffModel {
     InverseSquared,
 }
 
-/// Which tech casts this light's shadow. Mirrors the compiler-side
-/// `ShadowTech` and the wire-level `AlphaShadowTech`. The three sets are
-/// disjoint, so the forward pass routes each light's shadow to exactly one of
-/// baked (lightmap) / SDF (runtime trace) / dynamic (shadow map) — no
-/// double-count. Legacy PRLs without the wire field decode `Baked`.
-/// See `context/plans/in-progress/sdf-per-light-shadows/`.
+/// How a baked-tier light's **direct** shadow resolves. Mirrors the
+/// compiler-side `ShadowType` and the wire-level `AlphaShadowType`. Two values
+/// only — the dynamic tier is NOT a shadow-type value; it reaches the runtime
+/// via the separate `is_dynamic` field (set by classname). The direct
+/// techniques are disjoint, so the forward pass routes each light's direct
+/// shadow to exactly one of lightmap (`StaticLightMap`) / runtime SDF trace
+/// (`Sdf`) — no double-count. Legacy PRLs without the wire field decode
+/// `StaticLightMap`. See `context/plans/in-progress/sdf-per-light-shadows/`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ShadowTech {
+pub enum ShadowType {
     #[default]
-    Baked,
+    StaticLightMap,
     Sdf,
-    Dynamic,
 }
 
 /// From PRL section 18. FGD-authored; script-registered entity types arrive via `setupMod()`'s `entities` return field, drained into `DataRegistry` at boot.
@@ -187,12 +188,13 @@ pub struct MapLight {
     /// `u32::MAX` (`ALPHA_LIGHT_LEAF_UNASSIGNED`) = couldn't assign to a non-solid leaf;
     /// excluded from portal-graph reachability and chunk light lists.
     pub leaf_index: u32,
-    /// Which tech casts this light's shadow (FGD `_shadow_tech`). `Sdf`-tagged
-    /// lights take the runtime per-light SDF visibility + diffuse path in the
-    /// forward shader (flagged via `spec_lights`); `Dynamic` rides the
-    /// shadow-map path (and parses `is_dynamic == true`); `Baked` is shadowed
-    /// by the lightmap. Legacy PRLs decode `Baked`.
-    pub shadow_tech: ShadowTech,
+    /// How this baked-tier light's **direct** shadow resolves (FGD
+    /// `_shadow_type`). `Sdf`-typed lights take the runtime per-light SDF
+    /// visibility + diffuse path in the forward shader (flagged via
+    /// `spec_lights`); `StaticLightMap` is shadowed by the lightmap. The dynamic
+    /// tier rides the separate `is_dynamic` field (shadow-map path), not this
+    /// value. Legacy PRLs decode `StaticLightMap`.
+    pub shadow_type: ShadowType,
 }
 
 /// Whether the lightmap section's baked irradiance already includes the
@@ -354,10 +356,9 @@ fn convert_alpha_lights(section: AlphaLightsSection) -> Vec<MapLight> {
                 AlphaFalloffModel::InverseDistance => FalloffModel::InverseDistance,
                 AlphaFalloffModel::InverseSquared => FalloffModel::InverseSquared,
             };
-            let shadow_tech = match r.shadow_tech {
-                AlphaShadowTech::Baked => ShadowTech::Baked,
-                AlphaShadowTech::Sdf => ShadowTech::Sdf,
-                AlphaShadowTech::Dynamic => ShadowTech::Dynamic,
+            let shadow_type = match r.shadow_type {
+                AlphaShadowType::StaticLightMap => ShadowType::StaticLightMap,
+                AlphaShadowType::Sdf => ShadowType::Sdf,
             };
             MapLight {
                 origin: r.origin,
@@ -375,7 +376,7 @@ fn convert_alpha_lights(section: AlphaLightsSection) -> Vec<MapLight> {
                 animated_slot: None, // populated from ShVolume slot table later in load
                 tags: vec![],        // populated by LightTags section pass below
                 leaf_index: r.leaf_index,
-                shadow_tech,
+                shadow_type,
             }
         })
         .collect()
@@ -1665,7 +1666,7 @@ mod tests {
                     is_dynamic: false,
                     casts_entity_shadows: false,
                     leaf_index: 0,
-                    shadow_tech: AlphaShadowTech::Baked,
+                    shadow_type: AlphaShadowType::StaticLightMap,
                 },
                 AlphaLightRecord {
                     origin: [-4.0, 5.5, 6.0],
@@ -1681,7 +1682,7 @@ mod tests {
                     is_dynamic: true,
                     casts_entity_shadows: true,
                     leaf_index: 1,
-                    shadow_tech: AlphaShadowTech::Baked,
+                    shadow_type: AlphaShadowType::StaticLightMap,
                 },
                 AlphaLightRecord {
                     origin: [0.0, 10.0, 0.0],
@@ -1697,7 +1698,7 @@ mod tests {
                     is_dynamic: false,
                     casts_entity_shadows: false,
                     leaf_index: 2,
-                    shadow_tech: AlphaShadowTech::Baked,
+                    shadow_type: AlphaShadowType::StaticLightMap,
                 },
             ],
         }

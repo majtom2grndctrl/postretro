@@ -7,7 +7,7 @@ use glam::DVec3;
 use thiserror::Error;
 
 use crate::map_data::{
-    FalloffModel, KEYFRAME_RESAMPLE_RATE_HZ, LightAnimation, LightType, MapLight, ShadowTech,
+    FalloffModel, KEYFRAME_RESAMPLE_RATE_HZ, LightAnimation, LightType, MapLight, ShadowType,
     resample_keyframes,
 };
 use crate::map_format::MapFormat;
@@ -265,17 +265,12 @@ pub fn translate_light(
     // across the direct techniques, so no contribution is double-counted; an
     // unknown value is a hard authoring error. `dynamic` is NOT a shadow-type
     // value — the dynamic tier is selected by classname (below), not by a KVP.
-    //
-    // NOTE (sdf-per-light-shadows Task 2 seam): the KVP is read here under its
-    // new name and restricted to two values, but the internal enum is still the
-    // legacy `ShadowTech` (with a now-parser-unreachable `Dynamic` variant) and
-    // the runtime/wire threading still uses the old name. Task 3 renames the
-    // enum/field to `ShadowType`, drops the dead `Dynamic` variant, and threads
-    // the two-value contract through `MapLight`/PRL. This task pins only the FGD
-    // surface and the classname → `is_dynamic` dispatch.
-    let shadow_tech = match props.get("_shadow_type").map(|s| s.trim()) {
-        None | Some("") | Some("static_light_map") => ShadowTech::Baked,
-        Some("sdf") => ShadowTech::Sdf,
+    // The parsed value carries through the two-value `ShadowType` enum onto the
+    // compiler-side `MapLight`, the PRL wire record, and the runtime `MapLight`
+    // (sdf-per-light-shadows Task 3).
+    let shadow_type = match props.get("_shadow_type").map(|s| s.trim()) {
+        None | Some("") | Some("static_light_map") => ShadowType::StaticLightMap,
+        Some("sdf") => ShadowType::Sdf,
         Some(other) => {
             return Err(TranslateError::InvalidProperty {
                 key: "_shadow_type",
@@ -506,7 +501,7 @@ pub fn translate_light(
         casts_entity_shadows,
         is_animated,
         tags,
-        shadow_tech,
+        shadow_type,
     })
 }
 
@@ -1041,7 +1036,7 @@ mod tests {
         let light = translate_light(&point_light_props(&[]), DVec3::ZERO, "light")
             .expect("should translate");
         // `static_light_map` maps to the (still legacy-named) `Baked` enum.
-        assert_eq!(light.shadow_tech, ShadowTech::Baked);
+        assert_eq!(light.shadow_type, ShadowType::StaticLightMap);
         assert!(!light.is_dynamic);
     }
 
@@ -1053,7 +1048,7 @@ mod tests {
             "light",
         )
         .expect("should translate");
-        assert_eq!(light.shadow_tech, ShadowTech::Sdf);
+        assert_eq!(light.shadow_type, ShadowType::Sdf);
         assert!(!light.is_dynamic);
     }
 
@@ -1065,7 +1060,7 @@ mod tests {
             "light",
         )
         .expect("should translate");
-        assert_eq!(light.shadow_tech, ShadowTech::Baked);
+        assert_eq!(light.shadow_type, ShadowType::StaticLightMap);
         assert!(!light.is_dynamic);
     }
 

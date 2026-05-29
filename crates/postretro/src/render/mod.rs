@@ -4683,7 +4683,7 @@ mod tests {
                 animated_slot: None,
                 tags: vec![],
                 leaf_index: 0,
-                shadow_tech: crate::prl::ShadowTech::Baked,
+                shadow_type: crate::prl::ShadowType::StaticLightMap,
             }
         }
 

@@ -155,24 +155,20 @@ pub enum FalloffModel {
     InverseSquared,
 }
 
-/// Which tech casts this light's shadow. The three sets are **disjoint** — a
-/// light is shadowed by exactly one of these, so no contribution is
-/// double-counted. Authored as FGD `_shadow_tech`; default `Baked`.
-///
-/// - `Baked`: shadow baked into the lightmap (free, fixed) — included in the
-///   lightmap bake.
-/// - `Sdf`: runtime SDF-traced per-light shadow (sparse, tweakable without a
-///   re-bake) — excluded from the bake, flagged in the runtime light buffer.
-/// - `Dynamic`: shadow-map path (spots / moving / hero) — maps to
-///   `is_dynamic`, excluded from the bake.
-///
+/// How a baked-tier light's **direct** shadow resolves (FGD `_shadow_type`,
+/// default `StaticLightMap`). Two values only — the dynamic tier is selected by
+/// classname (sets `is_dynamic`), NOT by a shadow-type value. The direct
+/// techniques are disjoint, so no contribution is double-counted.
 /// See `context/plans/in-progress/sdf-per-light-shadows/`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum ShadowTech {
+pub enum ShadowType {
+    /// Direct light + shadow baked into the lightmap; bounce baked into SH.
+    /// The default.
     #[default]
-    Baked,
+    StaticLightMap,
+    /// Direct shadow traced at runtime against the baked static-occluder atlas;
+    /// bounce still baked into SH.
     Sdf,
-    Dynamic,
 }
 
 /// Curve-based animation over a repeating cycle.
@@ -246,19 +242,16 @@ pub struct MapLight {
     /// sections). Defaults to false.
     pub bake_only: bool,
 
-    /// Marker for the shadow-map / geometry-moving light class (position/aim
-    /// animation, or any light tagged `_shadow_tech dynamic`). Set `true` by
-    /// the parser when `shadow_tech == Dynamic`. The named seam for future
-    /// geometry-moving lights.
+    /// Marker for the dynamic (shadow-map) tier. Set `true` by the parser from
+    /// the dynamic-tier CLASSNAME (`light_dynamic` / `light_dynamic_spot`), NOT
+    /// from a shadow-type value. Dynamic-tier lights bake into nothing and route
+    /// to the shadow-map path; the only tier that can shadow moving entities.
     ///
-    /// Intensity-only animation (brightness/color pulse, including
-    /// script-driven sweeps) is **not** dynamic — those are static lights
-    /// on the animated-baked compose path (Task 2c). The bake filter is
-    /// `shadow_tech == Baked` (see `StaticBakedLights` / `AnimatedBakedLights`
-    /// in `light_namespaces.rs`), which subsumes the old `!is_dynamic` guard
-    /// and keeps `lm_irr`/`lm_anim` disjoint from the runtime shadow-map set.
-    /// `is_dynamic` composes with `bake_only` as orthogonal axes —
-    /// geometry-moving + bake-only is a meaningful combination.
+    /// The namespace filters (`StaticBakedLights` / `AnimatedBakedLights` in
+    /// `light_namespaces.rs`) key on this position axis (`!is_dynamic`) — never
+    /// on shadow type — because they also feed the SH/delta bakes, which need
+    /// every baked-tier light. `is_dynamic` composes with `bake_only` as
+    /// orthogonal axes.
     pub is_dynamic: bool,
 
     /// Per-light opt-in for shadow-map-pool eligibility for dynamic
@@ -290,13 +283,16 @@ pub struct MapLight {
     /// equals `"t"`. Empty means untagged.
     pub tags: Vec<String>,
 
-    /// Which tech casts this light's shadow (FGD `_shadow_tech`, default
-    /// `Baked`). Routes the light into exactly one of three disjoint sets:
-    /// `Baked` → lightmap bake; `Sdf` → excluded from the bake, runtime
-    /// SDF-traced; `Dynamic` → `is_dynamic`, shadow-map path. The bake
-    /// filters (`StaticBakedLights`, `AnimatedBakedLights`) read this to keep
-    /// the baked atlas disjoint from the runtime SDF set.
-    pub shadow_tech: ShadowTech,
+    /// How this baked-tier light's **direct** shadow resolves (FGD
+    /// `_shadow_type`, default `StaticLightMap`). `StaticLightMap` → direct
+    /// shadow baked into the lightmap; `Sdf` → direct shadow traced at runtime.
+    /// Both bake their bounce into SH (shadow type never gates indirect). The
+    /// direct lightmap consumers (static lightmap bake, animated weight-map
+    /// bake) drop `Sdf` so `lm_irr`/`lm_anim` stay disjoint from the runtime
+    /// SDF set; the namespace filters key on the position axis (`!is_dynamic`),
+    /// not on this field. The dynamic tier rides `is_dynamic` (set by
+    /// classname), not a shadow-type value.
+    pub shadow_type: ShadowType,
 }
 
 // ---------------------------------------------------------------------------

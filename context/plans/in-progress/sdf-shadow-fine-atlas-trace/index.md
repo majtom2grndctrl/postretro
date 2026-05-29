@@ -1,5 +1,13 @@
 # SDF Shadow Fine-Atlas Trace
 
+> **SUBSUMED — do not resume.** Superseded by
+> `context/plans/drafts/sdf-per-light-shadows/`. The fine-field sampler and coarse
+> unit-bug fix this plan produced **landed and are carried forward** (committed as a
+> checkpoint); only the dominant-direction trace structure they fed is replaced by
+> per-light tracing. The fine field's role in the new design is documented in that
+> plan's `architecture.md`. Retained in git history only; removed from the tree so
+> agents don't resume a superseded trace.
+
 ## Goal
 
 Make the half-res SDF static-occluder shadow trace sample the **fine brick atlas** (0.5 m voxels) near surfaces instead of marching the coarse per-brick field alone. The coarse field is per-brick (≈4 m granularity on `occlusion-test.prl`) and cannot resolve real occluders — pillars, doorways, anything smaller than a brick — so the ray marches straight through and the pass produces almost no shadows. The fine atlas is already baked, uploaded, and bound to the pass; the trace just doesn't read it. This is the named v1 follow-up (`sdf_shadow.wgsl` trace comment: "Refining to the fine atlas is the named follow-up").

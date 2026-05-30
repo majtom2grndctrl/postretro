@@ -76,20 +76,21 @@ pub fn bake_chunk_light_list(
         return Ok(ChunkLightListSection::placeholder());
     }
 
-    // Emitted u32s in `light_indices` are AlphaLights slot indices — matches
-    // the runtime spec-buffer layout one-to-one.
+    // Emitted u32s in `light_indices` index the COMPACTED `!is_dynamic`
+    // spec_lights array, matching `pack_spec_lights` in
+    // `crates/postretro/src/lighting/spec_buffer.rs`. That packer iterates the
+    // runtime AlphaLights-ordered light list and SKIPS dynamic lights with no
+    // placeholder, so the spec_lights slot space is the running index over only
+    // the non-dynamic lights — NOT the AlphaLights slot space (which still
+    // counts dynamic lights). `enumerate()` therefore runs AFTER the
+    // `!is_dynamic` filter so the emitted index is a contiguous compacted slot.
     let static_slots: Vec<(u32, &MapLight)> = inputs
         .lights
         .entries()
         .iter()
+        .filter(|e| !e.light.is_dynamic)
         .enumerate()
-        .filter_map(|(slot, e)| {
-            if !e.light.is_dynamic {
-                Some((slot as u32, e.light))
-            } else {
-                None
-            }
-        })
+        .map(|(slot, e)| (slot as u32, e.light))
         .collect();
     if static_slots.is_empty() {
         return Ok(ChunkLightListSection::placeholder());
@@ -1210,6 +1211,110 @@ mod tests {
         );
         let slot = section.light_indices[entry.offset as usize];
         assert_eq!(slot, 0);
+    }
+
+    /// Regression for the dynamic-light index-skew bug: the baker must emit
+    /// `light_indices` in the COMPACTED `!is_dynamic` slot space that
+    /// `pack_spec_lights` produces — NOT the AlphaLights slot space (which
+    /// counts dynamic lights). When a dynamic light precedes a static/SDF light,
+    /// the AlphaLights slot of the SDF light is 1, but its compacted spec_lights
+    /// slot is 0 (the dynamic light is skipped with no placeholder). The runtime
+    /// indexes `spec_lights[light_idx]`, so the baker must emit the compacted
+    /// index or every light after a dynamic one reads the wrong record (SDF
+    /// lights dropped from selection, static specular mis-read).
+    ///
+    /// The contract is pinned by reconstructing the same compaction
+    /// `pack_spec_lights` applies (`!is_dynamic`, iteration order, no
+    /// placeholder) over the runtime light list, then asserting the emitted
+    /// index lands on the intended SDF light in that compacted array. We pin at
+    /// the baker level (rather than calling `pack_spec_lights`, which lives in
+    /// the `postretro` crate and would cross a crate boundary) by mirroring its
+    /// filter here; `pack_spec_lights` has its own `skips_dynamic_lights` test
+    /// holding up the other half of the seam.
+    #[test]
+    fn emitted_index_is_compacted_spec_slot_when_dynamic_precedes_sdf() {
+        // AlphaLights order: [dynamic, sdf-static]. AlphaLights slot of the SDF
+        // light is 1; its compacted (!is_dynamic) spec_lights slot is 0.
+        let geo = single_quad_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let lights = vec![
+            dynamic_point_light(DVec3::new(0.0, 1.0, 0.0), 4.0),
+            sdf_point_light(DVec3::new(0.0, 1.0, 0.0), 4.0),
+        ];
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let inputs = ChunkLightListInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            lights: &alpha_lights,
+            tree: &empty_tree(),
+            portals: &[],
+            exterior_leaves: &HashSet::new(),
+        };
+        let section = bake_chunk_light_list(&inputs, 8.0, 64).unwrap();
+        assert_eq!(section.has_grid, 1);
+
+        // Mirror `pack_spec_lights`: the compacted spec_lights view of the
+        // runtime light list (filter !is_dynamic, preserve order, no placeholder).
+        let spec_lights: Vec<&MapLight> = lights.iter().filter(|l| !l.is_dynamic).collect();
+
+        // Every emitted index must point at the SDF light through the compacted
+        // array — i.e. `spec_lights[emitted].shadow_type == Sdf`. The pre-fix
+        // baker emitted AlphaLights slot 1, which is out of range of the
+        // single-entry compacted array (the bug), or in larger sets the wrong
+        // record.
+        assert!(
+            !section.light_indices.is_empty(),
+            "the SDF light should land in at least one chunk"
+        );
+        for &emitted in &section.light_indices {
+            let slot = emitted as usize;
+            assert!(
+                slot < spec_lights.len(),
+                "emitted index {slot} is out of range of the compacted spec_lights \
+                 array (len {}) — this is the AlphaLights-vs-compacted skew bug",
+                spec_lights.len(),
+            );
+            assert_eq!(
+                spec_lights[slot].shadow_type,
+                ShadowType::Sdf,
+                "emitted compacted index {slot} must resolve to the SDF light, \
+                 not a different spec_lights record"
+            );
+        }
+    }
+
+    /// The baker emits a contiguous compacted index sequence over the
+    /// non-dynamic subset: with [static, dynamic, sdf] the only valid
+    /// spec_lights slots are 0 and 1 (the two non-dynamic lights), never 2.
+    #[test]
+    fn emitted_indices_are_contiguous_over_non_dynamic_subset() {
+        let geo = single_quad_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let lights = vec![
+            point_light(DVec3::new(0.0, 1.0, 0.0), 4.0), // compacted slot 0
+            dynamic_point_light(DVec3::new(0.0, 1.0, 0.0), 4.0), // skipped
+            sdf_point_light(DVec3::new(0.0, 1.0, 0.0), 4.0), // compacted slot 1
+        ];
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let inputs = ChunkLightListInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            lights: &alpha_lights,
+            tree: &empty_tree(),
+            portals: &[],
+            exterior_leaves: &HashSet::new(),
+        };
+        let section = bake_chunk_light_list(&inputs, 8.0, 64).unwrap();
+        let non_dynamic_count = lights.iter().filter(|l| !l.is_dynamic).count() as u32;
+        for &emitted in &section.light_indices {
+            assert!(
+                emitted < non_dynamic_count,
+                "emitted index {emitted} exceeds the {non_dynamic_count} non-dynamic \
+                 spec_lights slots (AlphaLights slot would have been 2 for the SDF light)"
+            );
+        }
     }
 
     #[test]

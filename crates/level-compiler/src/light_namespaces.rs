@@ -7,8 +7,12 @@
 //
 // Index-space contracts:
 // - `AlphaLightsNs` matches the on-disk `AlphaLightRecord` order (`!bake_only`).
-//   `LightInfluence` records and `ChunkLightList` light_indices share this slot
-//   space — record `i` here is record `i` everywhere downstream.
+//   `LightInfluence` records share this slot space — record `i` here is record
+//   `i` for those downstream consumers.
+//   NOTE: `ChunkLightList` light_indices do NOT share this space. They are
+//   emitted in the compacted `!is_dynamic` space that the runtime `spec_lights`
+//   buffer uses (`pack_spec_lights`), since dynamic lights are dropped (with no
+//   placeholder) from that buffer. See `chunk_light_list_bake.rs`.
 // - `AnimatedBakedLights` matches the `AnimationDescriptor` array order
 //   (`!is_dynamic && animation.is_some()`).
 // - `StaticBakedLights` is internal to lightmap and SH base bakes; no on-disk

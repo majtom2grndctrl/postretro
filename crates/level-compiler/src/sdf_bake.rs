@@ -42,7 +42,12 @@ use crate::partition::{BspTree, find_leaf_for_point};
 /// folds it in so a stale on-disk entry from a prior version is automatically
 /// invalidated (first build after the bump is a miss; the second is a hit —
 /// matches the SH and lightmap stage pattern).
-pub const STAGE_VERSION: u32 = 1;
+// v2: empty-brick coarse value changed from the per-brick MEAN of signed
+// distances to a conservative MINIMUM clearance (`min_unsigned − safety
+// margin`). The mean is not a valid sphere-trace lower bound and let the shadow
+// march overstep/tunnel through sub-brick geometry (Hart 1996). Bumped so stale
+// caches don't serve the old mean-based coarse field. See `COARSE_SAFETY_MARGIN_VOXELS`.
+pub const STAGE_VERSION: u32 = 2;
 
 /// Default voxel edge length in meters. Sized to give a usable shadow
 /// resolution for retro-scale interiors without exploding atlas memory.
@@ -62,6 +67,18 @@ const GRID_VOXEL_PADDING: u32 = 2;
 /// One voxel of slack gives the runtime a smooth fallback across brick
 /// boundaries via the coarse field.
 const SURFACE_BAND_VOXELS: f32 = 1.0;
+
+/// Half the unit-cube diagonal (`sqrt(3) / 2 ≈ 0.866`), in voxel-size units.
+/// The per-brick coarse clearance (`min_unsigned`) is the minimum unsigned
+/// distance measured at VOXEL CENTERS, spaced `voxel_size` apart. A ray point
+/// between centers can be closer to a surface than any center; the worst case is
+/// a point at a corner of the voxel-center lattice cell, which sits up to half a
+/// voxel diagonal (`voxel_size · sqrt(3) / 2`) from the nearest center. Since
+/// the SDF is 1-Lipschitz, subtracting this margin from `min_unsigned` yields a
+/// provable lower bound on the true clearance for ANY point inside the brick —
+/// the invariant sphere tracing requires (Hart 1996). See the `coarse_clearance`
+/// computation below.
+const COARSE_SAFETY_MARGIN_VOXELS: f32 = 0.866_025_4;
 
 /// Owned, serialisable snapshot of the bake's inputs. Hashed into the cache
 /// key via postcard (mirrors `ShInputs` / `LightmapInputs`).
@@ -156,7 +173,6 @@ pub fn bake_sdf_atlas(ctx: &SdfBakeCtx<'_>, config: &SdfConfig) -> SdfAtlasSecti
                 let mut all_solid = true;
                 let mut all_empty_air = true;
                 let mut max_abs_quant: f32 = 0.0;
-                let mut signed_sum = 0.0f64; // for coarse aggregate
 
                 for vz in 0..brick_size {
                     for vy in 0..brick_size {
@@ -182,7 +198,6 @@ pub fn bake_sdf_atlas(ctx: &SdfBakeCtx<'_>, config: &SdfConfig) -> SdfAtlasSecti
                                 all_solid = false;
                             }
                             let signed = if inside_solid { -unsigned } else { unsigned };
-                            signed_sum += signed as f64;
 
                             let q_raw = (signed * inv_quant_step).round();
                             let q_clamped = q_raw.clamp(i16::MIN as f32, i16::MAX as f32) as i16;
@@ -197,7 +212,29 @@ pub fn bake_sdf_atlas(ctx: &SdfBakeCtx<'_>, config: &SdfConfig) -> SdfAtlasSecti
                 // where the fine atlas data carries non-redundant info.
                 let near_surface = min_unsigned <= surface_band_m;
 
-                let coarse_signed = (signed_sum / voxels_per_brick as f64) as f32;
+                // Per-brick coarse clearance: a CONSERVATIVE LOWER BOUND on the
+                // unsigned distance-to-surface for ANY point a ray could occupy
+                // inside this brick. The runtime uses this as the sphere-trace
+                // step for non-surface (EMPTY) bricks (`sample_coarse_distance`
+                // in `sdf_shadow.wgsl`, step `t += max(d, voxel*0.5)`).
+                //
+                // WHY MIN, NOT MEAN: sphere tracing requires the step to be a
+                // lower bound on distance-to-surface (Hart 1996). The old mean
+                // of per-voxel distances is NOT a lower bound — it overstates
+                // clearance near the brick's closest approach, so the ray
+                // oversteps and tunnels through sub-brick occluders (the
+                // secondary ~4 m-granularity banding). Take the minimum instead.
+                //
+                // WHY THE MARGIN: `min_unsigned` is the minimum measured at
+                // voxel CENTERS (spaced `voxel_size` apart). A point between
+                // centers can be closer to a surface; the worst case is half a
+                // voxel diagonal from the nearest center. Subtracting that margin
+                // (1-Lipschitz SDF) makes the value a provable lower bound for
+                // every interior point. Under-stepping is safe-but-slower;
+                // over-stepping is the bug. Clamp at >= 0 (the runtime clamps
+                // too, but keep the stored value honest).
+                let coarse_clearance =
+                    (min_unsigned - voxel_size * COARSE_SAFETY_MARGIN_VOXELS).max(0.0);
 
                 if !near_surface {
                     // Pure-empty or pure-solid brick — no atlas slot. Pick
@@ -222,7 +259,7 @@ pub fn bake_sdf_atlas(ctx: &SdfBakeCtx<'_>, config: &SdfConfig) -> SdfAtlasSecti
                     atlas.extend_from_slice(&brick_samples);
                     surface_brick_count += 1;
                 }
-                coarse.push(coarse_signed);
+                coarse.push(coarse_clearance);
             }
         }
     }
@@ -710,9 +747,10 @@ mod tests {
              positive={has_positive}",
         );
 
-        // The brick's coarse signed distance should be small in magnitude
-        // (centered roughly on the wall) — order-of-magnitude check.
-        // Pick whichever coarse entry corresponds to the first surface brick.
+        // The brick's coarse clearance is now a conservative MIN of unsigned
+        // per-voxel distances (minus a half-voxel-diagonal margin), clamped >= 0.
+        // A wall-straddling brick has voxels right on the wall, so its clearance
+        // is small (well under a brick edge). Order-of-magnitude check.
         let first_surface_brick_idx = section
             .top_level
             .iter()
@@ -720,9 +758,106 @@ mod tests {
             .expect("surface-brick slot 0 must exist in top_level");
         let coarse_at = section.coarse_distances[first_surface_brick_idx];
         assert!(
-            coarse_at.abs() < cfg.voxel_size_m * cfg.brick_size_voxels as f32,
-            "coarse distance at a wall-straddling brick should be smaller than \
-             the brick edge length, got {coarse_at}",
+            (0.0..cfg.voxel_size_m * cfg.brick_size_voxels as f32).contains(&coarse_at),
+            "coarse clearance at a wall-straddling brick should be in \
+             [0, brick edge length), got {coarse_at}",
+        );
+    }
+
+    /// Guards the sphere-trace lower-bound invariant (Hart 1996): the per-brick
+    /// coarse value must be a CONSERVATIVE MIN clearance, not the per-voxel MEAN.
+    /// The mean overstates distance-to-surface and lets the shadow march overstep
+    /// / tunnel through sub-brick geometry. We pick an EMPTY brick whose per-voxel
+    /// distances span a gradient (so min ≠ mean), then assert the stored value
+    /// equals `(min − half-voxel-diagonal margin).max(0)` and is NOT the mean.
+    #[test]
+    fn coarse_value_stores_conservative_min_not_mean() {
+        let (geo, tree) = wall_scene();
+        let cfg = SdfConfig {
+            voxel_size_m: 0.5,
+            brick_size_voxels: 4,
+        };
+        let ctx = SdfBakeCtx {
+            geometry: &geo,
+            tree: &tree,
+        };
+        let section = bake_sdf_atlas(&ctx, &cfg);
+
+        // Independently reconstruct per-voxel distances so the assertion does not
+        // round-trip the bake's own aggregate (would prove nothing).
+        let triangles = collect_triangles(&geo);
+        let voxel_size = cfg.voxel_size_m;
+        let brick_size = cfg.brick_size_voxels;
+        let voxels_per_brick = (brick_size * brick_size * brick_size) as usize;
+        let (world_min, world_max) = world_aabb(&ctx);
+        let (grid_origin, brick_dims) = grid_extents(world_min, world_max, voxel_size, brick_size);
+
+        // Find an EMPTY brick whose voxel-center distances form a gradient, so
+        // the minimum and the mean are meaningfully different. Bricks set back
+        // from the x=0 wall have a clear min-to-mean spread.
+        let mut found: Option<(usize, f32, f32)> = None; // (brick_idx, min, mean)
+        'outer: for bz in 0..brick_dims[2] {
+            for by in 0..brick_dims[1] {
+                for bx in 0..brick_dims[0] {
+                    let brick_idx =
+                        (bz * brick_dims[1] * brick_dims[0] + by * brick_dims[0] + bx) as usize;
+                    if section.top_level[brick_idx] != BRICK_SLOT_EMPTY {
+                        continue;
+                    }
+                    let mut min_unsigned = f32::INFINITY;
+                    let mut sum = 0.0f64;
+                    for vz in 0..brick_size {
+                        for vy in 0..brick_size {
+                            for vx in 0..brick_size {
+                                let p = voxel_center(
+                                    grid_origin,
+                                    bx,
+                                    by,
+                                    bz,
+                                    vx,
+                                    vy,
+                                    vz,
+                                    brick_size,
+                                    voxel_size,
+                                );
+                                let d = nearest_triangle_distance(&triangles, p);
+                                min_unsigned = min_unsigned.min(d);
+                                sum += d as f64;
+                            }
+                        }
+                    }
+                    let mean = (sum / voxels_per_brick as f64) as f32;
+                    // Require a real spread so the "not the mean" check has teeth.
+                    if mean - min_unsigned > 0.5 * voxel_size {
+                        found = Some((brick_idx, min_unsigned, mean));
+                        break 'outer;
+                    }
+                }
+            }
+        }
+
+        let (brick_idx, min_unsigned, mean) =
+            found.expect("expected an EMPTY brick with a min-to-mean distance gradient");
+
+        let expected = (min_unsigned - voxel_size * COARSE_SAFETY_MARGIN_VOXELS).max(0.0);
+        let stored = section.coarse_distances[brick_idx];
+
+        // Stored value matches the conservative-min formula.
+        assert!(
+            (stored - expected).abs() < 1.0e-4,
+            "coarse value must be (min − margin).max(0) = {expected}, got {stored} \
+             (min_unsigned={min_unsigned}, mean={mean})",
+        );
+        // ...and is a valid lower bound: never above the minimum sample.
+        assert!(
+            stored <= min_unsigned + 1.0e-4,
+            "coarse value {stored} must not exceed the minimum sample {min_unsigned}",
+        );
+        // ...and is explicitly NOT the mean (this would fail under old behavior).
+        assert!(
+            (stored - mean).abs() > 0.5 * voxel_size,
+            "coarse value {stored} must NOT equal the per-voxel mean {mean} \
+             (the old, sphere-trace-unsafe behavior)",
         );
     }
 }

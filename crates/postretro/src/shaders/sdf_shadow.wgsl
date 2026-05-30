@@ -132,17 +132,17 @@ fn sample_coarse_distance(world: vec3<f32>) -> f32 {
     let grid = vec3<f32>(sdf_meta.grid_dims);
     let coord = vec3<i32>(clamp(normalized * grid, vec3<f32>(0.0), grid - vec3<f32>(1.0)));
     let coarse = textureLoad(sdf_coarse, coord, 0).r;
-    // The baked coarse value (`sdf_bake.rs::coarse_signed`) is already a metric
-    // signed distance in meters — the per-brick mean of ±nearest-triangle
-    // distance. Return its non-negative part directly; do NOT re-scale by the
-    // brick edge length (that over-stepped the empty-brick fallback by ~4 m and
-    // let the sphere-trace tunnel through sub-brick occluders). It is a mean,
-    // not a tight lower bound, but that is fine here: this fallback only fires
-    // for non-surface bricks — bricks classified EMPTY because their closest
-    // triangle distance exceeds `surface_band_m` (sdf_bake.rs ~line 198:
-    // `near_surface = min_unsigned <= surface_band_m`). Relaxing that threshold
-    // would promote some near-surface bricks to EMPTY and allow this path to
-    // under-count distance into them.
+    // The baked coarse value (`sdf_bake.rs`, the `coarse_clearance` computation)
+    // is a CONSERVATIVE LOWER BOUND on the unsigned distance-to-surface for any
+    // point inside the brick, in meters: `min(per-voxel clearance) − half-voxel-
+    // diagonal margin`, clamped >= 0. This is a valid sphere-trace step (Hart
+    // 1996); it replaced the old per-brick MEAN, which overstated clearance and
+    // let the march tunnel through sub-brick occluders (the ~4 m banding). Do NOT
+    // re-scale by the brick edge length. The value is already non-negative, so
+    // `max(coarse, 0.0)` is a belt-and-braces clamp — no shader change was needed
+    // for the mean→min switch. This fallback only fires for non-surface (EMPTY)
+    // bricks — bricks whose closest triangle distance exceeds `surface_band_m`
+    // (sdf_bake.rs: `near_surface = min_unsigned <= surface_band_m`).
     return max(coarse, 0.0);
 }
 
@@ -308,23 +308,34 @@ fn trace_shadow(origin: vec3<f32>, dir: vec3<f32>) -> f32 {
     let k = max(params.penumbra_k, 1.0);
     let max_t = 64.0; // meters — bounded march length
 
+    // Aaltonen interpolated closest-passing-distance estimator (iquilezles,
+    // "Soft Shadows in Raymarched SDFs"): the plain `k·d/t` term samples the
+    // penumbra only at discrete steps and misses the true closest approach when
+    // it falls between two samples (the inter-step ripple at corners/grazing
+    // angles). Reconstruct that closest approach from consecutive samples
+    // `ph` (previous) and `h` (current). Seed `ph` large so the first iteration
+    // contributes no spurious dark term.
+    var ph: f32 = 1.0e10;
     let steps: u32 = clamp(params.max_march_steps, 1u, 256u);
     for (var i: u32 = 0u; i < steps; i = i + 1u) {
         let p = origin + dir * t;
-        let d = sample_fine_distance(p);
+        let h = sample_fine_distance(p);
         // A true hit (ray actually reaches a solid) always shadows — even a hit
         // can't fire inside the bias window because `t` starts past it, so a
         // contact shadow on the floor/wall around the block's base is preserved.
-        if (d < voxel * 0.5) {
+        if (h < voxel * 0.5) {
             return 0.0;
         }
         // Closest-passing-distance penumbra estimate. Skip it while the ray is
-        // within the start-bias window: there `d` is dominated by the caster's
+        // within the start-bias window: there `h` is dominated by the caster's
         // own surface field, not a separate occluder.
         if (t > bias) {
-            factor = min(factor, k * d / max(t, voxel));
+            let y = h * h / (2.0 * max(ph, voxel * 0.5));
+            let estimate = sqrt(max(h * h - y * y, 0.0));
+            factor = min(factor, k * estimate / max(t - y, voxel));
         }
-        t = t + max(d, voxel * 0.5);
+        ph = h;
+        t = t + max(h, voxel * 0.5);
         if (t > max_t) {
             break;
         }

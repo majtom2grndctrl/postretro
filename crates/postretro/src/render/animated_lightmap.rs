@@ -220,8 +220,15 @@ impl AnimatedLightmapResources {
             });
         };
 
-        if section.chunk_rects.is_empty() {
-            // Section present but empty — nothing to compose.
+        if section.chunk_rects.is_empty() || section.texel_lights.is_empty() {
+            // Nothing to compose. Either no animated chunks, or every animated
+            // light is SDF-typed so the baker emitted zero baked direct weight
+            // (the disjoint-direct split — sdf-per-light-shadows Task 1). The
+            // chunk rects still exist (they pair 1:1 with AnimatedLightChunks
+            // for the SH delta bake), but with no texel-lights there is no
+            // direct term to composite: the forward pass falls back to the
+            // static lightmap and runtime SDF resolves these lights' direct
+            // term. Takes the same no-atlas path as a map with no weight maps.
             return Ok(Self {
                 atlas_texture: None,
                 dummy_texture,
@@ -603,8 +610,11 @@ fn create_zero_texture(
 fn create_storage_buffer(device: &wgpu::Device, label: &str, bytes: &[u8]) -> wgpu::Buffer {
     use wgpu::util::DeviceExt;
     // wgpu rejects zero-sized storage buffers. All callers are gated behind the
-    // non-empty `chunk_rects` check above. Use `assert!` (not `debug_assert!`)
-    // so a future regression surfaces in release builds.
+    // early-out in `new` that bails when `chunk_rects` OR `texel_lights` is
+    // empty, so by here every packed buffer is non-empty. (An all-SDF map emits
+    // chunk rects + offset_counts but zero texel_lights — caught by that gate.)
+    // Use `assert!` (not `debug_assert!`) so a future regression surfaces in
+    // release builds.
     assert!(!bytes.is_empty(), "{label} storage buffer would be empty");
     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some(label),

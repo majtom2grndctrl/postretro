@@ -51,34 +51,35 @@ impl AlphaFalloffModel {
     }
 }
 
-/// Which tech casts this light's shadow. Wire-level `u8`; matches the semantic
-/// `ShadowTech` enum in `postretro-level-compiler::map_data`. The three sets
-/// are disjoint — a light is shadowed by exactly one — so no contribution is
+/// How a baked-tier light's **direct** shadow resolves. Wire-level `u8`;
+/// matches the semantic `ShadowType` enum in
+/// `postretro-level-compiler::map_data`. Two values only — the dynamic tier is
+/// NOT a shadow-type value; it reaches the runtime via the separate
+/// `is_dynamic` field (set by classname). The direct techniques are disjoint —
+/// a light's direct shadow comes from exactly one — so no contribution is
 /// double-counted. See `context/plans/in-progress/sdf-per-light-shadows/`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
-pub enum AlphaShadowTech {
-    /// Shadow baked into the lightmap (free, fixed). The default.
+pub enum AlphaShadowType {
+    /// Direct shadow baked into the lightmap (free, fixed). The default.
     #[default]
-    Baked = 0,
-    /// Runtime SDF-traced per-light shadow (sparse, tweakable, no re-bake).
+    StaticLightMap = 0,
+    /// Runtime SDF-traced per-light direct shadow (sparse, tweakable, no re-bake).
     Sdf = 1,
-    /// Shadow-map path (spots / moving / hero); also sets `is_dynamic`.
-    Dynamic = 2,
 }
 
-impl AlphaShadowTech {
+impl AlphaShadowType {
     pub fn from_u8(value: u8) -> Option<Self> {
         match value {
-            0 => Some(Self::Baked),
+            0 => Some(Self::StaticLightMap),
             1 => Some(Self::Sdf),
-            2 => Some(Self::Dynamic),
             _ => None,
         }
     }
 }
 
-/// One serialised light record. Fixed-size on disk: 72 bytes per record.
+/// One serialised light record. Fixed-size on disk:
+/// `ALPHA_LIGHT_RECORD_SIZE` (74) bytes per record.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AlphaLightRecord {
     /// World position, engine meters (Y-up).
@@ -100,10 +101,11 @@ pub struct AlphaLightRecord {
     /// Normalized aim vector; `[0,0,0]` if Point.
     pub cone_direction: [f32; 3],
     pub cast_shadows: bool,
-    /// Routes this light onto the shadow-map path. Set by the `_shadow_tech
-    /// dynamic` authoring key; `false` for `baked` and `sdf`. Intensity-only
-    /// animation does **not** set this flag — that stays on the animated-baked
-    /// path and needs no per-frame shadow re-render.
+    /// Routes this light onto the dynamic (shadow-map) tier. Set by the
+    /// dynamic-tier CLASSNAME (`light_dynamic` / `light_dynamic_spot`), NOT by a
+    /// shadow-type value. `false` for the baked tier (`static_light_map` / `sdf`).
+    /// Intensity-only animation does **not** set this flag — that stays on the
+    /// animated-baked path and needs no per-frame shadow re-render.
     pub is_dynamic: bool,
     /// Per-light opt-in for shadow-map-pool eligibility for dynamic entities
     /// (enemies / moving meshes). FGD `_cast_entity_shadows`. Default `false`.
@@ -114,10 +116,12 @@ pub struct AlphaLightRecord {
     /// "unassigned / cannot determine leaf" (e.g. the light origin landed in
     /// a solid leaf — a map-authoring error). Runtime culls these and warns.
     pub leaf_index: u32,
-    /// Which tech casts this light's shadow (FGD `_shadow_tech`). The three
-    /// sets are disjoint, so no light's contribution is double-counted.
-    /// Records from a `.prl` predating the shadow-tech field decode `Baked`.
-    pub shadow_tech: AlphaShadowTech,
+    /// How this baked-tier light's direct shadow resolves (FGD `_shadow_type`,
+    /// 2 values). The direct techniques are disjoint, so no light's
+    /// contribution is double-counted. Records from a `.prl` predating the
+    /// shadow-type field decode `StaticLightMap`. The dynamic tier rides
+    /// `is_dynamic`, not this field.
+    pub shadow_type: AlphaShadowType,
 }
 
 /// Sentinel `leaf_index` for lights whose origin could not be assigned to a
@@ -129,23 +133,28 @@ pub const ALPHA_LIGHT_LEAF_UNASSIGNED: u32 = u32::MAX;
 /// 24 (origin) + 1 (type) + 4 (intensity) + 12 (color) + 1 (falloff model)
 /// + 4 (range) + 4 + 4 (cone angles) + 12 (cone dir) + 1 (cast shadows)
 /// + 1 (is_dynamic) + 1 (casts_entity_shadows) + 4 (leaf_index)
-/// + 1 (shadow_tech) = 74.
+/// + 1 (shadow_type) = 74.
 pub const ALPHA_LIGHT_RECORD_SIZE: usize = 74;
 
 /// AlphaLights section version (per-section, distinct from the PRL header
 /// `CURRENT_VERSION`; mirrors the `SH_VOLUME_VERSION` precedent). Bumped when
-/// the record layout changes so the loader decodes the right fields.
+/// the record layout changes so the loader decodes the right fields and
+/// rejects stale layouts with a clear error.
 ///
-/// - v1 (legacy): no `shadow_tech` byte — 73-byte records. Decodes
-///   `shadow_tech = Baked`.
-/// - v2 (current): trailing `shadow_tech` byte — 74-byte records.
+/// - v3 (current): trailing `shadow_type` byte — 2-valued
+///   (0=`static_light_map`, 1=`sdf`); 74-byte records. The dynamic-tier
+///   distinction rides the separate `is_dynamic` field, not this byte.
 ///
-/// A version-less `.prl` written before this field existed is treated as v1.
-pub const ALPHA_LIGHTS_VERSION: u32 = 2;
+/// A `.prl` written without this leading version field (predating it) is the
+/// legacy version-less layout — `count` directly, 73-byte records — and decodes
+/// `shadow_type = StaticLightMap`. The leading `u32 version` field subsumes the
+/// old 72/73 record-stride heuristic.
+pub const ALPHA_LIGHTS_VERSION: u32 = 3;
 
-/// v1 record stride (predating the `shadow_tech` byte). Records this length
-/// decode `shadow_tech = Baked`.
-const ALPHA_LIGHT_RECORD_SIZE_V1: usize = 73;
+/// Legacy version-less record stride (predating the `shadow_type` byte and the
+/// leading `version` field). Records this length decode
+/// `shadow_type = StaticLightMap`.
+const ALPHA_LIGHT_RECORD_SIZE_LEGACY: usize = 73;
 
 /// AlphaLights section (ID 18).
 ///
@@ -186,7 +195,7 @@ impl AlphaLightsSection {
             buf.push(if l.is_dynamic { 1 } else { 0 });
             buf.push(if l.casts_entity_shadows { 1 } else { 0 });
             buf.extend_from_slice(&l.leaf_index.to_le_bytes());
-            buf.push(l.shadow_tech as u8);
+            buf.push(l.shadow_type as u8);
         }
 
         buf
@@ -200,26 +209,61 @@ impl AlphaLightsSection {
             )));
         }
 
-        // The section gained a leading `u32 version` (mirroring
-        // `SH_VOLUME_VERSION`). A `.prl` written before that field began with
-        // `u32 light_count` directly and 73-byte records. Disambiguate by
-        // testing the versioned interpretation against the body length: a
-        // current section is `version(4) + count(4) + count*74`. If that
-        // matches, decode versioned; otherwise fall back to the version-less
-        // v1 layout (`count(4) + count*73`, `shadow_tech = Baked`).
+        // Disambiguation rule — versioned vs. legacy:
+        //
+        // Versioned layout  (v3+): version(u32) + count(u32) + count×74 bytes.
+        //   Total length = 8 + count×74.
+        // Legacy layout (version-less): count(u32) + count×73 bytes.
+        //   Total length = 4 + count×73.
+        //
+        // Detection: read `first = data[0..4]` as a u32.
+        //   Step 1 — test the versioned formula with `first` as version and
+        //     `data[4..8]` as count. If the total length matches exactly and
+        //     `first == ALPHA_LIGHTS_VERSION`, decode as current versioned.
+        //   Step 2 — if the versioned formula matches but `first` differs from
+        //     `ALPHA_LIGHTS_VERSION`, the section was written by a different
+        //     compiler version; reject with a clear version-mismatch error
+        //     instead of falling through to legacy. This prevents a foreign
+        //     version word from being silently reinterpreted as a light count.
+        //   Step 3 — otherwise decode as legacy: `first` is the light count,
+        //     73-byte records, `shadow_type` defaults to `StaticLightMap`.
+        //
+        // Why the versioned formula is a reliable discriminator: a genuine
+        // legacy section with N lights has length 4 + N×73. For that to also
+        // satisfy the versioned formula (8 + M×74, where M = data[4..8]) the
+        // two equalities must hold simultaneously. These coincide only for
+        // extremely specific (N, M) pairs and are vanishingly unlikely on any
+        // real file. The formula check is therefore the practical discriminator
+        // even without an explicit tag byte.
         let first = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-        let versioned = data.len() >= 8 && {
+        let versioned_length_matches = data.len() >= 8 && {
             let count = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
-            first == ALPHA_LIGHTS_VERSION && data.len() == 8 + count * ALPHA_LIGHT_RECORD_SIZE
+            data.len() == 8 + count * ALPHA_LIGHT_RECORD_SIZE
         };
 
-        let (mut o, count, record_size, has_shadow_tech) = if versioned {
+        if versioned_length_matches && first != ALPHA_LIGHTS_VERSION {
+            return Err(FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "unsupported AlphaLights section version {} (expected {}); recompile the map",
+                    first, ALPHA_LIGHTS_VERSION,
+                ),
+            )));
+        }
+
+        let (mut o, count, record_size, has_shadow_type) = if versioned_length_matches {
+            // `first == ALPHA_LIGHTS_VERSION` is guaranteed by the check above.
             let count = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
             (8usize, count, ALPHA_LIGHT_RECORD_SIZE, true)
         } else {
-            // Version-less legacy section: `first` is the light count, records
-            // are 73 bytes, and `shadow_tech` defaults to `Baked`.
-            (4usize, first as usize, ALPHA_LIGHT_RECORD_SIZE_V1, false)
+            // Legacy version-less section: `first` is the light count, records
+            // are 73 bytes, and `shadow_type` defaults to `StaticLightMap`.
+            (
+                4usize,
+                first as usize,
+                ALPHA_LIGHT_RECORD_SIZE_LEGACY,
+                false,
+            )
         };
 
         let expected_len = o + count * record_size;
@@ -268,18 +312,18 @@ impl AlphaLightsSection {
             let casts_entity_shadows = data[o + 68] != 0;
             let leaf_index =
                 u32::from_le_bytes([data[o + 69], data[o + 70], data[o + 71], data[o + 72]]);
-            // `shadow_tech` trails the record only in v2+; version-less v1
-            // sections default to `Baked`.
-            let shadow_tech = if has_shadow_tech {
+            // `shadow_type` trails the record only in the versioned layout;
+            // legacy version-less sections default to `StaticLightMap`.
+            let shadow_type = if has_shadow_type {
                 let raw = data[o + 73];
-                AlphaShadowTech::from_u8(raw).ok_or_else(|| {
+                AlphaShadowType::from_u8(raw).ok_or_else(|| {
                     FormatError::Io(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
-                        format!("alpha light {i}: invalid shadow_tech {raw}"),
+                        format!("alpha light {i}: invalid shadow_type {raw}"),
                     ))
                 })?
             } else {
-                AlphaShadowTech::Baked
+                AlphaShadowType::StaticLightMap
             };
 
             lights.push(AlphaLightRecord {
@@ -296,7 +340,7 @@ impl AlphaLightsSection {
                 is_dynamic,
                 casts_entity_shadows,
                 leaf_index,
-                shadow_tech,
+                shadow_type,
             });
 
             o += record_size;
@@ -333,7 +377,7 @@ mod tests {
             is_dynamic: false,
             casts_entity_shadows: false,
             leaf_index: 7,
-            shadow_tech: AlphaShadowTech::Sdf,
+            shadow_type: AlphaShadowType::Sdf,
         }
     }
 
@@ -357,20 +401,25 @@ mod tests {
         assert_eq!(section, restored);
     }
 
-    /// The tech tag survives a serialize → deserialize round-trip across all
-    /// three values. (PRL → runtime contract seam.)
+    /// The shadow-type tag survives a serialize → deserialize round-trip across
+    /// both values. (PRL → runtime contract seam.) Two values only — the
+    /// dynamic tier rides `is_dynamic`, asserted alongside here.
     #[test]
-    fn shadow_tech_survives_round_trip() {
-        for tech in [
-            AlphaShadowTech::Baked,
-            AlphaShadowTech::Sdf,
-            AlphaShadowTech::Dynamic,
+    fn shadow_type_and_tier_survive_round_trip() {
+        for (ty, is_dynamic) in [
+            (AlphaShadowType::StaticLightMap, false),
+            (AlphaShadowType::Sdf, false),
+            // The dynamic tier is orthogonal to shadow type; it rides
+            // `is_dynamic`, which round-trips independently of the u8.
+            (AlphaShadowType::StaticLightMap, true),
         ] {
             let mut rec = sample_record();
-            rec.shadow_tech = tech;
+            rec.shadow_type = ty;
+            rec.is_dynamic = is_dynamic;
             let section = AlphaLightsSection { lights: vec![rec] };
             let restored = AlphaLightsSection::from_bytes(&section.to_bytes()).unwrap();
-            assert_eq!(restored.lights[0].shadow_tech, tech);
+            assert_eq!(restored.lights[0].shadow_type, ty);
+            assert_eq!(restored.lights[0].is_dynamic, is_dynamic);
         }
     }
 
@@ -392,7 +441,7 @@ mod tests {
                     is_dynamic: false,
                     casts_entity_shadows: false,
                     leaf_index: 0,
-                    shadow_tech: AlphaShadowTech::Baked,
+                    shadow_type: AlphaShadowType::StaticLightMap,
                 },
                 sample_record(),
                 AlphaLightRecord {
@@ -410,10 +459,10 @@ mod tests {
                         -std::f32::consts::FRAC_1_SQRT_2,
                     ],
                     cast_shadows: false,
-                    is_dynamic: false,
+                    is_dynamic: true,
                     casts_entity_shadows: false,
                     leaf_index: ALPHA_LIGHT_LEAF_UNASSIGNED,
-                    shadow_tech: AlphaShadowTech::Dynamic,
+                    shadow_type: AlphaShadowType::StaticLightMap,
                 },
             ],
         };
@@ -438,12 +487,13 @@ mod tests {
         assert!(msg.contains("truncated"), "unexpected: {msg}");
     }
 
-    /// Version-less legacy PRLs predating `_shadow_tech` write a section with
-    /// no leading version field and 73-byte records (no trailing tech byte).
-    /// The loader detects the absence of the version header and defaults every
-    /// record's `shadow_tech` to `Baked`, preserving the stored `is_dynamic`.
+    /// Version-less legacy PRLs predating the `shadow_type` byte write a section
+    /// with no leading version field and 73-byte records (no trailing type
+    /// byte). The loader detects the absence of the version header and defaults
+    /// every record's `shadow_type` to `StaticLightMap`, preserving the stored
+    /// `is_dynamic`.
     #[test]
-    fn legacy_versionless_section_decodes_baked_shadow_tech() {
+    fn legacy_versionless_section_decodes_static_light_map_shadow_type() {
         // Build a version-less (count + 73-byte records) body for two records,
         // with distinct is_dynamic bytes to assert preservation.
         let mut buf = Vec::new();
@@ -471,16 +521,58 @@ mod tests {
             buf.push(0); // casts_entity_shadows
             buf.extend_from_slice(&leaf.to_le_bytes()); // leaf_index
         }
-        assert_eq!(buf.len(), 4 + 2 * ALPHA_LIGHT_RECORD_SIZE_V1);
+        assert_eq!(buf.len(), 4 + 2 * ALPHA_LIGHT_RECORD_SIZE_LEGACY);
 
         let section = AlphaLightsSection::from_bytes(&buf).expect("legacy body should parse");
         assert_eq!(section.lights.len(), 2);
         assert!(!section.lights[0].is_dynamic);
         assert_eq!(section.lights[0].leaf_index, 5);
-        assert_eq!(section.lights[0].shadow_tech, AlphaShadowTech::Baked);
+        assert_eq!(
+            section.lights[0].shadow_type,
+            AlphaShadowType::StaticLightMap
+        );
         assert!(section.lights[1].is_dynamic);
         assert_eq!(section.lights[1].leaf_index, 9);
-        assert_eq!(section.lights[1].shadow_tech, AlphaShadowTech::Baked);
+        assert_eq!(
+            section.lights[1].shadow_type,
+            AlphaShadowType::StaticLightMap
+        );
+    }
+
+    /// A blob whose length satisfies the versioned formula (`8 + count×74`) but
+    /// whose leading version word is not `ALPHA_LIGHTS_VERSION` is a versioned
+    /// section written by a different compiler version. The loader must reject it
+    /// with a clear version-mismatch error rather than silently reinterpreting
+    /// the version word as a light count and producing a truncation error or
+    /// garbage output.
+    #[test]
+    fn rejects_versioned_section_with_non_current_version() {
+        // Construct a blob that exactly satisfies the versioned length formula
+        // (8 + 1×74 = 82 bytes) but with a version word that isn't the current
+        // one. Using ALPHA_LIGHTS_VERSION + 1 as a stand-in for a future version.
+        let non_current_version: u32 = ALPHA_LIGHTS_VERSION + 1;
+        let count: u32 = 1;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&non_current_version.to_le_bytes());
+        buf.extend_from_slice(&count.to_le_bytes());
+        // Pad out one record's worth of zeros to satisfy the length formula.
+        buf.extend(std::iter::repeat_n(0u8, ALPHA_LIGHT_RECORD_SIZE));
+        assert_eq!(buf.len(), 8 + ALPHA_LIGHT_RECORD_SIZE);
+
+        let err = AlphaLightsSection::from_bytes(&buf).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unsupported AlphaLights section version"),
+            "expected version-mismatch error, got: {msg}"
+        );
+        assert!(
+            msg.contains(&non_current_version.to_string()),
+            "error should name the bad version number, got: {msg}"
+        );
+        assert!(
+            msg.contains("recompile the map"),
+            "error should instruct the user to recompile, got: {msg}"
+        );
     }
 
     #[test]
@@ -510,15 +602,15 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unknown_shadow_tech_byte() {
+    fn rejects_unknown_shadow_type_byte() {
         let section = AlphaLightsSection {
             lights: vec![sample_record()],
         };
         let mut bytes = section.to_bytes();
-        // shadow_tech is the last byte of the (only) record.
+        // shadow_type is the last byte of the (only) record.
         *bytes.last_mut().unwrap() = 99;
         let err = AlphaLightsSection::from_bytes(&bytes).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("invalid shadow_tech"), "unexpected: {msg}");
+        assert!(msg.contains("invalid shadow_type"), "unexpected: {msg}");
     }
 }

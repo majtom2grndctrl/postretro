@@ -17,7 +17,7 @@ use wgpu::util::DeviceExt;
 
 /// Per-fragment SDF shadow budget; must match `SDF_SELECT_K` in
 /// `sdf_light_select.wgsl`.
-const K: usize = 3;
+const K: usize = 4;
 /// Sentinel for an unused slot; must match `SDF_SELECT_NONE` in the helper.
 const NONE: u32 = 0xffff_ffff;
 
@@ -130,7 +130,7 @@ struct ChunkGridInfo {
 
 // Test inputs: one world position per dispatched thread.
 @group(0) @binding(4) var<storage, read> test_worlds: array<vec4<f32>>;
-// Output: 4 u32 per thread — indices[0..3] then count.
+// Output: 5 u32 per thread — indices[0..4] then count (K = 4).
 @group(0) @binding(5) var<storage, read_write> out_sel: array<u32>;
 "#;
     let entry = r#"
@@ -139,11 +139,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     let world = test_worlds[idx].xyz;
     let sel = select_sdf_lights(world);
-    let base = idx * 4u;
+    let base = idx * 5u;
     out_sel[base + 0u] = sel.indices[0];
     out_sel[base + 1u] = sel.indices[1];
     out_sel[base + 2u] = sel.indices[2];
-    out_sel[base + 3u] = sel.count;
+    out_sel[base + 3u] = sel.indices[3];
+    out_sel[base + 4u] = sel.count;
 }
 "#;
     format!(
@@ -240,7 +241,7 @@ fn run_select(ctx: &GpuCtx, lights: &[TestLight], worlds: &[[f32; 3]]) -> Vec<(V
             usage: wgpu::BufferUsages::STORAGE,
         });
 
-    let out_size = (worlds.len() * 4 * 4) as u64; // 4 u32 per thread
+    let out_size = (worlds.len() * 5 * 4) as u64; // 5 u32 per thread (K = 4 + count)
     let out_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("out_sel"),
         size: out_size,
@@ -372,8 +373,8 @@ fn run_select(ctx: &GpuCtx, lights: &[TestLight], worlds: &[[f32; 3]]) -> Vec<(V
     drop(data);
     readback.unmap();
 
-    raw.chunks_exact(4)
-        .map(|c| (vec![c[0], c[1], c[2]], c[3]))
+    raw.chunks_exact(5)
+        .map(|c| (vec![c[0], c[1], c[2], c[3]], c[4]))
         .collect()
 }
 
@@ -461,5 +462,5 @@ fn k_selection_empty_when_no_sdf_in_range() {
     let gpu = run_select(&ctx, &lights, &worlds);
     let (indices, count) = &gpu[0];
     assert_eq!(*count, 0, "expected no selected lights");
-    assert_eq!(indices, &[NONE, NONE, NONE]);
+    assert_eq!(indices, &[NONE, NONE, NONE, NONE]);
 }

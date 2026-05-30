@@ -509,7 +509,7 @@ mod tests {
             is_animated: false,
             casts_entity_shadows: false,
             tags: vec![],
-            shadow_tech: crate::map_data::ShadowTech::Baked,
+            shadow_type: crate::map_data::ShadowType::StaticLightMap,
         }
     }
 
@@ -521,10 +521,10 @@ mod tests {
 
     fn mk_dynamic_light() -> MapLight {
         let mut l = mk_animated_light();
+        // Dynamic-tier lights are selected by classname → `is_dynamic`; the
+        // namespace filter keys on this position axis, excluding them from the
+        // animated bake set.
         l.is_dynamic = true;
-        // Real dynamic lights carry `_shadow_tech dynamic`; the bake filter now
-        // keys on the tag (not `is_dynamic` alone), so set it to match.
-        l.shadow_tech = crate::map_data::ShadowTech::Dynamic;
         l
     }
 

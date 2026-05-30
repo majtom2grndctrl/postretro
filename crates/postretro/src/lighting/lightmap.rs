@@ -119,19 +119,6 @@ impl LightmapResources {
             direction_texture: direction_tex,
         }
     }
-
-    /// Mint a fresh sampled view over the static lightmap dominant-direction
-    /// atlas. The SDF static dominant-direction trace that consumed this was
-    /// removed in `sdf-per-light-shadows` Task 2; kept until the baked direction
-    /// atlas is retired from the upload path (follow-on, see the struct field).
-    #[allow(dead_code)]
-    pub fn make_direction_view(&self) -> wgpu::TextureView {
-        self.direction_texture
-            .create_view(&wgpu::TextureViewDescriptor {
-                label: Some("Lightmap Direction Shadow View"),
-                ..Default::default()
-            })
-    }
 }
 
 fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 4] {

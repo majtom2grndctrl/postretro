@@ -14,7 +14,7 @@ use thiserror::Error;
 use crate::bvh_build::BvhPrimitive;
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::AlphaLightsNs;
-use crate::map_data::{LightType, MapLight, ShadowTech};
+use crate::map_data::{LightType, MapLight, ShadowType};
 use crate::partition::{BspTree, find_leaf_for_point};
 use crate::portals::Portal;
 
@@ -31,17 +31,19 @@ pub const MAX_SECTION_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
 const RAY_EPSILON: f32 = 1.0e-3;
 
 /// Per-fragment SDF-shadow budget: the runtime traces at most this many
-/// `sdf`-tagged lights' visibility per `chunk_grid` cell (seed K = 3; the
-/// 4-channel half-res shadow target keeps one channel for the animated
-/// factor). Beyond K overlapping `sdf` lights in a cell, the runtime drops the
-/// extras (treated lit), so the compiler warns the author. See
-/// `context/plans/in-progress/sdf-per-light-shadows/` (Rough sketch, K-slice).
+/// `sdf`-tagged lights' visibility per `chunk_grid` cell. All four RGBA
+/// channels of the half-res shadow target carry per-light slices — slot i maps
+/// to channel i (R/G/B/A). Beyond K overlapping `sdf` lights in a cell, the
+/// runtime drops the extras (treated lit), so the compiler warns the author.
+/// See `context/plans/in-progress/sdf-per-light-shadows/` (Rough sketch,
+/// K-slice).
 ///
-/// Raising K requires matching changes in three coupled sites:
-/// `SDF_SELECT_K` in `sdf_light_select.wgsl`, the `indices: array<u32, 3>`
-/// hardcoded size in that same file, and the channel mapping in
+/// Must equal `SDF_SELECT_K` in `crates/postretro/src/shaders/sdf_light_select.wgsl`
+/// — that constant drives the runtime selection and the half-res texture layout.
+/// Raising K requires updating both together, plus the `indices: array<u32, N>`
+/// hardcoded size in `sdf_light_select.wgsl` and the channel mapping in
 /// `slice_for_visibility` in `forward.wgsl`.
-pub const SDF_SHADOW_K: usize = 3;
+pub const SDF_SHADOW_K: usize = 4;
 
 #[derive(Debug, Error)]
 pub enum ChunkLightListError {
@@ -281,7 +283,7 @@ pub fn bake_chunk_light_list(
         .entries()
         .iter()
         .map(|e| e.light)
-        .filter(|l| l.shadow_tech == ShadowTech::Sdf)
+        .filter(|l| l.shadow_type == ShadowType::Sdf)
         .collect();
     warn_oversubscribed_sdf_cells(&sdf_lights, world_min, cell, dims, SDF_SHADOW_K);
 
@@ -345,9 +347,10 @@ fn warn_oversubscribed_sdf_cells(
     if over_cells > 0 {
         log::warn!(
             "[ChunkLightList] {over_cells} chunk-grid cell(s) are covered by more than \
-             K={k} `_shadow_tech sdf` lights; the runtime traces only K per fragment and \
+             K={k} `_shadow_type sdf` lights; the runtime traces only K per fragment and \
              drops the rest (treated lit). Worst cell ({}, {}, {}) is covered by {}. \
-             Re-tag some lights `baked`/`dynamic` or spread them out.",
+             Re-tag some lights `static_light_map` (or author them dynamic-tier) or spread \
+             them out.",
             worst.1[0],
             worst.1[1],
             worst.1[2],
@@ -557,7 +560,7 @@ mod tests {
             casts_entity_shadows: false,
             is_animated: false,
             tags: vec![],
-            shadow_tech: crate::map_data::ShadowTech::Baked,
+            shadow_type: crate::map_data::ShadowType::StaticLightMap,
         }
     }
 
@@ -569,7 +572,7 @@ mod tests {
 
     fn sdf_point_light(origin: DVec3, range: f32) -> MapLight {
         let mut l = point_light(origin, range);
-        l.shadow_tech = ShadowTech::Sdf;
+        l.shadow_type = ShadowType::Sdf;
         l
     }
 
@@ -637,7 +640,7 @@ mod tests {
             casts_entity_shadows: false,
             is_animated: false,
             tags: vec![],
-            shadow_tech: crate::map_data::ShadowTech::Baked,
+            shadow_type: crate::map_data::ShadowType::StaticLightMap,
         }
     }
 

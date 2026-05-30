@@ -45,6 +45,7 @@ pub struct DiagnosticsState {
     pub sdf_max_march_steps: u32,
     pub sdf_open_space_skip_threshold: f32,
     pub sdf_penumbra_k: f32,
+    pub sdf_surface_bias: f32,
     pub fog_step_size: f32,
     pub fog_pixel_scale: u32,
     /// Tracks whether the slider state has been seeded from the live renderer
@@ -64,6 +65,7 @@ impl Default for DiagnosticsState {
             sdf_max_march_steps: super::sdf_shadow::DEFAULT_MAX_MARCH_STEPS,
             sdf_open_space_skip_threshold: super::sdf_shadow::DEFAULT_OPEN_SPACE_SKIP_THRESHOLD,
             sdf_penumbra_k: super::sdf_shadow::DEFAULT_PENUMBRA_K,
+            sdf_surface_bias: super::sdf_shadow::DEFAULT_SURFACE_BIAS_VOXELS,
             fog_step_size: crate::fx::fog_volume::DEFAULT_FOG_STEP_SIZE,
             fog_pixel_scale: 4,
             seeded: false,
@@ -145,6 +147,7 @@ pub fn draw_diagnostics_panel(
         state.sdf_max_march_steps = renderer.sdf_max_march_steps();
         state.sdf_open_space_skip_threshold = renderer.sdf_open_space_skip_threshold();
         state.sdf_penumbra_k = renderer.sdf_penumbra_k();
+        state.sdf_surface_bias = renderer.sdf_surface_bias();
         state.fog_step_size = renderer.fog_step_size();
         state.fog_pixel_scale = renderer.fog_pixel_scale();
         state.seeded = true;
@@ -221,19 +224,6 @@ pub fn draw_diagnostics_panel(
                 let mut frozen = renderer.freeze_time();
                 if ui.checkbox(&mut frozen, "Freeze animation time").changed() {
                     renderer.set_freeze_time(frozen);
-                }
-
-                // Scales the SH compose animated-delta contribution: 0 composes
-                // the static base only, 1 is full delta. Diagnostic aid: bisects
-                // whether irradiance-marker flicker comes from delta application
-                // or base sampling / compose init by sweeping the blend.
-                let mut delta_scale = renderer.sh_compose_delta_scale();
-                ui.label("SH compose: delta scale (0 = base only)");
-                if ui
-                    .add(egui::Slider::new(&mut delta_scale, 0.0_f32..=1.0))
-                    .changed()
-                {
-                    renderer.set_sh_compose_delta_scale(delta_scale);
                 }
             });
 
@@ -353,6 +343,17 @@ pub fn draw_diagnostics_panel(
                     .changed()
                 {
                     renderer.set_sdf_penumbra_k(state.sdf_penumbra_k);
+                }
+
+                ui.label("SDF surface bias (× voxel)");
+                if ui
+                    .add(egui::Slider::new(
+                        &mut state.sdf_surface_bias,
+                        0.0_f32..=8.0,
+                    ))
+                    .changed()
+                {
+                    renderer.set_sdf_surface_bias(state.sdf_surface_bias);
                 }
 
                 ui.separator();

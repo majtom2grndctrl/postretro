@@ -159,24 +159,6 @@ pub struct AnimatedLightmapResources {
     /// when present, otherwise at `dummy_texture` — keeps the bind-group layout constant.
     pub forward_view: wgpu::TextureView,
 
-    /// Per-frame dominant-direction atlas (Rgba8Unorm). Task 2b of
-    /// sdf-static-occluder-shadows: the compose pass fuses each contributing
-    /// light's per-texel incoming direction weighted by current radiance and
-    /// writes the normalized result (octahedral-encoded in rg) into this
-    /// atlas. Read by the forward pass for the bumped-Lambert correction term
-    /// and by the SDF shadow pass to trace toward (Task 4 wires this).
-    /// `None` on maps with no animated weight maps.
-    #[allow(dead_code)]
-    direction_atlas_texture: Option<wgpu::Texture>,
-    #[allow(dead_code)]
-    dummy_direction_texture: wgpu::Texture,
-    /// Always populated — points at the real direction atlas when allocated,
-    /// otherwise at a 1×1 zero dummy so downstream bind groups stay
-    /// layout-stable. Consumed by Task 4 (the SDF shadow pass, not in this
-    /// task's scope); kept allocated and exposed here so the seam is in place.
-    #[allow(dead_code)]
-    pub direction_view: wgpu::TextureView,
-
     /// `None` on maps with no weight maps; `dispatch` is a no-op in that case.
     dispatch_state: Option<DispatchState>,
 }
@@ -228,32 +210,29 @@ impl AnimatedLightmapResources {
     ) -> Result<Self, String> {
         let dummy_texture = create_zero_texture(device, 1, 1, "Animated LM Dummy");
         let dummy_view = dummy_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let dummy_direction_texture =
-            create_direction_zero_texture(device, 1, 1, "Animated LM Direction Dummy");
-        let dummy_direction_view =
-            dummy_direction_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let Some(section) = weight_maps else {
             return Ok(Self {
                 atlas_texture: None,
                 dummy_texture,
                 forward_view: dummy_view,
-                direction_atlas_texture: None,
-                dummy_direction_texture,
-                direction_view: dummy_direction_view,
                 dispatch_state: None,
             });
         };
 
-        if section.chunk_rects.is_empty() {
-            // Section present but empty — nothing to compose.
+        if section.chunk_rects.is_empty() || section.texel_lights.is_empty() {
+            // Nothing to compose. Either no animated chunks, or every animated
+            // light is SDF-typed so the baker emitted zero baked direct weight
+            // (the disjoint-direct split — sdf-per-light-shadows Task 1). The
+            // chunk rects still exist (they pair 1:1 with AnimatedLightChunks
+            // for the SH delta bake), but with no texel-lights there is no
+            // direct term to composite: the forward pass falls back to the
+            // static lightmap and runtime SDF resolves these lights' direct
+            // term. Takes the same no-atlas path as a map with no weight maps.
             return Ok(Self {
                 atlas_texture: None,
                 dummy_texture,
                 forward_view: dummy_view,
-                direction_atlas_texture: None,
-                dummy_direction_texture,
-                direction_view: dummy_direction_view,
                 dispatch_state: None,
             });
         }
@@ -298,36 +277,6 @@ impl AnimatedLightmapResources {
             label: Some("Animated LM Storage View"),
             ..Default::default()
         });
-
-        // Per-frame dominant-direction atlas (Task 2b). Rgba8Unorm because the
-        // direction is octahedral-encoded in rg and chunky retro shadows need
-        // no more precision; matches the static lightmap's direction convention
-        // (see `forward.wgsl::decode_lightmap_direction`). Same dimensions as
-        // the irradiance atlas so one UV samples both. A separate texture, NOT
-        // a widening of the Rgba16Float irradiance atlas.
-        let direction_atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Animated LM Direction Atlas"),
-            size: wgpu::Extent3d {
-                width: ANIMATED_ATLAS_SIZE,
-                height: ANIMATED_ATLAS_SIZE,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let direction_view = direction_atlas_texture.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("Animated LM Direction View"),
-            ..Default::default()
-        });
-        let direction_storage_view =
-            direction_atlas_texture.create_view(&wgpu::TextureViewDescriptor {
-                label: Some("Animated LM Direction Storage View"),
-                ..Default::default()
-            });
 
         let chunk_rects_bytes = pack_chunk_rects(&section.chunk_rects);
         let offset_counts_bytes = pack_offset_counts(section);
@@ -429,10 +378,6 @@ impl AnimatedLightmapResources {
                     binding: 7,
                     resource: debug_buffer.as_entire_binding(),
                 },
-                wgpu::BindGroupEntry {
-                    binding: 8,
-                    resource: wgpu::BindingResource::TextureView(&direction_storage_view),
-                },
             ],
         });
 
@@ -449,9 +394,6 @@ impl AnimatedLightmapResources {
             atlas_texture: Some(atlas_texture),
             dummy_texture,
             forward_view,
-            direction_atlas_texture: Some(direction_atlas_texture),
-            dummy_direction_texture,
-            direction_view,
             dispatch_state: Some(DispatchState {
                 compose_pipeline,
                 compute_bind_group,
@@ -472,37 +414,6 @@ impl AnimatedLightmapResources {
     /// marked-but-unwritten.
     pub fn is_active(&self) -> bool {
         self.dispatch_state.is_some()
-    }
-
-    /// Per-frame dominant-direction atlas view (Rgba8Unorm, octahedral in rg).
-    /// Written by the compose pass each frame; sampled by the SDF shadow pass
-    /// (Task 4) and by the forward pass to trace toward the animated-baked
-    /// term's per-frame dominant direction. On maps with no animated weight
-    /// maps this returns a 1×1 zero dummy so bind-group layouts stay constant.
-    #[allow(dead_code)]
-    pub fn direction_view(&self) -> &wgpu::TextureView {
-        &self.direction_view
-    }
-
-    /// Create a fresh sampled view over the direction atlas. wgpu's
-    /// `TextureView` is not `Clone`, so consumers that need their own owned
-    /// handle (e.g. the SDF shadow pass's bind group, which is rebuilt on
-    /// resize / level reload) request one from here rather than borrowing
-    /// `direction_view`. Points at the real direction atlas when allocated;
-    /// otherwise the 1×1 dummy.
-    pub fn make_direction_view(&self) -> wgpu::TextureView {
-        match &self.direction_atlas_texture {
-            Some(tex) => tex.create_view(&wgpu::TextureViewDescriptor {
-                label: Some("Animated LM Direction Shadow View"),
-                ..Default::default()
-            }),
-            None => self
-                .dummy_direction_texture
-                .create_view(&wgpu::TextureViewDescriptor {
-                    label: Some("Animated LM Direction Dummy Shadow View"),
-                    ..Default::default()
-                }),
-        }
     }
 
     /// Dispatch the per-frame compose pass.
@@ -605,7 +516,7 @@ fn build_chunk_cell_ids(bvh_leaves: &[BvhLeaf], chunk_count: usize) -> Vec<u32> 
     chunk_cell_ids
 }
 
-fn compute_bgl_entries() -> [wgpu::BindGroupLayoutEntry; 9] {
+fn compute_bgl_entries() -> [wgpu::BindGroupLayoutEntry; 8] {
     let storage_read = wgpu::BindingType::Buffer {
         ty: wgpu::BufferBindingType::Storage { read_only: true },
         has_dynamic_offset: false,
@@ -668,19 +579,6 @@ fn compute_bgl_entries() -> [wgpu::BindGroupLayoutEntry; 9] {
             },
             count: None,
         },
-        // Task 2b: per-frame dominant-direction atlas (Rgba8Unorm storage).
-        // Octahedral-encoded in rg (matching the static lightmap's
-        // direction convention) — chunky retro shadows need no more precision.
-        wgpu::BindGroupLayoutEntry {
-            binding: 8,
-            visibility: wgpu::ShaderStages::COMPUTE,
-            ty: wgpu::BindingType::StorageTexture {
-                access: wgpu::StorageTextureAccess::WriteOnly,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                view_dimension: wgpu::TextureViewDimension::D2,
-            },
-            count: None,
-        },
     ]
 }
 
@@ -709,36 +607,14 @@ fn create_zero_texture(
     })
 }
 
-/// Dummy 1×1 direction-atlas texture (Rgba8Unorm). Mirrors `create_zero_texture`
-/// but in the direction atlas's format so the compose bind-group layout slot is
-/// satisfied on maps with no animated weight maps.
-fn create_direction_zero_texture(
-    device: &wgpu::Device,
-    width: u32,
-    height: u32,
-    label: &str,
-) -> wgpu::Texture {
-    device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(label),
-        size: wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
-        view_formats: &[],
-    })
-}
-
 fn create_storage_buffer(device: &wgpu::Device, label: &str, bytes: &[u8]) -> wgpu::Buffer {
     use wgpu::util::DeviceExt;
     // wgpu rejects zero-sized storage buffers. All callers are gated behind the
-    // non-empty `chunk_rects` check above. Use `assert!` (not `debug_assert!`)
-    // so a future regression surfaces in release builds.
+    // early-out in `new` that bails when `chunk_rects` OR `texel_lights` is
+    // empty, so by here every packed buffer is non-empty. (An all-SDF map emits
+    // chunk rects + offset_counts but zero texel_lights — caught by that gate.)
+    // Use `assert!` (not `debug_assert!`) so a future regression surfaces in
+    // release builds.
     assert!(!bytes.is_empty(), "{label} storage buffer would be empty");
     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some(label),
@@ -1206,118 +1082,26 @@ mod tests {
         assert_eq!(ids, vec![5, 5, 5]);
     }
 
-    /// Task 2b: the compose shader must accumulate the radiance-weighted
-    /// per-light direction (so the fused per-frame direction tracks the
-    /// brightness sweep) and write the result into the new direction atlas.
-    /// Asserted at the shader-source level because the actual compose runs on
-    /// the GPU, which `cargo test` doesn't drive.
+    /// sdf-per-light-shadows Task 1: the animated dominant-direction atlas and
+    /// its compose-pass write were removed (the per-light SDF trace keys on
+    /// light position, not a per-texel mean direction). Guard against the atlas
+    /// or its encode helper creeping back into the compose shader.
     #[test]
-    fn compose_shader_includes_radiance_weighted_direction_fusion() {
+    fn compose_shader_has_no_dominant_direction_atlas() {
         let src = include_str!("../shaders/animated_lightmap_compose.wgsl");
-
-        // The new direction atlas binding must be declared.
         assert!(
-            src.contains("animated_lm_direction_atlas"),
-            "compose shader missing direction atlas binding",
+            !src.contains("@group(1) @binding(8)"),
+            "the direction atlas binding (binding 8) must be removed",
         );
         assert!(
-            src.contains("rgba8unorm"),
-            "direction atlas must be Rgba8Unorm storage",
+            !src.contains("encode_oct_to_rg"),
+            "the octahedral encode helper for the direction atlas must be removed",
         );
-
-        // The per-texel TexelLight must carry the baked octahedral direction.
-        assert!(
-            src.contains("direction_oct_packed"),
-            "TexelLight missing baked-direction field",
-        );
-        assert!(
-            src.contains("decode_oct_packed"),
-            "compose shader missing octahedral decode helper",
-        );
-
-        // The fusion must weight by per-light radiance (NOT by raw weight, NOT
-        // by a constant) — anchors the AC's correctness contract.
-        assert!(
-            src.contains("dir_accum") && src.contains("dir * lum"),
-            "compose loop must accumulate direction * radiance-luminance",
-        );
-
-        // The fused direction must be written out, octahedral-encoded.
-        assert!(
-            src.contains("encode_oct_to_rg") && src.contains("animated_lm_direction_atlas"),
-            "compose shader must textureStore the fused direction into the atlas",
-        );
-    }
-
-    /// CPU-side equivalent of the GPU radiance-weighted fusion, run on two
-    /// out-of-phase lights at two different times. Asserts the AC: the fused
-    /// dominant direction at light A's peak differs measurably from its value
-    /// at light B's peak.
-    #[test]
-    fn cpu_equivalent_fused_direction_tracks_radiance_weighted_sweep() {
-        // Two lights at the same texel, baked unit directions point opposite
-        // ways. They animate brightness 180° out of phase, so the per-frame
-        // dominant direction must swing across the cycle.
-        let dir_a = [1.0_f32, 0.0, 0.0]; // light A — toward +X
-        let dir_b = [-1.0_f32, 0.0, 0.0]; // light B — toward -X
-
-        // Sinusoidal brightness, opposite phase. At t_a = 0.0 light A peaks
-        // at 1.0 and light B is at 0.0; at t_b = 0.5 they swap.
-        let brightness = |phase_shift: f32, t: f32| -> f32 {
-            (0.5 + 0.5 * (2.0 * std::f32::consts::PI * (t + phase_shift)).cos()).max(0.0)
-        };
-
-        fn fuse(dir_a: [f32; 3], rad_a: f32, dir_b: [f32; 3], rad_b: f32) -> [f32; 3] {
-            // Rec. 709 luminance of a (rad, rad, rad) radiance (white light).
-            let lum_a = rad_a;
-            let lum_b = rad_b;
-            let mut accum = [
-                dir_a[0] * lum_a + dir_b[0] * lum_b,
-                dir_a[1] * lum_a + dir_b[1] * lum_b,
-                dir_a[2] * lum_a + dir_b[2] * lum_b,
-            ];
-            let len = (accum[0] * accum[0] + accum[1] * accum[1] + accum[2] * accum[2]).sqrt();
-            if len > 1.0e-8 {
-                accum[0] /= len;
-                accum[1] /= len;
-                accum[2] /= len;
-            }
-            accum
-        }
-
-        let t_at_a_peak = 0.0;
-        let t_at_b_peak = 0.5;
-
-        let rad_a_t1 = brightness(0.0, t_at_a_peak);
-        let rad_b_t1 = brightness(0.5, t_at_a_peak);
-        let fused_t1 = fuse(dir_a, rad_a_t1, dir_b, rad_b_t1);
-
-        let rad_a_t2 = brightness(0.0, t_at_b_peak);
-        let rad_b_t2 = brightness(0.5, t_at_b_peak);
-        let fused_t2 = fuse(dir_a, rad_a_t2, dir_b, rad_b_t2);
-
-        // Measurable swing on the dominant axis (X) — at A's peak the fused
-        // direction must lean toward dir_a, at B's peak toward dir_b.
-        assert!(
-            fused_t1[0] > 0.5,
-            "at light A's peak, fused dir should lean +X; got {:?}",
-            fused_t1,
-        );
-        assert!(
-            fused_t2[0] < -0.5,
-            "at light B's peak, fused dir should lean -X; got {:?}",
-            fused_t2,
-        );
-        // Sanity: the fused direction must change across the sweep, not be
-        // frozen — this is the failure mode a static baked direction would
-        // have, the exact bug Task 2b's per-frame fusion exists to prevent.
-        let delta = (fused_t1[0] - fused_t2[0]).abs();
-        assert!(
-            delta > 1.0,
-            "fused direction must swing measurably between out-of-phase peaks; \
-             delta on X axis = {}",
-            delta,
-        );
+        // Exactly one textureStore now — the irradiance atlas write (the
+        // direction-atlas store is gone). The debug heatmap path has its own
+        // early-return store, so count the main-path stores by the atlas name.
+        let dir_stores = src.matches("animated_lm_direction_atlas").count();
+        assert_eq!(dir_stores, 0, "no reference to the removed direction atlas");
     }
 
     #[test]

@@ -7,12 +7,27 @@ use glam::DVec3;
 use thiserror::Error;
 
 use crate::map_data::{
-    FalloffModel, KEYFRAME_RESAMPLE_RATE_HZ, LightAnimation, LightType, MapLight, ShadowTech,
+    FalloffModel, KEYFRAME_RESAMPLE_RATE_HZ, LightAnimation, LightType, MapLight, ShadowType,
     resample_keyframes,
 };
 use crate::map_format::MapFormat;
 
-pub const LIGHT_CLASSNAMES: &[&str] = &["light", "light_spot", "light_sun"];
+/// Every classname the FGD defines as a light entity. Baked-tier
+/// (`light`/`light_spot`/`light_sun`) and dynamic-tier
+/// (`light_dynamic`/`light_dynamic_spot`) both flow through
+/// [`translate_light`]; the tier is decided by classname, not by any KVP.
+pub const LIGHT_CLASSNAMES: &[&str] = &[
+    "light",
+    "light_spot",
+    "light_sun",
+    "light_dynamic",
+    "light_dynamic_spot",
+];
+
+/// Dynamic-tier light classnames — unbaked, runtime-only lights. The parser
+/// sets `is_dynamic = true` from membership here; bake participation is the
+/// primary lighting split (see `context/plans/in-progress/sdf-per-light-shadows/architecture.md`).
+const DYNAMIC_LIGHT_CLASSNAMES: &[&str] = &["light_dynamic", "light_dynamic_spot"];
 
 /// Quake authoring reference for the `light` property. A mapper-authored
 /// `light 300` (the Quake default and the "fully lit room" baseline)
@@ -72,8 +87,8 @@ pub fn translate_light(
     classname: &str,
 ) -> Result<MapLight, TranslateError> {
     let light_type = match classname {
-        "light" => LightType::Point,
-        "light_spot" => LightType::Spot,
+        "light" | "light_dynamic" => LightType::Point,
+        "light_spot" | "light_dynamic_spot" => LightType::Spot,
         "light_sun" => LightType::Directional,
         other => return Err(TranslateError::UnknownClassname(other.to_string())),
     };
@@ -244,29 +259,32 @@ pub fn translate_light(
         }
     };
 
-    // `_shadow_tech` picks the disjoint shadow set this light routes into.
-    // Default `baked`; an unknown value is a hard authoring error. `dynamic`
-    // is the v1 surface that sets `is_dynamic` (the geometry-moving / shadow-
-    // map path) — the old `_dynamic` key was retired in Task 1b of the SDF
-    // static-occluder-shadows spec and `_shadow_tech dynamic` supersedes it.
-    let shadow_tech = match props.get("_shadow_tech").map(|s| s.trim()) {
-        None | Some("") | Some("baked") => ShadowTech::Baked,
-        Some("sdf") => ShadowTech::Sdf,
-        Some("dynamic") => ShadowTech::Dynamic,
+    // `_shadow_type` is a baked-tier sub-choice deciding only how this
+    // (fixed-position, baking) light's DIRECT shadow resolves — `static_light_map`
+    // (lightmap, default) or `sdf` (runtime-traced). The two sets are disjoint
+    // across the direct techniques, so no contribution is double-counted; an
+    // unknown value is a hard authoring error. `dynamic` is NOT a shadow-type
+    // value — the dynamic tier is selected by classname (below), not by a KVP.
+    // The parsed value carries through the two-value `ShadowType` enum onto the
+    // compiler-side `MapLight`, the PRL wire record, and the runtime `MapLight`
+    // (sdf-per-light-shadows Task 3).
+    let shadow_type = match props.get("_shadow_type").map(|s| s.trim()) {
+        None | Some("") | Some("static_light_map") => ShadowType::StaticLightMap,
+        Some("sdf") => ShadowType::Sdf,
         Some(other) => {
             return Err(TranslateError::InvalidProperty {
-                key: "_shadow_tech",
+                key: "_shadow_type",
                 value: other.to_string(),
-                reason: "expected one of: baked, sdf, dynamic",
+                reason: "expected one of: static_light_map, sdf",
             });
         }
     };
 
-    // `dynamic`-tagged lights route onto the existing shadow-map path; every
-    // other tag stays static. Intensity-only animation (brightness/color
-    // pulse) is a static light on the animated-baked compose path (Task 2c),
-    // not a dynamic light — so it is unaffected by this flag.
-    let is_dynamic = matches!(shadow_tech, ShadowTech::Dynamic);
+    // Bake participation is the primary lighting split, and it is set by the
+    // CLASSNAME, not by a shadow-type value. Dynamic-tier entities
+    // (`light_dynamic` / `light_dynamic_spot`) are unbaked, runtime-only lights
+    // routed onto the shadow-map path; every baked-tier classname stays static.
+    let is_dynamic = DYNAMIC_LIGHT_CLASSNAMES.contains(&classname);
 
     // `_animated` declares "static geometry, intensity arrives at runtime;
     // reserve a baked weight map." The compiler bakes an animated-lightmap
@@ -483,7 +501,7 @@ pub fn translate_light(
         casts_entity_shadows,
         is_animated,
         tags,
-        shadow_tech,
+        shadow_type,
     })
 }
 
@@ -1005,7 +1023,7 @@ mod tests {
         assert!(matches!(err, TranslateError::UnknownClassname(_)));
     }
 
-    // --- _shadow_tech parsing (sdf-per-light-shadows Task 1) ---
+    // --- _shadow_type parsing + tier dispatch (sdf-per-light-shadows Task 2) ---
 
     fn point_light_props(extra: &[(&str, &str)]) -> HashMap<String, String> {
         let mut pairs = vec![("light", "300"), ("_fade", "2048")];
@@ -1014,64 +1032,123 @@ mod tests {
     }
 
     #[test]
-    fn shadow_tech_defaults_to_baked_when_absent() {
+    fn shadow_type_defaults_to_static_light_map_when_absent() {
         let light = translate_light(&point_light_props(&[]), DVec3::ZERO, "light")
             .expect("should translate");
-        assert_eq!(light.shadow_tech, ShadowTech::Baked);
+        // `static_light_map` maps to the (still legacy-named) `Baked` enum.
+        assert_eq!(light.shadow_type, ShadowType::StaticLightMap);
         assert!(!light.is_dynamic);
     }
 
     #[test]
-    fn shadow_tech_parses_sdf_without_setting_is_dynamic() {
+    fn shadow_type_parses_sdf_without_setting_is_dynamic() {
         let light = translate_light(
-            &point_light_props(&[("_shadow_tech", "sdf")]),
+            &point_light_props(&[("_shadow_type", "sdf")]),
             DVec3::ZERO,
             "light",
         )
         .expect("should translate");
-        assert_eq!(light.shadow_tech, ShadowTech::Sdf);
+        assert_eq!(light.shadow_type, ShadowType::Sdf);
         assert!(!light.is_dynamic);
     }
 
     #[test]
-    fn shadow_tech_dynamic_sets_is_dynamic() {
+    fn shadow_type_parses_static_light_map() {
         let light = translate_light(
-            &point_light_props(&[("_shadow_tech", "dynamic")]),
+            &point_light_props(&[("_shadow_type", "static_light_map")]),
             DVec3::ZERO,
             "light",
         )
         .expect("should translate");
-        assert_eq!(light.shadow_tech, ShadowTech::Dynamic);
-        assert!(light.is_dynamic);
-    }
-
-    #[test]
-    fn shadow_tech_baked_leaves_is_dynamic_false() {
-        let light = translate_light(
-            &point_light_props(&[("_shadow_tech", "baked")]),
-            DVec3::ZERO,
-            "light",
-        )
-        .expect("should translate");
-        assert_eq!(light.shadow_tech, ShadowTech::Baked);
+        assert_eq!(light.shadow_type, ShadowType::StaticLightMap);
         assert!(!light.is_dynamic);
     }
 
+    /// `dynamic` ceased to be a shadow-type value in Task 2 — the dynamic tier
+    /// is selected by classname. Authoring `_shadow_type dynamic` is now an
+    /// error, not a route to `is_dynamic`.
     #[test]
-    fn shadow_tech_unknown_value_errors() {
+    fn shadow_type_dynamic_value_is_rejected() {
         let err = translate_light(
-            &point_light_props(&[("_shadow_tech", "raytraced")]),
+            &point_light_props(&[("_shadow_type", "dynamic")]),
             DVec3::ZERO,
             "light",
         )
-        .expect_err("unknown _shadow_tech should error at compile");
+        .expect_err("'dynamic' is no longer a shadow-type value");
         assert!(matches!(
             err,
             TranslateError::InvalidProperty {
-                key: "_shadow_tech",
+                key: "_shadow_type",
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn shadow_type_unknown_value_errors() {
+        let err = translate_light(
+            &point_light_props(&[("_shadow_type", "raytraced")]),
+            DVec3::ZERO,
+            "light",
+        )
+        .expect_err("unknown _shadow_type should error at compile");
+        assert!(matches!(
+            err,
+            TranslateError::InvalidProperty {
+                key: "_shadow_type",
+                ..
+            }
+        ));
+    }
+
+    /// The Task 2 contract: dynamic-tier CLASSNAMES set `is_dynamic == true`
+    /// from the classname (not from any shadow-type value), and baked-tier
+    /// classnames resolve to `is_dynamic == false`.
+    #[test]
+    fn dynamic_classnames_set_is_dynamic_baked_classnames_do_not() {
+        // Baked tier → not dynamic.
+        for classname in ["light", "light_spot", "light_sun"] {
+            // Spot/sun need direction; give them angles so translation succeeds.
+            let light = translate_light(
+                &point_light_props(&[("angles", "-90 0 0")]),
+                DVec3::ZERO,
+                classname,
+            )
+            .unwrap_or_else(|e| panic!("{classname} should translate: {e}"));
+            assert!(
+                !light.is_dynamic,
+                "baked-tier classname {classname} must resolve is_dynamic == false"
+            );
+        }
+
+        // Dynamic tier → dynamic, set by classname with no shadow-type KVP.
+        let dyn_point = translate_light(&point_light_props(&[]), DVec3::ZERO, "light_dynamic")
+            .expect("light_dynamic should translate");
+        assert!(
+            dyn_point.is_dynamic,
+            "light_dynamic must set is_dynamic == true from the classname"
+        );
+        assert_eq!(dyn_point.light_type, LightType::Point);
+
+        let dyn_spot = translate_light(
+            &point_light_props(&[("angles", "-90 0 0")]),
+            DVec3::ZERO,
+            "light_dynamic_spot",
+        )
+        .expect("light_dynamic_spot should translate");
+        assert!(
+            dyn_spot.is_dynamic,
+            "light_dynamic_spot must set is_dynamic == true from the classname"
+        );
+        assert_eq!(dyn_spot.light_type, LightType::Spot);
+    }
+
+    /// `light_dynamic*` are registered light classnames so they reach the
+    /// translator (the `parse.rs` dispatch gates on `is_light_classname`).
+    #[test]
+    fn dynamic_classnames_are_recognized_as_lights() {
+        assert!(is_light_classname("light_dynamic"));
+        assert!(is_light_classname("light_dynamic_spot"));
     }
 
     #[test]

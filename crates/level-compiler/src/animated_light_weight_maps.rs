@@ -23,11 +23,14 @@ const WEIGHT_EPSILON: f32 = 1.0e-6;
 
 /// Cache stage version for the animated-light weight-map bake. Bumped to 2 on
 /// the sdf-static-occluder-shadows branch when the bake started retaining the
-/// per-light per-texel incoming direction (Task 2b). Bumps invalidate any
-/// prior cache entries (the `animated_lm_weight_maps` cache key folds this in
+/// per-light per-texel incoming direction (Task 2b). v3 bump
+/// (sdf-per-light-shadows Task 3): the direct weight-map now drops `sdf`-typed
+/// lights (their direct term resolves at runtime), so a stale entry could carry
+/// a baked direct weight the runtime double-counts. Bumps invalidate any prior
+/// cache entries (the `animated_lm_weight_maps` cache key folds this in
 /// alongside the input hash — same shape as `lightmap_bake::STAGE_VERSION` and
 /// `sh_bake::STAGE_VERSION`).
-pub const STAGE_VERSION: u32 = 2;
+pub const STAGE_VERSION: u32 = 3;
 
 pub struct WeightMapInputs<'a> {
     pub bvh: &'a Bvh<f32, 3>,
@@ -203,6 +206,16 @@ fn bake_one_chunk(
             let mut count: u32 = 0;
             for &light_index in chunk_light_indices {
                 let light = &inputs.lights[light_index as usize];
+                // Disjoint-direct exclusion at the direct weight-map consumer:
+                // `sdf`-typed lights resolve their direct term at runtime, so
+                // they contribute no baked `lm_anim` weight. They stay in
+                // `inputs.lights` (index alignment with the chunk section /
+                // delta-SH bake) but emit zero weight here. Dynamic-tier lights
+                // are already absent — the `AnimatedBakedLights` namespace keys
+                // on `!is_dynamic`.
+                if light.shadow_type == crate::map_data::ShadowType::Sdf {
+                    continue;
+                }
                 let (contribution, dir) =
                     light_contribution_and_direction(light, world_p, surface_normal);
                 let weight = contribution_to_weight(contribution, light.color, light.intensity);
@@ -557,7 +570,7 @@ mod tests {
             is_animated: false,
             casts_entity_shadows: false,
             tags: vec![],
-            shadow_tech: crate::map_data::ShadowTech::Baked,
+            shadow_type: crate::map_data::ShadowType::StaticLightMap,
         }
     }
 
@@ -581,7 +594,6 @@ mod tests {
             &mut lm_ctx,
             &crate::lightmap_bake::LightmapConfig {
                 lightmap_density: 0.25,
-                mode: crate::lightmap_bake::BakeMode::Shadowed,
             },
         )
         .unwrap();

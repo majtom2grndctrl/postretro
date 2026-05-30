@@ -1,22 +1,22 @@
 // Half-resolution SDF shadow pass. Runs as a compute pass between the depth
-// pre-pass and the forward pass. Per half-res pixel, traces up to K per-light
-// SDF visibility rays plus one animated dominant-direction ray, writing results
-// into a `Rgba8Unorm` half-res target:
+// pre-pass and the forward pass. Per half-res pixel, traces up to K = 4 per-light
+// SDF visibility rays, writing the four factors into a `Rgba8Unorm` half-res
+// target, one slice per channel:
 //   R = per-light SDF visibility slice 0
-//   G = animated-baked aggregate factor
-//   B = per-light SDF visibility slice 1
-//   A = per-light SDF visibility slice 2  (K = 3 per-light slices total)
+//   G = per-light SDF visibility slice 1
+//   B = per-light SDF visibility slice 2
+//   A = per-light SDF visibility slice 3
 //
-// Forward integration reads this target: the animated G term is multiplied into
-// the animated-baked contribution (flag-gated); per-light slices R/B/A are read
-// directly by the sdf-tag diffuse term — no flag, gated by light selection.
-// When the SDF atlas isn't present the pass is skipped and the target stays at
-// its `Clear` color of (1,1,1,1) — forward degrades cleanly.
+// Forward integration reads this target: each sdf-tagged light's diffuse and
+// specular multiply by their slice (read directly via `slice_for_visibility`;
+// gated by light selection, not a flag). When the SDF atlas isn't present the
+// pass is skipped and the target stays at its prior contents — forward degrades
+// cleanly (it gates the multiply on the atlas-present flag).
 //
 // Pipeline layout: group 0 = SDF atlas (owned by `SdfAtlasResources`),
-// group 1 = this pass's own bind group (params uniform, depth, animated
-// direction texture, SH depth moments, shadow factor output, lightmap-UV
-// gbuffer), group 2 = static-light buffers the shared K-selection helper reads.
+// group 1 = this pass's own bind group (params uniform, depth, SH depth moments,
+// shadow factor output), group 2 = static-light buffers the shared K-selection
+// helper reads.
 
 use glam::Mat4;
 
@@ -24,10 +24,10 @@ use super::sdf_atlas::SdfAtlasResources;
 
 /// Full WGSL source for the SDF shadow compute pass: the pass shader plus the
 /// shared K-selection helper, textually concatenated (the shared-WGSL-helper
-/// pattern — cf. `curve_eval.wgsl`). The forward shader (Task 3) appends the
-/// SAME `sdf_light_select.wgsl` string, so both select identical lights in
-/// identical order — the load-bearing K-selection parity seam. The pass shader
-/// declares the `spec_lights` / `chunk_grid` / `chunk_offsets` / `chunk_indices`
+/// pattern — cf. `curve_eval.wgsl`). The forward shader also appends the same
+/// `sdf_light_select.wgsl` string, so both select identical lights in identical
+/// order — the load-bearing K-selection parity seam. The pass shader declares
+/// the `spec_lights` / `chunk_grid` / `chunk_offsets` / `chunk_indices`
 /// bindings (group 2) the helper reads by name.
 const SDF_SHADOW_SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/sdf_shadow.wgsl"),
@@ -40,9 +40,8 @@ const SDF_SHADOW_SHADER_SOURCE: &str = concat!(
 /// `context/plans/in-progress/sdf-static-occluder-shadows/research.md`).
 pub const HALF_RES_SCALE: u32 = 2;
 
-/// Color format of the shadow-factor target. R = per-light SDF visibility
-/// slice 0; G = animated-baked aggregate; B = per-light slice 1; A = per-light
-/// slice 2 (K = 3 per-light slices total).
+/// Color format of the shadow-factor target. The four channels are the K = 4
+/// per-light SDF visibility slices: R = slot 0, G = slot 1, B = slot 2, A = slot 3.
 pub const SHADOW_FACTOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 /// Default uniform values for the tuning knobs. Task 7 wires sliders to these.
@@ -54,13 +53,37 @@ pub const SHADOW_FACTOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8
 /// (well under the 256 hard clamp; the open-space early-out keeps the common
 /// case cheap, and the perf AC bounds the worst case). The `k*d/t` penumbra
 /// estimate sharpens once `d` is a real metric distance, so `penumbra_k` is
-/// softened 16 → 8 to keep penumbra width similar rather than over-hard. The
-/// open-space skip threshold is unchanged — it keys off the SH moment, not the
-/// step source. These are SEED values; adjust them live via the "SDF / Fog
-/// Quality" panel in the debug overlay (`dev-tools` feature).
+/// softened 16 → 8 to keep penumbra width similar rather than over-hard.
+///
+/// The open-space skip threshold is seeded **loose** (8.0): the skip returns
+/// FULLY_LIT before marching when `E[d] > threshold × SH cell`, so a *small*
+/// threshold fires the skip on even a moderate gap and suppresses the per-light
+/// trace. Seeded loose so rays actually run on typical geometry; tighten via the
+/// Task 6 perf gate if open-space cost dominates (see
+/// `context/plans/in-progress/sdf-static-occluder-shadows/research.md` step 2
+/// for the threshold-sensitivity analysis).
+/// These are SEED values; adjust them live via the "SDF / Fog Quality" panel in
+/// the debug overlay (`dev-tools` feature).
 pub const DEFAULT_MAX_MARCH_STEPS: u32 = 64;
-pub const DEFAULT_OPEN_SPACE_SKIP_THRESHOLD: f32 = 2.5; // multiple of SH cell size
+pub const DEFAULT_OPEN_SPACE_SKIP_THRESHOLD: f32 = 8.0; // multiple of SH cell size (loose seed)
 pub const DEFAULT_PENUMBRA_K: f32 = 8.0;
+
+/// Self-shadow surface bias, in MULTIPLES of the SDF voxel size (0.5 m default,
+/// so the seed below ≈ 1.5 m). The march begins at `t = surface_bias × voxel`
+/// and the closest-passing-distance penumbra term is suppressed inside that
+/// window. This is the distance-field self-intersection fix (cf. UE mesh/global
+/// DF shadows): the caster is baked into the field, so a ray that starts on a
+/// lit surface grazes that surface's own ≈0 field near the origin; with the
+/// coarse field (0.5 m voxel / 4 m brick mean) the penumbra estimate rounds that
+/// self-grazing into soft round dark blobs on faces that point at the light.
+///
+/// Seeded at 3.0 voxels — enough to clear the caster's own near-surface
+/// quantization band (the prior hard-coded 1.5-voxel start was too small), small
+/// enough not to detach the block's contact shadow on the floor/wall: that
+/// shadow comes from the trace HITTING the block (the `d < voxel*0.5` hard
+/// return), not from the suppressed penumbra term, so widening the penumbra
+/// window leaves it intact.
+pub const DEFAULT_SURFACE_BIAS_VOXELS: f32 = 3.0;
 
 /// Size in bytes of the `ShadowPassParams` uniform. Mirrors the WGSL struct
 /// in `shaders/sdf_shadow.wgsl`. std140-aligned: vec3<f32>/u32 pairs share
@@ -77,7 +100,7 @@ pub const DEFAULT_PENUMBRA_K: f32 = 8.0;
 ///   96..108  sh_grid_origin          (vec3<f32>)
 ///   108..112 sh_has_volume           (u32)
 ///   112..124 sh_cell_size            (vec3<f32>)
-///   124..128 _pad0                   (u32)
+///   124..128 surface_bias            (f32)  // former _pad0 slot
 ///   128..140 sh_grid_dimensions      (vec3<u32>)
 ///   140..144 _pad1                   (u32)
 pub const SHADOW_PASS_PARAMS_SIZE: usize = 144;
@@ -89,6 +112,9 @@ pub struct SdfShadowTuning {
     pub max_march_steps: u32,
     pub open_space_skip_threshold: f32,
     pub penumbra_k: f32,
+    /// Self-shadow surface bias in multiples of the SDF voxel size. See
+    /// `DEFAULT_SURFACE_BIAS_VOXELS`.
+    pub surface_bias: f32,
 }
 
 impl Default for SdfShadowTuning {
@@ -97,6 +123,7 @@ impl Default for SdfShadowTuning {
             max_march_steps: DEFAULT_MAX_MARCH_STEPS,
             open_space_skip_threshold: DEFAULT_OPEN_SPACE_SKIP_THRESHOLD,
             penumbra_k: DEFAULT_PENUMBRA_K,
+            surface_bias: DEFAULT_SURFACE_BIAS_VOXELS,
         }
     }
 }
@@ -158,7 +185,7 @@ pub struct SdfShadowPass {
     /// allocation so the pass-skipped path is "fully lit".
     #[allow(dead_code)]
     shadow_texture: wgpu::Texture,
-    /// View into `shadow_texture` exposed to Task 5's forward pass for the
+    /// View into `shadow_texture` exposed to the forward pass for the
     /// bilateral upsample.
     pub shadow_view: wgpu::TextureView,
     /// Storage-write view bound on the pass's own bind group.
@@ -169,20 +196,12 @@ pub struct SdfShadowPass {
     /// Per-frame `ShadowPassParams` uniform.
     params_buffer: wgpu::Buffer,
     /// Bind group built once at construction / rebuilt on resize. References
-    /// `depth_view` and `lightmap_uv_view` (both recreated by the renderer on
-    /// resize, so the bind group must be rebuilt too) and the direction /
-    /// depth-moment views (stable across resizes — only rebuilt on level reload).
+    /// `depth_view` (recreated by the renderer on resize, so the bind group must
+    /// be rebuilt too) and the depth-moment view (stable across resizes — only
+    /// rebuilt on level reload).
     bind_group: wgpu::BindGroup,
-    /// Animated-baked atlas per-frame dominant direction (Task 2b). Sampled
-    /// to feed the retained animated-term trace.
-    animated_lm_direction_view: wgpu::TextureView,
     /// SH depth moment texture (`E[d]`, `E[d²]`) — open-space skip lookup.
     sh_depth_moments_view: wgpu::TextureView,
-    /// Full-res lightmap-UV gbuffer written by the depth pre-pass MRT slot.
-    /// Recreated by the renderer on resize, so the bind group must be rebuilt
-    /// too (handled in `resize`). Bound at `@group(1) @binding(5)`; the shader
-    /// samples it to index the animated direction atlas per-texel.
-    lightmap_uv_view: wgpu::TextureView,
     /// SH grid metadata mirrored into the params uniform.
     sh_grid: SdfShadowShGrid,
     /// Live tuning knobs. Mutated by Task 7's sliders; uploaded each frame.
@@ -204,8 +223,6 @@ impl SdfShadowPass {
         device: &wgpu::Device,
         sdf_atlas_layout: &wgpu::BindGroupLayout,
         depth_view: &wgpu::TextureView,
-        lightmap_uv_view: &wgpu::TextureView,
-        animated_lm_direction_view: wgpu::TextureView,
         sh_depth_moments_view: wgpu::TextureView,
         lights: SdfShadowLightBuffers,
         sh_grid: SdfShadowShGrid,
@@ -262,10 +279,8 @@ impl SdfShadowPass {
             &bind_group_layout,
             &params_buffer,
             depth_view,
-            &animated_lm_direction_view,
             &sh_depth_moments_view,
             &shadow_storage_view,
-            lightmap_uv_view,
         );
         let light_bind_group = build_light_bind_group(device, &light_bind_group_layout, lights);
 
@@ -280,23 +295,21 @@ impl SdfShadowPass {
             half_res,
             params_buffer,
             bind_group,
-            animated_lm_direction_view,
             sh_depth_moments_view,
-            lightmap_uv_view: lightmap_uv_view.clone(),
             sh_grid,
             tuning: SdfShadowTuning::default(),
         }
     }
 
-    /// View into the half-res shadow factor target. Consumed by Task 5's
-    /// forward pass for the bilateral upsample.
+    /// View into the half-res shadow factor target. Consumed by the forward
+    /// pass for the bilateral upsample.
     #[allow(dead_code)]
     pub fn shadow_view(&self) -> &wgpu::TextureView {
         &self.shadow_view
     }
 
-    /// Current half-res dimensions. Useful for the Task 5 forward pass to
-    /// compute the upsample sampling step.
+    /// Current half-res dimensions. Useful for the forward pass to compute
+    /// the upsample sampling step.
     #[allow(dead_code)]
     pub fn half_res(&self) -> (u32, u32) {
         self.half_res
@@ -331,20 +344,25 @@ impl SdfShadowPass {
         self.tuning.penumbra_k = k.max(0.01);
     }
 
+    /// Write through to `tuning.surface_bias` (× voxel). Larger = the march
+    /// starts further off the originating surface, which kills SDF self-shadow
+    /// blobs on lit faces but, taken too far, can begin to detach the block's
+    /// own contact shadow. Clamped non-negative.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn set_surface_bias(&mut self, bias: f32) {
+        self.tuning.surface_bias = bias.max(0.0);
+    }
+
     /// Resize the half-res target on a surface resize. Rebuilds the bind group
     /// because both the depth view and the shadow target view changed.
     pub fn resize(
         &mut self,
         device: &wgpu::Device,
         depth_view: &wgpu::TextureView,
-        lightmap_uv_view: &wgpu::TextureView,
         full_res_width: u32,
         full_res_height: u32,
     ) {
         self.half_res = compute_half_res(full_res_width, full_res_height);
-        // The renderer recreates the lightmap-UV gbuffer in lockstep with the
-        // depth view, so capture the new view here.
-        self.lightmap_uv_view = lightmap_uv_view.clone();
         let (shadow_texture, shadow_view, shadow_storage_view) =
             create_shadow_target(device, self.half_res.0, self.half_res.1);
         self.shadow_texture = shadow_texture;
@@ -355,29 +373,23 @@ impl SdfShadowPass {
             &self.bind_group_layout,
             &self.params_buffer,
             depth_view,
-            &self.animated_lm_direction_view,
             &self.sh_depth_moments_view,
             &self.shadow_storage_view,
-            &self.lightmap_uv_view,
         );
     }
 
     /// Rebuild the views and light buffers the pass depends on after a level
-    /// load (lightmap + animated atlas + SH section + the static-light buffers
-    /// all swap). The depth view is unchanged by a level load (it's owned by
-    /// the renderer's surface state), so the caller passes the current one back
-    /// in.
-    #[allow(clippy::too_many_arguments)]
+    /// load (SH section + the static-light buffers swap). The depth view is
+    /// unchanged by a level load (it's owned by the renderer's surface state),
+    /// so the caller passes the current one back in.
     pub fn rebuild_for_level(
         &mut self,
         device: &wgpu::Device,
         depth_view: &wgpu::TextureView,
-        animated_lm_direction_view: wgpu::TextureView,
         sh_depth_moments_view: wgpu::TextureView,
         lights: SdfShadowLightBuffers,
         sh_grid: SdfShadowShGrid,
     ) {
-        self.animated_lm_direction_view = animated_lm_direction_view;
         self.sh_depth_moments_view = sh_depth_moments_view;
         self.sh_grid = sh_grid;
         self.bind_group = build_bind_group(
@@ -385,10 +397,8 @@ impl SdfShadowPass {
             &self.bind_group_layout,
             &self.params_buffer,
             depth_view,
-            &self.animated_lm_direction_view,
             &self.sh_depth_moments_view,
             &self.shadow_storage_view,
-            &self.lightmap_uv_view,
         );
         self.light_bind_group =
             build_light_bind_group(device, &self.light_bind_group_layout, lights);
@@ -397,8 +407,8 @@ impl SdfShadowPass {
     /// Encode the per-frame dispatch. The caller has already determined the
     /// pass should run (`sdf_atlas.present == true` and SDF mode is on — Task
     /// 6 will wire the off/visualize mode selector). When skipped, the shadow
-    /// target retains its last contents — Task 5's forward pass is responsible
-    /// for guarding the multiply on the mode flag.
+    /// target retains its last contents — the forward pass is responsible for
+    /// guarding the multiply on the mode flag.
     pub fn dispatch(
         &self,
         queue: &wgpu::Queue,
@@ -446,8 +456,8 @@ fn create_shadow_target(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: SHADOW_FACTOR_FORMAT,
-        // STORAGE_BINDING for the compute write, TEXTURE_BINDING for the Task 5
-        // bilateral upsample read.
+        // STORAGE_BINDING for the compute write, TEXTURE_BINDING for the
+        // forward-pass bilateral upsample read.
         usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
@@ -462,16 +472,13 @@ fn create_shadow_target(
     (texture, sampled_view, storage_view)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn build_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     params_buffer: &wgpu::Buffer,
     depth_view: &wgpu::TextureView,
-    animated_lm_direction_view: &wgpu::TextureView,
     sh_depth_moments_view: &wgpu::TextureView,
     shadow_storage_view: &wgpu::TextureView,
-    lightmap_uv_view: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("SDF Shadow Bind Group"),
@@ -487,25 +494,17 @@ fn build_bind_group(
             },
             wgpu::BindGroupEntry {
                 binding: 2,
-                resource: wgpu::BindingResource::TextureView(animated_lm_direction_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
                 resource: wgpu::BindingResource::TextureView(sh_depth_moments_view),
             },
             wgpu::BindGroupEntry {
-                binding: 4,
+                binding: 3,
                 resource: wgpu::BindingResource::TextureView(shadow_storage_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 5,
-                resource: wgpu::BindingResource::TextureView(lightmap_uv_view),
             },
         ],
     })
 }
 
-fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
+fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 4] {
     let vis = wgpu::ShaderStages::COMPUTE;
     [
         // Binding 0: params uniform.
@@ -530,22 +529,9 @@ fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
             },
             count: None,
         },
-        // Binding 2: animated lightmap direction (Rgba8Unorm, non-filterable
-        // load). The static direction texture binding is gone — per-light
-        // static shadows key on light position (group 2), not a mean direction.
+        // Binding 2: SH depth moments (Rg16Float 3D, non-filterable load).
         wgpu::BindGroupLayoutEntry {
             binding: 2,
-            visibility: vis,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                view_dimension: wgpu::TextureViewDimension::D2,
-                multisampled: false,
-            },
-            count: None,
-        },
-        // Binding 3: SH depth moments (Rg16Float 3D, non-filterable load).
-        wgpu::BindGroupLayoutEntry {
-            binding: 3,
             visibility: vis,
             ty: wgpu::BindingType::Texture {
                 sample_type: wgpu::TextureSampleType::Float { filterable: false },
@@ -554,27 +540,14 @@ fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
             },
             count: None,
         },
-        // Binding 4: shadow-factor output (Rgba8Unorm storage write).
+        // Binding 3: shadow-factor output (Rgba8Unorm storage write).
         wgpu::BindGroupLayoutEntry {
-            binding: 4,
+            binding: 3,
             visibility: vis,
             ty: wgpu::BindingType::StorageTexture {
                 access: wgpu::StorageTextureAccess::WriteOnly,
                 format: SHADOW_FACTOR_FORMAT,
                 view_dimension: wgpu::TextureViewDimension::D2,
-            },
-            count: None,
-        },
-        // Binding 5: full-res lightmap-UV gbuffer (Rg16Float, non-filterable
-        // load). Read via textureLoad to index the animated direction atlas
-        // per-texel.
-        wgpu::BindGroupLayoutEntry {
-            binding: 5,
-            visibility: vis,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                view_dimension: wgpu::TextureViewDimension::D2,
-                multisampled: false,
             },
             count: None,
         },
@@ -691,10 +664,11 @@ pub(crate) fn pack_params_bytes(
     bytes[104..108].copy_from_slice(&sh_grid.origin[2].to_ne_bytes());
     let has_vol: u32 = if sh_grid.has_volume { 1 } else { 0 };
     bytes[108..112].copy_from_slice(&has_vol.to_ne_bytes());
-    // 112..124: sh_cell_size; 124..128: _pad0.
+    // 112..124: sh_cell_size; 124..128: surface_bias (former _pad0 slot).
     bytes[112..116].copy_from_slice(&sh_grid.cell_size[0].to_ne_bytes());
     bytes[116..120].copy_from_slice(&sh_grid.cell_size[1].to_ne_bytes());
     bytes[120..124].copy_from_slice(&sh_grid.cell_size[2].to_ne_bytes());
+    bytes[124..128].copy_from_slice(&tuning.surface_bias.to_ne_bytes());
     // 128..140: sh_grid_dimensions; 140..144: _pad1.
     bytes[128..132].copy_from_slice(&sh_grid.dimensions[0].to_ne_bytes());
     bytes[132..136].copy_from_slice(&sh_grid.dimensions[1].to_ne_bytes());
@@ -740,56 +714,60 @@ mod tests {
             src.contains("textureStore(\n        shadow_factor,"),
             "cs_main must write the K-slice target via textureStore",
         );
-        // Per-light visibility (R/B/A) + retained animated trace (G): the
-        // selection helper drives the per-light rays.
+        // Per-light visibility (R/G/B/A): the selection helper drives the
+        // per-light rays — one `trace_shadow` per selected light, no animated
+        // dominant-direction trace.
         assert!(
             src.contains("select_sdf_lights(world)"),
             "cs_main must select per-light sdf shadows via the shared helper",
         );
         let trace_calls = src.matches("trace_shadow(").count();
         assert!(
-            trace_calls >= 2,
-            "expected the animated trace plus per-light traces; found {trace_calls}",
+            trace_calls >= 1,
+            "expected at least the per-light trace_shadow call; found {trace_calls}",
         );
-        // The removed static dominant-direction binding must be gone.
+        // The removed static AND animated dominant-direction bindings must be gone.
         assert!(
-            !src.contains("static_lm_direction"),
-            "the static dominant-direction binding must be removed",
+            !src.contains("static_lm_direction") && !src.contains("animated_lm_direction"),
+            "the dominant-direction bindings (static and animated) must be removed",
+        );
+        // The lightmap-UV gbuffer existed only for the animated trace — it must
+        // be gone now that the per-light trace keys on light position.
+        assert!(
+            !src.contains("lightmap_uv_tex"),
+            "the lightmap-UV gbuffer binding must be removed (per-light trace keys on position)",
         );
     }
 
-    /// The lightmap-UV gbuffer is bound at `@group(1) @binding(5)` (renumbered
-    /// after dropping the static-direction binding) in the pass-owned BGL, and
-    /// the shader sources its animated-direction UV from that target.
+    /// After dropping the animated dominant-direction trace, the pass-owned
+    /// group-1 BGL is exactly four entries: params, depth, SH depth moments,
+    /// and the shadow-factor storage output. No lightmap-UV gbuffer, no
+    /// animated-direction texture.
     #[test]
-    fn sdf_shadow_binds_and_samples_lightmap_uv_gbuffer() {
-        // BGL entry: binding 5 is present as a non-filterable float texture in
-        // the pass-owned group-1 layout.
+    fn sdf_shadow_bgl_has_no_gbuffer_or_direction_bindings() {
         let entries = bind_group_layout_entries();
-        let entry = entries
-            .iter()
-            .find(|e| e.binding == 5)
-            .expect("BGL must declare @group(1) @binding(5) for the lightmap-UV gbuffer");
-        assert!(
-            matches!(
-                entry.ty,
-                wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                }
-            ),
-            "binding 5 must be a non-filterable 2D float texture (Rg16Float via textureLoad)",
+        assert_eq!(
+            entries.len(),
+            4,
+            "group 1 must have exactly four bindings after removing the animated trace",
         );
+        // Binding 3 is the storage-write output (was 4 before the renumber).
+        let out = entries
+            .iter()
+            .find(|e| e.binding == 3)
+            .expect("BGL must declare the shadow-factor output at binding 3");
+        assert!(matches!(
+            out.ty,
+            wgpu::BindingType::StorageTexture {
+                access: wgpu::StorageTextureAccess::WriteOnly,
+                ..
+            }
+        ));
 
         let src = include_str!("../shaders/sdf_shadow.wgsl");
         assert!(
-            src.contains("@group(1) @binding(5)") && src.contains("lightmap_uv_tex"),
-            "sdf_shadow.wgsl must declare lightmap_uv_tex at @group(1) @binding(5)",
-        );
-        assert!(
-            src.contains("textureLoad(lightmap_uv_tex"),
-            "the animated direction atlas must be indexed via a UV loaded from lightmap_uv_tex",
+            src.contains("@group(1) @binding(3) var shadow_factor"),
+            "shadow_factor must be at @group(1) @binding(3) after the renumber",
         );
     }
 
@@ -870,6 +848,7 @@ mod tests {
                 max_march_steps: 64,
                 open_space_skip_threshold: 1.5,
                 penumbra_k: 8.0,
+                surface_bias: 3.0,
             },
             SdfShadowShGrid {
                 origin: [-4.0, 0.0, -4.0],
@@ -902,6 +881,10 @@ mod tests {
         assert_eq!(max_steps, 64);
         assert_eq!(skip_thresh, 1.5);
         assert_eq!(k, 8.0);
+
+        // surface_bias occupies the former _pad0 slot at 124..128.
+        let surface_bias = f32::from_ne_bytes(bytes[124..128].try_into().unwrap());
+        assert_eq!(surface_bias, 3.0);
 
         let sh_origin_x = f32::from_ne_bytes(bytes[96..100].try_into().unwrap());
         let has_vol = u32::from_ne_bytes(bytes[108..112].try_into().unwrap());

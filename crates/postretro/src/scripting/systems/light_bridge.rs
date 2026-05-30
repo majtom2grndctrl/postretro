@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use crate::lighting::{GPU_LIGHT_SIZE, pack_light};
-use crate::prl::{FalloffModel, LightType, MapLight, ShadowTech};
+use crate::prl::{FalloffModel, LightType, MapLight, ShadowType};
 use crate::render::sh_volume::{
     ANIMATION_DESCRIPTOR_SIZE, SCRIPTED_BRIGHTNESS_SLOT, SCRIPTED_COLOR_SLOT_F32,
     SCRIPTED_FLOATS_PER_LIGHT,
@@ -552,11 +552,11 @@ fn component_to_map_light(
         animated_slot: None,
         tags: vec![],
         leaf_index,
-        // Script-spawned lights have no authoring surface for `_shadow_tech`
-        // and `LightComponent` does not carry it; default `Baked` (same gap as
-        // `casts_entity_shadows` above). Preserving the tag through the
-        // component is part of the broader entity-model migration.
-        shadow_tech: ShadowTech::Baked,
+        // Script-spawned lights have no authoring surface for `_shadow_type`
+        // and `LightComponent` does not carry it; default `StaticLightMap`
+        // (same gap as `casts_entity_shadows` above). Preserving the tag
+        // through the component is part of the broader entity-model migration.
+        shadow_type: ShadowType::StaticLightMap,
     }
 }
 
@@ -736,7 +736,7 @@ mod tests {
             animated_slot: None,
             tags: vec![],
             leaf_index: 0,
-            shadow_tech: crate::prl::ShadowTech::Baked,
+            shadow_type: crate::prl::ShadowType::StaticLightMap,
         }
     }
 
@@ -757,7 +757,7 @@ mod tests {
             animated_slot: None,
             tags: vec![],
             leaf_index: 0,
-            shadow_tech: crate::prl::ShadowTech::Baked,
+            shadow_type: crate::prl::ShadowType::StaticLightMap,
         }
     }
 

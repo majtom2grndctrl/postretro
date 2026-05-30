@@ -33,10 +33,11 @@
 // (group, binding). It reads them by name only.
 
 // Per-fragment SDF shadow budget: at most this many `sdf`-tagged lights are
-// traced/shaded per fragment. Seed K = 3 (the animated shadow factor keeps one
-// of the 4 RGBA channels of the half-res target, leaving three for per-light
-// slices). Beyond K overlapping sdf lights, extras drop (treated lit).
-const SDF_SELECT_K: u32 = 3u;
+// traced/shaded per fragment. Seed K = 4 — all four RGBA channels of the
+// half-res target carry per-light slices now that the animated
+// dominant-direction trace (which reserved the G channel) is removed. Beyond K
+// overlapping sdf lights, extras drop (treated lit).
+const SDF_SELECT_K: u32 = 4u;
 
 // Sentinel for an unused selection slot. spec_lights is indexed by u32, so the
 // all-ones value cannot collide with a real light index.
@@ -46,7 +47,7 @@ const SDF_SELECT_NONE: u32 = 0xffffffffu;
 // the pinned total order (influence descending, light index ascending). Unused
 // slots hold SDF_SELECT_NONE. `count` is the number of valid leading slots.
 struct SdfLightSelection {
-    indices: array<u32, 3>, // SDF_SELECT_K
+    indices: array<u32, 4>, // SDF_SELECT_K
     count: u32,
 };
 
@@ -119,11 +120,16 @@ fn sdf_select_chunk_window(world: vec3<f32>) -> SdfChunkWindow {
 // host-side Rust reference comparator mirrors exactly.
 fn select_sdf_lights(world: vec3<f32>) -> SdfLightSelection {
     var sel: SdfLightSelection;
-    sel.indices = array<u32, 3>(SDF_SELECT_NONE, SDF_SELECT_NONE, SDF_SELECT_NONE);
+    sel.indices = array<u32, 4>(
+        SDF_SELECT_NONE,
+        SDF_SELECT_NONE,
+        SDF_SELECT_NONE,
+        SDF_SELECT_NONE,
+    );
     sel.count = 0u;
 
     // Parallel influence array for the kept slots (indices[i] ↔ infl[i]).
-    var infl = array<f32, 3>(0.0, 0.0, 0.0);
+    var infl = array<f32, 4>(0.0, 0.0, 0.0, 0.0);
 
     let win = sdf_select_chunk_window(world);
     for (var j: u32 = 0u; j < win.count; j = j + 1u) {

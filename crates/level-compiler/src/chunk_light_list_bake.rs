@@ -30,19 +30,15 @@ pub const MAX_SECTION_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
 /// Offset along ray direction to avoid self-intersection on the emitting surface.
 const RAY_EPSILON: f32 = 1.0e-3;
 
-/// Per-fragment SDF-shadow budget: the runtime traces at most this many
-/// `sdf`-tagged lights' visibility per `chunk_grid` cell. All four RGBA
-/// channels of the half-res shadow target carry per-light slices — slot i maps
-/// to channel i (R/G/B/A). Beyond K overlapping `sdf` lights in a cell, the
-/// runtime drops the extras (treated lit), so the compiler warns the author.
-/// See `context/plans/in-progress/sdf-per-light-shadows/` (Rough sketch,
-/// K-slice).
+/// Per-fragment SDF-shadow budget. Runtime traces at most K `sdf`-tagged lights
+/// per `chunk_grid` cell; extras are dropped (treated lit). The half-res shadow
+/// target has four RGBA channels — slot i maps to channel i. Compiler warns when
+/// a cell exceeds K. See `context/plans/in-progress/sdf-per-light-shadows/`.
 ///
-/// Must equal `SDF_SELECT_K` in `crates/postretro/src/shaders/sdf_light_select.wgsl`
-/// — that constant drives the runtime selection and the half-res texture layout.
-/// Raising K requires updating both together, plus the `indices: array<u32, N>`
-/// hardcoded size in `sdf_light_select.wgsl` and the channel mapping in
-/// `slice_for_visibility` in `forward.wgsl`.
+/// Must equal `SDF_SELECT_K` in `sdf_light_select.wgsl` — that constant drives
+/// runtime selection and the half-res texture layout. Raising K also requires
+/// updating `indices: array<u32, N>` in `sdf_light_select.wgsl` and the channel
+/// mapping in `forward.wgsl`.
 pub const SDF_SHADOW_K: usize = 4;
 
 #[derive(Debug, Error)]
@@ -64,8 +60,8 @@ pub struct ChunkLightListInputs<'a> {
     pub exterior_leaves: &'a HashSet<usize>,
 }
 
-/// Returns a placeholder section (`has_grid == 0`) when there is no work to do.
-/// The runtime treats the placeholder as the signal to fall back to full-buffer iteration.
+/// Returns a placeholder section (`has_grid == 0`) when there is nothing to bake.
+/// Runtime falls back to full-buffer iteration on placeholder.
 pub fn bake_chunk_light_list(
     inputs: &ChunkLightListInputs<'_>,
     cell_size_meters: f32,
@@ -76,20 +72,18 @@ pub fn bake_chunk_light_list(
         return Ok(ChunkLightListSection::placeholder());
     }
 
-    // Emitted u32s in `light_indices` are AlphaLights slot indices — matches
-    // the runtime spec-buffer layout one-to-one.
+    // `light_indices` values index the COMPACTED `!is_dynamic` spec_lights array
+    // (mirrors `pack_spec_lights`, `spec_buffer.rs`) — NOT AlphaLights slot space.
+    // `pack_spec_lights` skips dynamic lights with no placeholder; the slot is a
+    // running index over non-dynamic lights only. `enumerate()` runs AFTER the
+    // `!is_dynamic` filter so the emitted index is a contiguous compacted slot.
     let static_slots: Vec<(u32, &MapLight)> = inputs
         .lights
         .entries()
         .iter()
+        .filter(|e| !e.light.is_dynamic)
         .enumerate()
-        .filter_map(|(slot, e)| {
-            if !e.light.is_dynamic {
-                Some((slot as u32, e.light))
-            } else {
-                None
-            }
-        })
+        .map(|(slot, e)| (slot as u32, e.light))
         .collect();
     if static_slots.is_empty() {
         return Ok(ChunkLightListSection::placeholder());
@@ -298,12 +292,10 @@ pub fn bake_chunk_light_list(
     })
 }
 
-/// Warn when more than `k` `sdf`-tagged lights' influence covers a single
-/// `chunk_grid` cell. The runtime traces at most `k` per fragment and drops the
-/// rest (treated lit), so the author needs to know which cells exceed the
-/// budget. Influence coverage reuses the same `overlaps_chunk` metric the
-/// runtime cull is built on — no new metric is invented. Returns the number of
-/// over-K cells (for tests); logging is the production effect.
+/// Warn when more than `k` `sdf`-tagged lights cover a single `chunk_grid` cell.
+/// Runtime traces at most `k` per fragment; extras are dropped (treated lit).
+/// Coverage uses the same `overlaps_chunk` metric as the runtime cull.
+/// Returns over-K cell count (for tests); logging is the production effect.
 fn warn_oversubscribed_sdf_cells(
     sdf_lights: &[&MapLight],
     world_min: Vec3,
@@ -1210,6 +1202,110 @@ mod tests {
         );
         let slot = section.light_indices[entry.offset as usize];
         assert_eq!(slot, 0);
+    }
+
+    /// Regression for the dynamic-light index-skew bug: the baker must emit
+    /// `light_indices` in the COMPACTED `!is_dynamic` slot space that
+    /// `pack_spec_lights` produces — NOT the AlphaLights slot space (which
+    /// counts dynamic lights). When a dynamic light precedes a static/SDF light,
+    /// the AlphaLights slot of the SDF light is 1, but its compacted spec_lights
+    /// slot is 0 (the dynamic light is skipped with no placeholder). The runtime
+    /// indexes `spec_lights[light_idx]`, so the baker must emit the compacted
+    /// index or every light after a dynamic one reads the wrong record (SDF
+    /// lights dropped from selection, static specular mis-read).
+    ///
+    /// The contract is pinned by reconstructing the same compaction
+    /// `pack_spec_lights` applies (`!is_dynamic`, iteration order, no
+    /// placeholder) over the runtime light list, then asserting the emitted
+    /// index lands on the intended SDF light in that compacted array. We pin at
+    /// the baker level (rather than calling `pack_spec_lights`, which lives in
+    /// the `postretro` crate and would cross a crate boundary) by mirroring its
+    /// filter here; `pack_spec_lights` has its own `skips_dynamic_lights` test
+    /// holding up the other half of the seam.
+    #[test]
+    fn emitted_index_is_compacted_spec_slot_when_dynamic_precedes_sdf() {
+        // AlphaLights order: [dynamic, sdf-static]. AlphaLights slot of the SDF
+        // light is 1; its compacted (!is_dynamic) spec_lights slot is 0.
+        let geo = single_quad_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let lights = vec![
+            dynamic_point_light(DVec3::new(0.0, 1.0, 0.0), 4.0),
+            sdf_point_light(DVec3::new(0.0, 1.0, 0.0), 4.0),
+        ];
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let inputs = ChunkLightListInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            lights: &alpha_lights,
+            tree: &empty_tree(),
+            portals: &[],
+            exterior_leaves: &HashSet::new(),
+        };
+        let section = bake_chunk_light_list(&inputs, 8.0, 64).unwrap();
+        assert_eq!(section.has_grid, 1);
+
+        // Mirror `pack_spec_lights`: the compacted spec_lights view of the
+        // runtime light list (filter !is_dynamic, preserve order, no placeholder).
+        let spec_lights: Vec<&MapLight> = lights.iter().filter(|l| !l.is_dynamic).collect();
+
+        // Every emitted index must point at the SDF light through the compacted
+        // array — i.e. `spec_lights[emitted].shadow_type == Sdf`. The pre-fix
+        // baker emitted AlphaLights slot 1, which is out of range of the
+        // single-entry compacted array (the bug), or in larger sets the wrong
+        // record.
+        assert!(
+            !section.light_indices.is_empty(),
+            "the SDF light should land in at least one chunk"
+        );
+        for &emitted in &section.light_indices {
+            let slot = emitted as usize;
+            assert!(
+                slot < spec_lights.len(),
+                "emitted index {slot} is out of range of the compacted spec_lights \
+                 array (len {}) — this is the AlphaLights-vs-compacted skew bug",
+                spec_lights.len(),
+            );
+            assert_eq!(
+                spec_lights[slot].shadow_type,
+                ShadowType::Sdf,
+                "emitted compacted index {slot} must resolve to the SDF light, \
+                 not a different spec_lights record"
+            );
+        }
+    }
+
+    /// The baker emits a contiguous compacted index sequence over the
+    /// non-dynamic subset: with [static, dynamic, sdf] the only valid
+    /// spec_lights slots are 0 and 1 (the two non-dynamic lights), never 2.
+    #[test]
+    fn emitted_indices_are_contiguous_over_non_dynamic_subset() {
+        let geo = single_quad_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let lights = vec![
+            point_light(DVec3::new(0.0, 1.0, 0.0), 4.0), // compacted slot 0
+            dynamic_point_light(DVec3::new(0.0, 1.0, 0.0), 4.0), // skipped
+            sdf_point_light(DVec3::new(0.0, 1.0, 0.0), 4.0), // compacted slot 1
+        ];
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let inputs = ChunkLightListInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            lights: &alpha_lights,
+            tree: &empty_tree(),
+            portals: &[],
+            exterior_leaves: &HashSet::new(),
+        };
+        let section = bake_chunk_light_list(&inputs, 8.0, 64).unwrap();
+        let non_dynamic_count = lights.iter().filter(|l| !l.is_dynamic).count() as u32;
+        for &emitted in &section.light_indices {
+            assert!(
+                emitted < non_dynamic_count,
+                "emitted index {emitted} exceeds the {non_dynamic_count} non-dynamic \
+                 spec_lights slots (AlphaLights slot would have been 2 for the SDF light)"
+            );
+        }
     }
 
     #[test]

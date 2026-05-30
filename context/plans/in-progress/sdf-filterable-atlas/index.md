@@ -19,7 +19,9 @@ Current baked state (confirmed against source): the fine atlas is `R16Sint`,
 sampled nearest, with **no sampler bound**. Surface bricks are serialized as a
 **flat, row-wrapped element stream** — a brick is *not* a contiguous 3D sub-cube
 of the texture (the shader de-interleaves a linear element index `slot ·
-voxels_per_brick + voxel_in_brick`). Hardware trilinear needs the 8 neighbor taps
+voxels_per_brick + voxel_in_brick`; `voxels_per_brick` is computed inline as
+`brick_size³` today, `(brick_size+2)³` after — it is not a named constant; the
+only fixed const is `DEFAULT_BRICK_SIZE_VOXELS = 8`). Hardware trilinear needs the 8 neighbor taps
 of any sample to be true spatial neighbors, so this upgrade must **re-pack bricks
 as contiguous 3D sub-cubes with a 1-voxel apron**, switch to a filterable float
 format, and bind a linear sampler.
@@ -40,7 +42,7 @@ format, and bind a linear sampler.
   half-texel addressing, one `textureSampleLevel`.
 - On-disk atlas stays **compact** (surface bricks only, each `(brick_size + 2)³`);
   the 3D tiling into the texture happens at upload.
-- Bump `SDF_ATLAS_VERSION` (on-disk) and the bake `STAGE_VERSION`. Re-bake dev maps.
+- Bump `SDF_ATLAS_VERSION` 1 → 2 (on-disk) and the bake `STAGE_VERSION` 2 → 3. Re-bake dev maps.
 
 ### Out of scope
 
@@ -65,8 +67,10 @@ Automated:
 - [ ] Trilinear sampling is seamless across brick boundaries: a host test on a
       known continuous field shows a brick's edge apron column equals the adjacent
       brick's first interior column (no seam discontinuity).
-- [ ] `SDF_ATLAS_VERSION` and the bake `STAGE_VERSION` are bumped; loading a
-      pre-bump `.prl` is rejected with a clear version error.
+- [ ] `SDF_ATLAS_VERSION` 1 → 2 and bake `STAGE_VERSION` 2 → 3 are bumped;
+      loading a pre-bump `.prl` is rejected with a clear version error. The
+      existing `rejects_mismatched_section_version` test stamps an arbitrary
+      version and stays green after the bump, so it satisfies this AC generically.
 - [ ] `cargo fmt` / `clippy` clean; full suite green.
 
 Manual / visual (human, in-engine — not machine-verified):
@@ -92,26 +96,46 @@ samples, z-major), apron voxels via the same nearest-triangle eval as interior
 voxels, edge-extending at the world boundary. Keep on-disk storage compact
 (surface bricks only, each `(brick_size + 2)³` i16, back-to-back). Update the
 level-format `SdfAtlasSection` for the new per-brick length (`atlas_len ==
-(brick_size + 2)³ · surface_brick_count`) and bump `SDF_ATLAS_VERSION`; bump the
-bake `STAGE_VERSION`. Tests: apron voxel equals the mirrored neighbor field value;
+(brick_size + 2)³ · surface_brick_count`) and bump `SDF_ATLAS_VERSION` 1 → 2;
+bump the bake `STAGE_VERSION` 2 → 3. No new header field is added — the runtime
+and shader derive the stored brick edge as `brick_size_voxels + 2`. Update the
+`SdfAtlasSection` doc comments that currently hardcode `brick_size_voxels³`
+per-brick (the struct-level comment, the `atlas_len` comment, and the `atlas`
+field comment) to `(brick_size_voxels + 2)³`. Tests: apron voxel equals the mirrored neighbor field value;
 seam continuity (a brick's +x apron column equals the +x-neighbor brick's first
-interior column).
+interior column; compact stored-brick voxel index `vox_idx = sz·(brick_size+2)²
++ sy·(brick_size+2) + sx`, z-major within the apron'd brick; the test fixture
+must contain ≥2 x-adjacent surface bricks).
 
 ### Task 2: R16Float upload + sampler + trilinear shader sampling
 
 Switch the fine atlas texture to `R16Float` (`sdf_atlas.rs`), converting the
-on-disk i16-quantized values (`step = voxel_size_m / 256`) to f16 at upload. Place
+on-disk i16-quantized values (`step = voxel_size_m / 256`) to f16 at upload.
+Three coupled sites must change together or naga rejects the shader: texture
+descriptor `R16Sint` → `R16Float`; layout sample_type `Sint` → `Float {
+filterable: true }`; WGSL texture var `texture_3d<i32>` → `texture_3d<f32>`
+(the current `textureLoad(...).r` returns `i32`). Place
 each surface brick as a contiguous `(brick_size + 2)³` 3D sub-cube at its tiled
-atlas position (per-brick `write_texture`, or a dense staging buffer + one write);
+atlas position: scatter each compact `(brick_size + 2)³` brick into a dense
+`(atlas_bricks_per_axis · (brick_size + 2))³` f16 buffer at its tiled 3D
+position on the host, then a single `write_texture` (matches the current
+single-write upload shape);
 texture dims become `atlas_bricks_per_axis · (brick_size + 2)`. Create a linear
 `Filtering` sampler; update the SDF bind-group layout (fine binding →
-`Float { filterable: true }`, add the sampler binding). Rewrite
+`Float { filterable: true }`, add a `Sampler(SamplerBindingType::Filtering)` at
+**binding 4**, COMPUTE visibility — the current layout has 4 entries at bindings
+0–3: meta/atlas/coarse/top_level; bump both the layout-entry array and the
+bind-group array from length 4 to 5); add `@group(0) @binding(4) var sdf_sampler: sampler;`
+in the shader. Rewrite
 `sample_fine_distance` (`sdf_shadow.wgsl`): map `slot` → 3D atlas-brick coordinate
 (via `atlas_bricks_per_axis`) → base texel `· (brick_size + 2)`; add the apron
 offset, intra-brick coordinate, and half-texel center; sample once via
 `textureSampleLevel(sdf_atlas, sdf_sampler, uvw, 0.0)`. Drop the flat
 element-index de-interleave and the no-apron half-texel clamp. Interior/empty
-sentinel handling unchanged.
+sentinel handling unchanged. Update the existing test
+`sdf_shadow_traces_on_fine_atlas_sampler` (`sdf_shadow.rs`), which currently
+asserts `textureLoad` on the fine atlas, to assert
+`textureSampleLevel(sdf_atlas, sdf_sampler, …)` instead.
 
 ### Task 3: Re-bake + perf/visual gate
 
@@ -133,9 +157,12 @@ addressing must match the baked layout exactly.
 
 **Apron fill (bake).** Interior voxels keep their current z-major order at stored
 indices `[1, brick_size]` per axis; apron occupies indices `0` and
-`brick_size + 1`. Apron voxel world center lies in a neighbor brick's space — eval
-the signed field there exactly as for interior voxels. At the world-AABB boundary
-(no neighbor), edge-extend the nearest interior value.
+`brick_size + 1`. Loop `s in 0..(brick_size + 2)` per axis; world voxel index =
+`brick_origin · brick_size + s − 1`; voxel center = `(world_idx + 0.5) ·
+voxel_size` (matching the existing center-sampling convention); stored at index
+`s`. Apron voxel world center lies in a neighbor brick's space — eval the signed
+field there exactly as for interior voxels. At the world-AABB boundary (no
+neighbor), edge-extend the nearest interior value.
 
 **Packing + addressing.** On-disk each surface brick is a compact `(brick_size +
 2)³` block. At upload, brick `slot` maps to a 3D atlas-brick coordinate
@@ -145,7 +172,9 @@ atlas_bricks_per_axis`; the brick's texels start at that coordinate `· (brick_s
 `base = atlas_brick_coord · (brick_size + 2)`; a world point's intra-brick
 fraction `frac ∈ [0, 1)` over the `brick_size` interior voxels maps to texel
 coordinate `base + 1 (apron) + frac · brick_size + 0.5 (half-texel center)`;
-normalize by the atlas dims and `textureSampleLevel`. The `+1` skips the apron;
+normalize by the atlas dims (`atlas_dim = atlas_bricks_per_axis * (brick_size + 2)`
+per axis, derived from existing `SdfAtlasMeta` uniform fields — no new uniform)
+and `textureSampleLevel`. The `+1` skips the apron;
 the apron supplies the ±1 neighbors trilinear needs at interior edges, so sampling
 is seamless across brick seams.
 
@@ -162,16 +191,21 @@ section. Little-endian, unchanged. The `atlas: Vec<i16>` element type is unchang
 (i16 quantized, `step = voxel_size_m / 256`); only the **per-brick element count**
 changes from `brick_size³` to `(brick_size + 2)³`, and the header `atlas_len`
 field follows. The atlas stays compact (surface bricks only, back-to-back, z-major
-within the apron'd brick). Bump `SDF_ATLAS_VERSION`; the deserializer rejects the
+within the apron'd brick). Bump `SDF_ATLAS_VERSION` 1 → 2; the deserializer rejects the
 prior version (recompile-from-`.map` is the pre-release path — the build cache
-already invalidates on the bake `STAGE_VERSION` bump). 3D tiling is a GPU-upload
+already invalidates on the bake `STAGE_VERSION` 2 → 3 bump). No new header field
+is added — the runtime and shader derive the stored brick edge as
+`brick_size_voxels + 2`; update the `SdfAtlasSection` doc comments that
+hardcode `brick_size_voxels³` per-brick (struct-level, `atlas_len`, and `atlas`
+field) to `(brick_size_voxels + 2)³`. 3D tiling is a GPU-upload
 concern, not an on-disk one.
 
 ## Open questions
 
-- **f16 encoding at upload.** Confirm a vetted f32→f16 path (the `half` crate or an
-  existing helper) is available in the render crate; add it if not. The on-disk
-  data stays i16, so this is confined to the upload path.
+- **f16 encoding at upload.** Use the existing vetted helper `f32_to_f16_bits`
+  (`crates/postretro/src/render/sh_volume.rs`), which returns `u16` bits suitable
+  for an `R16Float` `write_texture`. No new dependency. The on-disk data stays
+  i16; the conversion is confined to the upload path.
 - **Apron at the world boundary** — pinned to edge-extend (clamp nearest interior
   value); flag if a different bound reads better in-engine.
 - **Coarse-field filtering** is deferred (out of scope). Revisit only if residual

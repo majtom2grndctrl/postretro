@@ -30,19 +30,15 @@ pub const MAX_SECTION_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
 /// Offset along ray direction to avoid self-intersection on the emitting surface.
 const RAY_EPSILON: f32 = 1.0e-3;
 
-/// Per-fragment SDF-shadow budget: the runtime traces at most this many
-/// `sdf`-tagged lights' visibility per `chunk_grid` cell. All four RGBA
-/// channels of the half-res shadow target carry per-light slices — slot i maps
-/// to channel i (R/G/B/A). Beyond K overlapping `sdf` lights in a cell, the
-/// runtime drops the extras (treated lit), so the compiler warns the author.
-/// See `context/plans/in-progress/sdf-per-light-shadows/` (Rough sketch,
-/// K-slice).
+/// Per-fragment SDF-shadow budget. Runtime traces at most K `sdf`-tagged lights
+/// per `chunk_grid` cell; extras are dropped (treated lit). The half-res shadow
+/// target has four RGBA channels — slot i maps to channel i. Compiler warns when
+/// a cell exceeds K. See `context/plans/in-progress/sdf-per-light-shadows/`.
 ///
-/// Must equal `SDF_SELECT_K` in `crates/postretro/src/shaders/sdf_light_select.wgsl`
-/// — that constant drives the runtime selection and the half-res texture layout.
-/// Raising K requires updating both together, plus the `indices: array<u32, N>`
-/// hardcoded size in `sdf_light_select.wgsl` and the channel mapping in
-/// `slice_for_visibility` in `forward.wgsl`.
+/// Must equal `SDF_SELECT_K` in `sdf_light_select.wgsl` — that constant drives
+/// runtime selection and the half-res texture layout. Raising K also requires
+/// updating `indices: array<u32, N>` in `sdf_light_select.wgsl` and the channel
+/// mapping in `forward.wgsl`.
 pub const SDF_SHADOW_K: usize = 4;
 
 #[derive(Debug, Error)]
@@ -64,8 +60,8 @@ pub struct ChunkLightListInputs<'a> {
     pub exterior_leaves: &'a HashSet<usize>,
 }
 
-/// Returns a placeholder section (`has_grid == 0`) when there is no work to do.
-/// The runtime treats the placeholder as the signal to fall back to full-buffer iteration.
+/// Returns a placeholder section (`has_grid == 0`) when there is nothing to bake.
+/// Runtime falls back to full-buffer iteration on placeholder.
 pub fn bake_chunk_light_list(
     inputs: &ChunkLightListInputs<'_>,
     cell_size_meters: f32,
@@ -76,13 +72,10 @@ pub fn bake_chunk_light_list(
         return Ok(ChunkLightListSection::placeholder());
     }
 
-    // Emitted u32s in `light_indices` index the COMPACTED `!is_dynamic`
-    // spec_lights array, matching `pack_spec_lights` in
-    // `crates/postretro/src/lighting/spec_buffer.rs`. That packer iterates the
-    // runtime AlphaLights-ordered light list and SKIPS dynamic lights with no
-    // placeholder, so the spec_lights slot space is the running index over only
-    // the non-dynamic lights — NOT the AlphaLights slot space (which still
-    // counts dynamic lights). `enumerate()` therefore runs AFTER the
+    // `light_indices` values index the COMPACTED `!is_dynamic` spec_lights array
+    // (mirrors `pack_spec_lights`, `spec_buffer.rs`) — NOT AlphaLights slot space.
+    // `pack_spec_lights` skips dynamic lights with no placeholder; the slot is a
+    // running index over non-dynamic lights only. `enumerate()` runs AFTER the
     // `!is_dynamic` filter so the emitted index is a contiguous compacted slot.
     let static_slots: Vec<(u32, &MapLight)> = inputs
         .lights
@@ -299,12 +292,10 @@ pub fn bake_chunk_light_list(
     })
 }
 
-/// Warn when more than `k` `sdf`-tagged lights' influence covers a single
-/// `chunk_grid` cell. The runtime traces at most `k` per fragment and drops the
-/// rest (treated lit), so the author needs to know which cells exceed the
-/// budget. Influence coverage reuses the same `overlaps_chunk` metric the
-/// runtime cull is built on — no new metric is invented. Returns the number of
-/// over-K cells (for tests); logging is the production effect.
+/// Warn when more than `k` `sdf`-tagged lights cover a single `chunk_grid` cell.
+/// Runtime traces at most `k` per fragment; extras are dropped (treated lit).
+/// Coverage uses the same `overlaps_chunk` metric as the runtime cull.
+/// Returns over-K cell count (for tests); logging is the production effect.
 fn warn_oversubscribed_sdf_cells(
     sdf_lights: &[&MapLight],
     world_min: Vec3,

@@ -1,22 +1,17 @@
 // Typed light-namespace envelopes.
 //
-// Each bake stage operates over a different subset of `MapLight`. Pre-filtering
-// once into typed envelopes — and naming the resulting index spaces — replaces
-// parallel filter predicates spread across the bake stages. Per-stage code
-// takes the typed slice it needs and applies no further filter.
+// Pre-filtering `MapLight` once into named typed envelopes replaces per-stage
+// filter predicates. Each stage takes the slice it needs; no further filtering.
 //
 // Index-space contracts:
-// - `AlphaLightsNs` matches the on-disk `AlphaLightRecord` order (`!bake_only`).
-//   `LightInfluence` records share this slot space — record `i` here is record
-//   `i` for those downstream consumers.
-//   NOTE: `ChunkLightList` light_indices do NOT share this space. They are
-//   emitted in the compacted `!is_dynamic` space that the runtime `spec_lights`
-//   buffer uses (`pack_spec_lights`), since dynamic lights are dropped (with no
-//   placeholder) from that buffer. See `chunk_light_list_bake.rs`.
-// - `AnimatedBakedLights` matches the `AnimationDescriptor` array order
+// - `AlphaLightsNs`: on-disk `AlphaLightRecord` order (`!bake_only`).
+//   `LightInfluence` records share this slot space — record `i` aligns across both.
+//   NOTE: `ChunkLightList` light_indices do NOT share this space; emitted in the
+//   compacted `!is_dynamic` spec_lights space (`pack_spec_lights`), dynamic lights
+//   dropped with no placeholder. See `chunk_light_list_bake.rs`.
+// - `AnimatedBakedLights`: `AnimationDescriptor` array order
 //   (`!is_dynamic && animation.is_some()`).
-// - `StaticBakedLights` is internal to lightmap and SH base bakes; no on-disk
-//   slot space.
+// - `StaticBakedLights`: internal to lightmap and SH base bakes; no on-disk slot.
 
 use postretro_level_format::light_influence::InfluenceRecord;
 
@@ -48,16 +43,13 @@ pub struct AlphaLightEntry<'a> {
     pub light: &'a MapLight,
 }
 
-/// Lights consumed by the static lightmap bake **and** the SH base bake.
+/// Lights for the static lightmap bake and SH base bake.
 ///
-/// Filter: `!is_dynamic && animation.is_none()` — the **position** axis, never
-/// shadow type. This namespace feeds both the direct lightmap bake and the SH
-/// base bake; SH needs *every* baked-tier light (both shadow types) for its
-/// bounce, so filtering on shadow type here would starve SH. The shadow-type
-/// exclusion (drop `sdf`) lives **down** at the direct lightmap consumer (the
-/// static lightmap bake), keeping `lm_irr` disjoint from the runtime SDF set
-/// while SH still sees all baked-tier lights. Iteration order matches the
-/// original `&[MapLight]`.
+/// Filter: `!is_dynamic && animation.is_none()` — position axis only, never
+/// shadow type. SH needs every baked-tier light (both shadow types) for bounce;
+/// filtering on shadow type here would starve it. The `sdf` exclusion lives at
+/// the direct lightmap consumer, keeping `lm_irr` disjoint from the runtime SDF
+/// set while SH still sees all baked-tier lights. Iteration order: original `&[MapLight]`.
 #[derive(Debug, Clone)]
 pub struct StaticBakedLights<'a> {
     entries: Vec<StaticBakedEntry<'a>>,
@@ -90,20 +82,16 @@ impl<'a> StaticBakedLights<'a> {
     }
 }
 
-/// Lights consumed by the animated-light-chunks builder, the animated weight
-/// map baker, **and** the SH bake's animation-descriptor + delta-SH list.
+/// Lights for the animated weight-map bake, animation descriptors, and SH delta bake.
 ///
-/// Filter: `!is_dynamic && animation.is_some()` — the **position** axis, never
-/// shadow type. This namespace feeds both the direct weight-map bake and the
-/// SH delta bake; the delta bake needs every animated baked-tier light (both
-/// shadow types) for its bounce, so filtering on shadow type here would starve
-/// it. The shadow-type exclusion (drop `sdf`) lives **down** at the direct
-/// weight-map consumer, so `lm_anim` stays disjoint from the runtime SDF set
-/// while the delta bake still sees all animated baked-tier lights. Indices in
-/// this namespace are the same indices the runtime `AnimationDescriptor` buffer
-/// and the `AnimatedLightChunks` `light_indices` use — iteration order matches
-/// the original `&[MapLight]`. `bake_only` animated lights are retained — they
-/// participate in weight-map compose at runtime.
+/// Filter: `!is_dynamic && animation.is_some()` — position axis only, never
+/// shadow type. The delta bake needs every animated baked-tier light for bounce;
+/// filtering on shadow type here would starve it. The `sdf` exclusion lives at
+/// the direct weight-map consumer (`lm_anim` stays disjoint from the runtime SDF
+/// set; delta bake still sees all animated baked-tier lights). `bake_only`
+/// animated lights are retained — they participate in weight-map compose at
+/// runtime. Indices match the runtime `AnimationDescriptor` buffer and
+/// `AnimatedLightChunks` light_indices. Iteration order: original `&[MapLight]`.
 #[derive(Debug, Clone)]
 pub struct AnimatedBakedLights<'a> {
     entries: Vec<AnimatedBakedEntry<'a>>,
@@ -167,13 +155,12 @@ impl<'a> AnimatedBakedLights<'a> {
     }
 }
 
-/// Lights consumed by the AlphaLights pack, the LightInfluence pack, the
-/// LightTags pack, and the chunk light list bake.
+/// Lights for the AlphaLights pack, LightInfluence pack, LightTags pack, and
+/// chunk light list bake.
 ///
-/// Filter: `!bake_only`. Iteration order matches the original `&[MapLight]`.
-/// Indices in this namespace are the same slot indices as the on-disk
-/// `AlphaLightRecord` array — record `i` in AlphaLights, LightInfluence, and
-/// LightTags all line up.
+/// Filter: `!bake_only`. Indices match on-disk `AlphaLightRecord` slot space —
+/// AlphaLights, LightInfluence, and LightTags records all align. Iteration
+/// order: original `&[MapLight]`.
 #[derive(Debug, Clone)]
 pub struct AlphaLightsNs<'a> {
     entries: Vec<AlphaLightEntry<'a>>,

@@ -594,7 +594,6 @@ mod tests {
             &mut lm_ctx,
             &crate::lightmap_bake::LightmapConfig {
                 lightmap_density: 0.25,
-                mode: crate::lightmap_bake::BakeMode::Shadowed,
             },
         )
         .unwrap();

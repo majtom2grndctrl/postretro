@@ -597,21 +597,21 @@ pub struct Renderer {
     sh_volume_resources: ShVolumeResources,
 
     /// Static-occluder SDF atlas + bind group. Owned by the renderer; the
-    /// bind-group layout is consumed only by the (future) Task 4 shadow
-    /// pass — NOT bound by forward (forward gets only the shadow-factor
-    /// texture in group 5, Task 5). `present` is false when no SDF section
-    /// is in the PRL; the shadow pass skips its dispatch in that case.
+    /// bind-group layout is consumed only by the SDF shadow pass — NOT
+    /// bound by forward (forward gets only the shadow-factor texture in
+    /// group 5). `present` is false when no SDF section is in the PRL;
+    /// the shadow pass skips its dispatch in that case.
     sdf_atlas_resources: SdfAtlasResources,
-    /// Half-resolution SDF shadow pass (Task 4 of sdf-static-occluder-shadows).
-    /// Always allocated. Dispatch is gated on `sdf_atlas_resources.present`
-    /// and the SDF shadow mode (Task 6 wires the mode selector; for now any
-    /// loaded SDF atlas activates the pass).
+    /// Half-resolution per-light SDF shadow pass. Always allocated.
+    /// Dispatch is gated on `sdf_atlas_resources.present` and the active
+    /// `SdfShadowMode`.
     sdf_shadow_pass: SdfShadowPass,
-    /// Read from the PRL by Task 2a (the bake records whether the lightmap
-    /// has visibility folded in). Task 5's forward pass reads this to
-    /// decide whether to multiply the SDF visibility factor into the
-    /// static-lightmap term. Defaults to `Shadowed` so legacy PRLs and
-    /// pre-Task-2a builds behave like `main`.
+    /// Lightmap bake mode read from the PRL (records whether visibility was
+    /// folded into the bake). Under the disjoint-direct design, `sdf` lights
+    /// are excluded from `lm_irr` at bake time, so the forward pass never
+    /// multiplies SDF visibility into the static-lightmap term; this field
+    /// is retained only for legacy-PRL compatibility. Defaults to `Shadowed`
+    /// so legacy PRLs decode without error.
     #[allow(dead_code)]
     lightmap_mode: crate::prl::LightmapMode,
 
@@ -662,12 +662,11 @@ pub struct Renderer {
     /// Rebuilt in `Renderer::new` and `reload_geometry` from `filter_dynamic_lights`.
     dynamic_light_influences: Vec<LightInfluence>,
     /// Candidate set for the spot-shadow pool — sourced from the FULL level
-    /// light set filtered by `casts_entity_shadows`, NOT from `level_lights`
-    /// (Task 1b decouples the two). After Task 2c re-tags every authored
-    /// light static, `level_lights` (the `is_dynamic`-filtered forward set)
-    /// goes empty, so gating the pool on it would silently empty the pool.
-    /// `casts_entity_shadows` is the per-light authoring opt-in for
-    /// dynamic-entity (enemy / moving-mesh) shadows.
+    /// light set filtered by `casts_entity_shadows`, NOT from `level_lights`.
+    /// Dynamic-tier lights (`light_dynamic`/`light_dynamic_spot`) are a
+    /// distinct classname, not re-tagged statics; `casts_entity_shadows` is
+    /// the per-light authoring opt-in for dynamic-entity (moving-mesh) shadows,
+    /// independent of which lights are dynamic-tier.
     shadow_candidate_lights: Vec<MapLight>,
     /// Influence volumes parallel to `shadow_candidate_lights`. Built
     /// alongside it from the full level light set.
@@ -2448,30 +2447,28 @@ impl Renderer {
     }
 
     /// `true` when the loaded map carries a baked SDF static-occluder atlas.
-    /// The (future) Task 4 shadow pass reads this to decide whether to
-    /// dispatch; the (future) Task 5 forward pass reads this together with
-    /// `lightmap_mode` to decide whether to multiply the SDF visibility
-    /// factor into the static-lightmap term. Legacy PRLs report `false` and
-    /// the renderer degrades cleanly to `main`-equivalent lighting.
+    /// The SDF shadow pass gates its dispatch on this; the SDF visibility
+    /// applies to the per-light `sdf`-tagged diffuse/specular forward loops,
+    /// not to `lm_irr`. Legacy PRLs report `false` and the renderer degrades
+    /// cleanly to `main`-equivalent lighting.
     #[allow(dead_code)]
     pub fn has_sdf_atlas(&self) -> bool {
         self.sdf_atlas_resources.present
     }
 
-    /// Borrow the SDF atlas resources. The (future) Task 4 shadow pass
-    /// consumes the bind group + layout here; no other pass should bind
-    /// these — forward gets only an upsampled shadow-factor texture in
-    /// group 5 (Task 5).
+    /// Borrow the SDF atlas resources. The SDF shadow pass consumes the
+    /// bind group + layout here; no other pass should bind these — forward
+    /// gets only an upsampled shadow-factor texture in group 5.
     #[allow(dead_code)]
     pub fn sdf_atlas_resources(&self) -> &SdfAtlasResources {
         &self.sdf_atlas_resources
     }
 
-    /// Lightmap bake mode (Shadowed = visibility baked in, Unshadowed = SDF
-    /// supplies visibility at runtime). Task 2a wires this through from the
-    /// lightmap section; today it is `Shadowed` for every PRL, matching
-    /// `main`-equivalent behavior so the forward pass skips the SDF multiply
-    /// on the static term.
+    /// Lightmap bake mode read from the PRL (Shadowed = visibility baked in).
+    /// Under the disjoint-direct design, `sdf` lights are excluded from
+    /// `lm_irr` at bake time, so the forward pass never multiplies SDF
+    /// visibility into the static-lightmap term; this accessor is retained
+    /// only for legacy-PRL compatibility.
     #[allow(dead_code)]
     pub fn lightmap_mode(&self) -> crate::prl::LightmapMode {
         self.lightmap_mode
@@ -2546,9 +2543,8 @@ impl Renderer {
         self.lighting_isolation
     }
 
-    /// Direct setter used by the debug-panel `SdfShadowMode` dropdown (Task 6
-    /// of `sdf-static-occluder-shadows`). Logs only on transition so spam
-    /// clicks on the current mode stay quiet.
+    /// Direct setter for the `SdfShadowMode`; used by the debug-panel dropdown.
+    /// Logs only on transition so spam clicks on the current mode stay quiet.
     #[cfg(feature = "dev-tools")]
     pub fn set_sdf_shadow_mode(&mut self, mode: SdfShadowMode) {
         if self.sdf_shadow_mode != mode {

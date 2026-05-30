@@ -24,10 +24,10 @@ use super::sdf_atlas::SdfAtlasResources;
 
 /// Full WGSL source for the SDF shadow compute pass: the pass shader plus the
 /// shared K-selection helper, textually concatenated (the shared-WGSL-helper
-/// pattern — cf. `curve_eval.wgsl`). The forward shader (Task 3) appends the
-/// SAME `sdf_light_select.wgsl` string, so both select identical lights in
-/// identical order — the load-bearing K-selection parity seam. The pass shader
-/// declares the `spec_lights` / `chunk_grid` / `chunk_offsets` / `chunk_indices`
+/// pattern — cf. `curve_eval.wgsl`). The forward shader also appends the same
+/// `sdf_light_select.wgsl` string, so both select identical lights in identical
+/// order — the load-bearing K-selection parity seam. The pass shader declares
+/// the `spec_lights` / `chunk_grid` / `chunk_offsets` / `chunk_indices`
 /// bindings (group 2) the helper reads by name.
 const SDF_SHADOW_SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/sdf_shadow.wgsl"),
@@ -55,13 +55,13 @@ pub const SHADOW_FACTOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8
 /// estimate sharpens once `d` is a real metric distance, so `penumbra_k` is
 /// softened 16 → 8 to keep penumbra width similar rather than over-hard.
 ///
-/// The open-space skip threshold is seeded **loose** (8.0, was 2.5): the skip
-/// returns FULLY_LIT before marching when `E[d] > threshold × SH cell`, so a
-/// *small* threshold fires the skip on even a moderate gap and suppresses the
-/// trace. This session's investigation (`research.md` step 2) found the old 2.5
-/// default suppressed much of the per-light trace; Visualize at 0 vs 8 changed
-/// dramatically. Seed loose so the per-light rays actually run on the SDF case,
-/// and tighten later via the perf gate (Task 6) if open-space cost dominates.
+/// The open-space skip threshold is seeded **loose** (8.0): the skip returns
+/// FULLY_LIT before marching when `E[d] > threshold × SH cell`, so a *small*
+/// threshold fires the skip on even a moderate gap and suppresses the per-light
+/// trace. Seeded loose so rays actually run on typical geometry; tighten via the
+/// Task 6 perf gate if open-space cost dominates (see
+/// `context/plans/in-progress/sdf-static-occluder-shadows/research.md` step 2
+/// for the threshold-sensitivity analysis).
 /// These are SEED values; adjust them live via the "SDF / Fog Quality" panel in
 /// the debug overlay (`dev-tools` feature).
 pub const DEFAULT_MAX_MARCH_STEPS: u32 = 64;
@@ -164,7 +164,7 @@ pub struct SdfShadowPass {
     /// allocation so the pass-skipped path is "fully lit".
     #[allow(dead_code)]
     shadow_texture: wgpu::Texture,
-    /// View into `shadow_texture` exposed to Task 5's forward pass for the
+    /// View into `shadow_texture` exposed to the forward pass for the
     /// bilateral upsample.
     pub shadow_view: wgpu::TextureView,
     /// Storage-write view bound on the pass's own bind group.
@@ -280,15 +280,15 @@ impl SdfShadowPass {
         }
     }
 
-    /// View into the half-res shadow factor target. Consumed by Task 5's
-    /// forward pass for the bilateral upsample.
+    /// View into the half-res shadow factor target. Consumed by the forward
+    /// pass for the bilateral upsample.
     #[allow(dead_code)]
     pub fn shadow_view(&self) -> &wgpu::TextureView {
         &self.shadow_view
     }
 
-    /// Current half-res dimensions. Useful for the Task 5 forward pass to
-    /// compute the upsample sampling step.
+    /// Current half-res dimensions. Useful for the forward pass to compute
+    /// the upsample sampling step.
     #[allow(dead_code)]
     pub fn half_res(&self) -> (u32, u32) {
         self.half_res
@@ -377,8 +377,8 @@ impl SdfShadowPass {
     /// Encode the per-frame dispatch. The caller has already determined the
     /// pass should run (`sdf_atlas.present == true` and SDF mode is on — Task
     /// 6 will wire the off/visualize mode selector). When skipped, the shadow
-    /// target retains its last contents — Task 5's forward pass is responsible
-    /// for guarding the multiply on the mode flag.
+    /// target retains its last contents — the forward pass is responsible for
+    /// guarding the multiply on the mode flag.
     pub fn dispatch(
         &self,
         queue: &wgpu::Queue,
@@ -426,8 +426,8 @@ fn create_shadow_target(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: SHADOW_FACTOR_FORMAT,
-        // STORAGE_BINDING for the compute write, TEXTURE_BINDING for the Task 5
-        // bilateral upsample read.
+        // STORAGE_BINDING for the compute write, TEXTURE_BINDING for the
+        // forward-pass bilateral upsample read.
         usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });

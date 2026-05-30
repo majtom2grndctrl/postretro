@@ -31,17 +31,19 @@ pub const MAX_SECTION_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
 const RAY_EPSILON: f32 = 1.0e-3;
 
 /// Per-fragment SDF-shadow budget: the runtime traces at most this many
-/// `sdf`-tagged lights' visibility per `chunk_grid` cell (seed K = 3; the
-/// 4-channel half-res shadow target keeps one channel for the animated
-/// factor). Beyond K overlapping `sdf` lights in a cell, the runtime drops the
-/// extras (treated lit), so the compiler warns the author. See
-/// `context/plans/in-progress/sdf-per-light-shadows/` (Rough sketch, K-slice).
+/// `sdf`-tagged lights' visibility per `chunk_grid` cell. All four RGBA
+/// channels of the half-res shadow target carry per-light slices — slot i maps
+/// to channel i (R/G/B/A). Beyond K overlapping `sdf` lights in a cell, the
+/// runtime drops the extras (treated lit), so the compiler warns the author.
+/// See `context/plans/in-progress/sdf-per-light-shadows/` (Rough sketch,
+/// K-slice).
 ///
-/// Raising K requires matching changes in three coupled sites:
-/// `SDF_SELECT_K` in `sdf_light_select.wgsl`, the `indices: array<u32, 3>`
-/// hardcoded size in that same file, and the channel mapping in
+/// Must equal `SDF_SELECT_K` in `crates/postretro/src/shaders/sdf_light_select.wgsl`
+/// — that constant drives the runtime selection and the half-res texture layout.
+/// Raising K requires updating both together, plus the `indices: array<u32, N>`
+/// hardcoded size in `sdf_light_select.wgsl` and the channel mapping in
 /// `slice_for_visibility` in `forward.wgsl`.
-pub const SDF_SHADOW_K: usize = 3;
+pub const SDF_SHADOW_K: usize = 4;
 
 #[derive(Debug, Error)]
 pub enum ChunkLightListError {

@@ -10,7 +10,7 @@
 // contribution already lives in `lm_anim` (the animated weight-map bake, occlusion-
 // tested); folding it into the delta SH too double-counted it. SH is indirect-only:
 // base and delta both store bounce only. See
-// context/plans/in-progress/sdf-per-light-shadows/{architecture.md,index.md} (Task 1).
+// `context/lib/rendering_pipeline.md §4` (Animated SH delta volumes).
 // The result is stored as a CSR index keyed by affinity cell:
 //
 //   - `affinity_offsets[c]..affinity_offsets[c+1]` is cell `c`'s slice of

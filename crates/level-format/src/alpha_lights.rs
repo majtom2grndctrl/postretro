@@ -209,22 +209,50 @@ impl AlphaLightsSection {
             )));
         }
 
-        // The section carries a leading `u32 version` (mirroring
-        // `SH_VOLUME_VERSION`); this subsumes the old 72/73 record-stride
-        // heuristic. A `.prl` written before the version field began with
-        // `u32 light_count` directly and 73-byte records. Disambiguate by
-        // testing the versioned interpretation against the body length: a
-        // current section is `version(4) + count(4) + count*74`. If that
-        // matches, decode versioned; otherwise fall back to the legacy
-        // version-less layout (`count(4) + count*73`,
-        // `shadow_type = StaticLightMap`).
+        // Disambiguation rule — versioned vs. legacy:
+        //
+        // Versioned layout  (v3+): version(u32) + count(u32) + count×74 bytes.
+        //   Total length = 8 + count×74.
+        // Legacy layout (version-less): count(u32) + count×73 bytes.
+        //   Total length = 4 + count×73.
+        //
+        // Detection: read `first = data[0..4]` as a u32.
+        //   Step 1 — test the versioned formula with `first` as version and
+        //     `data[4..8]` as count. If the total length matches exactly and
+        //     `first == ALPHA_LIGHTS_VERSION`, decode as current versioned.
+        //   Step 2 — if the versioned formula matches but `first` differs from
+        //     `ALPHA_LIGHTS_VERSION`, the section was written by a different
+        //     compiler version; reject with a clear version-mismatch error
+        //     instead of falling through to legacy. This prevents a foreign
+        //     version word from being silently reinterpreted as a light count.
+        //   Step 3 — otherwise decode as legacy: `first` is the light count,
+        //     73-byte records, `shadow_type` defaults to `StaticLightMap`.
+        //
+        // Why the versioned formula is a reliable discriminator: a genuine
+        // legacy section with N lights has length 4 + N×73. For that to also
+        // satisfy the versioned formula (8 + M×74, where M = data[4..8]) the
+        // two equalities must hold simultaneously. These coincide only for
+        // extremely specific (N, M) pairs and are vanishingly unlikely on any
+        // real file. The formula check is therefore the practical discriminator
+        // even without an explicit tag byte.
         let first = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-        let versioned = data.len() >= 8 && {
+        let versioned_length_matches = data.len() >= 8 && {
             let count = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
-            first == ALPHA_LIGHTS_VERSION && data.len() == 8 + count * ALPHA_LIGHT_RECORD_SIZE
+            data.len() == 8 + count * ALPHA_LIGHT_RECORD_SIZE
         };
 
-        let (mut o, count, record_size, has_shadow_type) = if versioned {
+        if versioned_length_matches && first != ALPHA_LIGHTS_VERSION {
+            return Err(FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "unsupported AlphaLights section version {} (expected {}); recompile the map",
+                    first, ALPHA_LIGHTS_VERSION,
+                ),
+            )));
+        }
+
+        let (mut o, count, record_size, has_shadow_type) = if versioned_length_matches {
+            // `first == ALPHA_LIGHTS_VERSION` is guaranteed by the check above.
             let count = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
             (8usize, count, ALPHA_LIGHT_RECORD_SIZE, true)
         } else {
@@ -508,6 +536,42 @@ mod tests {
         assert_eq!(
             section.lights[1].shadow_type,
             AlphaShadowType::StaticLightMap
+        );
+    }
+
+    /// A blob whose length satisfies the versioned formula (`8 + count×74`) but
+    /// whose leading version word is not `ALPHA_LIGHTS_VERSION` is a versioned
+    /// section written by a different compiler version. The loader must reject it
+    /// with a clear version-mismatch error rather than silently reinterpreting
+    /// the version word as a light count and producing a truncation error or
+    /// garbage output.
+    #[test]
+    fn rejects_versioned_section_with_non_current_version() {
+        // Construct a blob that exactly satisfies the versioned length formula
+        // (8 + 1×74 = 82 bytes) but with a version word that isn't the current
+        // one. Using ALPHA_LIGHTS_VERSION + 1 as a stand-in for a future version.
+        let non_current_version: u32 = ALPHA_LIGHTS_VERSION + 1;
+        let count: u32 = 1;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&non_current_version.to_le_bytes());
+        buf.extend_from_slice(&count.to_le_bytes());
+        // Pad out one record's worth of zeros to satisfy the length formula.
+        buf.extend(std::iter::repeat_n(0u8, ALPHA_LIGHT_RECORD_SIZE));
+        assert_eq!(buf.len(), 8 + ALPHA_LIGHT_RECORD_SIZE);
+
+        let err = AlphaLightsSection::from_bytes(&buf).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unsupported AlphaLights section version"),
+            "expected version-mismatch error, got: {msg}"
+        );
+        assert!(
+            msg.contains(&non_current_version.to_string()),
+            "error should name the bad version number, got: {msg}"
+        );
+        assert!(
+            msg.contains("recompile the map"),
+            "error should instruct the user to recompile, got: {msg}"
         );
     }
 

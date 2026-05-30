@@ -37,27 +37,6 @@ pub const DEFAULT_TEXEL_DENSITY_METERS: f32 = 0.04;
 /// a re-bake of the now-disjoint direct set.
 pub const STAGE_VERSION: u32 = 4;
 
-/// Serializable enum tag for the bake mode. Mirrors `LightmapMode` from
-/// `level-format` but lives here so the cache-key derivation in `main` can fold
-/// the mode in via `postcard::to_allocvec(&LightmapConfig)` (the format crate's
-/// enum has no `Serialize` impl by design — it is the on-disk parse target,
-/// not a build-cache key input).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, Default)]
-pub enum BakeMode {
-    #[default]
-    Shadowed,
-    Unshadowed,
-}
-
-impl BakeMode {
-    fn to_section_mode(self) -> LightmapMode {
-        match self {
-            BakeMode::Shadowed => LightmapMode::Shadowed,
-            BakeMode::Unshadowed => LightmapMode::Unshadowed,
-        }
-    }
-}
-
 /// Atlas width/height when no face would fit otherwise. Power-of-two for BC6H block alignment.
 const MIN_ATLAS_DIMENSION: u32 = 64;
 
@@ -123,16 +102,10 @@ pub struct LightmapInputs {
 }
 
 /// CLI-driven configuration for the lightmap bake. Fields are included in the
-/// cache key so adding a flag here automatically invalidates stale entries.
+/// cache key so adding a field here automatically invalidates stale entries.
 #[derive(serde::Serialize)]
 pub struct LightmapConfig {
     pub lightmap_density: f32,
-    /// Selects whether the per-texel visibility test is applied during the
-    /// bake. `Shadowed` (default) reproduces `main` — occluded texels go dark.
-    /// `Unshadowed` skips the visibility gate so the atlas holds full static-
-    /// light irradiance + bounce, and runtime SDF supplies visibility.
-    #[serde(default)]
-    pub mode: BakeMode,
 }
 
 /// Output of a lightmap bake pass. The animated weight-map baker consumes
@@ -246,7 +219,6 @@ pub fn bake_lightmap(
     config: &LightmapConfig,
 ) -> Result<LightmapBakeOutput, LightmapBakeError> {
     let texel_density = config.lightmap_density;
-    let mode = config.mode;
 
     // Short-circuit on empty geometry: nothing for the atlas prep to do and the per-texel pass
     // would allocate zero-sized buffers.
@@ -308,7 +280,6 @@ pub fn bake_lightmap(
             &charts[face_idx],
             placement,
             atlas_w,
-            mode,
             &mut irradiance,
             &mut direction,
             &mut coverage,
@@ -333,7 +304,12 @@ pub fn bake_lightmap(
             texel_density,
             irradiance: irr_bytes,
             direction: dir_bytes,
-            mode: mode.to_section_mode(),
+            // Lightmaps always bake shadowed: the `sdf` lights' direct term is
+            // resolved at runtime, so a `static_light_map` light's shadow can
+            // only come from this bake. `LightmapMode` is permanently
+            // `Shadowed` on the bake-emit side (the `Unshadowed` variant
+            // survives in `level-format`/runtime for legacy-PRL decode only).
+            mode: LightmapMode::Shadowed,
         },
         charts,
         placements,
@@ -691,7 +667,6 @@ fn bake_face_chart(
     chart: &Chart,
     placement: &ChartPlacement,
     atlas_w: u32,
-    mode: BakeMode,
     irradiance: &mut [f32],
     direction: &mut [Vec3],
     coverage: &mut [bool],
@@ -720,13 +695,11 @@ fn bake_face_chart(
                 if contribution.length_squared() <= 1.0e-12 {
                     continue;
                 }
-                // Unshadowed mode skips the per-texel visibility test — the
-                // atlas carries full static-light irradiance + bounce, and
-                // runtime SDF supplies visibility separately to avoid double-
-                // shadowing.
-                if mode == BakeMode::Shadowed
-                    && !shadow_visible(bvh, primitives, geometry, world_p, surface_normal, light)
-                {
+                // Lightmaps always bake shadowed: occluded texels go dark so a
+                // `static_light_map` light's hard static shadow lives in the
+                // atlas. `sdf` lights are already filtered out of `static_lights`
+                // (their direct shadow resolves at runtime), so no double-shadow.
+                if !shadow_visible(bvh, primitives, geometry, world_p, surface_normal, light) {
                     continue;
                 }
                 irr += contribution;
@@ -1147,7 +1120,6 @@ mod tests {
             &mut inputs,
             &LightmapConfig {
                 lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
-                mode: BakeMode::Shadowed,
             },
         )
         .unwrap()
@@ -1172,7 +1144,6 @@ mod tests {
             &mut inputs,
             &LightmapConfig {
                 lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
-                mode: BakeMode::Shadowed,
             },
         )
         .unwrap()
@@ -1197,7 +1168,6 @@ mod tests {
             &mut inputs,
             &LightmapConfig {
                 lightmap_density: 0.25,
-                mode: BakeMode::Shadowed,
             },
         )
         .unwrap()
@@ -1253,7 +1223,6 @@ mod tests {
             &mut inputs,
             &LightmapConfig {
                 lightmap_density: 0.25,
-                mode: BakeMode::Shadowed,
             },
         )
         .unwrap()
@@ -1290,7 +1259,6 @@ mod tests {
             &mut inputs,
             &LightmapConfig {
                 lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
-                mode: BakeMode::Shadowed,
             },
         )
         .unwrap()
@@ -1320,7 +1288,6 @@ mod tests {
             &mut inputs,
             &LightmapConfig {
                 lightmap_density: 0.25,
-                mode: BakeMode::Shadowed,
             },
         )
         .unwrap()
@@ -1345,7 +1312,6 @@ mod tests {
             &mut inputs_d,
             &LightmapConfig {
                 lightmap_density: 0.25,
-                mode: BakeMode::Shadowed,
             },
         )
         .unwrap()
@@ -1374,7 +1340,6 @@ mod tests {
             &mut inputs_a,
             &LightmapConfig {
                 lightmap_density: 0.25,
-                mode: BakeMode::Shadowed,
             },
         )
         .unwrap()
@@ -1399,7 +1364,6 @@ mod tests {
             &mut inputs_b,
             &LightmapConfig {
                 lightmap_density: 0.25,
-                mode: BakeMode::Shadowed,
             },
         )
         .unwrap()
@@ -1459,7 +1423,6 @@ mod tests {
                 &mut inputs,
                 &LightmapConfig {
                     lightmap_density: 0.25,
-                    mode: BakeMode::Shadowed,
                 },
             )
             .unwrap();
@@ -1493,7 +1456,6 @@ mod tests {
             &mut inputs,
             &LightmapConfig {
                 lightmap_density: 0.25,
-                mode: BakeMode::Shadowed,
             },
         )
         .unwrap();
@@ -1649,7 +1611,6 @@ mod tests {
             &mut inputs,
             &LightmapConfig {
                 lightmap_density: 0.25,
-                mode: BakeMode::Shadowed,
             },
         )
         .unwrap()
@@ -1667,214 +1628,6 @@ mod tests {
             zero_count > 0,
             "expected at least one occluded (zero-irradiance) texel",
         );
-    }
-
-    /// Acceptance: the unshadowed bake omits the visibility term. A surface
-    /// fully occluded from a static light leaves the lightmap texel dark under
-    /// the shadowed bake (covered by `occluder_produces_dark_texel`) but lit
-    /// under the unshadowed bake — the runtime SDF supplies visibility instead.
-    /// Also asserts the section records which mode produced it.
-    #[test]
-    fn unshadowed_bake_lights_occluded_texels() {
-        // Same floor + ceiling-blocker setup as `occluder_produces_dark_texel`.
-        let floor = vec![
-            Vertex::new(
-                [0.0, 0.0, 0.0],
-                [0.0, 0.0],
-                [0.0, 1.0, 0.0],
-                [1.0, 0.0, 0.0],
-                true,
-                [0.0, 0.0],
-            ),
-            Vertex::new(
-                [2.0, 0.0, 0.0],
-                [1.0, 0.0],
-                [0.0, 1.0, 0.0],
-                [1.0, 0.0, 0.0],
-                true,
-                [0.0, 0.0],
-            ),
-            Vertex::new(
-                [2.0, 0.0, 2.0],
-                [1.0, 1.0],
-                [0.0, 1.0, 0.0],
-                [1.0, 0.0, 0.0],
-                true,
-                [0.0, 0.0],
-            ),
-            Vertex::new(
-                [0.0, 0.0, 2.0],
-                [0.0, 1.0],
-                [0.0, 1.0, 0.0],
-                [1.0, 0.0, 0.0],
-                true,
-                [0.0, 0.0],
-            ),
-        ];
-        let ceiling = vec![
-            Vertex::new(
-                [-2.0, 1.0, -2.0],
-                [0.0, 0.0],
-                [0.0, -1.0, 0.0],
-                [1.0, 0.0, 0.0],
-                true,
-                [0.0, 0.0],
-            ),
-            Vertex::new(
-                [4.0, 1.0, -2.0],
-                [1.0, 0.0],
-                [0.0, -1.0, 0.0],
-                [1.0, 0.0, 0.0],
-                true,
-                [0.0, 0.0],
-            ),
-            Vertex::new(
-                [4.0, 1.0, 4.0],
-                [1.0, 1.0],
-                [0.0, -1.0, 0.0],
-                [1.0, 0.0, 0.0],
-                true,
-                [0.0, 0.0],
-            ),
-            Vertex::new(
-                [-2.0, 1.0, 4.0],
-                [0.0, 1.0],
-                [0.0, -1.0, 0.0],
-                [1.0, 0.0, 0.0],
-                true,
-                [0.0, 0.0],
-            ),
-        ];
-        let mut vertices = floor;
-        vertices.extend(ceiling);
-        let indices = vec![0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7];
-        let faces = vec![
-            FaceMeta {
-                leaf_index: 0,
-                texture_index: 0,
-            },
-            FaceMeta {
-                leaf_index: 0,
-                texture_index: 0,
-            },
-        ];
-        let face_index_ranges = vec![
-            FaceIndexRange {
-                index_offset: 0,
-                index_count: 6,
-            },
-            FaceIndexRange {
-                index_offset: 6,
-                index_count: 6,
-            },
-        ];
-
-        // Build a fresh geometry per bake — the bake mutates lightmap UVs.
-        let make_geo = || GeometryResult {
-            geometry: GeometrySection {
-                vertices: vertices.clone(),
-                indices: indices.clone(),
-                faces: faces.clone(),
-            },
-            texture_names: TextureNamesSection { names: Vec::new() },
-            face_index_ranges: face_index_ranges.clone(),
-        };
-
-        let light = MapLight {
-            origin: DVec3::new(1.0, 2.0, 1.0),
-            light_type: LightType::Point,
-            intensity: 1.0,
-            color: [1.0, 1.0, 1.0],
-            falloff_model: FalloffModel::Linear,
-            falloff_range: 10.0,
-            cone_angle_inner: None,
-            cone_angle_outer: None,
-            cone_direction: None,
-            animation: None,
-            cast_shadows: true,
-            bake_only: false,
-            is_dynamic: false,
-            casts_entity_shadows: false,
-            is_animated: false,
-            tags: vec![],
-            shadow_type: crate::map_data::ShadowType::StaticLightMap,
-        };
-        let lights = vec![light];
-        let static_lights = StaticBakedLights::from_lights(&lights);
-
-        // Shadowed bake — produces at least one dark texel under the blocker.
-        let mut geo_shadowed = make_geo();
-        let (bvh_s, prims_s, _) = build_bvh(&geo_shadowed).unwrap();
-        let shadowed = bake_lightmap(
-            &mut LightmapBakeCtx {
-                bvh: &bvh_s,
-                primitives: &prims_s,
-                geometry: &mut geo_shadowed,
-                lights: &static_lights,
-            },
-            &LightmapConfig {
-                lightmap_density: 0.25,
-                mode: BakeMode::Shadowed,
-            },
-        )
-        .unwrap()
-        .section;
-        assert_eq!(shadowed.mode, LightmapMode::Shadowed);
-
-        // Unshadowed bake — every texel sees the light, including ones the
-        // shadowed bake leaves dark.
-        let mut geo_unshadowed = make_geo();
-        let (bvh_u, prims_u, _) = build_bvh(&geo_unshadowed).unwrap();
-        let unshadowed = bake_lightmap(
-            &mut LightmapBakeCtx {
-                bvh: &bvh_u,
-                primitives: &prims_u,
-                geometry: &mut geo_unshadowed,
-                lights: &static_lights,
-            },
-            &LightmapConfig {
-                lightmap_density: 0.25,
-                mode: BakeMode::Unshadowed,
-            },
-        )
-        .unwrap()
-        .section;
-        assert_eq!(unshadowed.mode, LightmapMode::Unshadowed);
-
-        // Atlas dimensions are deterministic from the geometry+density so the
-        // texel-index mapping is identical between the two bakes — compare
-        // texel-by-texel and assert that at least one shadowed-dark texel is
-        // lit under the unshadowed bake.
-        assert_eq!(shadowed.width, unshadowed.width);
-        assert_eq!(shadowed.height, unshadowed.height);
-        let texel_count = (shadowed.width * shadowed.height) as usize;
-        let mut occluded_now_lit = 0usize;
-        for t in 0..texel_count {
-            let s_r =
-                u16::from_le_bytes([shadowed.irradiance[t * 8], shadowed.irradiance[t * 8 + 1]]);
-            let u_r = u16::from_le_bytes([
-                unshadowed.irradiance[t * 8],
-                unshadowed.irradiance[t * 8 + 1],
-            ]);
-            if s_r == 0 && u_r != 0 {
-                occluded_now_lit += 1;
-            }
-        }
-        assert!(
-            occluded_now_lit > 0,
-            "expected at least one shadowed-dark texel to become lit under the unshadowed bake, \
-             got {occluded_now_lit}",
-        );
-
-        // Mode round-trips through the on-disk section bytes.
-        let unshadowed_round =
-            postretro_level_format::lightmap::LightmapSection::from_bytes(&unshadowed.to_bytes())
-                .unwrap();
-        assert_eq!(unshadowed_round.mode, LightmapMode::Unshadowed);
-        let shadowed_round =
-            postretro_level_format::lightmap::LightmapSection::from_bytes(&shadowed.to_bytes())
-                .unwrap();
-        assert_eq!(shadowed_round.mode, LightmapMode::Shadowed);
     }
 
     #[test]
@@ -1942,7 +1695,6 @@ mod tests {
             &mut inputs,
             &LightmapConfig {
                 lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
-                mode: BakeMode::Shadowed,
             },
         );
         match result {
@@ -2035,7 +1787,6 @@ mod tests {
             &mut inputs,
             &LightmapConfig {
                 lightmap_density: 0.25,
-                mode: BakeMode::Shadowed,
             },
         )
         .unwrap();

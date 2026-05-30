@@ -115,6 +115,21 @@ fn resolve_prm_cache_root_via_cargo(map_path: &Path) -> PathBuf {
         .join("prm-cache")
 }
 
+/// Whether the SDF occluder atlas must bake — true iff any light carries the
+/// `sdf` shadow type.
+///
+/// Content-driven, exactly like the lightmap bakes because lights exist: the
+/// atlas follows from the map's content, not a CLI flag. So an `sdf`-typed
+/// light can never ship without the atlas it needs (the no-atlas-silent-no-
+/// shadow footgun is removed by construction). A map with zero `sdf` lights
+/// emits no atlas section, which the runtime handles gracefully — `sdf_factor`
+/// defaults to a no-op multiply.
+fn map_needs_sdf_atlas(lights: &[map_data::MapLight]) -> bool {
+    lights
+        .iter()
+        .any(|l| l.shadow_type == map_data::ShadowType::Sdf)
+}
+
 fn main() -> anyhow::Result<()> {
     let started = Instant::now();
     let args = parse_args()?;
@@ -246,14 +261,8 @@ fn main() -> anyhow::Result<()> {
     progress.start_stage("Lightmap bake...");
     let stage_start = Instant::now();
     let static_light_count = map_data.lights.iter().filter(|l| !l.is_dynamic).count();
-    let bake_mode = if args.unshadowed_lightmap {
-        lightmap_bake::BakeMode::Unshadowed
-    } else {
-        lightmap_bake::BakeMode::Shadowed
-    };
     let lightmap_config = lightmap_bake::LightmapConfig {
         lightmap_density: args.lightmap_density,
-        mode: bake_mode,
     };
     let final_lightmap_density;
     let lightmap_bake_output = {
@@ -322,7 +331,6 @@ fn main() -> anyhow::Result<()> {
                     &mut lm_ctx,
                     &lightmap_bake::LightmapConfig {
                         lightmap_density: density,
-                        mode: bake_mode,
                     },
                 ) {
                     Ok(result) => {
@@ -540,7 +548,7 @@ fn main() -> anyhow::Result<()> {
         Some(animated_light_chunks_section)
     };
 
-    let sdf_atlas_section = if args.bake_sdf {
+    let sdf_atlas_section = if map_needs_sdf_atlas(&map_data.lights) {
         progress.start_stage("SDF atlas bake...");
         let stage_start = Instant::now();
         let sdf_config = sdf_bake::SdfConfig::default();
@@ -658,14 +666,6 @@ struct Args {
     probe_spacing: f32,
     /// Starting density in meters; baker retries at coarser densities on atlas overflow.
     lightmap_density: f32,
-    /// When true, skip the per-texel visibility test during the lightmap bake so the
-    /// atlas carries full static-light irradiance + bounce with no baked shadows.
-    /// Default (false) reproduces `main`'s shadowed bake byte-for-byte.
-    unshadowed_lightmap: bool,
-    /// When true, run the SDF static-occluder atlas bake and emit
-    /// `SectionId::SdfAtlas`. Default false — leaving the section absent
-    /// preserves byte-identity with main for the same map.
-    bake_sdf: bool,
     /// Override cache directory. None = use the workspace-root default.
     cache_dir: Option<PathBuf>,
     /// When true, bypass cache reads and writes entirely.
@@ -686,8 +686,6 @@ where
     let mut format = DEFAULT_MAP_FORMAT;
     let mut probe_spacing = sh_bake::DEFAULT_PROBE_SPACING;
     let mut lightmap_density = lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS;
-    let mut unshadowed_lightmap = false;
-    let mut bake_sdf = false;
     let mut cache_dir: Option<PathBuf> = None;
     let mut no_cache = false;
 
@@ -743,12 +741,6 @@ where
             "--no-cache" => {
                 no_cache = true;
             }
-            "--unshadowed-lightmap" => {
-                unshadowed_lightmap = true;
-            }
-            "--bake-sdf" => {
-                bake_sdf = true;
-            }
             _ if input.is_none() => {
                 input = Some(PathBuf::from(arg));
             }
@@ -762,7 +754,7 @@ where
         anyhow::anyhow!(
             "usage: prl-build <input.map> [-o <output.prl>] [-v|--verbose] \
              [--format <FORMAT>] [--probe-spacing <METERS>] [--lightmap-density <METERS>] \
-             [--unshadowed-lightmap] [--bake-sdf] [--cache-dir <PATH>] [--no-cache]"
+             [--cache-dir <PATH>] [--no-cache]"
         )
     })?;
 
@@ -775,8 +767,6 @@ where
         format,
         probe_spacing,
         lightmap_density,
-        unshadowed_lightmap,
-        bake_sdf,
         cache_dir,
         no_cache,
     })
@@ -1286,6 +1276,31 @@ mod tests {
         }
     }
 
+    /// Content-driven SDF gating: a map with any `sdf`-typed light bakes the
+    /// occluder atlas; a map with none does not. Pins the predicate that
+    /// replaced the retired `--bake-sdf` flag.
+    #[test]
+    fn sdf_atlas_gated_on_sdf_typed_light_presence() {
+        // No lights → no atlas.
+        assert!(!map_needs_sdf_atlas(&[]));
+
+        // Only `static_light_map` lights → no atlas.
+        let static_only = vec![baseline_point_light(), baseline_point_light()];
+        assert!(
+            !map_needs_sdf_atlas(&static_only),
+            "a map with no sdf-typed light must not bake the SDF atlas",
+        );
+
+        // At least one `sdf` light → atlas bakes.
+        let mut sdf_light = baseline_point_light();
+        sdf_light.shadow_type = crate::map_data::ShadowType::Sdf;
+        let mixed = vec![baseline_point_light(), sdf_light];
+        assert!(
+            map_needs_sdf_atlas(&mixed),
+            "a map with any sdf-typed light must bake the SDF atlas",
+        );
+    }
+
     /// Replicates the lightmap key derivation in `main`: postcard
     /// `LightmapInputs` and `LightmapConfig`, concatenate, blake3.
     fn lightmap_input_hash(inputs: &LightmapInputs, config: &LightmapConfig) -> [u8; 32] {
@@ -1315,7 +1330,6 @@ mod tests {
         };
         let config = LightmapConfig {
             lightmap_density: 0.25,
-            mode: lightmap_bake::BakeMode::Shadowed,
         };
         let hash = lightmap_input_hash(&inputs, &config);
         let key = CacheKey::new("lightmap", lightmap_bake::STAGE_VERSION, &hash);
@@ -1439,7 +1453,6 @@ mod tests {
         };
         let config = LightmapConfig {
             lightmap_density: 0.25,
-            mode: lightmap_bake::BakeMode::Shadowed,
         };
         let key_a = CacheKey::new(
             "lightmap",
@@ -1494,7 +1507,6 @@ mod tests {
         };
         let config = LightmapConfig {
             lightmap_density: 0.25,
-            mode: lightmap_bake::BakeMode::Shadowed,
         };
 
         let key_first = CacheKey::new(
@@ -1564,7 +1576,6 @@ mod tests {
         };
         let config = LightmapConfig {
             lightmap_density: 0.25,
-            mode: lightmap_bake::BakeMode::Shadowed,
         };
         let hash = lightmap_input_hash(&inputs, &config);
         let key = CacheKey::new("lightmap", lightmap_bake::STAGE_VERSION, &hash);

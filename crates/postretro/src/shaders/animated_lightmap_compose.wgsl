@@ -98,12 +98,10 @@ struct DebugConfig {
 @group(1) @binding(5) var<storage, read> anim_samples: array<f32>;
 @group(1) @binding(6) var animated_lm_atlas: texture_storage_2d<rgba16float, write>;
 @group(1) @binding(7) var<uniform> debug_config: DebugConfig;
-// NOTE: the per-frame dominant-direction atlas (former binding 8) was removed
-// with the animated dominant-direction SDF trace (sdf-per-light-shadows Task 1).
-// The per-light SDF trace keys on light position, not a per-texel mean
-// direction, so the compose pass no longer fuses or writes a direction. The
-// baked `direction_oct_packed` field of `TexelLight` is retained for wire-format
-// stability but is no longer read.
+// Binding 8 (the per-texel dominant-direction atlas) is intentionally absent —
+// the per-light SDF trace keys on light position, not a per-texel mean direction.
+// `TexelLight.direction_oct_packed` is retained for wire-format stability but is
+// not read.
 
 @compute @workgroup_size(8, 8, 1)
 fn compose_main(

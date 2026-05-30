@@ -2200,7 +2200,11 @@ mod tests {
         };
 
         let brick_size = 4u32;
-        let voxels_per_brick = (brick_size * brick_size * brick_size) as usize;
+        // v2 layout: each surface brick stores an apron'd `(brick_size + 2)^3`
+        // block. The fixture must satisfy the loader's per-brick invariant
+        // (atlas_len == (brick_size + 2)^3 * surface_brick_count).
+        let stored_edge = brick_size + 2;
+        let voxels_per_brick = (stored_edge * stored_edge * stored_edge) as usize;
         let section = SdfAtlasSection {
             world_min: [-1.0, -1.0, -1.0],
             world_max: [1.0, 1.0, 1.0],

@@ -198,8 +198,10 @@ current sweep flagged:
   direction *binding* stays live (bumped-Lambert); only the extra view handle is dead.
 - **Animated dominant-direction trace** — removed by this slice. Drops the
   `animated_lm_direction` atlas, the animated SDF shadow flag, and the lightmap-UV gbuffer
-  MRT (the per-light SDF trace keys on light position, not lightmap UV). There is now
-  **no** consumer of an unshadowed lightmap: `LightmapMode` is permanently `Shadowed`.
+  MRT (the per-light SDF trace keys on light position, not lightmap UV). The bake no longer
+  **produces** an unshadowed lightmap — `BakeMode::Unshadowed` is deleted and the bake
+  always emits `Shadowed`. The wire enum `LightmapMode::Unshadowed` is retained for
+  legacy-`.prl` decode only.
 - **Animated weight-map `STAGE_VERSION`** const advertising a cache key that does not exist.
 - **Stale `!is_dynamic`/`shadow_tech` filter comments** on the lightmap and weight-map bakes.
 - **`_animated` flag + the script→animated-baked compose bridge** (the `f6bf69e` "bake the

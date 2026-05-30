@@ -9,7 +9,8 @@
 // allocated so the bind group stays valid. The shadow pass guards on
 // `present` and skips its dispatch entirely in that case.
 //
-// See: context/plans/in-progress/sdf-static-occluder-shadows/index.md (Task 3)
+// See: context/plans/done/sdf-static-occluder-shadows/index.md (foundation)
+//      context/plans/in-progress/sdf-filterable-atlas/index.md (current change)
 
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
 use wgpu::util::DeviceExt;
@@ -47,9 +48,10 @@ pub const SDF_I16_QUANT_STEPS_PER_VOXEL: f32 = 256.0;
 /// Bind group layout (group index is the shadow pass's choice; this module
 /// owns the layout — it is not added to forward bind groups):
 ///   binding 0: SdfAtlasMeta uniform
-///   binding 1: 3D `R16Sint` atlas distances (sampled, COMPUTE visibility)
+///   binding 1: 3D `R16Float` atlas distances (filterable, COMPUTE visibility)
 ///   binding 2: 3D `R32Float` coarse per-brick distances (sampled, COMPUTE visibility)
 ///   binding 3: storage buffer of `u32` top-level slots (read-only, COMPUTE visibility)
+///   binding 4: linear `Filtering` sampler for the fine atlas (COMPUTE visibility)
 pub struct SdfAtlasResources {
     /// Bind group consumed by the (future) Task 4 shadow pass.
     #[allow(dead_code)]
@@ -87,6 +89,8 @@ pub struct SdfAtlasResources {
     top_level_buffer: wgpu::Buffer,
     #[allow(dead_code)]
     meta_buffer: wgpu::Buffer,
+    #[allow(dead_code)]
+    sampler: wgpu::Sampler,
 }
 
 impl SdfAtlasResources {
@@ -130,27 +134,30 @@ impl SdfAtlasResources {
             top_level_payload,
         ) = if let Some(sec) = usable {
             let brick_size = sec.brick_size_voxels.max(1);
-            // 3D atlas texture: `brick_size_voxels` along each brick axis
-            // times the `atlas_bricks_per_axis` packing dimensions. The
-            // bake's `surface_brick_count` and `atlas_bricks_per_axis`
-            // together describe the 3D packing; the texture itself sizes to
-            // `atlas_bricks_per_axis * brick_size` along each axis.
-            let atlas_w = sec.atlas_bricks_per_axis[0].max(1) * brick_size;
-            let atlas_h = sec.atlas_bricks_per_axis[1].max(1) * brick_size;
-            let atlas_d = sec.atlas_bricks_per_axis[2].max(1) * brick_size;
-            let expected_atlas_voxels = (atlas_w as usize)
-                .saturating_mul(atlas_h as usize)
-                .saturating_mul(atlas_d as usize);
+            // Each surface brick is stored as a compact `(brick_size + 2)^3`
+            // sub-cube (interior + 1-voxel apron per side, for hardware
+            // trilinear). The 3D atlas texture sizes to
+            // `atlas_bricks_per_axis * (brick_size + 2)` along each axis, and
+            // each brick is scattered to a contiguous sub-cube at its tiled
+            // 3D position so a single `textureSampleLevel` trilinear-filters it.
+            let stored_edge = brick_size + 2;
+            let atlas_w = sec.atlas_bricks_per_axis[0].max(1) * stored_edge;
+            let atlas_h = sec.atlas_bricks_per_axis[1].max(1) * stored_edge;
+            let atlas_d = sec.atlas_bricks_per_axis[2].max(1) * stored_edge;
 
-            // If the bake's packed atlas is shorter than the texture extent
-            // (the bake may pack only `surface_brick_count` bricks and leave
-            // the trailing slots in the 3D layout empty), pad with zeros.
-            // If it is longer, truncate — the texture can't hold more.
-            let mut atlas_bytes = Vec::with_capacity(expected_atlas_voxels * 2);
-            for v in sec.atlas.iter().take(expected_atlas_voxels) {
-                atlas_bytes.extend_from_slice(&v.to_le_bytes());
+            // Scatter the compact back-to-back surface bricks into a dense
+            // f16 atlas at their tiled 3D positions. On-disk data stays i16;
+            // the conversion to f16 (`R16Float`) happens here at upload.
+            let atlas_f16 = scatter_bricks_to_atlas(
+                &sec.atlas,
+                sec.surface_brick_count,
+                brick_size,
+                sec.atlas_bricks_per_axis,
+            );
+            let mut atlas_bytes = Vec::with_capacity(atlas_f16.len() * 2);
+            for bits in &atlas_f16 {
+                atlas_bytes.extend_from_slice(&bits.to_le_bytes());
             }
-            atlas_bytes.resize(expected_atlas_voxels * 2, 0);
 
             // Coarse texture matches the brick-grid dims (one f32 per brick
             // cell). `coarse_distances.len()` should equal prod(grid_dims);
@@ -221,16 +228,18 @@ impl SdfAtlasResources {
             )
         };
 
-        // 3D atlas distances: R16Sint matches the bake's `i16` quantization
-        // exactly — no precision loss across the GPU boundary, and the
-        // shadow pass scales by `voxel_size_m / 256` to recover meters.
+        // 3D atlas distances: R16Float is filterable by default on every
+        // backend (no feature flag), so one hardware `textureSampleLevel`
+        // trilinear-filters the field. It carries the same quant-step
+        // magnitudes the bake produced (decoded by `voxel_size_m / 256`);
+        // f16 has ample precision for the small local distances stored here.
         let atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("SDF Atlas Distances"),
             size: atlas_size,
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D3,
-            format: wgpu::TextureFormat::R16Sint,
+            format: wgpu::TextureFormat::R16Float,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -311,6 +320,21 @@ impl SdfAtlasResources {
             ..Default::default()
         });
 
+        // Linear sampler for the fine atlas — drives the hardware trilinear
+        // `textureSampleLevel`. Clamp-to-edge so the half-texel margins at the
+        // atlas extent don't wrap; the shader already keeps samples inside each
+        // brick's apron'd sub-cube.
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("SDF Atlas Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("SDF Atlas Bind Group"),
             layout: &bind_group_layout,
@@ -330,6 +354,10 @@ impl SdfAtlasResources {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: top_level_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
                 },
             ],
         });
@@ -363,10 +391,11 @@ impl SdfAtlasResources {
             coarse_texture,
             top_level_buffer,
             meta_buffer,
+            sampler,
         }
     }
 
-    fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 4] {
+    fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 5] {
         // COMPUTE-only visibility: only the shadow pass (Task 4) reads these.
         // The forward pass gets only the shadow-factor texture (Task 5), not
         // the atlas itself.
@@ -382,21 +411,24 @@ impl SdfAtlasResources {
                 },
                 count: None,
             },
-            // Quantized i16 distances. `filterable: false` is honest — no
-            // sampler is bound; the shadow pass reads via `textureLoad`
-            // (signed integer formats are not filterable in wgpu anyway).
+            // Fine f16 distances. `filterable: true` — the shadow pass samples
+            // via `textureSampleLevel` with the linear sampler at binding 4 for
+            // hardware trilinear (R16Float is filterable on all backends).
             wgpu::BindGroupLayoutEntry {
                 binding: 1,
                 visibility: vis,
                 ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Sint,
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
                     view_dimension: wgpu::TextureViewDimension::D3,
                     multisampled: false,
                 },
                 count: None,
             },
-            // Coarse f32 distances. Unfilterable here too — the shadow pass
-            // uses `textureLoad` for both the atlas and the coarse fallback.
+            // Coarse f32 distances. Unfilterable — the shadow pass uses
+            // `textureLoad` for the coarse fallback (no filtering needed at
+            // brick granularity). The fine atlas at binding 1 is filterable and
+            // is sampled via `textureSampleLevel` with the linear sampler at
+            // binding 4.
             wgpu::BindGroupLayoutEntry {
                 binding: 2,
                 visibility: vis,
@@ -415,6 +447,13 @@ impl SdfAtlasResources {
                     has_dynamic_offset: false,
                     min_binding_size: None,
                 },
+                count: None,
+            },
+            // Linear filtering sampler for the fine atlas trilinear sample.
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: vis,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
         ]
@@ -456,9 +495,116 @@ pub(crate) fn build_meta_bytes(
     bytes
 }
 
+/// Scatter the bake's compact, back-to-back surface bricks into a dense f16
+/// atlas buffer at their tiled 3D positions, converting i16 quant steps to f16
+/// bits (`R16Float` write) along the way. `R16Float` is used rather than
+/// keeping the on-disk `i16` as `R16Sint` because `R16Float` is filterable on
+/// all wgpu backends without a feature flag, enabling the trilinear
+/// `textureSampleLevel` in the shadow pass; `R16Sint` is not filterable.
+///
+/// Each surface brick is a contiguous `(brick_size + 2)^3` i16 block (interior
+/// plus a 1-voxel apron on every side), z-major within the stored brick
+/// (`vox_idx = sz·edge² + sy·edge + sx`, `edge = brick_size + 2`). Surface
+/// brick `slot` maps to the 3D atlas-brick coord
+/// `(slot % apx, (slot / apx) % apy, slot / (apx·apy))`; its texels start at
+/// that coord `· (brick_size + 2)`. The output buffer is dense row-major over
+/// the `(atlas_bricks_per_axis · (brick_size + 2))` extent — exactly what a
+/// single `write_texture` expects. Kept device-free so the 3D scatter is
+/// unit-testable per the data-logic / GPU-interaction split.
+pub(crate) fn scatter_bricks_to_atlas(
+    atlas_i16: &[i16],
+    surface_brick_count: u32,
+    brick_size: u32,
+    atlas_bricks_per_axis: [u32; 3],
+) -> Vec<u16> {
+    let edge = (brick_size + 2) as usize;
+    let voxels_per_brick = edge * edge * edge;
+    let apx = atlas_bricks_per_axis[0].max(1) as usize;
+    let apy = atlas_bricks_per_axis[1].max(1) as usize;
+    let apz = atlas_bricks_per_axis[2].max(1) as usize;
+
+    let atlas_w = apx * edge;
+    let atlas_h = apy * edge;
+    let atlas_d = apz * edge;
+    let mut out = vec![0u16; atlas_w * atlas_h * atlas_d];
+
+    let slots = (surface_brick_count as usize).min(atlas_i16.len() / voxels_per_brick.max(1));
+    for slot in 0..slots {
+        // Slot → 3D atlas-brick coord (z-major slot order — matches the shader).
+        let bx = slot % apx;
+        let by = (slot / apx) % apy;
+        let bz = slot / (apx * apy);
+        if bz >= apz {
+            break; // packing overflow — shouldn't happen, but stay in bounds.
+        }
+        let base_x = bx * edge;
+        let base_y = by * edge;
+        let base_z = bz * edge;
+
+        let brick = &atlas_i16[slot * voxels_per_brick..(slot + 1) * voxels_per_brick];
+        // z-major within the stored brick: sz outermost, sx innermost.
+        for sz in 0..edge {
+            for sy in 0..edge {
+                for sx in 0..edge {
+                    let src = sz * edge * edge + sy * edge + sx;
+                    let dst =
+                        (base_z + sz) * atlas_w * atlas_h + (base_y + sy) * atlas_w + (base_x + sx);
+                    out[dst] = super::sh_volume::f32_to_f16_bits(brick[src] as f32);
+                }
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scatter_places_each_brick_as_contiguous_subcube() {
+        // 2 surface bricks, brick_size = 1 → stored edge = 3, 27 voxels/brick.
+        // Pack 2 bricks along x (apx = 2). Fill brick 0 with value v, brick 1
+        // with value v+offset, then assert each lands at its tiled sub-cube and
+        // the unwritten interior between/around is zero.
+        let brick_size = 1u32;
+        let edge = (brick_size + 2) as usize; // 3
+        let vpb = edge * edge * edge; // 27
+        let apx = 2usize;
+
+        // Brick 0: stored voxel s gets value s (1..=26, with s=0 → 0 distinct
+        // from the zero-initialized atlas). Brick 1: value s + 100.
+        let mut atlas_i16 = vec![0i16; 2 * vpb];
+        for s in 0..vpb {
+            atlas_i16[s] = s as i16; // brick 0
+            atlas_i16[vpb + s] = (s + 100) as i16; // brick 1
+        }
+
+        let out = scatter_bricks_to_atlas(&atlas_i16, 2, brick_size, [apx as u32, 1, 1]);
+        let atlas_w = apx * edge; // 6
+        let atlas_h = edge; // 3
+
+        // Spot-check a few voxels of each brick map to the expected dense offset.
+        for s in 0..vpb {
+            let sx = s % edge;
+            let sy = (s / edge) % edge;
+            let sz = s / (edge * edge);
+
+            // Brick 0 at atlas-brick (0,0,0): base offset 0.
+            let dst0 = sz * atlas_w * atlas_h + sy * atlas_w + sx;
+            assert_eq!(
+                out[dst0],
+                super::super::sh_volume::f32_to_f16_bits(s as f32)
+            );
+
+            // Brick 1 at atlas-brick (1,0,0): base x = edge.
+            let dst1 = sz * atlas_w * atlas_h + sy * atlas_w + (edge + sx);
+            assert_eq!(
+                out[dst1],
+                super::super::sh_volume::f32_to_f16_bits((s + 100) as f32)
+            );
+        }
+    }
 
     #[test]
     fn meta_bytes_encode_world_bounds_and_present_flag() {

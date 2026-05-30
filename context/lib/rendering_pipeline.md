@@ -47,7 +47,44 @@ Loader parses PRL via the `postretro-level-format` crate. Uploads the global ver
 
 Three components: **static direct** (baked), **dynamic direct** (runtime), and **indirect** (baked). All evaluated per fragment in the world shader — no deferred stages.
 
-**Static direct.** prl-build UV-unwraps world geometry and ray-casts per-texel irradiance and a dominant incoming light direction from all static lights into a directional lightmap atlas. Runtime samples the atlas per fragment with nearest-neighbor filtering on both irradiance and direction textures — hard-edged pixelated shadows match the retro aesthetic, and nearest is arguably more correct on octahedral-encoded directions (linear interpolation doesn't commute with slerp). Bumped-Lambert correction preserves normal-map response to baked static lights. Hard shadows from static lights are captured in the bake.
+**Lighting architecture map.** The primary split is **bake participation**: baked-tier lights are fixed-position and bake into at least one layer; dynamic-tier lights bake into nothing and are evaluated entirely at runtime under a rationed budget. Within the baked tier, **shadow type** decides only how a light's *direct* shadow resolves. Every surface reaches indirect through exactly one path (SH, indirect-only); every light reaches direct through exactly one technique, and the techniques add in the forward — they never re-weight each other. One light is shadowed by exactly one source.
+
+```
+AUTHOR (TrenchBroom .map) — split on bake participation
+    baked tier   — fixed-position lights; shadow type ∈ { static_light_map, sdf }
+    dynamic tier — unbaked, runtime-only, rationed (its own light entities)
+        │
+        ▼
+COMPILER (prl-build) — route by tier, then (baked tier) by shadow type
+        │
+        ├─ INDIRECT  ─ every baked-tier light, both shadow types ─► SH bounce
+        │                       (base grid + sparse per-light delta; indirect-only)
+        │
+        ├─ DIRECT · static_light_map shadow type ─► baked into the lightmap (direct + shadow)
+        │
+        ├─ DIRECT · sdf shadow type ─────────► no baked direct; resolves at runtime
+        │                       (perf-gated — reverts to lightmap if the gate fails)
+        │
+        └─ OCCLUDER FIELD (static geometry, no lights) ─► signed-distance field,
+                                baked when sdf lights are present
+        │
+        ▼
+RUNTIME — dynamic tier bakes nothing: evaluated live, shadowed by a rationed
+          shadow-map pool (budget-capped; lowest-ranked lights render unshadowed).
+          Only the dynamic tier can shadow moving entities.
+        │
+        ▼
+FORWARD COMPOSITION (per fragment) — direct terms disjoint by technique; they add
+        total = ambient floor
+              + indirect          SH base + delta      every surface, one path
+              + baked direct       static_light_map shadow type, shadow baked in
+              + Σ sdf direct        × each light's runtime SDF visibility
+              + Σ dynamic direct    × shadow map (rationed pool)
+```
+
+The seams that keep direct and indirect disjoint — tier routing, the position-axis namespace filter, indirect reaching every baked light regardless of shadow type — are pinned by compiler tests. Full producer/consumer inventory and the SDF runtime path (perf-gated, promotes to its own context doc once the gate holds): `context/plans/in-progress/sdf-per-light-shadows/architecture.md`.
+
+**Static direct.** prl-build UV-unwraps world geometry and ray-casts per-texel irradiance and a dominant incoming light direction from static_light_map-typed lights into a directional lightmap atlas. Runtime samples the atlas per fragment with nearest-neighbor filtering on both irradiance and direction textures — hard-edged pixelated shadows match the retro aesthetic, and nearest is arguably more correct on octahedral-encoded directions (linear interpolation doesn't commute with slerp). Bumped-Lambert correction preserves normal-map response to baked static lights. Hard shadows from static lights are captured in the bake.
 
 **Dynamic direct.** Dynamic lights run a per-fragment loop with an influence-volume early-out. Dynamic spot lights support shadow maps (depth texture array, comparison sampler); omnidirectional and sun lights cast no dynamic shadows. Light sources: FGD entities (`light`, `light_spot`, `light_sun`) and gameplay effects. Clustered forward+ binning deferred until profiling shows the flat loop bottlenecks.
 
@@ -189,6 +226,8 @@ All wgpu calls live in the renderer module. Map loader, game logic, audio, and i
 
 Groups 0, 2, 3, and 5 are shared across the forward, billboard, and fog pipelines — the same bind-group objects are reused, not re-uploaded. When a new pipeline stage consumes a shared BGL, each accessed binding's `visibility` must include that stage (e.g. `FRAGMENT → FRAGMENT | COMPUTE`) — wgpu validates this at pipeline creation, not compile time. One budget slot remains; a pass needing a ninth group must consolidate, not raise the limit.
 
+**Target hardware.** The renderer targets mid-2020 mid-range discrete GPUs — the envelope the lean wgpu pipeline is built toward. **Perf floor** (must hold an acceptable framerate): NVIDIA GTX 16-series (Turing, e.g. GTX 1660 Super). No RT cores at this tier, so SDF shadows sphere-trace in compute (§4) and hardware ray tracing stays a non-goal (§12). **Compatibility floor** (must run, not perf-tuned): AMD Radeon Pro 5500M-class (RDNA1, the 2020 16-inch MacBook Pro discrete GPU) on the Metal backend; a live-tunable quality panel (dev-tools) explores settings on this class. Perf-gated renderer decisions — SDF shadow budgets and the like (§4) — are measured against this envelope; measured per-pass numbers live with the `POSTRETRO_GPU_TIMING` diagnostics (§11), not here.
+
 ---
 
 ## 10. Camera
@@ -232,7 +271,7 @@ Set `POSTRETRO_GPU_TIMING=1` to enable per-pass GPU timing. Requires adapter sup
 
 - **Deferred rendering** — forward lighting with influence-volume early-out keeps per-fragment iteration proportional to nearby lights. Indoor portal-isolated geometry bounds the set further. Deferred adds complexity without benefit.
 - **PBR materials** — albedo + normal map is the full material vocabulary. Metallic/roughness is out of scope.
-- **Hardware ray tracing** — not in baseline wgpu. Shadow maps cover dynamic shadowing; SH volume covers indirect.
+- **Hardware ray tracing** — not in baseline wgpu, and absent at the §9 perf floor (Turing GTX 16-series has no RT cores). Shadow maps cover dynamic shadowing; SH volume covers indirect; SDF shadows sphere-trace in compute.
 - **Mesh shaders** — not baseline in wgpu. GPU-driven culling uses compute + `draw_indexed_indirect`.
 - **Runtime level compilation** — maps compiled offline by prl-build. Engine is a consumer only.
 - **Multiplayer / networking** — single-player engine. Out of project scope.

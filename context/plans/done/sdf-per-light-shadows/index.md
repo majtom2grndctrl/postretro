@@ -164,7 +164,8 @@ SDF-tagged lights.
   lightmap bakes because lights exist — so an `sdf`-typed light can never ship without
   the atlas it needs (the no-atlas-silent-no-shadow footgun is removed by construction).
   Lightmaps **always** bake shadowed: `BakeMode::Unshadowed` has no consumer in the
-  uniform model (`LightmapMode` is permanently `Shadowed`) and is deleted with its flag.
+  uniform model and is deleted with its flag. (The wire enum `LightmapMode::Unshadowed`
+  is retained for legacy-`.prl` decode; the bake never emits it.)
   SDF is a standard bake output alongside the lightmap and SH volume — runtime SDF Shadow
   Mode (default On) and the dev On/Off/Visualize toggle remain the only places SDF is
   switchable, and those are runtime, not compile-time.

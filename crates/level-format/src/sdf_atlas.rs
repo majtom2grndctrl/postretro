@@ -8,8 +8,9 @@
 //   `BRICK_SLOT_EMPTY` (`u32::MAX`) marks an entirely-empty brick (open space);
 //   `BRICK_SLOT_INTERIOR` (`u32::MAX - 1`) marks an entirely-solid interior
 //   brick. Any other value is an index into the packed `atlas` brick array
-//   (each surface brick contributes `brick_size_voxels^3` `i16` distance
-//   samples).
+//   (each surface brick contributes `(brick_size_voxels + 2)^3` `i16` distance
+//   samples — interior voxels plus a 1-voxel apron on every side for hardware
+//   trilinear filtering).
 // - `atlas` stores quantized distances at `voxel_size_m / 256` per unit, i.e.
 //   `i16` = `round(distance_m / (voxel_size_m / 256))`, clamped to the `i16`
 //   range. The runtime decodes with the inverse scale.
@@ -21,15 +22,21 @@
 // the PRL is also valid — the runtime treats "no atlas" as a degradation
 // path, not an error.
 //
-// See: context/plans/in-progress/sdf-static-occluder-shadows/index.md
-//      context/plans/in-progress/sdf-static-occluder-shadows/research.md
+// See: context/plans/done/sdf-static-occluder-shadows/index.md (foundation)
+//      context/plans/in-progress/sdf-filterable-atlas/index.md (current change)
 
 use crate::FormatError;
 
 /// Section-internal version written as the first u32 of every SdfAtlas section
 /// payload. Bumped on any on-disk layout change so the loader can reject stale
 /// `.prl` files with a clear error rather than silently misread them.
-pub const SDF_ATLAS_VERSION: u32 = 1;
+///
+/// v2: surface bricks gained a 1-voxel apron on every side, so the per-brick
+/// element count went from `brick_size_voxels^3` to `(brick_size_voxels + 2)^3`
+/// (the apron supplies the neighbor taps hardware trilinear needs at brick
+/// edges). No new header field — runtime/shader derive the stored brick edge as
+/// `brick_size_voxels + 2`.
+pub const SDF_ATLAS_VERSION: u32 = 2;
 
 /// Top-level slot sentinel: the brick cell is entirely empty (open space).
 /// The runtime tracer reads only the coarse distance for these bricks.
@@ -44,7 +51,7 @@ pub const BRICK_SLOT_INTERIOR: u32 = u32::MAX - 1;
 /// On-disk layout (all little-endian):
 ///
 /// ```text
-///   Header (64 bytes):
+///   Header (76 bytes):
 ///     u32      version                (= SDF_ATLAS_VERSION)
 ///     f32 × 3  world_min              (world-space min corner, meters)
 ///     f32 × 3  world_max              (world-space max corner, meters)
@@ -54,16 +61,18 @@ pub const BRICK_SLOT_INTERIOR: u32 = u32::MAX - 1;
 ///     u32 × 3  atlas_bricks_per_axis  (3D packing of surface bricks)
 ///     u32      surface_brick_count    (number of surface bricks packed)
 ///     u32      top_level_len          (== prod(grid_dims))
-///     u32      atlas_len              (== voxels_per_brick * surface_brick_count)
+///     u32      atlas_len              (== (brick_size_voxels + 2)^3 * surface_brick_count)
 ///     u32      coarse_len             (== prod(grid_dims))
 ///
 ///   Top-level index (top_level_len × u32):
 ///     u32 per cell, EMPTY/INTERIOR sentinels or 0-based atlas brick index.
 ///
 ///   Atlas distances (atlas_len × i16):
-///     Quantized signed distances, unit = voxel_size_m / 256.
-///     Layout per brick is the bake's responsibility (z-major-within-brick is
-///     the historical convention) — this section treats the array as opaque.
+///     Quantized signed distances, unit = voxel_size_m / 256. Each surface
+///     brick is `(brick_size_voxels + 2)^3` samples (interior plus a 1-voxel
+///     apron on every side), z-major within the apron'd block (sz outermost,
+///     sx innermost). This layout is load-bearing: the runtime uploader and
+///     the shadow shader both depend on it.
 ///
 ///   Coarse distances (coarse_len × f32):
 ///     One per brick cell, in meters. Provides an open-space fallback for the
@@ -81,8 +90,9 @@ pub struct SdfAtlasSection {
     pub world_max: [f32; 3],
     /// Side length of one voxel, in meters.
     pub voxel_size_m: f32,
-    /// Side length of one brick, in voxels. Total samples per brick is the
-    /// cube of this value.
+    /// Side length of one brick's interior, in voxels. Each surface brick is
+    /// stored with a 1-voxel apron on every side, so its stored sample count is
+    /// `(brick_size_voxels + 2)^3`.
     pub brick_size_voxels: u32,
     /// Brick count along x/y/z of the world grid.
     pub grid_dims: [u32; 3],
@@ -96,8 +106,9 @@ pub struct SdfAtlasSection {
     /// sentinels or a 0-based atlas brick index. Length == prod(grid_dims).
     pub top_level: Vec<u32>,
     /// Packed quantized atlas distances. Length ==
-    /// `brick_size_voxels^3 * surface_brick_count`. Unit per `i16` step is
-    /// `voxel_size_m / 256`.
+    /// `(brick_size_voxels + 2)^3 * surface_brick_count` — each surface brick
+    /// stores its interior plus a 1-voxel apron on every side, z-major within
+    /// the apron'd brick. Unit per `i16` step is `voxel_size_m / 256`.
     pub atlas: Vec<i16>,
     /// One coarse `f32` distance (meters) per brick cell. Length ==
     /// prod(grid_dims).
@@ -241,6 +252,31 @@ impl SdfAtlasSection {
         o += 4;
         debug_assert_eq!(o, Self::HEADER_SIZE);
 
+        // Per-brick invariant (v2): every surface brick stores an apron'd
+        // `(brick_size_voxels + 2)^3` block, so the packed atlas must hold
+        // exactly that many samples per surface brick. Rejecting a mismatch
+        // here stops a stale `brick_size^3` body (e.g. a v2 header on a v1
+        // bake) from deserializing cleanly and then being misread by the
+        // runtime 3D-scatter, which assumes the apron'd stride. The empty-atlas
+        // case (surface_brick_count == 0) needs no special-casing: the formula
+        // yields the required atlas_len == 0.
+        let brick_edge = brick_size_voxels as usize + 2;
+        let expected_atlas_len = brick_edge
+            .checked_pow(3)
+            .and_then(|per_brick| per_brick.checked_mul(surface_brick_count as usize));
+        if expected_atlas_len != Some(atlas_len) {
+            return Err(FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "sdf atlas atlas_len ({atlas_len}) does not match \
+                     (brick_size_voxels + 2)^3 * surface_brick_count = \
+                     {brick_edge}^3 * {surface_brick_count} = {expected:?} — \
+                     stale per-brick stride; recompile the .prl with the current `prl-build`",
+                    expected = expected_atlas_len,
+                ),
+            )));
+        }
+
         let top_level_bytes = top_level_len.checked_mul(4).ok_or_else(|| {
             FormatError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -336,7 +372,9 @@ mod tests {
         // one interior, four with arbitrary indices that exercise the slot
         // encoding round trip.
         let brick_size = 4u32;
-        let voxels_per_brick = (brick_size * brick_size * brick_size) as usize;
+        // Stored bricks carry a 1-voxel apron on every side (v2 layout).
+        let stored_edge = brick_size + 2;
+        let voxels_per_brick = (stored_edge * stored_edge * stored_edge) as usize;
         let surface_brick_count = 2u32;
         let atlas_len = voxels_per_brick * surface_brick_count as usize;
 

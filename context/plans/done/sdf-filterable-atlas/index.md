@@ -171,10 +171,12 @@ atlas_bricks_per_axis`; the brick's texels start at that coordinate `· (brick_s
 + 2)` and fill a contiguous sub-cube. The shader inverts the same mapping:
 `base = atlas_brick_coord · (brick_size + 2)`; a world point's intra-brick
 fraction `frac ∈ [0, 1)` over the `brick_size` interior voxels maps to texel
-coordinate `base + 1 (apron) + frac · brick_size + 0.5 (half-texel center)`;
-normalize by the atlas dims (`atlas_dim = atlas_bricks_per_axis * (brick_size + 2)`
-per axis, derived from existing `SdfAtlasMeta` uniform fields — no new uniform)
-and `textureSampleLevel`. The `+1` skips the apron;
+coordinate `base + 1 (apron) + frac · brick_size` — `frac · brick_size ∈ [0,
+brick_size)` is position in voxels from the brick's low corner, so voxel `i`'s
+center sits at `frac · brick_size = i + 0.5` with no extra half-texel constant
+needed; normalize by the atlas dims (`atlas_dim = atlas_bricks_per_axis * (brick_size
++ 2)` per axis, derived from existing `SdfAtlasMeta` uniform fields — no new
+uniform) and `textureSampleLevel`. The `+1` skips the apron;
 the apron supplies the ±1 neighbors trilinear needs at interior edges, so sampling
 is seamless across brick seams.
 

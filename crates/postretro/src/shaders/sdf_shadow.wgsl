@@ -15,9 +15,10 @@ struct SdfAtlasMeta {
 };
 
 @group(0) @binding(0) var<uniform> sdf_meta: SdfAtlasMeta;
-@group(0) @binding(1) var sdf_atlas: texture_3d<i32>;
+@group(0) @binding(1) var sdf_atlas: texture_3d<f32>;
 @group(0) @binding(2) var sdf_coarse: texture_3d<f32>;
 @group(0) @binding(3) var<storage, read> sdf_top_level: array<u32>;
+@group(0) @binding(4) var sdf_sampler: sampler;
 
 // ---- Group 1: pass-owned bindings ----
 
@@ -158,10 +159,10 @@ fn sample_coarse_distance(world: vec3<f32>) -> f32 {
 //                                  empty-space step (already meters, >= 0).
 //   - SDF_TOP_LEVEL_INTERIOR     → inside solid; return a negative distance so
 //                                  the march registers a hit.
-//   - surface brick (real slot)  → de-pack the slot to its atlas brick coord,
-//                                  map the brick-local position to a voxel,
-//                                  textureLoad the nearest voxel (the intended
-//                                  retro aesthetic; no trilinear), decode.
+//   - surface brick (real slot)  → de-pack the slot to its 3D atlas brick coord,
+//                                  map the brick-local position to a texel inside
+//                                  the apron'd sub-cube, and `textureSampleLevel`
+//                                  once for hardware trilinear filtering.
 fn sample_fine_distance(world: vec3<f32>) -> f32 {
     if (sdf_meta.present == 0u) {
         return 1.0e4;
@@ -185,7 +186,7 @@ fn sample_fine_distance(world: vec3<f32>) -> f32 {
     let brick_coord = vec3<u32>(clamp(local, vec3<f32>(0.0), grid_f - vec3<f32>(1.0)));
 
     // z-major flat index — mirrors the baker's `for bz { for by { for bx } }`
-    // top-level traversal (sdf_bake.rs ~line 151) and the on-disk layout.
+    // top-level traversal and the on-disk layout.
     let flat = brick_coord.z * grid_dims.x * grid_dims.y
         + brick_coord.y * grid_dims.x
         + brick_coord.x;
@@ -202,53 +203,40 @@ fn sample_fine_distance(world: vec3<f32>) -> f32 {
         return -brick_world_size;
     }
 
-    // Surface brick: `slot` is the linear surface-brick index. Recover the fine
-    // voxel's atlas texel by mirroring the baker's + uploader's exact byte path,
-    // NOT the brick-tiled formula in the spec sketch.
+    // Surface brick: `slot` is the linear surface-brick index. Each surface brick
+    // is stored as a contiguous `(brick_size + 2)^3` sub-cube in the 3D atlas
+    // (the uploader scatters it there; the baker fills it z-major with a 1-voxel
+    // apron on every side — interior voxels at stored indices [1, brick_size],
+    // apron at 0 and brick_size + 1). Sample it once with hardware trilinear.
     //
-    // WHY linear, not brick-tiled: the baker appends each surface brick's voxels
-    // CONTIGUOUSLY into one flat `atlas` stream in z-major within-brick order
-    // (sdf_bake.rs ~line 222: `atlas.extend_from_slice(&brick_samples)`, where
-    // brick_samples is filled z-major: outer loop vz, inner loop vx). The uploader
-    // (sdf_atlas.rs ~line 237) then `write_texture`s that flat stream into the
-    // 3D atlas as a dense row-major fill of the (aw, ah, ad) extent
-    // (bytes_per_row = 2*aw, rows_per_image = ah). So the flat element index of
-    // a voxel is `slot * voxels_per_brick + (vz*bs*bs + vy*bs + vx)`, and the
-    // texel is the row-major de-interleave of that single linear index:
-    //   x = e % aw,  y = (e / aw) % ah,  z = e / (aw * ah).
-    // The brick is NOT a contiguous bs^3 sub-cube of the texture — the contiguous
-    // run wraps across atlas rows — so the brick-tiled `brick_atlas*bs + voxel`
-    // formula would read the wrong voxels for a near-cube pack. Mirror the bytes.
+    // Slot → 3D atlas-brick coordinate (z-major slot order, matching the
+    // uploader's `slot % apx, (slot/apx) % apy, slot/(apx*apy)` placement):
     let bricks_per_axis = sdf_meta.atlas_bricks_per_axis;
-    let atlas_w = max(bricks_per_axis.x, 1u) * brick_size;
-    let atlas_h = max(bricks_per_axis.y, 1u) * brick_size;
-    let voxels_per_brick = brick_size * brick_size * brick_size;
-
-    // Brick-local position → voxel index. Half-texel-clamp to
-    // [0.5, brick_size - 0.5]: bricks have NO apron, so the nearest sample must
-    // stay strictly inside this brick to avoid bleeding into its neighbor.
-    let frac = local - vec3<f32>(brick_coord); // [0,1) within the brick
-    let voxel_local = clamp(
-        frac * f32(brick_size),
-        vec3<f32>(0.5),
-        vec3<f32>(f32(brick_size) - 0.5),
+    let apx = max(bricks_per_axis.x, 1u);
+    let apy = max(bricks_per_axis.y, 1u);
+    let atlas_brick_coord = vec3<u32>(
+        slot % apx,
+        (slot / apx) % apy,
+        slot / (apx * apy),
     );
-    let voxel_idx = vec3<u32>(voxel_local); // nearest voxel (floor of clamped)
 
-    // Flat element index into the baked stream (z-major within-brick), then
-    // de-interleave to the dense row-major texel the uploader wrote.
-    let voxel_in_brick = voxel_idx.z * brick_size * brick_size
-        + voxel_idx.y * brick_size
-        + voxel_idx.x;
-    let e = slot * voxels_per_brick + voxel_in_brick;
-    let texel = vec3<i32>(
-        i32(e % atlas_w),
-        i32((e / atlas_w) % atlas_h),
-        i32(e / (atlas_w * atlas_h)),
-    );
-    let raw = textureLoad(sdf_atlas, texel, 0).r;
-    // Decode i16 quant steps → meters: step = voxel_size_m / 256 per i16.
-    return f32(raw) * (voxel / SDF_I16_QUANT_STEPS_PER_VOXEL);
+    // Stored brick edge includes the 1-voxel apron on both sides.
+    let stored_edge = brick_size + 2u;
+    let atlas_dim = vec3<f32>(vec3<u32>(apx, apy, max(bricks_per_axis.z, 1u)) * stored_edge);
+
+    // Base texel of this brick's sub-cube in the dense atlas. `+1` skips the
+    // low-side apron. `frac * brick_size` ∈ [0, brick_size) is the position in
+    // voxels from the brick's low corner — voxel i's center sits at i + 0.5, so
+    // hardware trilinear lands on true voxel centers. The apron supplies the
+    // neighbor tap at brick edges, keeping seams seamless.
+    let base = vec3<f32>(atlas_brick_coord * stored_edge);
+    let frac = local - vec3<f32>(brick_coord); // [0,1) within the brick interior
+    let texel = base + vec3<f32>(1.0) + frac * f32(brick_size);
+    let uvw = texel / atlas_dim;
+    let raw = textureSampleLevel(sdf_atlas, sdf_sampler, uvw, 0.0).r;
+    // Decode i16 quant steps → meters: step = voxel_size_m / 256 per i16. The
+    // f16 atlas stores the same quant-step magnitudes the bake produced.
+    return raw * (voxel / SDF_I16_QUANT_STEPS_PER_VOXEL);
 }
 
 // Sample the SH depth moments E[d] at a world-space point. Returns the mean

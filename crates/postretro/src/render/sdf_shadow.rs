@@ -807,10 +807,10 @@ mod tests {
     /// Fine-path wiring guard (regression guard, not a correctness proof).
     /// Asserts the fine-atlas sampler exists, that `trace_shadow` steps on it
     /// (not solely on the coarse sampler), and that the fine atlas (`sdf_atlas`)
-    /// is actually read. It passes even if the index math is wrong — it only
-    /// confirms the fine path is wired in and stays wired; feature correctness
-    /// is proven by the visual ACs. No mirrored-arithmetic test is added (it
-    /// would re-encode the index math and prove nothing).
+    /// is sampled with hardware trilinear via `textureSampleLevel` + the
+    /// filtering sampler (not the old nearest `textureLoad`). It passes even if
+    /// the index math is wrong — it only confirms the fine path is wired in and
+    /// stays wired; feature correctness is proven by the visual ACs.
     #[test]
     fn sdf_shadow_traces_on_fine_atlas_sampler() {
         let src = include_str!("../shaders/sdf_shadow.wgsl");
@@ -823,8 +823,12 @@ mod tests {
             "trace_shadow must step on sample_fine_distance, not the coarse-only field",
         );
         assert!(
-            src.contains("textureLoad(sdf_atlas"),
-            "the fine sampler must read the fine atlas (sdf_atlas) via textureLoad",
+            src.contains("textureSampleLevel(sdf_atlas, sdf_sampler"),
+            "the fine sampler must trilinear-sample sdf_atlas via textureSampleLevel + sdf_sampler",
+        );
+        assert!(
+            !src.contains("textureLoad(sdf_atlas"),
+            "the fine atlas must no longer use nearest textureLoad (replaced by trilinear sampling)",
         );
         // The coarse multiply that over-stepped the empty-brick fallback must
         // be gone — sample_coarse_distance returns metric meters directly.

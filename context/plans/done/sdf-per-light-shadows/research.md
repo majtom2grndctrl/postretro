@@ -193,3 +193,15 @@ total frame time.
   `k·d/t` and the Aaltonen interpolated estimator.
 - Hart 1996, Sphere Tracing — the lower-bound invariant behind "store min, not mean."
 - UE5 mesh/global distance fields; GigaVoxels brick pools — bordered-brick / apron convention.
+
+## Perf gate — PASSED (2026-05-30)
+
+Owner-set budgets, 1080p: **GTX 1660 Super ≤ 16.667 ms/frame (60 fps)**; **Radeon Pro
+5500M (2020 MacBook Pro) ≤ 25 ms/frame (40 fps)**. Both hold on `occlusion-test` and
+`campaign-test` with the shipped per-light SDF path. The SDF perf bet clears the
+fail-floor — SDF stays (does not revert to lightmap).
+
+Caveat: measured against the **nearest-sampling** field (pre-`sdf-filterable-atlas`).
+Item 3 (R16Float + apron + trilinear) adds a filtered fetch per march step + ~2× atlas
+memory — re-measure against these budgets when it lands. (Per-pass `POSTRETRO_GPU_TIMING`
+numbers not separately captured; budgets are whole-frame.)

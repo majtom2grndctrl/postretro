@@ -25,7 +25,7 @@ Octahedral keeps the 8-probe loop (per-probe weights survive) but lets hardware 
 ## Alternatives considered, not chosen
 
 - **Reconstruct-once on SH (blend coeffs, then one eval).** ~8× SH-ALU cut, no bake change. Rejected as primary: throwaway once octahedral lands (octahedral deletes SH reconstruction). Was the interim option; user chose octahedral-only.
-- **Aggressive single-tap SH (hardware trilinear across the grid).** Biggest fetch cut, but drops per-probe Chebyshev — i.e. on SH, "hardware filtering" *is* the aggressive path. Kept the concept as the runtime toggle, but on octahedral it reduces to "skip Chebyshev," a clean uniform branch.
+- **Aggressive single-tap SH (hardware trilinear across the grid).** Biggest fetch cut, but drops per-probe Chebyshev — i.e. on SH, "hardware filtering" *is* the skip-Chebyshev path. Kept the concept as the runtime **Probe Occlusion** toggle (default on), but on octahedral it reduces to "skip Chebyshev," a clean uniform branch.
 - **L1 SH + Geomerics non-negative reconstruction.** ~half ALU, 56% memory, near-L2, no ringing. Viable cheaper encoding, but a lateral move vs octahedral and still per-pixel-reconstruction-bound. Available later as an L2→L1 runtime truncation if wanted.
 - **Ambient cube (Bevy/HL2).** Cheapest (3 MADs) but boxy gradients and no per-probe visibility. Floor option only.
 - **Ambient Dice / Spherical Gaussians.** Raise per-pixel cost to *exceed* L2 quality — wrong direction for a perf goal. Revisit only for glossy indirect.
@@ -38,7 +38,7 @@ Confirmed against source: the shipped Chebyshev stores **one `(E[d], E[d²])` pa
 
 ## Fog interaction
 
-Fog (`fog_volume.wgsl::sample_sh_fog_dual`) explicitly disables Chebyshev (`rendering_pipeline.md`: "Chebyshev depth visibility stays off for fog"). Fog's directional response comes from the dual-direction SH read mapped to a Henyey-Greenstein `scatter_bias`, not from Chebyshev. Therefore the aggressive (skip-Chebyshev) toggle does not affect fog. The octahedral sampler must still serve fog's two-direction read from one 8-probe iteration.
+Fog (`fog_volume.wgsl::sample_sh_fog_dual`) explicitly disables Chebyshev (`rendering_pipeline.md`: "Chebyshev depth visibility stays off for fog"). Fog's directional response comes from the dual-direction SH read mapped to a Henyey-Greenstein `scatter_bias`, not from Chebyshev. Therefore the Probe Occlusion toggle (which gates Chebyshev) does not affect fog. The octahedral sampler must still serve fog's two-direction read from one 8-probe iteration.
 
 ## M9 reconciliation
 

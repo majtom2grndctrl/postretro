@@ -2,8 +2,8 @@
 //
 // Builds a sparse brick atlas of signed distances from each voxel to the
 // nearest static-world triangle, packaged as a `SdfAtlasSection` for the PRL.
-// Drives the runtime SDF static-occluder shadow pass (see
-// `context/plans/in-progress/sdf-static-occluder-shadows/index.md`).
+// Foundation plan: `context/plans/done/sdf-static-occluder-shadows/index.md`.
+// Current apron/version change: `context/plans/in-progress/sdf-filterable-atlas/index.md`.
 //
 // Algorithm (deterministic, single-threaded inside each brick — accumulation
 // order is stable so identical inputs produce byte-identical output):
@@ -18,8 +18,14 @@
 // 3. Classify each brick: all samples > `voxel_size_m` in magnitude → empty
 //    or interior (sign tells which), no atlas entry; otherwise it is a
 //    surface brick — emit it into the atlas in the order the bake encountered
-//    it. Atlas brick layout is z-major-within-brick, mirroring the runtime
-//    sampler convention noted in `sdf_atlas.rs`.
+//    it. Surface bricks store a 1-voxel apron on every side: the stored block
+//    is `(brick_size + 2)^3` samples, z-major-within-brick, with interior
+//    voxels at stored indices `[1, brick_size]` and apron voxels at `0` and
+//    `brick_size + 1`. The apron carries the true signed field at the neighbor
+//    positions it mirrors (edge-extended at the world-AABB boundary) so the
+//    runtime can sample the fine field with hardware trilinear filtering
+//    without seams across brick boundaries. Classification (empty/interior vs.
+//    surface) uses only the interior voxels.
 // 4. Pack the surface bricks into a 3D `atlas_bricks_per_axis` arrangement
 //    sized as a near-cube to keep texture aspect reasonable. The packing
 //    coordinate is implicit from the linear order, so the bake records only
@@ -47,7 +53,10 @@ use crate::partition::{BspTree, find_leaf_for_point};
 // margin`). The mean is not a valid sphere-trace lower bound and let the shadow
 // march overstep/tunnel through sub-brick geometry (Hart 1996). Bumped so stale
 // caches don't serve the old mean-based coarse field. See `COARSE_SAFETY_MARGIN_VOXELS`.
-pub const STAGE_VERSION: u32 = 2;
+// v3: surface bricks now store a 1-voxel apron on every side (stored sample
+// count `(brick_size + 2)^3`, z-major) so the runtime can sample the fine field
+// with hardware trilinear filtering without seams at brick boundaries.
+pub const STAGE_VERSION: u32 = 3;
 
 /// Default voxel edge length in meters. Sized to give a usable shadow
 /// resolution for retro-scale interiors without exploding atlas memory.
@@ -136,11 +145,23 @@ pub fn bake_sdf_atlas(ctx: &SdfBakeCtx<'_>, config: &SdfConfig) -> SdfAtlasSecti
 
     let voxel_size = config.voxel_size_m.max(1.0e-4);
     let brick_size = config.brick_size_voxels.max(1);
-    let voxels_per_brick = (brick_size * brick_size * brick_size) as usize;
+    // Surface bricks store a 1-voxel apron on every side for hardware trilinear
+    // filtering, so the stored block is `(brick_size + 2)^3`, z-major.
+    let stored_brick_edge = brick_size + 2;
+    let voxels_per_brick = (stored_brick_edge * stored_brick_edge * stored_brick_edge) as usize;
 
     let (world_min, world_max) = world_aabb(ctx);
     let (grid_origin, brick_dims) = grid_extents(world_min, world_max, voxel_size, brick_size);
     let total_bricks = brick_dims[0] as usize * brick_dims[1] as usize * brick_dims[2] as usize;
+
+    // Total interior-voxel extent of the whole grid per axis. Apron voxels that
+    // fall outside `[0, interior_voxels - 1]` have no neighbor brick, so they
+    // edge-extend: clamp the world voxel index into this range before eval.
+    let interior_voxels = [
+        brick_dims[0] * brick_size,
+        brick_dims[1] * brick_size,
+        brick_dims[2] * brick_size,
+    ];
 
     let inv_quant_step = 256.0 / voxel_size;
     let surface_band_m = voxel_size * SURFACE_BAND_VOXELS;
@@ -157,8 +178,10 @@ pub fn bake_sdf_atlas(ctx: &SdfBakeCtx<'_>, config: &SdfConfig) -> SdfAtlasSecti
     let bake_started = Instant::now();
 
     // Per-brick scratch buffer; reused across bricks to avoid reallocation.
-    // The ordering here is `z*nx*ny + y*nx + x` over the brick voxel grid, so
-    // the bake's atlas layout is z-major-within-brick.
+    // The ordering is z-major over the apron'd `(brick_size + 2)^3` block:
+    // `sz*edge^2 + sy*edge + sx` with `edge = brick_size + 2`. Stored indices
+    // `[1, brick_size]` per axis hold interior voxels; `0` and `brick_size + 1`
+    // hold the apron. The runtime/shader address this same layout.
     let mut brick_samples: Vec<i16> = Vec::with_capacity(voxels_per_brick);
 
     // Iterate bricks in z-major / y-major / x order — the same order the
@@ -174,35 +197,43 @@ pub fn bake_sdf_atlas(ctx: &SdfBakeCtx<'_>, config: &SdfConfig) -> SdfAtlasSecti
                 let mut all_empty_air = true;
                 let mut max_abs_quant: f32 = 0.0;
 
-                for vz in 0..brick_size {
-                    for vy in 0..brick_size {
-                        for vx in 0..brick_size {
-                            let p = voxel_center(
-                                grid_origin,
-                                bx,
-                                by,
-                                bz,
-                                vx,
-                                vy,
-                                vz,
-                                brick_size,
-                                voxel_size,
-                            );
-                            let unsigned = nearest_triangle_distance(&triangles, p);
-                            min_unsigned = min_unsigned.min(unsigned);
+                // Sample the apron'd `(brick_size + 2)^3` block, z-major. Stored
+                // index `s` maps to world voxel index `brick_origin + s - 1`, so
+                // `s = 0` and `s = brick_size + 1` are the apron (a neighbor
+                // brick's space, or edge-extended at the world boundary) and
+                // `s in [1, brick_size]` are this brick's interior. Only interior
+                // voxels feed the empty/interior/surface classification.
+                for sz in 0..stored_brick_edge {
+                    let wz = clamp_world_voxel(bz, sz, brick_size, interior_voxels[2]);
+                    let interior_z = sz >= 1 && sz <= brick_size;
+                    for sy in 0..stored_brick_edge {
+                        let wy = clamp_world_voxel(by, sy, brick_size, interior_voxels[1]);
+                        let interior_y = sy >= 1 && sy <= brick_size;
+                        for sx in 0..stored_brick_edge {
+                            let wx = clamp_world_voxel(bx, sx, brick_size, interior_voxels[0]);
+                            let interior_x = sx >= 1 && sx <= brick_size;
 
+                            let p = voxel_center(grid_origin, wx, wy, wz, voxel_size);
+                            let unsigned = nearest_triangle_distance(&triangles, p);
                             let inside_solid = point_in_solid(ctx.tree, p);
-                            if inside_solid {
-                                all_empty_air = false;
-                            } else {
-                                all_solid = false;
-                            }
                             let signed = if inside_solid { -unsigned } else { unsigned };
 
                             let q_raw = (signed * inv_quant_step).round();
                             let q_clamped = q_raw.clamp(i16::MIN as f32, i16::MAX as f32) as i16;
                             brick_samples.push(q_clamped);
-                            max_abs_quant = max_abs_quant.max(q_clamped.unsigned_abs() as f32);
+
+                            // Classification reads interior voxels only — the
+                            // apron is filler for trilinear continuity, not part
+                            // of this brick's surface/empty decision.
+                            if interior_x && interior_y && interior_z {
+                                min_unsigned = min_unsigned.min(unsigned);
+                                if inside_solid {
+                                    all_empty_air = false;
+                                } else {
+                                    all_solid = false;
+                                }
+                                max_abs_quant = max_abs_quant.max(q_clamped.unsigned_abs() as f32);
+                            }
                         }
                     }
                 }
@@ -403,22 +434,16 @@ fn grid_extents(
     (origin, brick_dims)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// World-space center of the voxel at global voxel index `(world_vx, _vy, _vz)`
+/// — the historical center-sampling convention `(world_idx + 0.5) * voxel`.
 fn voxel_center(
     origin: DVec3,
-    bx: u32,
-    by: u32,
-    bz: u32,
-    vx: u32,
-    vy: u32,
-    vz: u32,
-    brick_size: u32,
+    world_vx: u32,
+    world_vy: u32,
+    world_vz: u32,
     voxel_size: f32,
 ) -> Vec3 {
     let voxel = voxel_size as f64;
-    let world_vx = bx * brick_size + vx;
-    let world_vy = by * brick_size + vy;
-    let world_vz = bz * brick_size + vz;
     let p = origin
         + DVec3::new(
             (world_vx as f64 + 0.5) * voxel,
@@ -426,6 +451,19 @@ fn voxel_center(
             (world_vz as f64 + 0.5) * voxel,
         );
     Vec3::new(p.x as f32, p.y as f32, p.z as f32)
+}
+
+/// Map a stored apron index `s in [0, brick_size + 1]` to a global voxel index.
+/// The interior occupies `s in [1, brick_size]`; the apron at `s = 0` /
+/// `s = brick_size + 1` reaches one voxel past the brick. World voxel index is
+/// `brick_origin * brick_size + s - 1`; at the world-AABB boundary (no neighbor
+/// brick) the index is edge-extended by clamping into `[0, interior_voxels - 1]`.
+fn clamp_world_voxel(brick_origin: u32, s: u32, brick_size: u32, interior_voxels: u32) -> u32 {
+    // `brick_origin * brick_size + s` is always >= 0; subtracting 1 can underflow
+    // only at the very first apron voxel (brick_origin = 0, s = 0), which clamps
+    // to 0 anyway, so saturate the subtraction.
+    let world = (brick_origin * brick_size + s).saturating_sub(1);
+    world.min(interior_voxels.saturating_sub(1))
 }
 
 fn point_in_solid(tree: &BspTree, p: Vec3) -> bool {
@@ -722,8 +760,8 @@ mod tests {
         // perfectly-aligned wall is ~half-voxel away — quant ≈ 128. Allow
         // up to 200 quant steps (~78% of a voxel) so any voxel adjacent to
         // the wall qualifies as "near-surface".
-        let voxels_per_brick =
-            (cfg.brick_size_voxels * cfg.brick_size_voxels * cfg.brick_size_voxels) as usize;
+        let stored_edge = cfg.brick_size_voxels + 2;
+        let voxels_per_brick = (stored_edge * stored_edge * stored_edge) as usize;
         let any_near_surface = section
             .atlas
             .iter()
@@ -811,13 +849,9 @@ mod tests {
                             for vx in 0..brick_size {
                                 let p = voxel_center(
                                     grid_origin,
-                                    bx,
-                                    by,
-                                    bz,
-                                    vx,
-                                    vy,
-                                    vz,
-                                    brick_size,
+                                    bx * brick_size + vx,
+                                    by * brick_size + vy,
+                                    bz * brick_size + vz,
                                     voxel_size,
                                 );
                                 let d = nearest_triangle_distance(&triangles, p);
@@ -859,5 +893,247 @@ mod tests {
             "coarse value {stored} must NOT equal the per-voxel mean {mean} \
              (the old, sphere-trace-unsafe behavior)",
         );
+    }
+
+    /// Construct a wide horizontal floor (a quad on the Y=0 plane) with empty
+    /// space above and solid below. The distance field near the floor is the
+    /// continuous unsigned distance to the plane, so every brick along the
+    /// floor is a surface brick — giving the x-adjacent surface bricks the
+    /// apron/seam tests need.
+    fn floor_scene() -> (GeometryResult, BspTree) {
+        let v = |x: f32, y: f32, z: f32| Vertex {
+            position: [x, y, z],
+            uv: [0.0, 0.0],
+            normal_oct: [0, 0],
+            tangent_packed: [0, 0],
+            lightmap_uv: [0, 0],
+        };
+        // Floor quad at y=0 spanning x,z in [-6, 6]. Two triangles.
+        let vertices = vec![
+            v(-6.0, 0.0, -6.0),
+            v(6.0, 0.0, -6.0),
+            v(6.0, 0.0, 6.0),
+            v(-6.0, 0.0, 6.0),
+        ];
+        let indices = vec![0u32, 1, 2, 0, 2, 3];
+        let faces = vec![FaceMeta {
+            leaf_index: 1,
+            texture_index: 0,
+        }];
+        let geometry = GeometrySection {
+            vertices,
+            indices,
+            faces,
+        };
+        let texture_names = TextureNamesSection {
+            names: vec!["dev/floor".to_string()],
+        };
+        let face_index_ranges = vec![FaceIndexRange {
+            index_offset: 0,
+            index_count: 6,
+        }];
+        let geo = GeometryResult {
+            geometry,
+            texture_names,
+            face_index_ranges,
+        };
+
+        // Minimal BSP: split on the XZ plane (normal = +Y). y >= 0 → empty,
+        // y < 0 → solid.
+        use crate::partition::{BspChild, BspNode};
+        let nodes = vec![BspNode {
+            plane_normal: DVec3::new(0.0, 1.0, 0.0),
+            plane_distance: 0.0,
+            front: BspChild::Leaf(1), // y >= 0 → empty
+            back: BspChild::Leaf(0),  // y < 0 → solid
+            parent: None,
+        }];
+        let leaves = vec![
+            BspLeaf {
+                face_indices: vec![],
+                bounds: Aabb {
+                    min: DVec3::new(-8.0, -8.0, -8.0),
+                    max: DVec3::new(8.0, 0.0, 8.0),
+                },
+                is_solid: true,
+                defining_planes: vec![],
+            },
+            BspLeaf {
+                face_indices: vec![0],
+                bounds: Aabb {
+                    min: DVec3::new(-8.0, 0.0, -8.0),
+                    max: DVec3::new(8.0, 8.0, 8.0),
+                },
+                is_solid: false,
+                defining_planes: vec![],
+            },
+        ];
+        let tree = BspTree { nodes, leaves };
+        (geo, tree)
+    }
+
+    /// Re-derive the quantized stored value the bake would write for an
+    /// arbitrary global voxel index, using the same eval the bake uses. Lets
+    /// the apron tests assert against an independently-computed field value
+    /// rather than round-tripping the bake's own output.
+    fn quantized_field_at(
+        geo: &GeometryResult,
+        tree: &BspTree,
+        grid_origin: DVec3,
+        world_v: [u32; 3],
+        voxel_size: f32,
+    ) -> i16 {
+        let triangles = collect_triangles(geo);
+        let p = voxel_center(grid_origin, world_v[0], world_v[1], world_v[2], voxel_size);
+        let unsigned = nearest_triangle_distance(&triangles, p);
+        let signed = if point_in_solid(tree, p) {
+            -unsigned
+        } else {
+            unsigned
+        };
+        let inv_quant_step = 256.0 / voxel_size;
+        (signed * inv_quant_step)
+            .round()
+            .clamp(i16::MIN as f32, i16::MAX as f32) as i16
+    }
+
+    /// Apron contract: an apron voxel stores the true field value at the
+    /// neighbor position it mirrors (interior of an adjacent brick), within
+    /// quant epsilon. We take the +x apron column of a surface brick and assert
+    /// it equals the independently-evaluated field at world voxel index
+    /// `(bx+1)*brick_size` — the voxel the apron mirrors.
+    #[test]
+    fn apron_voxel_mirrors_neighbor_field_value() {
+        let (geo, tree) = floor_scene();
+        let cfg = SdfConfig {
+            voxel_size_m: 0.5,
+            brick_size_voxels: 4,
+        };
+        let ctx = SdfBakeCtx {
+            geometry: &geo,
+            tree: &tree,
+        };
+        let section = bake_sdf_atlas(&ctx, &cfg);
+
+        let brick_size = cfg.brick_size_voxels;
+        let edge = brick_size + 2;
+        let voxels_per_brick = (edge * edge * edge) as usize;
+        let (world_min, world_max) = world_aabb(&ctx);
+        let (grid_origin, brick_dims) =
+            grid_extents(world_min, world_max, cfg.voxel_size_m, brick_size);
+
+        // Find a surface brick that has a +x neighbor inside the grid, so its
+        // +x apron mirrors a real neighbor voxel (not the edge-extended case).
+        let (bx, by, bz) = find_surface_brick_with_x_neighbor(&section, brick_dims);
+        let slot = section.top_level
+            [(bz * brick_dims[1] * brick_dims[0] + by * brick_dims[0] + bx) as usize];
+        let brick_base = slot as usize * voxels_per_brick;
+
+        // +x apron column: sx = brick_size + 1, mirrors world voxel index
+        // (bx+1)*brick_size. Check the whole column across sy, sz interior range.
+        for sz in 1..=brick_size {
+            for sy in 1..=brick_size {
+                let sx = brick_size + 1;
+                let vox_idx = (sz * edge * edge + sy * edge + sx) as usize;
+                let stored = section.atlas[brick_base + vox_idx];
+
+                let world_v = [
+                    (bx + 1) * brick_size,
+                    by * brick_size + (sy - 1),
+                    bz * brick_size + (sz - 1),
+                ];
+                let expected =
+                    quantized_field_at(&geo, &tree, grid_origin, world_v, cfg.voxel_size_m);
+                // Same eval + same quant → exact equality (within ±1 quant step
+                // for floating-point rounding determinism across the two paths).
+                assert!(
+                    (stored as i32 - expected as i32).abs() <= 1,
+                    "apron voxel at sx={sx},sy={sy},sz={sz} stored {stored} but the \
+                     mirrored neighbor field is {expected}",
+                );
+            }
+        }
+    }
+
+    /// Seam continuity: a brick's +x apron column equals the +x-neighbor
+    /// brick's first interior column, voxel-for-voxel. Both reference the same
+    /// world voxel index `(bx+1)*brick_size`, so a hardware-trilinear sampler
+    /// reading across the seam sees no discontinuity. Requires >=2 x-adjacent
+    /// surface bricks — the wide floor fixture provides them.
+    #[test]
+    fn plus_x_apron_matches_neighbor_first_interior_column() {
+        let (geo, tree) = floor_scene();
+        let cfg = SdfConfig {
+            voxel_size_m: 0.5,
+            brick_size_voxels: 4,
+        };
+        let ctx = SdfBakeCtx {
+            geometry: &geo,
+            tree: &tree,
+        };
+        let section = bake_sdf_atlas(&ctx, &cfg);
+
+        let brick_size = cfg.brick_size_voxels;
+        let edge = brick_size + 2;
+        let voxels_per_brick = (edge * edge * edge) as usize;
+        let (world_min, world_max) = world_aabb(&ctx);
+        let (_grid_origin, brick_dims) =
+            grid_extents(world_min, world_max, cfg.voxel_size_m, brick_size);
+
+        let (bx, by, bz) = find_surface_brick_with_x_neighbor(&section, brick_dims);
+        let cell = |x: u32, y: u32, z: u32| {
+            (z * brick_dims[1] * brick_dims[0] + y * brick_dims[0] + x) as usize
+        };
+        let slot = section.top_level[cell(bx, by, bz)];
+        let neighbor_slot = section.top_level[cell(bx + 1, by, bz)];
+        assert!(
+            neighbor_slot != BRICK_SLOT_EMPTY && neighbor_slot != BRICK_SLOT_INTERIOR,
+            "the +x-neighbor must also be a surface brick for the seam test",
+        );
+        let base = slot as usize * voxels_per_brick;
+        let neighbor_base = neighbor_slot as usize * voxels_per_brick;
+
+        // Compact stored-brick voxel index: vox_idx = sz*edge^2 + sy*edge + sx,
+        // z-major within the apron'd brick.
+        let vox_idx = |sx: u32, sy: u32, sz: u32| (sz * edge * edge + sy * edge + sx) as usize;
+
+        for sz in 1..=brick_size {
+            for sy in 1..=brick_size {
+                // Brick's +x apron column (sx = brick_size + 1).
+                let apron = section.atlas[base + vox_idx(brick_size + 1, sy, sz)];
+                // Neighbor's first interior column (sx = 1).
+                let neighbor_interior = section.atlas[neighbor_base + vox_idx(1, sy, sz)];
+                assert_eq!(
+                    apron, neighbor_interior,
+                    "+x apron column at sy={sy},sz={sz} ({apron}) must equal the \
+                     +x-neighbor's first interior column ({neighbor_interior}) — \
+                     no seam discontinuity",
+                );
+            }
+        }
+    }
+
+    /// Scan the top-level index for a surface brick whose +x neighbor (`bx+1`)
+    /// is also a surface brick. Panics if none exists — the floor fixture is
+    /// sized to guarantee a run of x-adjacent surface bricks.
+    fn find_surface_brick_with_x_neighbor(
+        section: &SdfAtlasSection,
+        brick_dims: [u32; 3],
+    ) -> (u32, u32, u32) {
+        let is_surface = |x: u32, y: u32, z: u32| {
+            let slot = section.top_level
+                [(z * brick_dims[1] * brick_dims[0] + y * brick_dims[0] + x) as usize];
+            slot != BRICK_SLOT_EMPTY && slot != BRICK_SLOT_INTERIOR
+        };
+        for bz in 0..brick_dims[2] {
+            for by in 0..brick_dims[1] {
+                for bx in 0..brick_dims[0].saturating_sub(1) {
+                    if is_surface(bx, by, bz) && is_surface(bx + 1, by, bz) {
+                        return (bx, by, bz);
+                    }
+                }
+            }
+        }
+        panic!("floor fixture must contain >=2 x-adjacent surface bricks");
     }
 }

@@ -164,8 +164,10 @@ const SHADER_SOURCE: &str = concat!(
 
 const WIREFRAME_SHADER_SOURCE: &str = include_str!("../shaders/wireframe.wgsl");
 
-// Depth pre-pass: writes depth (enables Equal depth compare → zero shading
-// overdraw) + the full-res lightmap-UV gbuffer (Rg16Float MRT slot).
+// Depth pre-pass: writes depth only (enables Equal depth compare → zero shading
+// overdraw). The full-res lightmap-UV gbuffer MRT it once wrote was freed with
+// the animated dominant-direction trace; the per-light SDF visibility pass keys
+// on light position, not lightmap UV, so it has no color attachment now.
 const DEPTH_PREPASS_SHADER_SOURCE: &str = include_str!("../shaders/depth_prepass.wgsl");
 
 // Spot shadow: vertex-only; per-slot matrix selected via dynamic-offset uniform.

@@ -53,12 +53,19 @@ pub const SHADOW_FACTOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8
 /// (well under the 256 hard clamp; the open-space early-out keeps the common
 /// case cheap, and the perf AC bounds the worst case). The `k*d/t` penumbra
 /// estimate sharpens once `d` is a real metric distance, so `penumbra_k` is
-/// softened 16 → 8 to keep penumbra width similar rather than over-hard. The
-/// open-space skip threshold is unchanged — it keys off the SH moment, not the
-/// step source. These are SEED values; adjust them live via the "SDF / Fog
-/// Quality" panel in the debug overlay (`dev-tools` feature).
+/// softened 16 → 8 to keep penumbra width similar rather than over-hard.
+///
+/// The open-space skip threshold is seeded **loose** (8.0, was 2.5): the skip
+/// returns FULLY_LIT before marching when `E[d] > threshold × SH cell`, so a
+/// *small* threshold fires the skip on even a moderate gap and suppresses the
+/// trace. This session's investigation (`research.md` step 2) found the old 2.5
+/// default suppressed much of the per-light trace; Visualize at 0 vs 8 changed
+/// dramatically. Seed loose so the per-light rays actually run on the SDF case,
+/// and tighten later via the perf gate (Task 6) if open-space cost dominates.
+/// These are SEED values; adjust them live via the "SDF / Fog Quality" panel in
+/// the debug overlay (`dev-tools` feature).
 pub const DEFAULT_MAX_MARCH_STEPS: u32 = 64;
-pub const DEFAULT_OPEN_SPACE_SKIP_THRESHOLD: f32 = 2.5; // multiple of SH cell size
+pub const DEFAULT_OPEN_SPACE_SKIP_THRESHOLD: f32 = 8.0; // multiple of SH cell size (loose seed)
 pub const DEFAULT_PENUMBRA_K: f32 = 8.0;
 
 /// Size in bytes of the `ShadowPassParams` uniform. Mirrors the WGSL struct

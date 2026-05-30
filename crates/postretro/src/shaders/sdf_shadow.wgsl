@@ -269,7 +269,13 @@ fn sample_open_distance(world: vec3<f32>) -> f32 {
 // in empty bricks. The loop shape — self-shadow start bias, closest-passing
 // penumbra estimate, bounded march length, open-space early-out — is unchanged
 // from the coarse-only v1.
-fn trace_shadow(origin: vec3<f32>, dir: vec3<f32>) -> f32 {
+// `max_dist` is the world-meter distance at which the march must stop — the
+// distance to the light for a finite point/spot source. Geometry at or beyond
+// the light is NOT an occluder (it lies behind or around the light, with a clear
+// line of sight to the lit surface), so the march is clamped to it. Callers with
+// an infinite/directional source pass a large value (e.g. the 64 m hard cap) to
+// preserve the original fixed-length behavior.
+fn trace_shadow(origin: vec3<f32>, dir: vec3<f32>, max_dist: f32) -> f32 {
     if (sdf_meta.present == 0u) {
         return FULLY_LIT;
     }
@@ -294,7 +300,12 @@ fn trace_shadow(origin: vec3<f32>, dir: vec3<f32>) -> f32 {
     var t: f32 = bias;
     var factor: f32 = FULLY_LIT;
     let k = max(params.penumbra_k, 1.0);
-    let max_t = 64.0; // meters — bounded march length
+    // Bounded march length: the 64 m hard cap AND the distance to the light,
+    // whichever is closer. Stopping at the light keeps geometry behind/around it
+    // from being counted as an occluder. Pull in by one voxel so a surface the
+    // light is mounted just above isn't counted as its own occluder, without
+    // over-subtracting (which would let near-light occluders leak).
+    let max_t = max(min(64.0, max_dist - voxel), bias); // meters
 
     // Aaltonen interpolated closest-passing-distance estimator (iquilezles,
     // "Soft Shadows in Raymarched SDFs"): the plain `k·d/t` term samples the
@@ -342,7 +353,8 @@ fn trace_light_visibility(world: vec3<f32>, light_idx: u32) -> f32 {
     if (dist < 1.0e-4) {
         return FULLY_LIT;
     }
-    return trace_shadow(world, to_light / dist);
+    // Clamp the march to the light distance — never count occluders at/behind it.
+    return trace_shadow(world, to_light / dist, dist);
 }
 
 // ---- Entry ----

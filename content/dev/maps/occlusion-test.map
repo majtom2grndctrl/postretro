@@ -1152,6 +1152,7 @@
 // entity 2
 {
 "classname" "light"
+"_shadow_type" "sdf"
 "origin" "180 229 60"
 "light" "400"
 "_color" "255 170 40"
@@ -1162,6 +1163,7 @@
 // entity 3
 {
 "classname" "light_spot"
+"_shadow_type" "sdf"
 "origin" "-240 1440 74"
 "light" "800"
 "_color" "255 170 40"
@@ -1175,6 +1177,7 @@
 // entity 4
 {
 "classname" "light"
+"_shadow_type" "sdf"
 "origin" "472 1984 72"
 "light" "300"
 "_color" "236 21 142"
@@ -1185,6 +1188,7 @@
 // entity 5
 {
 "classname" "light"
+"_shadow_type" "sdf"
 "origin" "824 1656 120"
 "light" "300"
 "_color" "2 114 245"
@@ -1289,12 +1293,13 @@
 // entity 12
 {
 "classname" "light_spot"
+"_shadow_type" "static_light_map"
 "origin" "264 1144 216"
 "angles" "-90 0 30"
 "_tags" ""
 "style" "2"
 "_fade" "250"
-"light" "500"
+"light" "800"
 "_color" "245 221 51"
 "_cone" "5"
 "_cone2" "45"
@@ -1302,12 +1307,13 @@
 // entity 13
 {
 "classname" "light_spot"
+"_shadow_type" "static_light_map"
 "origin" "744 1144 216"
 "angles" "-90 0 30"
 "_tags" ""
 "style" "2"
 "_fade" "250"
-"light" "250"
+"light" "500"
 "_color" "255 255 255"
 "_cone" "5"
 "_cone2" "45"
@@ -1335,6 +1341,7 @@
 // entity 15
 {
 "classname" "light_spot"
+"_shadow_type" "sdf"
 "origin" "152 2120 104"
 "angles" "-90 0 30"
 "_tags" ""
@@ -1348,6 +1355,7 @@
 // entity 16
 {
 "classname" "light_spot"
+"_shadow_type" "sdf"
 "origin" "152 2232 104"
 "angles" "-90 0 30"
 "_tags" ""
@@ -1361,11 +1369,12 @@
 // entity 17
 {
 "classname" "light_spot"
+"_shadow_type" "static_light_map"
 "origin" "8 1112 264"
 "angles" "-20 0 0"
 "_cone" "2"
 "_cone2" "30"
 "delay" "0"
-"light" "400"
+"light" "50"
 "_fade" "800"
 }

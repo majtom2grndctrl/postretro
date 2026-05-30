@@ -42,7 +42,13 @@ Fog (`fog_volume.wgsl::sample_sh_fog_dual`) explicitly disables Chebyshev (`rend
 
 ## M9 reconciliation
 
-Milestone 9 (diffuse GI upgrade) is shipped: probe-weight correctness, depth/visibility atlas bake, depth-aware Chebyshev interpolant, directional fog (`context/plans/done/M9--*`). This spec is a perf re-encoding on top, not an M9 sub-spec. No collision with `context/plans/in-progress/` (sdf-per-light-shadows, fx-volumetric-smoke, comment-cleanup).
+Milestone 9 (diffuse GI upgrade) is shipped: probe-weight correctness, depth/visibility atlas bake, depth-aware Chebyshev interpolant, directional fog (`context/plans/done/M9--*`). This spec is a perf re-encoding on top, not an M9 sub-spec.
+
+`sdf-per-light-shadows` merged into the branch (`e362975`). Verified compatible — no spec task invalidated. Two contract changes it introduced, now reflected in `index.md`:
+- **Delta SH is indirect-only** (bounce). `bake_probe_direct_rgb` was removed; the animated light's direct term lives in `lm_anim`. The octahedral delta (Task 2) must encode bounce only.
+- **`delta_scale` retired** — compose adds delta at full weight; the `GridDims` uniform field is now padding (Task 4).
+
+All other grounding confirmed unchanged: `RAYS_PER_PROBE=256`, `sh_basis_l2`/`apply_cosine_lobe_rgb`/`bake_probe_rgb_with_moments`, `ShProbe`/`PROBE_STRIDE=116`, `SectionId::ShVolume=20`/`DeltaShVolumes=27`, `AFFINITY_FACTOR=4` CSR structure, bind group 3 indices, isotropic per-probe Chebyshev, fog dual read, 5 timing pairs (none for SH). Note: "K=4" in the merge is the per-light SDF visibility slot count (forward pass), unrelated to the 4×4×4 delta affinity cells.
 
 ## wgpu / hardware notes
 

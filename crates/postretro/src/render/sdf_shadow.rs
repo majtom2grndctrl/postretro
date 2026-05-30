@@ -68,6 +68,23 @@ pub const DEFAULT_MAX_MARCH_STEPS: u32 = 64;
 pub const DEFAULT_OPEN_SPACE_SKIP_THRESHOLD: f32 = 8.0; // multiple of SH cell size (loose seed)
 pub const DEFAULT_PENUMBRA_K: f32 = 8.0;
 
+/// Self-shadow surface bias, in MULTIPLES of the SDF voxel size (0.5 m default,
+/// so the seed below ≈ 1.5 m). The march begins at `t = surface_bias × voxel`
+/// and the closest-passing-distance penumbra term is suppressed inside that
+/// window. This is the distance-field self-intersection fix (cf. UE mesh/global
+/// DF shadows): the caster is baked into the field, so a ray that starts on a
+/// lit surface grazes that surface's own ≈0 field near the origin; with the
+/// coarse field (0.5 m voxel / 4 m brick mean) the penumbra estimate rounds that
+/// self-grazing into soft round dark blobs on faces that point at the light.
+///
+/// Seeded at 3.0 voxels — enough to clear the caster's own near-surface
+/// quantization band (the prior hard-coded 1.5-voxel start was too small), small
+/// enough not to detach the block's contact shadow on the floor/wall: that
+/// shadow comes from the trace HITTING the block (the `d < voxel*0.5` hard
+/// return), not from the suppressed penumbra term, so widening the penumbra
+/// window leaves it intact.
+pub const DEFAULT_SURFACE_BIAS_VOXELS: f32 = 3.0;
+
 /// Size in bytes of the `ShadowPassParams` uniform. Mirrors the WGSL struct
 /// in `shaders/sdf_shadow.wgsl`. std140-aligned: vec3<f32>/u32 pairs share
 /// 16-byte slots, mat4x4 takes 64.
@@ -83,7 +100,7 @@ pub const DEFAULT_PENUMBRA_K: f32 = 8.0;
 ///   96..108  sh_grid_origin          (vec3<f32>)
 ///   108..112 sh_has_volume           (u32)
 ///   112..124 sh_cell_size            (vec3<f32>)
-///   124..128 _pad0                   (u32)
+///   124..128 surface_bias            (f32)  // former _pad0 slot
 ///   128..140 sh_grid_dimensions      (vec3<u32>)
 ///   140..144 _pad1                   (u32)
 pub const SHADOW_PASS_PARAMS_SIZE: usize = 144;
@@ -95,6 +112,9 @@ pub struct SdfShadowTuning {
     pub max_march_steps: u32,
     pub open_space_skip_threshold: f32,
     pub penumbra_k: f32,
+    /// Self-shadow surface bias in multiples of the SDF voxel size. See
+    /// `DEFAULT_SURFACE_BIAS_VOXELS`.
+    pub surface_bias: f32,
 }
 
 impl Default for SdfShadowTuning {
@@ -103,6 +123,7 @@ impl Default for SdfShadowTuning {
             max_march_steps: DEFAULT_MAX_MARCH_STEPS,
             open_space_skip_threshold: DEFAULT_OPEN_SPACE_SKIP_THRESHOLD,
             penumbra_k: DEFAULT_PENUMBRA_K,
+            surface_bias: DEFAULT_SURFACE_BIAS_VOXELS,
         }
     }
 }
@@ -321,6 +342,15 @@ impl SdfShadowPass {
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn set_penumbra_k(&mut self, k: f32) {
         self.tuning.penumbra_k = k.max(0.01);
+    }
+
+    /// Write through to `tuning.surface_bias` (× voxel). Larger = the march
+    /// starts further off the originating surface, which kills SDF self-shadow
+    /// blobs on lit faces but, taken too far, can begin to detach the block's
+    /// own contact shadow. Clamped non-negative.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn set_surface_bias(&mut self, bias: f32) {
+        self.tuning.surface_bias = bias.max(0.0);
     }
 
     /// Resize the half-res target on a surface resize. Rebuilds the bind group
@@ -634,10 +664,11 @@ pub(crate) fn pack_params_bytes(
     bytes[104..108].copy_from_slice(&sh_grid.origin[2].to_ne_bytes());
     let has_vol: u32 = if sh_grid.has_volume { 1 } else { 0 };
     bytes[108..112].copy_from_slice(&has_vol.to_ne_bytes());
-    // 112..124: sh_cell_size; 124..128: _pad0.
+    // 112..124: sh_cell_size; 124..128: surface_bias (former _pad0 slot).
     bytes[112..116].copy_from_slice(&sh_grid.cell_size[0].to_ne_bytes());
     bytes[116..120].copy_from_slice(&sh_grid.cell_size[1].to_ne_bytes());
     bytes[120..124].copy_from_slice(&sh_grid.cell_size[2].to_ne_bytes());
+    bytes[124..128].copy_from_slice(&tuning.surface_bias.to_ne_bytes());
     // 128..140: sh_grid_dimensions; 140..144: _pad1.
     bytes[128..132].copy_from_slice(&sh_grid.dimensions[0].to_ne_bytes());
     bytes[132..136].copy_from_slice(&sh_grid.dimensions[1].to_ne_bytes());
@@ -817,6 +848,7 @@ mod tests {
                 max_march_steps: 64,
                 open_space_skip_threshold: 1.5,
                 penumbra_k: 8.0,
+                surface_bias: 3.0,
             },
             SdfShadowShGrid {
                 origin: [-4.0, 0.0, -4.0],
@@ -849,6 +881,10 @@ mod tests {
         assert_eq!(max_steps, 64);
         assert_eq!(skip_thresh, 1.5);
         assert_eq!(k, 8.0);
+
+        // surface_bias occupies the former _pad0 slot at 124..128.
+        let surface_bias = f32::from_ne_bytes(bytes[124..128].try_into().unwrap());
+        assert_eq!(surface_bias, 3.0);
 
         let sh_origin_x = f32::from_ne_bytes(bytes[96..100].try_into().unwrap());
         let has_vol = u32::from_ne_bytes(bytes[108..112].try_into().unwrap());

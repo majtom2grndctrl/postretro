@@ -3105,6 +3105,16 @@ impl Renderer {
         self.sdf_shadow_pass.set_penumbra_k(k);
     }
 
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn sdf_surface_bias(&self) -> f32 {
+        self.sdf_shadow_pass.tuning().surface_bias
+    }
+
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn set_sdf_surface_bias(&mut self, bias: f32) {
+        self.sdf_shadow_pass.set_surface_bias(bias);
+    }
+
     /// Current per-frame fog raymarch step size (world units). Read by the
     /// debug-UI slider on first draw so it shows the live value rather than
     /// the construction default.

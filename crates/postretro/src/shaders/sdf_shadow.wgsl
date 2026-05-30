@@ -38,7 +38,13 @@ struct ShadowPassParams {
     sh_grid_origin: vec3<f32>,
     sh_has_volume: u32,
     sh_cell_size: vec3<f32>,
-    _pad0: u32,
+    // Self-shadow surface bias, in MULTIPLES of the SDF voxel size (occupies the
+    // former _pad0 slot — same 144-byte layout). The march starts at
+    // `t = surface_bias × voxel` and the closest-passing-distance penumbra term
+    // is suppressed inside that window, so the caster's own near-surface field
+    // can't shadow itself (the distance-field self-intersection fix; cf. UE
+    // mesh/global DF shadows).
+    surface_bias: f32,
     sh_grid_dimensions: vec3<u32>,
     _pad1: u32,
 };
@@ -287,9 +293,16 @@ fn trace_shadow(origin: vec3<f32>, dir: vec3<f32>) -> f32 {
         return FULLY_LIT;
     }
 
-    // Offset the march start slightly to avoid self-shadowing at the surface.
+    // Self-shadow surface bias (distance-field self-intersection fix; cf. UE
+    // mesh/global DF shadows). The caster IS baked into the field, so a ray that
+    // starts on a lit surface grazes that surface's own ≈0 field near the origin
+    // and the `k·d/t` penumbra term reads it as occlusion — the coarse field
+    // (0.5 m voxel / 4 m brick mean) rounds this into soft round dark blobs on
+    // faces that point at the light. Bias the START off the surface, AND suppress
+    // the penumbra `min` while the ray is still inside the bias window, so the
+    // caster's own near-surface field is never counted as a shadow caster.
     let voxel = max(sdf_meta.voxel_size_m, 1.0e-4);
-    let bias = voxel * 1.5;
+    let bias = voxel * max(params.surface_bias, 0.0);
     var t: f32 = bias;
     var factor: f32 = FULLY_LIT;
     let k = max(params.penumbra_k, 1.0);
@@ -299,11 +312,18 @@ fn trace_shadow(origin: vec3<f32>, dir: vec3<f32>) -> f32 {
     for (var i: u32 = 0u; i < steps; i = i + 1u) {
         let p = origin + dir * t;
         let d = sample_fine_distance(p);
+        // A true hit (ray actually reaches a solid) always shadows — even a hit
+        // can't fire inside the bias window because `t` starts past it, so a
+        // contact shadow on the floor/wall around the block's base is preserved.
         if (d < voxel * 0.5) {
             return 0.0;
         }
-        // Closest-passing-distance penumbra estimate.
-        factor = min(factor, k * d / max(t, voxel));
+        // Closest-passing-distance penumbra estimate. Skip it while the ray is
+        // within the start-bias window: there `d` is dominated by the caster's
+        // own surface field, not a separate occluder.
+        if (t > bias) {
+            factor = min(factor, k * d / max(t, voxel));
+        }
         t = t + max(d, voxel * 0.5);
         if (t > max_t) {
             break;

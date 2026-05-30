@@ -572,6 +572,24 @@ fn slice_for_visibility(factor: vec4<f32>, slot: u32) -> f32 {
     }
 }
 
+// Per-light SDF visibility for an arbitrary spec-light index, resolved through
+// the fragment's K-selection (`sel`). Used by the specular loop, which walks the
+// chunk light list in chunk order rather than selection order: for an `sdf`
+// light it must read the SAME slice its diffuse term used, so it finds the
+// light's slot in the selection (slot i ↔ channel i, by construction the same
+// `sel` the diffuse loop read) and returns that channel. A light that is not
+// `sdf`, or an `sdf` light that ranked beyond K (dropped from the selection,
+// treated lit — matching the diffuse loop), returns 1.0 so the specular term is
+// left unshadowed. `slice_for_visibility` does the slot→channel mapping.
+fn sdf_visibility_for_light(sel: SdfLightSelection, factor: vec4<f32>, light_idx: u32) -> f32 {
+    for (var s: u32 = 0u; s < sel.count; s = s + 1u) {
+        if sel.indices[s] == light_idx {
+            return slice_for_visibility(factor, s);
+        }
+    }
+    return 1.0;
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // UV footprint derivatives — computed once here in uniform control flow.
@@ -686,22 +704,33 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         static_direct = lm_irr * scale + lm_anim;
     }
 
+    // K-selection of `sdf`-tagged lights for this fragment, computed ONCE and
+    // shared by the per-light diffuse loop (below) and the per-light specular
+    // loop (further down). Both terms of an `sdf` light must read the SAME
+    // visibility slice, so they must read it off the SAME selection: a single
+    // `select_sdf_lights` call pins slot i → light i → channel i for both.
+    //
+    // NOTE (Task 4 visual check): `select_sdf_lights` uses the interpolated
+    // full-res world position; the half-res visibility pass reconstructs
+    // position from half-res depth. Near a `chunk_grid` cell boundary the
+    // two can select a different K-set — watch for boundary seam artifacts.
+    let sdf_sel = select_sdf_lights(in.world_position);
+    // Dev toggle: force visibility to 1.0 for the "no double-count" A/B
+    // (forced-1.0 must match the pre-change render — disjoint sets mean the
+    // additive sum is the only thing this loop introduces). `SdfShadowMode::Off`
+    // also forces 1.0 so the sdf terms still land but unshadowed, mirroring the
+    // baked-term Off behavior. Applies to BOTH diffuse and specular.
+    let sdf_force_lit = uniforms.sdf_force_visibility_one != 0u || sdf_mode_off;
+
     // Per-light SDF diffuse (sdf-tagged static lights). Disjoint from `lm_irr`
     // /`lm_anim` by construction (the compiler excludes sdf lights from both
-    // bake sets), so this is purely additive — no re-weighting. Selects the
-    // SAME K lights in the SAME order the half-res visibility pass did (shared
-    // `select_sdf_lights` helper), then multiplies each light's Lambert diffuse
-    // by its upsampled visibility slice (slot i → R/B/A via
-    // `slice_for_visibility`). Gated by `use_lightmap` so it shows in exactly
-    // the direct-static-light isolation modes the baked term does.
+    // bake sets), so this is purely additive — no re-weighting. Multiplies each
+    // selected light's Lambert diffuse by its upsampled visibility slice (slot i
+    // → R/G/B/A via `slice_for_visibility`). Gated by `use_lightmap` so it shows
+    // in exactly the direct-static-light isolation modes the baked term does.
     if use_lightmap {
-        // NOTE (Task 4 visual check): `select_sdf_lights` uses the interpolated
-        // full-res world position; the half-res visibility pass reconstructs
-        // position from half-res depth. Near a `chunk_grid` cell boundary the
-        // two can select a different K-set — watch for boundary seam artifacts.
-        let sel = select_sdf_lights(in.world_position);
-        for (var s: u32 = 0u; s < sel.count; s = s + 1u) {
-            let sl = spec_lights[sel.indices[s]];
+        for (var s: u32 = 0u; s < sdf_sel.count; s = s + 1u) {
+            let sl = spec_lights[sdf_sel.indices[s]];
             let to_light = sl.position_and_range.xyz - in.world_position;
             let dist = length(to_light);
             let range = sl.position_and_range.w;
@@ -714,13 +743,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 continue;
             }
             let atten = select(1.0, max(1.0 - dist / max(range, 0.001), 0.0), range > 0.0);
-            // Dev toggle: force visibility to 1.0 for the "no double-count"
-            // A/B (forced-1.0 must match the pre-change render — disjoint sets
-            // mean the additive sum is the only thing this loop introduces).
-            // `SdfShadowMode::Off` also forces 1.0 so the diffuse still lands
-            // but unshadowed, mirroring the baked-term Off behavior.
-            let force_lit = uniforms.sdf_force_visibility_one != 0u || sdf_mode_off;
-            let visibility = select(slice_for_visibility(sdf_factor, s), 1.0, force_lit);
+            let visibility = select(slice_for_visibility(sdf_factor, s), 1.0, sdf_force_lit);
             static_direct = static_direct + sl.color_and_pad.xyz * (n_dot_l * atten * visibility);
         }
     }
@@ -774,9 +797,25 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 continue;
             }
             let atten = select(1.0, max(1.0 - dist / max(range, 0.001), 0.0), range > 0.0);
+            // Specular is shadowed by the light's OWN technique (invariant 9). An
+            // `sdf`-tagged light's specular multiplies by the SAME per-light
+            // visibility slice its diffuse used — resolved through the shared
+            // `sdf_sel` selection so slot/channel line up by construction; the
+            // slice is already sampled (`sdf_factor`), so this is near-zero cost
+            // and removes specular-through-walls for sdf lights. Non-`sdf`
+            // (`static_light_map`) lights' specular stays unshadowed (they carry
+            // no runtime visibility; baked = free) — a known limitation — so
+            // `sdf_visibility_for_light` returns 1.0 for them. The dev force-lit
+            // toggle (and `SdfShadowMode::Off`) forces 1.0, matching the diffuse.
+            let is_sdf = sdf_select_is_sdf(sl);
+            let visibility = select(
+                sdf_visibility_for_light(sdf_sel, sdf_factor, light_idx),
+                1.0,
+                sdf_force_lit || !is_sdf,
+            );
             let contribution = blinn_phong(
                 L, V, N_bump, sl.color_and_pad.xyz, spec_exp, spec_int
-            ) * atten;
+            ) * (atten * visibility);
             specular_sum = specular_sum + contribution;
         }
     }

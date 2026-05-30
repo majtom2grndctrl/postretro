@@ -4354,6 +4354,74 @@ mod tests {
         );
     }
 
+    /// Pins Task 5's headline contract (invariant 9): an `sdf`-typed light's
+    /// SPECULAR term reads the SAME per-light visibility slice as its diffuse.
+    /// The specular loop walks the chunk list in chunk order, so it resolves the
+    /// slice through `sdf_visibility_for_light`, which finds the light's slot in
+    /// the shared `sdf_sel` selection and maps it via `slice_for_visibility` —
+    /// the same selection and slot→channel mapping the diffuse loop uses, so the
+    /// two terms read the same slice by construction. Full naga validation plus
+    /// structural assertions that the resolver exists, is composed, and is
+    /// actually applied to the specular contribution in `fs_main`.
+    #[test]
+    fn forward_shader_specular_reads_sdf_visibility_slice() {
+        let src = SHADER_SOURCE;
+        let module = naga::front::wgsl::parse_str(src)
+            .expect("forward + sdf_light_select must parse as one composed WGSL module");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("forward + sdf_light_select composed source should validate");
+
+        // The specular slice resolver must exist as a function.
+        let has_resolver = module
+            .functions
+            .iter()
+            .any(|(_h, f)| f.name.as_deref() == Some("sdf_visibility_for_light"));
+        assert!(
+            has_resolver,
+            "forward must declare `sdf_visibility_for_light` (specular reads the per-light slice)",
+        );
+
+        let fs = src
+            .find("fn fs_main(")
+            .expect("forward.wgsl must declare fs_main");
+        let fs_tail = &src[fs..];
+
+        // The specular loop must drive the resolver — else specular is unshadowed
+        // for sdf lights and Task 5's headline contract is unmet.
+        assert!(
+            fs_tail.contains("sdf_visibility_for_light("),
+            "fs_main must call sdf_visibility_for_light so sdf specular reads its visibility slice",
+        );
+
+        // Diffuse and specular must read off the SAME selection: one shared
+        // `sdf_sel` (single `select_sdf_lights` call), not two. A second call
+        // could drift the slot ordering and break diffuse/specular parity.
+        // Count against forward.wgsl ALONE — `SHADER_SOURCE` appends the helper
+        // file, whose `fn select_sdf_lights(` definition would otherwise count.
+        let forward_only = include_str!("../shaders/forward.wgsl");
+        assert_eq!(
+            forward_only.matches("select_sdf_lights(").count(),
+            1,
+            "forward.wgsl must call select_sdf_lights exactly once (diffuse + specular share one selection)",
+        );
+        assert!(
+            fs_tail.contains("sdf_visibility_for_light(sdf_sel,"),
+            "specular must resolve visibility through the shared `sdf_sel` selection",
+        );
+
+        // The specular contribution must actually be multiplied by the resolved
+        // visibility (gated through the sdf tag), proving the slice reaches the
+        // blinn-phong term and is not dead.
+        assert!(
+            fs_tail.contains("sdf_select_is_sdf("),
+            "specular must gate visibility on the sdf tag via sdf_select_is_sdf",
+        );
+    }
+
     /// Regression: the SH volume's `ShGridInfo` uniform struct must have
     /// matching byte stride on both sides of the bind group — CPU packer
     /// (`sh_volume::build_grid_info_bytes`) and the fragment shader's

@@ -526,7 +526,8 @@ pub struct LevelGeometry<'a> {
     pub bvh: &'a BvhTree,
     pub lights: &'a [MapLight],
     pub light_influences: &'a [LightInfluence],
-    /// `None` → renderer binds dummy 1×1×1 textures; shader skips SH sampling.
+    /// `None` means no `OctahedralShVolumeSection`; renderer binds dummy
+    /// 1×1×1 textures and shader skips octahedral SH sampling.
     pub sh_volume: Option<&'a postretro_level_format::sh_volume::OctahedralShVolumeSection>,
     /// `None` → 1×1 white placeholder; bumped-Lambert falls back to flat white.
     pub lightmap: Option<&'a postretro_level_format::lightmap::LightmapSection>,
@@ -4617,16 +4618,16 @@ mod tests {
 
         // Verify the ShGridInfo uniform payload size.
         let sh_grid_binding = sh_volume::BIND_SH_GRID_INFO;
-        let grid_info = sh_volume::build_grid_info_bytes(
-            [0.0; 3],
-            [1.0; 3],
-            [1, 1, 1],
-            [1, 1],
-            1,
-            0,
-            false,
-            true,
-        );
+        let grid_info = sh_volume::build_grid_info_bytes(sh_volume::ShGridInfoParams {
+            grid_origin: [0.0; 3],
+            cell_size: [1.0; 3],
+            grid_dimensions: [1, 1, 1],
+            atlas_dimensions: [1, 1],
+            tile_dimension: 1,
+            tile_border: 0,
+            present: false,
+            probe_occlusion_enabled: true,
+        });
         if let Some(&min) = min_sizes.get(&(3, sh_grid_binding)) {
             assert!(
                 grid_info.len() as u64 >= min,

@@ -75,12 +75,14 @@ pub const SCRIPTED_COLOR_SLOT_F32: usize = 128;
 pub const SCRIPTED_FLOATS_PER_LIGHT: usize = SCRIPTED_BRIGHTNESS_SLOT + SCRIPTED_COLOR_SLOT_F32;
 
 /// Uploaded SH volume handles + bind group. Always populated. Empty-geometry
-/// levels bind dummy 1×1 atlases and set `has_sh_volume` to zero so shader
-/// consumers skip indirect sampling.
+/// levels bind dummy 1×1 octahedral atlas textures plus a dummy 1×1×1
+/// depth-moment texture, and set `has_sh_volume` to zero so shader consumers
+/// skip indirect sampling.
 ///
 /// Two atlas textures exist:
-/// - **base**: uploaded once at load time from the PRL `OctahedralShVolume`
-///   section. Held as the source-of-truth static octahedral irradiance atlas.
+/// - **base**: uploaded once at load time from the PRL
+///   `OctahedralShVolumeSection`. Held as the source-of-truth static
+///   octahedral irradiance atlas.
 /// - **total**: one `Rgba16Float` texture with both sampled and storage views.
 ///   Consumers sample this texture; the compose pass writes it each frame.
 pub struct ShVolumeResources {
@@ -122,7 +124,8 @@ pub struct ShVolumeResources {
     pub scripted_sample_byte_offset: usize,
     /// CPU mirror of section-34 per-probe validity bytes, z-major
     /// (`x + y*Nx + z*Nx*Ny`). One byte per probe: `0 = invalid` (probe inside
-    /// solid or off-grid), non-zero = valid. Empty when no SH section is present.
+    /// solid or off-grid), non-zero = valid. Empty when no
+    /// `OctahedralShVolume` section is present.
     /// Consumed by `sh_diagnostics::emit` for probe-marker coloring.
     #[cfg(feature = "dev-tools")]
     pub validity: Vec<u8>,
@@ -257,8 +260,9 @@ impl AnimatedLightBuffers {
 
 impl ShVolumeResources {
     /// Build group 3 (SH volume) resources. `section` is `None` when the PRL
-    /// file had no `ShVolume` section — in that case dummy 1×1×1 textures are
-    /// uploaded and the `has_sh_volume` flag is zero so the shader skips SH
+    /// file had no `OctahedralShVolume` section — in that case dummy 1×1
+    /// octahedral atlas textures and a dummy 1×1×1 depth-moment texture are
+    /// uploaded, and the `has_sh_volume` flag is zero so the shader skips SH
     /// sampling and falls back to `ambient_floor + direct_sum`.
     pub fn new(
         device: &wgpu::Device,
@@ -392,7 +396,7 @@ impl ShVolumeResources {
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         );
 
-        let grid_info_bytes = build_grid_info_bytes(
+        let grid_info_bytes = build_grid_info_bytes(ShGridInfoParams {
             grid_origin,
             cell_size,
             grid_dimensions,
@@ -401,7 +405,7 @@ impl ShVolumeResources {
             tile_border,
             present,
             probe_occlusion_enabled,
-        );
+        });
         let grid_info_buffer = device.create_buffer_init_helper(
             "SH Grid Info Uniform",
             &grid_info_bytes,
@@ -437,35 +441,36 @@ impl ShVolumeResources {
             ..Default::default()
         });
 
-        let mut entries: Vec<wgpu::BindGroupEntry> = Vec::with_capacity(7);
-        entries.push(wgpu::BindGroupEntry {
-            binding: BIND_SH_TOTAL_ATLAS,
-            resource: wgpu::BindingResource::TextureView(&total_atlas_sampled_view),
-        });
-        entries.push(wgpu::BindGroupEntry {
-            binding: BIND_SH_ATLAS_SAMPLER,
-            resource: wgpu::BindingResource::Sampler(&atlas_sampler),
-        });
-        entries.push(wgpu::BindGroupEntry {
-            binding: BIND_SH_GRID_INFO,
-            resource: grid_info_buffer.as_entire_binding(),
-        });
-        entries.push(wgpu::BindGroupEntry {
-            binding: BIND_ANIM_DESCRIPTORS,
-            resource: anim_descriptors_buffer.as_entire_binding(),
-        });
-        entries.push(wgpu::BindGroupEntry {
-            binding: BIND_ANIM_SAMPLES,
-            resource: anim_samples_buffer.as_entire_binding(),
-        });
-        entries.push(wgpu::BindGroupEntry {
-            binding: BIND_SCRIPTED_LIGHT_DESCRIPTORS,
-            resource: scripted_light_descriptors_buffer.as_entire_binding(),
-        });
-        entries.push(wgpu::BindGroupEntry {
-            binding: BIND_SH_DEPTH_MOMENTS,
-            resource: wgpu::BindingResource::TextureView(&depth_moment_view),
-        });
+        let entries: Vec<wgpu::BindGroupEntry> = vec![
+            wgpu::BindGroupEntry {
+                binding: BIND_SH_TOTAL_ATLAS,
+                resource: wgpu::BindingResource::TextureView(&total_atlas_sampled_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: BIND_SH_ATLAS_SAMPLER,
+                resource: wgpu::BindingResource::Sampler(&atlas_sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: BIND_SH_GRID_INFO,
+                resource: grid_info_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: BIND_ANIM_DESCRIPTORS,
+                resource: anim_descriptors_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: BIND_ANIM_SAMPLES,
+                resource: anim_samples_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: BIND_SCRIPTED_LIGHT_DESCRIPTORS,
+                resource: scripted_light_descriptors_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: BIND_SH_DEPTH_MOMENTS,
+                resource: wgpu::BindingResource::TextureView(&depth_moment_view),
+            },
+        ];
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("SH Volume Bind Group"),
@@ -532,16 +537,16 @@ impl ShVolumeResources {
             return;
         }
         self.probe_occlusion_enabled = enabled;
-        let bytes = build_grid_info_bytes(
-            self.grid_origin,
-            self.cell_size,
-            self.grid_dimensions,
-            self.atlas_dimensions,
-            self.tile_dimension,
-            self.tile_border,
-            self.present,
-            enabled,
-        );
+        let bytes = build_grid_info_bytes(ShGridInfoParams {
+            grid_origin: self.grid_origin,
+            cell_size: self.cell_size,
+            grid_dimensions: self.grid_dimensions,
+            atlas_dimensions: self.atlas_dimensions,
+            tile_dimension: self.tile_dimension,
+            tile_border: self.tile_border,
+            present: self.present,
+            probe_occlusion_enabled: enabled,
+        });
         queue.write_buffer(&self.grid_info_buffer, 0, &bytes);
     }
 }
@@ -918,42 +923,47 @@ fn u16_slice_to_bytes(data: &[u16]) -> Vec<u8> {
     bytes
 }
 
-pub(crate) fn build_grid_info_bytes(
-    grid_origin: [f32; 3],
-    cell_size: [f32; 3],
-    grid_dimensions: [u32; 3],
-    atlas_dimensions: [u32; 2],
-    tile_dimension: u32,
-    tile_border: u32,
-    present: bool,
-    probe_occlusion_enabled: bool,
-) -> [u8; SH_GRID_INFO_SIZE] {
+#[derive(Clone, Copy)]
+pub(crate) struct ShGridInfoParams {
+    pub grid_origin: [f32; 3],
+    pub cell_size: [f32; 3],
+    pub grid_dimensions: [u32; 3],
+    pub atlas_dimensions: [u32; 2],
+    pub tile_dimension: u32,
+    pub tile_border: u32,
+    pub present: bool,
+    pub probe_occlusion_enabled: bool,
+}
+
+pub(crate) fn build_grid_info_bytes(params: ShGridInfoParams) -> [u8; SH_GRID_INFO_SIZE] {
     let mut bytes = [0u8; SH_GRID_INFO_SIZE];
     // grid_origin vec3 at 0..12, has_sh_volume u32 at 12..16.
-    bytes[0..4].copy_from_slice(&grid_origin[0].to_ne_bytes());
-    bytes[4..8].copy_from_slice(&grid_origin[1].to_ne_bytes());
-    bytes[8..12].copy_from_slice(&grid_origin[2].to_ne_bytes());
-    let flag: u32 = if present { 1 } else { 0 };
+    bytes[0..4].copy_from_slice(&params.grid_origin[0].to_ne_bytes());
+    bytes[4..8].copy_from_slice(&params.grid_origin[1].to_ne_bytes());
+    bytes[8..12].copy_from_slice(&params.grid_origin[2].to_ne_bytes());
+    let flag: u32 = if params.present { 1 } else { 0 };
     bytes[12..16].copy_from_slice(&flag.to_ne_bytes());
     // cell_size vec3 at 16..28, _pad0 at 28..32.
-    bytes[16..20].copy_from_slice(&cell_size[0].to_ne_bytes());
-    bytes[20..24].copy_from_slice(&cell_size[1].to_ne_bytes());
-    bytes[24..28].copy_from_slice(&cell_size[2].to_ne_bytes());
+    bytes[16..20].copy_from_slice(&params.cell_size[0].to_ne_bytes());
+    bytes[20..24].copy_from_slice(&params.cell_size[1].to_ne_bytes());
+    bytes[24..28].copy_from_slice(&params.cell_size[2].to_ne_bytes());
     // grid_dimensions vec3<u32> at 32..44, _pad1 at 44..48.
-    bytes[32..36].copy_from_slice(&grid_dimensions[0].to_ne_bytes());
-    bytes[36..40].copy_from_slice(&grid_dimensions[1].to_ne_bytes());
-    bytes[40..44].copy_from_slice(&grid_dimensions[2].to_ne_bytes());
+    bytes[32..36].copy_from_slice(&params.grid_dimensions[0].to_ne_bytes());
+    bytes[36..40].copy_from_slice(&params.grid_dimensions[1].to_ne_bytes());
+    bytes[40..44].copy_from_slice(&params.grid_dimensions[2].to_ne_bytes());
     // bytes[44..48] is _pad1, already zero.
-    bytes[48..52].copy_from_slice(&atlas_dimensions[0].to_ne_bytes());
-    bytes[52..56].copy_from_slice(&atlas_dimensions[1].to_ne_bytes());
-    bytes[56..60].copy_from_slice(&tile_dimension.to_ne_bytes());
-    bytes[60..64].copy_from_slice(&tile_border.to_ne_bytes());
-    bytes[64..68].copy_from_slice(&grid_dimensions[0].to_ne_bytes());
-    let tile_rows = grid_dimensions[1].saturating_mul(grid_dimensions[2]);
+    bytes[48..52].copy_from_slice(&params.atlas_dimensions[0].to_ne_bytes());
+    bytes[52..56].copy_from_slice(&params.atlas_dimensions[1].to_ne_bytes());
+    bytes[56..60].copy_from_slice(&params.tile_dimension.to_ne_bytes());
+    bytes[60..64].copy_from_slice(&params.tile_border.to_ne_bytes());
+    bytes[64..68].copy_from_slice(&params.grid_dimensions[0].to_ne_bytes());
+    let tile_rows = params.grid_dimensions[1].saturating_mul(params.grid_dimensions[2]);
     bytes[68..72].copy_from_slice(&tile_rows.to_ne_bytes());
-    let interior = tile_dimension.saturating_sub(tile_border.saturating_mul(2));
+    let interior = params
+        .tile_dimension
+        .saturating_sub(params.tile_border.saturating_mul(2));
     bytes[72..76].copy_from_slice(&interior.to_ne_bytes());
-    let probe_occlusion: u32 = probe_occlusion_enabled as u32;
+    let probe_occlusion: u32 = params.probe_occlusion_enabled as u32;
     bytes[80..84].copy_from_slice(&probe_occlusion.to_ne_bytes());
     bytes
 }
@@ -1103,16 +1113,16 @@ mod tests {
 
     #[test]
     fn grid_info_bytes_encode_origin_and_present_flag() {
-        let bytes = build_grid_info_bytes(
-            [1.5, 2.5, 3.5],
-            [0.25, 0.5, 1.0],
-            [4, 5, 6],
-            [24, 180],
-            6,
-            1,
-            true,
-            true,
-        );
+        let bytes = build_grid_info_bytes(ShGridInfoParams {
+            grid_origin: [1.5, 2.5, 3.5],
+            cell_size: [0.25, 0.5, 1.0],
+            grid_dimensions: [4, 5, 6],
+            atlas_dimensions: [24, 180],
+            tile_dimension: 6,
+            tile_border: 1,
+            present: true,
+            probe_occlusion_enabled: true,
+        });
         assert_eq!(bytes.len(), SH_GRID_INFO_SIZE);
 
         let ox = f32::from_ne_bytes(bytes[0..4].try_into().unwrap());
@@ -1140,7 +1150,16 @@ mod tests {
 
     #[test]
     fn grid_info_flag_zero_when_absent() {
-        let bytes = build_grid_info_bytes([0.0; 3], [1.0; 3], [1, 1, 1], [1, 1], 1, 0, false, true);
+        let bytes = build_grid_info_bytes(ShGridInfoParams {
+            grid_origin: [0.0; 3],
+            cell_size: [1.0; 3],
+            grid_dimensions: [1, 1, 1],
+            atlas_dimensions: [1, 1],
+            tile_dimension: 1,
+            tile_border: 0,
+            present: false,
+            probe_occlusion_enabled: true,
+        });
         let flag = u32::from_ne_bytes(bytes[12..16].try_into().unwrap());
         assert_eq!(flag, 0);
     }
@@ -1156,8 +1175,16 @@ mod tests {
     #[test]
     fn grid_info_bytes_encode_probe_occlusion_flag() {
         for (enabled, expected) in [(true, 1u32), (false, 0u32)] {
-            let bytes =
-                build_grid_info_bytes([0.0; 3], [1.0; 3], [1, 1, 1], [1, 1], 1, 0, true, enabled);
+            let bytes = build_grid_info_bytes(ShGridInfoParams {
+                grid_origin: [0.0; 3],
+                cell_size: [1.0; 3],
+                grid_dimensions: [1, 1, 1],
+                atlas_dimensions: [1, 1],
+                tile_dimension: 1,
+                tile_border: 0,
+                present: true,
+                probe_occlusion_enabled: enabled,
+            });
             assert_eq!(
                 u32::from_ne_bytes(bytes[80..84].try_into().unwrap()),
                 expected,
@@ -1323,8 +1350,16 @@ mod tests {
         assert_eq!(dummy_depth_moment_payload(), [0, 0, 0, 0]);
         assert_eq!(dummy_depth_moment_payload().len(), 4);
 
-        let grid_info =
-            build_grid_info_bytes([0.0; 3], [1.0; 3], [1, 1, 1], [1, 1], 1, 0, false, true);
+        let grid_info = build_grid_info_bytes(ShGridInfoParams {
+            grid_origin: [0.0; 3],
+            cell_size: [1.0; 3],
+            grid_dimensions: [1, 1, 1],
+            atlas_dimensions: [1, 1],
+            tile_dimension: 1,
+            tile_border: 0,
+            present: false,
+            probe_occlusion_enabled: true,
+        });
         let flag = u32::from_ne_bytes(grid_info[12..16].try_into().unwrap());
         assert_eq!(
             flag, 0,

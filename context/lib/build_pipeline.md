@@ -114,7 +114,8 @@ parse .map → BSP construction → brush-side projection → portal generation 
 6. **Geometry.** Fan-triangulates faces into a global vertex/index buffer. Associates each face with a material bucket and cell ID.
 7. **BVH.** Builds a global SAH BVH over all static geometry organized by `(face, material_bucket)` pair. Flattens to dense arrays; leaves sorted by material bucket for contiguous per-bucket indirect draw slots.
 8. **Lightmap bake.** UV-unwraps world geometry into a lightmap atlas. Ray-casts per-texel irradiance and dominant incoming light direction from all static lights against the global BVH. Atlas dimensions are bounded; on overflow the baker retries at a coarser texel density (halving resolution) a bounded number of times before failing the build. Each retry emits a warning — the fallback is visible in logs, not silent. Skipped when the map has no static lights.
-9. **Pack.** Writes all sections to the `.prl` binary format.
+9. **Octahedral irradiance volume bake.** Bakes static-light indirect irradiance into octahedral atlas tiles and isotropic Chebyshev depth moments. When animated lights are present, also bakes the sparse indirect-only delta tile companion for runtime composition.
+10. **Pack.** Writes all sections to the `.prl` binary format.
 
 ### PRL section IDs
 

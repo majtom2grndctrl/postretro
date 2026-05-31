@@ -5,12 +5,11 @@
 // into octahedral irradiance tiles — but ONLY at base-grid probes that fall
 // inside an affinity cell the light reaches (from `affinity_grid::decompose_affinity`).
 //
-// Indirect-only is a deliberate amendment to the shipped `perf-animated-sh-light-culling`
-// plan, which baked direct + indirect into the delta. The animated light's DIRECT
-// contribution already lives in `lm_anim` (the animated weight-map bake, occlusion-
-// tested); folding it into the delta too double-counted it. Base and delta
-// irradiance both store bounce only. See
-// `context/lib/rendering_pipeline.md §4` (Animated SH delta volumes).
+// Indirect-only is a deliberate split: the animated light's DIRECT contribution
+// already lives in `lm_anim` (the animated weight-map bake, occlusion-tested);
+// folding it into the delta too would double-count it. Base and delta
+// irradiance both store bounce only. See `context/lib/rendering_pipeline.md §4`
+// (Animated SH delta volumes).
 // The result is stored as a CSR index keyed by affinity cell:
 //
 //   - `affinity_offsets[c]..affinity_offsets[c+1]` is cell `c`'s slice of
@@ -32,7 +31,7 @@
 // `animation_descriptor_indices[affinity_lights[i]]` both index
 // `AnimatedBakedLights.entries()` — same iteration order, no remap.
 //
-// See: context/plans/in-progress/perf-animated-sh-light-culling/
+// Wire format: `context/lib/build_pipeline.md §PRL section IDs`
 
 use std::collections::HashSet;
 
@@ -276,13 +275,13 @@ fn csr_entry_cells(affinity_offsets: &[u32]) -> Vec<u32> {
 /// flat probe payload (`PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE` halves):
 /// one RGBA16F octahedral tile per probe, x-fastest in-cell order.
 ///
-/// Per-probe clip (see module doc): cell inclusion is portal-granular (Task 1's
-/// affinity decomposition already dropped cells the light can't reach through
-/// portals). Within an included cell each probe is additionally clipped by the
+/// Per-probe clip (see module doc): cell inclusion is portal-granular; affinity
+/// decomposition already dropped cells the light can't reach through portals.
+/// Within an included cell each probe is additionally clipped by the
 /// light's AABB and the solid/exterior validity gate (`probe_is_valid_pub`, the
 /// same gate the dense bake used). Probes outside the AABB or in an invalid leaf
-/// are written all-zero. The portal-reachability clip stays cell-granular — we
-/// reuse Task 1's centroid test rather than add per-probe portal plumbing.
+/// are written all-zero. The portal-reachability clip stays cell-granular and
+/// uses the affinity-cell centroid rather than per-probe portal tests.
 fn bake_subblock(
     inputs: &DeltaBakeInputs<'_>,
     light: &MapLight,
@@ -622,20 +621,18 @@ mod tests {
         assert!(!section.affinity_lights.is_empty());
         assert_eq!(section.tile_dimension, DEFAULT_IRRADIANCE_TILE_DIMENSION);
         assert_eq!(section.tile_border, DEFAULT_IRRADIANCE_TILE_BORDER);
-        // NOTE: no "any probe nonzero" assertion here. The delta is now
-        // INDIRECT-only (Task 1) — with this sparse single-triangle fixture the
+        // NOTE: no "any probe nonzero" assertion here. The delta is
+        // INDIRECT-only: with this sparse single-triangle fixture the
         // origin probes have no surfaces to bounce off, so an all-zero payload is
         // correct. The nonzero-tile contract is covered by
         // `subblock_stores_indirect_only_not_direct_plus_indirect` (bit-exact vs
         // the indirect-only reference) instead.
     }
 
-    /// Delta irradiance is INDIRECT-ONLY (sdf-per-light-shadows Task 1, amending
-    /// `perf-animated-sh-light-culling`). The baked sub-block at a probe must
+    /// Delta irradiance is INDIRECT-ONLY. The baked sub-block at a probe must
     /// equal the indirect-only bounce tile — NOT direct + indirect. The animated
     /// light's direct term lives in `lm_anim`; folding it into the delta too
-    /// would double-count. Regression: the shipped delta bake summed
-    /// `direct + indirect`, double-counting the animated direct contribution.
+    /// would double-count.
     #[test]
     fn subblock_stores_indirect_only_not_direct_plus_indirect() {
         // Light on a base-probe position inside cell 0's block, with cube

@@ -34,8 +34,9 @@ const BIND_ANIMATION_DESCRIPTOR_INDICES: u32 = 25;
 const COMPOSE_GRID_DIMS_SIZE: usize = 48;
 
 /// GPU-side compose pass. Always present — levels without an SH section get
-/// 1×1×1 dummy textures and a single workgroup dispatch. Unconditional
-/// dispatch avoids branching in the frame loop.
+/// dummy 1×1 octahedral atlases plus valid zeroed depth-moment resources and a
+/// single workgroup dispatch. Unconditional dispatch avoids branching in the
+/// frame loop.
 pub struct ShComposeResources {
     pipeline: wgpu::ComputePipeline,
     bind_group: wgpu::BindGroup,
@@ -179,47 +180,48 @@ impl ShComposeResources {
             cache: None,
         });
 
-        let mut entries: Vec<wgpu::BindGroupEntry> = Vec::with_capacity(10);
-        entries.push(wgpu::BindGroupEntry {
-            binding: 0,
-            resource: wgpu::BindingResource::TextureView(&sh.base_atlas_view),
-        });
-        entries.push(wgpu::BindGroupEntry {
-            binding: 1,
-            resource: wgpu::BindingResource::TextureView(&sh.total_atlas_storage_view),
-        });
-        entries.push(wgpu::BindGroupEntry {
-            binding: 18,
-            resource: grid_buffer.as_entire_binding(),
-        });
-        entries.push(wgpu::BindGroupEntry {
-            binding: 19,
-            resource: origin_buffer.as_entire_binding(),
-        });
-        entries.push(wgpu::BindGroupEntry {
-            binding: BIND_DELTA_SUBBLOCKS,
-            resource: delta_subblocks_buffer.as_entire_binding(),
-        });
-        entries.push(wgpu::BindGroupEntry {
-            binding: BIND_AFFINITY_OFFSETS,
-            resource: affinity_offsets_buffer.as_entire_binding(),
-        });
-        entries.push(wgpu::BindGroupEntry {
-            binding: BIND_AFFINITY_LIGHTS,
-            resource: affinity_lights_buffer.as_entire_binding(),
-        });
-        entries.push(wgpu::BindGroupEntry {
-            binding: BIND_ANIMATION_DESCRIPTOR_INDICES,
-            resource: animation_descriptor_indices_buffer.as_entire_binding(),
-        });
-        entries.push(wgpu::BindGroupEntry {
-            binding: 22,
-            resource: sh.animation.descriptors.as_entire_binding(),
-        });
-        entries.push(wgpu::BindGroupEntry {
-            binding: 23,
-            resource: sh.animation.anim_samples.as_entire_binding(),
-        });
+        let entries: Vec<wgpu::BindGroupEntry> = vec![
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&sh.base_atlas_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&sh.total_atlas_storage_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 18,
+                resource: grid_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 19,
+                resource: origin_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: BIND_DELTA_SUBBLOCKS,
+                resource: delta_subblocks_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: BIND_AFFINITY_OFFSETS,
+                resource: affinity_offsets_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: BIND_AFFINITY_LIGHTS,
+                resource: affinity_lights_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: BIND_ANIMATION_DESCRIPTOR_INDICES,
+                resource: animation_descriptor_indices_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 22,
+                resource: sh.animation.descriptors.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 23,
+                resource: sh.animation.anim_samples.as_entire_binding(),
+            },
+        ];
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("SH Compose Bind Group"),
@@ -460,116 +462,116 @@ pub(crate) fn f16_bits_to_f32(bits: u16) -> f32 {
 }
 
 fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
-    let mut entries = Vec::with_capacity(10);
-    entries.push(wgpu::BindGroupLayoutEntry {
-        binding: 0,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Texture {
-            sample_type: wgpu::TextureSampleType::Float { filterable: false },
-            view_dimension: wgpu::TextureViewDimension::D2,
-            multisampled: false,
+    vec![
+        wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
         },
-        count: None,
-    });
-    entries.push(wgpu::BindGroupLayoutEntry {
-        binding: 1,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::StorageTexture {
-            access: wgpu::StorageTextureAccess::WriteOnly,
-            format: wgpu::TextureFormat::Rgba16Float,
-            view_dimension: wgpu::TextureViewDimension::D2,
+        wgpu::BindGroupLayoutEntry {
+            binding: 1,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::StorageTexture {
+                access: wgpu::StorageTextureAccess::WriteOnly,
+                format: wgpu::TextureFormat::Rgba16Float,
+                view_dimension: wgpu::TextureViewDimension::D2,
+            },
+            count: None,
         },
-        count: None,
-    });
-    // Binding 18: atlas/grid/tile/affinity mapping.
-    entries.push(wgpu::BindGroupLayoutEntry {
-        binding: 18,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: false,
-            min_binding_size: None,
+        // Binding 18: atlas/grid/tile/affinity mapping.
+        wgpu::BindGroupLayoutEntry {
+            binding: 18,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
         },
-        count: None,
-    });
-    // Binding 19: grid_origin + cell_size.
-    entries.push(wgpu::BindGroupLayoutEntry {
-        binding: 19,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: false,
-            min_binding_size: None,
+        // Binding 19: grid_origin + cell_size.
+        wgpu::BindGroupLayoutEntry {
+            binding: 19,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
         },
-        count: None,
-    });
-    // Binding 20: delta_subblocks — sparse f16 probe payload (raw `u16` halves).
-    entries.push(wgpu::BindGroupLayoutEntry {
-        binding: BIND_DELTA_SUBBLOCKS,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only: true },
-            has_dynamic_offset: false,
-            min_binding_size: None,
+        // Binding 20: delta_subblocks — sparse f16 probe payload (raw `u16` halves).
+        wgpu::BindGroupLayoutEntry {
+            binding: BIND_DELTA_SUBBLOCKS,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
         },
-        count: None,
-    });
-    // Binding 21: affinity_offsets — CSR offsets (`u32`).
-    entries.push(wgpu::BindGroupLayoutEntry {
-        binding: BIND_AFFINITY_OFFSETS,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only: true },
-            has_dynamic_offset: false,
-            min_binding_size: None,
+        // Binding 21: affinity_offsets — CSR offsets (`u32`).
+        wgpu::BindGroupLayoutEntry {
+            binding: BIND_AFFINITY_OFFSETS,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
         },
-        count: None,
-    });
-    // Binding 24: affinity_lights — flat CSR light indices (`u32`). Numbered
-    // after the shared 22/23 so those keep their indices.
-    entries.push(wgpu::BindGroupLayoutEntry {
-        binding: BIND_AFFINITY_LIGHTS,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only: true },
-            has_dynamic_offset: false,
-            min_binding_size: None,
+        // Binding 24: affinity_lights — flat CSR light indices (`u32`). Numbered
+        // after the shared 22/23 so those keep their indices.
+        wgpu::BindGroupLayoutEntry {
+            binding: BIND_AFFINITY_LIGHTS,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
         },
-        count: None,
-    });
-    // Binding 25: delta-light index → animation descriptor slot.
-    entries.push(wgpu::BindGroupLayoutEntry {
-        binding: BIND_ANIMATION_DESCRIPTOR_INDICES,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only: true },
-            has_dynamic_offset: false,
-            min_binding_size: None,
+        // Binding 25: delta-light index → animation descriptor slot.
+        wgpu::BindGroupLayoutEntry {
+            binding: BIND_ANIMATION_DESCRIPTOR_INDICES,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
         },
-        count: None,
-    });
-    // Bindings 22–23: animation descriptors and samples (shared with SH bind group).
-    entries.push(wgpu::BindGroupLayoutEntry {
-        binding: 22,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only: true },
-            has_dynamic_offset: false,
-            min_binding_size: None,
+        // Bindings 22–23: animation descriptors and samples (shared with SH bind group).
+        wgpu::BindGroupLayoutEntry {
+            binding: 22,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
         },
-        count: None,
-    });
-    entries.push(wgpu::BindGroupLayoutEntry {
-        binding: 23,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only: true },
-            has_dynamic_offset: false,
-            min_binding_size: None,
+        wgpu::BindGroupLayoutEntry {
+            binding: 23,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
         },
-        count: None,
-    });
-    entries
+    ]
 }
 
 #[cfg(test)]

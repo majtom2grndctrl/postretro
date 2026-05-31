@@ -1,5 +1,5 @@
-// SH irradiance volume section (ID 20): regular-grid L2 spherical harmonic
-// probes with static RGB base coefficients and animation descriptors.
+// Current OctahedralShVolume section (id 34) plus legacy ShVolume (id 20)
+// compatibility.
 //
 // See: context/lib/build_pipeline.md
 

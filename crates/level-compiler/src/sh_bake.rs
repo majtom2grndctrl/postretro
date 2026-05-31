@@ -1,4 +1,4 @@
-// SH irradiance volume baker — indirect-only L2 probe grid over the level AABB.
+// Octahedral irradiance atlas baker. Uses L2 SH as an intermediate projection.
 // See: context/lib/build_pipeline.md
 
 use std::collections::HashSet;
@@ -62,8 +62,8 @@ pub struct ShBakeCtx<'a> {
     pub exterior_leaves: &'a HashSet<usize>,
     pub static_lights: &'a StaticBakedLights<'a>,
     pub animated_lights: &'a AnimatedBakedLights<'a>,
-    /// Total `MapLight` count (full pre-filter list length). Used to size the
-    /// `slot_for_map_light` trailer in the emitted `ShVolumeSection`. Task 2c.
+    /// Total `MapLight` count before static/animated filtering. Sizes the
+    /// `slot_for_map_light` table emitted with `OctahedralShVolumeSection`.
     pub total_light_count: usize,
 }
 
@@ -209,8 +209,8 @@ pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> OctahedralSh
         .map(|l| animation_descriptor_for(l))
         .collect();
 
-    // Task 2c: emit the map-light-index → animated-slot table. Inverse of
-    // the envelope-slot assignment in `AnimatedBakedLights::from_lights`.
+    // Emit the map-light-index to animated-slot table consumed by runtime
+    // animation lookup. This is the inverse of `AnimatedBakedLights` slotting.
     let mut slot_for_map_light = vec![ANIMATED_SLOT_NONE; inputs.total_light_count];
     for (slot, entry) in inputs.animated_lights.entries().iter().enumerate() {
         if entry.source_index < slot_for_map_light.len() {
@@ -1125,7 +1125,7 @@ mod tests {
         assert!(section.atlas_texels.is_empty());
     }
 
-    /// Task 2c: even on empty geometry, the slot table sizes to
+    /// Empty geometry still emits a `slot_for_map_light` table sized to
     /// `total_light_count`. Every entry is `ANIMATED_SLOT_NONE`.
     #[test]
     fn empty_geometry_emits_sized_slot_table_when_lights_present() {

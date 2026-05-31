@@ -24,7 +24,7 @@ cargo run -p postretro-level-compiler -- input.map -o output.prl
 |------|---------|-------------|
 | `-o <PATH>` | same as input, `.prl` extension | Where to write the compiled file |
 | `--lightmap-density <METERS>` | `0.04` | Lightmap pixel size. Higher values = chunkier shadows, faster compile. Try `0.1` for drafts. |
-| `--probe-spacing <METERS>` | `1.0` | How dense the indirect lighting probes are. `2.0` is fine for large open areas. |
+| `--sh-probe-spacing <METERS>` | `1.0` | How dense the indirect lighting probes are. `2.0` is fine for large open areas. |
 | `-v`, `--verbose` | off | Prints each compilation step — useful when something goes wrong |
 
 **Unit scale:** 1 map unit = 0.0254 m (one inch). A standard player-height room is roughly 72–80 units tall.

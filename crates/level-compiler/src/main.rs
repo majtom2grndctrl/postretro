@@ -551,7 +551,10 @@ fn main() -> anyhow::Result<()> {
     let sdf_atlas_section = if map_needs_sdf_atlas(&map_data.lights) {
         progress.start_stage("SDF atlas bake...");
         let stage_start = Instant::now();
-        let sdf_config = sdf_bake::SdfConfig::default();
+        let sdf_config = sdf_bake::SdfConfig {
+            voxel_size_m: args.voxel_size,
+            ..sdf_bake::SdfConfig::default()
+        };
         let section = {
             // Build serialisable inputs for the cache key. Geometry hash also
             // captures triangle order, so a deterministic geometry result
@@ -666,6 +669,9 @@ struct Args {
     probe_spacing: f32,
     /// Starting density in meters; baker retries at coarser densities on atlas overflow.
     lightmap_density: f32,
+    /// SDF occluder-atlas voxel edge length in meters. Overrides
+    /// `sdf_bake::DEFAULT_VOXEL_SIZE_METERS` for this run.
+    voxel_size: f32,
     /// Override cache directory. None = use the workspace-root default.
     cache_dir: Option<PathBuf>,
     /// When true, bypass cache reads and writes entirely.
@@ -674,6 +680,34 @@ struct Args {
 
 fn parse_args() -> anyhow::Result<Args> {
     parse_args_from(std::env::args().skip(1))
+}
+
+/// Usage text for `-h`/`--help`. Built from the live default constants so the
+/// printed defaults never drift from the values the parser actually applies.
+fn help_text() -> String {
+    format!(
+        "prl-build — Postretro level compiler (.map -> .prl)\n\
+         \n\
+         USAGE:\n    \
+         prl-build <input.map> [-o <output.prl>] [OPTIONS]\n\
+         \n\
+         ARGS:\n    \
+         <input.map>    Input TrenchBroom/Quake-style .map file to compile (required)\n\
+         \n\
+         OPTIONS:\n    \
+         -o <output.prl>            Output PRL path (default: input path with a .prl extension)\n    \
+         -v, --verbose              Verbose stage logging to stderr (default: off)\n    \
+         --format <FORMAT>          Map source format: idtech2 | idtech3 | idtech4 (default: idtech2)\n    \
+         --sh-probe-spacing <METERS> SH irradiance probe spacing in meters, > 0 (default: {probe})\n    \
+         --lightmap-density <METERS> Starting lightmap texel size in meters, > 0 (default: {density})\n    \
+         --sdf-voxel-size <METERS>  SDF occluder-atlas voxel edge length in meters, > 0 (default: {voxel})\n    \
+         --cache-dir <PATH>         Override the stage-cache directory (default: <workspace>/.build-caches/prl-cache)\n    \
+         --no-cache                 Disable the stage cache entirely; wins over --cache-dir (default: off)\n    \
+         -h, --help                 Print this help and exit\n",
+        probe = sh_bake::DEFAULT_PROBE_SPACING,
+        density = lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS,
+        voxel = sdf_bake::DEFAULT_VOXEL_SIZE_METERS,
+    )
 }
 
 fn parse_args_from<I>(mut args: I) -> anyhow::Result<Args>
@@ -686,11 +720,16 @@ where
     let mut format = DEFAULT_MAP_FORMAT;
     let mut probe_spacing = sh_bake::DEFAULT_PROBE_SPACING;
     let mut lightmap_density = lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS;
+    let mut voxel_size = sdf_bake::DEFAULT_VOXEL_SIZE_METERS;
     let mut cache_dir: Option<PathBuf> = None;
     let mut no_cache = false;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "-h" | "--help" => {
+                print!("{}", help_text());
+                std::process::exit(0);
+            }
             "-o" => {
                 let path = args
                     .next()
@@ -708,15 +747,15 @@ where
                     .parse::<MapFormat>()
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
             }
-            "--probe-spacing" => {
+            "--sh-probe-spacing" => {
                 let spacing_str = args
                     .next()
-                    .ok_or_else(|| anyhow::anyhow!("--probe-spacing requires a value"))?;
+                    .ok_or_else(|| anyhow::anyhow!("--sh-probe-spacing requires a value"))?;
                 let parsed: f32 = spacing_str.parse().map_err(|_| {
-                    anyhow::anyhow!("--probe-spacing must be a positive number of meters")
+                    anyhow::anyhow!("--sh-probe-spacing must be a positive number of meters")
                 })?;
                 if !parsed.is_finite() || parsed <= 0.0 {
-                    anyhow::bail!("--probe-spacing must be a positive number of meters");
+                    anyhow::bail!("--sh-probe-spacing must be a positive number of meters");
                 }
                 probe_spacing = parsed;
             }
@@ -731,6 +770,18 @@ where
                     anyhow::bail!("--lightmap-density must be a positive number of meters");
                 }
                 lightmap_density = parsed;
+            }
+            "--sdf-voxel-size" => {
+                let voxel_str = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--sdf-voxel-size requires a value"))?;
+                let parsed: f32 = voxel_str.parse().map_err(|_| {
+                    anyhow::anyhow!("--sdf-voxel-size must be a positive number of meters")
+                })?;
+                if !parsed.is_finite() || parsed <= 0.0 {
+                    anyhow::bail!("--sdf-voxel-size must be a positive number of meters");
+                }
+                voxel_size = parsed;
             }
             "--cache-dir" => {
                 let path = args
@@ -753,8 +804,9 @@ where
     let input = input.ok_or_else(|| {
         anyhow::anyhow!(
             "usage: prl-build <input.map> [-o <output.prl>] [-v|--verbose] \
-             [--format <FORMAT>] [--probe-spacing <METERS>] [--lightmap-density <METERS>] \
-             [--cache-dir <PATH>] [--no-cache]"
+             [--format <FORMAT>] [--sh-probe-spacing <METERS>] [--lightmap-density <METERS>] \
+             [--sdf-voxel-size <METERS>] [--cache-dir <PATH>] [--no-cache]\n\
+             (run `prl-build --help` for the full flag list)"
         )
     })?;
 
@@ -767,6 +819,7 @@ where
         format,
         probe_spacing,
         lightmap_density,
+        voxel_size,
         cache_dir,
         no_cache,
     })
@@ -987,6 +1040,51 @@ mod tests {
         assert!(!parsed.verbose);
         assert_eq!(parsed.format, MapFormat::IdTech2);
         assert_eq!(parsed.probe_spacing, sh_bake::DEFAULT_PROBE_SPACING);
+        assert_eq!(parsed.voxel_size, sdf_bake::DEFAULT_VOXEL_SIZE_METERS);
+    }
+
+    #[test]
+    fn parse_args_voxel_size() {
+        let args = vec![
+            "input.map".to_string(),
+            "--sdf-voxel-size".to_string(),
+            "0.25".to_string(),
+        ];
+        let parsed = parse_args_from(args.into_iter()).unwrap();
+        assert_eq!(parsed.voxel_size, 0.25);
+    }
+
+    #[test]
+    fn parse_args_voxel_size_rejects_non_positive() {
+        let args = vec![
+            "input.map".to_string(),
+            "--sdf-voxel-size".to_string(),
+            "0".to_string(),
+        ];
+        assert!(parse_args_from(args.into_iter()).is_err());
+
+        let args = vec![
+            "input.map".to_string(),
+            "--sdf-voxel-size".to_string(),
+            "-1".to_string(),
+        ];
+        assert!(parse_args_from(args.into_iter()).is_err());
+    }
+
+    #[test]
+    fn parse_args_voxel_size_rejects_non_finite() {
+        let args = vec![
+            "input.map".to_string(),
+            "--sdf-voxel-size".to_string(),
+            "nan".to_string(),
+        ];
+        assert!(parse_args_from(args.into_iter()).is_err());
+    }
+
+    #[test]
+    fn parse_args_voxel_size_requires_value() {
+        let args = vec!["input.map".to_string(), "--sdf-voxel-size".to_string()];
+        assert!(parse_args_from(args.into_iter()).is_err());
     }
 
     #[test]
@@ -1004,7 +1102,7 @@ mod tests {
     fn parse_args_probe_spacing() {
         let args = vec![
             "input.map".to_string(),
-            "--probe-spacing".to_string(),
+            "--sh-probe-spacing".to_string(),
             "0.5".to_string(),
         ];
         let parsed = parse_args_from(args.into_iter()).unwrap();
@@ -1015,14 +1113,14 @@ mod tests {
     fn parse_args_probe_spacing_rejects_non_positive() {
         let args = vec![
             "input.map".to_string(),
-            "--probe-spacing".to_string(),
+            "--sh-probe-spacing".to_string(),
             "0".to_string(),
         ];
         assert!(parse_args_from(args.into_iter()).is_err());
 
         let args = vec![
             "input.map".to_string(),
-            "--probe-spacing".to_string(),
+            "--sh-probe-spacing".to_string(),
             "-1".to_string(),
         ];
         assert!(parse_args_from(args.into_iter()).is_err());
@@ -1030,7 +1128,7 @@ mod tests {
 
     #[test]
     fn parse_args_probe_spacing_requires_value() {
-        let args = vec!["input.map".to_string(), "--probe-spacing".to_string()];
+        let args = vec!["input.map".to_string(), "--sh-probe-spacing".to_string()];
         assert!(parse_args_from(args.into_iter()).is_err());
     }
 

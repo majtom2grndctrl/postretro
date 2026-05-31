@@ -17,7 +17,7 @@ Based on the pipeline in `main.rs`, every pass is linear in the compiler's outpu
 | Geometry extraction | Cheap | BSP tree, faces |
 | BVH build | Cheap (SAH, small N) | Geometry |
 | Lightmap bake | **Expensive** (O(faces × texels × lights × rays)) | Geometry, BVH, static lights, `--lightmap-density` |
-| SH volume bake | **Expensive** (O(probes × RAYS_PER_PROBE=256 × lights)) | Geometry, BVH, BSP tree, static + animated lights, `--probe-spacing` |
+| SH volume bake | **Expensive** (O(probes × RAYS_PER_PROBE=256 × lights)) | Geometry, BVH, BSP tree, static + animated lights, `--sh-probe-spacing` |
 | Chunk light list bake | Medium (shadow rays per chunk × light) | Geometry, BVH, static lights |
 | Animated light chunks | Cheap (spatial partition, no raytracing) | BVH leaves, face charts, animated lights |
 | Animated light weight maps | **Expensive** (O(chunks × texels × animated lights)) — parallelized via rayon | BVH, geometry, chunks, animated lights, charts, placements |
@@ -78,7 +78,7 @@ There is one tight coupling to watch: `lightmap_bake` mutates `geo_result` by wr
 | Cache key | Contents |
 |-----------|----------|
 | Geometry key | SHA-256 of raw `.map` file bytes + format flag + `--pvs` flag |
-| Light key | SHA-256 of the serialized light list (all `MapLight` structs, including `is_dynamic`, `animation`, `bake_only`) + `--probe-spacing` + `--lightmap-density` |
+| Light key | SHA-256 of the serialized light list (all `MapLight` structs, including `is_dynamic`, `animation`, `bake_only`) + `--sh-probe-spacing` + `--lightmap-density` |
 | Format version | `CURRENT_VERSION` from `postretro_level_format::CURRENT_VERSION` (currently `1`) |
 | Compiler version | Cargo package version string from `postretro-level-compiler` |
 

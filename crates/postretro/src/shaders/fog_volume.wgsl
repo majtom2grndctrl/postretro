@@ -101,7 +101,7 @@ const MAX_PIXEL_SCALE: u32 = 8u;
 // is inside the volume. Anchoring at one cell (Nyquist for a trilinear field)
 // makes the cache no coarser than the grid's own trilinear seams, removing the
 // banding. The dual-read fetch (one 8-corner load reconstructed for both iso
-// and dir) keeps this affordable. Tightening `--probe-spacing` shrinks the
+// and dir) keeps this affordable. Tightening `--sh-probe-spacing` shrinks the
 // cell and the stride together; tightening `fog.step_size` is floored at one
 // sample per step and capped by `MAX_SH_RESAMPLE_STRIDE`.
 const SH_COVERAGE_CELLS: f32 = 1.0;
@@ -582,7 +582,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     //
     // `sh_coverage_dist` is derived once per ray from the SH grid cell size,
     // so the meters-per-cache-sample budget stays proportional to the baked
-    // SH resolution regardless of `--probe-spacing` or `fog_step_size`.
+    // SH resolution regardless of `--sh-probe-spacing` or `fog_step_size`.
     // `cell_size` is a per-axis world-space length (matches
     // `probe_spacing_meters` on the host); taking the minimum component is
     // the conservative choice for anisotropic grids. Floored at `step` (one

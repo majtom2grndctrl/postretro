@@ -225,15 +225,31 @@ pub enum SdfShadowMode {
     On = 0,
     Off = 1,
     Visualize = 2,
+    // TEMP DEBUG: SDF shadow path visualization. Encodes the per-pixel OUTCOME
+    // of the primary (slot 0) light's `trace_shadow` as an RGB code instead of a
+    // visibility float, displayed directly (no bilateral upsample). Diagnostic
+    // only — remove with the rest of the `// TEMP DEBUG:` markers.
+    VisualizeDebugPaths = 3,
+    // TEMP DEBUG: SDF shadow path visualization. Encodes the reconstructed
+    // GEOMETRIC SURFACE NORMAL (the exact `reconstruct_normal` result the
+    // normal-offset shadow fix marches from) as RGB = normal*0.5+0.5, displayed
+    // directly (no bilateral upsample). Lets us confirm the reconstructed normal
+    // is sane at edges/corners vs garbage. Diagnostic only — remove with the
+    // rest of the `// TEMP DEBUG:` markers.
+    VisualizeNormals = 4,
 }
 
 impl SdfShadowMode {
     /// All variants in display order. Used by the debug UI dropdown.
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
-    pub const ALL_VARIANTS: [SdfShadowMode; 3] = [
+    pub const ALL_VARIANTS: [SdfShadowMode; 5] = [
         SdfShadowMode::On,
         SdfShadowMode::Off,
         SdfShadowMode::Visualize,
+        // TEMP DEBUG: SDF shadow path visualization.
+        SdfShadowMode::VisualizeDebugPaths,
+        // TEMP DEBUG: SDF shadow path visualization.
+        SdfShadowMode::VisualizeNormals,
     ];
 
     #[allow(dead_code)]
@@ -242,6 +258,10 @@ impl SdfShadowMode {
             SdfShadowMode::On => "On",
             SdfShadowMode::Off => "Off",
             SdfShadowMode::Visualize => "Visualize",
+            // TEMP DEBUG: SDF shadow path visualization.
+            SdfShadowMode::VisualizeDebugPaths => "Visualize: debug paths",
+            // TEMP DEBUG: SDF shadow path visualization.
+            SdfShadowMode::VisualizeNormals => "Visualize: normals",
         }
     }
 }
@@ -3370,6 +3390,16 @@ impl Renderer {
                 .as_ref()
                 .map(|t| t.compute_pass_writes(TIMING_PAIR_SDF_SHADOW));
             let inv_view_proj = view_proj.inverse();
+            // TEMP DEBUG: SDF shadow path visualization. When a debug-viz mode is
+            // selected, the pass writes a debug RGB code into slot 0 instead of
+            // per-light visibility floats. The mode value (3 = debug paths,
+            // 4 = normals) is threaded so the shader picks the right encoding;
+            // 0 means "not a debug mode" (production path).
+            let sdf_debug_mode = match self.sdf_shadow_mode {
+                SdfShadowMode::VisualizeDebugPaths => SdfShadowMode::VisualizeDebugPaths as u32,
+                SdfShadowMode::VisualizeNormals => SdfShadowMode::VisualizeNormals as u32,
+                _ => 0,
+            };
             self.sdf_shadow_pass.dispatch(
                 &self.queue,
                 &mut encoder,
@@ -3379,6 +3409,7 @@ impl Renderer {
                     camera_position: self.last_camera_position.into(),
                 },
                 sdf_ts,
+                sdf_debug_mode,
             );
         }
 

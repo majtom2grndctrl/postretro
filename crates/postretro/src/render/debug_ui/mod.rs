@@ -345,7 +345,7 @@ pub fn draw_diagnostics_panel(
                     renderer.set_sdf_penumbra_k(state.sdf_penumbra_k);
                 }
 
-                ui.label("SDF surface bias (× voxel)");
+                ui.label("SDF surface bias (× voxel, along normal)");
                 if ui
                     .add(egui::Slider::new(
                         &mut state.sdf_surface_bias,

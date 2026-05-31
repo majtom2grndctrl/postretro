@@ -89,8 +89,41 @@ pub fn bake_chunk_light_list(
         return Ok(ChunkLightListSection::placeholder());
     }
 
-    let (world_min, world_max) = world_aabb(inputs.geometry);
     let cell = cell_size_meters.max(1.0e-3);
+
+    // Pad the grid bounds outward by HALF a cell on every side. Without padding,
+    // `grid_origin` sits FLUSH with the lowest rendered surface (the geometry-AABB
+    // min) — e.g. a pit floor whose surface y equals `grid_origin.y`. The full-res
+    // forward shader selects SDF lights at the exact fragment position, so a
+    // flush-boundary floor lands in cell 0 and is lit; but the half-res SDF shadow
+    // pass selects at a depth-RECONSTRUCTED half-res position whose sub-meter error
+    // can tip that same floor to cell index -1 ("outside grid → no lights"),
+    // writing no shadow and leaving the floor reading fully lit. (forward.wgsl's
+    // "Task 4 visual check" note documents this exact full-vs-half-res selection
+    // disagreement at a chunk_grid cell boundary.)
+    //
+    // The padding must NOT be an integer multiple of `cell`: shifting the origin
+    // by a whole cell only MOVES the flush boundary from the grid edge to the
+    // first interior cell boundary, where surfaces flush with the AABB min STILL
+    // straddle a cell face (a downward reconstruction error then drops into the
+    // sub-floor cell, which legitimately holds no light because the floor occludes
+    // it). Half a cell centers a surface flush with the AABB min in the MIDDLE of
+    // cell 0 — the point maximally far (half a cell) from either neighboring cell
+    // face — so the half-res reconstruction error (sub-meter; here < 0.5·cell = 4 m)
+    // cannot push it across a boundary. This mirrors the intent of the SDF atlas
+    // grid's `GRID_VOXEL_PADDING` band (`sdf_bake::grid_extents`), which combines
+    // an outward pad with a lattice snap to keep the edge surface band inside the
+    // grid; we achieve the equivalent boundary-avoidance with a fractional pad and
+    // no snap (the chunk grid is recomputed identically each bake, so origin-offset
+    // determinism is moot). We pad the origin (and expand `world_max` to keep
+    // coverage) at this single point; `grid_origin`/`dims` are computed once here
+    // and reused everywhere downstream (per-cell construction, the oversubscription
+    // warning, the emitted `ChunkLightListSection`), so the shift flows through
+    // consistently.
+    let (geo_min, geo_max) = world_aabb(inputs.geometry);
+    let pad = Vec3::splat(cell * 0.5);
+    let world_min = geo_min - pad;
+    let world_max = geo_max + pad;
     let extent = (world_max - world_min).max(Vec3::splat(cell));
     let dims = [
         ((extent.x / cell).ceil() as u32).max(1),
@@ -1334,5 +1367,480 @@ mod tests {
             total >= 1,
             "no-portal degenerate case must not filter out all assignments"
         );
+    }
+
+    // TEMP DIAG: pit-floor SDF light-selection probe ------------------------
+    //
+    // The pit floor directly under the bridge reads WHITE in the SDF shadow
+    // debug viz (should be shadowed). A separate CPU probe
+    // (`sdf_bake::temp_diag_floor_light_column_probe`) already PROVED the bridge
+    // slab is a correctly-baked SURFACE occluder squarely on the floor→light
+    // ray — so the distance field is fine. That refutes "field can't see the
+    // slab" and points the finger at LIGHT SELECTION: if the pit-floor pixel
+    // never SELECTS the SDF light, no shadow ray is traced and the viz defaults
+    // to WHITE.
+    //
+    // The runtime selector `select_sdf_lights` (sdf_light_select.wgsl) iterates
+    // ONLY over the baked per-cell `chunk_indices` list for the receiver's
+    // `chunk_grid` cell, then applies the range cull + influence ordering
+    // (`sdf_select_influence`). The per-cell list is produced by
+    // `bake_chunk_light_list` in THIS module — and it is NOT a pure sphere
+    // overlap: it also applies a portal-reachability filter AND a BVH
+    // shadow-ray filter (`any_ray_unoccluded`). So an SDF light can be DROPPED
+    // from the pit-floor cell at bake time even though its influence sphere
+    // covers the floor — which would make the runtime never trace it.
+    //
+    // This probe bakes the chunk-light-list the SAME way `prl-build` does, then
+    // for the pit-floor receiver (plus a few offsets under the bridge) reports:
+    //   * the SDF light's falloff `range`, position, peak intensity, and the
+    //     floor→light `dist`;
+    //   * the per-pixel influence (mirroring `sdf_select_influence`: range cull
+    //     + atten*peak) — culled to 0 by range, or > 0?
+    //   * the receiver's chunk-grid cell, and whether the SDF light's compacted
+    //     spec index is present in that cell's baked light list (and which
+    //     sdf-tagged lights ARE present);
+    //   * the full `select_sdf_lights`-equivalent result (count + indices),
+    //     mirrored on the CPU over the baked cell list;
+    //   * a VERDICT: is the SDF light selected for the pit floor? If not, is it
+    //     dropped by (a) the range cull, (b) chunk-list omission, or (c) else.
+    //
+    // No host comparator is reused: the existing one
+    // (`postretro::render::sdf_light_select_test::reference_select`) is in the
+    // `postretro` crate, runs on the GPU, and scans the FULL spec buffer
+    // (chunk grid disabled) — it cannot reach the level-compiler bake nor model
+    // the per-cell window that is the whole point here. This test mirrors
+    // `sdf_select_influence` + `select_sdf_lights` fresh against the baked
+    // `ChunkLightListSection` (the actual runtime candidate window).
+    //
+    // Run with:
+    //   cargo test -p postretro-level-compiler --release \
+    //     temp_diag_pit_floor_sdf_light_selection -- --ignored --nocapture
+    //
+    // TEMPORARY diagnostic — delete this whole block when the investigation is
+    // complete. Changes no engine/production behavior.
+    #[test]
+    #[ignore = "TEMP DIAG: pit-floor SDF light-selection probe — run explicitly with --ignored --nocapture"]
+    fn temp_diag_pit_floor_sdf_light_selection() {
+        use crate::map_data::ShadowType;
+        use crate::map_format::MapFormat;
+        use std::collections::HashSet;
+
+        // Must mirror SDF_SELECT_K in sdf_light_select.wgsl (and SDF_SHADOW_K).
+        const K: usize = SDF_SHADOW_K;
+
+        // 1. Build the map + chunk-light-list the SAME way prl-build does
+        //    (main.rs: parse → partition → portals → exterior → geometry → BVH
+        //    → bake_chunk_light_list with the DEFAULT cell size + cap).
+        let map_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("workspace root")
+            .join("content/dev/maps/campaign-test.map");
+        let map_data = crate::parse::parse_map_file(&map_path, MapFormat::IdTech2)
+            .expect("campaign-test.map should parse");
+        let result =
+            crate::partition::partition(&map_data.brush_volumes).expect("partition should succeed");
+        let portals = crate::portals::generate_portals(&result.tree);
+        let exterior: HashSet<usize> =
+            crate::visibility::find_exterior_leaves(&result.tree, &portals);
+        let geo_result = crate::geometry::extract_geometry(&result.faces, &result.tree, &exterior);
+        let (bvh, prims, _) = build_bvh(&geo_result).expect("bvh build should succeed");
+        let alpha_lights = AlphaLightsNs::from_lights(&map_data.lights);
+
+        let inputs = ChunkLightListInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo_result,
+            lights: &alpha_lights,
+            tree: &result.tree,
+            portals: &portals,
+            exterior_leaves: &exterior,
+        };
+        let section = bake_chunk_light_list(
+            &inputs,
+            DEFAULT_CELL_SIZE_METERS,
+            DEFAULT_PER_CHUNK_LIGHT_CAP,
+        )
+        .expect("chunk light list bake should succeed");
+
+        println!("\n=== TEMP DIAG: pit-floor SDF light-selection probe ===");
+        println!(
+            "chunk grid: origin={:?} cell_size={:.3}m dims={:?} has_grid={} (K={K})",
+            section.grid_origin, section.cell_size, section.grid_dimensions, section.has_grid,
+        );
+
+        // 2. Build the COMPACTED spec_lights view the runtime indexes into. This
+        //    is exactly what pack_spec_lights (spec_buffer.rs) emits and what the
+        //    baked `light_indices` index into: filter `!is_dynamic`, preserve
+        //    order, no placeholder. The baked chunk list stores these compacted
+        //    slots, and the runtime reads spec_lights[slot].
+        struct Spec<'a> {
+            slot: u32,
+            light: &'a MapLight,
+            pos: Vec3,
+            range: f32,
+            peak: f32,
+            is_sdf: bool,
+        }
+        let specs: Vec<Spec> = map_data
+            .lights
+            .iter()
+            .filter(|l| !l.is_dynamic)
+            .enumerate()
+            .map(|(slot, l)| Spec {
+                slot: slot as u32,
+                light: l,
+                pos: Vec3::new(l.origin.x as f32, l.origin.y as f32, l.origin.z as f32),
+                range: l.falloff_range, // SpecLight.range = falloff_range (meters)
+                peak: (l.color[0] * l.intensity)
+                    .max(l.color[1] * l.intensity)
+                    .max(l.color[2] * l.intensity),
+                is_sdf: l.shadow_type == ShadowType::Sdf,
+            })
+            .collect();
+
+        // 3. Identify the SDF light (the one with shadow_type == Sdf).
+        let sdf = specs
+            .iter()
+            .find(|s| s.is_sdf)
+            .expect("campaign-test must have an Sdf-shadow light");
+        let sdf_pos = Vec3::new(
+            sdf.light.origin.x as f32,
+            sdf.light.origin.y as f32,
+            sdf.light.origin.z as f32,
+        );
+        println!(
+            "\nSDF light: compacted spec slot={} pos=({:.3},{:.3},{:.3}) \
+             falloff_range={:.3}m intensity={:.3} color={:?} peak(color*intensity)={:.3}",
+            sdf.slot, sdf_pos.x, sdf_pos.y, sdf_pos.z, sdf.range, sdf.light.intensity,
+            sdf.light.color, sdf.peak,
+        );
+        let sdf_slots: Vec<u32> = specs.iter().filter(|s| s.is_sdf).map(|s| s.slot).collect();
+        println!("all sdf-tagged compacted spec slots: {sdf_slots:?}");
+
+        // CPU mirror of `sdf_select_influence`: range cull then atten*peak.
+        let influence = |s: &Spec, world: Vec3| -> f32 {
+            let dist = (s.pos - world).length();
+            if s.range > 0.0 && dist > s.range {
+                return 0.0;
+            }
+            let atten = if s.range > 0.0 {
+                (1.0 - dist / s.range.max(0.001)).max(0.0)
+            } else {
+                1.0
+            };
+            atten * s.peak
+        };
+
+        // Resolve the chunk-grid cell linear index for a world position, mirroring
+        // `sdf_select_chunk_window`. Returns None when outside the grid.
+        let cell_index = |world: Vec3| -> Option<(usize, [i32; 3])> {
+            if section.has_grid == 0 {
+                return None;
+            }
+            let origin = Vec3::from(section.grid_origin);
+            let cell = section.cell_size;
+            let local = world - origin;
+            let cx = (local.x / cell).floor() as i32;
+            let cy = (local.y / cell).floor() as i32;
+            let cz = (local.z / cell).floor() as i32;
+            let dims = section.grid_dimensions;
+            if cx < 0
+                || cy < 0
+                || cz < 0
+                || cx >= dims[0] as i32
+                || cy >= dims[1] as i32
+                || cz >= dims[2] as i32
+            {
+                return Some((usize::MAX, [cx, cy, cz])); // outside grid sentinel
+            }
+            let ci = cz as usize * dims[1] as usize * dims[0] as usize
+                + cy as usize * dims[0] as usize
+                + cx as usize;
+            Some((ci, [cx, cy, cz]))
+        };
+
+        // CPU mirror of `select_sdf_lights` over the BAKED per-cell window: scan
+        // the cell's chunk_indices, keep sdf lights with influence > 0, order by
+        // influence DESC then index ASC, take K.
+        let select = |world: Vec3| -> Vec<(u32, f32)> {
+            let Some((ci, _)) = cell_index(world) else {
+                // No grid → runtime scans the full spec buffer.
+                let mut cands: Vec<(u32, f32)> = specs
+                    .iter()
+                    .filter(|s| s.is_sdf)
+                    .map(|s| (s.slot, influence(s, world)))
+                    .filter(|(_, inf)| *inf > 0.0)
+                    .collect();
+                cands.sort_by(|a, b| {
+                    b.1.partial_cmp(&a.1).unwrap().then_with(|| a.0.cmp(&b.0))
+                });
+                cands.truncate(K);
+                return cands;
+            };
+            if ci == usize::MAX {
+                return Vec::new(); // outside authored grid → no static lights
+            }
+            let entry = section.offsets[ci];
+            let start = entry.offset as usize;
+            let end = start + entry.count as usize;
+            let mut cands: Vec<(u32, f32)> = section.light_indices[start..end]
+                .iter()
+                .filter_map(|&slot| {
+                    let s = specs.get(slot as usize)?;
+                    if !s.is_sdf {
+                        return None;
+                    }
+                    let inf = influence(s, world);
+                    if inf <= 0.0 { None } else { Some((slot, inf)) }
+                })
+                .collect();
+            cands.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap().then_with(|| a.0.cmp(&b.0)));
+            cands.truncate(K);
+            cands
+        };
+
+        // 4. Probe the pit-floor receiver and a few offsets under the bridge so a
+        //    single unlucky cell boundary cannot mislead.
+        let receivers = [
+            ("pit floor (canonical)", Vec3::new(-13.0, -5.5, -46.3)),
+            ("+1m x", Vec3::new(-12.0, -5.5, -46.3)),
+            ("-1m x", Vec3::new(-14.0, -5.5, -46.3)),
+            ("+2m z", Vec3::new(-13.0, -5.5, -44.3)),
+            ("-2m z", Vec3::new(-13.0, -5.5, -48.3)),
+            ("+1m y (above floor)", Vec3::new(-13.0, -4.5, -46.3)),
+        ];
+
+        // Fine y-sweep at the canonical (x,z): pin exactly where the grid floor
+        // (grid_origin.y) cuts off selection. The pit-floor SURFACE sits right at
+        // the world-min AABB, which is also the chunk-grid origin — so a receiver
+        // a hair below it falls into cell y=-1 (out of grid) and selects nothing.
+        println!(
+            "\n--- fine y-sweep at canonical x=-13, z=-46.3 (grid_origin.y={:.4}) ---",
+            section.grid_origin[1]
+        );
+        let mut yy = -6.0_f32;
+        while yy <= -3.0 {
+            let world = Vec3::new(-13.0, yy, -46.3);
+            let cell = cell_index(world);
+            let sel = select(world);
+            let cell_desc = match cell {
+                Some((usize::MAX, c)) => format!("OUT[{},{},{}]", c[0], c[1], c[2]),
+                Some((ci, c)) => format!("in[{},{},{}]#{ci}", c[0], c[1], c[2]),
+                None => "nogrid".to_string(),
+            };
+            println!(
+                "  y={yy:>6.2}  cell={cell_desc:>16}  selected_sdf_slots={:?}",
+                sel.iter().map(|(i, _)| *i).collect::<Vec<_>>()
+            );
+            yy += 0.25;
+        }
+
+        // 4b. TRUE floor-SURFACE receiver. The canonical y=-5.5 receiver above is
+        //     actually BELOW the floor surface (inside solid), so it never tests
+        //     the pixel the forward shader shades. Walk UP a column from well
+        //     below the floor to the FIRST non-solid (air) point — the surface
+        //     receiver the runtime shades — exactly like sdf_bake's column probe
+        //     finds floor_top. Then perturb it ±0.3 m vertically to stand in for
+        //     the half-res depth-reconstruction error. The fix is PROVEN when the
+        //     surface receiver AND both perturbations all land in a valid interior
+        //     cell (index >= 0, with margin) and select the SDF light.
+        let in_solid = |p: Vec3| -> bool {
+            let leaf = find_leaf_for_point(&result.tree, DVec3::new(p.x as f64, p.y as f64, p.z as f64));
+            result
+                .tree
+                .leaves
+                .get(leaf)
+                .map(|l| l.is_solid)
+                .unwrap_or(false)
+        };
+        let (col_x, col_z) = (-13.0_f32, -46.3_f32);
+        // Walk DOWN from a known-air point INSIDE the pit (y = -3 m; the y-sweep
+        // shows this column is air and selects the light there) to the FIRST
+        // air→solid transition: that is the PIT-floor top (not the upper ledge
+        // above the pit, which a y=+2 start would hit first). The last air sample
+        // just above it is the surface receiver the forward shader shades.
+        let step = 0.05_f32;
+        let mut wy = -3.0_f32;
+        let bottom = Vec3::from(section.grid_origin).y; // padded grid floor
+        let mut floor_surface_y: Option<f32> = None;
+        let mut prev_air = !in_solid(Vec3::new(col_x, wy, col_z));
+        while wy >= bottom {
+            let here = Vec3::new(col_x, wy, col_z);
+            let solid = in_solid(here);
+            // First air→solid transition going DOWN = the floor top. The surface
+            // receiver is the air sample one step above (prev iteration's y).
+            if prev_air && solid {
+                floor_surface_y = Some(wy + step);
+                break;
+            }
+            prev_air = !solid;
+            wy -= step;
+        }
+
+        println!("\n--- TRUE floor-surface receiver at x={col_x}, z={col_z} ---");
+        match floor_surface_y {
+            None => println!(
+                "  (no air→solid transition found in the column — cannot locate the \
+                 floor surface; check the probe column placement)"
+            ),
+            Some(surf_y) => {
+                // `surf_y` is the lowest air sample above the solid floor — the
+                // receiver the forward shader shades at the floor surface.
+                let surface = Vec3::new(col_x, surf_y, col_z);
+                let probes = [
+                    ("floor surface", surface),
+                    ("surface +0.3m (half-res error)", surface + Vec3::new(0.0, 0.3, 0.0)),
+                    ("surface -0.3m (half-res error)", surface - Vec3::new(0.0, 0.3, 0.0)),
+                ];
+                let mut all_ok = true;
+                for (label, world) in probes {
+                    let cell = cell_index(world);
+                    let sel = select(world);
+                    let chosen: Vec<u32> = sel.iter().map(|(i, _)| *i).collect();
+                    let selected = chosen.contains(&sdf.slot);
+                    // Robustness criterion: the receiver must be a valid in-grid
+                    // cell (index >= 0 on every axis) AND sit clear of any cell
+                    // FACE — i.e. its fractional position within the cell is not
+                    // hard against a boundary. Half-cell padding centers a surface
+                    // flush with the AABB min in the MIDDLE of its cell, so the
+                    // fractional Y here should sit near 0.5, far from 0.0/1.0.
+                    let origin = Vec3::from(section.grid_origin);
+                    let frac = ((world - origin) / section.cell_size).fract();
+                    // Distance (in cell fractions) to the nearest cell face on the
+                    // Y axis — the axis the flush-boundary leak lives on (the pit
+                    // floor surface == AABB min.y). Half-cell padding should put
+                    // the surface receiver near the cell CENTER (frac_y ≈ 0.5), so
+                    // a ±0.3 m reconstruction error (≈ 0.04 cell at 8 m) cannot
+                    // cross the Y face. We only gate on Y; the X/Z fractional
+                    // position is incidental to this column's placement and not
+                    // what the padding addresses.
+                    let edge_dist_y = frac.y.min(1.0 - frac.y);
+                    let (cell_desc, in_grid) = match cell {
+                        Some((usize::MAX, c)) => {
+                            (format!("OUTSIDE[{},{},{}]", c[0], c[1], c[2]), false)
+                        }
+                        Some((_ci, c)) => (format!("in[{},{},{}]", c[0], c[1], c[2]), true),
+                        None => ("nogrid".to_string(), false),
+                    };
+                    // "off-boundary" margin on Y: > 0.1 cell from the nearest Y face.
+                    let off_boundary = in_grid && edge_dist_y > 0.1;
+                    println!(
+                        "  {label:<32} world=({:.3},{:.3},{:.3}) cell={cell_desc:>14} \
+                         frac_y={:.3} edge_dist_y={edge_dist_y:.3} off_boundary_y={off_boundary} \
+                         count={} indices={chosen:?} sdf_selected={selected}",
+                        world.x, world.y, world.z, frac.y, sel.len(),
+                    );
+                    if !(selected && off_boundary) {
+                        all_ok = false;
+                    }
+                }
+                println!(
+                    "\n  >> FLOOR-SURFACE VERDICT: {}",
+                    if all_ok {
+                        "FIXED — the floor-surface receiver and both ±0.3m perturbations \
+                         all land in an in-grid cell clear of the Y cell face \
+                         (edge_dist_y > 0.1 cell) and select the SDF light. Before \
+                         padding this same surface receiver mapped to cell y=-1 \
+                         (outside grid, count 0)."
+                    } else {
+                        "NOT fixed — at least one of the surface receiver / perturbations \
+                         still fails to select the SDF light or sits on a cell boundary."
+                    }
+                );
+                assert!(
+                    all_ok,
+                    "floor-surface receiver (and ±0.3m perturbations) must land in an \
+                     interior cell and select the SDF light after the grid padding fix"
+                );
+            }
+        }
+
+        for (label, world) in receivers {
+            let dist = (sdf_pos - world).length();
+            let inf = influence(sdf, world);
+            let range_culled = sdf.range > 0.0 && dist > sdf.range;
+            let cell = cell_index(world);
+            println!(
+                "\n----- RECEIVER {label}: world=({:.3},{:.3},{:.3}) -----",
+                world.x, world.y, world.z
+            );
+            println!(
+                "  floor→light dist={dist:.3}m  range={:.3}m  influence={inf:.4} \
+                 (range_culled={range_culled})",
+                sdf.range
+            );
+
+            match cell {
+                None => println!("  chunk cell: (no grid)"),
+                Some((usize::MAX, c)) => println!(
+                    "  chunk cell: ({},{},{}) is OUTSIDE the authored grid \
+                     dims={:?} → runtime sees NO static lights here",
+                    c[0], c[1], c[2], section.grid_dimensions
+                ),
+                Some((ci, c)) => {
+                    let entry = section.offsets[ci];
+                    let start = entry.offset as usize;
+                    let end = start + entry.count as usize;
+                    let in_cell = &section.light_indices[start..end];
+                    let sdf_in_cell: Vec<u32> = in_cell
+                        .iter()
+                        .copied()
+                        .filter(|&slot| {
+                            specs.get(slot as usize).map(|s| s.is_sdf).unwrap_or(false)
+                        })
+                        .collect();
+                    let sdf_present = in_cell.contains(&sdf.slot);
+                    println!(
+                        "  chunk cell: ({},{},{}) linear={ci}  cell holds {} light slot(s): {:?}",
+                        c[0], c[1], c[2], entry.count, in_cell
+                    );
+                    println!(
+                        "  sdf-tagged slots present in this cell: {sdf_in_cell:?}  \
+                         (SDF light slot {} present? {sdf_present})",
+                        sdf.slot
+                    );
+                }
+            }
+
+            let sel = select(world);
+            let chosen: Vec<u32> = sel.iter().map(|(i, _)| *i).collect();
+            let selected = chosen.contains(&sdf.slot);
+            println!(
+                "  select_sdf_lights-equiv: count={} indices={chosen:?} \
+                 (influences={:?})",
+                sel.len(),
+                sel.iter().map(|(_, f)| format!("{f:.4}")).collect::<Vec<_>>()
+            );
+
+            // VERDICT for this receiver.
+            let verdict = if selected {
+                "SELECTED — SDF light IS chosen; leak is NOT light selection for this pixel."
+            } else if range_culled {
+                "NOT selected: dropped by the RANGE CULL (dist > falloff_range)."
+            } else {
+                match cell {
+                    Some((usize::MAX, _)) => {
+                        "NOT selected: receiver is OUTSIDE the chunk grid (no static lights)."
+                    }
+                    Some((ci, _)) => {
+                        let entry = section.offsets[ci];
+                        let start = entry.offset as usize;
+                        let end = start + entry.count as usize;
+                        if section.light_indices[start..end].contains(&sdf.slot) {
+                            "NOT selected: in the cell + in range, but ranked below K \
+                             (other sdf lights outrank it)."
+                        } else {
+                            "NOT selected: dropped by CHUNK-LIST OMISSION — the bake's \
+                             portal-reachability / BVH-shadow-ray filter removed the SDF \
+                             light from this cell's list, so the runtime never traces it."
+                        }
+                    }
+                    None => "NOT selected: no grid (full-buffer scan) yet still not chosen.",
+                }
+            };
+            println!("  >> VERDICT: {verdict}");
+        }
+        println!("=== END TEMP DIAG ===\n");
     }
 }

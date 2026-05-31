@@ -929,5 +929,41 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let g = sdf_factor.r;
         return vec4<f32>(g, g, g, base_color.a);
     }
+    // TEMP DEBUG: SDF shadow path visualization (mode 3). The half-res pass
+    // encoded the slot-0 trace OUTCOME as an RGB code (see `debug_trace_outcome`
+    // in sdf_shadow.wgsl). Sample it directly with a NEAREST half-res tap —
+    // NOT the per-light bilateral upsample, which would blend distinct outcome
+    // codes into meaningless intermediate colors. Legend:
+    //   BLUE          open-space skip early-out
+    //   RED→ORANGE    hard hit (green = normalized hit distance: red=near, orange/yellow=far)
+    //   dark GREEN    penumbra-limited shadow (darker = stronger)
+    //   WHITE         fully lit
+    //   MAGENTA       no SDF light selected (no trace ran)
+    if uniforms.sdf_shadow_mode == 3u {
+        let depth_dims = vec2<f32>(textureDimensions(sdf_shadow_depth));
+        let half_dims = vec2<f32>(textureDimensions(sdf_shadow_factor));
+        let h_max = half_dims - vec2<f32>(1.0);
+        let half_xy = (in.clip_position.xy / depth_dims) * half_dims;
+        let h = vec2<i32>(clamp(floor(half_xy), vec2<f32>(0.0), h_max));
+        let code = textureLoad(sdf_shadow_factor, h, 0).rgb;
+        return vec4<f32>(code, base_color.a);
+    }
+    // TEMP DEBUG: SDF shadow path visualization (mode 4). The half-res pass
+    // encoded the reconstructed GEOMETRIC NORMAL as RGB = normal*0.5+0.5 (see
+    // the debug branch in sdf_shadow.wgsl's `cs_main`). Sample it with a NEAREST
+    // half-res tap — NOT the per-light bilateral upsample, which would blend
+    // distinct normals into meaningless intermediate colors. Color meaning:
+    //   +X→reddish  +Y→greenish  +Z→bluish; flat faces show a smooth constant
+    //   color, edges/corners may show seams. Mid-gray (0.5,0.5,0.5) = the
+    //   reconstruction was unusable (degenerate / off-screen neighborhood).
+    if uniforms.sdf_shadow_mode == 4u {
+        let depth_dims = vec2<f32>(textureDimensions(sdf_shadow_depth));
+        let half_dims = vec2<f32>(textureDimensions(sdf_shadow_factor));
+        let h_max = half_dims - vec2<f32>(1.0);
+        let half_xy = (in.clip_position.xy / depth_dims) * half_dims;
+        let h = vec2<i32>(clamp(floor(half_xy), vec2<f32>(0.0), h_max));
+        let n = textureLoad(sdf_shadow_factor, h, 0).rgb;
+        return vec4<f32>(n, base_color.a);
+    }
     return vec4<f32>(rgb, base_color.a);
 }

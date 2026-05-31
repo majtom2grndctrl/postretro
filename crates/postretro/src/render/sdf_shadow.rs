@@ -69,21 +69,30 @@ pub const DEFAULT_OPEN_SPACE_SKIP_THRESHOLD: f32 = 8.0; // multiple of SH cell s
 pub const DEFAULT_PENUMBRA_K: f32 = 8.0;
 
 /// Self-shadow surface bias, in MULTIPLES of the SDF voxel size (0.5 m default,
-/// so the seed below ≈ 1.5 m). The march begins at `t = surface_bias × voxel`
-/// and the closest-passing-distance penumbra term is suppressed inside that
-/// window. This is the distance-field self-intersection fix (cf. UE mesh/global
-/// DF shadows): the caster is baked into the field, so a ray that starts on a
-/// lit surface grazes that surface's own ≈0 field near the origin; with the
-/// coarse field (0.5 m voxel / 4 m brick mean) the penumbra estimate rounds that
-/// self-grazing into soft round dark blobs on faces that point at the light.
+/// so the seed below ≈ 0.75 m). The shadow-ray ORIGIN is pushed off the shading
+/// surface ALONG THE GEOMETRIC NORMAL by `surface_bias × voxel` before tracing.
+/// This is the distance-field self-intersection fix (cf. UE mesh/global DF
+/// shadows): the caster is baked into the field, so a ray launched on a lit
+/// surface grazes that surface's own ≈0 field near the origin and the penumbra
+/// estimate reads it as occlusion — soft round dark blobs on faces that point at
+/// the light. A *normal* offset (not the former along-ray start) is what fixes
+/// the grazing case: when the light is off to the side, an along-ray start skims
+/// tangent to the surface and the penumbra estimate collapses to ~0, falsely
+/// darkening walls and the bridge top. Lifting along the normal clears the
+/// surface field regardless of light direction.
 ///
-/// Seeded at 3.0 voxels — enough to clear the caster's own near-surface
-/// quantization band (the prior hard-coded 1.5-voxel start was too small), small
-/// enough not to detach the block's contact shadow on the floor/wall: that
-/// shadow comes from the trace HITTING the block (the `d < voxel*0.5` hard
-/// return), not from the suppressed penumbra term, so widening the penumbra
-/// window leaves it intact.
-pub const DEFAULT_SURFACE_BIAS_VOXELS: f32 = 3.0;
+/// Seeded at 1.5 voxels (≈ 0.75 m) — a deliberately CONSERVATIVE normal offset.
+/// Reasoning: a normal offset risks peter-panning / light-leak (detached
+/// shadows) far more than the old along-ray start did, because it physically
+/// moves the origin away from the contact point, so a large value would let a
+/// nearby occluder's shadow detach from the surface. 1.5 voxels is enough to
+/// clear the caster's own quantization band (one fine voxel) PLUS the half-res
+/// depth-reconstruction error (sub-voxel at this resolution), while staying well
+/// under the ~1 m gap at which contact shadows visibly detach. The contact
+/// shadow at a block's base survives regardless — it comes from the trace
+/// HITTING the block (`d < voxel*0.5`), which fires from the first step, not from
+/// the penumbra term. Tune live via the "SDF surface bias (× voxel)" slider.
+pub const DEFAULT_SURFACE_BIAS_VOXELS: f32 = 1.5;
 
 /// Size in bytes of the `ShadowPassParams` uniform. Mirrors the WGSL struct
 /// in `shaders/sdf_shadow.wgsl`. std140-aligned: vec3<f32>/u32 pairs share
@@ -345,9 +354,10 @@ impl SdfShadowPass {
     }
 
     /// Write through to `tuning.surface_bias` (× voxel). Larger = the march
-    /// starts further off the originating surface, which kills SDF self-shadow
-    /// blobs on lit faces but, taken too far, can begin to detach the block's
-    /// own contact shadow. Clamped non-negative.
+    /// origin is pushed further off the originating surface ALONG ITS NORMAL,
+    /// which kills SDF self-shadow blobs on lit faces but, taken too far, begins
+    /// to peter-pan / detach a nearby occluder's contact shadow. Clamped
+    /// non-negative.
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn set_surface_bias(&mut self, bias: f32) {
         self.tuning.surface_bias = bias.max(0.0);
@@ -416,8 +426,13 @@ impl SdfShadowPass {
         sdf_atlas: &SdfAtlasResources,
         frame: SdfShadowFrameInputs,
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
+        // TEMP DEBUG: SDF shadow path visualization. Non-zero selects a debug-viz
+        // mode (3 = trace-outcome paths, 4 = reconstructed normals); the pass then
+        // writes an RGB debug code for slot 0 instead of per-light visibility
+        // floats. 0 = production path.
+        debug_mode: u32,
     ) {
-        let bytes = pack_params_bytes(frame, self.half_res, self.tuning, self.sh_grid);
+        let bytes = pack_params_bytes(frame, self.half_res, self.tuning, self.sh_grid, debug_mode);
         queue.write_buffer(&self.params_buffer, 0, &bytes);
 
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -638,6 +653,10 @@ pub(crate) fn pack_params_bytes(
     half_res: (u32, u32),
     tuning: SdfShadowTuning,
     sh_grid: SdfShadowShGrid,
+    // TEMP DEBUG: SDF shadow path visualization. Packed into the former `_pad1`
+    // slot (bytes 140..144). 0 = production; 3 = trace-outcome paths; 4 = the
+    // reconstructed geometric normal (RGB = normal*0.5+0.5).
+    debug_mode: u32,
 ) -> [u8; SHADOW_PASS_PARAMS_SIZE] {
     let mut bytes = [0u8; SHADOW_PASS_PARAMS_SIZE];
     // 0..64: inv_view_proj (column-major, same convention as the rest of the
@@ -669,10 +688,14 @@ pub(crate) fn pack_params_bytes(
     bytes[116..120].copy_from_slice(&sh_grid.cell_size[1].to_ne_bytes());
     bytes[120..124].copy_from_slice(&sh_grid.cell_size[2].to_ne_bytes());
     bytes[124..128].copy_from_slice(&tuning.surface_bias.to_ne_bytes());
-    // 128..140: sh_grid_dimensions; 140..144: _pad1.
+    // 128..140: sh_grid_dimensions; 140..144: debug_mode (former _pad1 slot).
     bytes[128..132].copy_from_slice(&sh_grid.dimensions[0].to_ne_bytes());
     bytes[132..136].copy_from_slice(&sh_grid.dimensions[1].to_ne_bytes());
     bytes[136..140].copy_from_slice(&sh_grid.dimensions[2].to_ne_bytes());
+    // TEMP DEBUG: SDF shadow path visualization. 140..144: debug_mode value
+    // (0 = production, 3 = paths, 4 = normals) — carried verbatim so the shader
+    // branches on the actual mode.
+    bytes[140..144].copy_from_slice(&debug_mode.to_ne_bytes());
     bytes
 }
 
@@ -860,6 +883,8 @@ mod tests {
                 dimensions: [8, 4, 8],
                 has_volume: true,
             },
+            // TEMP DEBUG: SDF shadow path visualization. 4 = normals mode.
+            4,
         );
         assert_eq!(bytes.len(), SHADOW_PASS_PARAMS_SIZE);
 
@@ -896,6 +921,11 @@ mod tests {
         assert_eq!(sh_origin_x, -4.0);
         assert_eq!(has_vol, 1);
         assert_eq!(sh_dim_x, 8);
+
+        // TEMP DEBUG: SDF shadow path visualization. debug_mode value occupies
+        // the former _pad1 slot at 140..144 (passed `4` = normals mode above).
+        let debug_mode = u32::from_ne_bytes(bytes[140..144].try_into().unwrap());
+        assert_eq!(debug_mode, 4);
     }
 
     /// Sanity-check the half-res scaling — odd full-res dimensions still
@@ -953,6 +983,8 @@ mod tests {
             (16, 16),
             tuning,
             SdfShadowShGrid::default(),
+            // TEMP DEBUG: SDF shadow path visualization. 0 = production path.
+            0,
         );
         let packed_max = u32::from_ne_bytes(bytes[84..88].try_into().unwrap());
         let packed_k = f32::from_ne_bytes(bytes[92..96].try_into().unwrap());

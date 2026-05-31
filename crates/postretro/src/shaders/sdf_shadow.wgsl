@@ -40,14 +40,23 @@ struct ShadowPassParams {
     sh_has_volume: u32,
     sh_cell_size: vec3<f32>,
     // Self-shadow surface bias, in MULTIPLES of the SDF voxel size (occupies the
-    // former _pad0 slot — same 144-byte layout). The march starts at
-    // `t = surface_bias × voxel` and the closest-passing-distance penumbra term
-    // is suppressed inside that window, so the caster's own near-surface field
-    // can't shadow itself (the distance-field self-intersection fix; cf. UE
-    // mesh/global DF shadows).
+    // former _pad0 slot — same 144-byte layout). The shadow-ray ORIGIN is pushed
+    // off the shading surface ALONG THE GEOMETRIC NORMAL by `surface_bias × voxel`
+    // before tracing, so the caster's own near-surface field can't shadow itself
+    // (the distance-field self-intersection fix; cf. UE mesh/global DF shadows).
+    // A normal offset (rather than the former along-ray start) is what fixes the
+    // grazing case: when the light is off to the side, an along-ray start skims
+    // tangent to the surface and the penumbra estimate collapses to ~0, falsely
+    // darkening walls and the bridge top. Pushing along the normal lifts the
+    // origin clear of the surface field regardless of the light direction.
     surface_bias: f32,
     sh_grid_dimensions: vec3<u32>,
-    _pad1: u32,
+    // TEMP DEBUG: SDF shadow path visualization. Non-zero selects a debug-viz
+    // mode, written into slot 0 instead of per-light visibility floats (occupies
+    // the former _pad1 slot — same 144-byte layout). Diagnostic only.
+    //   3 = trace-outcome RGB codes for slot 0 (`debug_trace_outcome`).
+    //   4 = reconstructed GEOMETRIC NORMAL, encoded RGB = normal*0.5+0.5.
+    debug_mode: u32,
 };
 
 @group(1) @binding(0) var<uniform> params: ShadowPassParams;
@@ -87,6 +96,28 @@ const SDF_TOP_LEVEL_INTERIOR: u32 = 0xfffffffeu;
 const SDF_I16_QUANT_STEPS_PER_VOXEL: f32 = 256.0;
 const FULLY_LIT: f32 = 1.0;
 
+// Grazing-angle penumbra fade (Part A). `ndl = dot(normal, dir_to_light)` is ~0
+// when the light grazes the surface and →1 when it faces the light. A grazing
+// shadow ray skims tangent to the very wall being shaded, so the SDF returns the
+// small distance to that wall and the closest-passing penumbra estimate collapses
+// toward 0 — falsely darkening a wall with no real downrange occluder. Fading the
+// SOFT penumbra term toward fully-lit across this band (but NEVER the hard-hit
+// path) keeps the tangent skim from crushing `factor` while preserving genuine
+// cast shadows. Tune-able.
+const GRAZE_LO: f32 = 0.10;
+const GRAZE_HI: f32 = 0.35;
+
+// Safe normalize: `reconstruct_normal` returns vec3(0) on a degenerate
+// neighborhood, and `normalize(vec3(0))` is a NaN. Return zero there so the
+// grazing fade keys on ndl 0 (soft term fully faded → lit) rather than NaN.
+fn normalize_or_zero(v: vec3<f32>) -> vec3<f32> {
+    let len = length(v);
+    if (len < 1.0e-6) {
+        return vec3<f32>(0.0);
+    }
+    return v / len;
+}
+
 // Reconstruct world position from a half-res pixel + the depth pre-pass sample.
 // Returns vec4(world.xyz, valid) — valid == 0 when depth is the cleared sentinel (1.0).
 fn reconstruct_world(half_xy: vec2<u32>) -> vec4<f32> {
@@ -109,6 +140,130 @@ fn reconstruct_world(half_xy: vec2<u32>) -> vec4<f32> {
         return vec4<f32>(0.0, 0.0, 0.0, 0.0);
     }
     return vec4<f32>(world_h.xyz / world_h.w, 1.0);
+}
+
+// Reconstruct the GEOMETRIC face normal at a half-res pixel from depth neighbor
+// taps. This pass is a half-res COMPUTE shader, so the hardware derivatives
+// (ddx/ddy) that a fragment shader would use are unavailable — we approximate
+// them by reconstructing world positions at the +/-1 neighbors and differencing.
+//
+// `center` is the already-reconstructed world position at `half_xy` (passed in
+// so the caller doesn't re-unproject). Returns the unit normal, oriented toward
+// the camera. Returns vec3(0) when the neighborhood is unusable (all neighbors
+// invalid / off-screen, or the cross product degenerates) — the caller then
+// skips the normal offset rather than risk a NaN direction.
+//
+// Edge handling: on each axis we reconstruct BOTH the +1 and -1 neighbor and
+// build the tangent from whichever has the SMALLER world-space depth difference
+// to the center. That forward-vs-backward selection avoids spanning a silhouette
+// / depth-discontinuity edge (where one neighbor sits on a far surface), which
+// would otherwise tilt the reconstructed normal wildly. Invalid (sky / off-grid)
+// neighbors are rejected so the other side is used.
+fn reconstruct_normal(half_xy: vec2<u32>, center: vec3<f32>) -> vec3<f32> {
+    let x = i32(half_xy.x);
+    let y = i32(half_xy.y);
+    let max_x = i32(params.half_res_size_x) - 1;
+    let max_y = i32(params.half_res_size_y) - 1;
+
+    // Reconstruct a neighbor; returns (world.xyz, valid). Guards out-of-range
+    // half-res coords (returns invalid) so edge pixels don't sample wrapped data.
+    var tangent_x = vec3<f32>(0.0);
+    var have_x = false;
+    if (x > 0 || x < max_x) {
+        var best_d = 1.0e30;
+        // -1 neighbor.
+        if (x > 0) {
+            let n = reconstruct_world(vec2<u32>(u32(x - 1), half_xy.y));
+            if (n.w > 0.5) {
+                let d = abs(length(n.xyz - center));
+                if (d < best_d) {
+                    best_d = d;
+                    tangent_x = center - n.xyz; // points from -1 toward center
+                    have_x = true;
+                }
+            }
+        }
+        // +1 neighbor.
+        if (x < max_x) {
+            let n = reconstruct_world(vec2<u32>(u32(x + 1), half_xy.y));
+            if (n.w > 0.5) {
+                let d = abs(length(n.xyz - center));
+                if (d < best_d) {
+                    best_d = d;
+                    tangent_x = n.xyz - center; // points from center toward +1
+                    have_x = true;
+                }
+            }
+        }
+    }
+
+    var tangent_y = vec3<f32>(0.0);
+    var have_y = false;
+    if (y > 0 || y < max_y) {
+        var best_d = 1.0e30;
+        if (y > 0) {
+            let n = reconstruct_world(vec2<u32>(half_xy.x, u32(y - 1)));
+            if (n.w > 0.5) {
+                let d = abs(length(n.xyz - center));
+                if (d < best_d) {
+                    best_d = d;
+                    tangent_y = center - n.xyz;
+                    have_y = true;
+                }
+            }
+        }
+        if (y < max_y) {
+            let n = reconstruct_world(vec2<u32>(half_xy.x, u32(y + 1)));
+            if (n.w > 0.5) {
+                let d = abs(length(n.xyz - center));
+                if (d < best_d) {
+                    best_d = d;
+                    tangent_y = n.xyz - center;
+                    have_y = true;
+                }
+            }
+        }
+    }
+
+    if (!have_x || !have_y) {
+        return vec3<f32>(0.0); // unusable — caller falls back
+    }
+    var n = cross(tangent_x, tangent_y);
+    let len = length(n);
+    if (len < 1.0e-6) {
+        return vec3<f32>(0.0); // degenerate cross — caller falls back
+    }
+    n = n / len;
+    // Orient toward the camera so the offset always lifts the origin off the
+    // visible face, regardless of triangle winding / tangent ordering.
+    if (dot(n, params.camera_position - center) < 0.0) {
+        n = -n;
+    }
+    return n;
+}
+
+// Shared shadow-ray ORIGIN offset. Pushes the shading point off its surface
+// along the reconstructed geometric normal by `surface_bias × voxel`, lifting
+// the march origin clear of the caster's own near-surface field. Used by BOTH
+// the production trace and the debug-viz trace so the visualization reflects the
+// exact origin the production path marches from. When the normal is unusable
+// (zero from `reconstruct_normal`), fall back to a camera-ward offset so we still
+// clear the surface without ever producing a NaN direction.
+fn shadow_ray_origin(world: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
+    let voxel = max(sdf_meta.voxel_size_m, 1.0e-4);
+    let offset = max(params.surface_bias, 0.0) * voxel;
+    var n = normal;
+    if (length(n) < 1.0e-6) {
+        // Degenerate normal: bias toward the camera (always off the visible
+        // face for an opaque hit). Falls back to no offset if even that is zero.
+        let to_cam = params.camera_position - world;
+        let l = length(to_cam);
+        if (l < 1.0e-6) {
+            return world;
+        }
+        n = to_cam / l;
+    }
+    return world + n * offset;
 }
 
 // Sample the coarse SDF distance (meters) at a world-space point. Returns a
@@ -266,16 +421,18 @@ fn sample_open_distance(world: vec3<f32>) -> f32 {
 // Sphere-traces against the combined fine+coarse distance
 // (`sample_fine_distance`): the fine brick atlas resolves sub-brick occluders
 // near surfaces (pillars, doorways), falling back to the coarse per-brick field
-// in empty bricks. The loop shape — self-shadow start bias, closest-passing
-// penumbra estimate, bounded march length, open-space early-out — is unchanged
-// from the coarse-only v1.
+// in empty bricks. The loop shape — small along-ray start epsilon, closest-
+// passing penumbra estimate, bounded march length, open-space early-out — is
+// unchanged from the coarse-only v1. The self-shadow lift now lives in the
+// caller's normal-direction ORIGIN offset (`shadow_ray_origin`), not an along-
+// ray start; `origin` here is already lifted off the surface.
 // `max_dist` is the world-meter distance at which the march must stop — the
 // distance to the light for a finite point/spot source. Geometry at or beyond
 // the light is NOT an occluder (it lies behind or around the light, with a clear
 // line of sight to the lit surface), so the march is clamped to it. Callers with
 // an infinite/directional source pass a large value (e.g. the 64 m hard cap) to
 // preserve the original fixed-length behavior.
-fn trace_shadow(origin: vec3<f32>, dir: vec3<f32>, max_dist: f32) -> f32 {
+fn trace_shadow(origin: vec3<f32>, dir: vec3<f32>, max_dist: f32, normal: vec3<f32>) -> f32 {
     if (sdf_meta.present == 0u) {
         return FULLY_LIT;
     }
@@ -287,25 +444,35 @@ fn trace_shadow(origin: vec3<f32>, dir: vec3<f32>, max_dist: f32) -> f32 {
         return FULLY_LIT;
     }
 
-    // Self-shadow surface bias (distance-field self-intersection fix; cf. UE
-    // mesh/global DF shadows). The caster IS baked into the field, so a ray that
-    // starts on a lit surface grazes that surface's own ≈0 field near the origin
-    // and the `k·d/t` penumbra term reads it as occlusion — the coarse field
-    // (0.5 m voxel / 4 m brick mean) rounds this into soft round dark blobs on
-    // faces that point at the light. Bias the START off the surface, AND suppress
-    // the penumbra `min` while the ray is still inside the bias window, so the
-    // caster's own near-surface field is never counted as a shadow caster.
+    // Small along-ray start epsilon (distance-field self-intersection fix; cf. UE
+    // mesh/global DF shadows). The bulk of the self-shadow lift is the caller's
+    // normal-direction ORIGIN offset (`shadow_ray_origin`); here we only nudge the
+    // first sample a fraction of a voxel off `origin` so it isn't sampled exactly
+    // at the start point. Keeping this epsilon tiny preserves the contact shadow at
+    // a block's base — that comes from the trace HITTING the block, and the hit
+    // test fires from the very first step.
     let voxel = max(sdf_meta.voxel_size_m, 1.0e-4);
-    let bias = voxel * max(params.surface_bias, 0.0);
-    var t: f32 = bias;
+    let start_eps = voxel * 0.5;
+    var t: f32 = start_eps;
     var factor: f32 = FULLY_LIT;
     let k = max(params.penumbra_k, 1.0);
     // Bounded march length: the 64 m hard cap AND the distance to the light,
     // whichever is closer. Stopping at the light keeps geometry behind/around it
     // from being counted as an occluder. Pull in by one voxel so a surface the
     // light is mounted just above isn't counted as its own occluder, without
-    // over-subtracting (which would let near-light occluders leak).
-    let max_t = max(min(64.0, max_dist - voxel), bias); // meters
+    // over-subtracting (which would let near-light occluders leak). `max_dist` is
+    // measured from the OFFSET origin (the caller recomputes it), so the clamp
+    // stays correct relative to the lifted start point.
+    let max_t = max(min(64.0, max_dist - voxel), start_eps); // meters
+
+    // Part A — grazing-angle penumbra fade. `dir` points toward the light, so
+    // `ndl` is ~0 at a tangent skim and →1 facing the light. `graze` rides 0→1
+    // across [GRAZE_LO, GRAZE_HI]; at grazing the soft term is mixed toward
+    // fully-lit so a tangent skim along the shaded wall can't crush `factor`. A
+    // degenerate (zero-length) normal yields ndl 0 → graze 0 → soft fully faded,
+    // which is the safe (lit) default. The hard-hit path is never touched.
+    let ndl = dot(normalize_or_zero(normal), dir);
+    let graze = smoothstep(GRAZE_LO, GRAZE_HI, ndl);
 
     // Aaltonen interpolated closest-passing-distance estimator (iquilezles,
     // "Soft Shadows in Raymarched SDFs"): the plain `k·d/t` term samples the
@@ -325,13 +492,26 @@ fn trace_shadow(origin: vec3<f32>, dir: vec3<f32>, max_dist: f32) -> f32 {
         if (h < voxel * 0.5) {
             return 0.0;
         }
-        // Closest-passing-distance penumbra estimate. Skip it while the ray is
-        // within the start-bias window: there `h` is dominated by the caster's
-        // own surface field, not a separate occluder.
-        if (t > bias) {
+        // Closest-passing-distance penumbra estimate. Skip the very first sample
+        // (`t == start_eps`): the origin is already lifted off the surface by the
+        // normal offset, but residual quantization in the caster's own field can
+        // still sit a fraction of a voxel away, and counting it here would re-open
+        // the self-shadow blob. One step in, the ray has cleared that band, so the
+        // estimate keys on genuine separate occluders only.
+        // Soft penumbra term applies only while the ray APPROACHES the nearest
+        // surface (h <= ph). Receding steps drive the Aaltonen estimate
+        // sqrt(h²−y²) toward 0 via the Lipschitz doubling limit (h ≈ 2·ph);
+        // min() would latch that false zero into the concentric black "ripple
+        // rings" — not a real occluder, just the field opening up. Approaching
+        // keeps estimate ~0.87·h (well-conditioned) and t−y > 0, and still
+        // captures the true closest-approach penumbra (so contact edges and the
+        // bridge's real cast shadow survive). cf. iq's softshadow max(0.0, t−y).
+        if (t > start_eps && h <= ph) {
             let y = h * h / (2.0 * max(ph, voxel * 0.5));
             let estimate = sqrt(max(h * h - y * y, 0.0));
-            factor = min(factor, k * estimate / max(t - y, voxel));
+            let soft = k * estimate / max(t - y, voxel);
+            // Part A — fade the soft term toward fully-lit at grazing angles.
+            factor = min(factor, mix(1.0, soft, graze));
         }
         ph = h;
         t = t + max(h, voxel * 0.5);
@@ -342,19 +522,105 @@ fn trace_shadow(origin: vec3<f32>, dir: vec3<f32>, max_dist: f32) -> f32 {
     return clamp(factor, 0.0, 1.0);
 }
 
+// TEMP DEBUG: SDF shadow path visualization. A near-copy of `trace_shadow`
+// that, instead of returning a visibility float, returns an RGB outcome code
+// for the diagnostic Visualize-debug-paths mode. Kept fully separate so the
+// production `trace_shadow` above is never touched. Outcome legend:
+//   (0,0,1) BLUE          — open-space skip early-out (path a)
+//   (1, t/max_t, 0)  RED  — hard hit (path b); green = normalized hit distance
+//   (0, factor, 0) GREEN  — penumbra-limited finish (path c); intensity = factor
+//   (1,1,1) WHITE         — fully lit (path d), no atlas, or coincident w/ light
+// The (1,0,1) MAGENTA "no SDF light selected" code is emitted by the cs_main
+// caller (sel.count == 0), NOT here — so a WHITE pixel always means a trace ran
+// and completed fully lit, never "no trace ran".
+fn debug_trace_outcome(origin: vec3<f32>, dir: vec3<f32>, max_dist: f32, normal: vec3<f32>) -> vec3<f32> {
+    if (sdf_meta.present == 0u) {
+        return vec3<f32>(1.0, 1.0, 1.0); // fully lit (no atlas)
+    }
+    // (a) open-space skip early-out → BLUE.
+    let cell_scale = max(max(params.sh_cell_size.x, params.sh_cell_size.y), params.sh_cell_size.z);
+    let open = sample_open_distance(origin);
+    if (open > params.open_space_skip_threshold * cell_scale) {
+        return vec3<f32>(0.0, 0.0, 1.0);
+    }
+
+    let voxel = max(sdf_meta.voxel_size_m, 1.0e-4);
+    let start_eps = voxel * 0.5;
+    var t: f32 = start_eps;
+    var factor: f32 = FULLY_LIT;
+    let k = max(params.penumbra_k, 1.0);
+    let max_t = max(min(64.0, max_dist - voxel), start_eps);
+
+    // Part A — mirror the production trace so the debug viz reflects it.
+    let ndl = dot(normalize_or_zero(normal), dir);
+    let graze = smoothstep(GRAZE_LO, GRAZE_HI, ndl);
+
+    var ph: f32 = 1.0e10;
+    let steps: u32 = clamp(params.max_march_steps, 1u, 256u);
+    for (var i: u32 = 0u; i < steps; i = i + 1u) {
+        let p = origin + dir * t;
+        let h = sample_fine_distance(p);
+        // (b) hard hit → RED with green = normalized hit distance t / max_t.
+        if (h < voxel * 0.5) {
+            let norm_t = clamp(t / max(max_t, 1.0e-4), 0.0, 1.0);
+            return vec3<f32>(1.0, norm_t, 0.0);
+        }
+        // Soft penumbra term applies only while the ray APPROACHES the nearest
+        // surface (h <= ph). Receding steps drive the Aaltonen estimate toward 0
+        // (h ≈ 2·ph at the Lipschitz limit) and min() would latch that false zero
+        // into the concentric black "ripple rings". Mirrors `trace_shadow`.
+        if (t > start_eps && h <= ph) {
+            let y = h * h / (2.0 * max(ph, voxel * 0.5));
+            let estimate = sqrt(max(h * h - y * y, 0.0));
+            let soft = k * estimate / max(t - y, voxel);
+            factor = min(factor, mix(1.0, soft, graze));
+        }
+        ph = h;
+        t = t + max(h, voxel * 0.5);
+        if (t > max_t) {
+            break;
+        }
+    }
+    factor = clamp(factor, 0.0, 1.0);
+    // (d) fully lit → WHITE; (c) penumbra-limited finish → GREEN (intensity = factor).
+    if (factor >= 0.999) {
+        return vec3<f32>(1.0, 1.0, 1.0);
+    }
+    return vec3<f32>(0.0, factor, 0.0);
+}
+
+// TEMP DEBUG: SDF shadow path visualization. Mirrors `trace_light_visibility`
+// but returns the RGB outcome code for the primary (slot 0) light. `origin` is
+// the normal-offset march origin (`shadow_ray_origin`); the light vector and
+// distance are recomputed from it so the debug viz marches the exact ray the
+// production path does.
+fn debug_trace_light_outcome(origin: vec3<f32>, light_idx: u32, normal: vec3<f32>) -> vec3<f32> {
+    let sl = spec_lights[light_idx];
+    let to_light = sl.position_and_range.xyz - origin;
+    let dist = length(to_light);
+    if (dist < 1.0e-4) {
+        return vec3<f32>(1.0, 1.0, 1.0); // fully lit (coincident with light)
+    }
+    return debug_trace_outcome(origin, to_light / dist, dist, normal);
+}
+
 // Trace one per-light static shadow ray toward `light_idx`'s position. Returns
 // the closest-passing-distance visibility factor (1 = lit). The per-light
 // static trace keys on light POSITION — this is what lets it cast a specific
 // light's shadow, unlike the removed single dominant-direction trace.
-fn trace_light_visibility(world: vec3<f32>, light_idx: u32) -> f32 {
+//
+// `origin` is the normal-offset march origin (`shadow_ray_origin`). The light
+// vector and `max_dist` are recomputed from this offset origin so the
+// light-distance march clamp stays correct relative to the lifted start point.
+fn trace_light_visibility(origin: vec3<f32>, light_idx: u32, normal: vec3<f32>) -> f32 {
     let sl = spec_lights[light_idx];
-    let to_light = sl.position_and_range.xyz - world;
+    let to_light = sl.position_and_range.xyz - origin;
     let dist = length(to_light);
     if (dist < 1.0e-4) {
         return FULLY_LIT;
     }
     // Clamp the march to the light distance — never count occluders at/behind it.
-    return trace_shadow(world, to_light / dist, dist);
+    return trace_shadow(origin, to_light / dist, dist, normal);
 }
 
 // ---- Entry ----
@@ -380,10 +646,61 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var slice2: f32 = FULLY_LIT; // B
     var slice3: f32 = FULLY_LIT; // A
 
+    // TEMP DEBUG: SDF shadow path visualization. When enabled, write a debug RGB
+    // code to the output instead of per-light visibility floats. The other slices
+    // are irrelevant in these debug modes. Two encodings:
+    //   mode 3 → the slot-0 light's trace OUTCOME (`debug_trace_outcome`).
+    //   mode 4 → the reconstructed GEOMETRIC NORMAL (the exact `reconstruct_normal`
+    //            result the normal-offset shadow fix marches from), packed as
+    //            RGB = normal*0.5+0.5 so it can be inspected at edges/corners.
+    if (params.debug_mode != 0u) {
+        var dbg = vec3<f32>(1.0, 1.0, 1.0); // default fully lit
+        if (sdf_meta.present != 0u) {
+            let recon = reconstruct_world(half_xy);
+            if (recon.w > 0.5) {
+                let world = recon.xyz;
+                // Same reconstructed normal the production path uses for its
+                // origin offset, so the viz reflects the fix exactly.
+                let normal = reconstruct_normal(half_xy, world);
+                if (params.debug_mode == 4u) {
+                    // Encode the unit normal to [0,1] RGB. A degenerate
+                    // (unusable) reconstruction returns vec3(0) → mid-gray
+                    // (0.5,0.5,0.5), which reads as a distinct "no normal" tint.
+                    dbg = normal * 0.5 + vec3<f32>(0.5);
+                } else {
+                    // mode 3: trace-outcome RGB code for slot 0.
+                    let origin = shadow_ray_origin(world, normal);
+                    let sel = select_sdf_lights(world);
+                    if (sel.count > 0u) {
+                        dbg = debug_trace_light_outcome(origin, sel.indices[0], normal);
+                    } else {
+                        // TEMP DEBUG: no SDF light selected for this pixel → no
+                        // trace ran. MAGENTA disambiguates this from a completed
+                        // march that found no occluder (which is WHITE).
+                        dbg = vec3<f32>(1.0, 0.0, 1.0);
+                    }
+                }
+            }
+        }
+        textureStore(shadow_factor, store_xy, vec4<f32>(dbg, 1.0));
+        return;
+    }
+
     if (sdf_meta.present != 0u) {
         let recon = reconstruct_world(half_xy);
         if (recon.w > 0.5) {
             let world = recon.xyz;
+
+            // Lift the march origin off the shading surface ALONG THE GEOMETRIC
+            // NORMAL (reconstructed from depth neighbor taps). This is the
+            // self-shadow fix: an along-ray start skims tangent to the surface
+            // when the light is off to the side and collapses the penumbra
+            // estimate; a normal offset clears the caster's own field regardless
+            // of light direction. Light selection still keys on the true shading
+            // point `world` (matching the forward shader's selection); only the
+            // trace marches from the offset origin.
+            let normal = reconstruct_normal(half_xy, world);
+            let origin = shadow_ray_origin(world, normal);
 
             // Per-light static terms — trace one ray toward each of the K
             // most-influential sdf lights, chosen by the SHARED selection helper
@@ -391,16 +708,16 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             // keys on light POSITION, so no lightmap-UV gbuffer is needed.
             let sel = select_sdf_lights(world);
             if (sel.count > 0u) {
-                slice0 = trace_light_visibility(world, sel.indices[0]);
+                slice0 = trace_light_visibility(origin, sel.indices[0], normal);
             }
             if (sel.count > 1u) {
-                slice1 = trace_light_visibility(world, sel.indices[1]);
+                slice1 = trace_light_visibility(origin, sel.indices[1], normal);
             }
             if (sel.count > 2u) {
-                slice2 = trace_light_visibility(world, sel.indices[2]);
+                slice2 = trace_light_visibility(origin, sel.indices[2], normal);
             }
             if (sel.count > 3u) {
-                slice3 = trace_light_visibility(world, sel.indices[3]);
+                slice3 = trace_light_visibility(origin, sel.indices[3], normal);
             }
         }
     }

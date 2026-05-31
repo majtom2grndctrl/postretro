@@ -1512,8 +1512,14 @@ mod tests {
         println!(
             "\nSDF light: compacted spec slot={} pos=({:.3},{:.3},{:.3}) \
              falloff_range={:.3}m intensity={:.3} color={:?} peak(color*intensity)={:.3}",
-            sdf.slot, sdf_pos.x, sdf_pos.y, sdf_pos.z, sdf.range, sdf.light.intensity,
-            sdf.light.color, sdf.peak,
+            sdf.slot,
+            sdf_pos.x,
+            sdf_pos.y,
+            sdf_pos.z,
+            sdf.range,
+            sdf.light.intensity,
+            sdf.light.color,
+            sdf.peak,
         );
         let sdf_slots: Vec<u32> = specs.iter().filter(|s| s.is_sdf).map(|s| s.slot).collect();
         println!("all sdf-tagged compacted spec slots: {sdf_slots:?}");
@@ -1572,9 +1578,7 @@ mod tests {
                     .map(|s| (s.slot, influence(s, world)))
                     .filter(|(_, inf)| *inf > 0.0)
                     .collect();
-                cands.sort_by(|a, b| {
-                    b.1.partial_cmp(&a.1).unwrap().then_with(|| a.0.cmp(&b.0))
-                });
+                cands.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap().then_with(|| a.0.cmp(&b.0)));
                 cands.truncate(K);
                 return cands;
             };
@@ -1646,7 +1650,8 @@ mod tests {
         //     surface receiver AND both perturbations all land in a valid interior
         //     cell (index >= 0, with margin) and select the SDF light.
         let in_solid = |p: Vec3| -> bool {
-            let leaf = find_leaf_for_point(&result.tree, DVec3::new(p.x as f64, p.y as f64, p.z as f64));
+            let leaf =
+                find_leaf_for_point(&result.tree, DVec3::new(p.x as f64, p.y as f64, p.z as f64));
             result
                 .tree
                 .leaves
@@ -1690,8 +1695,14 @@ mod tests {
                 let surface = Vec3::new(col_x, surf_y, col_z);
                 let probes = [
                     ("floor surface", surface),
-                    ("surface +0.3m (half-res error)", surface + Vec3::new(0.0, 0.3, 0.0)),
-                    ("surface -0.3m (half-res error)", surface - Vec3::new(0.0, 0.3, 0.0)),
+                    (
+                        "surface +0.3m (half-res error)",
+                        surface + Vec3::new(0.0, 0.3, 0.0),
+                    ),
+                    (
+                        "surface -0.3m (half-res error)",
+                        surface - Vec3::new(0.0, 0.3, 0.0),
+                    ),
                 ];
                 let mut all_ok = true;
                 for (label, world) in probes {
@@ -1729,7 +1740,11 @@ mod tests {
                         "  {label:<32} world=({:.3},{:.3},{:.3}) cell={cell_desc:>14} \
                          frac_y={:.3} edge_dist_y={edge_dist_y:.3} off_boundary_y={off_boundary} \
                          count={} indices={chosen:?} sdf_selected={selected}",
-                        world.x, world.y, world.z, frac.y, sel.len(),
+                        world.x,
+                        world.y,
+                        world.z,
+                        frac.y,
+                        sel.len(),
                     );
                     if !(selected && off_boundary) {
                         all_ok = false;
@@ -1786,9 +1801,7 @@ mod tests {
                     let sdf_in_cell: Vec<u32> = in_cell
                         .iter()
                         .copied()
-                        .filter(|&slot| {
-                            specs.get(slot as usize).map(|s| s.is_sdf).unwrap_or(false)
-                        })
+                        .filter(|&slot| specs.get(slot as usize).map(|s| s.is_sdf).unwrap_or(false))
                         .collect();
                     let sdf_present = in_cell.contains(&sdf.slot);
                     println!(
@@ -1810,7 +1823,9 @@ mod tests {
                 "  select_sdf_lights-equiv: count={} indices={chosen:?} \
                  (influences={:?})",
                 sel.len(),
-                sel.iter().map(|(_, f)| format!("{f:.4}")).collect::<Vec<_>>()
+                sel.iter()
+                    .map(|(_, f)| format!("{f:.4}"))
+                    .collect::<Vec<_>>()
             );
 
             // VERDICT for this receiver.

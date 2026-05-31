@@ -1443,7 +1443,10 @@ mod tests {
             crate::visibility::find_exterior_leaves(&result.tree, &portals);
         let geo_result = crate::geometry::extract_geometry(&result.faces, &result.tree, &exterior);
         let triangles = collect_triangles(&geo_result);
-        assert!(!triangles.is_empty(), "campaign-test must produce triangles");
+        assert!(
+            !triangles.is_empty(),
+            "campaign-test must produce triangles"
+        );
 
         let ctx = SdfBakeCtx {
             geometry: &geo_result,
@@ -1457,7 +1460,11 @@ mod tests {
         let brick_size = section.brick_size_voxels;
         let dims = section.grid_dims; // bricks per axis
         let brick_world = voxel_size * brick_size as f32; // brick edge in meters
-        let origin = Vec3::new(section.world_min[0], section.world_min[1], section.world_min[2]);
+        let origin = Vec3::new(
+            section.world_min[0],
+            section.world_min[1],
+            section.world_min[2],
+        );
         let interior_voxels = [
             dims[0] * brick_size,
             dims[1] * brick_size,
@@ -1488,8 +1495,8 @@ mod tests {
                 return (None, "OOB", f32::INFINITY);
             }
             let (bx, by, bz) = (bxf as u32, byf as u32, bzf as u32);
-            let idx = (bz as usize * dims[1] as usize + by as usize) * dims[0] as usize
-                + bx as usize;
+            let idx =
+                (bz as usize * dims[1] as usize + by as usize) * dims[0] as usize + bx as usize;
             let slot = section.top_level[idx];
             let coarse = section.coarse_distances[idx];
             let class = if slot == BRICK_SLOT_EMPTY {

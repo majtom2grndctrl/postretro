@@ -181,6 +181,12 @@ pub enum SectionId {
     /// "no SDF" load (degradation, not an error).
     /// See `sdf_atlas::SdfAtlasSection`.
     SdfAtlas = 33,
+
+    /// Base irradiance probe volume encoded as a 2D octahedral `Rgba16Float`
+    /// atlas. Sibling replacement for `ShVolume` during the one-way migration;
+    /// validity, grid metadata, depth moments, and animation descriptors keep
+    /// the same meaning. See `sh_volume::OctahedralShVolumeSection`.
+    OctahedralShVolume = 34,
 }
 
 impl SectionId {
@@ -207,6 +213,7 @@ impl SectionId {
             31 => Some(Self::FogCellMasks),
             32 => Some(Self::TextureCacheKeys),
             33 => Some(Self::SdfAtlas),
+            34 => Some(Self::OctahedralShVolume),
             _ => None,
         }
     }

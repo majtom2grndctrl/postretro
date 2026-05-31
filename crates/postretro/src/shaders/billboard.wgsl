@@ -49,7 +49,7 @@ struct ChunkGridInfo {
 @group(2) @binding(4) var<storage, read> chunk_offsets: array<vec2<u32>>;
 @group(2) @binding(5) var<storage, read> chunk_indices: array<u32>;
 
-// --- Group 3: SH irradiance volume (shared with forward) ---
+// --- Group 3: octahedral irradiance atlas (shared with forward) ---
 struct ShGridInfo {
     grid_origin: vec3<f32>,
     has_sh_volume: u32,
@@ -57,17 +57,20 @@ struct ShGridInfo {
     _pad0: u32,
     grid_dimensions: vec3<u32>,
     _pad1: u32,
+    atlas_dimensions: vec2<u32>,
+    tile_dimension: u32,
+    tile_border: u32,
+    tile_grid_dimensions: vec2<u32>,
+    tile_interior: u32,
+    _pad2: u32,
+    probe_occlusion: u32,
+    _pad3: u32,
+    _pad4: u32,
+    _pad5: u32,
 };
 
-@group(3) @binding(1) var sh_band0: texture_3d<f32>;
-@group(3) @binding(2) var sh_band1: texture_3d<f32>;
-@group(3) @binding(3) var sh_band2: texture_3d<f32>;
-@group(3) @binding(4) var sh_band3: texture_3d<f32>;
-@group(3) @binding(5) var sh_band4: texture_3d<f32>;
-@group(3) @binding(6) var sh_band5: texture_3d<f32>;
-@group(3) @binding(7) var sh_band6: texture_3d<f32>;
-@group(3) @binding(8) var sh_band7: texture_3d<f32>;
-@group(3) @binding(9) var sh_band8: texture_3d<f32>;
+@group(3) @binding(1) var sh_total_atlas: texture_2d<f32>;
+@group(3) @binding(2) var sh_atlas_sampler: sampler;
 @group(3) @binding(10) var<uniform> sh_grid: ShGridInfo;
 
 // Animated-layer bindings must exist in the bind group layout so we can reuse
@@ -89,9 +92,9 @@ struct AnimationDescriptor {
 };
 @group(3) @binding(11) var<storage, read> anim_descriptors: array<AnimationDescriptor>;
 @group(3) @binding(12) var<storage, read> anim_samples: array<f32>;
-// Depth moments are likewise declared only for shared-layout compatibility with
-// the forward pass — billboard SH sampling uses the depth-disabled path
-// (`sample_sh_indirect_corners_without_depth`), so this texture is never read here.
+// Depth moments are consumed by billboard's depth-aware indirect sampler. The
+// path deliberately skips backface rejection because sprites have no stable
+// geometric surface normal.
 @group(3) @binding(14) var sh_depth_moments: texture_3d<f32>;
 
 // --- Group 6: sprite instance storage buffer ---
@@ -245,14 +248,12 @@ fn cone_attenuation(L: vec3<f32>, aim: vec3<f32>, inner_angle: f32, outer_angle:
     return smoothstep(cos_outer, cos_inner, cos_angle);
 }
 
-// SH reconstruction (`sh_irradiance`) and the manual depth-aware 8-corner blend
-// (`sample_sh_indirect_corners_depth_aware`) live in `sh_sample.wgsl`,
+// The depth-aware octahedral irradiance sampler lives in `sh_sample.wgsl`,
 // concatenated after this source at pipeline-build time (render/smoke.rs
-// `BILLBOARD_SHADER_SOURCE`). They read the group-3 `sh_band0..8`,
-// `sh_depth_moments`, and `sh_grid` declared above by lexical name. Billboard
-// passes `reject_backface = false`: a camera-facing sprite has no real surface
-// normal, so validity excludes invalid corners and depth visibility attenuates
-// occluded corners; backface rejection does not apply.
+// `BILLBOARD_SHADER_SOURCE`). Billboard passes `reject_backface = false`: a
+// camera-facing sprite has no real surface normal, so validity excludes invalid
+// probes and depth visibility attenuates occluded probes; backface rejection
+// does not apply.
 
 // Derive the raw grid index / sub-cell fraction and defer the depth-aware
 // 8-corner blend to the shared helper. `gi`/`gfrac` clamp the low side to the
@@ -271,7 +272,15 @@ fn sample_sh_indirect(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
     let gi = vec3<u32>(floor(clamped));
     let gfrac = fract(clamped);
 
-    return sample_sh_indirect_corners_depth_aware(gi, gfrac, world_pos, normal, normal, false);
+    return sample_sh_indirect_corners_depth_aware(
+        gi,
+        gfrac,
+        world_pos,
+        normal,
+        normal,
+        false,
+        sh_grid.probe_occlusion != 0u,
+    );
 }
 
 @fragment

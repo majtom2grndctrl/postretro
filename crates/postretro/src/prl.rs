@@ -25,7 +25,7 @@ use postretro_level_format::lightmap::LightmapSection;
 use postretro_level_format::map_entity::{MapEntityRecord, MapEntitySection};
 use postretro_level_format::portals::PortalsSection;
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
-use postretro_level_format::sh_volume::ShVolumeSection;
+use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::texture_names::TextureNamesSection;
 use postretro_level_format::{self as prl_format, SectionId};
@@ -57,6 +57,10 @@ pub enum PrlLoadError {
     )]
     NoTextureCacheKeys,
     #[error(
+        "PRL file has no OctahedralShVolume section (section 34) — pre-migration SH volume maps are not supported; recompile with `prl-build`"
+    )]
+    NoOctahedralShVolume,
+    #[error(
         "DeltaShVolumes affinity_factor {found} != engine AFFINITY_FACTOR {expected} — recompile the .prl with the current `prl-build`"
     )]
     DeltaShAffinityFactorMismatch { found: u8, expected: u8 },
@@ -70,7 +74,7 @@ pub enum PrlLoadError {
         expected: [u32; 3],
     },
     #[error(
-        "PRL file has a DeltaShVolumes section (id 27) but no base ShVolume section (id 20) — the compose pass cannot derive affinity dims without the base grid; recompile with `prl-build`"
+        "PRL file has a DeltaShVolumes section (id 27) but no base OctahedralShVolume section (id 34) — the compose pass cannot derive affinity dims without the base grid; recompile with `prl-build`"
     )]
     DeltaShMissingBaseVolume,
 }
@@ -240,8 +244,9 @@ pub struct LevelWorld {
     pub lights: Vec<MapLight>,
     /// Index `i` corresponds to `lights[i]`. Empty → all lights treated as infinite-bound.
     pub light_influences: Vec<crate::lighting::influence::LightInfluence>,
-    /// `None` → renderer degrades to `ambient_floor + direct_sum`.
-    pub sh_volume: Option<ShVolumeSection>,
+    /// Required octahedral irradiance atlas. Empty geometry uses a present
+    /// section with zero grid dimensions; missing section means stale PRL.
+    pub sh_volume: Option<OctahedralShVolumeSection>,
     /// `None` → 1×1 white placeholder; bumped-Lambert degrades to flat white.
     pub lightmap: Option<LightmapSection>,
     /// Whether the lightmap bake includes static-light visibility (Shadowed,
@@ -681,28 +686,29 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             }
         };
 
-    // Optional — absent → renderer falls back to `ambient_floor + direct_sum`.
-    let sh_volume: Option<ShVolumeSection> =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::ShVolume as u32)? {
-            Some(data) => {
-                let section = ShVolumeSection::from_bytes(&data)?;
-                log::info!(
-                    "[PRL] ShVolume: {}×{}×{} grid ({} probes, {} animated layers)",
-                    section.grid_dimensions[0],
-                    section.grid_dimensions[1],
-                    section.grid_dimensions[2],
-                    section.probes.len(),
-                    section.animation_descriptors.len(),
-                );
-                Some(section)
-            }
-            None => {
-                log::warn!(
-                    "[PRL] ShVolume section missing — indirect lighting disabled for this map"
-                );
-                None
-            }
-        };
+    let sh_volume: Option<OctahedralShVolumeSection> = match prl_format::read_section_data(
+        &mut cursor,
+        &meta,
+        SectionId::OctahedralShVolume as u32,
+    )? {
+        Some(data) => {
+            let section = OctahedralShVolumeSection::from_bytes(&data)?;
+            log::info!(
+                "[PRL] OctahedralShVolume: {}×{}×{} grid ({} probes, {}×{} atlas, tile {} + border {}, {} animated layers)",
+                section.grid_dimensions[0],
+                section.grid_dimensions[1],
+                section.grid_dimensions[2],
+                section.probes.len(),
+                section.atlas_dimensions[0],
+                section.atlas_dimensions[1],
+                section.tile_dimension,
+                section.tile_border,
+                section.animation_descriptors.len(),
+            );
+            Some(section)
+        }
+        None => return Err(PrlLoadError::NoOctahedralShVolume),
+    };
 
     // Task 2c: populate `MapLight.animated_slot` from the SH-volume slot
     // table. Resolution happens once here (load time), not per
@@ -714,7 +720,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         use postretro_level_format::sh_volume::ANIMATED_SLOT_NONE;
         if sh.slot_for_map_light.len() != lights.len() {
             log::warn!(
-                "[PRL] ShVolume slot_for_map_light count ({}) != AlphaLights count ({}); skipping animated-slot resolution",
+                "[PRL] OctahedralShVolume slot_for_map_light count ({}) != AlphaLights count ({}); skipping animated-slot resolution",
                 sh.slot_for_map_light.len(),
                 lights.len(),
             );
@@ -1110,7 +1116,10 @@ mod tests {
     use postretro_level_format::geometry::{FaceMeta as FormatFaceMeta, GeometrySection, Vertex};
 
     use postretro_level_format::delta_sh_volumes::{
-        AFFINITY_FACTOR, DeltaShVolumesSection, PROBE_F16_STRIDE, PROBES_PER_CELL,
+        AFFINITY_FACTOR, DEFAULT_DELTA_PROBE_F16_STRIDE, DeltaShVolumesSection, PROBES_PER_CELL,
+    };
+    use postretro_level_format::octahedral::{
+        DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
     };
 
     /// A minimal valid delta section for `base_dims`, with one CSR entry.
@@ -1124,10 +1133,12 @@ mod tests {
         DeltaShVolumesSection {
             affinity_factor: AFFINITY_FACTOR,
             affinity_dims,
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             animation_descriptor_indices: vec![0],
             affinity_offsets: offsets,
             affinity_lights: vec![0],
-            delta_subblocks: vec![0u16; PROBES_PER_CELL * PROBE_F16_STRIDE],
+            delta_subblocks: vec![0u16; PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE],
         }
     }
 
@@ -1516,11 +1527,48 @@ mod tests {
         }
     }
 
-    fn write_prl_fixture(sections: Vec<prl_format::SectionBlob>, name: &str) -> std::path::PathBuf {
+    fn write_prl_fixture_raw(
+        sections: Vec<prl_format::SectionBlob>,
+        name: &str,
+    ) -> std::path::PathBuf {
         let tmp = std::env::temp_dir().join(name);
         let mut file = std::fs::File::create(&tmp).unwrap();
         prl_format::write_prl(&mut file, &sections).unwrap();
         tmp
+    }
+
+    fn write_prl_fixture(
+        mut sections: Vec<prl_format::SectionBlob>,
+        name: &str,
+    ) -> std::path::PathBuf {
+        if !sections
+            .iter()
+            .any(|section| section.section_id == SectionId::OctahedralShVolume as u32)
+        {
+            sections.push(default_octahedral_sh_volume_blob());
+        }
+        write_prl_fixture_raw(sections, name)
+    }
+
+    fn default_octahedral_sh_volume_blob() -> prl_format::SectionBlob {
+        let section = OctahedralShVolumeSection {
+            grid_origin: [0.0; 3],
+            cell_size: [1.0; 3],
+            grid_dimensions: [0, 0, 0],
+            probe_stride: postretro_level_format::sh_volume::OCTAHEDRAL_PROBE_STRIDE,
+            tile_dimension: postretro_level_format::octahedral::DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: postretro_level_format::octahedral::DEFAULT_IRRADIANCE_TILE_BORDER,
+            atlas_dimensions: [0, 0],
+            probes: Vec::new(),
+            atlas_texels: Vec::new(),
+            animation_descriptors: Vec::new(),
+            slot_for_map_light: Vec::new(),
+        };
+        prl_format::SectionBlob {
+            section_id: SectionId::OctahedralShVolume as u32,
+            version: 1,
+            data: section.to_bytes(),
+        }
     }
 
     fn default_fog_volumes_blob() -> prl_format::SectionBlob {
@@ -1628,6 +1676,33 @@ mod tests {
         let tmp = write_prl_fixture(sections, "postretro_test_missing_bvh.prl");
         let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
         assert!(matches!(err, PrlLoadError::NoBvh), "got {err:?}");
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_missing_octahedral_sh_volume_section() {
+        let geom = sample_geometry();
+        let bvh = sample_bvh_section();
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geom.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture_raw(sections, "postretro_test_missing_oct_sh.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(err, PrlLoadError::NoOctahedralShVolume),
+            "got {err:?}"
+        );
         std::fs::remove_file(&tmp).ok();
     }
 

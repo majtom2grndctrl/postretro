@@ -103,7 +103,7 @@ Unknown prefix falls back to a default material with a warning at load time.
 ### Compiler pipeline
 
 ```
-parse .map → BSP construction → brush-side projection → portal generation → exterior leaf culling → geometry → BVH → lightmap bake → SH volume bake → pack .prl
+parse .map → BSP construction → brush-side projection → portal generation → exterior leaf culling → geometry → BVH → lightmap bake → octahedral irradiance volume bake → pack .prl
 ```
 
 1. **Parse.** Extracts brush volumes, brush sides, and entities. Applies coordinate transform (Quake Z-up → engine Y-up) and unit scale. Light entities route to FGD translation and validation; they don't participate in BSP construction.
@@ -129,21 +129,25 @@ PRL header `version` is 4. Loading a file with any other version fails.
 | Geometry | 17 | Always |
 | AlphaLights | 18 | Always |
 | Bvh | 19 | Always |
-| ShVolume | 20 | When compiled with lighting |
+| ShVolume | 20 | Retired legacy L2 SH irradiance payload; stale files are rejected by section-internal version |
 | LightInfluence | 21 | When compiled with lighting |
 | Lightmap | 22 | Always (placeholder atlas when a map has no static lights) |
 | ChunkLightList | 23 | Always; per-chunk static-light index lists for specular culling |
 | AnimatedLightChunks | 24 | When compiled with animated lights |
 | AnimatedLightWeightMaps | 25 | When compiled with animated lights; per-texel weight maps for the compose pass |
 | LightTags | 26 | When at least one light carries a tag; one space-delimited tag-list string per AlphaLight record (empty string = untagged) |
-| DeltaShVolumes | 27 | When the map has at least one animated light; per-light delta SH probe grids |
+| DeltaShVolumes | 27 | When the map has at least one animated light; per-light sparse octahedral irradiance delta tiles |
 | DataScript | 28 | When `data_script` KVP present on `worldspawn`; compiled script bytes + original source path |
 | MapEntity | 29 | When the map has at least one non-light, non-worldspawn entity; per-entity classname, origin, angles, tags, and KVP bag for runtime classname dispatch |
 | FogVolumes | 30 | Always (12-byte overhead when no fog_volume brushes present; carries fog_pixel_scale and initial_gravity) |
 | FogCellMasks | 31 | When at least one fog volume entity is present (fog_volume brush, fog_lamp, or fog_tube) |
 | TextureCacheKeys | 32 | Always; one 32-byte blake3 per TextureNames entry pointing at a `.prm` sidecar under `.build-caches/prm-cache/` |
+| SdfAtlas | 33 | When the map has SDF static occluder data |
+| OctahedralShVolume | 34 | When compiled with lighting; base indirect irradiance as octahedral atlas tiles |
 
-**ShVolume (id 20) probe record:** byte layout, field offsets, PROBE_STRIDE, and f16 encoding are documented in the `ShProbe` and `PROBE_STRIDE` doc comments in `crates/level-format/src/sh_volume.rs`. Non-obvious contract: sky-miss sentinel distance = `4 × length(cell_size)` — four times the full 3D cell diagonal, chosen so any valid in-cell ray distance is always smaller. `SH_VOLUME_VERSION` is a section-internal version (not the PRL header version); bump it whenever the per-probe record layout changes, so the loader rejects stale `.prl` files with a clear error.
+**OctahedralShVolume (id 34):** sibling replacement for legacy `ShVolume` (id 20). The section stores grid origin/cell size/dimensions, one metadata record per probe (`validity`, f16 `E[d]`, f16 `E[d²]`), and one 2D `Rgba16Float` atlas of base irradiance tiles. Default tile geometry is `tile_dimension = 6` including `tile_border = 1`, giving a 4×4 interior. Tiles are packed in x-fastest probe order: tile x = probe x, tile y = probe y + probe z × grid_y, so atlas dimensions are `(grid_x × tile_dimension, grid_y × grid_z × tile_dimension)`. Interior texel centers decode through the Rust octahedral mapping in `crates/level-format/src/octahedral.rs`; the 1-texel border copies the opposite edge with the orthogonal coordinate reversed across the octahedral wrap. Sky-miss sentinel distance remains `4 × length(cell_size)` for the isotropic Chebyshev moments. `SH_VOLUME_VERSION` is a section-internal version (not the PRL header version); version 6 is the octahedral base-atlas migration, and stale pre-migration `.prl` files are rejected rather than silently accepted.
+
+**DeltaShVolumes (id 27):** sparse CSR companion for animated-light indirect deltas. The affinity-cell structure is unchanged: `affinity_factor = 4`, `affinity_dims = ceil(base_dims / 4)`, CSR `affinity_offsets`, flat `affinity_lights`, and one dense 64-probe sub-block per CSR entry in x-fastest in-cell order. Version 3 replaces each probe's old 28-half SH coefficient payload with one row-major `Rgba16Float` octahedral delta tile using the same default `tile_dimension = 6`, `tile_border = 1`, interior mapping, and wrap-border convention as `OctahedralShVolume`. The delta bake is indirect-only; animated direct lighting lives in `lm_anim`, so adding direct terms here would double-count. `DELTA_SH_VOLUMES_VERSION` is section-internal and stale pre-migration sections are rejected. Delta bakes are invoked directly from the compiler rather than through the build cache, so this migration has no cache key or stage version to bump.
 
 ### Runtime visibility
 
@@ -167,7 +171,7 @@ Disk-backed content-hash cache that lets `prl-build` skip the two expensive bake
 | `stage_version` | `u32` constant (`STAGE_VERSION`) in each stage's module; bumped manually when the baking algorithm changes |
 | `input_hash` | `blake3(postcard(StageInputs) || postcard(StageConfig))` — covers the serialized data the stage reads |
 
-**Stage version bump rule.** Bump a stage's `STAGE_VERSION` when its output computation changes (algorithm, sampling, formula). The substrate invalidates every entry for that stage on the next build. Do not bump for unrelated changes.
+**Stage version bump rule.** Bump a stage's `STAGE_VERSION` when its output computation changes (algorithm, sampling, formula). The substrate invalidates every entry for that stage on the next build. Do not bump for unrelated changes. The `sh_volume` stage version is `3` for the octahedral base-atlas output.
 
 **Determinism invariant.** Both cached stages produce byte-identical output for identical inputs. Any new code in `lightmap_bake.rs` or `sh_bake.rs` must preserve this. Common non-determinism sources to avoid: `HashMap` iteration feeding output ordering, non-order-preserving parallel reductions.
 

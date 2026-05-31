@@ -57,8 +57,8 @@ AUTHOR (TrenchBroom .map) — split on bake participation
         ▼
 COMPILER (prl-build) — route by tier, then (baked tier) by shadow type
         │
-        ├─ INDIRECT  ─ every baked-tier light, both shadow types ─► SH bounce
-        │                       (base grid + sparse per-light delta; indirect-only)
+        ├─ INDIRECT  ─ every baked-tier light, both shadow types ─► octahedral probe atlas
+        │                       (base atlas + sparse per-light delta; indirect-only)
         │
         ├─ DIRECT · static_light_map shadow type ─► baked into the lightmap (direct + shadow)
         │
@@ -76,7 +76,7 @@ RUNTIME — dynamic tier bakes nothing: evaluated live, shadowed by a rationed
         ▼
 FORWARD COMPOSITION (per fragment) — direct terms disjoint by technique; they add
         total = ambient floor
-              + indirect          SH base + delta      every surface, one path
+              + indirect          octahedral base + delta      every surface, one path
               + baked direct       static_light_map shadow type, shadow baked in
               + Σ sdf direct        × each light's runtime SDF visibility
               + Σ dynamic direct    × shadow map (rationed pool)
@@ -88,13 +88,13 @@ The seams that keep direct and indirect disjoint — tier routing, the position-
 
 **Dynamic direct.** Dynamic lights run a per-fragment loop with an influence-volume early-out. Dynamic spot lights support shadow maps (depth texture array, comparison sampler); omnidirectional and sun lights cast no dynamic shadows. Light sources: FGD entities (`light`, `light_spot`, `light_sun`) and gameplay effects. Clustered forward+ binning deferred until profiling shows the flat loop bottlenecks.
 
-**Indirect.** prl-build bakes an SH L2 irradiance volume (3D probe grid) over the level's empty space. Runtime samples via a manual 8-corner `textureLoad` blend: each corner's weight = trilinear factor × baked validity bit (band-0 alpha; in-wall/off-grid probes are dropped) × optional backface-rejection term (forward path only); surviving weights are renormalized. Billboard and fog apply validity exclusion and renormalization but skip backface rejection. When no corners survive, the indirect term degrades to the ambient floor.
+**Indirect.** prl-build bakes diffuse irradiance into a DDGI-style octahedral probe atlas over the level's empty space. Runtime walks the 8 neighboring probes, does one hardware-bilinear atlas sample per probe direction, and weights each probe by trilinear factor × validity × optional backface rejection (forward path only) × optional Chebyshev probe visibility. Billboard and fog use the same atlas reads but skip backface rejection; fog also skips Chebyshev visibility. Surviving weights are renormalized, and when no probe survives the indirect term degrades to the ambient floor.
 
-**Probe depth moments.** Each ShVolume probe record carries two baked f16 depth moments alongside the SH coefficients — mean ray distance `E[d]` and mean squared distance `E[d²]` — accumulated over the same 256-ray sphere loop. Sky-miss rays contribute sentinel `4 × length(cell_size)` (4× the full 3D cell diagonal). The Chebyshev runtime interpolant consumes these to weight each probe by visibility and suppress through-wall indirect light leak. Probe record layout: see `build_pipeline.md` §PRL section IDs.
+**Probe depth moments.** Each ShVolume probe record carries two baked f16 depth moments alongside the octahedral irradiance data — mean ray distance `E[d]` and mean squared distance `E[d²]` — accumulated over the same 256-ray sphere loop. Sky-miss rays contribute sentinel `4 × length(cell_size)` (4× the full 3D cell diagonal). The Chebyshev runtime interpolant consumes these to weight each probe by visibility and suppress through-wall indirect light leak. Probe record layout: see `build_pipeline.md` §PRL section IDs.
 
 **Animated lights.** Animated lights carry per-light curve data (brightness scalar, RGB color) stored as packed f32 samples in a flat GPU storage buffer. Runtime evaluates Catmull-Rom splines over a `[0, 1)` cycle time with closed-loop wrap — uniform knot spacing, tension 0.5. A shared WGSL helper handles evaluation; it declares no buffers, so both the SH animation path and the animated-lightmap compose pass can bind their own `anim_samples` buffers at different bind-group slots without conflict. The animated-lightmap atlas is sampled by the forward pass only when the cell it belongs to passes the portal-traversed `VisibleCells` bitmask — any future pass that draws animated-lit geometry must share the same visibility gate or skip animated-lit chunks entirely.
 
-**Animated SH delta volumes.** For complex lighting scenes, animated lights also contribute to the SH irradiance volume. To avoid dynamic scene recomputation, each animated light's **indirect-only** (bounced) contribution at peak brightness is baked offline as an SH L2 delta, stored sparsely against the base SH grid (f16, 1.0m probe spacing). SH is indirect-only: the animated light's *direct* term lives in `lm_anim` (the animated weight-map bake, occlusion-tested), so the delta carries bounce only — baking direct into both would double-count (the double-count the `sdf-per-light-shadows` Task 1 amendment to `perf-animated-sh-light-culling` removed). The bake clips each light to its portal-reachable region and stores delta probes only where the light actually reaches: the base SH volume is partitioned into **affinity cells** of 4×4×4 base probes (`AFFINITY_FACTOR = 4`, locked to the compose workgroup size), and the section carries a CSR index (`affinity_offsets`/`affinity_lights`) mapping each affinity cell to the lights overlapping it, plus one dense 64-probe sub-block per (cell, light) entry. At runtime, a pre-frame compute pass (§7.1 step 5) dispatches one workgroup per affinity cell (`workgroup_id` *is* the cell), iterates only that cell's light list, point-reads each light's coincident sub-block probe, evaluates animation curves for the current frame time, and adds the composed delta into the base SH at full weight, writing the total into a separate set of 3D textures that all consumers (forward, billboard, fog) sample from group 3. Consumers see no change; the compose pass is the sole rendering-pipeline edit. (The former `delta_scale` dev knob was retired with the indirect-only amendment — the delta carries bounce only, so there is no double-count to bisect.) Forward shader includes 10 lighting isolation modes for independently inspecting each lighting contribution. Wire format / bake detail: `crates/level-format/src/delta_sh_volumes.rs` (`DeltaShVolumesSection`, version 2).
+**Animated SH delta volumes.** For complex lighting scenes, animated lights also contribute to the irradiance atlas. To avoid dynamic scene recomputation, each animated light's **indirect-only** (bounced) contribution at peak brightness is baked offline as octahedral delta tiles, stored sparsely against the base probe grid (f16, 1.0m probe spacing). Indirect is separate from direct: the animated light's *direct* term lives in `lm_anim` (the animated weight-map bake, occlusion-tested), so the delta carries bounce only — baking direct into both would double-count. The bake clips each light to its portal-reachable region and stores delta probes only where the light actually reaches: the base probe volume is partitioned into **affinity cells** of 4×4×4 base probes (`AFFINITY_FACTOR = 4`), and the section carries a CSR index (`affinity_offsets`/`affinity_lights`) mapping each affinity cell to the lights overlapping it, plus one dense 64-probe octahedral-tile sub-block per (cell, light) entry. At runtime, a pre-frame compute pass (§7.1 step 5) dispatches over atlas texels, maps each texel back to its probe's affinity cell, evaluates animation curves for the current frame time, and adds the composed delta into the base atlas at full weight, writing the total atlas that consumers (forward, billboard, fog) sample from group 3. Consumers see no change; the compose pass is the sole rendering-pipeline edit. (The former `delta_scale` dev knob was retired with the indirect-only amendment — the delta carries bounce only, so there is no double-count to bisect.) Forward shader includes 10 lighting isolation modes for independently inspecting each lighting contribution. Wire format / bake detail: `crates/level-format/src/delta_sh_volumes.rs`.
 
 **Normal maps.** Perturb the per-fragment normal before direct and indirect evaluation. Tangents baked into the vertex format at compile time.
 
@@ -138,7 +138,7 @@ UVs computed from face projection data at compile time; GPU sampler uses repeat 
 2. **BVH traversal** (compute) — walks the global BVH; tests each leaf AABB against the frustum and the leaf's cell bit; writes or zeros the leaf's indirect buffer slot.
 3. **Light list upload** — uploads the active dynamic light array and per-light influence volumes to GPU storage buffers.
 4. **Animated lightmap compose** (compute) — composites per-texel animated-light contributions into the atlas using pre-baked weight maps and runtime-evaluated Catmull-Rom curves. The atlas is zero-initialized by wgpu at creation and the compose pass writes every texel the forward pass samples, so no per-frame clear is needed. Culls dispatch tiles against the visible-cell bitmask so invisible rooms' animated lights don't waste GPU cycles. Runs after BVH cull and before the depth prepass. See §4 "Animated lights". **Atlas validity invariant:** the atlas holds valid data only for cells visible this frame. Any future pass that samples the animated lightmap atlas (e.g. reflection probes, alternate cameras) must use the same frame's `VisibleCells`, or skip animated-lit chunks — sampling the atlas for invisible cells yields stale prior-frame contents.
-5. **SH compose pass** (compute) — reads the static base SH irradiance volume and per-light delta volume data; evaluates animation curves for each light at the current frame time; accumulates total SH contributions and writes to a composed set of 3D textures. Runs unconditionally (no culling). See §4 "Animated SH delta volumes".
+5. **SH compose pass** (compute) — reads the static base octahedral irradiance atlas and per-light delta tile data; evaluates animation curves for each light at the current frame time; accumulates total indirect contributions and writes to the composed atlas. Runs unconditionally (no culling). See §4 "Animated SH delta volumes".
 6. **Spot-shadow depth pass** — for each active shadow slot, renders world geometry into that slot's depth texture array layer from the light's point of view. One render pass per occupied slot; slots with no ranked light are skipped. Runs after the compute prepasses and before the depth pre-pass so shadow maps are fully written before the forward pass samples them.
 
 ### 7.2 Depth Pre-Pass
@@ -153,7 +153,7 @@ One `multi_draw_indexed_indirect` call per material bucket. Depth loaded from th
 
 - Sample albedo and normal map; reconstruct world-space normal from TBN and normal-map sample.
 - Sample lightmap atlas (irradiance + dominant direction); apply bumped-Lambert correction for normal-map response to static lights.
-- Sample SH irradiance volume (8-corner validity-weighted blend) for indirect lighting.
+- Sample octahedral irradiance atlas (8-probe weighted bilinear reads) for indirect lighting.
 - Loop over dynamic lights; evaluate direct contribution with influence-volume early-out.
 - Output: `albedo × (static_direct + indirect_sh + Σ dynamic_direct)`.
 
@@ -182,7 +182,7 @@ Temporal smoothing also creates headroom to march coarser (raise `fog.step_size`
 
 `FogParams` layout: the temporal `prev_view_proj` (`mat4x4`, 64 bytes) is appended at the END (after the `frame_index`/`_pad2` tail), so the struct is now 176 bytes (`FOG_PARAMS_SIZE`). The composite declares a prefix-only `FogParams` ending at `far_clip` (WGSL allows eliding the tail of a uniform struct), so it is unaffected by the append; the raymarch likewise does not declare the appended field.
 
-**Ambient scatter.** Fog samples full L2 SH irradiance from the same composed SH volume (group 3) used by the forward and billboard passes. The fog pass keeps the stable world-up SH read as the isotropic baseline, then blends toward a view-derived SH read when authored `scatter_bias` is above zero. The compiler translates `scatter_bias` to a forward-scatter Henyey-Greenstein `g` value; `g = 0` preserves the flat haze path. `ambient_scatter` scales only the SH ambient term, so dynamic spot and point-light scatter remain visible when ambient scatter is zero. When no SH volume is present (`has_sh_volume == 0`) the ambient contribution is zero. Per-volume scatter tint and saturation remain available via the `tint` and `saturation` KVPs on fog entities. Fog uses the shared no-depth SH helper with backface rejection disabled; Chebyshev depth visibility stays off for fog.
+**Ambient scatter.** Fog samples irradiance from the same composed octahedral atlas (group 3) used by the forward and billboard passes. The fog pass keeps the stable world-up atlas read as the isotropic baseline, then blends toward a view-derived atlas read when authored `scatter_bias` is above zero. Each read is the same 8-probe loop used by the other samplers: one hardware-bilinear octahedral tap per probe direction, validity-weighted and renormalized. The compiler translates `scatter_bias` to a forward-scatter Henyey-Greenstein `g` value; `g = 0` preserves the flat haze path. `ambient_scatter` scales only the ambient indirect term, so dynamic spot and point-light scatter remain visible when ambient scatter is zero. When no SH volume is present (`has_sh_volume == 0`) the ambient contribution is zero. Per-volume scatter tint and saturation remain available via the `tint` and `saturation` KVPs on fog entities. Fog uses the shared no-depth SH helper with backface rejection disabled; Chebyshev depth visibility stays off for fog.
 
 **Portal-driven volume culling.** Each frame, before dispatching the raymarch, the renderer reduces the per-sample AABB-test loop to only volumes reachable from the camera cell. Per-leaf `u32` bitmasks are baked at compile time into PRL section 31 (`FogCellMasks`); bit `i` set in leaf `L`'s mask means volume `i` overlaps leaf `L`'s bounds (conservative AABB-vs-AABB, no boundary pop). At runtime:
 
@@ -219,7 +219,7 @@ All wgpu calls live in the renderer module. Map loader, game logic, audio, and i
 | 0 | Camera uniforms |
 | 1 | Material (albedo texture, normal map, per-material uniforms) |
 | 2 | Dynamic lights, influence volumes, per-chunk static light lists |
-| 3 | SH irradiance volume (9 coefficient band textures, grid uniform, animation descriptor + sample buffers, per-probe depth moments; see §4, §8) |
+| 3 | Octahedral irradiance atlas (sampled total atlas, grid/tile uniform, animation descriptor + sample buffers, per-probe depth moments; see §4, §8) |
 | 4 | Lightmap atlas (irradiance + dominant direction textures) |
 | 5 | Spot shadow maps (depth texture array, comparison sampler, light-space matrices) |
 | 6 | FX resources (sprite instance storage buffer; fog depth buffer, AABB buffer, scatter target) |
@@ -259,7 +259,7 @@ Camera position and orientation produce a view matrix each frame, feeding:
 
 ### GPU Pass Timing
 
-Set `POSTRETRO_GPU_TIMING=1` to enable per-pass GPU timing. Requires adapter support for `TIMESTAMP_QUERY`; silently disabled if the feature is absent. Passes measured: `cull`, `animated_lm_compose`, `depth_prepass`, `sdf_shadow`, `forward`. Results are averaged over a 120-frame window and logged via `log::info!` at the window boundary. Use with `RUST_LOG=info` to see output.
+Set `POSTRETRO_GPU_TIMING=1` to enable per-pass GPU timing. Requires adapter support for `TIMESTAMP_QUERY`; silently disabled if the feature is absent. Passes measured: `cull`, `animated_lm_compose`, `depth_prepass`, `sdf_shadow`, `forward`, `sh_compose`. Results are averaged over a 120-frame window and logged via `log::info!` at the window boundary. Use with `RUST_LOG=info` to see output. SH sampling is not separately timestamp-bracketed because it runs inside the forward fragment shader; measure it as `forward` timing deltas before/after the octahedral migration and with Probe Occlusion on/off.
 
 ### Debug-Line Renderer
 

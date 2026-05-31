@@ -4,8 +4,8 @@
 // Compute pass over a low-resolution scatter target; one thread per low-res texel.
 // Reconstructs a world-space ray from the camera and the full-resolution depth buffer.
 // Marches through the fog volume AABB buffer accumulating:
-//   - Full L2 SH ambient scatter: HG-weighted blend of a world-up and a
-//     view-derived SH read (composed SH volume). The blend weight is the
+//   - Octahedral-atlas ambient scatter: HG-weighted blend of a world-up and a
+//     view-derived irradiance read. The blend weight is the
 //     per-volume anisotropy; at runtime the view-derived read sits on the HG
 //     lobe peak, so the weight collapses to saturate(g).
 //   - Dynamic spot-light beam scatter (shadow map occlusion)
@@ -30,25 +30,24 @@ struct ShGridInfo {
     _pad0: u32,
     grid_dimensions: vec3<u32>,
     _pad1: u32,
+    atlas_dimensions: vec2<u32>,
+    tile_dimension: u32,
+    tile_border: u32,
+    tile_grid_dimensions: vec2<u32>,
+    tile_interior: u32,
+    _pad2: u32,
 }
 
-@group(3) @binding(1) var sh_band0: texture_3d<f32>;
-@group(3) @binding(2) var sh_band1: texture_3d<f32>;
-@group(3) @binding(3) var sh_band2: texture_3d<f32>;
-@group(3) @binding(4) var sh_band3: texture_3d<f32>;
-@group(3) @binding(5) var sh_band4: texture_3d<f32>;
-@group(3) @binding(6) var sh_band5: texture_3d<f32>;
-@group(3) @binding(7) var sh_band6: texture_3d<f32>;
-@group(3) @binding(8) var sh_band7: texture_3d<f32>;
-@group(3) @binding(9) var sh_band8: texture_3d<f32>;
+@group(3) @binding(1) var sh_total_atlas: texture_2d<f32>;
+@group(3) @binding(2) var sh_atlas_sampler: sampler;
 @group(3) @binding(10) var<uniform> sh_grid: ShGridInfo;
 
 // Animated buffers (bindings 11, 12) and the depth-moment texture (binding 14)
 // are declared to satisfy the shared group-3 layout but are not read here — the
-// fog pass does not evaluate animation curves itself and samples SH without the
-// depth-aware visibility term. The sh_band textures it samples (bindings 1..9)
-// are the composed total (static base + animated deltas), so animated-light
-// contributions are already reflected in the ambient scatter automatically.
+// fog pass does not evaluate animation curves itself and samples the composed
+// total atlas, so animated-light contributions are already reflected in the
+// ambient scatter automatically. Fog also deliberately skips Chebyshev depth
+// visibility, so it never reads the depth-moment texture.
 struct AnimationDescriptor {
     period: f32,
     phase: f32,
@@ -101,7 +100,7 @@ const MAX_PIXEL_SCALE: u32 = 8u;
 // is inside the volume. Anchoring at one cell (Nyquist for a trilinear field)
 // makes the cache no coarser than the grid's own trilinear seams, removing the
 // banding. The dual-read fetch (one 8-corner load reconstructed for both iso
-// and dir) keeps this affordable. Tightening `--sh-probe-spacing` shrinks the
+// and dir) keeps this affordable. Tightening `--probe-spacing` shrinks the
 // cell and the stride together; tightening `fog.step_size` is floored at one
 // sample per step and capped by `MAX_SH_RESAMPLE_STRIDE`.
 const SH_COVERAGE_CELLS: f32 = 1.0;
@@ -213,11 +212,11 @@ struct FogSpotLight {
 
 // --- SH ambient sampling ---
 //
-// SH reconstruction and 8-corner blend helpers live in `sh_sample.wgsl`,
+// Octahedral-atlas 8-probe blend helpers live in `sh_sample.wgsl`,
 // concatenated after this source at pipeline-build time (fog_pass.rs
 // `FOG_SHADER_SOURCE`). Fog uses the no-depth entry point: no surface normal
 // (the evaluation direction is supplied by the fog pass), so validity exclusion
-// of in-wall corners applies but backface and depth visibility do not.
+// of in-wall probes applies but backface and depth visibility do not.
 
 const PI: f32 = 3.141592653589793;
 const HG_MAX_G: f32 = 0.9;
@@ -273,11 +272,11 @@ fn fog_directional_sh_weight(cos_theta: f32, g: f32) -> f32 {
 // meaning in fog. The dual helper does no backface rejection (fog has no
 // surface normal).
 //
-// One world position yields two SH reads (isotropic world-up + view-derived
-// directional). The 8-corner / 72-textureLoad fetch is direction-independent,
-// so both reads share a single fetch — half the texture bandwidth of two
-// separate samples. `gi`/`gfrac` clamp the low side to the grid origin; the
-// helper owns high-side edge clamping per corner.
+// One world position yields two atlas reads per probe (isotropic world-up +
+// view-derived directional). Octahedral lookup is direction-dependent, so the
+// shared helper performs both bilinear taps inside one 8-probe loop.
+// `gi`/`gfrac` clamp the low side to the grid origin; the helper owns high-side
+// edge clamping per probe.
 fn sample_sh_fog_dual(
     world_pos: vec3<f32>,
     dir_a: vec3<f32>,
@@ -547,14 +546,12 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     var step_count: u32 = 0u;
 
-    // The SH read costs 72 textureLoads (8 corners × 9 bands) and the grid is
-    // coarser than the march step, so the iso/dir reads are resampled once per
+    // The octahedral irradiance read is an 8-probe loop, with two bilinear atlas
+    // taps per probe for fog's iso/dir pair. The grid is coarser than the march
+    // step, so the iso/dir reads are resampled once per
     // `sh_coverage_dist` of march distance and the per-step value is
     // reconstructed by linearly interpolating between two look-ahead anchors
-    // (`lo` at `t_anchor`, `hi` at `t_anchor + sh_coverage_dist`). The iso and
-    // dir reads at each anchor share one fetch (`sample_sh_fog_dual`): the 72
-    // loads are direction-independent, so both directions reconstruct from the
-    // same corners at half the bandwidth of two separate samples.
+    // (`lo` at `t_anchor`, `hi` at `t_anchor + sh_coverage_dist`).
     //
     // `sh_coverage_dist` is anchored at one SH cell (see SH_COVERAGE_CELLS).
     // The world-up (iso) read varies slowly in space and tolerates a wide
@@ -582,7 +579,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     //
     // `sh_coverage_dist` is derived once per ray from the SH grid cell size,
     // so the meters-per-cache-sample budget stays proportional to the baked
-    // SH resolution regardless of `--sh-probe-spacing` or `fog_step_size`.
+    // SH resolution regardless of `--probe-spacing` or `fog_step_size`.
     // `cell_size` is a per-axis world-space length (matches
     // `probe_spacing_meters` on the host); taking the minimum component is
     // the conservative choice for anisotropic grids. Floored at `step` (one

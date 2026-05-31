@@ -8,8 +8,13 @@ use bvh::ray::Ray;
 use glam::{DVec3, Vec3};
 use nalgebra::{Point3, Vector3};
 use postretro_level_format::lightmap::f32_to_f16_bits;
+use postretro_level_format::octahedral::{
+    DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION, irradiance_atlas_dimensions,
+    irradiance_interior_texel_direction, irradiance_tile_origin, irradiance_tile_source_texel,
+};
 use postretro_level_format::sh_volume::{
-    ANIMATED_SLOT_NONE, AnimationDescriptor, PROBE_STRIDE, ShProbe, ShVolumeSection,
+    ANIMATED_SLOT_NONE, AnimationDescriptor, OCTAHEDRAL_PROBE_STRIDE, OctahedralAtlasTexel,
+    OctahedralShProbe, OctahedralShVolumeSection,
 };
 use rayon::prelude::*;
 
@@ -19,12 +24,12 @@ use crate::light_namespaces::{AnimatedBakedLights, StaticBakedLights};
 use crate::map_data::{FalloffModel, LightAnimation, LightType, MapLight};
 use crate::partition::{BspTree, find_leaf_for_point};
 
-/// Default grid cell size in meters. Overridden by `--sh-probe-spacing`.
+/// Default grid cell size in meters. Overridden by `--probe-spacing`.
 pub const DEFAULT_PROBE_SPACING: f32 = 1.0;
 
 /// Bump this when the SH baking algorithm changes. Invalidates all existing
 /// cache entries for this stage.
-pub const STAGE_VERSION: u32 = 2;
+pub const STAGE_VERSION: u32 = 3;
 
 const RAYS_PER_PROBE: u32 = 256;
 
@@ -72,6 +77,21 @@ impl<'a> ShBakeCtx<'a> {
     }
 }
 
+#[derive(Clone, Copy)]
+struct BakedProbe {
+    coefficients: [f32; 27],
+    metadata: OctahedralShProbe,
+}
+
+impl Default for BakedProbe {
+    fn default() -> Self {
+        Self {
+            coefficients: [0.0; 27],
+            metadata: OctahedralShProbe::default(),
+        }
+    }
+}
+
 /// Owned, serializable snapshot of the data the SH volume bake reads. Used for
 /// cache key derivation: postcard-serialize this + ShConfig to get the input hash.
 #[derive(serde::Serialize)]
@@ -93,16 +113,20 @@ pub struct ShConfig {
 
 /// Returns an empty section (`grid_dimensions == [0,0,0]`) for empty geometry,
 /// matching the "no SH section" degradation path at runtime.
-pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> ShVolumeSection {
+pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> OctahedralShVolumeSection {
     let probe_spacing_meters = config.probe_spacing;
     let geom = &inputs.geometry.geometry;
     if geom.vertices.is_empty() {
-        return ShVolumeSection {
+        return OctahedralShVolumeSection {
             grid_origin: [0.0, 0.0, 0.0],
             cell_size: [probe_spacing_meters; 3],
             grid_dimensions: [0, 0, 0],
-            probe_stride: PROBE_STRIDE,
+            probe_stride: OCTAHEDRAL_PROBE_STRIDE,
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            atlas_dimensions: [0, 0],
             probes: Vec::new(),
+            atlas_texels: Vec::new(),
             animation_descriptors: Vec::new(),
             slot_for_map_light: vec![ANIMATED_SLOT_NONE; inputs.total_light_count],
         };
@@ -146,11 +170,11 @@ pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> ShVolumeSect
     // probe-spacing scale the runtime Chebyshev interpolant operates in.
     let far_sentinel = 4.0 * Vec3::from(cell_size).length();
 
-    let base_probes: Vec<ShProbe> = (0..total)
+    let baked_probes: Vec<BakedProbe> = (0..total)
         .into_par_iter()
         .map(|i| {
             if validity[i] == 0 {
-                return ShProbe::default();
+                return BakedProbe::default();
             }
             let pos = vec3_from(probe_positions[i]);
             let (coeffs, sum_d, sum_d2) =
@@ -159,14 +183,25 @@ pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> ShVolumeSect
             // so these are exact divisions by the constant.
             let mean_distance = sum_d / RAYS_PER_PROBE as f32;
             let mean_sq_distance = sum_d2 / RAYS_PER_PROBE as f32;
-            ShProbe {
-                sh_coefficients: coeffs,
-                validity: 1,
-                mean_distance: f32_to_f16_bits(mean_distance),
-                mean_sq_distance: f32_to_f16_bits(mean_sq_distance),
+            BakedProbe {
+                coefficients: coeffs,
+                metadata: OctahedralShProbe {
+                    validity: 1,
+                    mean_distance: f32_to_f16_bits(mean_distance),
+                    mean_sq_distance: f32_to_f16_bits(mean_sq_distance),
+                },
             }
         })
         .collect();
+    let base_probes: Vec<OctahedralShProbe> = baked_probes.iter().map(|p| p.metadata).collect();
+    let atlas_dimensions = irradiance_atlas_dimensions(dims, DEFAULT_IRRADIANCE_TILE_DIMENSION);
+    let atlas_texels = pack_octahedral_irradiance_atlas(
+        &baked_probes,
+        dims,
+        DEFAULT_IRRADIANCE_TILE_DIMENSION,
+        DEFAULT_IRRADIANCE_TILE_BORDER,
+        atlas_dimensions,
+    );
 
     // Per-light monochrome SH layers removed; animated indirect is handled by the SH compose pass via delta SH volumes.
     let animation_descriptors: Vec<AnimationDescriptor> = animated_lights
@@ -183,18 +218,22 @@ pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> ShVolumeSect
         }
     }
 
-    ShVolumeSection {
+    OctahedralShVolumeSection {
         grid_origin: [world_min.x as f32, world_min.y as f32, world_min.z as f32],
         cell_size,
         grid_dimensions: dims,
-        probe_stride: PROBE_STRIDE,
+        probe_stride: OCTAHEDRAL_PROBE_STRIDE,
+        tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+        tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+        atlas_dimensions,
         probes: base_probes,
+        atlas_texels,
         animation_descriptors,
         slot_for_map_light,
     }
 }
 
-pub fn log_stats(section: &ShVolumeSection) {
+pub fn log_stats(section: &OctahedralShVolumeSection) {
     let dims = section.grid_dimensions;
     let total = section.total_probes();
     let valid = section.probes.iter().filter(|p| p.validity == 1).count();
@@ -217,12 +256,17 @@ pub fn log_stats(section: &ShVolumeSection) {
     };
 
     log::info!(
-        "ShVolume: grid {}x{}x{} = {total} probes ({valid} valid, \
-         {invalid} invalid), cell {}m, depth E[d] mean {avg_mean_d:.2}m / \
-         max {max_mean_d:.2}m, {} animated light(s)",
+        "OctahedralShVolume: grid {}x{}x{} = {total} probes ({valid} valid, \
+         {invalid} invalid), tile {} (border {}), atlas {}x{}, cell {}m, \
+         depth E[d] mean {avg_mean_d:.2}m / max {max_mean_d:.2}m, \
+         {} animated light(s)",
         dims[0],
         dims[1],
         dims[2],
+        section.tile_dimension,
+        section.tile_border,
+        section.atlas_dimensions[0],
+        section.atlas_dimensions[1],
         section.cell_size[0],
         section.animation_descriptors.len(),
     );
@@ -590,6 +634,103 @@ fn accumulate_sh_rgb(acc: &mut [f32; 27], dir: Vec3, value: Vec3, weight: f32) {
         acc[base + 1] += *b * value.y * weight;
         acc[base + 2] += *b * value.z * weight;
     }
+}
+
+fn evaluate_sh_rgb(coefficients: &[f32; 27], dir: Vec3) -> Vec3 {
+    let basis = sh_basis_l2(dir);
+    let mut out = Vec3::ZERO;
+    for (band, b) in basis.iter().enumerate() {
+        let base = band * 3;
+        out.x += coefficients[base] * *b;
+        out.y += coefficients[base + 1] * *b;
+        out.z += coefficients[base + 2] * *b;
+    }
+    out.max(Vec3::ZERO)
+}
+
+fn pack_octahedral_irradiance_atlas(
+    probes: &[BakedProbe],
+    grid_dimensions: [u32; 3],
+    tile_dimension: u32,
+    border: u32,
+    atlas_dimensions: [u32; 2],
+) -> Vec<OctahedralAtlasTexel> {
+    let total = (grid_dimensions[0] as usize)
+        * (grid_dimensions[1] as usize)
+        * (grid_dimensions[2] as usize);
+    debug_assert_eq!(probes.len(), total);
+    let atlas_texel_count = atlas_dimensions[0] as usize * atlas_dimensions[1] as usize;
+    let mut atlas = vec![OctahedralAtlasTexel::default(); atlas_texel_count];
+    if total == 0 {
+        return atlas;
+    }
+
+    for (probe_index, probe) in probes.iter().enumerate() {
+        let origin = irradiance_tile_origin(probe_index, grid_dimensions, tile_dimension);
+        let tile = pack_octahedral_irradiance_tile(
+            &probe.coefficients,
+            probe.metadata.validity != 0,
+            tile_dimension,
+            border,
+        );
+
+        for tile_y in 0..tile_dimension {
+            for tile_x in 0..tile_dimension {
+                let texel = tile[(tile_y * tile_dimension + tile_x) as usize];
+                let atlas_x = origin[0] + tile_x;
+                let atlas_y = origin[1] + tile_y;
+                let atlas_off = (atlas_y * atlas_dimensions[0] + atlas_x) as usize;
+                atlas[atlas_off] = texel;
+            }
+        }
+    }
+    atlas
+}
+
+pub(crate) fn pack_octahedral_irradiance_tile(
+    coefficients: &[f32; 27],
+    valid: bool,
+    tile_dimension: u32,
+    border: u32,
+) -> Vec<OctahedralAtlasTexel> {
+    let interior = tile_dimension - 2 * border;
+    let mut interior_texels = vec![OctahedralAtlasTexel::default(); (interior * interior) as usize];
+
+    if valid {
+        let valid_alpha = f32_to_f16_bits(1.0);
+        for iy in 0..interior {
+            for ix in 0..interior {
+                let dir = Vec3::from(irradiance_interior_texel_direction(
+                    ix,
+                    iy,
+                    tile_dimension,
+                    border,
+                ));
+                let irradiance = evaluate_sh_rgb(coefficients, dir);
+                let off = (iy * interior + ix) as usize;
+                interior_texels[off] = OctahedralAtlasTexel {
+                    rgba: [
+                        f32_to_f16_bits(irradiance.x),
+                        f32_to_f16_bits(irradiance.y),
+                        f32_to_f16_bits(irradiance.z),
+                        valid_alpha,
+                    ],
+                };
+            }
+        }
+    }
+
+    let mut tile =
+        vec![OctahedralAtlasTexel::default(); (tile_dimension * tile_dimension) as usize];
+    for tile_y in 0..tile_dimension {
+        for tile_x in 0..tile_dimension {
+            let [src_x, src_y] =
+                irradiance_tile_source_texel(tile_x, tile_y, tile_dimension, border);
+            tile[(tile_y * tile_dimension + tile_x) as usize] =
+                interior_texels[(src_y * interior + src_x) as usize];
+        }
+    }
+    tile
 }
 
 // Ramamoorthi & Hanrahan 2001, eq. 11 — zonal-harmonic cosine-lobe factors.
@@ -979,7 +1120,9 @@ mod tests {
         };
         let section = bake_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 });
         assert_eq!(section.grid_dimensions, [0, 0, 0]);
+        assert_eq!(section.atlas_dimensions, [0, 0]);
         assert!(section.probes.is_empty());
+        assert!(section.atlas_texels.is_empty());
     }
 
     /// Task 2c: even on empty geometry, the slot table sizes to
@@ -1495,7 +1638,8 @@ mod tests {
         };
         let section = bake_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 });
         assert!(section.animation_descriptors.is_empty());
-        // animated_light_count is the last u32 of the 48-byte header (bytes 44..48).
+        // animated_light_count keeps the legacy header offset (bytes 44..48)
+        // before the octahedral tile metadata.
         let bytes = section.to_bytes();
         assert_eq!(&bytes[44..48], &0u32.to_le_bytes());
     }
@@ -1713,13 +1857,11 @@ mod tests {
         assert!(with_dynamic.animation_descriptors.is_empty());
         for (a, b) in with_dynamic.probes.iter().zip(baseline.probes.iter()) {
             assert_eq!(a.validity, b.validity);
-            for (ca, cb) in a.sh_coefficients.iter().zip(b.sh_coefficients.iter()) {
-                assert!(
-                    (ca - cb).abs() < 1.0e-5,
-                    "dynamic-light bake diverged from baseline: {ca} vs {cb}",
-                );
-            }
         }
+        assert_eq!(
+            with_dynamic.atlas_texels, baseline.atlas_texels,
+            "dynamic-light bake diverged from baseline atlas",
+        );
     }
 
     /// Indirect-not-starved contract (sdf-per-light-shadows Task 3): an
@@ -1796,18 +1938,10 @@ mod tests {
         };
 
         assert_eq!(with_sdf.probes.len(), baseline.probes.len());
-        let mut diverged = false;
-        'outer: for (a, b) in with_sdf.probes.iter().zip(baseline.probes.iter()) {
-            for (ca, cb) in a.sh_coefficients.iter().zip(b.sh_coefficients.iter()) {
-                if (ca - cb).abs() > 1.0e-4 {
-                    diverged = true;
-                    break 'outer;
-                }
-            }
-        }
+        let diverged = with_sdf.atlas_texels != baseline.atlas_texels;
         assert!(
             diverged,
-            "an sdf-typed light's bounce must bake into SH (indirect not starved)",
+            "an sdf-typed light's bounce must bake into the octahedral atlas (indirect not starved)",
         );
     }
 

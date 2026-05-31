@@ -1,5 +1,8 @@
-// Octahedral normal encoding: unit vector ↔ u16x2.
-// See: context/lib/rendering_pipeline.md §6
+// Octahedral direction encoding and irradiance-atlas tile mapping.
+// See: context/lib/rendering_pipeline.md §6 and context/lib/build_pipeline.md §PRL section IDs
+
+pub const DEFAULT_IRRADIANCE_TILE_DIMENSION: u32 = 6;
+pub const DEFAULT_IRRADIANCE_TILE_BORDER: u32 = 1;
 
 /// Encode a unit-length direction vector to octahedral `[u16; 2]`.
 ///
@@ -51,6 +54,115 @@ pub fn decode(encoded: [u16; 2]) -> [f32; 3] {
 /// Returns 1.0 for non-negative values, -1.0 for negative. Never returns zero.
 fn sign_not_zero(v: f32) -> f32 {
     if v >= 0.0 { 1.0 } else { -1.0 }
+}
+
+/// Atlas dimensions, in texels, for the committed probe packing:
+/// tile x = probe x, tile y = probe y + probe z * grid_y.
+pub fn irradiance_atlas_dimensions(grid_dimensions: [u32; 3], tile_dimension: u32) -> [u32; 2] {
+    if grid_dimensions.contains(&0) {
+        return [0, 0];
+    }
+    [
+        grid_dimensions[0] * tile_dimension,
+        grid_dimensions[1] * grid_dimensions[2] * tile_dimension,
+    ]
+}
+
+/// Tile origin, in atlas texels, for a probe in x-fastest grid order.
+pub fn irradiance_tile_origin(
+    probe_index: usize,
+    grid_dimensions: [u32; 3],
+    tile_dimension: u32,
+) -> [u32; 2] {
+    let nx = grid_dimensions[0] as usize;
+    let ny = grid_dimensions[1] as usize;
+    let z = probe_index / (nx * ny);
+    let rem = probe_index - z * nx * ny;
+    let y = rem / nx;
+    let x = rem - y * nx;
+    [
+        x as u32 * tile_dimension,
+        (y as u32 + z as u32 * grid_dimensions[1]) * tile_dimension,
+    ]
+}
+
+/// Interior texel center -> unit direction for an octahedral irradiance tile.
+///
+/// The border is excluded from the [0,1] domain. Interior `(0,0)` maps to the
+/// lower-left center of the unfolded octahedral square, and increasing y maps
+/// upward in octahedral space. Task 5's WGSL sampler must mirror this exactly.
+pub fn irradiance_interior_texel_direction(
+    interior_x: u32,
+    interior_y: u32,
+    tile_dimension: u32,
+    border: u32,
+) -> [f32; 3] {
+    let interior = tile_dimension
+        .checked_sub(border * 2)
+        .expect("tile border must leave an interior");
+    assert!(interior > 0, "tile border must leave an interior");
+    assert!(interior_x < interior);
+    assert!(interior_y < interior);
+
+    let u = (interior_x as f32 + 0.5) / interior as f32;
+    let v = (interior_y as f32 + 0.5) / interior as f32;
+    decode_unquantized(u * 2.0 - 1.0, v * 2.0 - 1.0)
+}
+
+/// Source interior texel for a tile texel, including the 1-texel octahedral
+/// wrap border. Interior texels map to themselves; border texels copy the
+/// opposite interior edge with the orthogonal coordinate reversed.
+pub fn irradiance_tile_source_texel(
+    tile_x: u32,
+    tile_y: u32,
+    tile_dimension: u32,
+    border: u32,
+) -> [u32; 2] {
+    assert_eq!(border, 1, "only the committed 1-texel border is supported");
+    assert!(tile_x < tile_dimension);
+    assert!(tile_y < tile_dimension);
+    let interior = tile_dimension - 2 * border;
+    assert!(interior > 0, "tile border must leave an interior");
+
+    let ix = tile_x as i32 - border as i32;
+    let iy = tile_y as i32 - border as i32;
+    let n = interior as i32;
+
+    if (0..n).contains(&ix) && (0..n).contains(&iy) {
+        return [ix as u32, iy as u32];
+    }
+
+    if ix < 0 && (0..n).contains(&iy) {
+        return [(n - 1) as u32, (n - 1 - iy) as u32];
+    }
+    if ix >= n && (0..n).contains(&iy) {
+        return [0, (n - 1 - iy) as u32];
+    }
+    if iy < 0 && (0..n).contains(&ix) {
+        return [(n - 1 - ix) as u32, (n - 1) as u32];
+    }
+    if iy >= n && (0..n).contains(&ix) {
+        return [(n - 1 - ix) as u32, 0];
+    }
+
+    // Corners are adjacent to two wrapped edges. Pick the diagonally wrapped
+    // interior corner; this matches the edge reversal convention above.
+    let sx = if ix < 0 { n - 1 } else { 0 };
+    let sy = if iy < 0 { n - 1 } else { 0 };
+    [sx as u32, sy as u32]
+}
+
+fn decode_unquantized(ox: f32, oy: f32) -> [f32; 3] {
+    let z = 1.0 - ox.abs() - oy.abs();
+    let (x, y) = if z < 0.0 {
+        let x = (1.0 - oy.abs()) * sign_not_zero(ox);
+        let y = (1.0 - ox.abs()) * sign_not_zero(oy);
+        (x, y)
+    } else {
+        (ox, oy)
+    };
+    let len = (x * x + y * y + z * z).sqrt();
+    [x / len, y / len, z / len]
 }
 
 #[cfg(test)]
@@ -184,6 +296,53 @@ mod tests {
                 enc,
                 len,
             );
+        }
+    }
+
+    #[test]
+    fn irradiance_atlas_dimensions_follow_x_fastest_probe_tiles() {
+        assert_eq!(irradiance_atlas_dimensions([3, 2, 4], 6), [18, 48]);
+        assert_eq!(irradiance_atlas_dimensions([0, 2, 4], 6), [0, 0]);
+        assert_eq!(irradiance_tile_origin(0, [3, 2, 4], 6), [0, 0]);
+        assert_eq!(irradiance_tile_origin(1, [3, 2, 4], 6), [6, 0]);
+        assert_eq!(irradiance_tile_origin(3, [3, 2, 4], 6), [0, 6]);
+        assert_eq!(irradiance_tile_origin(6, [3, 2, 4], 6), [0, 12]);
+    }
+
+    #[test]
+    fn irradiance_tile_border_copies_across_octahedral_wrap() {
+        let n = DEFAULT_IRRADIANCE_TILE_DIMENSION;
+        let border = DEFAULT_IRRADIANCE_TILE_BORDER;
+
+        // Interior maps to itself after subtracting the border.
+        assert_eq!(irradiance_tile_source_texel(1, 1, n, border), [0, 0]);
+        assert_eq!(irradiance_tile_source_texel(4, 4, n, border), [3, 3]);
+
+        // Edges copy the opposite edge with the orthogonal axis reversed.
+        assert_eq!(irradiance_tile_source_texel(0, 1, n, border), [3, 3]);
+        assert_eq!(irradiance_tile_source_texel(0, 4, n, border), [3, 0]);
+        assert_eq!(irradiance_tile_source_texel(5, 1, n, border), [0, 3]);
+        assert_eq!(irradiance_tile_source_texel(5, 4, n, border), [0, 0]);
+        assert_eq!(irradiance_tile_source_texel(1, 0, n, border), [3, 3]);
+        assert_eq!(irradiance_tile_source_texel(4, 0, n, border), [0, 3]);
+        assert_eq!(irradiance_tile_source_texel(1, 5, n, border), [3, 0]);
+        assert_eq!(irradiance_tile_source_texel(4, 5, n, border), [0, 0]);
+
+        // Corners use the diagonally wrapped interior corner.
+        assert_eq!(irradiance_tile_source_texel(0, 0, n, border), [3, 3]);
+        assert_eq!(irradiance_tile_source_texel(5, 0, n, border), [0, 3]);
+        assert_eq!(irradiance_tile_source_texel(0, 5, n, border), [3, 0]);
+        assert_eq!(irradiance_tile_source_texel(5, 5, n, border), [0, 0]);
+    }
+
+    #[test]
+    fn irradiance_interior_texel_direction_uses_unit_vectors() {
+        for y in 0..4 {
+            for x in 0..4 {
+                let d = irradiance_interior_texel_direction(x, y, 6, 1);
+                let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                assert!((len - 1.0).abs() < 1e-5);
+            }
         }
     }
 }

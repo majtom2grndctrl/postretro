@@ -415,7 +415,7 @@ fn main() -> anyhow::Result<()> {
 
         let cached = stage_cache.as_ref().and_then(|c| c.get(&sh_key));
         let cached_sh_section = cached.and_then(|bytes| {
-            postretro_level_format::sh_volume::ShVolumeSection::from_bytes(&bytes)
+            postretro_level_format::sh_volume::OctahedralShVolumeSection::from_bytes(&bytes)
                 .map_err(|e| log::warn!("[cache] corrupt sh_volume entry, re-baking: {e}"))
                 .ok()
         });
@@ -1754,7 +1754,7 @@ mod tests {
 
         let loaded_bytes = cache.get(&key).expect("cache must hit after put");
         let section2 =
-            postretro_level_format::sh_volume::ShVolumeSection::from_bytes(&loaded_bytes)
+            postretro_level_format::sh_volume::OctahedralShVolumeSection::from_bytes(&loaded_bytes)
                 .expect("deserialization must succeed");
         let round_tripped = section2.to_bytes();
         assert_eq!(

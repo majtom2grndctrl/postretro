@@ -1,18 +1,18 @@
-// Delta SH volumes section (ID 27): per-animated-light SH probe deltas in a
-// sparse, affinity-cell-indexed (CSR) layout. Each animated light's baked delta
-// contribution at peak brightness (brightness = 1.0, base color) is stored only
-// for the affinity cells it actually touches. Consumed by the runtime compose
-// pass that blends animated lights into the SH irradiance volume.
+// Delta SH volumes section (ID 27): per-animated-light octahedral irradiance
+// deltas in a sparse, affinity-cell-indexed (CSR) layout. Each animated light's
+// baked delta contribution at peak brightness (brightness = 1.0, base color) is
+// stored only for the affinity cells it actually touches. Consumed by the
+// runtime compose pass that blends animated lights into the irradiance atlas.
 //
 // See: context/plans/done/lighting-animated-sh/
 
 use crate::FormatError;
-use crate::lightmap::f32_to_f16_bits;
+use crate::octahedral::{DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION};
 
 /// Section-internal version, written as the first byte of the payload. Bumped
 /// whenever the on-disk layout changes so the loader can reject stale `.prl`
 /// files instead of silently misreading them.
-pub const DELTA_SH_VOLUMES_VERSION: u8 = 2;
+pub const DELTA_SH_VOLUMES_VERSION: u8 = 3;
 
 /// Affinity cell edge length in base SH probes. An affinity cell is a 4×4×4
 /// cube of base probes. Locked to the compose pass `@workgroup_size(4,4,4)`.
@@ -24,50 +24,19 @@ pub const AFFINITY_FACTOR: u8 = 4;
 /// Number of base probes in one affinity cell sub-block: 4 × 4 × 4.
 pub const PROBES_PER_CELL: usize = 64;
 
-/// Number of logical f16 SH coefficients per probe: 9 SH bands × 3 color
-/// channels. Unchanged across versions.
-pub const PROBE_F16_COUNT: usize = 27;
+/// Number of f16 channels per octahedral irradiance texel: RGBA16F.
+pub const DELTA_TILE_TEXEL_F16_COUNT: usize = 4;
 
-/// On-disk / GPU-buffer stride of one probe in f16 halves: 27 logical coeffs
-/// plus 1 zero pad half (28 total), so each probe pairs cleanly for
-/// `unpack2x16float` in the compose shader.
-pub const PROBE_F16_STRIDE: usize = 28;
+/// Default on-disk / GPU-buffer stride of one probe tile in f16 halves:
+/// 6 × 6 RGBA16F texels.
+pub const DEFAULT_DELTA_PROBE_F16_STRIDE: usize = (DEFAULT_IRRADIANCE_TILE_DIMENSION as usize)
+    * (DEFAULT_IRRADIANCE_TILE_DIMENSION as usize)
+    * DELTA_TILE_TEXEL_F16_COUNT;
 
-/// Byte stride of one serialized probe: 28 × f16 = 56 bytes. (v1 was 54 = 27 ×
-/// f16; the pad half raises the wire/buffer stride to 56.)
-pub const PROBE_BYTES: usize = PROBE_F16_STRIDE * 2;
+/// Default byte stride of one serialized probe tile.
+pub const DEFAULT_DELTA_PROBE_BYTES: usize = DEFAULT_DELTA_PROBE_F16_STRIDE * 2;
 
-/// One probe's logical SH coefficients. Stores 9 SH bands × RGB as f16, packed
-/// in the same channel-interleaved order as the base SH section's f32 layout:
-/// `[band0_r, band0_g, band0_b, band1_r, ...]`. The serialization pad half is
-/// applied at write time, not stored here.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DeltaShProbe {
-    pub sh_coefficients_f16: [u16; PROBE_F16_COUNT],
-}
-
-impl Default for DeltaShProbe {
-    fn default() -> Self {
-        Self {
-            sh_coefficients_f16: [0; PROBE_F16_COUNT],
-        }
-    }
-}
-
-impl DeltaShProbe {
-    /// Build a probe from f32 RGB SH coefficients, rounding to f16.
-    pub fn from_f32(coeffs: &[f32; PROBE_F16_COUNT]) -> Self {
-        let mut out = [0u16; PROBE_F16_COUNT];
-        for (dst, src) in out.iter_mut().zip(coeffs.iter()) {
-            *dst = f32_to_f16_bits(*src);
-        }
-        Self {
-            sh_coefficients_f16: out,
-        }
-    }
-}
-
-/// Delta SH volumes section (ID 27), version 2.
+/// Delta SH volumes section (ID 27), version 3.
 ///
 /// Sparse CSR layout keyed by affinity cell. An affinity cell is a 4×4×4 cube
 /// of base SH probes (`affinity_factor`). `affinity_dims = ceil(base_dims / 4)`
@@ -76,22 +45,26 @@ impl DeltaShProbe {
 /// of entries in `affinity_lights` (the flat list of animated-light indices
 /// influencing that cell). `delta_subblocks` holds one dense 64-probe sub-block
 /// per CSR entry, index-parallel to `affinity_lights`. In-cell probe order is
-/// x-fastest: `local = lx + ly*4 + lz*16`.
+/// x-fastest: `local = lx + ly*4 + lz*16`. Each probe payload is one row-major
+/// octahedral tile using the same `tile_dimension`, `tile_border`, interior
+/// mapping, and wrap-border convention as `OctahedralShVolume`.
 ///
 /// On-disk layout (all little-endian):
 ///
 /// ```text
-///   u8       version                    (= DELTA_SH_VOLUMES_VERSION = 2)
+///   u8       version                    (= DELTA_SH_VOLUMES_VERSION = 3)
 ///   u8       affinity_factor            (= AFFINITY_FACTOR = 4)
 ///   u32 × 3  affinity_dims              (affinity cells along x/y/z)
 ///   u32      animated_light_count
+///   u32      tile_dimension             (default 6, border included)
+///   u32      tile_border                (default 1)
 ///   u32 × animated_light_count          animation_descriptor_indices
 ///   u32 × (affinity_cell_count + 1)     affinity_offsets (CSR; last = list len)
 ///   u32 × affinity_offsets[-1]          affinity_lights (flat light indices)
-///   f16 × affinity_offsets[-1] × 64 × 28
+///   f16 × affinity_offsets[-1] × 64 × tile_dimension × tile_dimension × 4
 ///                                       delta_subblocks (one 64-probe sub-block
-///                                       per CSR entry; each probe = 27 coeffs +
-///                                       1 zero pad half = 28 halves)
+///                                       per CSR entry; each probe = one RGBA16F
+///                                       octahedral irradiance tile)
 /// ```
 ///
 /// Empty animated-light case: `affinity_offsets = [0; affinity_cell_count + 1]`,
@@ -105,6 +78,10 @@ pub struct DeltaShVolumesSection {
     /// Affinity grid dimensions in cells along x/y/z. Product is the affinity
     /// cell count, which fixes `affinity_offsets.len() == count + 1`.
     pub affinity_dims: [u32; 3],
+    /// Full octahedral tile dimension, including border texels.
+    pub tile_dimension: u32,
+    /// Octahedral wrap border width. Version 3 bakes with the committed value 1.
+    pub tile_border: u32,
     /// One entry per animated light: index into the SH section's
     /// `animation_descriptors` array. `u32::MAX` means "no descriptor".
     pub animation_descriptor_indices: Vec<u32>,
@@ -114,9 +91,10 @@ pub struct DeltaShVolumesSection {
     /// Flat list of animated-light indices, grouped by affinity cell. Each value
     /// must be `< animation_descriptor_indices.len()`.
     pub affinity_lights: Vec<u32>,
-    /// Flat probe payload, length `affinity_lights.len() * 64 * 28`. One dense
-    /// 64-probe sub-block per CSR entry, index-parallel to `affinity_lights`,
-    /// stored at stride-28 (the producer writes each probe's pad half as zero).
+    /// Flat probe payload, length `affinity_lights.len() * 64 *
+    /// tile_dimension * tile_dimension * 4`. One dense 64-probe sub-block per
+    /// CSR entry, index-parallel to `affinity_lights`, stored as row-major
+    /// RGBA16F octahedral tiles.
     pub delta_subblocks: Vec<u16>,
 }
 
@@ -128,11 +106,15 @@ impl DeltaShVolumesSection {
             * self.affinity_dims[2] as usize
     }
 
+    pub fn delta_probe_f16_stride(&self) -> usize {
+        delta_probe_f16_stride(self.tile_dimension)
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         debug_assert_eq!(self.affinity_offsets.len(), self.affinity_cell_count() + 1);
         debug_assert_eq!(
             self.delta_subblocks.len(),
-            self.affinity_lights.len() * PROBES_PER_CELL * PROBE_F16_STRIDE
+            self.affinity_lights.len() * PROBES_PER_CELL * self.delta_probe_f16_stride()
         );
 
         let mut buf = Vec::new();
@@ -145,6 +127,8 @@ impl DeltaShVolumesSection {
 
         let light_count = self.animation_descriptor_indices.len() as u32;
         buf.extend_from_slice(&light_count.to_le_bytes());
+        buf.extend_from_slice(&self.tile_dimension.to_le_bytes());
+        buf.extend_from_slice(&self.tile_border.to_le_bytes());
         for idx in &self.animation_descriptor_indices {
             buf.extend_from_slice(&idx.to_le_bytes());
         }
@@ -164,8 +148,8 @@ impl DeltaShVolumesSection {
 
     pub fn from_bytes(data: &[u8]) -> crate::Result<Self> {
         // Fixed header: version(1) + affinity_factor(1) + affinity_dims(12) +
-        // animated_light_count(4) = 18 bytes.
-        const FIXED_HEADER_SIZE: usize = 1 + 1 + 12 + 4;
+        // animated_light_count(4) + tile_dimension(4) + tile_border(4) = 26 bytes.
+        const FIXED_HEADER_SIZE: usize = 1 + 1 + 12 + 4 + 4 + 4;
         if data.len() < FIXED_HEADER_SIZE {
             return Err(truncated("header"));
         }
@@ -205,6 +189,13 @@ impl DeltaShVolumesSection {
 
         let animated_light_count = read_u32(data, o) as usize;
         o += 4;
+
+        let tile_dimension = read_u32(data, o);
+        o += 4;
+        let tile_border = read_u32(data, o);
+        o += 4;
+        validate_tile_geometry(tile_dimension, tile_border)?;
+        let probe_f16_stride = delta_probe_f16_stride_checked(tile_dimension)?;
 
         let index_bytes = animated_light_count.checked_mul(4).ok_or_else(|| {
             invalid_data(format!(
@@ -283,12 +274,12 @@ impl DeltaShVolumesSection {
 
         let subblock_count = list_len
             .checked_mul(PROBES_PER_CELL)
-            .and_then(|n| n.checked_mul(PROBE_F16_STRIDE))
+            .and_then(|n| n.checked_mul(probe_f16_stride))
             .ok_or_else(|| {
                 invalid_data(format!(
                     "delta sh volumes delta_subblocks count overflow: \
                      {list_len} entries × {PROBES_PER_CELL} probes × \
-                     {PROBE_F16_STRIDE} halves exceeds usize"
+                     {probe_f16_stride} halves exceeds usize"
                 ))
             })?;
         let subblock_bytes = subblock_count.checked_mul(2).ok_or_else(|| {
@@ -306,12 +297,43 @@ impl DeltaShVolumesSection {
         Ok(Self {
             affinity_factor,
             affinity_dims,
+            tile_dimension,
+            tile_border,
             animation_descriptor_indices,
             affinity_offsets,
             affinity_lights,
             delta_subblocks,
         })
     }
+}
+
+pub fn delta_probe_f16_stride(tile_dimension: u32) -> usize {
+    tile_dimension as usize * tile_dimension as usize * DELTA_TILE_TEXEL_F16_COUNT
+}
+
+fn delta_probe_f16_stride_checked(tile_dimension: u32) -> crate::Result<usize> {
+    (tile_dimension as usize)
+        .checked_mul(tile_dimension as usize)
+        .and_then(|n| n.checked_mul(DELTA_TILE_TEXEL_F16_COUNT))
+        .ok_or_else(|| {
+            invalid_data(format!(
+                "delta sh volumes tile_dimension {tile_dimension} overflows probe tile stride"
+            ))
+        })
+}
+
+fn validate_tile_geometry(tile_dimension: u32, tile_border: u32) -> crate::Result<()> {
+    if tile_border != DEFAULT_IRRADIANCE_TILE_BORDER {
+        return Err(invalid_data(format!(
+            "delta sh volumes tile_border {tile_border}, expected {DEFAULT_IRRADIANCE_TILE_BORDER}"
+        )));
+    }
+    if tile_dimension <= tile_border.saturating_mul(2) {
+        return Err(invalid_data(format!(
+            "delta sh volumes tile_dimension {tile_dimension} leaves no interior texels with border {tile_border}"
+        )));
+    }
+    Ok(())
 }
 
 fn truncated(what: &str) -> FormatError {
@@ -337,18 +359,14 @@ fn read_u16(data: &[u8], at: usize) -> u16 {
 mod tests {
     use super::*;
 
-    /// Build a stride-28 sub-block (one affinity cell's 64 probes) with
-    /// deterministic, pad-zeroed contents derived from `seed`.
+    /// Build one affinity cell's 64-probe octahedral tile payload with
+    /// deterministic contents derived from `seed`.
     fn sample_subblock(seed: u16) -> Vec<u16> {
-        let mut out = Vec::with_capacity(PROBES_PER_CELL * PROBE_F16_STRIDE);
+        let stride = DEFAULT_DELTA_PROBE_F16_STRIDE;
+        let mut out = Vec::with_capacity(PROBES_PER_CELL * stride);
         for probe in 0..PROBES_PER_CELL {
-            for coeff in 0..PROBE_F16_STRIDE {
-                let half = if coeff < PROBE_F16_COUNT {
-                    seed.wrapping_add((probe * PROBE_F16_STRIDE + coeff) as u16)
-                } else {
-                    // Pad half written zero by the producer.
-                    0
-                };
+            for half_index in 0..stride {
+                let half = seed.wrapping_add((probe * stride + half_index) as u16);
                 out.push(half);
             }
         }
@@ -360,6 +378,8 @@ mod tests {
         DeltaShVolumesSection {
             affinity_factor: AFFINITY_FACTOR,
             affinity_dims,
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             animation_descriptor_indices: Vec::new(),
             affinity_offsets: vec![0; cell_count + 1],
             affinity_lights: Vec::new(),
@@ -385,6 +405,8 @@ mod tests {
         let section = DeltaShVolumesSection {
             affinity_factor: AFFINITY_FACTOR,
             affinity_dims: [1, 1, 1],
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             animation_descriptor_indices: vec![7],
             affinity_offsets: vec![0, 1],
             affinity_lights: vec![0],
@@ -408,6 +430,8 @@ mod tests {
         let section = DeltaShVolumesSection {
             affinity_factor: AFFINITY_FACTOR,
             affinity_dims: [3, 1, 1],
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             animation_descriptor_indices: vec![0, 3, u32::MAX],
             affinity_offsets: vec![0, 2, 2, 3],
             affinity_lights: vec![0, 2, 1],
@@ -419,15 +443,15 @@ mod tests {
     }
 
     #[test]
-    fn from_f32_round_trips_via_f16() {
-        let mut coeffs = [0f32; PROBE_F16_COUNT];
-        for (i, c) in coeffs.iter_mut().enumerate() {
-            *c = i as f32 * 0.125;
-        }
-        let probe = DeltaShProbe::from_f32(&coeffs);
-        // 0.0 → 0x0000; index 8 → 1.0 → 0x3c00 confirms the f16 encoder is used.
-        assert_eq!(probe.sh_coefficients_f16[0], 0x0000);
-        assert_eq!(probe.sh_coefficients_f16[8], 0x3c00);
+    fn default_probe_stride_matches_committed_tile_geometry() {
+        assert_eq!(
+            DEFAULT_DELTA_PROBE_F16_STRIDE,
+            delta_probe_f16_stride(DEFAULT_IRRADIANCE_TILE_DIMENSION),
+        );
+        assert_eq!(
+            DEFAULT_DELTA_PROBE_BYTES,
+            DEFAULT_DELTA_PROBE_F16_STRIDE * 2
+        );
     }
 
     #[test]
@@ -451,6 +475,8 @@ mod tests {
         let section = DeltaShVolumesSection {
             affinity_factor: AFFINITY_FACTOR,
             affinity_dims: [1, 1, 1],
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             animation_descriptor_indices: vec![0],
             affinity_offsets: vec![0, 1],
             affinity_lights: vec![0],
@@ -485,6 +511,8 @@ mod tests {
         let section = DeltaShVolumesSection {
             affinity_factor: AFFINITY_FACTOR,
             affinity_dims: [3, 1, 1],
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             animation_descriptor_indices: vec![0],
             // Valid monotonic offsets: cell 0 → [0,1), cells 1&2 → empty.
             affinity_offsets: vec![0, 1, 1, 1],
@@ -496,8 +524,9 @@ mod tests {
         // Locate the affinity_offsets table in the serialized bytes and corrupt
         // index 1 so it is larger than index 2, breaking the monotonic invariant.
         // Fixed header: version(1) + affinity_factor(1) + affinity_dims(12) +
-        // animated_light_count(4) + animation_descriptor_indices(4×1) = 22 bytes.
-        let offsets_start = 1 + 1 + 12 + 4 + 4;
+        // animated_light_count(4) + tile_dimension(4) + tile_border(4) +
+        // animation_descriptor_indices(4×1) = 30 bytes.
+        let offsets_start = 1 + 1 + 12 + 4 + 4 + 4 + 4;
         // offsets[1] lives at offsets_start + 1×4; write a value larger than offsets[2].
         let corrupt_offset: u32 = 99;
         let off = offsets_start + 4;
@@ -517,6 +546,8 @@ mod tests {
         let section = DeltaShVolumesSection {
             affinity_factor: AFFINITY_FACTOR,
             affinity_dims: [1, 1, 1],
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             animation_descriptor_indices: vec![0],
             affinity_offsets: vec![0, 1],
             affinity_lights: vec![5],
@@ -526,5 +557,20 @@ mod tests {
         let err = DeltaShVolumesSection::from_bytes(&bytes).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("out of range"), "expected range error: {msg}");
+    }
+
+    #[test]
+    fn rejects_unsupported_tile_border() {
+        let section = empty_section([1, 1, 1]);
+        let mut bytes = section.to_bytes();
+        // tile_border is the u32 immediately after tile_dimension in the fixed header.
+        let tile_border_offset = 1 + 1 + 12 + 4 + 4;
+        bytes[tile_border_offset..tile_border_offset + 4].copy_from_slice(&2u32.to_le_bytes());
+        let err = DeltaShVolumesSection::from_bytes(&bytes).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("tile_border"),
+            "expected tile-border error: {msg}"
+        );
     }
 }

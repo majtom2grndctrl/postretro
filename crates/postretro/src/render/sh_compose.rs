@@ -1,26 +1,27 @@
-// SH compose compute pass: merges static base SH bands with animated per-light
-// deltas into the "total" SH 3D textures consumed by all SH samplers.
+// SH compose compute pass: merges the static base octahedral irradiance atlas
+// with animated per-light delta tiles into the total atlas consumed by samplers.
 // See: context/lib/rendering_pipeline.md §7.1
 
-use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
-
-use super::sh_volume::{
-    ANIMATION_DESCRIPTOR_SIZE, AnimatedLightBuffers, SH_BAND_COUNT, ShVolumeResources,
+use postretro_level_format::delta_sh_volumes::{
+    AFFINITY_FACTOR, DeltaShVolumesSection, delta_probe_f16_stride,
 };
+
+use super::sh_volume::{ANIMATION_DESCRIPTOR_SIZE, AnimatedLightBuffers, ShVolumeResources};
 
 // SH Compose Bind Group (`@group(1)`) binding index assignments. The shader
 // mirrors these (changing either requires updating both).
 //
 //   @group(1):
-//     0..9   base SH band textures        (sampled, `0..SH_BAND_COUNT`)
-//     9..18  total SH band textures       (storage write, `SH_BAND_COUNT..2*SH_BAND_COUNT`)
-//     18     GridDims uniform             (vec3<u32> grid_dims, f32 _pad)
+//     0      base octahedral atlas        (sampled)
+//     1      total octahedral atlas       (storage write)
+//     18     GridDims uniform             (atlas/grid/tile/affinity mapping)
 //     19     GridOrigin uniform           (grid_origin + cell_size)
 //     20     delta_subblocks  (storage)   f16 payload, raw `u16` halves; shader `unpack2x16float`s
 //     21     affinity_offsets (storage)   `u32` CSR offsets (affinity_cell_count + 1)
 //     22     animation descriptors        (storage, shared with the SH bind group)
 //     23     animation samples            (storage, shared with the SH bind group)
 //     24     affinity_lights  (storage)   `u32` flat light indices, CSR-parallel to delta subblocks
+//     25     animation descriptor indices `u32` delta-light index → descriptor slot
 //
 // 20/21 replace the old dense per-light `DeltaLightMeta`/`delta_probes` pair.
 // 24 is numbered after the shared 22/23 so adding `affinity_lights` doesn't
@@ -29,6 +30,8 @@ use super::sh_volume::{
 const BIND_DELTA_SUBBLOCKS: u32 = 20;
 const BIND_AFFINITY_OFFSETS: u32 = 21;
 const BIND_AFFINITY_LIGHTS: u32 = 24;
+const BIND_ANIMATION_DESCRIPTOR_INDICES: u32 = 25;
+const COMPOSE_GRID_DIMS_SIZE: usize = 48;
 
 /// GPU-side compose pass. Always present — levels without an SH section get
 /// 1×1×1 dummy textures and a single workgroup dispatch. Unconditional
@@ -36,9 +39,9 @@ const BIND_AFFINITY_LIGHTS: u32 = 24;
 pub struct ShComposeResources {
     pipeline: wgpu::ComputePipeline,
     bind_group: wgpu::BindGroup,
-    /// Probe grid dimensions. Drives the dispatch shape — one thread per
-    /// probe, rounded up to the (4,4,4) workgroup size.
-    grid_dimensions: [u32; 3],
+    /// Atlas dimensions. Drives the dispatch shape — one thread per atlas
+    /// texel, rounded up to the shader's 8×8 workgroup size.
+    dispatch_dimensions: [u32; 2],
 }
 
 impl ShComposeResources {
@@ -48,14 +51,14 @@ impl ShComposeResources {
     pub fn new(
         device: &wgpu::Device,
         sh: &ShVolumeResources,
-        sh_section: Option<&postretro_level_format::sh_volume::ShVolumeSection>,
+        sh_section: Option<&postretro_level_format::sh_volume::OctahedralShVolumeSection>,
         delta: Option<&DeltaShVolumesSection>,
         uniform_bind_group_layout: &wgpu::BindGroupLayout,
     ) -> Self {
         // Build the sparse CSR delta buffers. Probes stay f16 (raw `u16` halves)
         // in the storage buffer — the shader `unpack2x16float`s them. No
         // f16→f32 expansion.
-        let buffers = build_delta_buffers(delta);
+        let buffers = build_delta_buffers(delta, sh.grid_dimensions);
         let light_count = buffers.animated_light_count;
 
         // wgpu rejects zero-sized storage buffers; pad each to a minimum size so
@@ -71,6 +74,8 @@ impl ShComposeResources {
         let subblock_bytes = pad_storage_bytes(u16_slice_to_bytes(&buffers.delta_subblocks), 4);
         let offsets_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_offsets), 8);
         let lights_bytes = pad_storage_bytes(u32_slice_to_bytes(&buffers.affinity_lights), 4);
+        let descriptor_index_bytes =
+            pad_storage_bytes(u32_slice_to_bytes(&buffers.animation_descriptor_indices), 4);
 
         use wgpu::util::DeviceExt;
         let delta_subblocks_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -89,6 +94,12 @@ impl ShComposeResources {
             contents: &lights_bytes,
             usage: wgpu::BufferUsages::STORAGE,
         });
+        let animation_descriptor_indices_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("SH Compose Animation Descriptor Indices"),
+                contents: &descriptor_index_bytes,
+                usage: wgpu::BufferUsages::STORAGE,
+            });
 
         // Footprint AC: report per-binding byte sizes of every `@group(1)`
         // storage buffer the compose pass binds, plus the combined total. The
@@ -98,25 +109,27 @@ impl ShComposeResources {
             delta_subblocks_bytes: subblock_bytes.len(),
             affinity_offsets_bytes: offsets_bytes.len(),
             affinity_lights_bytes: lights_bytes.len(),
+            animation_descriptor_indices_bytes: descriptor_index_bytes.len(),
         };
         footprint.log();
 
-        // Grid-dims uniform: vec3<u32> grid_dims, f32 _pad. The loop bound comes
-        // from the affinity-cell CSR offsets; the 4th slot is now padding (the
-        // `delta_scale` knob was retired with the indirect-only delta — the full
-        // delta is always added). std140 needs the trailing word, so it stays.
-        let mut grid_bytes = [0u8; 16];
-        grid_bytes[0..4].copy_from_slice(&sh.grid_dimensions[0].to_ne_bytes());
-        grid_bytes[4..8].copy_from_slice(&sh.grid_dimensions[1].to_ne_bytes());
-        grid_bytes[8..12].copy_from_slice(&sh.grid_dimensions[2].to_ne_bytes());
+        let grid_bytes = build_compose_grid_bytes(
+            sh.grid_dimensions,
+            sh.atlas_dimensions,
+            sh.tile_dimension,
+            sh.tile_border,
+            buffers.affinity_dims,
+        );
         let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("SH Compose Grid Dims"),
-            contents: &grid_bytes,
+            contents: &grid_bytes[..],
             usage: wgpu::BufferUsages::UNIFORM,
         });
 
         // Grid origin uniform: vec3<f32> grid_origin, f32 _pad, vec3<f32> cell_size, f32 _pad.
-        // Used in the shader to convert probe indices to world-space positions.
+        // Retained at binding 19 so the compose bind layout stays compatible with
+        // the broader renderer resource setup; the atlas compose path does not
+        // need world-space reconstruction.
         let (grid_origin, cell_size) = match sh_section {
             Some(s) => (s.grid_origin, s.cell_size),
             None => ([0.0; 3], [1.0; 3]),
@@ -166,24 +179,15 @@ impl ShComposeResources {
             cache: None,
         });
 
-        debug_assert_eq!(sh.base_band_views.len(), SH_BAND_COUNT);
-        debug_assert_eq!(sh.total_band_storage_views.len(), SH_BAND_COUNT);
-
-        let mut entries: Vec<wgpu::BindGroupEntry> = Vec::with_capacity(SH_BAND_COUNT * 2 + 6);
-        // Bindings 0..9: base SH band textures (sampled).
-        for (i, view) in sh.base_band_views.iter().enumerate() {
-            entries.push(wgpu::BindGroupEntry {
-                binding: i as u32,
-                resource: wgpu::BindingResource::TextureView(view),
-            });
-        }
-        // Bindings 9..18: total SH band textures (storage write).
-        for (i, view) in sh.total_band_storage_views.iter().enumerate() {
-            entries.push(wgpu::BindGroupEntry {
-                binding: (SH_BAND_COUNT + i) as u32,
-                resource: wgpu::BindingResource::TextureView(view),
-            });
-        }
+        let mut entries: Vec<wgpu::BindGroupEntry> = Vec::with_capacity(10);
+        entries.push(wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(&sh.base_atlas_view),
+        });
+        entries.push(wgpu::BindGroupEntry {
+            binding: 1,
+            resource: wgpu::BindingResource::TextureView(&sh.total_atlas_storage_view),
+        });
         entries.push(wgpu::BindGroupEntry {
             binding: 18,
             resource: grid_buffer.as_entire_binding(),
@@ -203,6 +207,10 @@ impl ShComposeResources {
         entries.push(wgpu::BindGroupEntry {
             binding: BIND_AFFINITY_LIGHTS,
             resource: affinity_lights_buffer.as_entire_binding(),
+        });
+        entries.push(wgpu::BindGroupEntry {
+            binding: BIND_ANIMATION_DESCRIPTOR_INDICES,
+            resource: animation_descriptor_indices_buffer.as_entire_binding(),
         });
         entries.push(wgpu::BindGroupEntry {
             binding: 22,
@@ -235,7 +243,7 @@ impl ShComposeResources {
         Self {
             pipeline,
             bind_group,
-            grid_dimensions: sh.grid_dimensions,
+            dispatch_dimensions: sh.atlas_dimensions,
         }
     }
 
@@ -246,35 +254,40 @@ impl ShComposeResources {
         &self,
         encoder: &mut wgpu::CommandEncoder,
         uniform_bind_group: &wgpu::BindGroup,
+        timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
     ) {
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("SH Compose"),
-            timestamp_writes: None,
+            timestamp_writes,
         });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, uniform_bind_group, &[]);
         pass.set_bind_group(1, &self.bind_group, &[]);
-        let wg_x = self.grid_dimensions[0].div_ceil(4).max(1);
-        let wg_y = self.grid_dimensions[1].div_ceil(4).max(1);
-        let wg_z = self.grid_dimensions[2].div_ceil(4).max(1);
+        let wg_x = self.dispatch_dimensions[0].div_ceil(8).max(1);
+        let wg_y = self.dispatch_dimensions[1].div_ceil(8).max(1);
+        let wg_z = 1;
         pass.dispatch_workgroups(wg_x, wg_y, wg_z);
     }
 }
 
 /// Per-binding byte sizes of the `@group(1)` storage buffers the compose pass
-/// owns (the CSR delta payload + the two CSR index buffers). The sampled/storage
-/// SH band textures and the two shared animation buffers are not counted here —
-/// this is the footprint the sparse-delta plan exists to bound.
+/// owns (the CSR delta payload + index buffers). The sampled/storage atlas
+/// textures and the two shared animation buffers are not counted here — this is
+/// the footprint the sparse-delta plan exists to bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ComposeStorageFootprint {
     pub delta_subblocks_bytes: usize,
     pub affinity_offsets_bytes: usize,
     pub affinity_lights_bytes: usize,
+    pub animation_descriptor_indices_bytes: usize,
 }
 
 impl ComposeStorageFootprint {
     pub fn total_bytes(&self) -> usize {
-        self.delta_subblocks_bytes + self.affinity_offsets_bytes + self.affinity_lights_bytes
+        self.delta_subblocks_bytes
+            + self.affinity_offsets_bytes
+            + self.affinity_lights_bytes
+            + self.animation_descriptor_indices_bytes
     }
 
     /// Emit the footprint AC log line. MiB to two decimals for readability.
@@ -283,13 +296,16 @@ impl ComposeStorageFootprint {
         log::info!(
             "[Renderer] SH compose @group(1) storage footprint: \
              delta_subblocks {:.2} MiB ({} B), affinity_offsets {:.2} MiB ({} B), \
-             affinity_lights {:.2} MiB ({} B) — total {:.2} MiB ({} B)",
+             affinity_lights {:.2} MiB ({} B), animation_descriptor_indices {:.2} MiB ({} B) \
+             — total {:.2} MiB ({} B)",
             mib(self.delta_subblocks_bytes),
             self.delta_subblocks_bytes,
             mib(self.affinity_offsets_bytes),
             self.affinity_offsets_bytes,
             mib(self.affinity_lights_bytes),
             self.affinity_lights_bytes,
+            mib(self.animation_descriptor_indices_bytes),
+            self.animation_descriptor_indices_bytes,
             mib(self.total_bytes()),
             self.total_bytes(),
         );
@@ -301,24 +317,34 @@ impl ComposeStorageFootprint {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DeltaComposeBuffers {
     pub animated_light_count: u32,
-    /// f16 payload, one 64-probe stride-28 sub-block per CSR entry.
+    /// f16 payload, one 64-probe octahedral-tile sub-block per CSR entry.
     pub delta_subblocks: Vec<u16>,
     /// CSR offsets, one per affinity cell plus a trailing total.
     pub affinity_offsets: Vec<u32>,
     /// Flat CSR light indices, index-parallel to the sub-blocks.
     pub affinity_lights: Vec<u32>,
+    /// Delta-light index to animation descriptor slot. `u32::MAX` skips the light.
+    pub animation_descriptor_indices: Vec<u32>,
+    /// Affinity grid dimensions used by the compose shader for texel→CSR mapping.
+    pub affinity_dims: [u32; 3],
 }
 
 /// Map the loaded `DeltaShVolumesSection` to the engine's compose buffers.
 /// Pure (no GPU) so the loader→engine-struct mapping is unit-testable. When the
 /// section is absent the buffers are empty and the shader does a base→total copy.
-fn build_delta_buffers(delta: Option<&DeltaShVolumesSection>) -> DeltaComposeBuffers {
+fn build_delta_buffers(
+    delta: Option<&DeltaShVolumesSection>,
+    grid_dimensions: [u32; 3],
+) -> DeltaComposeBuffers {
     let Some(delta) = delta else {
+        let affinity_dims = affinity_dims_for_grid(grid_dimensions);
         return DeltaComposeBuffers {
             animated_light_count: 0,
             delta_subblocks: Vec::new(),
-            affinity_offsets: Vec::new(),
+            affinity_offsets: vec![0; affinity_cell_count(affinity_dims) + 1],
             affinity_lights: Vec::new(),
+            animation_descriptor_indices: Vec::new(),
+            affinity_dims,
         };
     };
     DeltaComposeBuffers {
@@ -327,7 +353,44 @@ fn build_delta_buffers(delta: Option<&DeltaShVolumesSection>) -> DeltaComposeBuf
         delta_subblocks: delta.delta_subblocks.clone(),
         affinity_offsets: delta.affinity_offsets.clone(),
         affinity_lights: delta.affinity_lights.clone(),
+        animation_descriptor_indices: delta.animation_descriptor_indices.clone(),
+        affinity_dims: delta.affinity_dims,
     }
+}
+
+fn affinity_dims_for_grid(grid_dimensions: [u32; 3]) -> [u32; 3] {
+    let factor = AFFINITY_FACTOR as u32;
+    [
+        grid_dimensions[0].div_ceil(factor).max(1),
+        grid_dimensions[1].div_ceil(factor).max(1),
+        grid_dimensions[2].div_ceil(factor).max(1),
+    ]
+}
+
+fn affinity_cell_count(dims: [u32; 3]) -> usize {
+    dims[0] as usize * dims[1] as usize * dims[2] as usize
+}
+
+fn build_compose_grid_bytes(
+    grid_dimensions: [u32; 3],
+    atlas_dimensions: [u32; 2],
+    tile_dimension: u32,
+    tile_border: u32,
+    affinity_dims: [u32; 3],
+) -> [u8; COMPOSE_GRID_DIMS_SIZE] {
+    let mut bytes = [0u8; COMPOSE_GRID_DIMS_SIZE];
+    bytes[0..4].copy_from_slice(&grid_dimensions[0].to_ne_bytes());
+    bytes[4..8].copy_from_slice(&grid_dimensions[1].to_ne_bytes());
+    bytes[8..12].copy_from_slice(&grid_dimensions[2].to_ne_bytes());
+    bytes[12..16].copy_from_slice(&tile_dimension.to_ne_bytes());
+    bytes[16..20].copy_from_slice(&atlas_dimensions[0].to_ne_bytes());
+    bytes[20..24].copy_from_slice(&atlas_dimensions[1].to_ne_bytes());
+    bytes[24..28].copy_from_slice(&tile_border.to_ne_bytes());
+    bytes[28..32].copy_from_slice(&(delta_probe_f16_stride(tile_dimension) as u32).to_ne_bytes());
+    bytes[32..36].copy_from_slice(&affinity_dims[0].to_ne_bytes());
+    bytes[36..40].copy_from_slice(&affinity_dims[1].to_ne_bytes());
+    bytes[40..44].copy_from_slice(&affinity_dims[2].to_ne_bytes());
+    bytes
 }
 
 fn u16_slice_to_bytes(data: &[u16]) -> Vec<u8> {
@@ -397,34 +460,28 @@ pub(crate) fn f16_bits_to_f32(bits: u16) -> f32 {
 }
 
 fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
-    let mut entries = Vec::with_capacity(SH_BAND_COUNT * 2 + 6);
-    // Bindings 0..9: base SH band textures (sampled via textureLoad — no filtering needed).
-    for i in 0..SH_BAND_COUNT {
-        entries.push(wgpu::BindGroupLayoutEntry {
-            binding: i as u32,
-            visibility: wgpu::ShaderStages::COMPUTE,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                view_dimension: wgpu::TextureViewDimension::D3,
-                multisampled: false,
-            },
-            count: None,
-        });
-    }
-    // Bindings 9..18: total SH band textures (storage write).
-    for i in 0..SH_BAND_COUNT {
-        entries.push(wgpu::BindGroupLayoutEntry {
-            binding: (SH_BAND_COUNT + i) as u32,
-            visibility: wgpu::ShaderStages::COMPUTE,
-            ty: wgpu::BindingType::StorageTexture {
-                access: wgpu::StorageTextureAccess::WriteOnly,
-                format: wgpu::TextureFormat::Rgba16Float,
-                view_dimension: wgpu::TextureViewDimension::D3,
-            },
-            count: None,
-        });
-    }
-    // Binding 18: grid-dimensions (+ trailing pad word; the delta_scale knob was retired).
+    let mut entries = Vec::with_capacity(10);
+    entries.push(wgpu::BindGroupLayoutEntry {
+        binding: 0,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
+        count: None,
+    });
+    entries.push(wgpu::BindGroupLayoutEntry {
+        binding: 1,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::StorageTexture {
+            access: wgpu::StorageTextureAccess::WriteOnly,
+            format: wgpu::TextureFormat::Rgba16Float,
+            view_dimension: wgpu::TextureViewDimension::D2,
+        },
+        count: None,
+    });
+    // Binding 18: atlas/grid/tile/affinity mapping.
     entries.push(wgpu::BindGroupLayoutEntry {
         binding: 18,
         visibility: wgpu::ShaderStages::COMPUTE,
@@ -480,6 +537,17 @@ fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         },
         count: None,
     });
+    // Binding 25: delta-light index → animation descriptor slot.
+    entries.push(wgpu::BindGroupLayoutEntry {
+        binding: BIND_ANIMATION_DESCRIPTOR_INDICES,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    });
     // Bindings 22–23: animation descriptors and samples (shared with SH bind group).
     entries.push(wgpu::BindGroupLayoutEntry {
         binding: 22,
@@ -518,6 +586,12 @@ mod tests {
         );
         let module =
             naga::front::wgsl::parse_str(src).expect("sh_compose.wgsl should parse as WGSL");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("sh_compose.wgsl should validate");
         let has_compose = module
             .entry_points
             .iter()
@@ -539,23 +613,29 @@ mod tests {
     }
 
     use postretro_level_format::delta_sh_volumes::{
-        AFFINITY_FACTOR, DeltaShVolumesSection, PROBE_F16_STRIDE, PROBES_PER_CELL,
+        DEFAULT_DELTA_PROBE_F16_STRIDE, DeltaShVolumesSection, PROBES_PER_CELL,
+    };
+    use postretro_level_format::octahedral::{
+        DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
     };
 
-    /// One stride-28 sub-block (64 probes) of deterministic f16 halves.
+    /// One default octahedral-tile sub-block (64 probes) of deterministic f16 halves.
     fn sample_subblock(seed: u16) -> Vec<u16> {
-        (0..PROBES_PER_CELL * PROBE_F16_STRIDE)
+        (0..PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE)
             .map(|i| seed.wrapping_add(i as u16))
             .collect()
     }
 
     #[test]
-    fn build_delta_buffers_no_section_returns_empty() {
-        let b = build_delta_buffers(None);
+    fn build_delta_buffers_no_section_returns_empty_payload_with_full_empty_offsets() {
+        let b = build_delta_buffers(None, [5, 2, 1]);
         assert_eq!(b.animated_light_count, 0);
         assert!(b.delta_subblocks.is_empty());
-        assert!(b.affinity_offsets.is_empty());
+        // ceil([5,2,1] / 4) = [2,1,1] → two cells plus trailing CSR total.
+        assert_eq!(b.affinity_dims, [2, 1, 1]);
+        assert_eq!(b.affinity_offsets, vec![0, 0, 0]);
         assert!(b.affinity_lights.is_empty());
+        assert!(b.animation_descriptor_indices.is_empty());
     }
 
     #[test]
@@ -568,21 +648,25 @@ mod tests {
         let section = DeltaShVolumesSection {
             affinity_factor: AFFINITY_FACTOR,
             affinity_dims: [3, 1, 1],
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             animation_descriptor_indices: vec![4, u32::MAX],
             affinity_offsets: vec![0, 1, 1, 2],
             affinity_lights: vec![0, 1],
             delta_subblocks: subblocks.clone(),
         };
 
-        let b = build_delta_buffers(Some(&section));
+        let b = build_delta_buffers(Some(&section), [12, 1, 1]);
         assert_eq!(b.animated_light_count, 2);
+        assert_eq!(b.affinity_dims, [3, 1, 1]);
         assert_eq!(b.affinity_offsets, vec![0, 1, 1, 2]);
         assert_eq!(b.affinity_lights, vec![0, 1]);
+        assert_eq!(b.animation_descriptor_indices, vec![4, u32::MAX]);
         // f16 payload preserved bit-for-bit (still u16, not expanded).
         assert_eq!(b.delta_subblocks, subblocks);
         assert_eq!(
             b.delta_subblocks.len(),
-            2 * PROBES_PER_CELL * PROBE_F16_STRIDE
+            2 * PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE
         );
     }
 
@@ -594,31 +678,57 @@ mod tests {
         let section = DeltaShVolumesSection {
             affinity_factor: AFFINITY_FACTOR,
             affinity_dims: [3, 1, 1],
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             animation_descriptor_indices: vec![0, 1],
             affinity_offsets: vec![0, 1, 1, 2],
             affinity_lights: vec![0, 1],
             delta_subblocks: subblocks,
         };
-        let b = build_delta_buffers(Some(&section));
+        let b = build_delta_buffers(Some(&section), [12, 1, 1]);
 
         let footprint = ComposeStorageFootprint {
             delta_subblocks_bytes: u16_slice_to_bytes(&b.delta_subblocks).len(),
             affinity_offsets_bytes: u32_slice_to_bytes(&b.affinity_offsets).len(),
             affinity_lights_bytes: u32_slice_to_bytes(&b.affinity_lights).len(),
+            animation_descriptor_indices_bytes: u32_slice_to_bytes(&b.animation_descriptor_indices)
+                .len(),
         };
 
-        // 2 entries × 64 probes × 28 halves × 2 bytes.
+        // 2 entries × 64 probes × one default octahedral tile × 2 bytes.
         assert_eq!(
             footprint.delta_subblocks_bytes,
-            2 * PROBES_PER_CELL * PROBE_F16_STRIDE * 2
+            2 * PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE * 2
         );
-        // 4 offsets × 4 bytes, 2 lights × 4 bytes.
+        // 4 offsets × 4 bytes, 2 lights × 4 bytes, 2 descriptor indices × 4 bytes.
         assert_eq!(footprint.affinity_offsets_bytes, 4 * 4);
         assert_eq!(footprint.affinity_lights_bytes, 2 * 4);
+        assert_eq!(footprint.animation_descriptor_indices_bytes, 2 * 4);
         assert_eq!(
             footprint.total_bytes(),
-            footprint.delta_subblocks_bytes + 16 + 8
+            footprint.delta_subblocks_bytes + 16 + 8 + 8
         );
+    }
+
+    #[test]
+    fn compose_grid_bytes_pack_atlas_tile_and_affinity_contract() {
+        let bytes = build_compose_grid_bytes([7, 5, 3], [42, 90], 6, 1, [2, 2, 1]);
+
+        let read_u32 =
+            |range: std::ops::Range<usize>| u32::from_ne_bytes(bytes[range].try_into().unwrap());
+        assert_eq!(bytes.len(), COMPOSE_GRID_DIMS_SIZE);
+        assert_eq!(read_u32(0..4), 7);
+        assert_eq!(read_u32(4..8), 5);
+        assert_eq!(read_u32(8..12), 3);
+        assert_eq!(read_u32(12..16), 6);
+        assert_eq!(read_u32(16..20), 42);
+        assert_eq!(read_u32(20..24), 90);
+        assert_eq!(read_u32(24..28), 1);
+        assert_eq!(read_u32(28..32), DEFAULT_DELTA_PROBE_F16_STRIDE as u32);
+        assert_eq!(read_u32(32..36), 2);
+        assert_eq!(read_u32(36..40), 2);
+        assert_eq!(read_u32(40..44), 1);
+        assert_eq!(read_u32(44..48), 0);
     }
 
     #[test]

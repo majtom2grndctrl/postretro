@@ -173,6 +173,14 @@ pub fn draw_diagnostics_panel(
                     renderer.set_indirect_scale(state.indirect_scale);
                 }
 
+                let mut probe_occlusion = renderer.probe_occlusion_enabled();
+                if ui
+                    .checkbox(&mut probe_occlusion, "Probe Occlusion")
+                    .changed()
+                {
+                    renderer.set_probe_occlusion_enabled(probe_occlusion);
+                }
+
                 let mut mode = renderer.lighting_isolation();
                 let prev_mode = mode;
                 egui::ComboBox::from_label("Lighting Isolation")

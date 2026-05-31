@@ -1,20 +1,17 @@
-// SH irradiance volume GPU resources: 3D textures, grid-info uniform, bind group (group 3).
+// SH irradiance volume GPU resources: octahedral atlas textures, grid-info uniform, bind group (group 3).
 // See: context/lib/rendering_pipeline.md §4, §8
 
-use postretro_level_format::sh_volume::{AnimationDescriptor, ShProbe, ShVolumeSection};
+use postretro_level_format::sh_volume::{
+    AnimationDescriptor, OctahedralAtlasTexel, OctahedralShProbe, OctahedralShVolumeSection,
+};
 
-/// SH band textures occupy group 3 bindings 1..=SH_BAND_COUNT. Binding 0 is
-/// intentionally vacant: `sh_sample.wgsl` uses `textureLoad`, so no sampler is
-/// bound. Indices need not be contiguous in WGSL/wgpu.
-///
-/// Adding bands increases the sampled-texture count consumed per shader stage.
-/// `render::mod::REQUIRED_SAMPLED_TEXTURES` is the matching adapter pre-check;
-/// a change here requires a coordinated bump there.
-pub const SH_BAND_COUNT: usize = 9;
-
-/// Binding indices for the group 3 animation storage buffers. These sit
-/// after the SH band textures (1..=SH_BAND_COUNT) and the grid-info uniform
-/// (1 + SH_BAND_COUNT == 10).
+/// Group 3 binding indices for the octahedral irradiance atlas resources.
+pub const BIND_SH_TOTAL_ATLAS: u32 = 1;
+pub const BIND_SH_ATLAS_SAMPLER: u32 = 2;
+pub const BIND_SH_GRID_INFO: u32 = 10;
+/// Binding indices for the group 3 animation storage buffers. These retain
+/// their pre-migration meanings so the scripting and light animation bridge
+/// keep their existing contract.
 pub const BIND_ANIM_DESCRIPTORS: u32 = 11;
 pub const BIND_ANIM_SAMPLES: u32 = 12;
 /// Separate from `BIND_ANIM_DESCRIPTORS` (baked section descriptors for the
@@ -24,17 +21,27 @@ pub const BIND_SCRIPTED_LIGHT_DESCRIPTORS: u32 = 13;
 /// Static per-probe depth moments: R = mean distance, G = mean squared distance.
 pub const BIND_SH_DEPTH_MOMENTS: u32 = BIND_SCRIPTED_LIGHT_DESCRIPTORS + 1;
 
-/// Byte size of `ShGridInfo` — four `vec4` slots to satisfy std140 alignment
+/// Byte size of `ShGridInfo` — six `vec4` slots to satisfy std140 alignment
 /// rules (vec3 fields align to 16, followed by a same-slot scalar).
 ///
-/// Layout (must match the WGSL `ShGridInfo` struct in `forward.wgsl`):
+/// Layout (must match the WGSL `ShGridInfo` structs in shader consumers):
 ///   0..12   grid_origin       (vec3<f32>)
 ///   12..16  has_sh_volume     (u32, 0 or 1)
 ///   16..28  cell_size         (vec3<f32>)
 ///   28..32  _pad0             (u32)
 ///   32..44  grid_dimensions   (vec3<u32>)
 ///   44..48  _pad1             (u32)
-pub const SH_GRID_INFO_SIZE: usize = 48;
+///   48..56  atlas_dimensions  (vec2<u32>)
+///   56..60  tile_dimension    (u32)
+///   60..64  tile_border       (u32)
+///   64..72  tile_grid_dims    (vec2<u32>: tiles wide, tiles high)
+///   72..76  tile_interior     (u32)
+///   76..80  _pad2             (u32)
+///   80..84  probe_occlusion   (u32, 0 or 1)
+///   84..96  _pad3             (three u32 slots)
+pub const SH_GRID_INFO_SIZE: usize = 96;
+
+pub const DEFAULT_PROBE_OCCLUSION: bool = true;
 
 /// Stride of one `AnimationDescriptor` record on the GPU. WGSL layout:
 ///   f32 period             (0..4)
@@ -67,31 +74,32 @@ pub const SCRIPTED_COLOR_SLOT_F32: usize = 128;
 /// [SCRIPTED_BRIGHTNESS_SLOT..SCRIPTED_FLOATS_PER_LIGHT) = color (RGB interleaved).
 pub const SCRIPTED_FLOATS_PER_LIGHT: usize = SCRIPTED_BRIGHTNESS_SLOT + SCRIPTED_COLOR_SLOT_F32;
 
-/// Uploaded SH volume handles + bind group. Always populated — when the level
-/// has no SH section, the bind group binds dummy 1×1×1 textures and the
-/// `has_sh_volume` flag is zero so the fragment shader skips SH sampling.
+/// Uploaded SH volume handles + bind group. Always populated. Empty-geometry
+/// levels bind dummy 1×1 atlases and set `has_sh_volume` to zero so shader
+/// consumers skip indirect sampling.
 ///
-/// Two parallel sets of 9 SH band textures exist:
-/// - **base**: uploaded once at load time from the PRL `ShVolume` section.
-///   Held as the source-of-truth static SH bands.
-/// - **total**: storage-writeable copies the per-frame compose pass
-///   (`sh_compose`) writes into. The consumer-facing `bind_group` references
-///   these — forward, billboard, fog all sample "total" so animated deltas
-///   apply seamlessly. The compose pass samples each animated light's curves
-///   and adds its delta volume onto the base, so `total` differs from `base`
-///   whenever an animated light is active.
+/// Two atlas textures exist:
+/// - **base**: uploaded once at load time from the PRL `OctahedralShVolume`
+///   section. Held as the source-of-truth static octahedral irradiance atlas.
+/// - **total**: one `Rgba16Float` texture with both sampled and storage views.
+///   Consumers sample this texture; the compose pass writes it each frame.
 pub struct ShVolumeResources {
     pub bind_group: wgpu::BindGroup,
     pub bind_group_layout: wgpu::BindGroupLayout,
     #[allow(dead_code)]
     pub present: bool,
-    /// Probe grid dimensions (in cells, x/y/z). Used by the compose pass to
-    /// pick a dispatch shape that covers exactly one workgroup-thread per probe.
+    /// Probe grid dimensions (in cells, x/y/z).
     pub grid_dimensions: [u32; 3],
-    /// Sampled views over the base SH band textures; consumed by the compose pass as `textureLoad` inputs.
-    pub base_band_views: Vec<wgpu::TextureView>,
-    /// Storage-writeable views over the total SH band textures; consumed by the compose pass as `textureStore` outputs.
-    pub total_band_storage_views: Vec<wgpu::TextureView>,
+    /// Atlas dimensions in texels.
+    pub atlas_dimensions: [u32; 2],
+    #[allow(dead_code)]
+    pub tile_dimension: u32,
+    #[allow(dead_code)]
+    pub tile_border: u32,
+    /// Sampled view over the base octahedral atlas; consumed by the compose pass.
+    pub base_atlas_view: wgpu::TextureView,
+    /// Storage-writeable view over the total octahedral atlas; consumed by the compose pass.
+    pub total_atlas_storage_view: wgpu::TextureView,
     /// Per-probe depth-moment texture (Rg16Float — R = E[d], G = E[d²]).
     /// Already bound on group 3 binding 14 for the forward/billboard/fog
     /// passes; held here so the SDF shadow pass can mint its own
@@ -112,17 +120,14 @@ pub struct ShVolumeResources {
     /// per-light sample data starting here; `upload_bridge_samples` passes this
     /// to `queue.write_buffer` as the destination offset.
     pub scripted_sample_byte_offset: usize,
-    /// CPU mirror of section-20 per-probe validity bytes, z-major
+    /// CPU mirror of section-34 per-probe validity bytes, z-major
     /// (`x + y*Nx + z*Nx*Ny`). One byte per probe: `0 = invalid` (probe inside
     /// solid or off-grid), non-zero = valid. Empty when no SH section is present.
     /// Consumed by `sh_diagnostics::emit` for probe-marker coloring.
     #[cfg(feature = "dev-tools")]
     pub validity: Vec<u8>,
-    /// CPU mirror of each probe's L0 (DC) SH coefficient as linear RGB, z-major
-    /// like `validity`. The L0 band reconstructs to a constant ambient
-    /// irradiance in every direction, so this is the average color of light at
-    /// the probe — consumed by `sh_diagnostics::emit` for irradiance-colored
-    /// markers. Invalid probes store zero, matching the band-texture upload.
+    /// CPU mirror of each probe's center-tile irradiance as linear RGB,
+    /// z-major like `validity`; consumed by `sh_diagnostics::emit`.
     #[cfg(feature = "dev-tools")]
     pub probe_l0: Vec<[f32; 3]>,
     /// CPU copies of grid origin and cell size. `grid_info_buffer` is the
@@ -134,9 +139,10 @@ pub struct ShVolumeResources {
     pub grid_origin: [f32; 3],
     #[allow(dead_code)]
     pub cell_size: [f32; 3],
-    /// Band-0 (L0) "total" texture handle, retained so the diagnostics readback
-    /// can copy it back to CPU each frame. Carries `COPY_SRC`. Band 0 alone is
-    /// enough for the average light color the irradiance markers display.
+    grid_info_buffer: wgpu::Buffer,
+    probe_occlusion_enabled: bool,
+    /// Total atlas handle, retained so the diagnostics readback can copy it
+    /// back to CPU each frame. Carries `COPY_SRC`.
     #[cfg(feature = "dev-tools")]
     pub total_band0_texture: wgpu::Texture,
 }
@@ -257,15 +263,16 @@ impl ShVolumeResources {
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        section: Option<&ShVolumeSection>,
+        section: Option<&OctahedralShVolumeSection>,
         map_light_count: usize,
+        probe_occlusion_enabled: bool,
     ) -> Self {
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("SH Volume Bind Group Layout"),
             entries: &sh_bind_group_layout_entries(),
         });
 
-        // A zero-dimension grid is treated the same as a missing section.
+        // A zero-dimension grid is treated the same as a missing/empty section.
         let usable = section.filter(|s| {
             s.grid_dimensions[0] > 0 && s.grid_dimensions[1] > 0 && s.grid_dimensions[2] > 0
         });
@@ -273,12 +280,12 @@ impl ShVolumeResources {
         let grid_origin: [f32; 3];
         let cell_size: [f32; 3];
         let grid_dimensions: [u32; 3];
+        let atlas_dimensions: [u32; 2];
+        let tile_dimension: u32;
+        let tile_border: u32;
         let present: bool;
-        // Base SH bands: uploaded from PRL data (or dummy zeros); read-only sampled inputs to the compose pass.
-        let base_textures: Vec<wgpu::Texture>;
-        // Total SH bands: storage-writeable parallel set the compose pass writes each frame;
-        // consumer bind group samples from these. STORAGE_BINDING | TEXTURE_BINDING so one texture serves both roles.
-        let total_textures: Vec<wgpu::Texture>;
+        let base_atlas_texture: wgpu::Texture;
+        let total_atlas_texture: wgpu::Texture;
         let depth_moment_texture: wgpu::Texture;
 
         #[cfg(feature = "dev-tools")]
@@ -286,22 +293,18 @@ impl ShVolumeResources {
             .map(|s| s.probes.iter().map(|p| p.validity).collect())
             .unwrap_or_default();
 
-        // Mirror the pack: invalid probes upload as zero, so store zero here too
-        // — keeps the irradiance marker dark where the band textures are dark.
+        // Mirror the pack: invalid probes upload as zero, so store zero here too.
         #[cfg(feature = "dev-tools")]
         let probe_l0: Vec<[f32; 3]> = usable
             .map(|s| {
                 s.probes
                     .iter()
-                    .map(|p| {
+                    .enumerate()
+                    .map(|(i, p)| {
                         if p.validity == 0 {
                             [0.0; 3]
                         } else {
-                            [
-                                p.sh_coefficients[0],
-                                p.sh_coefficients[1],
-                                p.sh_coefficients[2],
-                            ]
+                            probe_center_irradiance(s, i)
                         }
                     })
                     .collect()
@@ -309,34 +312,47 @@ impl ShVolumeResources {
             .unwrap_or_default();
 
         if let Some(sec) = usable {
-            let packed = pack_probes_to_band_slices(&sec.probes, sec.grid_dimensions);
-            base_textures = (0..SH_BAND_COUNT)
-                .map(|band| {
-                    upload_band_texture(device, queue, sec.grid_dimensions, &packed[band], band)
-                })
-                .collect();
-            total_textures = (0..SH_BAND_COUNT)
-                .map(|band| create_total_band_texture(device, sec.grid_dimensions, band))
-                .collect();
+            base_atlas_texture = upload_atlas_texture(
+                device,
+                queue,
+                sec.atlas_dimensions,
+                &sec.atlas_texels,
+                "SH Base Octahedral Atlas",
+            );
+            total_atlas_texture = create_total_atlas_texture(
+                device,
+                sec.atlas_dimensions,
+                "SH Total Octahedral Atlas",
+            );
             let moments = pack_probe_depth_moments(&sec.probes, sec.grid_dimensions);
             depth_moment_texture =
                 upload_depth_moment_texture(device, queue, sec.grid_dimensions, &moments);
             grid_origin = sec.grid_origin;
             cell_size = sec.cell_size;
             grid_dimensions = sec.grid_dimensions;
+            atlas_dimensions = sec.atlas_dimensions;
+            tile_dimension = sec.tile_dimension;
+            tile_border = sec.tile_border;
             present = true;
         } else {
             let dummy = dummy_depth_moment_payload();
-            base_textures = (0..SH_BAND_COUNT)
-                .map(|band| upload_band_texture(device, queue, [1, 1, 1], &dummy, band))
-                .collect();
-            total_textures = (0..SH_BAND_COUNT)
-                .map(|band| create_total_band_texture(device, [1, 1, 1], band))
-                .collect();
+            let dummy_texel = [OctahedralAtlasTexel { rgba: dummy }];
+            base_atlas_texture = upload_atlas_texture(
+                device,
+                queue,
+                [1, 1],
+                &dummy_texel,
+                "SH Base Octahedral Atlas Dummy",
+            );
+            total_atlas_texture =
+                create_total_atlas_texture(device, [1, 1], "SH Total Octahedral Atlas Dummy");
             depth_moment_texture = upload_depth_moment_texture(device, queue, [1, 1, 1], &dummy);
             grid_origin = [0.0; 3];
             cell_size = [1.0; 3];
             grid_dimensions = [1, 1, 1];
+            atlas_dimensions = [1, 1];
+            tile_dimension = 1;
+            tile_border = 0;
             present = false;
         }
 
@@ -376,52 +392,62 @@ impl ShVolumeResources {
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         );
 
-        let grid_info_bytes =
-            build_grid_info_bytes(grid_origin, cell_size, grid_dimensions, present);
+        let grid_info_bytes = build_grid_info_bytes(
+            grid_origin,
+            cell_size,
+            grid_dimensions,
+            atlas_dimensions,
+            tile_dimension,
+            tile_border,
+            present,
+            probe_occlusion_enabled,
+        );
         let grid_info_buffer = device.create_buffer_init_helper(
             "SH Grid Info Uniform",
             &grid_info_bytes,
             wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         );
 
-        // Sampled view of base bands: compose pass reads these as textureLoad inputs.
-        let base_band_views: Vec<wgpu::TextureView> = base_textures
-            .iter()
-            .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
-            .collect();
-        // Sampled view of total bands: bound on group 3 for forward/billboard/fog.
-        let total_sampled_views: Vec<wgpu::TextureView> = total_textures
-            .iter()
-            .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
-            .collect();
-        // Storage view of total bands: compose pass writes these as textureStore outputs.
-        let total_band_storage_views: Vec<wgpu::TextureView> = total_textures
-            .iter()
-            .map(|t| {
-                t.create_view(&wgpu::TextureViewDescriptor {
-                    label: Some("SH Total Band Storage View"),
-                    ..Default::default()
-                })
-            })
-            .collect();
+        let base_atlas_view = base_atlas_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("SH Base Octahedral Atlas View"),
+            ..Default::default()
+        });
+        let total_atlas_sampled_view =
+            total_atlas_texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("SH Total Octahedral Atlas Sampled View"),
+                ..Default::default()
+            });
+        let total_atlas_storage_view =
+            total_atlas_texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("SH Total Octahedral Atlas Storage View"),
+                ..Default::default()
+            });
         let depth_moment_view = depth_moment_texture.create_view(&wgpu::TextureViewDescriptor {
             label: Some("SH Depth Moment View"),
             ..Default::default()
         });
+        let atlas_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("SH Octahedral Atlas Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
 
-        let mut entries: Vec<wgpu::BindGroupEntry> = Vec::with_capacity(SH_BAND_COUNT + 6);
-        // Bind the **total** sampled views — consumers (forward, billboard,
-        // fog) read post-compose SH. The compose pass accumulates animated
-        // deltas onto the base each frame; with no active animated lights the
-        // result equals the base.
-        for (i, view) in total_sampled_views.iter().enumerate() {
-            entries.push(wgpu::BindGroupEntry {
-                binding: 1 + i as u32,
-                resource: wgpu::BindingResource::TextureView(view),
-            });
-        }
+        let mut entries: Vec<wgpu::BindGroupEntry> = Vec::with_capacity(7);
         entries.push(wgpu::BindGroupEntry {
-            binding: (1 + SH_BAND_COUNT) as u32,
+            binding: BIND_SH_TOTAL_ATLAS,
+            resource: wgpu::BindingResource::TextureView(&total_atlas_sampled_view),
+        });
+        entries.push(wgpu::BindGroupEntry {
+            binding: BIND_SH_ATLAS_SAMPLER,
+            resource: wgpu::BindingResource::Sampler(&atlas_sampler),
+        });
+        entries.push(wgpu::BindGroupEntry {
+            binding: BIND_SH_GRID_INFO,
             resource: grid_info_buffer.as_entire_binding(),
         });
         entries.push(wgpu::BindGroupEntry {
@@ -447,11 +473,11 @@ impl ShVolumeResources {
             entries: &entries,
         });
 
-        // Retain the band-0 total texture for the dev-tools readback. The
+        // Retain the total atlas texture for the dev-tools readback. The
         // `wgpu::Texture` handle is an Arc clone — the views above already keep
         // the texture alive, this just gives the readback a handle to copy from.
         #[cfg(feature = "dev-tools")]
-        let total_band0_texture = total_textures[0].clone();
+        let total_band0_texture = total_atlas_texture.clone();
 
         let animation = AnimatedLightBuffers {
             descriptors: anim_descriptors_buffer,
@@ -466,8 +492,11 @@ impl ShVolumeResources {
             bind_group_layout,
             present,
             grid_dimensions,
-            base_band_views,
-            total_band_storage_views,
+            atlas_dimensions,
+            tile_dimension,
+            tile_border,
+            base_atlas_view,
+            total_atlas_storage_view,
             depth_moment_texture,
             animation,
             scripted_light_descriptors: scripted_light_descriptors_buffer,
@@ -479,6 +508,8 @@ impl ShVolumeResources {
             probe_l0,
             grid_origin,
             cell_size,
+            grid_info_buffer,
+            probe_occlusion_enabled,
             #[cfg(feature = "dev-tools")]
             total_band0_texture,
         }
@@ -495,34 +526,52 @@ impl ShVolumeResources {
                 ..Default::default()
             })
     }
+
+    pub fn set_probe_occlusion_enabled(&mut self, queue: &wgpu::Queue, enabled: bool) {
+        if self.probe_occlusion_enabled == enabled {
+            return;
+        }
+        self.probe_occlusion_enabled = enabled;
+        let bytes = build_grid_info_bytes(
+            self.grid_origin,
+            self.cell_size,
+            self.grid_dimensions,
+            self.atlas_dimensions,
+            self.tile_dimension,
+            self.tile_border,
+            self.present,
+            enabled,
+        );
+        queue.write_buffer(&self.grid_info_buffer, 0, &bytes);
+    }
 }
 
 // --- Helpers ---
 
 fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
-    let mut entries: Vec<wgpu::BindGroupLayoutEntry> = Vec::with_capacity(SH_BAND_COUNT + 5);
+    let mut entries: Vec<wgpu::BindGroupLayoutEntry> = Vec::with_capacity(7);
     // Shared with the forward pass (fragment) and fog raymarch (compute), so visibility
     // covers both stages on every entry.
     let vis = wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE;
-    // bindings 1..=SH_BAND_COUNT: 3D textures. Binding 0 is intentionally vacant
-    // — the SH bands are read via `textureLoad` in `sh_sample.wgsl`, so no
-    // sampler is bound. `filterable: false` is the honest declaration since
-    // nothing samples these through a filtering sampler.
-    for i in 0..SH_BAND_COUNT {
-        entries.push(wgpu::BindGroupLayoutEntry {
-            binding: 1 + i as u32,
-            visibility: vis,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                view_dimension: wgpu::TextureViewDimension::D3,
-                multisampled: false,
-            },
-            count: None,
-        });
-    }
-    // binding 1 + SH_BAND_COUNT: ShGridInfo uniform
     entries.push(wgpu::BindGroupLayoutEntry {
-        binding: (1 + SH_BAND_COUNT) as u32,
+        binding: BIND_SH_TOTAL_ATLAS,
+        visibility: vis,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
+        count: None,
+    });
+    entries.push(wgpu::BindGroupLayoutEntry {
+        binding: BIND_SH_ATLAS_SAMPLER,
+        visibility: vis,
+        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+        count: None,
+    });
+    // ShGridInfo uniform.
+    entries.push(wgpu::BindGroupLayoutEntry {
+        binding: BIND_SH_GRID_INFO,
         visibility: vis,
         ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Uniform,
@@ -562,53 +611,12 @@ fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
     entries
 }
 
-/// Repack `ShProbe.sh_coefficients` from per-probe, band-interleaved RGB
-/// (`[b0_r, b0_g, b0_b, b1_r, ...]`) into 9 per-band byte buffers, each sized
-/// `grid_x × grid_y × grid_z × 8 bytes` (one `Rgba16Float` texel per probe).
-///
-/// Invalid probes (`validity == 0`) upload as all-zero coefficients, including
-/// a zero band-0 alpha. Valid probes carry the baked validity bit in band-0
-/// alpha (`f32_to_f16_bits(1.0) == 0x3c00`); bands 1..=8 keep alpha 0. The
-/// forward shader reads band-0 alpha to drop in-wall corners from its manual
-/// 8-corner blend, so the alpha is exactly two-state (`0x0000` invalid /
-/// `0x3c00` valid) and distinguishes an in-wall probe from a genuinely
-/// dark-but-valid one.
-fn pack_probes_to_band_slices(probes: &[ShProbe], grid: [u32; 3]) -> Vec<Vec<u16>> {
-    let total = (grid[0] as usize) * (grid[1] as usize) * (grid[2] as usize);
-    debug_assert_eq!(probes.len(), total);
-
-    // Each band's buffer holds 4 u16 halves per probe (R, G, B, pad=0).
-    let mut bands: Vec<Vec<u16>> = (0..SH_BAND_COUNT).map(|_| vec![0u16; total * 4]).collect();
-
-    for (probe_idx, probe) in probes.iter().enumerate() {
-        let off = probe_idx * 4;
-        if probe.validity == 0 {
-            // Already zero-initialized; leave invalid probes dark.
-            continue;
-        }
-        for (band, band_buf) in bands.iter_mut().enumerate() {
-            let r = probe.sh_coefficients[band * 3];
-            let g = probe.sh_coefficients[band * 3 + 1];
-            let b = probe.sh_coefficients[band * 3 + 2];
-            band_buf[off] = f32_to_f16_bits(r);
-            band_buf[off + 1] = f32_to_f16_bits(g);
-            band_buf[off + 2] = f32_to_f16_bits(b);
-            // Validity signal lives in band-0 alpha only. This probe is valid
-            // (the `validity == 0` branch above skipped invalid ones), so write
-            // 1.0; bands 1..=8 keep alpha 0.
-            band_buf[off + 3] = if band == 0 { f32_to_f16_bits(1.0) } else { 0 };
-        }
-    }
-
-    bands
-}
-
 /// Pack per-probe depth moments into one `Rgba16Float` 3D texture payload.
 /// Probes are already ordered z-major/y/x by the PRL section; keeping the same
 /// linear order as the SH band textures makes the moment texture index-aligned
 /// with every band. Valid probes copy baked f16 bits directly into RG; invalid
 /// probes remain all zero.
-fn pack_probe_depth_moments(probes: &[ShProbe], grid: [u32; 3]) -> Vec<u16> {
+fn pack_probe_depth_moments(probes: &[OctahedralShProbe], grid: [u32; 3]) -> Vec<u16> {
     let total = (grid[0] as usize) * (grid[1] as usize) * (grid[2] as usize);
     debug_assert_eq!(probes.len(), total);
 
@@ -628,36 +636,35 @@ fn dummy_depth_moment_payload() -> [u16; 4] {
     [0u16; 4]
 }
 
-/// Create a `Rgba16Float` 3D texture sized to `grid` and upload `data`
-/// (row-major by x, then y, then z — matching the baker's z-major iteration
-/// order after reshaping).
-fn upload_band_texture(
+fn upload_atlas_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    grid: [u32; 3],
-    data_u16: &[u16],
-    band: usize,
+    atlas_dimensions: [u32; 2],
+    texels: &[OctahedralAtlasTexel],
+    label: &str,
 ) -> wgpu::Texture {
     let size = wgpu::Extent3d {
-        width: grid[0].max(1),
-        height: grid[1].max(1),
-        depth_or_array_layers: grid[2].max(1),
+        width: atlas_dimensions[0].max(1),
+        height: atlas_dimensions[1].max(1),
+        depth_or_array_layers: 1,
     };
 
-    let label = format!("SH Volume Band {band}");
     let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(&label),
+        label: Some(label),
         size,
         mip_level_count: 1,
         sample_count: 1,
-        dimension: wgpu::TextureDimension::D3,
+        dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba16Float,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
 
-    // Safe reinterpretation: Rgba16Float wants 8 bytes per texel (4 halves).
-    let byte_slice = u16_slice_to_bytes(data_u16);
+    let mut halves = Vec::with_capacity(texels.len() * 4);
+    for texel in texels {
+        halves.extend_from_slice(&texel.rgba);
+    }
+    let byte_slice = u16_slice_to_bytes(&halves);
 
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
@@ -721,14 +728,13 @@ fn upload_depth_moment_texture(
     texture
 }
 
-/// Create one total-SH band texture: same `Rgba16Float` format and 3D shape
-/// as the corresponding base texture, but with `STORAGE_BINDING |
-/// TEXTURE_BINDING` usage so the compose compute pass can write through a
-/// storage view while consumers sample through a sampled view. No data is
-/// uploaded — wgpu zero-initializes; the compose pass overwrites every texel
-/// each frame.
-fn create_total_band_texture(device: &wgpu::Device, grid: [u32; 3], band: usize) -> wgpu::Texture {
-    let label = format!("SH Total Band {band}");
+/// Create the total octahedral atlas texture. No data is uploaded — wgpu
+/// zero-initializes; the compose pass overwrites every texel each frame.
+fn create_total_atlas_texture(
+    device: &wgpu::Device,
+    atlas_dimensions: [u32; 2],
+    label: &str,
+) -> wgpu::Texture {
     // dev-tools reads back band 0 (L0) for the irradiance probe-marker overlay,
     // which needs COPY_SRC. The flag is only added under the feature so release
     // builds — where the readback path is compiled out — keep the minimal usage.
@@ -739,19 +745,48 @@ fn create_total_band_texture(device: &wgpu::Device, grid: [u32; 3], band: usize)
         usage |= wgpu::TextureUsages::COPY_SRC;
     }
     device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(&label),
+        label: Some(label),
         size: wgpu::Extent3d {
-            width: grid[0].max(1),
-            height: grid[1].max(1),
-            depth_or_array_layers: grid[2].max(1),
+            width: atlas_dimensions[0].max(1),
+            height: atlas_dimensions[1].max(1),
+            depth_or_array_layers: 1,
         },
         mip_level_count: 1,
         sample_count: 1,
-        dimension: wgpu::TextureDimension::D3,
+        dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba16Float,
         usage,
         view_formats: &[],
     })
+}
+
+#[cfg(feature = "dev-tools")]
+fn probe_center_irradiance(section: &OctahedralShVolumeSection, probe_index: usize) -> [f32; 3] {
+    let origin = postretro_level_format::octahedral::irradiance_tile_origin(
+        probe_index,
+        section.grid_dimensions,
+        section.tile_dimension,
+    );
+    let center = section.tile_dimension / 2;
+    let x = (origin[0] + center).min(section.atlas_dimensions[0].saturating_sub(1));
+    let y = (origin[1] + center).min(section.atlas_dimensions[1].saturating_sub(1));
+    let idx = (y * section.atlas_dimensions[0] + x) as usize;
+    section
+        .atlas_texels
+        .get(idx)
+        .map(|texel| {
+            [
+                f16_bits_to_f32_local(texel.rgba[0]),
+                f16_bits_to_f32_local(texel.rgba[1]),
+                f16_bits_to_f32_local(texel.rgba[2]),
+            ]
+        })
+        .unwrap_or([0.0; 3])
+}
+
+#[cfg(feature = "dev-tools")]
+fn f16_bits_to_f32_local(bits: u16) -> f32 {
+    crate::render::sh_compose::f16_bits_to_f32(bits)
 }
 
 /// Build the two animation storage-buffer payloads from an (optional)
@@ -762,7 +797,7 @@ fn create_total_band_texture(device: &wgpu::Device, grid: [u32; 3], band: usize)
 /// The animated-lightmap compose pass guards on `count == 0` before reading
 /// these dummies, so the contents are irrelevant.
 pub(crate) fn build_animation_buffers(
-    section: Option<&ShVolumeSection>,
+    section: Option<&OctahedralShVolumeSection>,
 ) -> (Vec<u8>, Vec<u8>, u32) {
     let Some(sec) = section else {
         return (dummy_descriptor_buffer(), dummy_storage_buffer(), 0);
@@ -887,7 +922,11 @@ pub(crate) fn build_grid_info_bytes(
     grid_origin: [f32; 3],
     cell_size: [f32; 3],
     grid_dimensions: [u32; 3],
+    atlas_dimensions: [u32; 2],
+    tile_dimension: u32,
+    tile_border: u32,
     present: bool,
+    probe_occlusion_enabled: bool,
 ) -> [u8; SH_GRID_INFO_SIZE] {
     let mut bytes = [0u8; SH_GRID_INFO_SIZE];
     // grid_origin vec3 at 0..12, has_sh_volume u32 at 12..16.
@@ -905,7 +944,22 @@ pub(crate) fn build_grid_info_bytes(
     bytes[36..40].copy_from_slice(&grid_dimensions[1].to_ne_bytes());
     bytes[40..44].copy_from_slice(&grid_dimensions[2].to_ne_bytes());
     // bytes[44..48] is _pad1, already zero.
+    bytes[48..52].copy_from_slice(&atlas_dimensions[0].to_ne_bytes());
+    bytes[52..56].copy_from_slice(&atlas_dimensions[1].to_ne_bytes());
+    bytes[56..60].copy_from_slice(&tile_dimension.to_ne_bytes());
+    bytes[60..64].copy_from_slice(&tile_border.to_ne_bytes());
+    bytes[64..68].copy_from_slice(&grid_dimensions[0].to_ne_bytes());
+    let tile_rows = grid_dimensions[1].saturating_mul(grid_dimensions[2]);
+    bytes[68..72].copy_from_slice(&tile_rows.to_ne_bytes());
+    let interior = tile_dimension.saturating_sub(tile_border.saturating_mul(2));
+    bytes[72..76].copy_from_slice(&interior.to_ne_bytes());
+    let probe_occlusion: u32 = probe_occlusion_enabled as u32;
+    bytes[80..84].copy_from_slice(&probe_occlusion.to_ne_bytes());
     bytes
+}
+
+pub(crate) fn probe_occlusion_seed_from_fast_env(value: Option<&str>) -> bool {
+    value.map_or(DEFAULT_PROBE_OCCLUSION, |v| v != "1")
 }
 
 /// Round-to-nearest-even f32 → IEEE 754 binary16 (half float). Subnormals and
@@ -1008,6 +1062,29 @@ mod tests {
     const SH_DEPTH_BIAS_CELL_FRACTION_REF: f32 = 0.05;
     const SH_DEPTH_MIN_VISIBILITY_REF: f32 = 0.03;
 
+    fn test_octahedral_section(
+        grid: [u32; 3],
+        animation_descriptors: Vec<AnimationDescriptor>,
+    ) -> OctahedralShVolumeSection {
+        let probe_count = grid[0] as usize * grid[1] as usize * grid[2] as usize;
+        OctahedralShVolumeSection {
+            grid_origin: [0.0; 3],
+            cell_size: [1.0; 3],
+            grid_dimensions: grid,
+            probe_stride: postretro_level_format::sh_volume::OCTAHEDRAL_PROBE_STRIDE,
+            tile_dimension: 6,
+            tile_border: 1,
+            atlas_dimensions: [grid[0].max(1) * 6, grid[1].max(1) * grid[2].max(1) * 6],
+            probes: vec![OctahedralShProbe::default(); probe_count],
+            atlas_texels: vec![
+                OctahedralAtlasTexel::default();
+                (grid[0].max(1) * 6 * grid[1].max(1) * grid[2].max(1) * 6) as usize
+            ],
+            animation_descriptors,
+            slot_for_map_light: Vec::new(),
+        }
+    }
+
     #[test]
     fn f32_to_f16_zero_and_one() {
         assert_eq!(f32_to_f16_bits(0.0), 0x0000);
@@ -1026,7 +1103,16 @@ mod tests {
 
     #[test]
     fn grid_info_bytes_encode_origin_and_present_flag() {
-        let bytes = build_grid_info_bytes([1.5, 2.5, 3.5], [0.25, 0.5, 1.0], [4, 5, 6], true);
+        let bytes = build_grid_info_bytes(
+            [1.5, 2.5, 3.5],
+            [0.25, 0.5, 1.0],
+            [4, 5, 6],
+            [24, 180],
+            6,
+            1,
+            true,
+            true,
+        );
         assert_eq!(bytes.len(), SH_GRID_INFO_SIZE);
 
         let ox = f32::from_ne_bytes(bytes[0..4].try_into().unwrap());
@@ -1035,18 +1121,53 @@ mod tests {
         let flag = u32::from_ne_bytes(bytes[12..16].try_into().unwrap());
         let cx = f32::from_ne_bytes(bytes[16..20].try_into().unwrap());
         let gy = u32::from_ne_bytes(bytes[36..40].try_into().unwrap());
+        let atlas_w = u32::from_ne_bytes(bytes[48..52].try_into().unwrap());
+        let tile_dim = u32::from_ne_bytes(bytes[56..60].try_into().unwrap());
+        let tile_rows = u32::from_ne_bytes(bytes[68..72].try_into().unwrap());
+        let tile_interior = u32::from_ne_bytes(bytes[72..76].try_into().unwrap());
+        let probe_occlusion = u32::from_ne_bytes(bytes[80..84].try_into().unwrap());
 
         assert_eq!([ox, oy, oz], [1.5, 2.5, 3.5]);
         assert_eq!(flag, 1);
         assert_eq!(cx, 0.25);
         assert_eq!(gy, 5);
+        assert_eq!(atlas_w, 24);
+        assert_eq!(tile_dim, 6);
+        assert_eq!(tile_rows, 30);
+        assert_eq!(tile_interior, 4);
+        assert_eq!(probe_occlusion, 1);
     }
 
     #[test]
     fn grid_info_flag_zero_when_absent() {
-        let bytes = build_grid_info_bytes([0.0; 3], [1.0; 3], [1, 1, 1], false);
+        let bytes = build_grid_info_bytes([0.0; 3], [1.0; 3], [1, 1, 1], [1, 1], 1, 0, false, true);
         let flag = u32::from_ne_bytes(bytes[12..16].try_into().unwrap());
         assert_eq!(flag, 0);
+    }
+
+    #[test]
+    fn probe_occlusion_seed_defaults_on_and_fast_env_disables() {
+        assert!(probe_occlusion_seed_from_fast_env(None));
+        assert!(!probe_occlusion_seed_from_fast_env(Some("1")));
+        assert!(probe_occlusion_seed_from_fast_env(Some("0")));
+        assert!(probe_occlusion_seed_from_fast_env(Some("true")));
+    }
+
+    #[test]
+    fn grid_info_bytes_encode_probe_occlusion_flag() {
+        for (enabled, expected) in [(true, 1u32), (false, 0u32)] {
+            let bytes =
+                build_grid_info_bytes([0.0; 3], [1.0; 3], [1, 1, 1], [1, 1], 1, 0, true, enabled);
+            assert_eq!(
+                u32::from_ne_bytes(bytes[80..84].try_into().unwrap()),
+                expected,
+                "probe_occlusion={enabled} should encode to {expected}",
+            );
+            assert!(
+                bytes[84..96].iter().all(|&b| b == 0),
+                "probe-occlusion tail padding should stay zero",
+            );
+        }
     }
 
     /// Pins the sizing formula shared by `ShVolumeResources::new` and
@@ -1086,16 +1207,10 @@ mod tests {
 
     #[test]
     fn build_animation_buffers_packs_descriptors_and_samples() {
-        use postretro_level_format::sh_volume::{AnimationDescriptor, PROBE_STRIDE};
-
         let grid = [2u32, 1, 1];
-        let section = ShVolumeSection {
-            grid_origin: [0.0; 3],
-            cell_size: [1.0; 3],
-            grid_dimensions: grid,
-            probe_stride: PROBE_STRIDE,
-            probes: vec![ShProbe::default(), ShProbe::default()],
-            animation_descriptors: vec![
+        let section = test_octahedral_section(
+            grid,
+            vec![
                 AnimationDescriptor {
                     period: 2.0,
                     phase: 0.25,
@@ -1115,8 +1230,7 @@ mod tests {
                     start_active: 0,
                 },
             ],
-            slot_for_map_light: Vec::new(),
-        };
+        );
 
         let (descriptors, samples, count) = build_animation_buffers(Some(&section));
         assert_eq!(count, 2);
@@ -1153,56 +1267,14 @@ mod tests {
     }
 
     #[test]
-    fn pack_probes_zeroes_invalid() {
-        let probe_valid = ShProbe {
-            sh_coefficients: core::array::from_fn(|i| (i + 1) as f32),
-            validity: 1,
-            ..Default::default()
-        };
-        let probe_invalid = ShProbe {
-            sh_coefficients: [999.0; 27],
-            validity: 0,
-            ..Default::default()
-        };
-        let bands = pack_probes_to_band_slices(&[probe_valid, probe_invalid], [2, 1, 1]);
-        assert_eq!(bands.len(), SH_BAND_COUNT);
-
-        // Valid probe: band 0, probe 0 should encode coefficients [1, 2, 3].
-        let b0 = &bands[0];
-        // First texel: rgba at offsets 0..4.
-        let r = b0[0];
-        let g = b0[1];
-        let b = b0[2];
-        let a = b0[3];
-        assert_eq!(r, f32_to_f16_bits(1.0));
-        assert_eq!(g, f32_to_f16_bits(2.0));
-        assert_eq!(b, f32_to_f16_bits(3.0));
-        // Band-0 alpha carries the baked validity bit: valid → 0x3c00.
-        assert_eq!(a, f32_to_f16_bits(1.0));
-
-        // Invalid probe: everything must be zero, including band-0 alpha.
-        assert_eq!(b0[4], 0);
-        assert_eq!(b0[5], 0);
-        assert_eq!(b0[6], 0);
-        assert_eq!(b0[7], 0);
-
-        // Higher band on valid probe encodes next RGB triplet, alpha stays 0.
-        let b1 = &bands[1];
-        assert_eq!(b1[0], f32_to_f16_bits(4.0));
-        assert_eq!(b1[1], f32_to_f16_bits(5.0));
-        assert_eq!(b1[2], f32_to_f16_bits(6.0));
-        assert_eq!(b1[3], 0);
-    }
-
-    #[test]
     fn pack_probe_depth_moments_preserves_valid_probe_f16_bits() {
-        let probe_a = ShProbe {
+        let probe_a = OctahedralShProbe {
             validity: 1,
             mean_distance: 0x4200,
             mean_sq_distance: 0x4900,
             ..Default::default()
         };
-        let probe_b = ShProbe {
+        let probe_b = OctahedralShProbe {
             validity: 1,
             mean_distance: 0x3c00,
             mean_sq_distance: 0x4000,
@@ -1222,13 +1294,13 @@ mod tests {
 
     #[test]
     fn pack_probe_depth_moments_zeroes_invalid_probes() {
-        let probe_valid = ShProbe {
+        let probe_valid = OctahedralShProbe {
             validity: 1,
             mean_distance: 0x4400,
             mean_sq_distance: 0x4c00,
             ..Default::default()
         };
-        let probe_invalid = ShProbe {
+        let probe_invalid = OctahedralShProbe {
             validity: 0,
             mean_distance: 0x7bff,
             mean_sq_distance: 0x7bff,
@@ -1251,7 +1323,8 @@ mod tests {
         assert_eq!(dummy_depth_moment_payload(), [0, 0, 0, 0]);
         assert_eq!(dummy_depth_moment_payload().len(), 4);
 
-        let grid_info = build_grid_info_bytes([0.0; 3], [1.0; 3], [1, 1, 1], false);
+        let grid_info =
+            build_grid_info_bytes([0.0; 3], [1.0; 3], [1, 1, 1], [1, 1], 1, 0, false, true);
         let flag = u32::from_ne_bytes(grid_info[12..16].try_into().unwrap());
         assert_eq!(
             flag, 0,
@@ -1318,15 +1391,17 @@ mod tests {
             .iter()
             .map(|entry| entry.binding)
             .collect();
-        let expected_rust_bindings: BTreeSet<u32> = (1..=SH_BAND_COUNT as u32)
-            .chain([
-                (1 + SH_BAND_COUNT) as u32,
-                BIND_ANIM_DESCRIPTORS,
-                BIND_ANIM_SAMPLES,
-                BIND_SCRIPTED_LIGHT_DESCRIPTORS,
-                BIND_SH_DEPTH_MOMENTS,
-            ])
-            .collect();
+        let expected_rust_bindings: BTreeSet<u32> = [
+            BIND_SH_TOTAL_ATLAS,
+            BIND_SH_ATLAS_SAMPLER,
+            BIND_SH_GRID_INFO,
+            BIND_ANIM_DESCRIPTORS,
+            BIND_ANIM_SAMPLES,
+            BIND_SCRIPTED_LIGHT_DESCRIPTORS,
+            BIND_SH_DEPTH_MOMENTS,
+        ]
+        .into_iter()
+        .collect();
         assert_eq!(
             rust_bindings, expected_rust_bindings,
             "group-3 Rust layout bindings changed without updating the test contract",
@@ -1377,6 +1452,10 @@ mod tests {
                 || FOG_CONSUMER_SOURCE.contains("sample_sh_indirect_corners_two_without_depth("),
             "fog shader should stay on the explicit no-depth SH compatibility helper",
         );
+        assert!(
+            !FOG_CONSUMER_SOURCE.contains("probe_occlusion"),
+            "fog shader must not declare or read the Probe Occlusion toggle",
+        );
     }
 
     #[test]
@@ -1417,35 +1496,6 @@ mod tests {
     fn chebyshev_visibility_reference_zeroes_invalid_probe() {
         let visibility = chebyshev_visibility_reference(0.0, 0.0, 100.0, [1.0, 1.0, 1.0], false);
         assert_eq!(visibility, 0.0);
-    }
-
-    /// Validity must be exactly two-state in band-0 alpha — `0x0000` for
-    /// invalid probes and `0x3c00` (f16 1.0) for valid ones — and confined to
-    /// band 0 so bands 1..=8 never carry a validity signal. The forward shader
-    /// reads band-0 alpha `>= 0.5` as the per-corner validity test.
-    #[test]
-    fn pack_probes_writes_two_state_validity_into_band0_alpha() {
-        let probe_valid = ShProbe {
-            sh_coefficients: [0.0; 27],
-            validity: 1,
-            ..Default::default()
-        };
-        let probe_invalid = ShProbe {
-            sh_coefficients: [0.0; 27],
-            validity: 0,
-            ..Default::default()
-        };
-        let bands = pack_probes_to_band_slices(&[probe_valid, probe_invalid], [2, 1, 1]);
-
-        // Band 0 alpha: valid probe (texel 0) -> 0x3c00, invalid (texel 1) -> 0x0000.
-        assert_eq!(bands[0][3], 0x3c00);
-        assert_eq!(bands[0][7], 0x0000);
-
-        // No other band carries a validity signal — alpha stays 0 everywhere.
-        for (band, slice) in bands.iter().enumerate().take(SH_BAND_COUNT).skip(1) {
-            assert_eq!(slice[3], 0, "band {band} valid-probe alpha must be 0");
-            assert_eq!(slice[7], 0, "band {band} invalid-probe alpha must be 0");
-        }
     }
 
     /// SH L2 irradiance reconstruction, CPU-side reference. The shader does
@@ -1651,8 +1701,6 @@ mod tests {
     /// 48-byte stride invariant.
     #[test]
     fn descriptor_round_trip_pack_unpack_symmetric() {
-        use postretro_level_format::sh_volume::{AnimationDescriptor, PROBE_STRIDE};
-
         let grid = [1u32, 1, 1];
         let desc = AnimationDescriptor {
             period: 3.75,
@@ -1667,15 +1715,7 @@ mod tests {
             // Non-default: `_start_inactive = 1` at compile time zeros this.
             start_active: 0,
         };
-        let section = ShVolumeSection {
-            grid_origin: [0.0; 3],
-            cell_size: [1.0; 3],
-            grid_dimensions: grid,
-            probe_stride: PROBE_STRIDE,
-            probes: vec![ShProbe::default()],
-            animation_descriptors: vec![desc.clone()],
-            slot_for_map_light: Vec::new(),
-        };
+        let section = test_octahedral_section(grid, vec![desc.clone()]);
 
         let (descriptors, _samples, count) = build_animation_buffers(Some(&section));
         assert_eq!(count, 1);
@@ -1732,21 +1772,15 @@ mod tests {
     /// samples.
     #[test]
     fn direction_channel_packs_and_evaluates_via_catmull_rom() {
-        use postretro_level_format::sh_volume::{AnimationDescriptor, PROBE_STRIDE};
-
         // Four unit-length direction samples sweeping around the yz-plane.
         let dir0 = [0.0f32, 1.0, 0.0];
         let dir1 = [0.0f32, 0.0, 1.0];
         let dir2 = [0.0f32, -1.0, 0.0];
         let dir3 = [0.0f32, 0.0, -1.0];
 
-        let section = ShVolumeSection {
-            grid_origin: [0.0; 3],
-            cell_size: [1.0; 3],
-            grid_dimensions: [1, 1, 1],
-            probe_stride: PROBE_STRIDE,
-            probes: vec![ShProbe::default()],
-            animation_descriptors: vec![AnimationDescriptor {
+        let section = test_octahedral_section(
+            [1, 1, 1],
+            vec![AnimationDescriptor {
                 period: 1.0,
                 phase: 0.0,
                 base_color: [1.0, 1.0, 1.0],
@@ -1755,8 +1789,7 @@ mod tests {
                 direction: vec![dir0, dir1, dir2, dir3],
                 start_active: 1,
             }],
-            slot_for_map_light: Vec::new(),
-        };
+        );
 
         let (descriptors, samples_bytes, count) = build_animation_buffers(Some(&section));
         assert_eq!(count, 1);

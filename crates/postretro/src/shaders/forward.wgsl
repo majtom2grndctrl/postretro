@@ -1,5 +1,5 @@
 // Main forward pass — direct lighting via a flat per-fragment light loop
-// plus a scalar ambient floor, with baked SH irradiance indirect.
+// plus a scalar ambient floor, with baked octahedral-atlas irradiance indirect.
 // See: context/lib/rendering_pipeline.md §4
 
 struct Uniforms {
@@ -116,12 +116,11 @@ struct ChunkGridInfo {
 // Flat index list (u32 indices into spec_lights).
 @group(2) @binding(5) var<storage, read> chunk_indices: array<u32>;
 
-// Group 3 — SH irradiance volume. 9 3D textures (one per SH L2 band) carry
-// RGB coefficients in their .rgb channels. Band-0 .a carries the baked per-probe
-// validity bit (1 = valid, 0 = in-wall/off-grid); bands 1..=8 .a are unused.
-// A 10th 3D texture (@binding(14) sh_depth_moments) carries per-probe depth
-// moments (R = mean, G = mean²) for the depth-aware visibility term.
-// When `grid.has_sh_volume` is 0 the bindings point at dummy 1×1×1 textures and
+// Group 3 — octahedral irradiance atlas. The sampled total atlas carries
+// composed indirect irradiance, with alpha as the baked per-probe validity bit.
+// A 3D texture (@binding(14) sh_depth_moments) carries per-probe depth moments
+// (R = mean, G = mean²) for the depth-aware visibility term.
+// When `grid.has_sh_volume` is 0 the bindings point at dummy textures and
 // the shader skips SH sampling. See postretro/src/render/sh_volume.rs.
 struct ShGridInfo {
     grid_origin: vec3<f32>,
@@ -130,6 +129,16 @@ struct ShGridInfo {
     _pad0: u32,
     grid_dimensions: vec3<u32>,
     _pad1: u32,
+    atlas_dimensions: vec2<u32>,
+    tile_dimension: u32,
+    tile_border: u32,
+    tile_grid_dimensions: vec2<u32>,
+    tile_interior: u32,
+    _pad2: u32,
+    probe_occlusion: u32,
+    _pad3: u32,
+    _pad4: u32,
+    _pad5: u32,
 };
 
 // Per-light animation descriptor — matches ANIMATION_DESCRIPTOR_SIZE (48 B)
@@ -157,15 +166,8 @@ struct AnimationDescriptor {
     direction_count: u32,
 };
 
-@group(3) @binding(1) var sh_band0: texture_3d<f32>;
-@group(3) @binding(2) var sh_band1: texture_3d<f32>;
-@group(3) @binding(3) var sh_band2: texture_3d<f32>;
-@group(3) @binding(4) var sh_band3: texture_3d<f32>;
-@group(3) @binding(5) var sh_band4: texture_3d<f32>;
-@group(3) @binding(6) var sh_band5: texture_3d<f32>;
-@group(3) @binding(7) var sh_band6: texture_3d<f32>;
-@group(3) @binding(8) var sh_band7: texture_3d<f32>;
-@group(3) @binding(9) var sh_band8: texture_3d<f32>;
+@group(3) @binding(1) var sh_total_atlas: texture_2d<f32>;
+@group(3) @binding(2) var sh_atlas_sampler: sampler;
 @group(3) @binding(10) var<uniform> sh_grid: ShGridInfo;
 
 // Animation buffers. Always bound; anim_descriptors and anim_samples are
@@ -377,19 +379,18 @@ fn sample_spot_shadow(slot_index: u32, world_pos: vec3<f32>, light_proj: mat4x4<
     );
 }
 
-// SH reconstruction (`sh_irradiance`) and the manual depth-aware 8-corner blend
-// (`sample_sh_indirect_corners_depth_aware`) live in `sh_sample.wgsl`,
+// The depth-aware octahedral irradiance sampler lives in `sh_sample.wgsl`,
 // concatenated after this source at pipeline-build time (render/mod.rs
-// `SHADER_SOURCE`). They read the group-3 `sh_band0..8`, `sh_depth_moments`,
-// and `sh_grid` declared above by lexical name. The helper drops invalid
-// (in-wall) corners via the baked validity bit in band-0 alpha, downweights
-// backfacing corners, applies moment visibility, and renormalizes survivors.
+// `SHADER_SOURCE`). It reads the composed atlas, filtering sampler, depth
+// moments, and grid metadata declared above by lexical name. The helper drops
+// invalid (in-wall) probes via atlas alpha, downweights backfacing probes,
+// applies moment visibility, and renormalizes survivors.
 
 // Normal-offset wrapper. Biases the lookup toward the lit side and derives the
 // grid index / sub-cell fraction, then defers the corrected 8-corner blend to
 // the shared helper with backface rejection enabled (forward-only). The
 // geometric mesh normal keys the backface test; the (possibly normal-mapped)
-// shading normal drives SH reconstruction.
+// shading normal drives the octahedral direction lookup.
 fn sample_sh_indirect(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_normal: vec3<f32>) -> vec3<f32> {
     if sh_grid.has_sh_volume == 0u {
         return vec3<f32>(0.0);
@@ -414,6 +415,7 @@ fn sample_sh_indirect(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_norma
         shading_normal,
         geo_normal,
         true,
+        sh_grid.probe_occlusion != 0u,
     );
 }
 

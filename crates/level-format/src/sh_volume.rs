@@ -15,10 +15,10 @@ use crate::FormatError;
 ///
 /// `mean_distance` / `mean_sq_distance` are the per-probe depth moments
 /// `E[d]` / `E[d²]` over the probe's sampled rays, stored as IEEE 754 binary16
-/// bits (round to nearest, encode via `lightmap::f32_to_f16_bits`) — matching
-/// `DeltaShProbe`'s f16 SH storage. A future runtime Chebyshev interpolant
-/// reconstructs `variance = E[d²] − E[d]²` from the pair to weight each probe
-/// by visibility. Invalid probes carry zeroed moments, like their zeroed SH.
+/// bits (round to nearest, encode via `lightmap::f32_to_f16_bits`). A future
+/// runtime Chebyshev interpolant reconstructs `variance = E[d²] − E[d]²` from
+/// the pair to weight each probe by visibility. Invalid probes carry zeroed
+/// moments, like their zeroed SH.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ShProbe {
     /// 9 bands × 3 channels = 27 f32. Channel-interleaved per band.
@@ -51,12 +51,13 @@ impl Default for ShProbe {
 /// channel samples serialized after color samples, with a `direction_count`
 /// field in the descriptor header; version 4 — two f16 depth
 /// moments (`mean_distance`, `mean_sq_distance`) appended inside the per-probe
-/// record after `validity`, growing `PROBE_STRIDE` 112 → 116; version 5
-/// (current) — trailing `map-light-index → animated-light section slot` table
-/// (Task 2c of `sdf-static-occluder-shadows`), `u32::MAX` = no slot. The
-/// runtime resolves each map light's animated-compose-descriptor slot at load
-/// from this table.
-pub const SH_VOLUME_VERSION: u32 = 5;
+/// record after `validity`, growing `PROBE_STRIDE` 112 → 116; version 5 —
+/// trailing `map-light-index → animated-light section slot` table (Task 2c of
+/// `sdf-static-occluder-shadows`), `u32::MAX` = no slot; version 6 (current) —
+/// base irradiance moved to sibling section `OctahedralShVolume` (id 34), with
+/// per-probe validity/depth moments retained and SH coefficients replaced by a
+/// 2D octahedral `Rgba16Float` atlas.
+pub const SH_VOLUME_VERSION: u32 = 6;
 
 /// Sentinel for "this map light has no animated-light section slot" in
 /// `ShVolumeSection.slot_for_map_light`. Non-animated lights and any light
@@ -72,6 +73,30 @@ pub const ANIMATED_SLOT_NONE: u32 = u32::MAX;
 /// visibility term) grows the stride without breaking the loader, which advances
 /// by the file's `probe_stride` field rather than this compiled-in constant.
 pub const PROBE_STRIDE: u32 = 116;
+
+/// Byte stride of one serialized octahedral probe metadata record:
+/// `u8 validity` + two f16 depth moments + 3 bytes of padding.
+pub const OCTAHEDRAL_PROBE_STRIDE: u32 = 8;
+
+/// Serialized atlas texel stride for `Rgba16Float`: 4 f16 channels.
+pub const OCTAHEDRAL_ATLAS_TEXEL_STRIDE: u32 = 8;
+
+/// One probe's non-atlas metadata in the octahedral irradiance volume.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct OctahedralShProbe {
+    /// 0 = invalid (inside solid), 1 = valid (usable by runtime).
+    pub validity: u8,
+    /// Mean ray distance `E[d]`, f16 bits.
+    pub mean_distance: u16,
+    /// Mean squared ray distance `E[d²]`, f16 bits.
+    pub mean_sq_distance: u16,
+}
+
+/// One `Rgba16Float` atlas texel, stored as raw f16 channel bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct OctahedralAtlasTexel {
+    pub rgba: [u16; 4],
+}
 
 /// Animation curves for one animated light, stored once per light (not per
 /// probe). Brightness and color channels are uniformly-sampled over the
@@ -111,6 +136,256 @@ impl Default for AnimationDescriptor {
             direction: Vec::new(),
             start_active: 1,
         }
+    }
+}
+
+/// Octahedral irradiance volume section (ID 34).
+///
+/// On-disk layout (all little-endian):
+///
+/// ```text
+///   Header (64 bytes):
+///     u32      version                (= SH_VOLUME_VERSION)
+///     f32 × 3  grid_origin
+///     f32 × 3  cell_size
+///     u32 × 3  grid_dimensions
+///     u32      probe_stride           (= OCTAHEDRAL_PROBE_STRIDE = 8)
+///     u32      animated_light_count
+///     u32      tile_dimension         (default 6, border included)
+///     u32      tile_border            (default 1)
+///     u32      atlas_width            (texels)
+///     u32      atlas_height           (texels)
+///
+///   Probe metadata records (probe_stride bytes each, x-fastest order):
+///     u8       validity
+///     f16      mean_distance          (E[d])
+///     f16      mean_sq_distance       (E[d²])
+///     u8 × 3   padding
+///
+///   Atlas texels:
+///     row-major atlas_width × atlas_height texels
+///     f16 × 4 RGBA per texel
+///
+///   Animation descriptor table and map-light slot table:
+///     same encoding as `ShVolumeSection`
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct OctahedralShVolumeSection {
+    pub grid_origin: [f32; 3],
+    pub cell_size: [f32; 3],
+    pub grid_dimensions: [u32; 3],
+    pub probe_stride: u32,
+    pub tile_dimension: u32,
+    pub tile_border: u32,
+    pub atlas_dimensions: [u32; 2],
+    pub probes: Vec<OctahedralShProbe>,
+    pub atlas_texels: Vec<OctahedralAtlasTexel>,
+    pub animation_descriptors: Vec<AnimationDescriptor>,
+    pub slot_for_map_light: Vec<u32>,
+}
+
+impl OctahedralShVolumeSection {
+    pub const HEADER_SIZE: usize = 64;
+
+    pub fn total_probes(&self) -> usize {
+        self.grid_dimensions[0] as usize
+            * self.grid_dimensions[1] as usize
+            * self.grid_dimensions[2] as usize
+    }
+
+    pub fn total_atlas_texels(&self) -> usize {
+        self.atlas_dimensions[0] as usize * self.atlas_dimensions[1] as usize
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let total_probes = self.total_probes();
+        debug_assert_eq!(self.probes.len(), total_probes);
+        debug_assert_eq!(self.atlas_texels.len(), self.total_atlas_texels());
+
+        let mut buf = Vec::with_capacity(
+            Self::HEADER_SIZE
+                + total_probes * OCTAHEDRAL_PROBE_STRIDE as usize
+                + self.atlas_texels.len() * OCTAHEDRAL_ATLAS_TEXEL_STRIDE as usize,
+        );
+
+        buf.extend_from_slice(&SH_VOLUME_VERSION.to_le_bytes());
+        for v in &self.grid_origin {
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in &self.cell_size {
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in &self.grid_dimensions {
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+        buf.extend_from_slice(&self.probe_stride.to_le_bytes());
+        buf.extend_from_slice(&(self.animation_descriptors.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&self.tile_dimension.to_le_bytes());
+        buf.extend_from_slice(&self.tile_border.to_le_bytes());
+        buf.extend_from_slice(&self.atlas_dimensions[0].to_le_bytes());
+        buf.extend_from_slice(&self.atlas_dimensions[1].to_le_bytes());
+
+        for probe in &self.probes {
+            buf.push(probe.validity);
+            buf.extend_from_slice(&probe.mean_distance.to_le_bytes());
+            buf.extend_from_slice(&probe.mean_sq_distance.to_le_bytes());
+            buf.extend_from_slice(&[0u8; 3]);
+        }
+
+        for texel in &self.atlas_texels {
+            for channel in &texel.rgba {
+                buf.extend_from_slice(&channel.to_le_bytes());
+            }
+        }
+
+        write_animation_descriptors(&mut buf, &self.animation_descriptors);
+        write_slot_table(&mut buf, &self.slot_for_map_light);
+        buf
+    }
+
+    pub fn from_bytes(data: &[u8]) -> crate::Result<Self> {
+        if data.len() < Self::HEADER_SIZE {
+            return Err(truncated("octahedral header"));
+        }
+
+        let mut o = 0;
+        let version = read_u32(data, o);
+        o += 4;
+        if version != SH_VOLUME_VERSION {
+            return Err(FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "octahedral sh volume section version {version}, expected {SH_VOLUME_VERSION} — \
+                     recompile the .prl with the current `prl-build`"
+                ),
+            )));
+        }
+        let grid_origin = [
+            read_f32(data, o),
+            read_f32(data, o + 4),
+            read_f32(data, o + 8),
+        ];
+        o += 12;
+        let cell_size = [
+            read_f32(data, o),
+            read_f32(data, o + 4),
+            read_f32(data, o + 8),
+        ];
+        o += 12;
+        let grid_dimensions = [
+            read_u32(data, o),
+            read_u32(data, o + 4),
+            read_u32(data, o + 8),
+        ];
+        o += 12;
+        let probe_stride = read_u32(data, o);
+        o += 4;
+        let animated_light_count = read_u32(data, o) as usize;
+        o += 4;
+        let tile_dimension = read_u32(data, o);
+        o += 4;
+        let tile_border = read_u32(data, o);
+        o += 4;
+        let atlas_dimensions = [read_u32(data, o), read_u32(data, o + 4)];
+        o += 8;
+        debug_assert_eq!(o, Self::HEADER_SIZE);
+
+        if probe_stride < OCTAHEDRAL_PROBE_STRIDE {
+            return Err(FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "octahedral sh volume probe_stride {probe_stride} is smaller than the minimum {OCTAHEDRAL_PROBE_STRIDE}"
+                ),
+            )));
+        }
+
+        let total_probes = (grid_dimensions[0] as usize)
+            .checked_mul(grid_dimensions[1] as usize)
+            .and_then(|n| n.checked_mul(grid_dimensions[2] as usize))
+            .ok_or_else(|| {
+                FormatError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "octahedral sh volume grid_dimensions {:?} overflow",
+                        grid_dimensions,
+                    ),
+                ))
+            })?;
+        let probe_bytes = total_probes
+            .checked_mul(probe_stride as usize)
+            .ok_or_else(|| {
+                FormatError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "octahedral sh volume probe byte count overflow",
+                ))
+            })?;
+        if data.len() < o + probe_bytes {
+            return Err(truncated("octahedral probe metadata records"));
+        }
+
+        let mut probes = Vec::with_capacity(total_probes);
+        for _ in 0..total_probes {
+            probes.push(OctahedralShProbe {
+                validity: data[o],
+                mean_distance: read_u16(data, o + 1),
+                mean_sq_distance: read_u16(data, o + 3),
+            });
+            o += probe_stride as usize;
+        }
+
+        let total_atlas_texels = (atlas_dimensions[0] as usize)
+            .checked_mul(atlas_dimensions[1] as usize)
+            .ok_or_else(|| {
+                FormatError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "octahedral sh volume atlas_dimensions {:?} overflow",
+                        atlas_dimensions,
+                    ),
+                ))
+            })?;
+        let atlas_bytes = total_atlas_texels
+            .checked_mul(OCTAHEDRAL_ATLAS_TEXEL_STRIDE as usize)
+            .ok_or_else(|| {
+                FormatError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "octahedral sh volume atlas byte count overflow",
+                ))
+            })?;
+        if data.len() < o + atlas_bytes {
+            return Err(truncated("octahedral atlas texels"));
+        }
+
+        let mut atlas_texels = Vec::with_capacity(total_atlas_texels);
+        for _ in 0..total_atlas_texels {
+            atlas_texels.push(OctahedralAtlasTexel {
+                rgba: [
+                    read_u16(data, o),
+                    read_u16(data, o + 2),
+                    read_u16(data, o + 4),
+                    read_u16(data, o + 6),
+                ],
+            });
+            o += OCTAHEDRAL_ATLAS_TEXEL_STRIDE as usize;
+        }
+
+        let (animation_descriptors, after_anim) =
+            read_animation_descriptors(data, o, animated_light_count)?;
+        let (slot_for_map_light, _) = read_slot_table(data, after_anim)?;
+
+        Ok(Self {
+            grid_origin,
+            cell_size,
+            grid_dimensions,
+            probe_stride,
+            tile_dimension,
+            tile_border,
+            atlas_dimensions,
+            probes,
+            atlas_texels,
+            animation_descriptors,
+            slot_for_map_light,
+        })
     }
 }
 
@@ -459,6 +734,131 @@ impl ShVolumeSection {
     }
 }
 
+fn write_animation_descriptors(buf: &mut Vec<u8>, descriptors: &[AnimationDescriptor]) {
+    for desc in descriptors {
+        buf.extend_from_slice(&desc.period.to_le_bytes());
+        buf.extend_from_slice(&desc.phase.to_le_bytes());
+        for c in &desc.base_color {
+            buf.extend_from_slice(&c.to_le_bytes());
+        }
+        buf.extend_from_slice(&(desc.brightness.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&(desc.color.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&desc.start_active.to_le_bytes());
+        buf.extend_from_slice(&(desc.direction.len() as u32).to_le_bytes());
+        for b in &desc.brightness {
+            buf.extend_from_slice(&b.to_le_bytes());
+        }
+        for c in &desc.color {
+            for ch in c {
+                buf.extend_from_slice(&ch.to_le_bytes());
+            }
+        }
+        for d in &desc.direction {
+            for ch in d {
+                buf.extend_from_slice(&ch.to_le_bytes());
+            }
+        }
+    }
+}
+
+fn read_animation_descriptors(
+    data: &[u8],
+    mut o: usize,
+    animated_light_count: usize,
+) -> crate::Result<(Vec<AnimationDescriptor>, usize)> {
+    let mut animation_descriptors = Vec::with_capacity(animated_light_count);
+    for _ in 0..animated_light_count {
+        if data.len() < o + 20 {
+            return Err(truncated("animation descriptor header"));
+        }
+        let period = read_f32(data, o);
+        let phase = read_f32(data, o + 4);
+        let base_color = [
+            read_f32(data, o + 8),
+            read_f32(data, o + 12),
+            read_f32(data, o + 16),
+        ];
+        o += 20;
+
+        if data.len() < o + 16 {
+            return Err(truncated("animation descriptor sample counts"));
+        }
+        let brightness_count = read_u32(data, o) as usize;
+        let color_count = read_u32(data, o + 4) as usize;
+        let start_active = read_u32(data, o + 8);
+        let direction_count = read_u32(data, o + 12) as usize;
+        o += 16;
+
+        let brightness_bytes = brightness_count * 4;
+        let color_bytes = color_count * 12;
+        let direction_bytes = direction_count * 12;
+        if data.len() < o + brightness_bytes + color_bytes + direction_bytes {
+            return Err(truncated("animation descriptor samples"));
+        }
+
+        let mut brightness = Vec::with_capacity(brightness_count);
+        for i in 0..brightness_count {
+            brightness.push(read_f32(data, o + i * 4));
+        }
+        o += brightness_bytes;
+
+        let mut color = Vec::with_capacity(color_count);
+        for i in 0..color_count {
+            color.push([
+                read_f32(data, o + i * 12),
+                read_f32(data, o + i * 12 + 4),
+                read_f32(data, o + i * 12 + 8),
+            ]);
+        }
+        o += color_bytes;
+
+        let mut direction = Vec::with_capacity(direction_count);
+        for i in 0..direction_count {
+            direction.push([
+                read_f32(data, o + i * 12),
+                read_f32(data, o + i * 12 + 4),
+                read_f32(data, o + i * 12 + 8),
+            ]);
+        }
+        o += direction_bytes;
+
+        animation_descriptors.push(AnimationDescriptor {
+            period,
+            phase,
+            base_color,
+            brightness,
+            color,
+            direction,
+            start_active,
+        });
+    }
+    Ok((animation_descriptors, o))
+}
+
+fn write_slot_table(buf: &mut Vec<u8>, slots: &[u32]) {
+    buf.extend_from_slice(&(slots.len() as u32).to_le_bytes());
+    for slot in slots {
+        buf.extend_from_slice(&slot.to_le_bytes());
+    }
+}
+
+fn read_slot_table(data: &[u8], mut o: usize) -> crate::Result<(Vec<u32>, usize)> {
+    if data.len() < o + 4 {
+        return Ok((Vec::new(), o));
+    }
+    let map_light_count = read_u32(data, o) as usize;
+    o += 4;
+    if data.len() < o + map_light_count * 4 {
+        return Err(truncated("map-light slot table"));
+    }
+    let mut slots = Vec::with_capacity(map_light_count);
+    for i in 0..map_light_count {
+        slots.push(read_u32(data, o + i * 4));
+    }
+    o += map_light_count * 4;
+    Ok((slots, o))
+}
+
 fn truncated(what: &str) -> FormatError {
     FormatError::Io(std::io::Error::new(
         std::io::ErrorKind::UnexpectedEof,
@@ -511,6 +911,41 @@ mod tests {
         }
     }
 
+    fn oct_section(grid: [u32; 3]) -> OctahedralShVolumeSection {
+        let total = (grid[0] * grid[1] * grid[2]) as usize;
+        let tile_dimension = 6;
+        let tile_border = 1;
+        let atlas_dimensions = if total == 0 {
+            [0, 0]
+        } else {
+            [grid[0] * tile_dimension, grid[1] * grid[2] * tile_dimension]
+        };
+        let atlas_total = (atlas_dimensions[0] * atlas_dimensions[1]) as usize;
+        OctahedralShVolumeSection {
+            grid_origin: [1.0, 2.0, 3.0],
+            cell_size: [0.5, 0.5, 0.5],
+            grid_dimensions: grid,
+            probe_stride: OCTAHEDRAL_PROBE_STRIDE,
+            tile_dimension,
+            tile_border,
+            atlas_dimensions,
+            probes: (0..total)
+                .map(|i| OctahedralShProbe {
+                    validity: (i % 2) as u8,
+                    mean_distance: f32_to_f16_bits(i as f32 + 0.5),
+                    mean_sq_distance: f32_to_f16_bits(i as f32 + 1.0),
+                })
+                .collect(),
+            atlas_texels: (0..atlas_total)
+                .map(|i| OctahedralAtlasTexel {
+                    rgba: [i as u16, i as u16 + 1, i as u16 + 2, 0x3c00],
+                })
+                .collect(),
+            animation_descriptors: Vec::new(),
+            slot_for_map_light: Vec::new(),
+        }
+    }
+
     #[test]
     fn round_trip_empty_volume() {
         let section = ShVolumeSection {
@@ -527,6 +962,51 @@ mod tests {
         assert_eq!(bytes.len(), ShVolumeSection::HEADER_SIZE + 4);
         let restored = ShVolumeSection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);
+    }
+
+    #[test]
+    fn octahedral_round_trip_preserves_metadata_and_atlas() {
+        let section = oct_section([2, 2, 1]);
+        let bytes = section.to_bytes();
+        let expected_len = OctahedralShVolumeSection::HEADER_SIZE
+            + 4 * OCTAHEDRAL_PROBE_STRIDE as usize
+            + (12 * 12) * OCTAHEDRAL_ATLAS_TEXEL_STRIDE as usize
+            + 4;
+        assert_eq!(bytes.len(), expected_len);
+
+        let restored = OctahedralShVolumeSection::from_bytes(&bytes).unwrap();
+        assert_eq!(restored, section);
+        assert_eq!(restored.to_bytes(), bytes);
+    }
+
+    #[test]
+    fn octahedral_empty_volume_round_trips() {
+        let section = oct_section([0, 0, 0]);
+        let bytes = section.to_bytes();
+        assert_eq!(bytes.len(), OctahedralShVolumeSection::HEADER_SIZE + 4);
+        let restored = OctahedralShVolumeSection::from_bytes(&bytes).unwrap();
+        assert_eq!(restored, section);
+    }
+
+    #[test]
+    fn octahedral_rejects_previous_section_version() {
+        let section = oct_section([1, 1, 1]);
+        let mut bytes = section.to_bytes();
+        bytes[0..4].copy_from_slice(&5u32.to_le_bytes());
+        let err = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("version"),
+            "expected version-mismatch error, got: {msg}",
+        );
+    }
+
+    #[test]
+    fn octahedral_section_id_is_thirty_four() {
+        use crate::SectionId;
+
+        assert_eq!(SectionId::OctahedralShVolume as u32, 34);
+        assert_eq!(SectionId::from_u32(34), Some(SectionId::OctahedralShVolume));
     }
 
     #[test]

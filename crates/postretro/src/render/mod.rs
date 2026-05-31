@@ -179,7 +179,8 @@ const TIMING_PAIR_ANIMATED_LM_COMPOSE: usize = 1;
 const TIMING_PAIR_DEPTH_PREPASS: usize = 2;
 const TIMING_PAIR_SDF_SHADOW: usize = 3;
 const TIMING_PAIR_FORWARD: usize = 4;
-const TIMING_PAIR_COUNT: usize = 5;
+const TIMING_PAIR_SH_COMPOSE: usize = 5;
+const TIMING_PAIR_COUNT: usize = 6;
 
 // Must match `Uniforms` in forward.wgsl and wireframe.wgsl (both bind the same buffer).
 // std140: vec3<f32> aligns to 16 bytes; camera_position and ambient_floor share a slot.
@@ -526,7 +527,7 @@ pub struct LevelGeometry<'a> {
     pub lights: &'a [MapLight],
     pub light_influences: &'a [LightInfluence],
     /// `None` → renderer binds dummy 1×1×1 textures; shader skips SH sampling.
-    pub sh_volume: Option<&'a postretro_level_format::sh_volume::ShVolumeSection>,
+    pub sh_volume: Option<&'a postretro_level_format::sh_volume::OctahedralShVolumeSection>,
     /// `None` → 1×1 white placeholder; bumped-Lambert falls back to flat white.
     pub lightmap: Option<&'a postretro_level_format::lightmap::LightmapSection>,
     /// `None` → `has_chunk_grid == 0`; shader iterates the full spec buffer.
@@ -612,6 +613,10 @@ pub struct Renderer {
     light_count: u32,
     ambient_floor: f32,
     indirect_scale: f32,
+    /// Runtime SH probe-occlusion toggle. Default-on; `POSTRETRO_SH_FAST=1`
+    /// seeds it off for benchmark/headless runs, and the diagnostics panel can
+    /// flip it later. Uploaded through `ShGridInfo`.
+    probe_occlusion_enabled: bool,
 
     /// Absent SH section → dummy 1×1×1 textures; `has_sh_volume == 0` skips sampling.
     sh_volume_resources: ShVolumeResources,
@@ -938,22 +943,17 @@ impl Renderer {
             );
         }
 
-        // Forward pass and SH compose both exceed WebGPU spec floors for
-        // per-stage sampled (16) and storage (4) texture bindings. Desktop
-        // backends report far higher (Metal/AMD = 128), so we request the
-        // counts the pipelines need.
+        // Forward pass exceeds the WebGPU spec floor for per-stage sampled
+        // texture bindings. Desktop backends report far higher (Metal/AMD =
+        // 128), so we request the count the pipelines need.
         //
-        // Sampled texture inventory (19 total across the forward shader stage):
+        // Sampled texture inventory (11 total across the forward shader stage):
         //   Group 1 — material (3): diffuse, specular, normal
-        //   Group 3 — SH volume (10): 9 band textures (bindings 1–9) + depth-moments (binding 14)
+        //   Group 3 — SH volume (2): octahedral atlas + depth-moments
         //   Group 4 — lightmap (3): static irradiance, static dominant-direction, animated-contribution atlas
         //   Group 5 — shadow (3): spot-shadow depth array (binding 0), SDF shadow factor (binding 3), scene depth (binding 4)
-        //
-        // The two entries at Group 5 bindings 3 and 4 (SDF shadow factor and
-        // scene depth) raised the count from 17 to 19 when the SDF
-        // static-occluder shadow pass was added.
-        const REQUIRED_SAMPLED_TEXTURES: u32 = 19;
-        const REQUIRED_STORAGE_TEXTURES: u32 = 9;
+        const REQUIRED_SAMPLED_TEXTURES: u32 = 11;
+        const REQUIRED_STORAGE_TEXTURES: u32 = 4;
         // Stopgap: SH compose's flat delta-probe storage buffer outgrows the
         // WebGPU spec floor (128 MiB) on maps with many animated lights because
         // it bakes a dense AABB grid per light. 512 MiB covers current maps on
@@ -1100,6 +1100,9 @@ impl Renderer {
             filter_entity_shadow_candidates(full_lights, full_influences);
         let light_count = level_lights.len() as u32;
         let ambient_floor = DEFAULT_AMBIENT_FLOOR;
+        let sh_fast_env = std::env::var("POSTRETRO_SH_FAST").ok();
+        let probe_occlusion_enabled =
+            sh_volume::probe_occlusion_seed_from_fast_env(sh_fast_env.as_deref());
         let uniform_data = build_uniform_data(&FrameUniforms {
             view_proj,
             camera_position: Vec3::ZERO,
@@ -1407,6 +1410,7 @@ impl Renderer {
             &queue,
             geometry.and_then(|g| g.sh_volume),
             level_lights.len(),
+            probe_occlusion_enabled,
         );
 
         let sdf_atlas_resources =
@@ -1851,6 +1855,7 @@ impl Renderer {
             pass_labels[TIMING_PAIR_DEPTH_PREPASS] = "depth_prepass";
             pass_labels[TIMING_PAIR_SDF_SHADOW] = "sdf_shadow";
             pass_labels[TIMING_PAIR_FORWARD] = "forward";
+            pass_labels[TIMING_PAIR_SH_COMPOSE] = "sh_compose";
             Some(FrameTiming::new(&device, &queue, pass_labels))
         } else {
             None
@@ -1924,6 +1929,7 @@ impl Renderer {
             light_count,
             ambient_floor,
             indirect_scale: DEFAULT_INDIRECT_SCALE,
+            probe_occlusion_enabled,
             sh_volume_resources,
             sdf_atlas_resources,
             sdf_shadow_pass,
@@ -2183,6 +2189,7 @@ impl Renderer {
             &self.queue,
             geometry.sh_volume,
             self.level_lights.len(),
+            self.probe_occlusion_enabled,
         );
 
         self.sdf_atlas_resources =
@@ -3086,6 +3093,24 @@ impl Renderer {
         self.indirect_scale = value.clamp(0.0, 1.0);
     }
 
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn probe_occlusion_enabled(&self) -> bool {
+        self.probe_occlusion_enabled
+    }
+
+    /// Takes effect immediately for the SH grid uniform and persists across
+    /// level reloads because `install_level_geometry` seeds rebuilt resources
+    /// from this renderer state.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn set_probe_occlusion_enabled(&mut self, enabled: bool) {
+        if self.probe_occlusion_enabled != enabled {
+            self.probe_occlusion_enabled = enabled;
+            self.sh_volume_resources
+                .set_probe_occlusion_enabled(&self.queue, enabled);
+            log::info!("[Renderer] Probe Occlusion: {enabled}");
+        }
+    }
+
     // --- Task 7: SDF / Fog quality-slider seams ---
     //
     // The SDF knobs live on `SdfShadowPass.tuning` — pure uniform scalars
@@ -3288,8 +3313,12 @@ impl Renderer {
         }
 
         // Before depth pre-pass: storage-write → sampled-read barrier for SH.
+        let sh_compose_ts = self
+            .frame_timing
+            .as_ref()
+            .map(|t| t.compute_pass_writes(TIMING_PAIR_SH_COMPOSE));
         self.sh_compose
-            .dispatch(&mut encoder, &self.uniform_bind_group);
+            .dispatch(&mut encoder, &self.uniform_bind_group, sh_compose_ts);
 
         // The readback copy is deliberately not encoded here. A
         // `copy_texture_to_buffer` in the same command buffer as the compose
@@ -3770,7 +3799,7 @@ fn bytemuck_cast_slice_u32(data: &[u32]) -> Vec<u8> {
 /// absent or marked not-present, matching the dummy 1×1×1 path in
 /// `ShVolumeResources`.
 fn build_sdf_shadow_sh_grid(
-    sh_volume: Option<&postretro_level_format::sh_volume::ShVolumeSection>,
+    sh_volume: Option<&postretro_level_format::sh_volume::OctahedralShVolumeSection>,
     present: bool,
 ) -> SdfShadowShGrid {
     if !present {
@@ -4587,8 +4616,17 @@ mod tests {
         }
 
         // Verify the ShGridInfo uniform payload size.
-        let sh_grid_binding = (1 + sh_volume::SH_BAND_COUNT) as u32; // = 10
-        let grid_info = sh_volume::build_grid_info_bytes([0.0; 3], [1.0; 3], [1, 1, 1], false);
+        let sh_grid_binding = sh_volume::BIND_SH_GRID_INFO;
+        let grid_info = sh_volume::build_grid_info_bytes(
+            [0.0; 3],
+            [1.0; 3],
+            [1, 1, 1],
+            [1, 1],
+            1,
+            0,
+            false,
+            true,
+        );
         if let Some(&min) = min_sizes.get(&(3, sh_grid_binding)) {
             assert!(
                 grid_info.len() as u64 >= min,
@@ -4599,7 +4637,7 @@ mod tests {
         } else {
             panic!(
                 "forward.wgsl has no uniform at group=3 binding={sh_grid_binding}; \
-                    check SH_BAND_COUNT matches shader @binding decorators"
+                    check BIND_SH_GRID_INFO matches shader @binding decorators"
             );
         }
     }

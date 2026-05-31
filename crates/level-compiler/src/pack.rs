@@ -25,7 +25,7 @@ use postretro_level_format::lightmap::LightmapSection;
 use postretro_level_format::map_entity::{MapEntityRecord, MapEntitySection};
 use postretro_level_format::portals::{PortalRecord, PortalsSection};
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
-use postretro_level_format::sh_volume::ShVolumeSection;
+use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::{
     SectionBlob, SectionId, read_container, read_section_data, write_prl,
@@ -338,7 +338,7 @@ pub fn pack_and_write_portals(
     bvh_chunk_ranges: &[(u32, u32)],
     alpha_lights: &AlphaLightsSection,
     light_influence: &LightInfluenceSection,
-    sh_volume: &ShVolumeSection,
+    sh_volume: &OctahedralShVolumeSection,
     lightmap: &LightmapSection,
     chunk_light_list: &ChunkLightListSection,
     animated_light_chunks: Option<&AnimatedLightChunksSection>,
@@ -433,7 +433,7 @@ pub fn pack_and_write_portals(
             data: light_influence_bytes.clone(),
         },
         SectionBlob {
-            section_id: SectionId::ShVolume as u32,
+            section_id: SectionId::OctahedralShVolume as u32,
             version: 1,
             data: sh_volume_bytes.clone(),
         },
@@ -538,7 +538,7 @@ pub fn pack_and_write_portals(
         light_influence.records.len()
     );
     log::info!(
-        "  ShVolume: {} bytes ({} probes)",
+        "  OctahedralShVolume: {} bytes ({} probes)",
         sh_volume_bytes.len(),
         sh_volume.probes.len()
     );
@@ -779,13 +779,17 @@ mod tests {
         LightInfluenceSection::default()
     }
 
-    fn empty_sh_volume() -> ShVolumeSection {
-        ShVolumeSection {
+    fn empty_sh_volume() -> OctahedralShVolumeSection {
+        OctahedralShVolumeSection {
             grid_origin: [0.0, 0.0, 0.0],
             cell_size: [1.0, 1.0, 1.0],
             grid_dimensions: [0, 0, 0],
-            probe_stride: postretro_level_format::sh_volume::PROBE_STRIDE,
+            probe_stride: postretro_level_format::sh_volume::OCTAHEDRAL_PROBE_STRIDE,
+            tile_dimension: postretro_level_format::octahedral::DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: postretro_level_format::octahedral::DEFAULT_IRRADIANCE_TILE_BORDER,
+            atlas_dimensions: [0, 0],
             probes: Vec::new(),
+            atlas_texels: Vec::new(),
             animation_descriptors: Vec::new(),
             slot_for_map_light: Vec::new(),
         }
@@ -870,7 +874,10 @@ mod tests {
             meta.find_section(SectionId::LightInfluence as u32)
                 .is_some()
         );
-        assert!(meta.find_section(SectionId::ShVolume as u32).is_some());
+        assert!(
+            meta.find_section(SectionId::OctahedralShVolume as u32)
+                .is_some()
+        );
         assert!(meta.find_section(SectionId::Lightmap as u32).is_some());
 
         let _ = std::fs::remove_file(&output);
@@ -1018,7 +1025,10 @@ mod tests {
             meta.find_section(SectionId::LightInfluence as u32)
                 .is_some()
         );
-        assert!(meta.find_section(SectionId::ShVolume as u32).is_some());
+        assert!(
+            meta.find_section(SectionId::OctahedralShVolume as u32)
+                .is_some()
+        );
         assert!(meta.find_section(SectionId::Lightmap as u32).is_some());
         assert!(meta.find_section(SectionId::BspNodes as u32).is_some());
         assert!(meta.find_section(SectionId::BspLeaves as u32).is_some());
@@ -1086,10 +1096,11 @@ mod tests {
                 path.display()
             );
             let bytes = section.to_bytes();
-            let restored = postretro_level_format::sh_volume::ShVolumeSection::from_bytes(&bytes)
-                .unwrap_or_else(|e| {
-                    panic!("sh volume round-trip failed for {}: {e}", path.display())
-                });
+            let restored =
+                postretro_level_format::sh_volume::OctahedralShVolumeSection::from_bytes(&bytes)
+                    .unwrap_or_else(|e| {
+                        panic!("sh volume round-trip failed for {}: {e}", path.display())
+                    });
             assert_eq!(section, restored);
         }
         assert!(

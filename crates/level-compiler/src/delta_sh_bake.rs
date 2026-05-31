@@ -1,15 +1,15 @@
-// Per-animated-light sparse delta SH volume baker (CSR / affinity-cell form).
+// Per-animated-light sparse octahedral delta irradiance baker (CSR / affinity-cell form).
 //
 // For each animated light, bakes the light's **indirect-only** (bounced)
 // contribution at peak brightness (brightness = 1.0, authored color × intensity)
-// into SH L2 RGB coefficients — but ONLY at base-grid probes that fall inside an
-// affinity cell the light reaches (from `affinity_grid::decompose_affinity`).
+// into octahedral irradiance tiles — but ONLY at base-grid probes that fall
+// inside an affinity cell the light reaches (from `affinity_grid::decompose_affinity`).
 //
 // Indirect-only is a deliberate amendment to the shipped `perf-animated-sh-light-culling`
 // plan, which baked direct + indirect into the delta. The animated light's DIRECT
 // contribution already lives in `lm_anim` (the animated weight-map bake, occlusion-
-// tested); folding it into the delta SH too double-counted it. SH is indirect-only:
-// base and delta both store bounce only. See
+// tested); folding it into the delta too double-counted it. Base and delta
+// irradiance both store bounce only. See
 // `context/lib/rendering_pipeline.md §4` (Animated SH delta volumes).
 // The result is stored as a CSR index keyed by affinity cell:
 //
@@ -17,10 +17,11 @@
 //     `affinity_lights` (the animated-light indices touching that cell).
 //   - `delta_subblocks` is index-parallel to `affinity_lights`: one dense
 //     64-probe sub-block per CSR entry, x-fastest in-cell order
-//     `local = lx + ly*4 + lz*16`, at stride-28 (pad half zero).
+//     `local = lx + ly*4 + lz*16`; each probe slot is one row-major RGBA16F
+//     octahedral tile matching the base irradiance atlas tile geometry.
 //
 // The runtime compose pass reads one per-cell light list per workgroup and adds
-// `delta × brightness_curve(t)` to the base SH volume.
+// `delta × brightness_curve(t)` to the base irradiance atlas.
 //
 // Sub-blocks are COINCIDENT with base SH probes 1:1: the base-probe global coords
 // of in-cell probe `local` in cell `(cx,cy,cz)` are `(cx*4+lx, cy*4+ly, cz*4+lz)`
@@ -38,8 +39,11 @@ use std::collections::HashSet;
 use bvh::bvh::Bvh;
 use glam::{DVec3, Vec3};
 use postretro_level_format::delta_sh_volumes::{
-    AFFINITY_FACTOR as FORMAT_AFFINITY_FACTOR, DeltaShProbe, DeltaShVolumesSection,
-    PROBE_F16_COUNT, PROBE_F16_STRIDE, PROBES_PER_CELL,
+    AFFINITY_FACTOR as FORMAT_AFFINITY_FACTOR, DEFAULT_DELTA_PROBE_F16_STRIDE,
+    DeltaShVolumesSection, PROBES_PER_CELL,
+};
+use postretro_level_format::octahedral::{
+    DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
 };
 use rayon::prelude::*;
 
@@ -50,7 +54,9 @@ use crate::light_namespaces::AnimatedBakedLights;
 use crate::map_data::{LightType, MapLight};
 use crate::partition::BspTree;
 use crate::portals::Portal;
-use crate::sh_bake::{RaytracingCtx, bake_probe_indirect_rgb, probe_is_valid_pub};
+use crate::sh_bake::{
+    RaytracingCtx, bake_probe_indirect_rgb, pack_octahedral_irradiance_tile, probe_is_valid_pub,
+};
 
 // The compiler-side affinity factor (cell geometry) and the format-side
 // factor (written into the section, validated by the loader) must agree, or
@@ -172,7 +178,7 @@ pub fn bake_delta_sh_volumes(
 
     debug_assert_eq!(
         delta_subblocks.len(),
-        affinity_lights.len() * PROBES_PER_CELL * PROBE_F16_STRIDE
+        affinity_lights.len() * PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE
     );
 
     let animation_descriptor_indices: Vec<u32> = (0..animated_light_count as u32).collect();
@@ -180,6 +186,8 @@ pub fn bake_delta_sh_volumes(
     Some(DeltaShVolumesSection {
         affinity_factor: FORMAT_AFFINITY_FACTOR,
         affinity_dims,
+        tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+        tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
         animation_descriptor_indices,
         affinity_offsets,
         affinity_lights,
@@ -265,8 +273,8 @@ fn csr_entry_cells(affinity_offsets: &[u32]) -> Vec<u32> {
 // Per-entry sub-block bake
 
 /// Bake one dense 64-probe sub-block for `(cell, light)`. Returns the
-/// stride-28-flat probe payload (`PROBES_PER_CELL * PROBE_F16_STRIDE` halves):
-/// 27 logical coeffs + 1 zero pad half per probe, x-fastest in-cell order.
+/// flat probe payload (`PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE` halves):
+/// one RGBA16F octahedral tile per probe, x-fastest in-cell order.
 ///
 /// Per-probe clip (see module doc): cell inclusion is portal-granular (Task 1's
 /// affinity decomposition already dropped cells the light can't reach through
@@ -299,7 +307,7 @@ fn bake_subblock(
     let cell_z = cell / (nx * ny);
 
     let spacing = base_spacing as f64;
-    let mut out = vec![0u16; PROBES_PER_CELL * PROBE_F16_STRIDE];
+    let mut out = vec![0u16; PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE];
 
     for local in 0..PROBES_PER_CELL {
         // In-cell local coords, x-fastest: local = lx + ly*4 + lz*16. Matches the
@@ -332,14 +340,20 @@ fn bake_subblock(
         let lights_slice: [&MapLight; 1] = [light];
         // Indirect-only: the same bounce math as the base bake. The animated
         // light's DIRECT contribution lives in `lm_anim` (occlusion-tested),
-        // so baking it here too would double-count. SH is indirect-only.
+        // so baking it here too would double-count. Delta irradiance is indirect-only.
         let indirect = bake_probe_indirect_rgb(&ctx, pos, &lights_slice);
-        let probe = DeltaShProbe::from_f32(&indirect);
+        let tile = pack_octahedral_irradiance_tile(
+            &indirect,
+            true,
+            DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            DEFAULT_IRRADIANCE_TILE_BORDER,
+        );
 
-        // Write 27 logical coeffs at the probe's stride-28 slot; pad half (index
-        // 27) stays zero.
-        let base = local * PROBE_F16_STRIDE;
-        out[base..base + PROBE_F16_COUNT].copy_from_slice(&probe.sh_coefficients_f16);
+        let base = local * DEFAULT_DELTA_PROBE_F16_STRIDE;
+        for (texel_index, texel) in tile.iter().enumerate() {
+            let dst = base + texel_index * 4;
+            out[dst..dst + 4].copy_from_slice(&texel.rgba);
+        }
     }
 
     out
@@ -579,7 +593,7 @@ mod tests {
     // --- Sub-block layout --------------------------------------------------
 
     #[test]
-    fn subblock_payload_has_expected_length_and_zero_pad_halves() {
+    fn subblock_payload_has_expected_length_and_tile_geometry() {
         let geo = cube_geometry();
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let tree = tree_all_empty();
@@ -600,31 +614,25 @@ mod tests {
             bake_delta_sh_volumes(&inputs, &crate::sh_bake::ShConfig { probe_spacing: 1.0 })
                 .expect("expected a section");
 
-        // Index-parallel: payload length = entries × 64 × 28.
+        // Index-parallel: payload length = entries × 64 × one octahedral tile.
         assert_eq!(
             section.delta_subblocks.len(),
-            section.affinity_lights.len() * PROBES_PER_CELL * PROBE_F16_STRIDE
+            section.affinity_lights.len() * PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE
         );
         assert!(!section.affinity_lights.is_empty());
-
-        // Every pad half (stride index 27 of each probe) is zero.
-        for entry in 0..section.affinity_lights.len() {
-            for local in 0..PROBES_PER_CELL {
-                let pad = (entry * PROBES_PER_CELL + local) * PROBE_F16_STRIDE + PROBE_F16_COUNT;
-                assert_eq!(section.delta_subblocks[pad], 0, "pad half must be zero");
-            }
-        }
+        assert_eq!(section.tile_dimension, DEFAULT_IRRADIANCE_TILE_DIMENSION);
+        assert_eq!(section.tile_border, DEFAULT_IRRADIANCE_TILE_BORDER);
         // NOTE: no "any probe nonzero" assertion here. The delta is now
         // INDIRECT-only (Task 1) — with this sparse single-triangle fixture the
         // origin probes have no surfaces to bounce off, so an all-zero payload is
-        // correct. The nonzero-coefficient contract is covered by
+        // correct. The nonzero-tile contract is covered by
         // `subblock_stores_indirect_only_not_direct_plus_indirect` (bit-exact vs
         // the indirect-only reference) instead.
     }
 
-    /// Delta SH is INDIRECT-ONLY (sdf-per-light-shadows Task 1, amending
+    /// Delta irradiance is INDIRECT-ONLY (sdf-per-light-shadows Task 1, amending
     /// `perf-animated-sh-light-culling`). The baked sub-block at a probe must
-    /// equal the indirect-only bounce SH — NOT direct + indirect. The animated
+    /// equal the indirect-only bounce tile — NOT direct + indirect. The animated
     /// light's direct term lives in `lm_anim`; folding it into the delta too
     /// would double-count. Regression: the shipped delta bake summed
     /// `direct + indirect`, double-counting the animated direct contribution.
@@ -659,10 +667,11 @@ mod tests {
         assert!(section.affinity_offsets[1] > section.affinity_offsets[0]);
         let entry = section.affinity_offsets[0] as usize;
         let local = 21usize;
-        let slot = (entry * PROBES_PER_CELL + local) * PROBE_F16_STRIDE;
+        let slot = (entry * PROBES_PER_CELL + local) * DEFAULT_DELTA_PROBE_F16_STRIDE;
 
-        // Recompute the reference indirect-only SH at this probe and quantize it
-        // through the same f16 path the baker uses, then compare bit-for-bit.
+        // Recompute the reference indirect-only SH at this probe and pack it
+        // through the same octahedral tile path the base bake uses, then compare
+        // bit-for-bit.
         let ctx = RaytracingCtx {
             bvh: &bvh,
             primitives: &prims,
@@ -670,13 +679,48 @@ mod tests {
         };
         let pos = Vec3::new(-7.0, -7.0, -7.0);
         let indirect = bake_probe_indirect_rgb(&ctx, pos, &[&lights[0]]);
-        let expected = DeltaShProbe::from_f32(&indirect).sh_coefficients_f16;
-        let stored = &section.delta_subblocks[slot..slot + PROBE_F16_COUNT];
+        let expected_tile = pack_octahedral_irradiance_tile(
+            &indirect,
+            true,
+            DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            DEFAULT_IRRADIANCE_TILE_BORDER,
+        );
+        let expected: Vec<u16> = expected_tile.iter().flat_map(|texel| texel.rgba).collect();
+        let stored = &section.delta_subblocks[slot..slot + DEFAULT_DELTA_PROBE_F16_STRIDE];
         assert_eq!(
             stored,
             &expected[..],
-            "delta sub-block must store indirect-only SH, not direct + indirect",
+            "delta sub-block must store an indirect-only octahedral tile, not direct + indirect",
         );
+    }
+
+    #[test]
+    fn delta_bake_repeats_byte_identically_for_same_inputs() {
+        let geo = cube_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let tree = tree_all_empty();
+        let exterior: HashSet<usize> = HashSet::new();
+        let lights = vec![animated_point_light(DVec3::new(-7.0, -7.0, -7.0), 1.5)];
+        let envelope = AnimatedBakedLights::from_lights(&lights);
+        let inputs = DeltaBakeInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            portals: &[],
+            animated_lights: &envelope,
+        };
+        let config = crate::sh_bake::ShConfig { probe_spacing: 1.0 };
+
+        let first = bake_delta_sh_volumes(&inputs, &config)
+            .expect("expected first deterministic delta section")
+            .to_bytes();
+        let second = bake_delta_sh_volumes(&inputs, &config)
+            .expect("expected second deterministic delta section")
+            .to_bytes();
+
+        assert_eq!(first, second, "delta bake must be byte-identical");
     }
 
     // --- Out-of-region drop (AC #2) ----------------------------------------

@@ -18,7 +18,7 @@ use std::process::Command;
 
 use postretro_level_format::SectionId;
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
-use postretro_level_format::sh_volume::ShVolumeSection;
+use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::{read_container, read_section_data};
 
 /// Walk from the crate root to the workspace root (for locating `content/dev/`).
@@ -170,10 +170,11 @@ fn mixed_fixture_light_indices_are_in_descriptor_buffer_bounds() {
     let weight_maps =
         AnimatedLightWeightMapsSection::from_bytes(&weight_map_bytes).expect("from_bytes");
 
-    let sh_volume_bytes = read_section_data(&mut cursor, &meta, SectionId::ShVolume as u32)
-        .expect("read ShVolume")
-        .expect("ShVolume section present on mixed fixture");
-    let sh_volume = ShVolumeSection::from_bytes(&sh_volume_bytes).expect("sh from_bytes");
+    let sh_volume_bytes =
+        read_section_data(&mut cursor, &meta, SectionId::OctahedralShVolume as u32)
+            .expect("read OctahedralShVolume")
+            .expect("OctahedralShVolume section present on mixed fixture");
+    let sh_volume = OctahedralShVolumeSection::from_bytes(&sh_volume_bytes).expect("sh from_bytes");
 
     let animated_light_count = sh_volume.animation_descriptors.len() as u32;
     assert_eq!(

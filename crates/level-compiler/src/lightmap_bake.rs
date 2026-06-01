@@ -1031,7 +1031,7 @@ fn orthonormal_basis(n: Vec3) -> (Vec3, Vec3) {
     (tangent, bitangent)
 }
 
-fn segment_clear(
+pub(crate) fn segment_clear(
     bvh: &Bvh<f32, 3>,
     primitives: &[BvhPrimitive],
     geometry: &GeometryResult,

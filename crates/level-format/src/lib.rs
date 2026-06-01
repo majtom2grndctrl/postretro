@@ -96,8 +96,10 @@ pub enum SectionId {
     /// Global BVH: flat node + leaf arrays. See `bvh::BvhSection`.
     Bvh = 19,
 
-    /// SH irradiance volume: regular-grid L2 probes plus optional per-animated
-    /// light monochrome layers. See `sh_volume::ShVolumeSection`.
+    /// Legacy SH irradiance volume id. Retired: the section struct was removed
+    /// once the loader/compiler moved entirely to `OctahedralShVolume` (id 34).
+    /// The registry entry is retained so the id is not reused and missing-section
+    /// lookups stay well-defined.
     ShVolume = 20,
 
     /// Per-light influence volumes (compile-time sphere bounds) for spatial

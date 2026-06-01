@@ -35,7 +35,14 @@ pub const DEFAULT_TEXEL_DENSITY_METERS: f32 = 0.04;
 /// namespace). A stale cached lightmap could carry a direct shadow for an `sdf`
 /// light the runtime now resolves separately (double-count), so the bump forces
 /// a re-bake of the now-disjoint direct set.
-pub const STAGE_VERSION: u32 = 4;
+///
+/// v5 bump (baked-soft-lightmap-shadows Task 3): the per-texel static-light gate
+/// changed from a hard 1-texel `shadow_visible` step to an area-sampled
+/// `soft_visibility` fraction multiplied into irradiance and the
+/// dominant-direction accumulation. The per-texel output values shift, so a
+/// stale cached lightmap would serve the old hard-shadow output; the bump forces
+/// a re-bake into the soft-shadow values.
+pub const STAGE_VERSION: u32 = 5;
 
 /// Atlas width/height when no face would fit otherwise. Power-of-two for BC6H block alignment.
 const MIN_ATLAS_DIMENSION: u32 = 64;
@@ -57,7 +64,6 @@ const DIRECTIONAL_LIGHT_RAY_LENGTH_METERS: f32 = 10_000.0;
 /// adjacent texels. Same "PHBAKER" convention as `sh_bake.rs` — the two bakers
 /// share the constant value (not the symbol) so their soft-shadow sampling reads
 /// identically. No RNG: identical input yields byte-identical output.
-#[allow(dead_code)] // consumed by `soft_visibility` (Task-2 deliverable, wired in Tasks 3/4/4b)
 const SAMPLING_LATTICE_OFFSET: u64 = 0x5048_4542_414b_4552; // "PHBAKER"
 
 /// Errors surfaced from the lightmap bake stage. Caller can retry at a coarser texel density.
@@ -695,6 +701,13 @@ fn bake_face_chart(
             let world_p = chart_texel_world_position(chart, tx, ty, interior_w, interior_h);
             let surface_normal = chart.normal;
 
+            // Seed the area-sampling lattice from a fixed integer hash of the
+            // atlas-space texel coords. Deterministic (no `RandomState`) so the
+            // bake is byte-identical across processes — the cache requires it —
+            // while still decorrelating adjacent texels so penumbra bands don't
+            // share an identical sample rotation.
+            let seed = texel_seed(atlas_x as u32, atlas_y as u32);
+
             let mut irr = Vec3::ZERO;
             let mut weighted_dir = Vec3::ZERO;
             for light in static_lights {
@@ -703,15 +716,26 @@ fn bake_face_chart(
                 if contribution.length_squared() <= 1.0e-12 {
                     continue;
                 }
-                // Lightmaps always bake shadowed: occluded texels go dark so a
-                // `static_light_map` light's hard static shadow lives in the
-                // atlas. `sdf` lights are already filtered out of `static_lights`
-                // (their direct shadow resolves at runtime), so no double-shadow.
-                if !shadow_visible(bvh, primitives, geometry, world_p, surface_normal, light) {
+                // Lightmaps always bake shadowed: an occluded texel goes dark so a
+                // `static_light_map` light's static shadow lives in the atlas.
+                // `soft_visibility` returns the `[0,1]` unoccluded fraction over an
+                // area sample of the emitter — a multi-texel penumbra instead of a
+                // hard 1-texel step. `sdf` lights are already filtered out of
+                // `static_lights` (their direct shadow resolves at runtime), so no
+                // double-shadow.
+                let v = soft_visibility(world_p, surface_normal, light, seed, |from, to| {
+                    segment_clear(bvh, primitives, geometry, from, to)
+                });
+                if v <= 0.0 {
                     continue;
                 }
-                irr += contribution;
-                let lum = contribution.x + contribution.y + contribution.z;
+                irr += contribution * v;
+                // Weight the dominant-direction accumulation by `v` too: in a
+                // penumbra a partially-occluded light should bias the baked
+                // direction less than a fully-visible one, matching the softened
+                // irradiance it contributes. Direction encoding/format is
+                // unchanged; only the accumulated values shift.
+                let lum = (contribution.x + contribution.y + contribution.z) * v;
                 weighted_dir += to_light * lum;
             }
 
@@ -862,21 +886,35 @@ pub(crate) fn shadow_visible(
     segment_clear(bvh, primitives, geometry, origin, target)
 }
 
+/// Deterministic per-texel seed for `soft_visibility`'s sample-lattice rotation.
+/// An FNV-1a hash of the atlas-space `(x, y)` — a fixed integer mix, never a
+/// `RandomState` or any hash whose seed varies between processes — so the bake is
+/// byte-identical across separate runs (the build cache reuses stored bytes
+/// verbatim and would break on any run-to-run drift). Mirrors `sh_bake.rs`'s
+/// fixed-constant sampling convention; `soft_visibility` XORs this with
+/// `SAMPLING_LATTICE_OFFSET` internally.
+fn texel_seed(x: u32, y: u32) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut h = FNV_OFFSET;
+    h = (h ^ x as u64).wrapping_mul(FNV_PRIME);
+    h = (h ^ y as u64).wrapping_mul(FNV_PRIME);
+    h
+}
+
 // `soft_visibility` and its sampling helpers are the Task-2 deliverable of
-// `baked-soft-lightmap-shadows`; the per-texel bake loops (Tasks 3/4/4b) call it
-// next. Allow dead_code until those land — only the `#[cfg(test)]` suite exercises
-// it today, which doesn't count toward the binary build.
+// `baked-soft-lightmap-shadows`. The static lightmap bake (Task 3) calls
+// `soft_visibility` in the per-texel loop above; the animated weight-map and SH
+// bounce bakers (Tasks 4/4b) wrap their own `segment_clear` as the trace closure.
 
 /// Probe samples traced before escalating. Tracing this many first lets the
 /// fully-lit / fully-shadowed common case (where every probe agrees) stay cheap;
 /// only a penumbra (probes disagree) pays for the full set.
-#[allow(dead_code)]
 const SOFT_PROBE_SAMPLES: u32 = 4;
 
 /// Full stratified sample count once a penumbra is detected. Fixed constant, not
 /// data-dependent, so the bake stays deterministic. The probe set is a strict
 /// prefix of these, so a penumbra's returned fraction is `clear / SOFT_FULL_SAMPLES`.
-#[allow(dead_code)]
 const SOFT_FULL_SAMPLES: u32 = 32;
 
 /// Soft area-light visibility for a `(surface_point, surface_normal, light)` pair:
@@ -894,7 +932,6 @@ const SOFT_FULL_SAMPLES: u32 = 32;
 /// `sh_bake.rs`'s convention) rotated by `seed`. No RNG, no hash-order dependence —
 /// the caller supplies `seed` deterministically (texel `(x, y)` hash, or
 /// probe/ray/light indices) so the same inputs yield byte-identical output.
-#[allow(dead_code)]
 pub(crate) fn soft_visibility(
     surface_point: Vec3,
     surface_normal: Vec3,
@@ -942,7 +979,6 @@ pub(crate) fn soft_visibility(
 
 /// Single hard-ray target, matching `shadow_visible`: the light origin for
 /// Point/Spot, or a far point along `-cone_direction` for Directional.
-#[allow(dead_code)]
 fn hard_ray_target(surface_point: Vec3, light: &MapLight) -> Vec3 {
     match light.light_type {
         LightType::Point | LightType::Spot => Vec3::new(
@@ -964,7 +1000,6 @@ fn hard_ray_target(surface_point: Vec3, light: &MapLight) -> Vec3 {
 /// half-angle `angular_diameter/2` about `-cone_direction`, at the shared far
 /// distance (`DIRECTIONAL_LIGHT_RAY_LENGTH_METERS`, same for every directional
 /// sample). The lattice is rotated by `seed` so adjacent texels decorrelate.
-#[allow(dead_code)]
 fn area_sample_target(surface_point: Vec3, light: &MapLight, seed: u64, i: u32) -> Vec3 {
     match light.light_type {
         LightType::Point | LightType::Spot => {
@@ -988,7 +1023,6 @@ fn area_sample_target(surface_point: Vec3, light: &MapLight, seed: u64, i: u32) 
 /// Sample `i` of `count` on the unit sphere via the Fibonacci lattice, rotated by
 /// `seed`. Mirrors `sh_bake.rs::sphere_directions` so both bakers share the same
 /// low-discrepancy, RNG-free convention.
-#[allow(dead_code)]
 fn fibonacci_sphere_sample(i: u32, count: u32, seed: u64) -> Vec3 {
     let phi = std::f32::consts::PI * (3.0 - (5.0_f32).sqrt()); // golden angle
     let seed_offset = ((seed ^ SAMPLING_LATTICE_OFFSET) & 0xFFFF_FFFF) as f32 / u32::MAX as f32;
@@ -1002,7 +1036,6 @@ fn fibonacci_sphere_sample(i: u32, count: u32, seed: u64) -> Vec3 {
 /// Direction jittered within a cone of half-angle `half_angle` about `axis`, using
 /// the Fibonacci lattice mapped onto the spherical cap (equal-area in `cos(theta)`),
 /// rotated by `seed`. Same RNG-free convention as `fibonacci_sphere_sample`.
-#[allow(dead_code)]
 fn cone_jittered_direction(axis: Vec3, half_angle: f32, i: u32, count: u32, seed: u64) -> Vec3 {
     let phi = std::f32::consts::PI * (3.0 - (5.0_f32).sqrt()); // golden angle
     let seed_offset = ((seed ^ SAMPLING_LATTICE_OFFSET) & 0xFFFF_FFFF) as f32 / u32::MAX as f32;
@@ -1023,7 +1056,6 @@ fn cone_jittered_direction(axis: Vec3, half_angle: f32, i: u32, count: u32, seed
 
 /// Right-handed orthonormal basis whose third axis is `n`. Deterministic branch on
 /// `n.z` avoids a degenerate cross product when `n` is near the world Z axis.
-#[allow(dead_code)]
 fn orthonormal_basis(n: Vec3) -> (Vec3, Vec3) {
     let helper = if n.z.abs() < 0.999 { Vec3::Z } else { Vec3::X };
     let tangent = helper.cross(n).normalize_or_zero();
@@ -2171,5 +2203,236 @@ mod tests {
             (0.0..=1.0).contains(&dv),
             "directional default out of range: {dv}"
         );
+    }
+
+    // --- Task 3: static lightmap soft sum (full bake) --------------------
+    //
+    // These drive the real per-texel bake (BVH + `segment_clear`), unlike the
+    // mock-closure tests above which exercise `soft_visibility` in isolation.
+
+    /// A large floor at y=0 plus a small horizontal occluder quad floating above
+    /// it, positioned so a light above the occluder casts a shadow with a
+    /// penumbra band onto the floor. The occluder is small relative to the floor
+    /// so the shadow edge falls on the floor's interior texels.
+    fn box_on_floor_geometry() -> GeometryResult {
+        // Floor: 4x4 m quad centered at origin, upward normal.
+        let floor = [
+            ([-2.0, 0.0, -2.0], [0.0, 0.0]),
+            ([2.0, 0.0, -2.0], [1.0, 0.0]),
+            ([2.0, 0.0, 2.0], [1.0, 1.0]),
+            ([-2.0, 0.0, 2.0], [0.0, 1.0]),
+        ];
+        // Occluder: 1x1 m quad at y=1, downward normal (faces the floor). Sits
+        // between the light (high above) and the floor center.
+        let occluder = [
+            ([-0.5, 1.0, -0.5], [0.0, 0.0]),
+            ([0.5, 1.0, -0.5], [1.0, 0.0]),
+            ([0.5, 1.0, 0.5], [1.0, 1.0]),
+            ([-0.5, 1.0, 0.5], [0.0, 1.0]),
+        ];
+        let mut vertices = Vec::new();
+        for (pos, uv) in floor {
+            vertices.push(Vertex::new(
+                pos,
+                uv,
+                [0.0, 1.0, 0.0],
+                [1.0, 0.0, 0.0],
+                true,
+                [0.0, 0.0],
+            ));
+        }
+        for (pos, uv) in occluder {
+            vertices.push(Vertex::new(
+                pos,
+                uv,
+                [0.0, -1.0, 0.0],
+                [1.0, 0.0, 0.0],
+                true,
+                [0.0, 0.0],
+            ));
+        }
+        let indices = vec![0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7];
+        let faces = vec![
+            FaceMeta {
+                leaf_index: 0,
+                texture_index: 0,
+            },
+            FaceMeta {
+                leaf_index: 0,
+                texture_index: 0,
+            },
+        ];
+        let face_index_ranges = vec![
+            FaceIndexRange {
+                index_offset: 0,
+                index_count: 6,
+            },
+            FaceIndexRange {
+                index_offset: 6,
+                index_count: 6,
+            },
+        ];
+        GeometryResult {
+            geometry: GeometrySection {
+                vertices,
+                indices,
+                faces,
+            },
+            texture_names: TextureNamesSection { names: Vec::new() },
+            face_index_ranges,
+        }
+    }
+
+    /// Point light high above the occluder center, default soft size.
+    fn soft_overhead_light() -> MapLight {
+        let mut l = point_light_above();
+        l.origin = DVec3::new(0.0, 4.0, 0.0);
+        l.falloff_range = 20.0;
+        l.light_size = DEFAULT_LIGHT_SIZE;
+        l
+    }
+
+    /// Decode the floor's irradiance texels (R channel) from the encoded section.
+    fn floor_irradiance_r(section: &LightmapSection) -> Vec<f32> {
+        let texel_count = (section.width * section.height) as usize;
+        let mut out = Vec::with_capacity(texel_count);
+        for t in 0..texel_count {
+            let bits =
+                u16::from_le_bytes([section.irradiance[t * 8], section.irradiance[t * 8 + 1]]);
+            out.push(f16_bits_to_f32(bits));
+        }
+        out
+    }
+
+    /// IEEE-754 half → f32 decode for reading baked irradiance back in tests.
+    /// Mirrors `sh_bake.rs`'s private decoder (the inverse of
+    /// `level-format`'s `f32_to_f16_bits`); duplicated here because that one is
+    /// a sibling-module private and level-format exposes no public decoder.
+    fn f16_bits_to_f32(bits: u16) -> f32 {
+        let sign = (bits >> 15) & 0x1;
+        let exp = (bits >> 10) & 0x1f;
+        let mant = bits & 0x3ff;
+        let value = if exp == 0 {
+            (mant as f32) * 2.0f32.powi(-24)
+        } else if exp == 0x1f {
+            if mant == 0 { f32::INFINITY } else { f32::NAN }
+        } else {
+            let m = 1.0 + (mant as f32) / 1024.0;
+            m * 2.0f32.powi(exp as i32 - 15)
+        };
+        if sign == 1 { -value } else { value }
+    }
+
+    /// Soft-sum penumbra: a default-sized area light over a box-on-floor scene
+    /// must bake a *gradient* of intermediate irradiance across the shadow
+    /// boundary, not the binary lit/dark step a hard `shadow_visible` gate
+    /// produces. We assert the floor has texels strictly between fully dark and
+    /// fully lit — the fractional `v` band that defines a penumbra.
+    #[test]
+    fn soft_sum_bakes_penumbra_gradient_not_hard_step() {
+        let mut geo = box_on_floor_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let lights = vec![soft_overhead_light()];
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let mut inputs = LightmapBakeCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &mut geo,
+            lights: &static_lights,
+        };
+        let section = bake_lightmap(
+            &mut inputs,
+            &LightmapConfig {
+                lightmap_density: 0.05,
+            },
+        )
+        .unwrap()
+        .section;
+
+        let r = floor_irradiance_r(&section);
+        let max_lit = r.iter().cloned().fold(0.0f32, f32::max);
+        assert!(max_lit > 0.0, "expected some lit floor texels");
+
+        // A penumbra texel: partially occluded, so its irradiance lands strictly
+        // between full dark and (near-)full light. Fully-lit and fully-shadowed
+        // texels are excluded by the margins.
+        let lit_threshold = max_lit * 0.95;
+        let dark_threshold = max_lit * 0.05;
+        let penumbra_count = r
+            .iter()
+            .filter(|&&v| v > dark_threshold && v < lit_threshold)
+            .count();
+        assert!(
+            penumbra_count > 1,
+            "expected a multi-texel penumbra gradient, found {penumbra_count} intermediate texels \
+             (max_lit={max_lit}); a hard shadow step would yield ~0",
+        );
+    }
+
+    /// Soft-shadow determinism: re-baking the identical box-on-floor + soft-light
+    /// scene must produce byte-identical output. The per-texel seed is a fixed
+    /// `(x, y)` hash, so escalated penumbra sampling stays reproducible across
+    /// processes — the property the build cache relies on.
+    #[test]
+    fn soft_sum_bake_is_byte_identical_on_repeat() {
+        fn run() -> Vec<u8> {
+            let mut geo = box_on_floor_geometry();
+            let (bvh, prims, _) = build_bvh(&geo).unwrap();
+            let lights = vec![soft_overhead_light()];
+            let static_lights = StaticBakedLights::from_lights(&lights);
+            let mut inputs = LightmapBakeCtx {
+                bvh: &bvh,
+                primitives: &prims,
+                geometry: &mut geo,
+                lights: &static_lights,
+            };
+            bake_lightmap(
+                &mut inputs,
+                &LightmapConfig {
+                    lightmap_density: 0.05,
+                },
+            )
+            .unwrap()
+            .section
+            .to_bytes()
+        }
+        let a = run();
+        let b = run();
+        assert_eq!(
+            a, b,
+            "soft-shadow bake drifted between runs; the area-sample seed must be a fixed \
+             (x, y) hash with no RNG or hash-order dependence",
+        );
+    }
+
+    /// The cache-bump contract: Task 3 changed the per-texel output (hard gate →
+    /// soft area sum), so `STAGE_VERSION` must advance or recompiles serve stale
+    /// hard-shadow bytes. This exercises the real invalidation mechanism — the
+    /// current version's cache key must differ from the prior version's — rather
+    /// than asserting a constant, so it follows future bumps automatically.
+    #[test]
+    fn stage_version_bump_changes_lightmap_cache_key() {
+        use crate::cache::CacheKey;
+        let input_hash = [0x42u8; 32];
+        let prior = CacheKey::new("lightmap", STAGE_VERSION - 1, &input_hash);
+        let current = CacheKey::new("lightmap", STAGE_VERSION, &input_hash);
+        assert_ne!(
+            prior.as_filename(),
+            current.as_filename(),
+            "the soft-shadow output change must bump STAGE_VERSION so the lightmap cache key \
+             differs from the prior version's and stale hard-shadow entries are invalidated",
+        );
+    }
+
+    /// `texel_seed` is a pure deterministic function of `(x, y)` — same coords
+    /// give the same seed, and distinct coords decorrelate (so adjacent penumbra
+    /// texels don't share a sample rotation). Guards against accidentally
+    /// reintroducing process-varying hashing.
+    #[test]
+    fn texel_seed_is_deterministic_and_position_varying() {
+        assert_eq!(texel_seed(3, 7), texel_seed(3, 7));
+        assert_ne!(texel_seed(3, 7), texel_seed(7, 3));
+        assert_ne!(texel_seed(0, 0), texel_seed(0, 1));
+        assert_ne!(texel_seed(0, 0), texel_seed(1, 0));
     }
 }

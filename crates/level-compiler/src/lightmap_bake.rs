@@ -857,35 +857,6 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// `pub(crate)` so the animated weight-map baker shares the same traversal and epsilon —
-/// both bakers must agree on occlusion at chunk boundaries.
-pub(crate) fn shadow_visible(
-    bvh: &Bvh<f32, 3>,
-    primitives: &[BvhPrimitive],
-    geometry: &GeometryResult,
-    surface_point: Vec3,
-    surface_normal: Vec3,
-    light: &MapLight,
-) -> bool {
-    if !light.cast_shadows {
-        return true;
-    }
-    let origin = surface_point + surface_normal * RAY_EPSILON;
-    let target = match light.light_type {
-        LightType::Point | LightType::Spot => Vec3::new(
-            light.origin.x as f32,
-            light.origin.y as f32,
-            light.origin.z as f32,
-        ),
-        LightType::Directional => {
-            let aim = Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0]));
-            let to_light = (-aim).normalize_or_zero();
-            surface_point + to_light * DIRECTIONAL_LIGHT_RAY_LENGTH_METERS
-        }
-    };
-    segment_clear(bvh, primitives, geometry, origin, target)
-}
-
 /// Deterministic per-texel seed for `soft_visibility`'s sample-lattice rotation.
 /// An FNV-1a hash of the atlas-space `(x, y)` — a fixed integer mix, never a
 /// `RandomState` or any hash whose seed varies between processes — so the bake is

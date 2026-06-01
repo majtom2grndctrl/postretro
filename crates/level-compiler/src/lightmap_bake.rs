@@ -42,7 +42,16 @@ pub const DEFAULT_TEXEL_DENSITY_METERS: f32 = 0.04;
 /// dominant-direction accumulation. The per-texel output values shift, so a
 /// stale cached lightmap would serve the old hard-shadow output; the bump forces
 /// a re-bake into the soft-shadow values.
-pub const STAGE_VERSION: u32 = 5;
+///
+/// v6 bump (baked-soft-lightmap-shadows F1): `soft_visibility`'s probe set moved
+/// from the first `SOFT_PROBE_SAMPLES` contiguous lattice indices to an evenly
+/// **strided subset** so the cheap probes sample the whole emitter (not just its
+/// top cap). Penumbra texts the old clustered probes missed (occluders crossing
+/// the emitter's lower hemisphere) now escalate and bake a fraction instead of a
+/// hard 0/1. The per-texel output shifts with NO input change (maps using the
+/// default light size have identical inputs), so the cache would serve stale
+/// pre-F1 output unless the version advances.
+pub const STAGE_VERSION: u32 = 6;
 
 /// Atlas width/height when no face would fit otherwise. Power-of-two for BC6H block alignment.
 const MIN_ATLAS_DIMENSION: u32 = 64;
@@ -963,15 +972,89 @@ pub(crate) fn warn_sub_texel_penumbra_lights(lights: &[&MapLight], texel_density
 /// only a penumbra (probes disagree) pays for the full set. Fixed constant — the
 /// adaptive-escalation threshold must not vary, so the bake stays deterministic
 /// regardless of the caller's `full_samples` knob (Task 6).
+///
+/// The probe positions are a spread **subset** of the full lattice (each probe
+/// snapped to the full-lattice index nearest one of [`SOFT_PROBE_SAMPLES`]
+/// well-separated ideal directions), not the first N contiguous indices — see
+/// [`probe_indices`] for why.
 pub(crate) const SOFT_PROBE_SAMPLES: u32 = 4;
 
 /// Default full stratified sample count once a penumbra is detected. The
 /// area-sample-count bake knob (Task 6) overrides this per call via
 /// `soft_visibility`'s `full_samples` argument; callers without a knob
 /// (e.g. the SH bounce baker, where bounce is low-frequency) pass this default.
-/// The probe set is always a strict prefix of `full_samples`, so a penumbra's
-/// returned fraction is `clear / full_samples`.
+/// The probe set is a spread **subset** of `full_samples` (not a prefix), so a
+/// penumbra's returned fraction is still `clear / full_samples`.
 pub(crate) const DEFAULT_AREA_SAMPLE_COUNT: u32 = 32;
+
+/// The `SOFT_PROBE_SAMPLES` full-lattice indices used as the cheap probe set,
+/// chosen so the probes spread across the **whole** emitter (both poles and all
+/// azimuths), while remaining a strict **subset** of the `full_samples` lattice.
+///
+/// Why not the first N contiguous indices (the old behaviour): on the Fibonacci
+/// sphere/cone lattice the low indices `0,1,2,3` all cluster at the emitter's top
+/// pole / hug the cone axis — they spread in azimuth but not in polar angle. An
+/// occluder edge crossing the *lower* hemisphere of the emitter then leaves all
+/// four contiguous probes in agreement, early-outs to a hard 0/1, and silently
+/// drops the penumbra — re-introducing the hard 1-texel edge for occluders facing
+/// away from the pole.
+///
+/// Why not a plain index stride (`k·full/N`): on this lattice azimuth is linear in
+/// the index (`golden_angle·i`), so any arithmetic stride aliases the azimuth into
+/// a narrow wedge — it fixes polar coverage but *clusters* azimuth, trading one
+/// blind spot for another (an azimuthal occluder split would then be missed).
+///
+/// So each probe `k` is **snapped** to the full-lattice index whose direction is
+/// nearest the `k`-th direction of the inherently well-separated
+/// `SOFT_PROBE_SAMPLES`-point Fibonacci lattice (computed with `seed == 0`; the
+/// per-texel seed only adds a constant azimuth rotation to every sample, so it
+/// cannot collapse the relative spread). The result spreads in BOTH polar and
+/// azimuth for any `full_samples >= SOFT_PROBE_SAMPLES`. Deterministic — fixed
+/// constants, no RNG. The chosen indices are a strict subset of `full_samples`, so
+/// escalation only *adds* the remaining samples (no double-count, and no value
+/// discontinuity between an escalated and an early-out texel).
+///
+/// The snap uses the same per-light-type mapping the actual sampling uses
+/// (`fibonacci_sphere_sample` for Point/Spot, `cone_jittered_direction` for
+/// Directional) so probes land on real sample directions of that emitter.
+fn probe_indices(light: &MapLight, full_samples: u32) -> [u32; SOFT_PROBE_SAMPLES as usize] {
+    let mut out = [0u32; SOFT_PROBE_SAMPLES as usize];
+    for (k, slot) in out.iter_mut().enumerate() {
+        // Ideal direction k of the small, well-separated probe-count lattice.
+        let ideal = probe_sample_direction(light, k as u32, SOFT_PROBE_SAMPLES);
+        // Snap to the full-lattice index whose direction is closest. Ties resolve
+        // to the lowest index (the `>` keeps the first-seen best), so the choice is
+        // fully deterministic.
+        let mut best_index = 0u32;
+        let mut best_dot = f32::NEG_INFINITY;
+        for i in 0..full_samples {
+            let dir = probe_sample_direction(light, i, full_samples);
+            let dot = dir.dot(ideal);
+            if dot > best_dot {
+                best_dot = dot;
+                best_index = i;
+            }
+        }
+        *slot = best_index;
+    }
+    out
+}
+
+/// Un-rotated (seed == 0) sample direction for index `i` of `count`, using the
+/// emitter's per-light-type lattice mapping. Used only to pick the probe subset
+/// (`probe_indices`); the live sampling re-derives targets through
+/// `area_sample_target` with the real seed.
+fn probe_sample_direction(light: &MapLight, i: u32, count: u32) -> Vec3 {
+    match light.light_type {
+        LightType::Point | LightType::Spot => fibonacci_sphere_sample(i, count, 0),
+        LightType::Directional => {
+            let aim = Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0]));
+            let to_light = (-aim).normalize_or_zero();
+            let half_angle = light.angular_diameter.to_radians() * 0.5;
+            cone_jittered_direction(to_light, half_angle, i, count, 0)
+        }
+    }
+}
 
 /// Soft area-light visibility for a `(surface_point, surface_normal, light)` pair:
 /// the `[0, 1]` fraction of stratified area-samples whose shadow ray is unoccluded.
@@ -990,11 +1073,11 @@ pub(crate) const DEFAULT_AREA_SAMPLE_COUNT: u32 = 32;
 /// probe/ray/light indices) so the same inputs yield byte-identical output.
 ///
 /// `full_samples` is the area-sample-count bake knob (Task 6): the escalated
-/// (penumbra) sample target. The fixed `SOFT_PROBE_SAMPLES` probe set is always a
-/// strict prefix, so it is clamped to at least the probe count; the escalation
-/// threshold itself stays a fixed constant so the bake remains deterministic
-/// regardless of the knob's value. Callers without a knob pass
-/// [`DEFAULT_AREA_SAMPLE_COUNT`].
+/// (penumbra) sample target. The fixed `SOFT_PROBE_SAMPLES` probe set is a spread
+/// **subset** of the full lattice (see [`probe_indices`]), so `full_samples` is
+/// clamped to at least the probe count; the escalation threshold itself stays a
+/// fixed constant so the bake remains deterministic regardless of the knob's value.
+/// Callers without a knob pass [`DEFAULT_AREA_SAMPLE_COUNT`].
 pub(crate) fn soft_visibility(
     surface_point: Vec3,
     surface_normal: Vec3,
@@ -1019,12 +1102,15 @@ pub(crate) fn soft_visibility(
         return if trace(origin, target) { 1.0 } else { 0.0 };
     }
 
-    // Probe set is a strict prefix of the full set: the knob can only raise the
-    // escalated count above the fixed probe floor, so escalation only adds samples
-    // and the penumbra fraction stays `clear / full_samples`.
+    // Probe set is a spread subset of the full set (`probe_indices`): the knob can
+    // only raise the escalated count above the fixed probe floor, so escalation
+    // only adds the in-between samples and the penumbra fraction stays
+    // `clear / full_samples`. The subset spreads across the whole emitter (both
+    // poles and all azimuths), so a penumbra anywhere splits the probes.
     let full_samples = full_samples.max(SOFT_PROBE_SAMPLES);
+    let probes = probe_indices(light, full_samples);
     let mut clear = 0u32;
-    for i in 0..SOFT_PROBE_SAMPLES {
+    for &i in &probes {
         if trace(
             origin,
             area_sample_target(surface_point, light, seed, i, full_samples),
@@ -1038,7 +1124,13 @@ pub(crate) fn soft_visibility(
         return clear as f32 / SOFT_PROBE_SAMPLES as f32;
     }
 
-    for i in SOFT_PROBE_SAMPLES..full_samples {
+    // Escalate: trace every full-lattice index that was NOT already a probe, so
+    // probe rays are counted exactly once (no double-count) and the fraction is
+    // over the full set.
+    for i in 0..full_samples {
+        if probes.contains(&i) {
+            continue;
+        }
         if trace(
             origin,
             area_sample_target(surface_point, light, seed, i, full_samples),
@@ -2310,6 +2402,37 @@ mod tests {
         );
         assert_eq!(a.to_bits(), b.to_bits(), "repeat 1 diverged: {a} vs {b}");
         assert_eq!(a.to_bits(), c.to_bits(), "repeat 2 diverged: {a} vs {c}");
+    }
+
+    /// F1 regression: an occluder clipping the emitter's *lower* hemisphere — the
+    /// orientation the old contiguous probe set (`0,1,2,3`, all clustered at the
+    /// emitter's top cap) missed — must now yield a fractional `soft_visibility`,
+    /// not a hard 0/1. The strided probe subset (`{0,8,16,24}` for full=32) places
+    /// probes in both the upper and lower halves, so the split forces escalation.
+    /// Block rays toward the lower half of the emitter sphere (sample `y` below the
+    /// light center), pass the upper half.
+    #[test]
+    fn soft_visibility_lower_hemisphere_occluder_is_fractional() {
+        let light = soft_point_light(0.5);
+        let center = Vec3::new(
+            light.origin.x as f32,
+            light.origin.y as f32,
+            light.origin.z as f32,
+        );
+        // Clear (true) for the upper half of the emitter, blocked for the lower.
+        let v = soft_visibility(
+            Vec3::ZERO,
+            Vec3::Y,
+            &light,
+            13,
+            DEFAULT_AREA_SAMPLE_COUNT,
+            |_, to| (to - center).y >= 0.0,
+        );
+        assert!(
+            v > 0.0 && v < 1.0,
+            "lower-hemisphere occluder should be a penumbra, got {v} \
+             (clustered top-cap probes would have early-out to a hard edge)"
+        );
     }
 
     #[test]

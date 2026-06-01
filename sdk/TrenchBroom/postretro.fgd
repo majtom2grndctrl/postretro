@@ -32,11 +32,12 @@
     light(integer) : "Intensity" : 300
     _color(color255) : "Color" : "255 255 255"
     _falloff_range(integer) : "Falloff Distance (map units)"
-    // World-unit radius of the emitter used for bake-time area-light soft
-    // shadows (penumbra width scales with this). Absent → 0.25 (soft default);
-    // an authored 0 keeps the hard 1-texel shadow step. Bake-only; never
-    // serialized to a runtime PRL section.
-    _light_size(string) : "Light Size (world-unit radius; bake-only soft shadows)" : ""
+    // Map-unit (inch) radius of the emitter used for bake-time area-light soft
+    // shadows (penumbra width scales with this), authored in map units like
+    // _falloff_range. Absent → ~9.84 in (≈0.25 m, the soft default); an authored 0
+    // keeps the hard 1-texel shadow step. Bake-only; never serialized to a runtime
+    // PRL section.
+    _light_size(string) : "Light Size (map-unit radius; bake-only soft shadows)" : ""
     delay(choices) : "Falloff Model" : 0 =
     [
         0 : "Linear"

@@ -89,11 +89,12 @@
 "light" "400"
 "_color" "255 244 214"
 "_falloff_range" "900"
-"_light_size" "0.35"
+"_light_size" "14"
 }
 // --- five overlapping static lights over the open east half of the room.
 // Summed soft shadows, no hard cap (>4 overlapping). Each carries its own
-// _light_size so each penumbra is computed independently.
+// _light_size so each penumbra is computed independently. `_light_size` is in
+// map units (inches) like `_falloff_range`: 14 in ≈ 0.356 m, 12 in ≈ 0.305 m.
 // entity 3
 {
 "classname" "light"
@@ -102,7 +103,7 @@
 "light" "260"
 "_color" "245 120 120"
 "_falloff_range" "700"
-"_light_size" "0.30"
+"_light_size" "12"
 }
 // entity 4
 {
@@ -112,7 +113,7 @@
 "light" "260"
 "_color" "120 245 140"
 "_falloff_range" "700"
-"_light_size" "0.30"
+"_light_size" "12"
 }
 // entity 5
 {
@@ -122,7 +123,7 @@
 "light" "260"
 "_color" "120 160 245"
 "_falloff_range" "700"
-"_light_size" "0.30"
+"_light_size" "12"
 }
 // entity 6
 {
@@ -132,7 +133,7 @@
 "light" "260"
 "_color" "245 230 120"
 "_falloff_range" "700"
-"_light_size" "0.30"
+"_light_size" "12"
 }
 // entity 7
 {
@@ -142,5 +143,5 @@
 "light" "260"
 "_color" "200 120 245"
 "_falloff_range" "700"
-"_light_size" "0.30"
+"_light_size" "12"
 }

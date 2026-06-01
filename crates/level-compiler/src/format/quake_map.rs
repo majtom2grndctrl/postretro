@@ -148,15 +148,22 @@ pub fn translate_light(
         LightType::Directional => 0.0,
     };
 
-    // Bake-only area-light size inputs (soft shadows). Authored in world units
-    // directly (no inches→meters scale): `_light_size` is a meter radius for
-    // Point/Spot, `_angular_diameter` is degrees for Directional. Both are
-    // clamped non-negative. The "absent → nonzero default, authored 0 → keep 0"
-    // distinction lets existing maps soften on recompile while letting an author
-    // opt back into hard shadows with an explicit 0.
+    // Bake-only area-light size inputs (soft shadows). `_light_size` is a
+    // DISTANCE — the emitter radius for Point/Spot — so it is authored in map
+    // units (inches) like `_falloff_range` and every other distance KVP, and
+    // multiplied by the same `map_scale` to resolve to meters. `_angular_diameter`
+    // is an ANGLE (degrees) for Directional, NOT a distance, so it is left
+    // unscaled. Both are clamped non-negative. `MapLight::light_size` /
+    // `angular_diameter` carry the resolved final values (meters / degrees).
+    //
+    // Default handling: `DEFAULT_LIGHT_SIZE` is a resolved meter value, so an
+    // absent KVP takes it directly (NOT through `map_scale`); an authored value is
+    // `authored × map_scale`. The "absent → nonzero default, authored 0 → keep 0"
+    // distinction is preserved — an authored `0 × map_scale` is still `0`, so the
+    // hard-edge short-circuit still fires.
     let (light_size, angular_diameter) = match light_type {
         LightType::Point | LightType::Spot => (
-            parse_optional_size(props, "_light_size", DEFAULT_LIGHT_SIZE)?,
+            parse_optional_distance(props, "_light_size", DEFAULT_LIGHT_SIZE, map_scale)?,
             0.0,
         ),
         LightType::Directional => (
@@ -556,10 +563,44 @@ fn parse_f32(s: &str) -> Option<f32> {
     s.trim().parse::<f32>().ok()
 }
 
-/// Parse a bake-only area-light size KVP (`_light_size` / `_angular_diameter`).
-/// An absent or blank value yields `default` (so existing maps soften on
-/// recompile); an authored value — including an explicit `0` — is taken
-/// verbatim and clamped non-negative. Negative authored values clamp to `0`.
+/// Parse a bake-only area-light DISTANCE KVP authored in map units (`_light_size`).
+/// An absent or blank value yields `default` verbatim (a resolved meter value — it
+/// is NOT scaled). An authored value — including an explicit `0` — is multiplied by
+/// `map_scale` (units→meters) so the field reads in map units like `_falloff_range`,
+/// then clamped non-negative. An authored `0` scales to `0`, preserving the hard
+/// edge; a negative authored value clamps to `0`.
+fn parse_optional_distance(
+    props: &HashMap<String, String>,
+    key: &'static str,
+    default: f32,
+    map_scale: f32,
+) -> Result<f32, TranslateError> {
+    match props.get(key).map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        None => Ok(default),
+        Some(s) => {
+            let v = s
+                .parse::<f32>()
+                .map_err(|_| TranslateError::InvalidProperty {
+                    key,
+                    value: s.to_string(),
+                    reason: "expected a non-negative number",
+                })?;
+            if !v.is_finite() {
+                return Err(TranslateError::InvalidProperty {
+                    key,
+                    value: s.to_string(),
+                    reason: "expected a finite number",
+                });
+            }
+            Ok((v * map_scale).max(0.0))
+        }
+    }
+}
+
+/// Parse a bake-only area-light ANGLE KVP (`_angular_diameter`, degrees) — NOT a
+/// distance, so it is never scaled by `map_scale`. An absent or blank value yields
+/// `default`; an authored value — including an explicit `0` — is taken verbatim and
+/// clamped non-negative. Negative authored values clamp to `0`.
 fn parse_optional_size(
     props: &HashMap<String, String>,
     key: &'static str,
@@ -1910,14 +1951,23 @@ mod tests {
     }
 
     #[test]
-    fn light_size_authored_value_is_taken_verbatim() {
+    fn light_size_authored_value_is_scaled_to_meters() {
+        // F2: `_light_size` is a distance authored in map units (inches), so it is
+        // multiplied by the units→meters scale (0.0254) like `_falloff_range` —
+        // NOT consumed as raw meters. Authoring 10 inches resolves to 0.254 m.
+        let scale = MapFormat::IdTech2.units_to_meters() as f32;
         let light = translate_light(
-            &point_light_props(&[("_light_size", "0.5")]),
+            &point_light_props(&[("_light_size", "10")]),
             DVec3::ZERO,
             "light",
         )
         .expect("should translate");
-        assert!((light.light_size - 0.5).abs() < 1e-6);
+        assert!(
+            (light.light_size - 10.0 * scale).abs() < 1e-6,
+            "expected 10 units → {} m, got {}",
+            10.0 * scale,
+            light.light_size,
+        );
     }
 
     #[test]
@@ -1929,6 +1979,24 @@ mod tests {
         )
         .expect("should translate");
         assert_eq!(light.light_size, 0.0);
+    }
+
+    #[test]
+    fn angular_diameter_is_an_angle_not_scaled_by_map_units() {
+        // F2 confirmation: `_angular_diameter` is an ANGLE (degrees), not a
+        // distance, so it must be taken verbatim — never multiplied by the
+        // units→meters scale the way `_light_size`/`_falloff_range` are.
+        let p = props(&[
+            ("light", "200"),
+            ("_color", "255 255 255"),
+            ("_angular_diameter", "3"),
+        ]);
+        let light = translate_light(&p, DVec3::ZERO, "light_sun").expect("should translate");
+        assert!(
+            (light.angular_diameter - 3.0).abs() < 1e-6,
+            "angular_diameter must stay 3 degrees, got {}",
+            light.angular_diameter,
+        );
     }
 
     #[test]

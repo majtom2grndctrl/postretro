@@ -42,7 +42,7 @@ Radiates light in all directions from a single point.
 | `light` | integer | `300` | Brightness |
 | `_color` | RGB | `255 255 255` | Light color |
 | `_falloff_range` | integer | **required** | How far the light reaches, in map units. The compiler will error if this is missing. |
-| `_light_size` | float | `0.25` | Emitter radius in world units, driving bake-time soft shadows (wider = softer penumbra). Leave blank for the soft default; set `0` for a hard 1-texel shadow. Point/spot only — ignored on `light_sun`. Bake-only (not stored at runtime). |
+| `_light_size` | float | `~9.84` (≈0.25 m) | Emitter radius in map units (inches), like `_falloff_range`, driving bake-time soft shadows (wider = softer penumbra). Leave blank for the soft default (~0.25 m); set `0` for a hard 1-texel shadow. Point/spot only — ignored on `light_sun`. Bake-only (not stored at runtime). |
 | `delay` | 0/1/2 | `0` | Falloff shape: `0` = linear, `1` = inverse (1/x), `2` = inverse squared (1/x²) |
 | `style` | integer | `0` | Preset flicker/pulse animation — see the style table below |
 | `_phase` | float | `0.0` | Shifts the animation cycle (0.0–1.0). Set different values on nearby lights sharing the same style so they don't all pulse together. |

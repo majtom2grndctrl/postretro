@@ -35,7 +35,12 @@ pub const DEFAULT_PROBE_SPACING: f32 = 1.0;
 /// 4 → 5: the indirect-bounce shadow gate softened from a binary hard ray to the
 /// area-light `soft_visibility` fraction (baked-soft-lightmap-shadows Task 4b), so
 /// the cached `sh_volume` irradiance values shift.
-pub const STAGE_VERSION: u32 = 5;
+///
+/// 5 → 6 (baked-soft-lightmap-shadows F1): `soft_visibility`'s probe set (shared
+/// with the lightmap baker) became a strided emitter subset, shifting the soft
+/// fraction for some probe geometry. The SH indirect-bounce output uses that same
+/// fraction, so its cached values shift too — the bump forces a re-bake.
+pub const STAGE_VERSION: u32 = 6;
 
 const RAYS_PER_PROBE: u32 = 256;
 

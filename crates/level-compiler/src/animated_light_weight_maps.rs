@@ -41,7 +41,12 @@ const WEIGHT_EPSILON: f32 = 1.0e-6;
 /// so no cache invalidation fires at compile time. The `CacheKey`/STAGE_VERSION
 /// contract is still exercised by `stage_version_bump_misses_then_hits` in
 /// this module's test suite, anchoring the invariant if a cached path is added.
-pub const STAGE_VERSION: u32 = 4;
+///
+/// v5 bump (baked-soft-lightmap-shadows F1): `soft_visibility`'s probe set became
+/// a strided emitter subset, shifting the soft weight for some probe geometry.
+/// Bumped for consistency with `lightmap_bake`/`sh_bake`; this stage stays
+/// uncached, so the bump has no cache effect today (doc-marker only).
+pub const STAGE_VERSION: u32 = 5;
 
 pub struct WeightMapInputs<'a> {
     pub bvh: &'a Bvh<f32, 3>,

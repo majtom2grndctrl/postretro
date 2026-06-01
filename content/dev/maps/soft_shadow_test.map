@@ -1,0 +1,146 @@
+// Game: Generic
+// Format: Standard
+// Soft baked-shadow test (baked-soft-lightmap-shadows Task 6): single key light
+// over open floor (penumbra gradient), a box on the floor (contact hardening),
+// and five overlapping static_light_map lights (summed soft shadows, no cap).
+// entity 0
+{
+"classname" "worldspawn"
+"initialGravity" "-9.81"
+"wad" ""
+// floor (z: -16..0), 512 x 512
+{
+( 528 -16 -16 ) ( 528 528 0 ) ( 528 528 -16 ) concrete_pavement_036 0 0 0 1 1
+( -16 528 -16 ) ( -16 -16 0 ) ( -16 -16 -16 ) concrete_pavement_036 0 0 0 1 1
+( 528 528 -16 ) ( -16 528 0 ) ( -16 528 -16 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 -16 ) ( 528 -16 0 ) ( 528 -16 -16 ) concrete_pavement_036 0 0 0 1 1
+( -16 528 0 ) ( 528 -16 0 ) ( -16 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 -16 ) ( 528 528 -16 ) ( -16 528 -16 ) concrete_pavement_036 0 0 0 1 1
+}
+// ceiling (z: 256..272)
+{
+( 528 -16 256 ) ( 528 528 272 ) ( 528 528 256 ) concrete_pavement_036 0 0 0 1 1
+( -16 528 256 ) ( -16 -16 272 ) ( -16 -16 256 ) concrete_pavement_036 0 0 0 1 1
+( 528 528 256 ) ( -16 528 272 ) ( -16 528 256 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 256 ) ( 528 -16 272 ) ( 528 -16 256 ) concrete_pavement_036 0 0 0 1 1
+( -16 528 272 ) ( 528 -16 272 ) ( -16 -16 272 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 256 ) ( 528 528 256 ) ( -16 528 256 ) concrete_pavement_036 0 0 0 1 1
+}
+// west wall (x: -16..0)
+{
+( 0 -16 0 ) ( 0 528 256 ) ( 0 528 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 528 0 ) ( -16 -16 256 ) ( -16 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 528 0 ) ( -16 528 256 ) ( -16 528 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 0 ) ( 0 -16 256 ) ( 0 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 528 256 ) ( 0 -16 256 ) ( -16 -16 256 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 0 ) ( 0 528 0 ) ( -16 528 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// east wall (x: 512..528)
+{
+( 528 -16 0 ) ( 528 528 256 ) ( 528 528 0 ) concrete_pavement_036 0 0 0 1 1
+( 512 528 0 ) ( 512 -16 256 ) ( 512 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 528 528 0 ) ( 512 528 256 ) ( 512 528 0 ) concrete_pavement_036 0 0 0 1 1
+( 512 -16 0 ) ( 528 -16 256 ) ( 528 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 512 528 256 ) ( 528 -16 256 ) ( 512 -16 256 ) concrete_pavement_036 0 0 0 1 1
+( 512 -16 0 ) ( 528 528 0 ) ( 512 528 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// south wall (y: -16..0)
+{
+( 512 -16 0 ) ( 512 0 256 ) ( 512 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 0 -16 256 ) ( 0 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 512 0 0 ) ( 0 0 256 ) ( 0 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 -16 0 ) ( 512 -16 256 ) ( 512 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 256 ) ( 512 -16 256 ) ( 0 -16 256 ) concrete_pavement_036 0 0 0 1 1
+( 0 -16 0 ) ( 512 0 0 ) ( 0 0 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// north wall (y: 512..528)
+{
+( 512 512 0 ) ( 512 528 256 ) ( 512 528 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 528 0 ) ( 0 512 256 ) ( 0 512 0 ) concrete_pavement_036 0 0 0 1 1
+( 512 528 0 ) ( 0 528 256 ) ( 0 528 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 512 0 ) ( 512 512 256 ) ( 512 512 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 528 256 ) ( 512 512 256 ) ( 0 512 256 ) concrete_pavement_036 0 0 0 1 1
+( 0 512 0 ) ( 512 528 0 ) ( 0 528 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// box on floor (64 x 64 x 64, centered at x=128,y=128) — the contact-hardening
+// occluder: its shadow on the floor should be sharp at the contact and soften
+// with distance under the area-light bake.
+{
+( 160 96 0 ) ( 160 160 64 ) ( 160 160 0 ) concrete_pavement_036 0 0 0 1 1
+( 96 160 0 ) ( 96 96 64 ) ( 96 96 0 ) concrete_pavement_036 0 0 0 1 1
+( 160 160 0 ) ( 96 160 64 ) ( 96 160 0 ) concrete_pavement_036 0 0 0 1 1
+( 96 96 0 ) ( 160 96 64 ) ( 160 96 0 ) concrete_pavement_036 0 0 0 1 1
+( 96 160 64 ) ( 160 96 64 ) ( 96 96 64 ) concrete_pavement_036 0 0 0 1 1
+( 96 96 0 ) ( 160 160 0 ) ( 96 160 0 ) concrete_pavement_036 0 0 0 1 1
+}
+}
+// entity 1
+{
+"classname" "player_spawn"
+"origin" "256 256 24"
+"angle" "0"
+}
+// entity 2 — single key light over the open floor (penumbra-gradient case).
+// High above and offset so the box casts a long, softening shadow.
+{
+"classname" "light"
+"_shadow_type" "static_light_map"
+"origin" "128 128 224"
+"light" "400"
+"_color" "255 244 214"
+"_falloff_range" "900"
+"_light_size" "0.35"
+}
+// --- five overlapping static lights over the open east half of the room.
+// Summed soft shadows, no hard cap (>4 overlapping). Each carries its own
+// _light_size so each penumbra is computed independently.
+// entity 3
+{
+"classname" "light"
+"_shadow_type" "static_light_map"
+"origin" "352 224 200"
+"light" "260"
+"_color" "245 120 120"
+"_falloff_range" "700"
+"_light_size" "0.30"
+}
+// entity 4
+{
+"classname" "light"
+"_shadow_type" "static_light_map"
+"origin" "416 288 200"
+"light" "260"
+"_color" "120 245 140"
+"_falloff_range" "700"
+"_light_size" "0.30"
+}
+// entity 5
+{
+"classname" "light"
+"_shadow_type" "static_light_map"
+"origin" "288 320 200"
+"light" "260"
+"_color" "120 160 245"
+"_falloff_range" "700"
+"_light_size" "0.30"
+}
+// entity 6
+{
+"classname" "light"
+"_shadow_type" "static_light_map"
+"origin" "400 384 200"
+"light" "260"
+"_color" "245 230 120"
+"_falloff_range" "700"
+"_light_size" "0.30"
+}
+// entity 7
+{
+"classname" "light"
+"_shadow_type" "static_light_map"
+"origin" "336 352 200"
+"light" "260"
+"_color" "200 120 245"
+"_falloff_range" "700"
+"_light_size" "0.30"
+}

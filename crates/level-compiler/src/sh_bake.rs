@@ -880,9 +880,18 @@ fn sample_radiance_rgb(
             let mut radiance = Vec3::ZERO;
             for (light_index, light) in lights.iter().enumerate() {
                 let seed = soft_visibility_seed(probe_index, ray_index, light_index as u64);
-                let v = soft_visibility(hit.point, hit.normal, light, seed, |from, to| {
-                    segment_clear(ctx, from, to)
-                });
+                // SH bounce is low-frequency, so it has no author-facing
+                // sample-count knob — it always uses the default full-sample
+                // target (Task 6 wires the knob only to the lightmap and animated
+                // stages).
+                let v = soft_visibility(
+                    hit.point,
+                    hit.normal,
+                    light,
+                    seed,
+                    crate::lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
+                    |from, to| segment_clear(ctx, from, to),
+                );
                 if v <= 0.0 {
                     continue;
                 }

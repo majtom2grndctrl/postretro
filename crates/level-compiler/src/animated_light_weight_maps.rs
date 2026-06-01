@@ -54,6 +54,13 @@ pub struct WeightMapInputs<'a> {
     pub face_placements: &'a [ChartPlacement],
     pub atlas_width: u32,
     pub atlas_height: u32,
+    /// Area-sample count for soft-shadow penumbra visibility (Task 6 knob).
+    /// Plain owned field, not a cache key: this stage is uncached (invoked
+    /// directly from `main.rs`, no `*Config`/`input_hash`), so every compile that
+    /// runs the animated bake recomputes from scratch with this value — there is
+    /// no stale-output risk to guard. Default
+    /// `lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT`.
+    pub area_sample_count: u32,
 }
 
 struct ChunkBakeResult {
@@ -251,9 +258,16 @@ fn bake_one_chunk(
                 // intensity is a separate per-frame scalar. Wraps this module's
                 // `segment_clear` as the trace closure (the helper is
                 // trace-context-agnostic per Task 2).
-                let v = soft_visibility(world_p, surface_normal, light, texel_seed, |from, to| {
-                    segment_clear(inputs.bvh, inputs.primitives, inputs.geometry, from, to)
-                });
+                let v = soft_visibility(
+                    world_p,
+                    surface_normal,
+                    light,
+                    texel_seed,
+                    inputs.area_sample_count,
+                    |from, to| {
+                        segment_clear(inputs.bvh, inputs.primitives, inputs.geometry, from, to)
+                    },
+                );
                 if v <= 0.0 {
                     continue;
                 }
@@ -696,8 +710,25 @@ mod tests {
     }
 
     fn bake_with_geometry_and_chunks<F>(
+        geo: GeometryResult,
+        lights: Vec<MapLight>,
+        build_chunks: F,
+    ) -> AnimatedLightWeightMapsSection
+    where
+        F: FnOnce(&[Chart]) -> AnimatedLightChunksSection,
+    {
+        bake_with_sample_count(
+            geo,
+            lights,
+            crate::lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
+            build_chunks,
+        )
+    }
+
+    fn bake_with_sample_count<F>(
         mut geo: GeometryResult,
         lights: Vec<MapLight>,
+        area_sample_count: u32,
         build_chunks: F,
     ) -> AnimatedLightWeightMapsSection
     where
@@ -715,6 +746,7 @@ mod tests {
             &mut lm_ctx,
             &crate::lightmap_bake::LightmapConfig {
                 lightmap_density: 0.25,
+                area_sample_count: crate::lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
             },
         )
         .unwrap();
@@ -731,6 +763,7 @@ mod tests {
             face_placements: &lm_output.placements,
             atlas_width: lm_output.atlas_width,
             atlas_height: lm_output.atlas_height,
+            area_sample_count,
         };
         bake_animated_light_weight_maps(&inputs)
     }
@@ -899,6 +932,47 @@ mod tests {
             assert_eq!(entry.count, 0, "sdf-typed lights emit no baked weight");
         }
         assert!(section.texel_lights.is_empty());
+    }
+
+    /// Task 6: the area-sample-count knob is a plain owned field on
+    /// `WeightMapInputs` (this stage is uncached — no `*Config`/`input_hash` to
+    /// fold it into), passed straight into the bake. Raising it changes the
+    /// penumbra weights at the higher stratification resolution, proving the
+    /// field reaches `soft_visibility`. Each build recomputes from scratch — the
+    /// only "invalidation" mechanism the uncached stage has.
+    #[test]
+    fn area_sample_count_field_changes_penumbra_weights() {
+        let low = bake_with_sample_count(
+            floor_plus_partial_blocker_geometry(),
+            vec![soft_animated_point_light_above()],
+            16,
+            |charts| full_face_chunk(charts, 0, vec![0]),
+        );
+        let high = bake_with_sample_count(
+            floor_plus_partial_blocker_geometry(),
+            vec![soft_animated_point_light_above()],
+            64,
+            |charts| full_face_chunk(charts, 0, vec![0]),
+        );
+        assert!(low.is_consistent() && high.is_consistent());
+
+        // Collect penumbra weights (those strictly below the per-build max) at
+        // each sample count. The finer stratification at 64 quantizes the
+        // fraction differently, so the multisets must differ.
+        let low_weights: Vec<u32> = low
+            .texel_lights
+            .iter()
+            .map(|t| t.weight.to_bits())
+            .collect();
+        let high_weights: Vec<u32> = high
+            .texel_lights
+            .iter()
+            .map(|t| t.weight.to_bits())
+            .collect();
+        assert_ne!(
+            low_weights, high_weights,
+            "raising the area-sample-count knob must change baked penumbra weights",
+        );
     }
 
     /// Task 4: the soft bake stays deterministic — the per-texel seed is a fixed

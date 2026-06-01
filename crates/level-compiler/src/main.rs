@@ -263,6 +263,7 @@ fn main() -> anyhow::Result<()> {
     let static_light_count = map_data.lights.iter().filter(|l| !l.is_dynamic).count();
     let lightmap_config = lightmap_bake::LightmapConfig {
         lightmap_density: args.lightmap_density,
+        area_sample_count: args.soft_shadow_samples,
     };
     let final_lightmap_density;
     let lightmap_bake_output = {
@@ -331,6 +332,7 @@ fn main() -> anyhow::Result<()> {
                     &mut lm_ctx,
                     &lightmap_bake::LightmapConfig {
                         lightmap_density: density,
+                        area_sample_count: args.soft_shadow_samples,
                     },
                 ) {
                     Ok(result) => {
@@ -535,6 +537,7 @@ fn main() -> anyhow::Result<()> {
             face_placements: &face_placements,
             atlas_width,
             atlas_height,
+            area_sample_count: args.soft_shadow_samples,
         };
         Some(animated_light_weight_maps::bake_animated_light_weight_maps(
             &wm_inputs,
@@ -669,6 +672,11 @@ struct Args {
     probe_spacing: f32,
     /// Starting density in meters; baker retries at coarser densities on atlas overflow.
     lightmap_density: f32,
+    /// Soft-shadow area-sample count (penumbra escalation target). Raising it
+    /// invalidates the cached lightmap stage and re-bakes; the uncached animated
+    /// stage recomputes from scratch. Default
+    /// `lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT`.
+    soft_shadow_samples: u32,
     /// SDF occluder-atlas voxel edge length in meters. Overrides
     /// `sdf_bake::DEFAULT_VOXEL_SIZE_METERS` for this run.
     voxel_size: f32,
@@ -700,12 +708,14 @@ fn help_text() -> String {
          --format <FORMAT>          Map source format: idtech2 | idtech3 | idtech4 (default: idtech2)\n    \
          --sh-probe-spacing <METERS> SH irradiance probe spacing in meters, > 0 (default: {probe})\n    \
          --lightmap-density <METERS> Starting lightmap texel size in meters, > 0 (default: {density})\n    \
+         --soft-shadow-samples <N>  Soft-shadow penumbra area-sample count, >= 1 (default: {samples})\n    \
          --sdf-voxel-size <METERS>  SDF occluder-atlas voxel edge length in meters, > 0 (default: {voxel})\n    \
          --cache-dir <PATH>         Override the stage-cache directory (default: <workspace>/.build-caches/prl-cache)\n    \
          --no-cache                 Disable the stage cache entirely; wins over --cache-dir (default: off)\n    \
          -h, --help                 Print this help and exit\n",
         probe = sh_bake::DEFAULT_PROBE_SPACING,
         density = lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS,
+        samples = lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
         voxel = sdf_bake::DEFAULT_VOXEL_SIZE_METERS,
     )
 }
@@ -720,6 +730,7 @@ where
     let mut format = DEFAULT_MAP_FORMAT;
     let mut probe_spacing = sh_bake::DEFAULT_PROBE_SPACING;
     let mut lightmap_density = lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS;
+    let mut soft_shadow_samples = lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT;
     let mut voxel_size = sdf_bake::DEFAULT_VOXEL_SIZE_METERS;
     let mut cache_dir: Option<PathBuf> = None;
     let mut no_cache = false;
@@ -771,6 +782,18 @@ where
                 }
                 lightmap_density = parsed;
             }
+            "--soft-shadow-samples" => {
+                let samples_str = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--soft-shadow-samples requires a value"))?;
+                let parsed: u32 = samples_str.parse().map_err(|_| {
+                    anyhow::anyhow!("--soft-shadow-samples must be a positive integer")
+                })?;
+                if parsed < 1 {
+                    anyhow::bail!("--soft-shadow-samples must be >= 1");
+                }
+                soft_shadow_samples = parsed;
+            }
             "--sdf-voxel-size" => {
                 let voxel_str = args
                     .next()
@@ -805,7 +828,7 @@ where
         anyhow::anyhow!(
             "usage: prl-build <input.map> [-o <output.prl>] [-v|--verbose] \
              [--format <FORMAT>] [--sh-probe-spacing <METERS>] [--lightmap-density <METERS>] \
-             [--sdf-voxel-size <METERS>] [--cache-dir <PATH>] [--no-cache]\n\
+             [--soft-shadow-samples <N>] [--sdf-voxel-size <METERS>] [--cache-dir <PATH>] [--no-cache]\n\
              (run `prl-build --help` for the full flag list)"
         )
     })?;
@@ -819,6 +842,7 @@ where
         format,
         probe_spacing,
         lightmap_density,
+        soft_shadow_samples,
         voxel_size,
         cache_dir,
         no_cache,
@@ -1430,6 +1454,7 @@ mod tests {
         };
         let config = LightmapConfig {
             lightmap_density: 0.25,
+            area_sample_count: lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
         };
         let hash = lightmap_input_hash(&inputs, &config);
         let key = CacheKey::new("lightmap", lightmap_bake::STAGE_VERSION, &hash);
@@ -1553,6 +1578,7 @@ mod tests {
         };
         let config = LightmapConfig {
             lightmap_density: 0.25,
+            area_sample_count: lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
         };
         let key_a = CacheKey::new(
             "lightmap",
@@ -1586,6 +1612,53 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Task 6 area-sample-count knob: raising `LightmapConfig.area_sample_count`
+    /// shifts the lightmap stage's `input_hash` (the knob folds into the cache
+    /// key via `LightmapConfig`), so a stale lower-quality entry is unreachable
+    /// and the stage re-bakes at the new sample count.
+    #[test]
+    fn cache_misses_when_area_sample_count_changes() {
+        let dir = fresh_cache_dir("lm_sample_count_change");
+        let cache = StageCache::new(&dir).expect("create cache dir");
+
+        let inputs = LightmapInputs {
+            lights: vec![baseline_point_light()],
+            geometry: minimal_geometry(),
+        };
+        let config_default = LightmapConfig {
+            lightmap_density: 0.25,
+            area_sample_count: lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
+        };
+        let key_default = CacheKey::new(
+            "lightmap",
+            lightmap_bake::STAGE_VERSION,
+            &lightmap_input_hash(&inputs, &config_default),
+        );
+        cache.put(&key_default, b"default-quality-section");
+
+        // Raise only the knob: the cache key must change → cache miss → re-bake.
+        let config_high = LightmapConfig {
+            lightmap_density: 0.25,
+            area_sample_count: lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT * 2,
+        };
+        let key_high = CacheKey::new(
+            "lightmap",
+            lightmap_bake::STAGE_VERSION,
+            &lightmap_input_hash(&inputs, &config_high),
+        );
+        assert_ne!(
+            key_default.as_filename(),
+            key_high.as_filename(),
+            "raising area_sample_count must change the lightmap cache key",
+        );
+        assert!(
+            cache.get(&key_high).is_none(),
+            "higher sample count must miss the cache and re-bake",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn cache_key_stable_across_non_bake_fields() {
         // `LightmapInputs` only carries lights + geometry — not fog_pixel_scale,
@@ -1607,6 +1680,7 @@ mod tests {
         };
         let config = LightmapConfig {
             lightmap_density: 0.25,
+            area_sample_count: lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
         };
 
         let key_first = CacheKey::new(
@@ -1676,6 +1750,7 @@ mod tests {
         };
         let config = LightmapConfig {
             lightmap_density: 0.25,
+            area_sample_count: lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
         };
         let hash = lightmap_input_hash(&inputs, &config);
         let key = CacheKey::new("lightmap", lightmap_bake::STAGE_VERSION, &hash);

@@ -120,6 +120,10 @@ pub struct LightmapInputs {
 #[derive(serde::Serialize)]
 pub struct LightmapConfig {
     pub lightmap_density: f32,
+    /// Area-sample count for soft-shadow penumbra visibility (Task 6 knob).
+    /// Folded into this stage's `input_hash`, so raising it invalidates the
+    /// cache and re-bakes at the higher quality. Default [`DEFAULT_AREA_SAMPLE_COUNT`].
+    pub area_sample_count: u32,
 }
 
 /// Output of a lightmap bake pass. The animated weight-map baker consumes
@@ -233,6 +237,7 @@ pub fn bake_lightmap(
     config: &LightmapConfig,
 ) -> Result<LightmapBakeOutput, LightmapBakeError> {
     let texel_density = config.lightmap_density;
+    let area_sample_count = config.area_sample_count;
 
     // Short-circuit on empty geometry: nothing for the atlas prep to do and the per-texel pass
     // would allocate zero-sized buffers.
@@ -275,6 +280,11 @@ pub fn bake_lightmap(
         .map(|e| e.light)
         .filter(|l| l.shadow_type != crate::map_data::ShadowType::Sdf)
         .collect();
+
+    // Author hint: flag any light whose emitter is too small to soften at this
+    // atlas density before baking (Task 6). Output-only — never alters the bake.
+    warn_sub_texel_penumbra_lights(&static_lights, texel_density);
+
     let charts = prepared.charts;
     let placements = prepared.placements;
     let atlas_w = prepared.atlas_width;
@@ -294,6 +304,7 @@ pub fn bake_lightmap(
             &charts[face_idx],
             placement,
             atlas_w,
+            area_sample_count,
             &mut irradiance,
             &mut direction,
             &mut coverage,
@@ -681,6 +692,7 @@ fn bake_face_chart(
     chart: &Chart,
     placement: &ChartPlacement,
     atlas_w: u32,
+    area_sample_count: u32,
     irradiance: &mut [f32],
     direction: &mut [Vec3],
     coverage: &mut [bool],
@@ -723,9 +735,14 @@ fn bake_face_chart(
                 // hard 1-texel step. `sdf` lights are already filtered out of
                 // `static_lights` (their direct shadow resolves at runtime), so no
                 // double-shadow.
-                let v = soft_visibility(world_p, surface_normal, light, seed, |from, to| {
-                    segment_clear(bvh, primitives, geometry, from, to)
-                });
+                let v = soft_visibility(
+                    world_p,
+                    surface_normal,
+                    light,
+                    seed,
+                    area_sample_count,
+                    |from, to| segment_clear(bvh, primitives, geometry, from, to),
+                );
                 if v <= 0.0 {
                     continue;
                 }
@@ -878,15 +895,83 @@ fn texel_seed(x: u32, y: u32) -> u64 {
 // `soft_visibility` in the per-texel loop above; the animated weight-map and SH
 // bounce bakers (Tasks 4/4b) wrap their own `segment_clear` as the trace closure.
 
+/// Sub-texel-penumbra warning threshold, in atlas texels (Task 6). An emitter
+/// whose estimated penumbra spans fewer than this many texels can't produce a
+/// visibly-soft edge — the area samples collapse into one texel and the result
+/// reads as a hard step. Diagnostic-only: this constant never feeds bake output,
+/// so it is exempt from the determinism fixed-constant rule (it only gates a
+/// `log::warn!`). One texel is the floor below which softening is wasted.
+const SUB_TEXEL_PENUMBRA_THRESHOLD: f32 = 1.0;
+
+/// Coarse estimate of an emitter's penumbra width in **atlas texels**, used by
+/// the sub-texel-penumbra author hint (Task 6). Deliberately uses only the
+/// emitter size (`_light_size` / `_angular_diameter`), its `_falloff_range`
+/// reach, and the atlas texel world-size (`texel_density`) — **no
+/// distance-to-occluder term**, matching the no-occluder-distance design of
+/// `soft_visibility`. It is an author hint, not an exact penumbra width.
+///
+/// Point/Spot: the emitter subtends `2·atan(light_size / falloff_range)` from the
+/// receiver at the falloff reach; projected back over that reach the world-space
+/// penumbra is `angular · falloff_range` (≈ `2·light_size` at small angles).
+/// Directional: the angular diameter is given directly; projected over the
+/// falloff reach as the characteristic scale. Dividing by `texel_density` yields
+/// the span in texels.
+fn penumbra_span_texels(light: &MapLight, texel_density: f32) -> f32 {
+    let texel = texel_density.max(1.0e-4);
+    let reach = light.falloff_range.max(1.0e-4);
+    let angular = match light.light_type {
+        LightType::Point | LightType::Spot => 2.0 * (light.light_size.max(0.0) / reach).atan(),
+        LightType::Directional => light.angular_diameter.max(0.0).to_radians(),
+    };
+    let world_width = angular * reach;
+    world_width / texel
+}
+
+/// Whether `light`'s estimated penumbra is narrower than one atlas texel — the
+/// pure predicate behind the sub-texel-penumbra warning. A hard-authored light
+/// (`light_size`/`angular_diameter == 0`, i.e. zero span) is intentionally *not*
+/// flagged: the author opted into a hard edge, so a "too soft to see" hint would
+/// be noise. Factored out of the logging path so it is unit-testable without
+/// capturing `log` output.
+fn penumbra_below_one_texel(light: &MapLight, texel_density: f32) -> bool {
+    let span = penumbra_span_texels(light, texel_density);
+    span > 0.0 && span < SUB_TEXEL_PENUMBRA_THRESHOLD
+}
+
+/// Emit one `log::warn!` per `static_light_map` light whose estimated penumbra is
+/// narrower than one atlas texel (Task 6 author hint). Names the light's index
+/// and origin so the author can locate the offending emitter. Lights at or above
+/// the threshold — and explicitly-hard lights (zero size) — warn not at all.
+pub(crate) fn warn_sub_texel_penumbra_lights(lights: &[&MapLight], texel_density: f32) {
+    for (index, light) in lights.iter().enumerate() {
+        if penumbra_below_one_texel(light, texel_density) {
+            log::warn!(
+                "[Lightmap] light {index} at ({:.2}, {:.2}, {:.2}) subtends a sub-texel \
+                 penumbra (~{:.2} texel at {texel_density} m/texel) — its soft shadow will read \
+                 as a hard edge; raise `_light_size`/`_angular_diameter` or `_falloff_range`",
+                light.origin.x,
+                light.origin.y,
+                light.origin.z,
+                penumbra_span_texels(light, texel_density),
+            );
+        }
+    }
+}
+
 /// Probe samples traced before escalating. Tracing this many first lets the
 /// fully-lit / fully-shadowed common case (where every probe agrees) stay cheap;
-/// only a penumbra (probes disagree) pays for the full set.
+/// only a penumbra (probes disagree) pays for the full set. Fixed constant — the
+/// adaptive-escalation threshold must not vary, so the bake stays deterministic
+/// regardless of the caller's `full_samples` knob (Task 6).
 const SOFT_PROBE_SAMPLES: u32 = 4;
 
-/// Full stratified sample count once a penumbra is detected. Fixed constant, not
-/// data-dependent, so the bake stays deterministic. The probe set is a strict
-/// prefix of these, so a penumbra's returned fraction is `clear / SOFT_FULL_SAMPLES`.
-const SOFT_FULL_SAMPLES: u32 = 32;
+/// Default full stratified sample count once a penumbra is detected. The
+/// area-sample-count bake knob (Task 6) overrides this per call via
+/// `soft_visibility`'s `full_samples` argument; callers without a knob
+/// (e.g. the SH bounce baker, where bounce is low-frequency) pass this default.
+/// The probe set is always a strict prefix of `full_samples`, so a penumbra's
+/// returned fraction is `clear / full_samples`.
+pub(crate) const DEFAULT_AREA_SAMPLE_COUNT: u32 = 32;
 
 /// Soft area-light visibility for a `(surface_point, surface_normal, light)` pair:
 /// the `[0, 1]` fraction of stratified area-samples whose shadow ray is unoccluded.
@@ -903,11 +988,19 @@ const SOFT_FULL_SAMPLES: u32 = 32;
 /// `sh_bake.rs`'s convention) rotated by `seed`. No RNG, no hash-order dependence —
 /// the caller supplies `seed` deterministically (texel `(x, y)` hash, or
 /// probe/ray/light indices) so the same inputs yield byte-identical output.
+///
+/// `full_samples` is the area-sample-count bake knob (Task 6): the escalated
+/// (penumbra) sample target. The fixed `SOFT_PROBE_SAMPLES` probe set is always a
+/// strict prefix, so it is clamped to at least the probe count; the escalation
+/// threshold itself stays a fixed constant so the bake remains deterministic
+/// regardless of the knob's value. Callers without a knob pass
+/// [`DEFAULT_AREA_SAMPLE_COUNT`].
 pub(crate) fn soft_visibility(
     surface_point: Vec3,
     surface_normal: Vec3,
     light: &MapLight,
     seed: u64,
+    full_samples: u32,
     trace: impl Fn(Vec3, Vec3) -> bool,
 ) -> f32 {
     if !light.cast_shadows {
@@ -926,11 +1019,18 @@ pub(crate) fn soft_visibility(
         return if trace(origin, target) { 1.0 } else { 0.0 };
     }
 
+    // The probe set is a strict prefix of the full set, so the knob can only raise
+    // the escalated count above the fixed probe floor — never below it.
+    let full_samples = full_samples.max(SOFT_PROBE_SAMPLES);
+
     // The probe set is a strict prefix of the full set, so escalation only adds
-    // samples — the penumbra fraction stays `clear / SOFT_FULL_SAMPLES`.
+    // samples — the penumbra fraction stays `clear / full_samples`.
     let mut clear = 0u32;
     for i in 0..SOFT_PROBE_SAMPLES {
-        if trace(origin, area_sample_target(surface_point, light, seed, i)) {
+        if trace(
+            origin,
+            area_sample_target(surface_point, light, seed, i, full_samples),
+        ) {
             clear += 1;
         }
     }
@@ -940,12 +1040,15 @@ pub(crate) fn soft_visibility(
         return clear as f32 / SOFT_PROBE_SAMPLES as f32;
     }
 
-    for i in SOFT_PROBE_SAMPLES..SOFT_FULL_SAMPLES {
-        if trace(origin, area_sample_target(surface_point, light, seed, i)) {
+    for i in SOFT_PROBE_SAMPLES..full_samples {
+        if trace(
+            origin,
+            area_sample_target(surface_point, light, seed, i, full_samples),
+        ) {
             clear += 1;
         }
     }
-    clear as f32 / SOFT_FULL_SAMPLES as f32
+    clear as f32 / full_samples as f32
 }
 
 /// Single hard-ray target, matching `shadow_visible`: the light origin for
@@ -965,13 +1068,20 @@ fn hard_ray_target(surface_point: Vec3, light: &MapLight) -> Vec3 {
     }
 }
 
-/// Stratified area-sample target for sample index `i` of `SOFT_FULL_SAMPLES`.
+/// Stratified area-sample target for sample index `i` of `full_samples` (the
+/// area-sample-count knob; the lattice's stratification denominator).
 /// Point/Spot → a point on the emitter sphere of radius `light_size` at the light
 /// origin. Directional → a far point along a direction jittered within the cone of
 /// half-angle `angular_diameter/2` about `-cone_direction`, at the shared far
 /// distance (`DIRECTIONAL_LIGHT_RAY_LENGTH_METERS`, same for every directional
 /// sample). The lattice is rotated by `seed` so adjacent texels decorrelate.
-fn area_sample_target(surface_point: Vec3, light: &MapLight, seed: u64, i: u32) -> Vec3 {
+fn area_sample_target(
+    surface_point: Vec3,
+    light: &MapLight,
+    seed: u64,
+    i: u32,
+    full_samples: u32,
+) -> Vec3 {
     match light.light_type {
         LightType::Point | LightType::Spot => {
             let center = Vec3::new(
@@ -979,13 +1089,13 @@ fn area_sample_target(surface_point: Vec3, light: &MapLight, seed: u64, i: u32) 
                 light.origin.y as f32,
                 light.origin.z as f32,
             );
-            center + fibonacci_sphere_sample(i, SOFT_FULL_SAMPLES, seed) * light.light_size
+            center + fibonacci_sphere_sample(i, full_samples, seed) * light.light_size
         }
         LightType::Directional => {
             let aim = Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0]));
             let to_light = (-aim).normalize_or_zero();
             let half_angle = light.angular_diameter.to_radians() * 0.5;
-            let dir = cone_jittered_direction(to_light, half_angle, i, SOFT_FULL_SAMPLES, seed);
+            let dir = cone_jittered_direction(to_light, half_angle, i, full_samples, seed);
             surface_point + dir * DIRECTIONAL_LIGHT_RAY_LENGTH_METERS
         }
     }
@@ -1302,6 +1412,7 @@ mod tests {
             &mut inputs,
             &LightmapConfig {
                 lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
+                area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             },
         )
         .unwrap()
@@ -1326,6 +1437,7 @@ mod tests {
             &mut inputs,
             &LightmapConfig {
                 lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
+                area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             },
         )
         .unwrap()
@@ -1350,6 +1462,7 @@ mod tests {
             &mut inputs,
             &LightmapConfig {
                 lightmap_density: 0.25,
+                area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             },
         )
         .unwrap()
@@ -1405,6 +1518,7 @@ mod tests {
             &mut inputs,
             &LightmapConfig {
                 lightmap_density: 0.25,
+                area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             },
         )
         .unwrap()
@@ -1441,6 +1555,7 @@ mod tests {
             &mut inputs,
             &LightmapConfig {
                 lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
+                area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             },
         )
         .unwrap()
@@ -1470,6 +1585,7 @@ mod tests {
             &mut inputs,
             &LightmapConfig {
                 lightmap_density: 0.25,
+                area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             },
         )
         .unwrap()
@@ -1494,6 +1610,7 @@ mod tests {
             &mut inputs_d,
             &LightmapConfig {
                 lightmap_density: 0.25,
+                area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             },
         )
         .unwrap()
@@ -1522,6 +1639,7 @@ mod tests {
             &mut inputs_a,
             &LightmapConfig {
                 lightmap_density: 0.25,
+                area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             },
         )
         .unwrap()
@@ -1546,6 +1664,7 @@ mod tests {
             &mut inputs_b,
             &LightmapConfig {
                 lightmap_density: 0.25,
+                area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             },
         )
         .unwrap()
@@ -1605,6 +1724,7 @@ mod tests {
                 &mut inputs,
                 &LightmapConfig {
                     lightmap_density: 0.25,
+                    area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
                 },
             )
             .unwrap();
@@ -1638,6 +1758,7 @@ mod tests {
             &mut inputs,
             &LightmapConfig {
                 lightmap_density: 0.25,
+                area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             },
         )
         .unwrap();
@@ -1795,6 +1916,7 @@ mod tests {
             &mut inputs,
             &LightmapConfig {
                 lightmap_density: 0.25,
+                area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             },
         )
         .unwrap()
@@ -1879,6 +2001,7 @@ mod tests {
             &mut inputs,
             &LightmapConfig {
                 lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
+                area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             },
         );
         match result {
@@ -1971,6 +2094,7 @@ mod tests {
             &mut inputs,
             &LightmapConfig {
                 lightmap_density: 0.25,
+                area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             },
         )
         .unwrap();
@@ -2024,7 +2148,14 @@ mod tests {
         let mut light = soft_point_light(DEFAULT_LIGHT_SIZE);
         light.cast_shadows = false;
         // Every ray "blocked", but cast_shadows == false short-circuits first.
-        let v = soft_visibility(Vec3::ZERO, Vec3::Y, &light, 7, |_, _| false);
+        let v = soft_visibility(
+            Vec3::ZERO,
+            Vec3::Y,
+            &light,
+            7,
+            DEFAULT_AREA_SAMPLE_COUNT,
+            |_, _| false,
+        );
         assert!((v - 1.0).abs() < EPS, "got {v}");
     }
 
@@ -2033,8 +2164,22 @@ mod tests {
         // An authored `0` must reproduce the single hard ray exactly: 1.0 clear,
         // 0.0 blocked — preserving an explicit hard edge.
         let light = soft_point_light(0.0);
-        let clear = soft_visibility(Vec3::ZERO, Vec3::Y, &light, 1, |_, _| true);
-        let blocked = soft_visibility(Vec3::ZERO, Vec3::Y, &light, 1, |_, _| false);
+        let clear = soft_visibility(
+            Vec3::ZERO,
+            Vec3::Y,
+            &light,
+            1,
+            DEFAULT_AREA_SAMPLE_COUNT,
+            |_, _| true,
+        );
+        let blocked = soft_visibility(
+            Vec3::ZERO,
+            Vec3::Y,
+            &light,
+            1,
+            DEFAULT_AREA_SAMPLE_COUNT,
+            |_, _| false,
+        );
         assert!((clear - 1.0).abs() < EPS, "clear got {clear}");
         assert!(blocked.abs() < EPS, "blocked got {blocked}");
     }
@@ -2042,8 +2187,22 @@ mod tests {
     #[test]
     fn soft_visibility_zero_angular_diameter_matches_hard_ray() {
         let light = soft_directional_light(0.0);
-        let clear = soft_visibility(Vec3::ZERO, Vec3::Y, &light, 1, |_, _| true);
-        let blocked = soft_visibility(Vec3::ZERO, Vec3::Y, &light, 1, |_, _| false);
+        let clear = soft_visibility(
+            Vec3::ZERO,
+            Vec3::Y,
+            &light,
+            1,
+            DEFAULT_AREA_SAMPLE_COUNT,
+            |_, _| true,
+        );
+        let blocked = soft_visibility(
+            Vec3::ZERO,
+            Vec3::Y,
+            &light,
+            1,
+            DEFAULT_AREA_SAMPLE_COUNT,
+            |_, _| false,
+        );
         assert!((clear - 1.0).abs() < EPS, "clear got {clear}");
         assert!(blocked.abs() < EPS, "blocked got {blocked}");
     }
@@ -2059,23 +2218,42 @@ mod tests {
             light.origin.y as f32,
             light.origin.z as f32,
         );
-        let v = soft_visibility(surface, Vec3::Y, &light, 0, |_, to| {
-            (to - expected_target).length() < EPS
-        });
+        let v = soft_visibility(
+            surface,
+            Vec3::Y,
+            &light,
+            0,
+            DEFAULT_AREA_SAMPLE_COUNT,
+            |_, to| (to - expected_target).length() < EPS,
+        );
         assert!((v - 1.0).abs() < EPS, "got {v}");
     }
 
     #[test]
     fn soft_visibility_full_clear_is_one() {
         let light = soft_point_light(DEFAULT_LIGHT_SIZE);
-        let v = soft_visibility(Vec3::ZERO, Vec3::Y, &light, 42, |_, _| true);
+        let v = soft_visibility(
+            Vec3::ZERO,
+            Vec3::Y,
+            &light,
+            42,
+            DEFAULT_AREA_SAMPLE_COUNT,
+            |_, _| true,
+        );
         assert!((v - 1.0).abs() < EPS, "got {v}");
     }
 
     #[test]
     fn soft_visibility_full_block_is_zero() {
         let light = soft_point_light(DEFAULT_LIGHT_SIZE);
-        let v = soft_visibility(Vec3::ZERO, Vec3::Y, &light, 42, |_, _| false);
+        let v = soft_visibility(
+            Vec3::ZERO,
+            Vec3::Y,
+            &light,
+            42,
+            DEFAULT_AREA_SAMPLE_COUNT,
+            |_, _| false,
+        );
         assert!(v.abs() < EPS, "got {v}");
     }
 
@@ -2090,9 +2268,14 @@ mod tests {
             light.origin.y as f32,
             light.origin.z as f32,
         );
-        let v = soft_visibility(Vec3::ZERO, Vec3::Y, &light, 9, |_, to| {
-            (to - center).x <= 0.0
-        });
+        let v = soft_visibility(
+            Vec3::ZERO,
+            Vec3::Y,
+            &light,
+            9,
+            DEFAULT_AREA_SAMPLE_COUNT,
+            |_, to| (to - center).x <= 0.0,
+        );
         assert!(v > 0.0 && v < 1.0, "expected penumbra fraction, got {v}");
     }
 
@@ -2103,9 +2286,30 @@ mod tests {
         let light = soft_point_light(0.5);
         let surface = Vec3::new(0.5, 0.0, 0.5);
         let occluder = |_from: Vec3, to: Vec3| to.x <= 0.5;
-        let a = soft_visibility(surface, Vec3::Y, &light, 0xABCD, occluder);
-        let b = soft_visibility(surface, Vec3::Y, &light, 0xABCD, occluder);
-        let c = soft_visibility(surface, Vec3::Y, &light, 0xABCD, occluder);
+        let a = soft_visibility(
+            surface,
+            Vec3::Y,
+            &light,
+            0xABCD,
+            DEFAULT_AREA_SAMPLE_COUNT,
+            occluder,
+        );
+        let b = soft_visibility(
+            surface,
+            Vec3::Y,
+            &light,
+            0xABCD,
+            DEFAULT_AREA_SAMPLE_COUNT,
+            occluder,
+        );
+        let c = soft_visibility(
+            surface,
+            Vec3::Y,
+            &light,
+            0xABCD,
+            DEFAULT_AREA_SAMPLE_COUNT,
+            occluder,
+        );
         assert_eq!(a.to_bits(), b.to_bits(), "repeat 1 diverged: {a} vs {b}");
         assert_eq!(a.to_bits(), c.to_bits(), "repeat 2 diverged: {a} vs {c}");
     }
@@ -2114,7 +2318,14 @@ mod tests {
     fn soft_visibility_directional_partial_occluder_is_fractional() {
         // Wide cone so jittered directions spread; occluder splits the cone.
         let light = soft_directional_light(20.0);
-        let v = soft_visibility(Vec3::ZERO, Vec3::Y, &light, 3, |_, to| to.x <= 0.0);
+        let v = soft_visibility(
+            Vec3::ZERO,
+            Vec3::Y,
+            &light,
+            3,
+            DEFAULT_AREA_SAMPLE_COUNT,
+            |_, to| to.x <= 0.0,
+        );
         assert!(v > 0.0 && v < 1.0, "expected penumbra fraction, got {v}");
     }
 
@@ -2136,7 +2347,7 @@ mod tests {
                 counter.set(i + 1);
                 (pattern >> (i % 32)) & 1 == 0
             };
-            let v = soft_visibility(Vec3::ZERO, Vec3::Y, &light, seed, occluder);
+            let v = soft_visibility(Vec3::ZERO, Vec3::Y, &light, seed, DEFAULT_AREA_SAMPLE_COUNT, occluder);
             proptest::prop_assert!((0.0..=1.0).contains(&v), "v out of range: {v}");
         }
 
@@ -2147,7 +2358,7 @@ mod tests {
             all_clear in proptest::prelude::any::<bool>(),
         ) {
             let light = soft_directional_light(angular);
-            let v = soft_visibility(Vec3::ZERO, Vec3::Y, &light, seed, |_, _| all_clear);
+            let v = soft_visibility(Vec3::ZERO, Vec3::Y, &light, seed, DEFAULT_AREA_SAMPLE_COUNT, |_, _| all_clear);
             proptest::prop_assert!((0.0..=1.0).contains(&v), "v out of range: {v}");
         }
     }
@@ -2162,17 +2373,151 @@ mod tests {
             point.origin.y as f32,
             point.origin.z as f32,
         );
-        let pv = soft_visibility(Vec3::ZERO, Vec3::Y, &point, 11, |_, to| {
-            (to - center).x <= 0.0
-        });
+        let pv = soft_visibility(
+            Vec3::ZERO,
+            Vec3::Y,
+            &point,
+            11,
+            DEFAULT_AREA_SAMPLE_COUNT,
+            |_, to| (to - center).x <= 0.0,
+        );
         assert!(pv > 0.0 && pv < 1.0, "point default not soft: {pv}");
 
         let dir = soft_directional_light(DEFAULT_ANGULAR_DIAMETER_DEG);
         // Directional default is a narrow 0.5°; a split still yields a fraction.
-        let dv = soft_visibility(Vec3::ZERO, Vec3::Y, &dir, 11, |_, to| to.x <= 0.0);
+        let dv = soft_visibility(
+            Vec3::ZERO,
+            Vec3::Y,
+            &dir,
+            11,
+            DEFAULT_AREA_SAMPLE_COUNT,
+            |_, to| to.x <= 0.0,
+        );
         assert!(
             (0.0..=1.0).contains(&dv),
             "directional default out of range: {dv}"
+        );
+    }
+
+    // --- Task 6: sub-texel-penumbra author hint --------------------------
+    //
+    // Test the pure predicate `penumbra_below_one_texel` (and the
+    // `warn_sub_texel_penumbra_lights` count via it), not the `log::warn!`
+    // macro — the warning is gated entirely by this predicate, so its branch
+    // is the testable seam.
+
+    #[test]
+    fn penumbra_below_one_texel_flags_tiny_point_emitter() {
+        // A near-zero (but nonzero) emitter over a long reach subtends a
+        // sub-texel penumbra at the default atlas density → flagged.
+        let mut light = soft_point_light(0.001);
+        light.falloff_range = 5.0;
+        assert!(
+            penumbra_below_one_texel(&light, DEFAULT_TEXEL_DENSITY_METERS),
+            "tiny emitter should be flagged sub-texel"
+        );
+    }
+
+    #[test]
+    fn penumbra_below_one_texel_passes_default_sized_point_emitter() {
+        // The documented default `_light_size` is sized to span ~multiple
+        // texels at the default density → not flagged.
+        let mut light = soft_point_light(DEFAULT_LIGHT_SIZE);
+        light.falloff_range = 5.0;
+        assert!(
+            !penumbra_below_one_texel(&light, DEFAULT_TEXEL_DENSITY_METERS),
+            "default-sized emitter must not be flagged"
+        );
+    }
+
+    #[test]
+    fn penumbra_below_one_texel_does_not_flag_explicit_hard_light() {
+        // An explicitly-authored hard light (size 0) opted into a hard edge —
+        // a "too soft" hint would be noise, so it is never flagged.
+        let mut light = soft_point_light(0.0);
+        light.falloff_range = 5.0;
+        assert!(
+            !penumbra_below_one_texel(&light, DEFAULT_TEXEL_DENSITY_METERS),
+            "explicit hard light (size 0) must not be flagged"
+        );
+        let dir = soft_directional_light(0.0);
+        assert!(
+            !penumbra_below_one_texel(&dir, DEFAULT_TEXEL_DENSITY_METERS),
+            "explicit hard directional (angular 0) must not be flagged"
+        );
+    }
+
+    #[test]
+    fn penumbra_below_one_texel_flags_narrow_directional() {
+        // A 0.001° sun over a unit reach is well below one texel → flagged;
+        // a wide 5° sun is not.
+        let mut narrow = soft_directional_light(0.001);
+        narrow.falloff_range = 1.0;
+        assert!(
+            penumbra_below_one_texel(&narrow, DEFAULT_TEXEL_DENSITY_METERS),
+            "narrow directional should be flagged sub-texel"
+        );
+        let mut wide = soft_directional_light(5.0);
+        wide.falloff_range = 1.0;
+        assert!(
+            !penumbra_below_one_texel(&wide, DEFAULT_TEXEL_DENSITY_METERS),
+            "wide directional must not be flagged"
+        );
+    }
+
+    #[test]
+    fn warn_sub_texel_penumbra_counts_only_below_threshold_lights() {
+        // Mixed set: one flagged (tiny), one not (default). The predicate that
+        // gates the per-light `log::warn!` must fire for exactly one of them.
+        let mut tiny = soft_point_light(0.001);
+        tiny.falloff_range = 5.0;
+        let mut ok = soft_point_light(DEFAULT_LIGHT_SIZE);
+        ok.falloff_range = 5.0;
+        let lights = [&tiny, &ok];
+        let flagged = lights
+            .iter()
+            .filter(|l| penumbra_below_one_texel(l, DEFAULT_TEXEL_DENSITY_METERS))
+            .count();
+        assert_eq!(flagged, 1, "exactly one light should warn");
+        // Smoke: the warning emitter runs without panicking on the same set.
+        warn_sub_texel_penumbra_lights(&lights, DEFAULT_TEXEL_DENSITY_METERS);
+    }
+
+    // --- Task 6: area-sample-count knob ----------------------------------
+
+    #[test]
+    fn soft_visibility_knob_below_probe_floor_is_clamped() {
+        // A knob below the fixed probe count must not panic or invert the
+        // prefix invariant — it clamps up to the probe floor. Full-clear and
+        // full-block still resolve to 1.0 / 0.0.
+        let light = soft_point_light(0.5);
+        let clear = soft_visibility(Vec3::ZERO, Vec3::Y, &light, 1, 1, |_, _| true);
+        let blocked = soft_visibility(Vec3::ZERO, Vec3::Y, &light, 1, 1, |_, _| false);
+        assert!((clear - 1.0).abs() < EPS, "clamped clear got {clear}");
+        assert!(blocked.abs() < EPS, "clamped blocked got {blocked}");
+    }
+
+    #[test]
+    fn soft_visibility_higher_knob_changes_penumbra_fraction_resolution() {
+        // Raising the knob raises the stratification denominator, so a penumbra
+        // fraction is quantized more finely. The two counts trace different
+        // sample sets, so the returned fractions differ — proving the knob
+        // reaches `soft_visibility`'s full-sample target.
+        let light = soft_point_light(0.5);
+        let center = Vec3::new(
+            light.origin.x as f32,
+            light.origin.y as f32,
+            light.origin.z as f32,
+        );
+        let occluder = |_from: Vec3, to: Vec3| (to - center).x <= 0.0;
+        let low = soft_visibility(Vec3::ZERO, Vec3::Y, &light, 9, 16, occluder);
+        let high = soft_visibility(Vec3::ZERO, Vec3::Y, &light, 9, 64, occluder);
+        assert!(low > 0.0 && low < 1.0, "low knob not a penumbra: {low}");
+        assert!(high > 0.0 && high < 1.0, "high knob not a penumbra: {high}");
+        assert_ne!(
+            low.to_bits(),
+            high.to_bits(),
+            "knob did not change full-sample resolution: {low} vs {high}"
         );
     }
 
@@ -2315,6 +2660,7 @@ mod tests {
             &mut inputs,
             &LightmapConfig {
                 lightmap_density: 0.05,
+                area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             },
         )
         .unwrap()
@@ -2361,6 +2707,7 @@ mod tests {
                 &mut inputs,
                 &LightmapConfig {
                     lightmap_density: 0.05,
+                    area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
                 },
             )
             .unwrap()

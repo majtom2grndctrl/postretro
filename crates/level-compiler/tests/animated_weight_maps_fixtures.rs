@@ -18,6 +18,7 @@ use std::process::Command;
 
 use postretro_level_format::SectionId;
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
+use postretro_level_format::lightmap::LightmapSection;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::{read_container, read_section_data};
 
@@ -113,6 +114,68 @@ fn single_fixture_compiles_and_carries_weight_map_section() {
     );
 
     // Cleanup.
+    let _ = std::fs::remove_file(&output);
+    let _ = std::fs::remove_dir(&out_dir);
+}
+
+/// Task 6 soft-shadow test map: compile `soft_shadow_test.map` (single key
+/// light, box-on-floor contact case, and five overlapping static lights) and
+/// assert it produces a real (non-placeholder) baked lightmap. This is the
+/// "every test map compiles" coverage for the new map; the soft-shadow *values*
+/// are covered by unit tests in `lightmap_bake.rs`.
+#[test]
+fn soft_shadow_test_map_compiles_to_a_baked_lightmap() {
+    let ws = workspace_root();
+    let input = ws.join("content/dev/maps/soft_shadow_test.map");
+    assert!(input.exists(), "fixture map missing: {}", input.display());
+
+    let out_dir = std::env::temp_dir().join("postretro_fixture_soft_shadow");
+    std::fs::create_dir_all(&out_dir).expect("mkdir temp out");
+    let output = out_dir.join("soft_shadow_test.prl");
+
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let status = Command::new(cargo)
+        .args([
+            "run",
+            "--quiet",
+            "-p",
+            "postretro-level-compiler",
+            "--bin",
+            "prl-build",
+            "--",
+        ])
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        // Isolate from the shared on-disk stage cache so this test always
+        // exercises a fresh bake regardless of prior runs.
+        .arg("--no-cache")
+        .current_dir(&ws)
+        .status()
+        .expect("spawn prl-build");
+    assert!(status.success(), "prl-build failed: {status}");
+
+    let bytes = std::fs::read(&output).expect("read compiled .prl");
+    let mut cursor = Cursor::new(&bytes);
+    let meta = read_container(&mut cursor).expect("read_container");
+    let lightmap_bytes = read_section_data(&mut cursor, &meta, SectionId::Lightmap as u32)
+        .expect("read Lightmap section")
+        .expect("Lightmap section present on soft-shadow map");
+    let lightmap = LightmapSection::from_bytes(&lightmap_bytes).expect("lightmap from_bytes");
+
+    // A real (non-placeholder) atlas: the six static lights bake into it, so it
+    // must be larger than the 1x1 placeholder and carry irradiance bytes.
+    assert!(
+        lightmap.width > 1 && lightmap.height > 1,
+        "soft-shadow map must bake a real lightmap atlas, got {}x{}",
+        lightmap.width,
+        lightmap.height,
+    );
+    assert!(
+        !lightmap.irradiance.is_empty(),
+        "baked lightmap must carry irradiance data",
+    );
+
     let _ = std::fs::remove_file(&output);
     let _ = std::fs::remove_dir(&out_dir);
 }

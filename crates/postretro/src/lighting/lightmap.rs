@@ -20,9 +20,8 @@ pub const BIND_ANIMATED_ATLAS: u32 = 3;
 /// Filtering (Linear) sampler. Used for the irradiance and animated atlases so
 /// baked penumbra ramps read as continuous gradients under magnification
 /// instead of stair-stepping at atlas-texel boundaries. See
-/// baked-soft-lightmap-shadows/ §Task 5. Bound in every variant; on the manual
-/// 4-tap fallback path it goes unused (the shader sees `use_hw_filter == false`)
-/// but stays bound so the group-4 BGL is identical across both pipeline variants.
+/// baked-soft-lightmap-shadows/ §Task 5. `Rgba16Float` linear-filterability is a
+/// hard runtime requirement checked at init (see `atlas_format_filterable`).
 pub const BIND_FILTERING_SAMPLER: u32 = 4;
 
 /// GPU-side lightmap atlas: irradiance texture, direction texture, sampler,
@@ -216,10 +215,11 @@ fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 5] {
 }
 
 /// Whether `Rgba16Float` (the irradiance + animated atlas format) advertises
-/// hardware bilinear filtering on this adapter. Decides the forward pipeline's
-/// `use_hw_filter` override once at init: `true` → sample through the linear
-/// sampler; `false` → manual 4-tap bilinear lerp in `forward.wgsl`. Both produce
-/// the same continuous ramp; the fallback only costs extra per-fragment work.
+/// hardware bilinear filtering on this adapter. Checked once at init: the
+/// forward pass samples the irradiance + animated atlases through the linear
+/// sampler, so a non-filterable adapter is rejected (see `Renderer::new`).
+/// Linear 16-bit-float filtering is core WebGPU and mandated on all targeted
+/// backends, so this holds everywhere the engine is supported.
 pub fn atlas_format_filterable(adapter: &wgpu::Adapter) -> bool {
     adapter
         .get_texture_format_features(wgpu::TextureFormat::Rgba16Float)

@@ -62,7 +62,7 @@ Start scripts and domain scripts declare entity types as `entities` on the `setu
 
 | Phase | Stage | Owner | Status |
 |-------|-------|-------|--------|
-| 0 | Engine init: wgpu adapter, input, scripting runtimes constructed; SDK preludes installed | Engine | today |
+| 0 | Engine init: wgpu adapter, input, scripting runtimes constructed; SDK preludes installed. Adapter requirements checked here — fail fast with a named `[Renderer]` message if unmet (e.g. `Rgba16Float` linear-filterability, see `rendering_pipeline.md` §4) | Engine | today |
 | 1 | Discover mods: scan `content/base/` and `content/mods/*/` for valid manifests | Engine | planned |
 | 2 | Mod browser UI: present discovered mods, user selects active set (or skip via CLI / saved selection) | Engine + UI system | planned |
 | 3 | Resolve load order: base first, then selected mods in user-specified order | Engine | planned |

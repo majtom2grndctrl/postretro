@@ -199,59 +199,20 @@ struct AnimationDescriptor {
 // slot binds a 1×1 zero texture so the fragment shader reads 0.
 @group(4) @binding(3) var animated_lm_atlas: texture_2d<f32>;
 // Filtering (Linear) sampler — used for the irradiance + animated atlases so
-// baked penumbra ramps read as continuous gradients under magnification. Bound
-// in every variant; unused when `use_hw_filter == false` (the manual 4-tap
-// fallback path). See baked-soft-lightmap-shadows/ §Task 5.
+// baked penumbra ramps read as continuous gradients under magnification.
+// `Rgba16Float` linear-filterability is a hard runtime requirement, checked at
+// init (see context/lib/rendering_pipeline.md §4). See baked-soft-lightmap-shadows/ §Task 5.
 @group(4) @binding(4) var lightmap_filtering_sampler: sampler;
 
-// Pipeline-override constant, decided once at pipeline creation (see
-// `render/mod.rs` `Renderer::new`): `true` when the atlas format (Rgba16Float) advertises
-// hardware bilinear filtering, sampling irradiance + animated atlas through the
-// linear sampler; `false` falls back to a manual 4-tap bilinear lerp. One
-// pipeline is built per init, so this never becomes a per-fragment branch.
-override use_hw_filter: bool = true;
-
-// Manual 4-tap bilinear lerp for the fallback path (`use_hw_filter == false`).
-// Reproduces hardware bilinear filtering with `textureLoad` so the resulting
-// ramp is identical to the HW-filtered path on backends where Rgba16Float
-// filtering is unavailable. `uv` is in [0,1] texture space.
-fn bilinear_rgb(tex: texture_2d<f32>, uv: vec2<f32>) -> vec3<f32> {
-    let dims = vec2<f32>(textureDimensions(tex, 0));
-    // Texel-center sample space: shift by -0.5 so the four taps bracket `uv`.
-    let coord = uv * dims - vec2<f32>(0.5);
-    let base = floor(coord);
-    let frac = coord - base;
-    let i0 = vec2<i32>(base);
-    let maxc = vec2<i32>(dims) - vec2<i32>(1);
-    // Clamp to edge (matches the samplers' ClampToEdge address mode).
-    let x0 = clamp(i0.x, 0, maxc.x);
-    let y0 = clamp(i0.y, 0, maxc.y);
-    let x1 = clamp(i0.x + 1, 0, maxc.x);
-    let y1 = clamp(i0.y + 1, 0, maxc.y);
-    let c00 = textureLoad(tex, vec2<i32>(x0, y0), 0).rgb;
-    let c10 = textureLoad(tex, vec2<i32>(x1, y0), 0).rgb;
-    let c01 = textureLoad(tex, vec2<i32>(x0, y1), 0).rgb;
-    let c11 = textureLoad(tex, vec2<i32>(x1, y1), 0).rgb;
-    let top = mix(c00, c10, frac.x);
-    let bot = mix(c01, c11, frac.x);
-    return mix(top, bot, frac.y);
-}
-
-// Sample the irradiance atlas with hardware bilinear filtering or the manual
-// 4-tap fallback, selected once by the `use_hw_filter` override constant.
+// Sample the irradiance atlas with hardware bilinear filtering through the
+// linear sampler at binding 4.
 fn sample_lightmap_irradiance(uv: vec2<f32>) -> vec3<f32> {
-    if use_hw_filter {
-        return textureSample(lightmap_irradiance, lightmap_filtering_sampler, uv).rgb;
-    }
-    return bilinear_rgb(lightmap_irradiance, uv);
+    return textureSample(lightmap_irradiance, lightmap_filtering_sampler, uv).rgb;
 }
 
-// Same path selection for the animated-light contribution atlas.
+// Same for the animated-light contribution atlas.
 fn sample_lightmap_animated(uv: vec2<f32>) -> vec3<f32> {
-    if use_hw_filter {
-        return textureSample(animated_lm_atlas, lightmap_filtering_sampler, uv).rgb;
-    }
-    return bilinear_rgb(animated_lm_atlas, uv);
+    return textureSample(animated_lm_atlas, lightmap_filtering_sampler, uv).rgb;
 }
 
 // Group 5 — dynamic spot light shadow maps.
@@ -734,10 +695,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // a mesh-normal surface.
     var static_direct = vec3<f32>(0.0);
     if use_lightmap {
-        // Irradiance + animated atlas filter bilinear (HW linear sampler or the
-        // 4-tap fallback, selected by `use_hw_filter`) so baked penumbra ramps
-        // read as continuous gradients under magnification. The direction
-        // channel below stays on the nearest sampler (octahedral lerp ≠ slerp).
+        // Irradiance + animated atlas filter bilinear (HW linear sampler at
+        // binding 4) so baked penumbra ramps read as continuous gradients under
+        // magnification. The direction channel below stays on the nearest
+        // sampler (octahedral lerp ≠ slerp).
         let lm_irr = sample_lightmap_irradiance(in.lightmap_uv);
         // Pre-shaded Lambert irradiance from the animated compose pre-pass.
         // Uncovered atlas texels are zero so this is safe to add unconditionally.

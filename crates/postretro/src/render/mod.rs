@@ -1010,6 +1010,20 @@ impl Renderer {
                 REQUIRED_STORAGE_BUFFER_BINDING_SIZE
             );
         }
+        // The lightmap irradiance + animated atlases (`Rgba16Float`) are sampled
+        // with hardware linear filtering (group-4 BGL declares `filterable:true`).
+        // Linear filtering of 16-bit-float textures is core WebGPU and mandated
+        // on every targeted backend (Vulkan/Metal/DX12), but check anyway so a
+        // non-filterable adapter fails here with a named message rather than an
+        // opaque `create_bind_group` crash later. See context/lib/rendering_pipeline.md §4.
+        if !crate::lighting::lightmap::atlas_format_filterable(&adapter) {
+            anyhow::bail!(
+                "[Renderer] GPU adapter does not support linear filtering of \
+                 Rgba16Float; PostRetro requires it for lightmap irradiance \
+                 sampling. All supported backends (Vulkan/Metal/DX12) provide \
+                 this — an adapter lacking it is below the supported floor"
+            );
+        }
 
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("Postretro Device"),
@@ -1525,32 +1539,6 @@ impl Renderer {
             source: wgpu::ShaderSource::Wgsl(SHADER_SOURCE.into()),
         });
 
-        // Lightmap atlas filtering path, decided once here (see
-        // `lightmap::atlas_format_filterable`). When `Rgba16Float` advertises
-        // hardware bilinear filtering we sample irradiance + the animated atlas
-        // through the linear sampler; otherwise the shader falls back to a
-        // manual 4-tap bilinear lerp. Drives the `use_hw_filter` WGSL override so
-        // the choice is baked into the pipeline — no per-fragment branch. The
-        // group-4 BGL is identical either way (the linear sampler is bound but
-        // unused on the fallback path).
-        let use_hw_filter = crate::lighting::lightmap::atlas_format_filterable(&adapter);
-        log::info!(
-            "[Renderer] Lightmap atlas (Rgba16Float) hardware filtering: {} ({})",
-            use_hw_filter,
-            if use_hw_filter {
-                "linear sampler"
-            } else {
-                "manual 4-tap fallback"
-            }
-        );
-        // WGSL bool override: 1.0 = true, 0.0 = false.
-        let forward_constants: [(&str, f64); 1] =
-            [("use_hw_filter", if use_hw_filter { 1.0 } else { 0.0 })];
-        let forward_fragment_compilation = wgpu::PipelineCompilationOptions {
-            constants: &forward_constants,
-            ..Default::default()
-        };
-
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Textured Pipeline"),
             layout: Some(&pipeline_layout),
@@ -1619,7 +1607,7 @@ impl Renderer {
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
-                compilation_options: forward_fragment_compilation,
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
             multiview_mask: None,
             cache: None,

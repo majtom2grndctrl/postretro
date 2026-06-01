@@ -1,8 +1,6 @@
 // Directional lightmap GPU resources: irradiance + direction atlas upload,
 // sampler, and bind group (group 4).
-//
-// See: context/plans/ready/lighting-lightmaps/index.md
-//      context/lib/rendering_pipeline.md §4
+// See: context/lib/rendering_pipeline.md §4
 
 use postretro_level_format::lightmap::LightmapSection;
 use wgpu::util::DeviceExt;
@@ -17,7 +15,7 @@ pub const BIND_DIRECTION: u32 = 1;
 pub const BIND_SAMPLER: u32 = 2;
 /// Animated-light contribution atlas (Rgba16Float). Composed each frame by
 /// `render::animated_lightmap`; forward pass samples alongside the static
-/// atlas. See animated-light-weight-maps/ §Task 5.
+/// atlas. See: context/lib/rendering_pipeline.md §4
 pub const BIND_ANIMATED_ATLAS: u32 = 3;
 /// Filtering (Linear) sampler. Used for the irradiance and animated atlases so
 /// baked penumbra ramps read as continuous gradients under magnification

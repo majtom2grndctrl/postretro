@@ -36,10 +36,11 @@ const WEIGHT_EPSILON: f32 = 1.0e-6;
 /// v4 bump (baked-soft-lightmap-shadows Task 4): the binary `shadow_visible`
 /// membership gate was replaced with a soft area-light visibility fraction
 /// multiplied into `TexelLight.weight` (penumbra texels now carry fractional
-/// weight instead of a 0/1 include). Documentation marker only — this stage is
-/// uncached (invoked directly from `main.rs`, no `CacheKey`/`input_hash`), so
-/// the bump has no recompile effect and is consumed solely by this module's
-/// own tests today.
+/// weight instead of a 0/1 include). This stage is currently uncached —
+/// invoked directly from `main.rs` with no `CacheKey`/`input_hash` round-trip,
+/// so no cache invalidation fires at compile time. The `CacheKey`/STAGE_VERSION
+/// contract is still exercised by `stage_version_bump_misses_then_hits` in
+/// this module's test suite, anchoring the invariant if a cached path is added.
 pub const STAGE_VERSION: u32 = 4;
 
 pub struct WeightMapInputs<'a> {

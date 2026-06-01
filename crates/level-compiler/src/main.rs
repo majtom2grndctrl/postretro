@@ -708,7 +708,7 @@ fn help_text() -> String {
          --format <FORMAT>          Map source format: idtech2 | idtech3 | idtech4 (default: idtech2)\n    \
          --sh-probe-spacing <METERS> SH irradiance probe spacing in meters, > 0 (default: {probe})\n    \
          --lightmap-density <METERS> Starting lightmap texel size in meters, > 0 (default: {density})\n    \
-         --soft-shadow-samples <N>  Soft-shadow penumbra area-sample count, >= 1 (default: {samples})\n    \
+         --soft-shadow-samples <N>  Soft-shadow penumbra area-sample count, >= {probe_floor} (default: {samples})\n    \
          --sdf-voxel-size <METERS>  SDF occluder-atlas voxel edge length in meters, > 0 (default: {voxel})\n    \
          --cache-dir <PATH>         Override the stage-cache directory (default: <workspace>/.build-caches/prl-cache)\n    \
          --no-cache                 Disable the stage cache entirely; wins over --cache-dir (default: off)\n    \
@@ -716,6 +716,7 @@ fn help_text() -> String {
         probe = sh_bake::DEFAULT_PROBE_SPACING,
         density = lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS,
         samples = lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
+        probe_floor = lightmap_bake::SOFT_PROBE_SAMPLES,
         voxel = sdf_bake::DEFAULT_VOXEL_SIZE_METERS,
     )
 }
@@ -789,8 +790,11 @@ where
                 let parsed: u32 = samples_str.parse().map_err(|_| {
                     anyhow::anyhow!("--soft-shadow-samples must be a positive integer")
                 })?;
-                if parsed < 1 {
-                    anyhow::bail!("--soft-shadow-samples must be >= 1");
+                if parsed < lightmap_bake::SOFT_PROBE_SAMPLES {
+                    anyhow::bail!(
+                        "--soft-shadow-samples must be >= {} (the probe-set floor)",
+                        lightmap_bake::SOFT_PROBE_SAMPLES
+                    );
                 }
                 soft_shadow_samples = parsed;
             }
@@ -1255,6 +1259,41 @@ mod tests {
         let parsed = parse_args_from(args.into_iter()).unwrap();
         assert!(!parsed.no_cache);
         assert!(parsed.cache_dir.is_none());
+    }
+
+    #[test]
+    fn parse_args_soft_shadow_samples() {
+        // At-floor value is accepted.
+        let floor = lightmap_bake::SOFT_PROBE_SAMPLES;
+        let args = vec![
+            "input.map".to_string(),
+            "--soft-shadow-samples".to_string(),
+            floor.to_string(),
+        ];
+        let parsed = parse_args_from(args.into_iter()).unwrap();
+        assert_eq!(parsed.soft_shadow_samples, floor);
+
+        // Above-floor value is accepted.
+        let args = vec![
+            "input.map".to_string(),
+            "--soft-shadow-samples".to_string(),
+            "16".to_string(),
+        ];
+        let parsed = parse_args_from(args.into_iter()).unwrap();
+        assert_eq!(parsed.soft_shadow_samples, 16);
+
+        // Below-floor values (1–3) are rejected.
+        for below in 1..floor {
+            let args = vec![
+                "input.map".to_string(),
+                "--soft-shadow-samples".to_string(),
+                below.to_string(),
+            ];
+            assert!(
+                parse_args_from(args.into_iter()).is_err(),
+                "--soft-shadow-samples {below} should be rejected (below probe floor {floor})"
+            );
+        }
     }
 
     #[test]

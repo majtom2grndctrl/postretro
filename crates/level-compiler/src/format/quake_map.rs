@@ -1000,7 +1000,7 @@ mod tests {
             .expect("directional light should translate");
 
         assert_eq!(light.light_type, LightType::Directional);
-        // Directional ignores _fade.
+        // Directional ignores _falloff_range.
         assert_eq!(light.falloff_range, 0.0);
         // -45 pitch, yaw 0 → engine (-qf_y, qf_z, -qf_x) = (0, -0.707, -0.707).
         let dir = light.cone_direction.expect("directional dir");

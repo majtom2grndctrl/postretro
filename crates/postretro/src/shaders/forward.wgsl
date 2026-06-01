@@ -205,7 +205,7 @@ struct AnimationDescriptor {
 @group(4) @binding(4) var lightmap_filtering_sampler: sampler;
 
 // Pipeline-override constant, decided once at pipeline creation (see
-// `render::mod.rs`): `true` when the atlas format (Rgba16Float) advertises
+// `render/mod.rs` `Renderer::new`): `true` when the atlas format (Rgba16Float) advertises
 // hardware bilinear filtering, sampling irradiance + animated atlas through the
 // linear sampler; `false` falls back to a manual 4-tap bilinear lerp. One
 // pipeline is built per init, so this never becomes a per-fragment branch.

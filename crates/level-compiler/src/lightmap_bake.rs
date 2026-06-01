@@ -946,7 +946,7 @@ pub(crate) fn warn_sub_texel_penumbra_lights(lights: &[&MapLight], texel_density
     for (index, light) in lights.iter().enumerate() {
         if penumbra_below_one_texel(light, texel_density) {
             log::warn!(
-                "[Lightmap] light {index} at ({:.2}, {:.2}, {:.2}) subtends a sub-texel \
+                "[Lightmap] static light #{index} at ({:.2}, {:.2}, {:.2}) subtends a sub-texel \
                  penumbra (~{:.2} texel at {texel_density} m/texel) — its soft shadow will read \
                  as a hard edge; raise `_light_size`/`_angular_diameter` or `_falloff_range`",
                 light.origin.x,
@@ -963,7 +963,7 @@ pub(crate) fn warn_sub_texel_penumbra_lights(lights: &[&MapLight], texel_density
 /// only a penumbra (probes disagree) pays for the full set. Fixed constant — the
 /// adaptive-escalation threshold must not vary, so the bake stays deterministic
 /// regardless of the caller's `full_samples` knob (Task 6).
-const SOFT_PROBE_SAMPLES: u32 = 4;
+pub(crate) const SOFT_PROBE_SAMPLES: u32 = 4;
 
 /// Default full stratified sample count once a penumbra is detected. The
 /// area-sample-count bake knob (Task 6) overrides this per call via
@@ -1019,12 +1019,10 @@ pub(crate) fn soft_visibility(
         return if trace(origin, target) { 1.0 } else { 0.0 };
     }
 
-    // The probe set is a strict prefix of the full set, so the knob can only raise
-    // the escalated count above the fixed probe floor — never below it.
+    // Probe set is a strict prefix of the full set: the knob can only raise the
+    // escalated count above the fixed probe floor, so escalation only adds samples
+    // and the penumbra fraction stays `clear / full_samples`.
     let full_samples = full_samples.max(SOFT_PROBE_SAMPLES);
-
-    // The probe set is a strict prefix of the full set, so escalation only adds
-    // samples — the penumbra fraction stays `clear / full_samples`.
     let mut clear = 0u32;
     for i in 0..SOFT_PROBE_SAMPLES {
         if trace(

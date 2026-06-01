@@ -417,7 +417,8 @@ fn overlaps_chunk(light: &MapLight, chunk_min: Vec3, chunk_max: Vec3) -> bool {
 
 /// Returns `true` if any of 4 shadow rays (centroid + 3 light-facing face midpoints)
 /// reaches the light unoccluded. Directional lights cast from sample toward sun,
-/// mirroring the `lightmap_bake::shadow_visible` pattern.
+/// mirroring the `segment_clear`-based hard-ray approach used by
+/// `lightmap_bake::soft_visibility`'s zero-size short-circuit.
 fn any_ray_unoccluded(
     bvh: &Bvh<f32, 3>,
     primitives: &[BvhPrimitive],

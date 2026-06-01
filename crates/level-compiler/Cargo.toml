@@ -27,3 +27,6 @@ image.workspace = true
 blake3 = "1"
 postcard = { version = "1", features = ["alloc"] }
 serde.workspace = true
+
+[dev-dependencies]
+proptest = { workspace = true }

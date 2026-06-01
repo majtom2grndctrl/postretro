@@ -52,6 +52,14 @@ pub(crate) const RAY_EPSILON: f32 = 1.0e-3;
 /// Shadow ray length for directional lights (no position, so must exceed the world diagonal).
 const DIRECTIONAL_LIGHT_RAY_LENGTH_METERS: f32 = 10_000.0;
 
+/// Rotates the Fibonacci lattice off its axis so axis-aligned light directions
+/// don't land on a degenerate sample, and lets the per-texel `seed` decorrelate
+/// adjacent texels. Same "PHBAKER" convention as `sh_bake.rs` — the two bakers
+/// share the constant value (not the symbol) so their soft-shadow sampling reads
+/// identically. No RNG: identical input yields byte-identical output.
+#[allow(dead_code)] // consumed by `soft_visibility` (Task-2 deliverable, wired in Tasks 3/4/4b)
+const SAMPLING_LATTICE_OFFSET: u64 = 0x5048_4542_414b_4552; // "PHBAKER"
+
 /// Errors surfaced from the lightmap bake stage. Caller can retry at a coarser texel density.
 #[derive(Debug, Error)]
 pub enum LightmapBakeError {
@@ -852,6 +860,175 @@ pub(crate) fn shadow_visible(
         }
     };
     segment_clear(bvh, primitives, geometry, origin, target)
+}
+
+// `soft_visibility` and its sampling helpers are the Task-2 deliverable of
+// `baked-soft-lightmap-shadows`; the per-texel bake loops (Tasks 3/4/4b) call it
+// next. Allow dead_code until those land — only the `#[cfg(test)]` suite exercises
+// it today, which doesn't count toward the binary build.
+
+/// Probe samples traced before escalating. Tracing this many first lets the
+/// fully-lit / fully-shadowed common case (where every probe agrees) stay cheap;
+/// only a penumbra (probes disagree) pays for the full set.
+#[allow(dead_code)]
+const SOFT_PROBE_SAMPLES: u32 = 4;
+
+/// Full stratified sample count once a penumbra is detected. Fixed constant, not
+/// data-dependent, so the bake stays deterministic. The probe set is a strict
+/// prefix of these, so a penumbra's returned fraction is `clear / SOFT_FULL_SAMPLES`.
+#[allow(dead_code)]
+const SOFT_FULL_SAMPLES: u32 = 32;
+
+/// Soft area-light visibility for a `(surface_point, surface_normal, light)` pair:
+/// the `[0, 1]` fraction of stratified area-samples whose shadow ray is unoccluded.
+/// Contact hardening is emergent — near a contact every sample occludes together
+/// (sharp); with receiver distance the sample cone subtends a wider region (soft) —
+/// so no distance-to-occluder input is needed.
+///
+/// `trace(from, to)` returns true when the segment is clear; the max-distance clamp
+/// lives inside the closure. This keeps the helper trace-context-agnostic so all three
+/// callers (static lightmap, animated weight-map, SH bounce) wrap their own
+/// `segment_clear` — each with a different signature — as the closure.
+///
+/// Determinism: the sample pattern is a fixed Fibonacci lattice (mirroring
+/// `sh_bake.rs`'s convention) rotated by `seed`. No RNG, no hash-order dependence —
+/// the caller supplies `seed` deterministically (texel `(x, y)` hash, or
+/// probe/ray/light indices) so the same inputs yield byte-identical output.
+#[allow(dead_code)]
+pub(crate) fn soft_visibility(
+    surface_point: Vec3,
+    surface_normal: Vec3,
+    light: &MapLight,
+    seed: u64,
+    trace: impl Fn(Vec3, Vec3) -> bool,
+) -> f32 {
+    if !light.cast_shadows {
+        return 1.0;
+    }
+    let origin = surface_point + surface_normal * RAY_EPSILON;
+
+    // An author's explicit `0` is a hard edge: collapse to the single hard ray so
+    // the result is identical to `shadow_visible` (1.0 clear / 0.0 occluded).
+    let radius = match light.light_type {
+        LightType::Point | LightType::Spot => light.light_size,
+        LightType::Directional => light.angular_diameter,
+    };
+    if radius <= 0.0 {
+        let target = hard_ray_target(surface_point, light);
+        return if trace(origin, target) { 1.0 } else { 0.0 };
+    }
+
+    // The probe set is a strict prefix of the full set, so escalation only adds
+    // samples — the penumbra fraction stays `clear / SOFT_FULL_SAMPLES`.
+    let mut clear = 0u32;
+    for i in 0..SOFT_PROBE_SAMPLES {
+        if trace(origin, area_sample_target(surface_point, light, seed, i)) {
+            clear += 1;
+        }
+    }
+
+    // Fully-lit or fully-shadowed probes agree — no penumbra, stay cheap.
+    if clear == 0 || clear == SOFT_PROBE_SAMPLES {
+        return clear as f32 / SOFT_PROBE_SAMPLES as f32;
+    }
+
+    for i in SOFT_PROBE_SAMPLES..SOFT_FULL_SAMPLES {
+        if trace(origin, area_sample_target(surface_point, light, seed, i)) {
+            clear += 1;
+        }
+    }
+    clear as f32 / SOFT_FULL_SAMPLES as f32
+}
+
+/// Single hard-ray target, matching `shadow_visible`: the light origin for
+/// Point/Spot, or a far point along `-cone_direction` for Directional.
+#[allow(dead_code)]
+fn hard_ray_target(surface_point: Vec3, light: &MapLight) -> Vec3 {
+    match light.light_type {
+        LightType::Point | LightType::Spot => Vec3::new(
+            light.origin.x as f32,
+            light.origin.y as f32,
+            light.origin.z as f32,
+        ),
+        LightType::Directional => {
+            let aim = Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0]));
+            let to_light = (-aim).normalize_or_zero();
+            surface_point + to_light * DIRECTIONAL_LIGHT_RAY_LENGTH_METERS
+        }
+    }
+}
+
+/// Stratified area-sample target for sample index `i` of `SOFT_FULL_SAMPLES`.
+/// Point/Spot → a point on the emitter sphere of radius `light_size` at the light
+/// origin. Directional → a far point along a direction jittered within the cone of
+/// half-angle `angular_diameter/2` about `-cone_direction`, at the shared far
+/// distance (`DIRECTIONAL_LIGHT_RAY_LENGTH_METERS`, same for every directional
+/// sample). The lattice is rotated by `seed` so adjacent texels decorrelate.
+#[allow(dead_code)]
+fn area_sample_target(surface_point: Vec3, light: &MapLight, seed: u64, i: u32) -> Vec3 {
+    match light.light_type {
+        LightType::Point | LightType::Spot => {
+            let center = Vec3::new(
+                light.origin.x as f32,
+                light.origin.y as f32,
+                light.origin.z as f32,
+            );
+            center + fibonacci_sphere_sample(i, SOFT_FULL_SAMPLES, seed) * light.light_size
+        }
+        LightType::Directional => {
+            let aim = Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0]));
+            let to_light = (-aim).normalize_or_zero();
+            let half_angle = light.angular_diameter.to_radians() * 0.5;
+            let dir = cone_jittered_direction(to_light, half_angle, i, SOFT_FULL_SAMPLES, seed);
+            surface_point + dir * DIRECTIONAL_LIGHT_RAY_LENGTH_METERS
+        }
+    }
+}
+
+/// Sample `i` of `count` on the unit sphere via the Fibonacci lattice, rotated by
+/// `seed`. Mirrors `sh_bake.rs::sphere_directions` so both bakers share the same
+/// low-discrepancy, RNG-free convention.
+#[allow(dead_code)]
+fn fibonacci_sphere_sample(i: u32, count: u32, seed: u64) -> Vec3 {
+    let phi = std::f32::consts::PI * (3.0 - (5.0_f32).sqrt()); // golden angle
+    let seed_offset = ((seed ^ SAMPLING_LATTICE_OFFSET) & 0xFFFF_FFFF) as f32 / u32::MAX as f32;
+    let t = (i as f32 + 0.5) / count as f32;
+    let y = 1.0 - 2.0 * t;
+    let radius = (1.0 - y * y).max(0.0).sqrt();
+    let theta = phi * i as f32 + seed_offset * std::f32::consts::TAU;
+    Vec3::new(theta.cos() * radius, y, theta.sin() * radius).normalize_or_zero()
+}
+
+/// Direction jittered within a cone of half-angle `half_angle` about `axis`, using
+/// the Fibonacci lattice mapped onto the spherical cap (equal-area in `cos(theta)`),
+/// rotated by `seed`. Same RNG-free convention as `fibonacci_sphere_sample`.
+#[allow(dead_code)]
+fn cone_jittered_direction(axis: Vec3, half_angle: f32, i: u32, count: u32, seed: u64) -> Vec3 {
+    let phi = std::f32::consts::PI * (3.0 - (5.0_f32).sqrt()); // golden angle
+    let seed_offset = ((seed ^ SAMPLING_LATTICE_OFFSET) & 0xFFFF_FFFF) as f32 / u32::MAX as f32;
+    let t = (i as f32 + 0.5) / count as f32;
+    // Equal-area cap mapping: cos(theta) ramps linearly from the rim to the axis.
+    let cos_theta = 1.0 - t * (1.0 - half_angle.cos());
+    let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
+    let azimuth = phi * i as f32 + seed_offset * std::f32::consts::TAU;
+    // Local sample around +Z, then rotate the +Z basis onto `axis`.
+    let local = Vec3::new(
+        azimuth.cos() * sin_theta,
+        azimuth.sin() * sin_theta,
+        cos_theta,
+    );
+    let (tangent, bitangent) = orthonormal_basis(axis);
+    (tangent * local.x + bitangent * local.y + axis * local.z).normalize_or_zero()
+}
+
+/// Right-handed orthonormal basis whose third axis is `n`. Deterministic branch on
+/// `n.z` avoids a degenerate cross product when `n` is near the world Z axis.
+#[allow(dead_code)]
+fn orthonormal_basis(n: Vec3) -> (Vec3, Vec3) {
+    let helper = if n.z.abs() < 0.999 { Vec3::Z } else { Vec3::X };
+    let tangent = helper.cross(n).normalize_or_zero();
+    let bitangent = n.cross(tangent);
+    (tangent, bitangent)
 }
 
 fn segment_clear(
@@ -1813,5 +1990,186 @@ mod tests {
         assert_eq!(original.uv, duplicate.uv);
         assert_eq!(original.normal_oct, duplicate.normal_oct);
         assert_eq!(original.tangent_packed, duplicate.tangent_packed);
+    }
+
+    // --- soft_visibility -------------------------------------------------
+    //
+    // These exercise the trace-context-agnostic helper with mock `trace`
+    // closures, so they need no BVH/geometry — the closure stands in for
+    // each caller's `segment_clear`.
+
+    use crate::map_data::{DEFAULT_ANGULAR_DIAMETER_DEG, DEFAULT_LIGHT_SIZE};
+
+    fn soft_point_light(size: f32) -> MapLight {
+        let mut l = point_light_above();
+        l.light_size = size;
+        l
+    }
+
+    fn soft_directional_light(angular_diameter: f32) -> MapLight {
+        let mut l = point_light_above();
+        l.light_type = LightType::Directional;
+        l.cone_direction = Some([0.0, -1.0, 0.0]);
+        l.angular_diameter = angular_diameter;
+        l
+    }
+
+    const EPS: f32 = 1.0e-5;
+
+    #[test]
+    fn soft_visibility_no_cast_shadows_returns_fully_visible() {
+        let mut light = soft_point_light(DEFAULT_LIGHT_SIZE);
+        light.cast_shadows = false;
+        // Every ray "blocked", but cast_shadows == false short-circuits first.
+        let v = soft_visibility(Vec3::ZERO, Vec3::Y, &light, 7, |_, _| false);
+        assert!((v - 1.0).abs() < EPS, "got {v}");
+    }
+
+    #[test]
+    fn soft_visibility_zero_light_size_matches_hard_ray() {
+        // An authored `0` must reproduce the single hard ray exactly: 1.0 clear,
+        // 0.0 blocked — preserving an explicit hard edge.
+        let light = soft_point_light(0.0);
+        let clear = soft_visibility(Vec3::ZERO, Vec3::Y, &light, 1, |_, _| true);
+        let blocked = soft_visibility(Vec3::ZERO, Vec3::Y, &light, 1, |_, _| false);
+        assert!((clear - 1.0).abs() < EPS, "clear got {clear}");
+        assert!(blocked.abs() < EPS, "blocked got {blocked}");
+    }
+
+    #[test]
+    fn soft_visibility_zero_angular_diameter_matches_hard_ray() {
+        let light = soft_directional_light(0.0);
+        let clear = soft_visibility(Vec3::ZERO, Vec3::Y, &light, 1, |_, _| true);
+        let blocked = soft_visibility(Vec3::ZERO, Vec3::Y, &light, 1, |_, _| false);
+        assert!((clear - 1.0).abs() < EPS, "clear got {clear}");
+        assert!(blocked.abs() < EPS, "blocked got {blocked}");
+    }
+
+    #[test]
+    fn soft_visibility_zero_size_single_ray_equals_shadow_visible_target() {
+        // The hard-ray short-circuit must hit the same target shadow_visible uses,
+        // so a closure that only passes that exact target returns fully visible.
+        let light = soft_point_light(0.0);
+        let surface = Vec3::new(0.5, 0.0, 0.5);
+        let expected_target = Vec3::new(
+            light.origin.x as f32,
+            light.origin.y as f32,
+            light.origin.z as f32,
+        );
+        let v = soft_visibility(surface, Vec3::Y, &light, 0, |_, to| {
+            (to - expected_target).length() < EPS
+        });
+        assert!((v - 1.0).abs() < EPS, "got {v}");
+    }
+
+    #[test]
+    fn soft_visibility_full_clear_is_one() {
+        let light = soft_point_light(DEFAULT_LIGHT_SIZE);
+        let v = soft_visibility(Vec3::ZERO, Vec3::Y, &light, 42, |_, _| true);
+        assert!((v - 1.0).abs() < EPS, "got {v}");
+    }
+
+    #[test]
+    fn soft_visibility_full_block_is_zero() {
+        let light = soft_point_light(DEFAULT_LIGHT_SIZE);
+        let v = soft_visibility(Vec3::ZERO, Vec3::Y, &light, 42, |_, _| false);
+        assert!(v.abs() < EPS, "got {v}");
+    }
+
+    #[test]
+    fn soft_visibility_partial_occluder_is_fractional() {
+        // Mock occluder: a half-plane through the light origin. Samples on the +X
+        // half of the emitter sphere are blocked, the -X half clear — guaranteeing
+        // a penumbra with the escalated sample set.
+        let light = soft_point_light(0.5);
+        let center = Vec3::new(
+            light.origin.x as f32,
+            light.origin.y as f32,
+            light.origin.z as f32,
+        );
+        let v = soft_visibility(Vec3::ZERO, Vec3::Y, &light, 9, |_, to| {
+            (to - center).x <= 0.0
+        });
+        assert!(v > 0.0 && v < 1.0, "expected penumbra fraction, got {v}");
+    }
+
+    #[test]
+    fn soft_visibility_is_deterministic_across_repeated_calls() {
+        // Same inputs incl. seed → identical output, no RNG, no hash-order
+        // dependence. A position-dependent occluder forces the escalated path.
+        let light = soft_point_light(0.5);
+        let surface = Vec3::new(0.5, 0.0, 0.5);
+        let occluder = |_from: Vec3, to: Vec3| to.x <= 0.5;
+        let a = soft_visibility(surface, Vec3::Y, &light, 0xABCD, occluder);
+        let b = soft_visibility(surface, Vec3::Y, &light, 0xABCD, occluder);
+        let c = soft_visibility(surface, Vec3::Y, &light, 0xABCD, occluder);
+        assert_eq!(a.to_bits(), b.to_bits(), "repeat 1 diverged: {a} vs {b}");
+        assert_eq!(a.to_bits(), c.to_bits(), "repeat 2 diverged: {a} vs {c}");
+    }
+
+    #[test]
+    fn soft_visibility_directional_partial_occluder_is_fractional() {
+        // Wide cone so jittered directions spread; occluder splits the cone.
+        let light = soft_directional_light(20.0);
+        let v = soft_visibility(Vec3::ZERO, Vec3::Y, &light, 3, |_, to| to.x <= 0.0);
+        assert!(v > 0.0 && v < 1.0, "expected penumbra fraction, got {v}");
+    }
+
+    proptest::proptest! {
+        // The unoccluded fraction is always a valid probability for any seed and
+        // any deterministic occluder pattern keyed on the sample index.
+        #[test]
+        fn soft_visibility_always_in_unit_interval(
+            seed in proptest::prelude::any::<u64>(),
+            size in 0.0f32..2.0,
+            pattern in proptest::prelude::any::<u32>(),
+        ) {
+            let light = soft_point_light(size);
+            // Pseudo-arbitrary but deterministic clear/block decision per call:
+            // `Cell` gives the `Fn` closure a per-sample counter without `FnMut`.
+            let counter = std::cell::Cell::new(0u32);
+            let occluder = |_from: Vec3, _to: Vec3| {
+                let i = counter.get();
+                counter.set(i + 1);
+                (pattern >> (i % 32)) & 1 == 0
+            };
+            let v = soft_visibility(Vec3::ZERO, Vec3::Y, &light, seed, occluder);
+            proptest::prop_assert!((0.0..=1.0).contains(&v), "v out of range: {v}");
+        }
+
+        #[test]
+        fn soft_visibility_directional_always_in_unit_interval(
+            seed in proptest::prelude::any::<u64>(),
+            angular in 0.0f32..45.0,
+            all_clear in proptest::prelude::any::<bool>(),
+        ) {
+            let light = soft_directional_light(angular);
+            let v = soft_visibility(Vec3::ZERO, Vec3::Y, &light, seed, |_, _| all_clear);
+            proptest::prop_assert!((0.0..=1.0).contains(&v), "v out of range: {v}");
+        }
+    }
+
+    #[test]
+    fn soft_visibility_default_sizes_softpath_disagreeing_probes_escalate() {
+        // Sanity: documented nonzero defaults take the soft path (not the hard
+        // short-circuit), so a split occluder yields a fraction, not 0/1.
+        let point = soft_point_light(DEFAULT_LIGHT_SIZE);
+        let center = Vec3::new(
+            point.origin.x as f32,
+            point.origin.y as f32,
+            point.origin.z as f32,
+        );
+        let pv = soft_visibility(Vec3::ZERO, Vec3::Y, &point, 11, |_, to| {
+            (to - center).x <= 0.0
+        });
+        assert!(pv > 0.0 && pv < 1.0, "point default not soft: {pv}");
+
+        let dir = soft_directional_light(DEFAULT_ANGULAR_DIAMETER_DEG);
+        // Directional default is a narrow 0.5°; a split still yields a fraction.
+        let dv = soft_visibility(Vec3::ZERO, Vec3::Y, &dir, 11, |_, to| to.x <= 0.0);
+        assert!(
+            (0.0..=1.0).contains(&dv),
+            "directional default out of range: {dv}"
+        );
     }
 }

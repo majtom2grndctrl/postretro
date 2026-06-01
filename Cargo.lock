@@ -3307,6 +3307,7 @@ dependencies = [
  "png",
  "postcard",
  "postretro-level-format",
+ "proptest",
  "rayon",
  "serde",
  "shambler",

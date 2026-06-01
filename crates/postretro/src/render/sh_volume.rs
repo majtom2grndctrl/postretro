@@ -1355,13 +1355,11 @@ mod tests {
             validity: 1,
             mean_distance: 0x4200,
             mean_sq_distance: 0x4900,
-            ..Default::default()
         };
         let probe_b = OctahedralShProbe {
             validity: 1,
             mean_distance: 0x3c00,
             mean_sq_distance: 0x4000,
-            ..Default::default()
         };
 
         let moments = pack_probe_depth_moments(&[probe_a, probe_b], [2, 1, 1]);
@@ -1381,13 +1379,11 @@ mod tests {
             validity: 1,
             mean_distance: 0x4400,
             mean_sq_distance: 0x4c00,
-            ..Default::default()
         };
         let probe_invalid = OctahedralShProbe {
             validity: 0,
             mean_distance: 0x7bff,
             mean_sq_distance: 0x7bff,
-            ..Default::default()
         };
 
         let moments = pack_probe_depth_moments(&[probe_valid, probe_invalid], [2, 1, 1]);

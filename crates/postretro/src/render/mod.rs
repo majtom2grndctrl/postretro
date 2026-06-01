@@ -1525,6 +1525,32 @@ impl Renderer {
             source: wgpu::ShaderSource::Wgsl(SHADER_SOURCE.into()),
         });
 
+        // Lightmap atlas filtering path, decided once here (see
+        // `lightmap::atlas_format_filterable`). When `Rgba16Float` advertises
+        // hardware bilinear filtering we sample irradiance + the animated atlas
+        // through the linear sampler; otherwise the shader falls back to a
+        // manual 4-tap bilinear lerp. Drives the `use_hw_filter` WGSL override so
+        // the choice is baked into the pipeline — no per-fragment branch. The
+        // group-4 BGL is identical either way (the linear sampler is bound but
+        // unused on the fallback path).
+        let use_hw_filter = crate::lighting::lightmap::atlas_format_filterable(&adapter);
+        log::info!(
+            "[Renderer] Lightmap atlas (Rgba16Float) hardware filtering: {} ({})",
+            use_hw_filter,
+            if use_hw_filter {
+                "linear sampler"
+            } else {
+                "manual 4-tap fallback"
+            }
+        );
+        // WGSL bool override: 1.0 = true, 0.0 = false.
+        let forward_constants: [(&str, f64); 1] =
+            [("use_hw_filter", if use_hw_filter { 1.0 } else { 0.0 })];
+        let forward_fragment_compilation = wgpu::PipelineCompilationOptions {
+            constants: &forward_constants,
+            ..Default::default()
+        };
+
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Textured Pipeline"),
             layout: Some(&pipeline_layout),
@@ -1593,7 +1619,7 @@ impl Renderer {
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                compilation_options: forward_fragment_compilation,
             }),
             multiview_mask: None,
             cache: None,

@@ -11,11 +11,21 @@ use wgpu::util::DeviceExt;
 /// `@binding` decorators must match these values.
 pub const BIND_IRRADIANCE: u32 = 0;
 pub const BIND_DIRECTION: u32 = 1;
+/// Non-filtering (Nearest) sampler. Used for the octahedral direction texture:
+/// linear interpolation of octahedral-encoded unit vectors does not commute
+/// with slerp, so the direction channel must stay nearest.
 pub const BIND_SAMPLER: u32 = 2;
 /// Animated-light contribution atlas (Rgba16Float). Composed each frame by
 /// `render::animated_lightmap`; forward pass samples alongside the static
 /// atlas. See animated-light-weight-maps/ §Task 5.
 pub const BIND_ANIMATED_ATLAS: u32 = 3;
+/// Filtering (Linear) sampler. Used for the irradiance and animated atlases so
+/// baked penumbra ramps read as continuous gradients under magnification
+/// instead of stair-stepping at atlas-texel boundaries. See
+/// baked-soft-lightmap-shadows/ §Task 5. Bound in every variant; on the manual
+/// 4-tap fallback path it goes unused (the shader sees `use_hw_filter == false`)
+/// but stays bound so the group-4 BGL is identical across both pipeline variants.
+pub const BIND_FILTERING_SAMPLER: u32 = 4;
 
 /// GPU-side lightmap atlas: irradiance texture, direction texture, sampler,
 /// and the bind group that exposes them to the forward shader.
@@ -62,13 +72,33 @@ impl LightmapResources {
         bind_group_layout: &wgpu::BindGroupLayout,
         animated_atlas_view: &wgpu::TextureView,
     ) -> Self {
+        // Nearest sampler for the octahedral direction texture (binding 1):
+        // linear interpolation of octahedral-encoded unit vectors does not
+        // commute with slerp, so direction must stay nearest.
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Lightmap Sampler"),
+            label: Some("Lightmap Sampler (Nearest)"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Nearest,
             min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+
+        // Linear sampler for the irradiance + animated atlases (both
+        // Rgba16Float, which is filterable in core WebGPU). Turns baked
+        // multi-texel penumbra ramps into continuous gradients under
+        // magnification. On the manual 4-tap fallback path the shader ignores
+        // this binding, but it stays bound so the group-4 BGL is identical
+        // across both pipeline variants. See baked-soft-lightmap-shadows/ §Task 5.
+        let filtering_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Lightmap Sampler (Linear)"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
@@ -110,6 +140,10 @@ impl LightmapResources {
                     binding: BIND_ANIMATED_ATLAS,
                     resource: wgpu::BindingResource::TextureView(animated_atlas_view),
                 },
+                wgpu::BindGroupEntry {
+                    binding: BIND_FILTERING_SAMPLER,
+                    resource: wgpu::BindingResource::Sampler(&filtering_sampler),
+                },
             ],
         });
 
@@ -121,19 +155,25 @@ impl LightmapResources {
     }
 }
 
-fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 4] {
-    // `filterable: false` + `NonFiltering` sampler: the lightmap sampler uses
-    // Nearest for both mag and min (see `LightmapResources::new`), so no
-    // filtering is ever requested. Declaring it here matches reality and
-    // lets wgpu pick the cheaper code path. Nearest is also arguably more
-    // correct on the direction texture — linear interpolation of
-    // octahedral-encoded unit vectors does not commute with slerp.
+fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 5] {
+    // Two samplers (binding 2 nearest, binding 4 linear), split by what each
+    // texture needs:
+    //   - Irradiance (0) and animated atlas (3) are `Rgba16Float`, which is
+    //     filterable in core WebGPU (only 32-bit float formats need the
+    //     `float32-filterable` feature). Marked `filterable: true` and sampled
+    //     through the linear sampler so baked penumbra ramps read as continuous
+    //     gradients instead of stair-stepping at texel boundaries.
+    //   - Direction (1) stays `filterable: false` on the nearest sampler:
+    //     linear interpolation of octahedral-encoded unit vectors does not
+    //     commute with slerp.
+    // The BGL is identical across the HW-filter and 4-tap-fallback pipeline
+    // variants — the fallback simply leaves the linear sampler unused.
     [
         wgpu::BindGroupLayoutEntry {
             binding: BIND_IRRADIANCE,
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
                 view_dimension: wgpu::TextureViewDimension::D2,
                 multisampled: false,
             },
@@ -155,20 +195,38 @@ fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 4] {
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
             count: None,
         },
-        // Animated-light contribution atlas. Rgba16Float is non-filterable
-        // at wgpu default limits; the existing `NonFiltering`
-        // `lightmap_sampler` already matches, so no new sampler is added.
+        // Animated-light contribution atlas (Rgba16Float) — filterable in core
+        // WebGPU, sampled through the linear sampler at binding 4 (HW path) or
+        // a manual 4-tap lerp (fallback).
         wgpu::BindGroupLayoutEntry {
             binding: BIND_ANIMATED_ATLAS,
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
                 view_dimension: wgpu::TextureViewDimension::D2,
                 multisampled: false,
             },
             count: None,
         },
+        wgpu::BindGroupLayoutEntry {
+            binding: BIND_FILTERING_SAMPLER,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        },
     ]
+}
+
+/// Whether `Rgba16Float` (the irradiance + animated atlas format) advertises
+/// hardware bilinear filtering on this adapter. Decides the forward pipeline's
+/// `use_hw_filter` override once at init: `true` → sample through the linear
+/// sampler; `false` → manual 4-tap bilinear lerp in `forward.wgsl`. Both produce
+/// the same continuous ramp; the fallback only costs extra per-fragment work.
+pub fn atlas_format_filterable(adapter: &wgpu::Adapter) -> bool {
+    adapter
+        .get_texture_format_features(wgpu::TextureFormat::Rgba16Float)
+        .flags
+        .contains(wgpu::TextureFormatFeatureFlags::FILTERABLE)
 }
 
 fn upload_irradiance_texture(
@@ -274,4 +332,61 @@ fn upload_placeholder_direction(device: &wgpu::Device, queue: &wgpu::Queue) -> w
         wgpu::util::TextureDataOrder::LayerMajor,
         &bytes,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The group-4 BGL is a fixed contract with `forward.wgsl`'s `@binding`
+    // decorators. This pins the sampler split decided in Task 5: which textures
+    // are filterable, and the two sampler bindings (nearest + linear).
+    #[test]
+    fn bgl_entries_pin_sampler_split() {
+        let entries = bind_group_layout_entries();
+        assert_eq!(entries.len(), 5, "group-4 BGL grew to 5 entries");
+
+        let tex_sample = |b: u32| {
+            entries
+                .iter()
+                .find(|e| e.binding == b)
+                .and_then(|e| match e.ty {
+                    wgpu::BindingType::Texture { sample_type, .. } => Some(sample_type),
+                    _ => None,
+                })
+        };
+        let sampler_ty = |b: u32| {
+            entries
+                .iter()
+                .find(|e| e.binding == b)
+                .and_then(|e| match e.ty {
+                    wgpu::BindingType::Sampler(t) => Some(t),
+                    _ => None,
+                })
+        };
+
+        // Irradiance + animated atlas filter linear (Rgba16Float is filterable).
+        assert_eq!(
+            tex_sample(BIND_IRRADIANCE),
+            Some(wgpu::TextureSampleType::Float { filterable: true })
+        );
+        assert_eq!(
+            tex_sample(BIND_ANIMATED_ATLAS),
+            Some(wgpu::TextureSampleType::Float { filterable: true })
+        );
+        // Direction stays nearest (octahedral lerp ≠ slerp).
+        assert_eq!(
+            tex_sample(BIND_DIRECTION),
+            Some(wgpu::TextureSampleType::Float { filterable: false })
+        );
+        // Two samplers: nearest at binding 2, linear at binding 4.
+        assert_eq!(
+            sampler_ty(BIND_SAMPLER),
+            Some(wgpu::SamplerBindingType::NonFiltering)
+        );
+        assert_eq!(
+            sampler_ty(BIND_FILTERING_SAMPLER),
+            Some(wgpu::SamplerBindingType::Filtering)
+        );
+    }
 }

@@ -14,7 +14,9 @@ use crate::chart_raster::{
     CHART_PADDING_TEXELS, ChartPlacement, chart_interior_dims, chart_texel_world_position,
 };
 use crate::geometry::GeometryResult;
-use crate::lightmap_bake::{Chart, light_contribution_and_direction, shadow_visible};
+use crate::lightmap_bake::{
+    Chart, light_contribution_and_direction, segment_clear, soft_visibility,
+};
 use crate::map_data::MapLight;
 
 /// Dropped as numerical noise; prevents per-texel lists from inflating on
@@ -30,7 +32,15 @@ const WEIGHT_EPSILON: f32 = 1.0e-6;
 /// cache entries (the `animated_lm_weight_maps` cache key folds this in
 /// alongside the input hash — same shape as `lightmap_bake::STAGE_VERSION` and
 /// `sh_bake::STAGE_VERSION`).
-pub const STAGE_VERSION: u32 = 3;
+///
+/// v4 bump (baked-soft-lightmap-shadows Task 4): the binary `shadow_visible`
+/// membership gate was replaced with a soft area-light visibility fraction
+/// multiplied into `TexelLight.weight` (penumbra texels now carry fractional
+/// weight instead of a 0/1 include). Documentation marker only — this stage is
+/// uncached (invoked directly from `main.rs`, no `CacheKey`/`input_hash`), so
+/// the bump has no recompile effect and is consumed solely by this module's
+/// own tests today.
+pub const STAGE_VERSION: u32 = 4;
 
 pub struct WeightMapInputs<'a> {
     pub bvh: &'a Bvh<f32, 3>,
@@ -202,6 +212,13 @@ fn bake_one_chunk(
                 chart_texel_world_position(chart, tx_interior, ty_interior, interior_w, interior_h);
             let surface_normal = chart.normal;
 
+            // Deterministic per-texel seed for soft-visibility sampling: a fixed
+            // integer hash of the texel's atlas coordinate. Same convention as the
+            // static lightmap stage (texel `(x, y)` hash, never `RandomState`), so
+            // the bake stays byte-identical across processes. `(ax, ay)` is the
+            // texel's stable identity in this loop.
+            let texel_seed = soft_visibility_texel_seed(ax, ay);
+
             let offset_start = texel_lights.len() as u32;
             let mut count: u32 = 0;
             for &light_index in chunk_light_indices {
@@ -212,7 +229,8 @@ fn bake_one_chunk(
                 // `inputs.lights` (index alignment with the chunk section /
                 // delta-SH bake) but emit zero weight here. Dynamic-tier lights
                 // are already absent — the `AnimatedBakedLights` namespace keys
-                // on `!is_dynamic`.
+                // on `!is_dynamic`. The soft-visibility multiply below composes
+                // *after* this filter, so sdf-typed lights stay fully skipped.
                 if light.shadow_type == crate::map_data::ShadowType::Sdf {
                     continue;
                 }
@@ -222,16 +240,24 @@ fn bake_one_chunk(
                 if weight <= WEIGHT_EPSILON {
                     continue;
                 }
-                if !shadow_visible(
-                    inputs.bvh,
-                    inputs.primitives,
-                    inputs.geometry,
-                    world_p,
-                    surface_normal,
-                    light,
-                ) {
+                // Soft area-light visibility replaces the old binary
+                // `shadow_visible` gate (baked-soft-lightmap-shadows Task 4): the
+                // `[0, 1]` unoccluded fraction scales the emitted weight, so
+                // penumbra texels carry a fractional weight rather than a hard
+                // include/exclude. Fully occluded (`v <= 0`) emits no entry, same
+                // sparsity as before. Because `weight` is a continuous multiplier
+                // consumed by the compose pre-pass (no thresholding there), the
+                // shadow *shape* stays fixed as the light's intensity animates —
+                // intensity is a separate per-frame scalar. Wraps this module's
+                // `segment_clear` as the trace closure (the helper is
+                // trace-context-agnostic per Task 2).
+                let v = soft_visibility(world_p, surface_normal, light, texel_seed, |from, to| {
+                    segment_clear(inputs.bvh, inputs.primitives, inputs.geometry, from, to)
+                });
+                if v <= 0.0 {
                     continue;
                 }
+                let weight = weight * v;
                 // Retain the per-light per-texel incoming direction the
                 // contribution calculation already computed (Task 2b of
                 // sdf-static-occluder-shadows). The light's geometry is
@@ -262,6 +288,19 @@ fn bake_one_chunk(
         offset_counts,
         texel_lights,
     }
+}
+
+/// Deterministic per-texel seed for `soft_visibility`'s sample-lattice rotation,
+/// derived from a fixed integer hash of the texel's atlas coordinate `(x, y)`.
+/// No `RandomState`, no hash-order dependence — same `(x, y)` always yields the
+/// same seed, so the bake is byte-identical across processes. Mixing follows the
+/// SplitMix64 finalizer so adjacent texels decorrelate. Mirrors the static
+/// lightmap stage's "texel `(x, y)` hash" seeding convention.
+fn soft_visibility_texel_seed(x: u32, y: u32) -> u64 {
+    let mut z = ((x as u64) << 32) | (y as u64);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
 }
 
 /// Strips base color and intensity so the weight is a neutral Lambert × falloff
@@ -545,6 +584,76 @@ mod tests {
         }
     }
 
+    /// Floor (face 0) at y=0; a *partial* blocker (face 1) at y=0.5 covering
+    /// only x ∈ [-1, 0.5] (z ∈ [-1, 2]). With a large-`light_size` point light at
+    /// (0.5, 1, 0.5), floor texels near the blocker edge see part of the light's
+    /// area disk past the edge and part occluded → fractional soft visibility.
+    fn floor_plus_partial_blocker_geometry() -> GeometryResult {
+        let mut vertices = xz_quad_face(0.0, 1.0, 0.0);
+        let blocker = vec![
+            Vertex::new(
+                [-1.0, 0.5, -1.0],
+                [0.0, 0.0],
+                [0.0, -1.0, 0.0],
+                [1.0, 0.0, 0.0],
+                true,
+                [0.0, 0.0],
+            ),
+            Vertex::new(
+                [0.5, 0.5, -1.0],
+                [1.0, 0.0],
+                [0.0, -1.0, 0.0],
+                [1.0, 0.0, 0.0],
+                true,
+                [0.0, 0.0],
+            ),
+            Vertex::new(
+                [0.5, 0.5, 2.0],
+                [1.0, 1.0],
+                [0.0, -1.0, 0.0],
+                [1.0, 0.0, 0.0],
+                true,
+                [0.0, 0.0],
+            ),
+            Vertex::new(
+                [-1.0, 0.5, 2.0],
+                [0.0, 1.0],
+                [0.0, -1.0, 0.0],
+                [1.0, 0.0, 0.0],
+                true,
+                [0.0, 0.0],
+            ),
+        ];
+        vertices.extend(blocker);
+        GeometryResult {
+            geometry: GeometrySection {
+                vertices,
+                indices: vec![0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7],
+                faces: vec![
+                    FaceMeta {
+                        leaf_index: 0,
+                        texture_index: 0,
+                    },
+                    FaceMeta {
+                        leaf_index: 0,
+                        texture_index: 0,
+                    },
+                ],
+            },
+            texture_names: TextureNamesSection { names: Vec::new() },
+            face_index_ranges: vec![
+                FaceIndexRange {
+                    index_offset: 0,
+                    index_count: 6,
+                },
+                FaceIndexRange {
+                    index_offset: 6,
+                    index_count: 6,
+                },
+            ],
+        }
+    }
+
     fn animated_point_light_above() -> MapLight {
         MapLight {
             origin: DVec3::new(0.5, 1.0, 0.5),
@@ -573,6 +682,16 @@ mod tests {
             casts_entity_shadows: false,
             tags: vec![],
             shadow_type: crate::map_data::ShadowType::StaticLightMap,
+        }
+    }
+
+    /// Same as `animated_point_light_above` but with a large `light_size` so the
+    /// soft-visibility path activates (the disk subtends enough that a partial
+    /// occluder yields a fractional unoccluded fraction rather than a hard 0/1).
+    fn soft_animated_point_light_above() -> MapLight {
+        MapLight {
+            light_size: 0.5,
+            ..animated_point_light_above()
         }
     }
 
@@ -694,6 +813,111 @@ mod tests {
             section.texel_lights.is_empty(),
             "no weights should be emitted when every texel is shadowed",
         );
+    }
+
+    /// Task 4: a partially-occluded soft light produces *fractional* weights in
+    /// penumbra texels, not just the old binary 0/1 include. At least one covered
+    /// texel must carry a weight strictly between the noise floor and the fully-
+    /// lit value, and that fractional texel must be a covered (emitted) entry.
+    #[test]
+    fn soft_light_partial_occluder_emits_fractional_weight() {
+        // Hard reference: a zero-size light over the same partial blocker bakes a
+        // crisp 0/1 mask. Its maximum (fully-lit) weight bounds "fully lit".
+        let hard = bake_with_geometry_and_chunks(
+            floor_plus_partial_blocker_geometry(),
+            vec![animated_point_light_above()],
+            |charts| full_face_chunk(charts, 0, vec![0]),
+        );
+        let hard_max = hard
+            .texel_lights
+            .iter()
+            .map(|tl| tl.weight)
+            .fold(0.0_f32, f32::max);
+        assert!(hard_max > 0.0, "hard reference produced no lit texels");
+
+        let soft = bake_with_geometry_and_chunks(
+            floor_plus_partial_blocker_geometry(),
+            vec![soft_animated_point_light_above()],
+            |charts| full_face_chunk(charts, 0, vec![0]),
+        );
+        assert!(soft.is_consistent());
+
+        // A penumbra weight is one strictly below the fully-lit value at the same
+        // geometric falloff (scaled down by soft visibility < 1) but above the
+        // numerical noise floor — i.e. a continuous gradient, not 0/1.
+        let mut penumbra_count = 0;
+        for entry in &soft.offset_counts {
+            for i in 0..entry.count {
+                let tl = &soft.texel_lights[(entry.offset + i) as usize];
+                assert!(
+                    tl.weight > WEIGHT_EPSILON,
+                    "emitted entries must clear the noise floor; got {}",
+                    tl.weight,
+                );
+                if tl.weight < hard_max * 0.95 {
+                    penumbra_count += 1;
+                }
+            }
+        }
+        assert!(
+            penumbra_count > 0,
+            "expected at least one penumbra texel with fractional (< fully-lit) \
+             weight under soft visibility, found none",
+        );
+    }
+
+    /// Task 4: fully-occluded texels under a soft light still emit *no* entry —
+    /// soft visibility of 0 means "drop", same sparsity as the old binary gate.
+    /// The full (large) blocker covers the whole floor, so every disk sample is
+    /// occluded for every texel.
+    #[test]
+    fn soft_light_full_occluder_emits_no_entry() {
+        let section = bake_with_geometry_and_chunks(
+            floor_plus_blocker_geometry(),
+            vec![soft_animated_point_light_above()],
+            |charts| full_face_chunk(charts, 0, vec![0]),
+        );
+        for entry in &section.offset_counts {
+            assert_eq!(
+                entry.count, 0,
+                "a fully-occluded soft light must emit no entry (v <= 0)",
+            );
+        }
+        assert!(section.texel_lights.is_empty());
+    }
+
+    /// Task 4: the soft-visibility multiply composes *after* the sdf-typed
+    /// `continue`, so `sdf`-typed lights remain fully skipped (no baked weight).
+    #[test]
+    fn sdf_typed_soft_light_is_skipped() {
+        let mut light = soft_animated_point_light_above();
+        light.shadow_type = crate::map_data::ShadowType::Sdf;
+        let section = bake_with_geometry_and_chunks(unit_floor_geometry(), vec![light], |charts| {
+            full_face_chunk(charts, 0, vec![0])
+        });
+        for entry in &section.offset_counts {
+            assert_eq!(entry.count, 0, "sdf-typed lights emit no baked weight");
+        }
+        assert!(section.texel_lights.is_empty());
+    }
+
+    /// Task 4: the soft bake stays deterministic — the per-texel seed is a fixed
+    /// hash of `(x, y)`, no RNG / hash-order, so two builds are byte-identical.
+    #[test]
+    fn soft_light_determinism_two_builds_byte_identical() {
+        let bytes_a = bake_with_geometry_and_chunks(
+            floor_plus_partial_blocker_geometry(),
+            vec![soft_animated_point_light_above()],
+            |charts| full_face_chunk(charts, 0, vec![0]),
+        )
+        .to_bytes();
+        let bytes_b = bake_with_geometry_and_chunks(
+            floor_plus_partial_blocker_geometry(),
+            vec![soft_animated_point_light_above()],
+            |charts| full_face_chunk(charts, 0, vec![0]),
+        )
+        .to_bytes();
+        assert_eq!(bytes_a, bytes_b);
     }
 
     #[test]

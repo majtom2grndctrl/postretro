@@ -22,6 +22,7 @@ use rayon::prelude::*;
 use crate::bvh_build::BvhPrimitive;
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::{AnimatedBakedLights, StaticBakedLights};
+use crate::lightmap_bake::soft_visibility;
 use crate::map_data::{FalloffModel, LightAnimation, LightType, MapLight};
 use crate::partition::{BspTree, find_leaf_for_point};
 
@@ -30,7 +31,11 @@ pub const DEFAULT_PROBE_SPACING: f32 = 1.0;
 
 /// Bump this when the SH baking algorithm changes. Invalidates all existing
 /// cache entries for this stage.
-pub const STAGE_VERSION: u32 = 4;
+///
+/// 4 → 5: the indirect-bounce shadow gate softened from a binary hard ray to the
+/// area-light `soft_visibility` fraction (baked-soft-lightmap-shadows Task 4b), so
+/// the cached `sh_volume` irradiance values shift.
+pub const STAGE_VERSION: u32 = 5;
 
 const RAYS_PER_PROBE: u32 = 256;
 
@@ -180,7 +185,7 @@ pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> OctahedralSh
             }
             let pos = vec3_from(probe_positions[i]);
             let (coeffs, sum_d, sum_d2) =
-                bake_probe_rgb_with_moments(inputs, pos, &static_lights, far_sentinel);
+                bake_probe_rgb_with_moments(inputs, pos, &static_lights, far_sentinel, i as u64);
             // All RAYS_PER_PROBE rays accumulate (sky misses via the sentinel),
             // so these are exact divisions by the constant.
             let mean_distance = sum_d / RAYS_PER_PROBE as f32;
@@ -559,21 +564,6 @@ fn light_contribution_lambert(light: &MapLight, surface_point: Vec3, surface_nor
     }
 }
 
-fn light_shadow_origin(light: &MapLight, surface_point: Vec3) -> Vec3 {
-    match light.light_type {
-        LightType::Point | LightType::Spot => Vec3::new(
-            light.origin.x as f32,
-            light.origin.y as f32,
-            light.origin.z as f32,
-        ),
-        LightType::Directional => {
-            let dir = Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0]));
-            let to_light = (-dir).normalize_or_zero();
-            surface_point + to_light * 10_000.0 // beyond any indoor map AABB
-        }
-    }
-}
-
 /// Must match `falloff` in `forward.wgsl` exactly — divergence produces "ghost glow"
 /// or missing bounce light. InverseDistance/InverseSquared have no upper clamp past 1.0,
 /// matching the shader convention.
@@ -777,14 +767,24 @@ pub(crate) fn bake_probe_indirect_rgb(
     ctx: &RaytracingCtx<'_>,
     probe_pos: Vec3,
     lights: &[&MapLight],
+    probe_index: u64,
 ) -> [f32; 27] {
     let directions = sphere_directions(RAYS_PER_PROBE, SAMPLING_LATTICE_OFFSET);
     let mc_weight = (4.0 * std::f32::consts::PI) / RAYS_PER_PROBE as f32;
     let mut acc = [0f32; 27];
-    for dir in &directions {
+    for (ray_index, dir) in directions.iter().enumerate() {
         // Pass f32::INFINITY as an unreachable sentinel; the delta path discards
-        // the returned distance, so this value is never read.
-        let (radiance, _) = sample_radiance_rgb(ctx, probe_pos, *dir, lights, f32::INFINITY);
+        // the returned distance, so this value is never read. `probe_index`/
+        // `ray_index` seed the soft-visibility area-sample rotation only.
+        let (radiance, _) = sample_radiance_rgb(
+            ctx,
+            probe_pos,
+            *dir,
+            lights,
+            f32::INFINITY,
+            probe_index,
+            ray_index as u64,
+        );
         accumulate_sh_rgb(&mut acc, *dir, radiance, mc_weight);
     }
     apply_cosine_lobe_rgb(&mut acc);
@@ -804,6 +804,7 @@ fn bake_probe_rgb_with_moments(
     probe_pos: Vec3,
     static_lights: &[&MapLight],
     far_sentinel: f32,
+    probe_index: u64,
 ) -> ([f32; 27], f32, f32) {
     let ctx = inputs.ray_ctx();
     let directions = sphere_directions(RAYS_PER_PROBE, SAMPLING_LATTICE_OFFSET);
@@ -811,9 +812,16 @@ fn bake_probe_rgb_with_moments(
     let mut acc = [0f32; 27];
     let mut sum_d = 0.0f32;
     let mut sum_d2 = 0.0f32;
-    for dir in &directions {
-        let (radiance, distance) =
-            sample_radiance_rgb(&ctx, probe_pos, *dir, static_lights, far_sentinel);
+    for (ray_index, dir) in directions.iter().enumerate() {
+        let (radiance, distance) = sample_radiance_rgb(
+            &ctx,
+            probe_pos,
+            *dir,
+            static_lights,
+            far_sentinel,
+            probe_index,
+            ray_index as u64,
+        );
         accumulate_sh_rgb(&mut acc, *dir, radiance, mc_weight);
         sum_d += distance;
         sum_d2 += distance * distance;
@@ -822,28 +830,63 @@ fn bake_probe_rgb_with_moments(
     (acc, sum_d, sum_d2)
 }
 
+/// Deterministic per-(probe, ray, light) seed for the soft-visibility area-sample
+/// rotation. `sh_bake` has no texel coordinate to hash (unlike the lightmap/animated
+/// callers), so the seed is mixed from the probe index, ray index, and the light's
+/// position in the bake slice — the three indices that uniquely identify a shadow
+/// query in this bake. SplitMix64-style integer avalanche of those indices plus
+/// `SAMPLING_LATTICE_OFFSET`: a pure function of the indices, so it reproduces
+/// byte-for-byte across separate processes. NO `RandomState`, NO hash-map iteration
+/// order — the byte-identical-`.prl` determinism AC depends on this staying
+/// index-derived. The base SH volume and the sparse animated delta tiles both reach
+/// this through `sample_radiance_rgb`, so both inherit the same deterministic seed.
+fn soft_visibility_seed(probe_index: u64, ray_index: u64, light_index: u64) -> u64 {
+    // Distinct odd multipliers keep the three index axes from aliasing onto each
+    // other (e.g. probe 1/ray 0 vs probe 0/ray 1) before the avalanche.
+    let mut z = SAMPLING_LATTICE_OFFSET
+        ^ probe_index.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ ray_index.wrapping_mul(0xBF58_476D_1CE4_E5B9)
+        ^ light_index.wrapping_mul(0x94D0_49BB_1331_11EB);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
 /// Indirect (bounced) radiance along one ray plus the ray's hit distance —
 /// direct term is the lightmap's responsibility. Shared by both bake paths: the
 /// SH-volume path consumes the distance for its depth moments, the delta path
 /// discards it. A ray that misses all geometry returns `SKY_COLOR` and
 /// `far_sentinel` as its distance — the depth-moment bake reads "no hit" as
 /// "fully open" at the probe-spacing scale.
+///
+/// `probe_index`/`ray_index` only feed the deterministic soft-visibility seed
+/// (`soft_visibility_seed`); they never alter which geometry is traced. Each
+/// light's bounce contribution is scaled by the `[0, 1]` area-light visibility
+/// fraction so bounced shadows soften in lockstep with the direct static term
+/// (an authored hard light — `_light_size`/`_angular_diameter == 0` — collapses to
+/// the single hard ray inside `soft_visibility`, matching the old binary gate).
 fn sample_radiance_rgb(
     ctx: &RaytracingCtx<'_>,
     origin: Vec3,
     dir: Vec3,
     lights: &[&MapLight],
     far_sentinel: f32,
+    probe_index: u64,
+    ray_index: u64,
 ) -> (Vec3, f32) {
     match closest_hit(ctx, origin + dir * RAY_EPSILON, dir, f32::INFINITY) {
         None => (Vec3::from(SKY_COLOR), far_sentinel),
         Some(hit) => {
             let mut radiance = Vec3::ZERO;
-            for light in lights {
-                if !shadow_visible(ctx, hit.point, hit.normal, light) {
+            for (light_index, light) in lights.iter().enumerate() {
+                let seed = soft_visibility_seed(probe_index, ray_index, light_index as u64);
+                let v = soft_visibility(hit.point, hit.normal, light, seed, |from, to| {
+                    segment_clear(ctx, from, to)
+                });
+                if v <= 0.0 {
                     continue;
                 }
-                radiance += light_contribution_lambert(light, hit.point, hit.normal);
+                radiance += light_contribution_lambert(light, hit.point, hit.normal) * v;
             }
             (
                 radiance * BOUNCE_ALBEDO / std::f32::consts::PI,
@@ -851,21 +894,6 @@ fn sample_radiance_rgb(
             )
         }
     }
-}
-
-fn shadow_visible(
-    ctx: &RaytracingCtx<'_>,
-    surface_point: Vec3,
-    surface_normal: Vec3,
-    light: &MapLight,
-) -> bool {
-    if !light.cast_shadows {
-        return true;
-    }
-    let shadow_origin = light_shadow_origin(light, surface_point);
-    // Nudge along the normal to avoid self-intersection with the hit face.
-    let probe_end = surface_point + surface_normal * RAY_EPSILON;
-    segment_clear(ctx, probe_end, shadow_origin)
 }
 
 pub(crate) fn probe_is_valid_pub(tree: &BspTree, exterior: &HashSet<usize>, pos: DVec3) -> bool {
@@ -1399,6 +1427,146 @@ mod tests {
         );
     }
 
+    /// Soft-shadow shadow-casting point light at `origin` with the given world-unit
+    /// area radius. `light_size > 0` takes the soft area-sample path in
+    /// `soft_visibility`; `0` collapses to the single hard ray.
+    fn soft_point_light(origin: DVec3, light_size: f32) -> MapLight {
+        MapLight {
+            origin,
+            light_type: LightType::Point,
+            intensity: 1.0,
+            color: [1.0, 1.0, 1.0],
+            falloff_model: FalloffModel::Linear,
+            falloff_range: 50.0,
+            light_size,
+            angular_diameter: 0.0,
+            cone_angle_inner: None,
+            cone_angle_outer: None,
+            cone_direction: None,
+            animation: None,
+            cast_shadows: true,
+            bake_only: false,
+            is_dynamic: false,
+            casts_entity_shadows: false,
+            is_animated: false,
+            tags: vec![],
+            shadow_type: crate::map_data::ShadowType::StaticLightMap,
+        }
+    }
+
+    /// Task 4b: the SH bounce term scales by the `[0, 1]` soft-visibility fraction,
+    /// not a binary 0/1 gate. A receiver floor under a soft (area) light, with a
+    /// half-plane occluder blocking part of the light's sphere, must bounce
+    /// strictly between fully-occluded (0) and fully-clear — the partial-penumbra
+    /// fraction. This exercises the wired `sample_radiance_rgb` call site through
+    /// real geometry tracing, not just the helper in isolation.
+    #[test]
+    fn sh_bounce_scales_by_soft_visibility_fraction() {
+        // Floor receiver around the origin (normal +Y) plus a half-plane occluder
+        // at y = 2.5 covering only +X, so area samples toward the +X half of the
+        // light sphere are blocked and the -X half stays clear → a true penumbra.
+        let floor_a = [[-4.0, 0.0, -4.0], [4.0, 0.0, -4.0], [4.0, 0.0, 4.0]];
+        let floor_b = [[-4.0, 0.0, -4.0], [4.0, 0.0, 4.0], [-4.0, 0.0, 4.0]];
+        let occluder_a = [[0.0, 2.5, -4.0], [4.0, 2.5, -4.0], [4.0, 2.5, 4.0]];
+        let occluder_b = [[0.0, 2.5, -4.0], [4.0, 2.5, 4.0], [0.0, 2.5, 4.0]];
+        let geo = multi_triangle_geometry(&[floor_a, floor_b, occluder_a, occluder_b]);
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let ctx = RaytracingCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+        };
+
+        // Probe just above the floor, ray straight down → hits the floor at ~origin.
+        let probe = Vec3::new(0.0, 1.0, 0.0);
+        let dir = Vec3::new(0.0, -1.0, 0.0);
+        let far = 100.0;
+
+        // Large area radius so the sphere straddles the +X occluder edge.
+        let soft_light = soft_point_light(DVec3::new(0.0, 5.0, 0.0), 2.0);
+        let soft = sample_radiance_rgb(&ctx, probe, dir, &[&soft_light], far, 0, 0).0;
+
+        // Reference: same light with shadows disabled → fully-clear bounce (v = 1).
+        let mut clear_light = soft_light.clone();
+        clear_light.cast_shadows = false;
+        let clear = sample_radiance_rgb(&ctx, probe, dir, &[&clear_light], far, 0, 0).0;
+
+        // Fractional, not binary: strictly dimmer than fully-clear yet nonzero.
+        assert!(clear.length() > 0.0, "reference clear bounce should be lit");
+        assert!(
+            soft.length() > 0.0,
+            "partially-visible soft light must still bounce some light, got {soft}"
+        );
+        assert!(
+            soft.length() < clear.length(),
+            "occluded soft light should bounce less than fully-clear: soft={} clear={}",
+            soft.length(),
+            clear.length()
+        );
+    }
+
+    /// Determinism is the make-or-break Task 4b property: the soft-visibility seed
+    /// is derived from probe/ray/light indices (no RNG, no hash-order), so a bake
+    /// with a *soft, occluded* light — the path that actually fans area samples —
+    /// must produce byte-identical output across runs. The existing
+    /// `..._byte_identical_output_on_repeated_runs` test uses hard (size-0) lights;
+    /// this one specifically pins the soft area-sampling path.
+    #[test]
+    fn sh_volume_bake_with_soft_occluded_light_is_byte_identical() {
+        let geo = floor_and_walls_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let tree = tree_all_empty();
+
+        // Soft shadow-caster inside the box; the walls partially occlude its area
+        // from interior probes, so soft_visibility takes the escalated path.
+        let light = soft_point_light(DVec3::new(2.0, 2.5, 2.0), 1.5);
+        let lights = std::slice::from_ref(&light);
+        let exterior: HashSet<usize> = HashSet::new();
+        let static_lights = StaticBakedLights::from_lights(lights);
+        let animated_lights = AnimatedBakedLights::from_lights(lights);
+        let inputs = ShBakeCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
+            total_light_count: 1,
+        };
+        let config = ShConfig { probe_spacing: 1.0 };
+
+        let bytes_a = bake_sh_volume(&inputs, &config).to_bytes();
+        let bytes_b = bake_sh_volume(&inputs, &config).to_bytes();
+        assert_eq!(
+            bytes_a, bytes_b,
+            "soft-shadow SH bake drifted between runs; the index-derived \
+             soft-visibility seed must keep output byte-identical for the cache",
+        );
+    }
+
+    /// The seed must vary across the three index axes (probe, ray, light) so
+    /// distinct shadow queries don't all rotate the same area-sample pattern, while
+    /// staying a pure function of the indices (reproducible across processes).
+    #[test]
+    fn soft_visibility_seed_varies_per_index_axis_and_is_pure() {
+        let base = soft_visibility_seed(0, 0, 0);
+        assert_ne!(base, soft_visibility_seed(1, 0, 0), "probe axis collapsed");
+        assert_ne!(base, soft_visibility_seed(0, 1, 0), "ray axis collapsed");
+        assert_ne!(base, soft_visibility_seed(0, 0, 1), "light axis collapsed");
+        // Distinct axes must not alias onto each other (probe 1 vs ray 1 etc.).
+        assert_ne!(
+            soft_visibility_seed(1, 0, 0),
+            soft_visibility_seed(0, 1, 0),
+            "probe and ray axes alias"
+        );
+        // Pure function: identical indices → identical seed.
+        assert_eq!(
+            soft_visibility_seed(7, 13, 2),
+            soft_visibility_seed(7, 13, 2)
+        );
+    }
+
     // Regression: guards variance non-negativity (`E[d²] >= E[d]²`) for a valid,
     // non-degenerate probe. Compares the pre-rounding f32 moments — two
     // independently-rounded f16 values can violate a naive `>=` and flake.
@@ -1435,7 +1603,7 @@ mod tests {
         // Pre-rounding f32 moments: divide the raw sums by RAYS_PER_PROBE before
         // any f16 encoding (the f16 store happens later in `bake_sh_volume`).
         let (_coeffs, sum_d, sum_d2) =
-            bake_probe_rgb_with_moments(&inputs, probe_pos, &static_light_refs, far_sentinel);
+            bake_probe_rgb_with_moments(&inputs, probe_pos, &static_light_refs, far_sentinel, 0);
         let mean_d = sum_d / RAYS_PER_PROBE as f32;
         let mean_sq_d = sum_d2 / RAYS_PER_PROBE as f32;
 

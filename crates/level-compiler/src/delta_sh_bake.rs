@@ -343,7 +343,11 @@ fn bake_subblock(
         // Indirect-only: the same bounce math as the base bake. The animated
         // light's DIRECT contribution lives in `lm_anim` (occlusion-tested),
         // so baking it here too would double-count. Delta irradiance is indirect-only.
-        let indirect = bake_probe_indirect_rgb(&ctx, pos, &lights_slice);
+        // Stable per-probe index for the soft-visibility seed: the affinity cell
+        // plus the in-cell local slot uniquely (and deterministically) identify
+        // this delta probe across separate processes — no RNG, no hash order.
+        let probe_index = cell as u64 * PROBES_PER_CELL as u64 + local as u64;
+        let indirect = bake_probe_indirect_rgb(&ctx, pos, &lights_slice, probe_index);
         let tile = pack_octahedral_irradiance_tile(
             &indirect,
             true,
@@ -694,7 +698,7 @@ mod tests {
             geometry: &geo,
         };
         let pos = Vec3::new(-7.0, -7.0, -7.0);
-        let indirect = bake_probe_indirect_rgb(&ctx, pos, &[&lights[0]]);
+        let indirect = bake_probe_indirect_rgb(&ctx, pos, &[&lights[0]], 0);
         let expected_tile = pack_octahedral_irradiance_tile(
             &indirect,
             true,

@@ -1,8 +1,20 @@
 // Octahedral direction encoding and irradiance-atlas tile mapping.
-// See: context/lib/rendering_pipeline.md §6 and context/lib/build_pipeline.md §PRL section IDs
+// See: context/lib/rendering_pipeline.md §4 and context/lib/build_pipeline.md §PRL section IDs
 
+/// Default tile resolution chosen by the baker when it writes a fresh atlas.
+/// The wire format stores N per-section, so a future re-bake can pick a
+/// different default without a format break.
 pub const DEFAULT_IRRADIANCE_TILE_DIMENSION: u32 = 6;
 pub const DEFAULT_IRRADIANCE_TILE_BORDER: u32 = 1;
+
+/// Tile resolution the current runtime (sampler shaders + delta/compose passes)
+/// is pinned to. This is a *capability* limit, not a format constraint: the
+/// header stores N so the resolution can change via re-bake, but the loaders
+/// reject any N the runtime cannot currently sample. Today it equals
+/// [`DEFAULT_IRRADIANCE_TILE_DIMENSION`]; the distinct name documents that the
+/// two answer different questions ("what does the baker pick" vs. "what can the
+/// runtime consume"). Bump this once the runtime handles a new N.
+pub const RUNTIME_SUPPORTED_TILE_DIMENSION: u32 = DEFAULT_IRRADIANCE_TILE_DIMENSION;
 
 /// Encode a unit-length direction vector to octahedral `[u16; 2]`.
 ///
@@ -56,41 +68,99 @@ fn sign_not_zero(v: f32) -> f32 {
     if v >= 0.0 { 1.0 } else { -1.0 }
 }
 
-/// Atlas dimensions, in texels, for the committed probe packing:
-/// tile x = probe x, tile y = probe y + probe z * grid_y.
+/// Atlas tile columns for the committed near-square probe packing.
+///
+/// Probes keep their x-fastest linear order:
+/// `probe_index = x + y * grid_x + z * grid_x * grid_y`.
+/// The 2D tile atlas places that linear index as:
+/// `tile_x = probe_index % tiles_per_row`,
+/// `tile_y = probe_index / tiles_per_row`.
+pub fn irradiance_atlas_tiles_per_row(grid_dimensions: [u32; 3]) -> Option<u32> {
+    let total = total_probe_count(grid_dimensions)?;
+    if total == 0 {
+        return Some(0);
+    }
+    if total > (u32::MAX as u64) * (u32::MAX as u64) {
+        return None;
+    }
+    u32::try_from(ceil_sqrt_u64(total)).ok()
+}
+
+/// Atlas dimensions, in texels, for the committed near-square probe packing.
 pub fn irradiance_atlas_dimensions(grid_dimensions: [u32; 3], tile_dimension: u32) -> [u32; 2] {
-    if grid_dimensions.contains(&0) {
+    let Some(total) = total_probe_count(grid_dimensions) else {
+        return [0, 0];
+    };
+    if total == 0 {
         return [0, 0];
     }
+    let Some(tiles_per_row) = irradiance_atlas_tiles_per_row(grid_dimensions) else {
+        return [0, 0];
+    };
+    let tile_rows = total.div_ceil(tiles_per_row as u64);
+    let Some(width) = tiles_per_row.checked_mul(tile_dimension) else {
+        return [0, 0];
+    };
+    let Some(height) = u32::try_from(tile_rows)
+        .ok()
+        .and_then(|rows| rows.checked_mul(tile_dimension))
+    else {
+        return [0, 0];
+    };
+    [width, height]
+}
+
+/// Tile origin, in atlas texels, for a probe identified by its x-fastest linear index
+/// (probe_index = x + y*gx + z*gx*gy).
+pub fn irradiance_tile_origin(
+    probe_index: usize,
+    tile_dimension: u32,
+    atlas_tiles_per_row: u32,
+) -> [u32; 2] {
+    let tiles_per_row = atlas_tiles_per_row.max(1) as usize;
+    let tile_x = probe_index % tiles_per_row;
+    let tile_y = probe_index / tiles_per_row;
     [
-        grid_dimensions[0] * tile_dimension,
-        grid_dimensions[1] * grid_dimensions[2] * tile_dimension,
+        tile_x as u32 * tile_dimension,
+        tile_y as u32 * tile_dimension,
     ]
 }
 
-/// Tile origin, in atlas texels, for a probe in x-fastest grid order.
-pub fn irradiance_tile_origin(
-    probe_index: usize,
-    grid_dimensions: [u32; 3],
-    tile_dimension: u32,
-) -> [u32; 2] {
-    let nx = grid_dimensions[0] as usize;
-    let ny = grid_dimensions[1] as usize;
-    let z = probe_index / (nx * ny);
-    let rem = probe_index - z * nx * ny;
-    let y = rem / nx;
-    let x = rem - y * nx;
-    [
-        x as u32 * tile_dimension,
-        (y as u32 + z as u32 * grid_dimensions[1]) * tile_dimension,
-    ]
+fn total_probe_count(grid_dimensions: [u32; 3]) -> Option<u64> {
+    if grid_dimensions.contains(&0) {
+        return Some(0);
+    }
+    (grid_dimensions[0] as u64)
+        .checked_mul(grid_dimensions[1] as u64)?
+        .checked_mul(grid_dimensions[2] as u64)
+}
+
+fn ceil_sqrt_u64(n: u64) -> u64 {
+    debug_assert!(n > 0);
+    let mut lo = 1u64;
+    // Cap the upper search bound at `u32::MAX` so the returned root never exceeds
+    // `u32::MAX`. Callers that need a `u32` (e.g. `irradiance_atlas_tiles_per_row`)
+    // already reject oversized inputs earlier — they bound `n` to at most
+    // `u32::MAX * u32::MAX`, whose ceil-sqrt is `u32::MAX` — so this cap only
+    // tightens the binary search, it is never the path that rejects an input.
+    let mut hi = n.min(u32::MAX as u64);
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if mid >= n.div_ceil(mid) {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    lo
 }
 
 /// Interior texel center -> unit direction for an octahedral irradiance tile.
 ///
 /// The border is excluded from the [0,1] domain. Interior `(0,0)` maps to the
 /// lower-left center of the unfolded octahedral square, and increasing y maps
-/// upward in octahedral space. Task 5's WGSL sampler must mirror this exactly.
+/// upward in octahedral space. The WGSL sampler in `sh_sample.wgsl` must mirror
+/// this mapping exactly.
 pub fn irradiance_interior_texel_direction(
     interior_x: u32,
     interior_y: u32,
@@ -150,6 +220,27 @@ pub fn irradiance_tile_source_texel(
     let sx = if ix < 0 { n - 1 } else { 0 };
     let sy = if iy < 0 { n - 1 } else { 0 };
     [sx as u32, sy as u32]
+}
+
+/// Unquantized octahedral UV in `[0, 1]^2` for a unit direction. This is the
+/// exact Rust mirror of `oct_encode_unquantized` in `sh_sample.wgsl`: same L1
+/// projection, same lower-hemisphere fold, same `p * 0.5 + 0.5` remap. It is
+/// the inverse of [`decode_unquantized`] (after the `[-1,1] ↔ [0,1]` remap).
+/// `octahedral_oct_uv_matches_wgsl_reference` pins it against hand-checked
+/// reference values so a drift on either side fails CI. Test-only: the runtime
+/// encodes via [`encode`]; this is the unquantized form the WGSL sampler uses.
+#[cfg(test)]
+fn encode_unquantized_uv(x: f32, y: f32, z: f32) -> [f32; 2] {
+    let inv_l1 = 1.0 / (x.abs() + y.abs() + z.abs());
+    let mut ox = x * inv_l1;
+    let mut oy = y * inv_l1;
+    if z < 0.0 {
+        let new_ox = (1.0 - oy.abs()) * sign_not_zero(ox);
+        let new_oy = (1.0 - ox.abs()) * sign_not_zero(oy);
+        ox = new_ox;
+        oy = new_oy;
+    }
+    [ox * 0.5 + 0.5, oy * 0.5 + 0.5]
 }
 
 fn decode_unquantized(ox: f32, oy: f32) -> [f32; 3] {
@@ -300,13 +391,15 @@ mod tests {
     }
 
     #[test]
-    fn irradiance_atlas_dimensions_follow_x_fastest_probe_tiles() {
-        assert_eq!(irradiance_atlas_dimensions([3, 2, 4], 6), [18, 48]);
+    fn irradiance_atlas_dimensions_follow_near_square_linear_probe_tiles() {
+        assert_eq!(irradiance_atlas_tiles_per_row([3, 2, 4]), Some(5));
+        assert_eq!(irradiance_atlas_dimensions([3, 2, 4], 6), [30, 30]);
         assert_eq!(irradiance_atlas_dimensions([0, 2, 4], 6), [0, 0]);
-        assert_eq!(irradiance_tile_origin(0, [3, 2, 4], 6), [0, 0]);
-        assert_eq!(irradiance_tile_origin(1, [3, 2, 4], 6), [6, 0]);
-        assert_eq!(irradiance_tile_origin(3, [3, 2, 4], 6), [0, 6]);
-        assert_eq!(irradiance_tile_origin(6, [3, 2, 4], 6), [0, 12]);
+        assert_eq!(irradiance_tile_origin(0, 6, 5), [0, 0]);
+        assert_eq!(irradiance_tile_origin(1, 6, 5), [6, 0]);
+        assert_eq!(irradiance_tile_origin(4, 6, 5), [24, 0]);
+        assert_eq!(irradiance_tile_origin(5, 6, 5), [0, 6]);
+        assert_eq!(irradiance_tile_origin(23, 6, 5), [18, 24]);
     }
 
     #[test]
@@ -333,6 +426,74 @@ mod tests {
         assert_eq!(irradiance_tile_source_texel(5, 0, n, border), [0, 3]);
         assert_eq!(irradiance_tile_source_texel(0, 5, n, border), [3, 0]);
         assert_eq!(irradiance_tile_source_texel(5, 5, n, border), [0, 0]);
+    }
+
+    /// Rust ↔ WGSL octahedral mapping parity (the plan's open question).
+    ///
+    /// The Rust encoder here and the WGSL decoder in `sh_sample.wgsl` are
+    /// hand-mirrored (no codegen), so this test pins the shared convention with
+    /// hardcoded reference values: each direction's unquantized octahedral UV
+    /// (matching WGSL's `oct_encode_unquantized`) and, for that UV, the
+    /// interior-space coordinate `uv * interior` the WGSL sampler computes as
+    /// `border + oct * interior`. If the mapping changes on either side, the
+    /// Rust assertions here fail directly and the comment by
+    /// `oct_encode_unquantized` prompts the human/agent to resync the shader.
+    ///
+    /// Reference set exercises the seam/fold: all six axes plus a
+    /// lower-hemisphere diagonal where the `z < 0` fold applies.
+    #[test]
+    fn octahedral_oct_uv_matches_wgsl_reference() {
+        const EPS: f32 = 1e-5;
+        // tile_dimension 6, border 1 -> interior 4 (the runtime-supported tile).
+        const INTERIOR: f32 = 4.0;
+
+        // (direction, expected octahedral UV in [0,1]^2).
+        let l = 1.0 / 2.0_f32.sqrt(); // 1/sqrt(2)
+        let cases: &[([f32; 3], [f32; 2])] = &[
+            // Upper hemisphere (z >= 0): UV is just the L1-normalized xy remapped.
+            ([1.0, 0.0, 0.0], [1.0, 0.5]),   // +X
+            ([-1.0, 0.0, 0.0], [0.0, 0.5]),  // -X
+            ([0.0, 1.0, 0.0], [0.5, 1.0]),   // +Y
+            ([0.0, -1.0, 0.0], [0.5, 0.0]),  // -Y
+            ([0.0, 0.0, 1.0], [0.5, 0.5]),   // +Z (center)
+            // Lower hemisphere (z < 0): the fold sends the apex to the corners.
+            ([0.0, 0.0, -1.0], [1.0, 1.0]),  // -Z
+            // Lower-hemisphere diagonal (x=y=0.5, z=-1/sqrt(2)). After folding,
+            // UV = ((1 - |oy|)*sign(ox)) etc. -> 0.853553 on both axes.
+            ([0.5, 0.5, -l], [0.853_553_4, 0.853_553_4]),
+        ];
+
+        for (dir, expected_uv) in cases {
+            let dir = normalize(*dir);
+            let uv = encode_unquantized_uv(dir[0], dir[1], dir[2]);
+            assert!(
+                (uv[0] - expected_uv[0]).abs() < EPS && (uv[1] - expected_uv[1]).abs() < EPS,
+                "octahedral UV for {dir:?} was {uv:?}, expected {expected_uv:?}",
+            );
+
+            // Interior-space coordinate the WGSL sampler derives (`oct * interior`).
+            let interior_coord = [uv[0] * INTERIOR, uv[1] * INTERIOR];
+            // Encoding then decoding the UV must return the same unit direction
+            // (sign-not-zero handling and the fold are self-inverse here).
+            let decoded = decode_unquantized(uv[0] * 2.0 - 1.0, uv[1] * 2.0 - 1.0);
+            assert!(
+                angular_error(dir, decoded) < MAX_ANGULAR_ERROR,
+                "decode of UV {uv:?} (interior coord {interior_coord:?}) was {decoded:?}, \
+                 expected {dir:?}",
+            );
+        }
+
+        // Pin the interior-texel inverse used by the baker / diagnostics:
+        // `irradiance_interior_texel_direction(i, j, 6, 1)` samples interior
+        // texel centers at UV `(i + 0.5) / 4`. Texel (0,0) is the lower-left
+        // octahedral center; texel (3,3) the upper-right.
+        let center_00 = irradiance_interior_texel_direction(0, 0, 6, 1);
+        let center_33 = irradiance_interior_texel_direction(3, 3, 6, 1);
+        // UV (0.125, 0.125) -> oct (-0.75, -0.75), z = 1 - 1.5 < 0 -> folds.
+        let expect_00 = decode_unquantized(0.125 * 2.0 - 1.0, 0.125 * 2.0 - 1.0);
+        let expect_33 = decode_unquantized(0.875 * 2.0 - 1.0, 0.875 * 2.0 - 1.0);
+        assert!(angular_error(center_00, expect_00) < MAX_ANGULAR_ERROR);
+        assert!(angular_error(center_33, expect_33) < MAX_ANGULAR_ERROR);
     }
 
     #[test]

@@ -132,7 +132,8 @@ struct ShGridInfo {
     atlas_dimensions: vec2<u32>,
     tile_dimension: u32,
     tile_border: u32,
-    tile_grid_dimensions: vec2<u32>,
+    atlas_tiles_per_row: u32,
+    atlas_tile_rows: u32, // computed Rust-side but not read by this shader — tile placement derives from atlas_tiles_per_row
     tile_interior: u32,
     _pad2: u32,
     probe_occlusion: u32,

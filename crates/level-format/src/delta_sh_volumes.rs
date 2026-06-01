@@ -7,7 +7,10 @@
 // See: context/plans/done/lighting-animated-sh/
 
 use crate::FormatError;
-use crate::octahedral::{DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION};
+use crate::octahedral::{
+    DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
+    RUNTIME_SUPPORTED_TILE_DIMENSION,
+};
 
 /// Section-internal version, written as the first byte of the payload. Bumped
 /// whenever the on-disk layout changes so the loader can reject stale `.prl`
@@ -328,6 +331,13 @@ fn validate_tile_geometry(tile_dimension: u32, tile_border: u32) -> crate::Resul
             "delta sh volumes tile_border {tile_border}, expected {DEFAULT_IRRADIANCE_TILE_BORDER}"
         )));
     }
+    // The header stores N so a re-bake can change tile resolution without a
+    // format break; reject only what *this runtime* cannot sample yet.
+    if tile_dimension != RUNTIME_SUPPORTED_TILE_DIMENSION {
+        return Err(invalid_data(format!(
+            "delta sh volumes tile_dimension {tile_dimension} is not supported by this runtime, which is pinned to N={RUNTIME_SUPPORTED_TILE_DIMENSION}"
+        )));
+    }
     if tile_dimension <= tile_border.saturating_mul(2) {
         return Err(invalid_data(format!(
             "delta sh volumes tile_dimension {tile_dimension} leaves no interior texels with border {tile_border}"
@@ -571,6 +581,24 @@ mod tests {
         assert!(
             msg.contains("tile_border"),
             "expected tile-border error: {msg}"
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_tile_dimension() {
+        let section = empty_section([1, 1, 1]);
+        let mut bytes = section.to_bytes();
+        // tile_dimension follows animated_light_count in the fixed header.
+        let tile_dimension_offset = 1 + 1 + 12 + 4;
+        bytes[tile_dimension_offset..tile_dimension_offset + 4]
+            .copy_from_slice(&8u32.to_le_bytes());
+        let err = DeltaShVolumesSection::from_bytes(&bytes).unwrap_err();
+        let msg = err.to_string();
+        // The error is a runtime-capability limit (the format permits other N),
+        // not a "format violation" — the wording must say so.
+        assert!(
+            msg.contains("tile_dimension") && msg.contains("not supported by this runtime"),
+            "expected runtime-capability tile-dimension error: {msg}"
         );
     }
 }

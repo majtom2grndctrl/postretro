@@ -10,7 +10,8 @@ use nalgebra::{Point3, Vector3};
 use postretro_level_format::lightmap::f32_to_f16_bits;
 use postretro_level_format::octahedral::{
     DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION, irradiance_atlas_dimensions,
-    irradiance_interior_texel_direction, irradiance_tile_origin, irradiance_tile_source_texel,
+    irradiance_atlas_tiles_per_row, irradiance_interior_texel_direction, irradiance_tile_origin,
+    irradiance_tile_source_texel,
 };
 use postretro_level_format::sh_volume::{
     ANIMATED_SLOT_NONE, AnimationDescriptor, OCTAHEDRAL_PROBE_STRIDE, OctahedralAtlasTexel,
@@ -29,7 +30,7 @@ pub const DEFAULT_PROBE_SPACING: f32 = 1.0;
 
 /// Bump this when the SH baking algorithm changes. Invalidates all existing
 /// cache entries for this stage.
-pub const STAGE_VERSION: u32 = 3;
+pub const STAGE_VERSION: u32 = 4;
 
 const RAYS_PER_PROBE: u32 = 256;
 
@@ -125,6 +126,7 @@ pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> OctahedralSh
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             atlas_dimensions: [0, 0],
+            atlas_tiles_per_row: 0,
             probes: Vec::new(),
             atlas_texels: Vec::new(),
             animation_descriptors: Vec::new(),
@@ -195,12 +197,15 @@ pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> OctahedralSh
         .collect();
     let base_probes: Vec<OctahedralShProbe> = baked_probes.iter().map(|p| p.metadata).collect();
     let atlas_dimensions = irradiance_atlas_dimensions(dims, DEFAULT_IRRADIANCE_TILE_DIMENSION);
+    let atlas_tiles_per_row = irradiance_atlas_tiles_per_row(dims)
+        .expect("non-empty SH probe grid should have a valid atlas tile row count");
     let atlas_texels = pack_octahedral_irradiance_atlas(
         &baked_probes,
         dims,
         DEFAULT_IRRADIANCE_TILE_DIMENSION,
         DEFAULT_IRRADIANCE_TILE_BORDER,
         atlas_dimensions,
+        atlas_tiles_per_row,
     );
 
     // Per-light monochrome SH layers removed; animated indirect is handled by the SH compose pass via delta SH volumes.
@@ -226,6 +231,7 @@ pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> OctahedralSh
         tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
         tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
         atlas_dimensions,
+        atlas_tiles_per_row,
         probes: base_probes,
         atlas_texels,
         animation_descriptors,
@@ -257,7 +263,7 @@ pub fn log_stats(section: &OctahedralShVolumeSection) {
 
     log::info!(
         "OctahedralShVolume: grid {}x{}x{} = {total} probes ({valid} valid, \
-         {invalid} invalid), tile {} (border {}), atlas {}x{}, cell {}m, \
+         {invalid} invalid), tile {} (border {}), atlas {}x{} ({} tile(s)/row), cell {}m, \
          depth E[d] mean {avg_mean_d:.2}m / max {max_mean_d:.2}m, \
          {} animated light(s)",
         dims[0],
@@ -267,6 +273,7 @@ pub fn log_stats(section: &OctahedralShVolumeSection) {
         section.tile_border,
         section.atlas_dimensions[0],
         section.atlas_dimensions[1],
+        section.atlas_tiles_per_row,
         section.cell_size[0],
         section.animation_descriptors.len(),
     );
@@ -654,6 +661,7 @@ fn pack_octahedral_irradiance_atlas(
     tile_dimension: u32,
     border: u32,
     atlas_dimensions: [u32; 2],
+    atlas_tiles_per_row: u32,
 ) -> Vec<OctahedralAtlasTexel> {
     let total = (grid_dimensions[0] as usize)
         * (grid_dimensions[1] as usize)
@@ -666,7 +674,7 @@ fn pack_octahedral_irradiance_atlas(
     }
 
     for (probe_index, probe) in probes.iter().enumerate() {
-        let origin = irradiance_tile_origin(probe_index, grid_dimensions, tile_dimension);
+        let origin = irradiance_tile_origin(probe_index, tile_dimension, atlas_tiles_per_row);
         let tile = pack_octahedral_irradiance_tile(
             &probe.coefficients,
             probe.metadata.validity != 0,
@@ -1121,6 +1129,7 @@ mod tests {
         let section = bake_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 });
         assert_eq!(section.grid_dimensions, [0, 0, 0]);
         assert_eq!(section.atlas_dimensions, [0, 0]);
+        assert_eq!(section.atlas_tiles_per_row, 0);
         assert!(section.probes.is_empty());
         assert!(section.atlas_texels.is_empty());
     }

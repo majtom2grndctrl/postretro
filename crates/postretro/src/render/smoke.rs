@@ -16,7 +16,7 @@ use crate::fx::smoke::{MAX_SPRITES, SPRITE_INSTANCE_SIZE, SpriteFrame};
 /// Byte size of `SpriteDrawParams` (one `vec4<f32>` = 16 B, padded to 16).
 pub const SPRITE_DRAW_PARAMS_SIZE: usize = 16;
 
-// `sh_sample.wgsl` reads `sh_band0..8`, `sh_depth_moments`, and `sh_grid`,
+// `sh_sample.wgsl` reads `sh_total_atlas`, `sh_depth_moments`, and `sh_grid`,
 // declared in `billboard.wgsl`; WGSL resolves module-scope names regardless of
 // textual order, so appending after is safe. The helper owns the SH
 // reconstruction + 8-corner blend symbols (`sh_irradiance`,

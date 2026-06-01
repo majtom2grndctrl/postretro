@@ -788,6 +788,7 @@ mod tests {
             tile_dimension: postretro_level_format::octahedral::DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: postretro_level_format::octahedral::DEFAULT_IRRADIANCE_TILE_BORDER,
             atlas_dimensions: [0, 0],
+            atlas_tiles_per_row: 0,
             probes: Vec::new(),
             atlas_texels: Vec::new(),
             animation_descriptors: Vec::new(),

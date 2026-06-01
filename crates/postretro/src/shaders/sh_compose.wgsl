@@ -37,7 +37,7 @@ struct GridDims {
     tile_border: u32,
     delta_probe_f16_stride: u32,
     affinity_dims: vec3<u32>,
-    _pad0: u32,
+    atlas_tiles_per_row: u32,
 };
 
 struct GridFrame {
@@ -86,15 +86,26 @@ fn map_atlas_texel(atlas_texel: vec2<u32>) -> AtlasTexelMapping {
     let tile = atlas_texel / vec2<u32>(tile_dim);
     let tile_texel = atlas_texel % vec2<u32>(tile_dim);
 
-    let tile_rows = grid.grid_dimensions.y * grid.grid_dimensions.z;
-    if (tile.x >= grid.grid_dimensions.x || tile.y >= tile_rows || grid.grid_dimensions.y == 0u) {
+    let total_probes = grid.grid_dimensions.x * grid.grid_dimensions.y * grid.grid_dimensions.z;
+    let tiles_per_row = max(grid.atlas_tiles_per_row, 1u);
+    if (
+        total_probes == 0u
+        || tile.x >= tiles_per_row
+        || tile.x + tile.y * tiles_per_row >= total_probes
+        || grid.grid_dimensions.x == 0u
+        || grid.grid_dimensions.y == 0u
+    ) {
         return AtlasTexelMapping(vec3<u32>(0u), tile_texel, false);
     }
 
+    let probe_index = tile.x + tile.y * tiles_per_row;
+    let xy = grid.grid_dimensions.x * grid.grid_dimensions.y;
+    let z = probe_index / xy;
+    let rem = probe_index - z * xy;
     let probe = vec3<u32>(
-        tile.x,
-        tile.y % grid.grid_dimensions.y,
-        tile.y / grid.grid_dimensions.y,
+        rem % grid.grid_dimensions.x,
+        rem / grid.grid_dimensions.x,
+        z,
     );
     return AtlasTexelMapping(probe, tile_texel, true);
 }

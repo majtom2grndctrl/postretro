@@ -74,6 +74,15 @@ pub enum PrlLoadError {
         expected: [u32; 3],
     },
     #[error(
+        "DeltaShVolumes tile geometry {found_dimension}+border {found_border} does not match base OctahedralShVolume tile geometry {base_dimension}+border {base_border} — recompile the .prl with the current `prl-build`"
+    )]
+    DeltaShTileGeometryMismatch {
+        found_dimension: u32,
+        found_border: u32,
+        base_dimension: u32,
+        base_border: u32,
+    },
+    #[error(
         "PRL file has a DeltaShVolumes section (id 27) but no base OctahedralShVolume section (id 34) — the compose pass cannot derive affinity dims without the base grid; recompile with `prl-build`"
     )]
     DeltaShMissingBaseVolume,
@@ -436,16 +445,17 @@ pub(crate) fn expected_affinity_dims(base_dims: [u32; 3], factor: u8) -> [u32; 3
 }
 
 /// Validate a loaded DeltaShVolumes section against the engine's invariants.
-/// `base_dims` is the base ShVolume (id 20) grid dimensions, or `None` if that
-/// section was absent. Pure so the reject paths are unit-testable.
+/// `base` is the base OctahedralShVolume (id 34), or `None` if that section was
+/// absent. Pure so the reject paths are unit-testable.
 ///
 /// Rejects (clear typed error, no panic):
 /// - `affinity_factor` != the engine's compiled-in `AFFINITY_FACTOR`,
 /// - base ShVolume absent while a delta section is present,
-/// - `affinity_dims` != `ceil(base_dims / affinity_factor)`.
+/// - `affinity_dims` != `ceil(base_dims / affinity_factor)`,
+/// - delta tile geometry differs from the base atlas tile geometry.
 pub(crate) fn validate_delta_sh(
     section: &DeltaShVolumesSection,
-    base_dims: Option<[u32; 3]>,
+    base: Option<&OctahedralShVolumeSection>,
 ) -> Result<(), PrlLoadError> {
     // affinity_factor is locked to the compose pass `@workgroup_size(4,4,4)`.
     if section.affinity_factor != AFFINITY_FACTOR {
@@ -457,9 +467,10 @@ pub(crate) fn validate_delta_sh(
 
     // The base grid's dims derive the expected affinity dims; the compose pass
     // cannot run without it.
-    let Some(base_dims) = base_dims else {
+    let Some(base) = base else {
         return Err(PrlLoadError::DeltaShMissingBaseVolume);
     };
+    let base_dims = base.grid_dimensions;
 
     let expected = expected_affinity_dims(base_dims, AFFINITY_FACTOR);
     if section.affinity_dims != expected {
@@ -468,6 +479,15 @@ pub(crate) fn validate_delta_sh(
             base_dims,
             factor: AFFINITY_FACTOR as u32,
             expected,
+        });
+    }
+
+    if section.tile_dimension != base.tile_dimension || section.tile_border != base.tile_border {
+        return Err(PrlLoadError::DeltaShTileGeometryMismatch {
+            found_dimension: section.tile_dimension,
+            found_border: section.tile_border,
+            base_dimension: base.tile_dimension,
+            base_border: base.tile_border,
         });
     }
 
@@ -694,7 +714,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         Some(data) => {
             let section = OctahedralShVolumeSection::from_bytes(&data)?;
             log::info!(
-                "[PRL] OctahedralShVolume: {}×{}×{} grid ({} probes, {}×{} atlas, tile {} + border {}, {} animated layers)",
+                "[PRL] OctahedralShVolume: {}×{}×{} grid ({} probes, {}×{} atlas, tile {} + border {}, {} tile(s)/row, {} animated layers)",
                 section.grid_dimensions[0],
                 section.grid_dimensions[1],
                 section.grid_dimensions[2],
@@ -703,6 +723,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
                 section.atlas_dimensions[1],
                 section.tile_dimension,
                 section.tile_border,
+                section.atlas_tiles_per_row,
                 section.animation_descriptors.len(),
             );
             Some(section)
@@ -863,7 +884,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             // Validation (mirrors the section-version reject path): a mismatched
             // bake must fail the load with a clear error rather than feed the
             // compose pass garbage. `sh_volume` (id 20) was loaded above.
-            validate_delta_sh(&section, sh_volume.as_ref().map(|s| s.grid_dimensions))?;
+            validate_delta_sh(&section, sh_volume.as_ref())?;
 
             log::info!(
                 "[PRL] DeltaShVolumes: {} animated light(s), affinity grid {}×{}×{} \
@@ -1142,6 +1163,39 @@ mod tests {
         }
     }
 
+    fn base_octahedral_section(grid_dimensions: [u32; 3]) -> OctahedralShVolumeSection {
+        let probe_count =
+            grid_dimensions[0] as usize * grid_dimensions[1] as usize * grid_dimensions[2] as usize;
+        let atlas_dimensions = postretro_level_format::octahedral::irradiance_atlas_dimensions(
+            grid_dimensions,
+            DEFAULT_IRRADIANCE_TILE_DIMENSION,
+        );
+        let atlas_tiles_per_row =
+            postretro_level_format::octahedral::irradiance_atlas_tiles_per_row(grid_dimensions)
+                .unwrap();
+        let atlas_texel_count = atlas_dimensions[0] as usize * atlas_dimensions[1] as usize;
+        OctahedralShVolumeSection {
+            grid_origin: [0.0; 3],
+            cell_size: [1.0; 3],
+            grid_dimensions,
+            probe_stride: postretro_level_format::sh_volume::OCTAHEDRAL_PROBE_STRIDE,
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            atlas_dimensions,
+            atlas_tiles_per_row,
+            probes: vec![
+                postretro_level_format::sh_volume::OctahedralShProbe::default();
+                probe_count
+            ],
+            atlas_texels: vec![
+                postretro_level_format::sh_volume::OctahedralAtlasTexel::default();
+                atlas_texel_count
+            ],
+            animation_descriptors: Vec::new(),
+            slot_for_map_light: Vec::new(),
+        }
+    }
+
     #[test]
     fn expected_affinity_dims_ceil_divides_per_axis() {
         // factor 4: 8→2, 9→3, 1→1, 4→1, 5→2.
@@ -1153,7 +1207,8 @@ mod tests {
     fn validate_delta_sh_accepts_matching_dims() {
         let base_dims = [8u32, 5, 1];
         let section = delta_section_for(expected_affinity_dims(base_dims, AFFINITY_FACTOR));
-        assert!(validate_delta_sh(&section, Some(base_dims)).is_ok());
+        let base = base_octahedral_section(base_dims);
+        assert!(validate_delta_sh(&section, Some(&base)).is_ok());
     }
 
     #[test]
@@ -1161,7 +1216,8 @@ mod tests {
         let base_dims = [8u32, 8, 8];
         let mut section = delta_section_for(expected_affinity_dims(base_dims, AFFINITY_FACTOR));
         section.affinity_factor = AFFINITY_FACTOR + 1;
-        let err = validate_delta_sh(&section, Some(base_dims)).unwrap_err();
+        let base = base_octahedral_section(base_dims);
+        let err = validate_delta_sh(&section, Some(&base)).unwrap_err();
         assert!(
             matches!(err, PrlLoadError::DeltaShAffinityFactorMismatch { .. }),
             "expected affinity-factor error, got {err:?}"
@@ -1173,10 +1229,24 @@ mod tests {
         let base_dims = [8u32, 8, 8]; // expected affinity dims [2,2,2]
         // Build a section whose affinity_dims disagree with the base grid.
         let section = delta_section_for([3, 2, 2]);
-        let err = validate_delta_sh(&section, Some(base_dims)).unwrap_err();
+        let base = base_octahedral_section(base_dims);
+        let err = validate_delta_sh(&section, Some(&base)).unwrap_err();
         assert!(
             matches!(err, PrlLoadError::DeltaShAffinityDimsMismatch { .. }),
             "expected affinity-dims error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_delta_sh_rejects_tile_geometry_mismatch() {
+        let base_dims = [8u32, 5, 1];
+        let mut section = delta_section_for(expected_affinity_dims(base_dims, AFFINITY_FACTOR));
+        section.tile_dimension += 2;
+        let base = base_octahedral_section(base_dims);
+        let err = validate_delta_sh(&section, Some(&base)).unwrap_err();
+        assert!(
+            matches!(err, PrlLoadError::DeltaShTileGeometryMismatch { .. }),
+            "expected tile-geometry error, got {err:?}"
         );
     }
 
@@ -1559,6 +1629,7 @@ mod tests {
             tile_dimension: postretro_level_format::octahedral::DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: postretro_level_format::octahedral::DEFAULT_IRRADIANCE_TILE_BORDER,
             atlas_dimensions: [0, 0],
+            atlas_tiles_per_row: 0,
             probes: Vec::new(),
             atlas_texels: Vec::new(),
             animation_descriptors: Vec::new(),

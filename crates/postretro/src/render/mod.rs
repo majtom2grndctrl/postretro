@@ -140,7 +140,7 @@ fn sphere_intersects_any_fog_aabb(center: Vec3, radius: f32, aabbs: &[(Vec3, Vec
 }
 
 // `curve_eval.wgsl` reads `anim_samples`; `sh_sample.wgsl` reads
-// `sh_band0..8`, `sh_depth_moments`, and `sh_grid`, all declared in
+// `sh_total_atlas`, `sh_depth_moments`, and `sh_grid`, all declared in
 // `forward.wgsl`. WGSL resolves module-scope names regardless of textual order,
 // so appending after is safe. `sh_sample.wgsl` owns the SH reconstruction +
 // 8-corner blend symbols (`sh_irradiance`, `sample_sh_indirect_corners_depth_aware`,
@@ -527,7 +527,7 @@ pub struct LevelGeometry<'a> {
     pub lights: &'a [MapLight],
     pub light_influences: &'a [LightInfluence],
     /// `None` means no `OctahedralShVolumeSection`; renderer binds dummy
-    /// 1×1×1 textures and shader skips octahedral SH sampling.
+    /// 1×1 atlas resources and shader skips octahedral SH sampling.
     pub sh_volume: Option<&'a postretro_level_format::sh_volume::OctahedralShVolumeSection>,
     /// `None` → 1×1 white placeholder; bumped-Lambert falls back to flat white.
     pub lightmap: Option<&'a postretro_level_format::lightmap::LightmapSection>,
@@ -619,7 +619,8 @@ pub struct Renderer {
     /// flip it later. Uploaded through `ShGridInfo`.
     probe_occlusion_enabled: bool,
 
-    /// Absent SH section → dummy 1×1×1 textures; `has_sh_volume == 0` skips sampling.
+    /// Absent/disabled OctahedralShVolume → dummy 1×1 atlas resources;
+    /// `has_sh_volume == 0` skips indirect sampling.
     sh_volume_resources: ShVolumeResources,
 
     /// Static-occluder SDF atlas + bind group. Owned by the renderer; the
@@ -648,7 +649,7 @@ pub struct Renderer {
     #[cfg(feature = "dev-tools")]
     sh_delta_volumes_meta: Vec<sh_volume::DeltaVolumeMeta>,
 
-    /// Async readback of the composed band-0 SH so irradiance probe markers
+    /// Async readback of the composed SH atlas so irradiance probe markers
     /// reflect live (base + animated-delta) lighting. Rebuilt per level load.
     #[cfg(feature = "dev-tools")]
     sh_probe_readback: sh_diagnostics::ShProbeReadback,
@@ -1420,11 +1421,17 @@ impl Renderer {
             .map(|g| g.lightmap_mode)
             .unwrap_or(crate::prl::LightmapMode::Shadowed);
 
+        let compose_sh_volume = geometry
+            .and_then(|g| g.sh_volume)
+            .filter(|_| sh_volume_resources.present);
+        let compose_delta_sh_volumes = geometry
+            .and_then(|g| g.delta_sh_volumes)
+            .filter(|_| sh_volume_resources.present);
         let sh_compose = ShComposeResources::new(
             &device,
             &sh_volume_resources,
-            geometry.and_then(|g| g.sh_volume),
-            geometry.and_then(|g| g.delta_sh_volumes),
+            compose_sh_volume,
+            compose_delta_sh_volumes,
             &uniform_bind_group_layout,
         );
 
@@ -1433,8 +1440,14 @@ impl Renderer {
             collect_delta_volume_meta(geometry.and_then(|g| g.delta_sh_volumes));
 
         #[cfg(feature = "dev-tools")]
-        let sh_probe_readback =
-            sh_diagnostics::ShProbeReadback::new(&device, sh_volume_resources.grid_dimensions);
+        let sh_probe_readback = sh_diagnostics::ShProbeReadback::new(
+            &device,
+            sh_volume_resources.grid_dimensions,
+            sh_volume_resources.atlas_dimensions,
+            sh_volume_resources.tile_dimension,
+            sh_volume_resources.tile_border,
+            sh_volume_resources.atlas_tiles_per_row,
+        );
 
         let animated_lm_debug = animated_lightmap::AnimatedLmDebugConfig::from_env();
         let animated_lightmap = animated_lightmap::AnimatedLightmapResources::new(
@@ -2196,20 +2209,30 @@ impl Renderer {
         self.sdf_atlas_resources =
             SdfAtlasResources::new(&self.device, &self.queue, geometry.sdf_atlas);
         self.lightmap_mode = geometry.lightmap_mode;
+        let compose_sh_volume = geometry
+            .sh_volume
+            .filter(|_| self.sh_volume_resources.present);
+        let compose_delta_sh_volumes = geometry
+            .delta_sh_volumes
+            .filter(|_| self.sh_volume_resources.present);
         self.sh_compose = ShComposeResources::new(
             &self.device,
             &self.sh_volume_resources,
-            geometry.sh_volume,
-            geometry.delta_sh_volumes,
+            compose_sh_volume,
+            compose_delta_sh_volumes,
             &self.uniform_bind_group_layout,
         );
         #[cfg(feature = "dev-tools")]
         {
             self.sh_delta_volumes_meta = collect_delta_volume_meta(geometry.delta_sh_volumes);
-            // Grid dims (hence readback buffer size) change per level — rebuild.
+            // Atlas dims (hence readback buffer size) change per level — rebuild.
             self.sh_probe_readback = sh_diagnostics::ShProbeReadback::new(
                 &self.device,
                 self.sh_volume_resources.grid_dimensions,
+                self.sh_volume_resources.atlas_dimensions,
+                self.sh_volume_resources.tile_dimension,
+                self.sh_volume_resources.tile_border,
+                self.sh_volume_resources.atlas_tiles_per_row,
             );
         }
 
@@ -2529,7 +2552,7 @@ impl Renderer {
         world: &crate::prl::LevelWorld,
         visible_leaf_mask: &[bool],
     ) {
-        // Drive the live band-0 readback only while the irradiance overlay is
+        // Drive the live atlas readback only while the irradiance overlay is
         // actually drawn — every other frame it costs nothing.
         let want_live_irradiance = state.show_markers
             && state.marker_mode == sh_diagnostics::MarkerMode::Irradiance
@@ -3323,7 +3346,7 @@ impl Renderer {
 
         // The readback copy is deliberately not encoded here. A
         // `copy_texture_to_buffer` in the same command buffer as the compose
-        // dispatch reads the `total` band-0 texture before its storage writes
+        // dispatch reads the `total` atlas texture before its storage writes
         // are visible, flickering garbage into the markers. It runs after a
         // blocking `poll(Wait)` below, once the compose submit has retired.
 
@@ -3683,7 +3706,7 @@ impl Renderer {
 
         self.queue.submit(std::iter::once(encoder.finish()));
 
-        // Capture the just-composed band-0 SH for the live irradiance overlay.
+        // Capture the just-composed SH atlas for the live irradiance overlay.
         // Separate submission so the boundary orders this copy after the compose
         // storage writes (see the note at the compose dispatch above). Skipped
         // unless the overlay is active.
@@ -3704,7 +3727,7 @@ impl Renderer {
                     });
             self.sh_probe_readback.encode_copy(
                 &mut readback_encoder,
-                &self.sh_volume_resources.total_band0_texture,
+                &self.sh_volume_resources.total_atlas_texture,
             );
             self.queue
                 .submit(std::iter::once(readback_encoder.finish()));
@@ -3718,8 +3741,8 @@ impl Renderer {
         // into the probe-marker source so the next overlay frame shows live
         // (base + animated-delta) irradiance instead of the static bake.
         #[cfg(feature = "dev-tools")]
-        if let Some(live_l0) = self.sh_probe_readback.post_submit(&self.device) {
-            self.sh_volume_resources.probe_l0 = live_l0;
+        if let Some(live_irradiance) = self.sh_probe_readback.post_submit(&self.device) {
+            self.sh_volume_resources.probe_irradiance = live_irradiance;
         }
 
         // Caller (`App`) presents after optionally appending the egui overlay
@@ -4625,6 +4648,7 @@ mod tests {
             atlas_dimensions: [1, 1],
             tile_dimension: 1,
             tile_border: 0,
+            atlas_tiles_per_row: 1,
             present: false,
             probe_occlusion_enabled: true,
         });

@@ -119,6 +119,7 @@ impl ShComposeResources {
             sh.atlas_dimensions,
             sh.tile_dimension,
             sh.tile_border,
+            sh.atlas_tiles_per_row,
             buffers.affinity_dims,
         );
         let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -373,13 +374,35 @@ fn affinity_cell_count(dims: [u32; 3]) -> usize {
     dims[0] as usize * dims[1] as usize * dims[2] as usize
 }
 
+/// Byte size of the `GridDims` uniform — 12 scalar `u32` fields packed without
+/// padding gaps (every field is `u32` or a `vec` of `u32`, so std140 requires
+/// no padding between them at this layout).
+///
+/// Layout (must match the WGSL `GridDims` struct in `sh_compose.wgsl`):
+///    0.. 4   grid_dimensions.x   (u32 — element 0 of vec3<u32>)
+///    4.. 8   grid_dimensions.y   (u32 — element 1 of vec3<u32>)
+///    8..12   grid_dimensions.z   (u32 — element 2 of vec3<u32>)
+///   12..16   tile_dimension      (u32)
+///   16..20   atlas_dimensions.x  (u32 — element 0 of vec2<u32>)
+///   20..24   atlas_dimensions.y  (u32 — element 1 of vec2<u32>)
+///   24..28   tile_border         (u32)
+///   28..32   delta_probe_f16_stride (u32)
+///   32..36   affinity_dims.x     (u32 — element 0 of vec3<u32>)
+///   36..40   affinity_dims.y     (u32 — element 1 of vec3<u32>)
+///   40..44   affinity_dims.z     (u32 — element 2 of vec3<u32>)
+///   44..48   atlas_tiles_per_row (u32)
+///
+/// `atlas_tiles_per_row` occupies the slot that was previously named `_pad0`
+/// in older revisions of this struct; the field was promoted rather than added.
 fn build_compose_grid_bytes(
     grid_dimensions: [u32; 3],
     atlas_dimensions: [u32; 2],
     tile_dimension: u32,
     tile_border: u32,
+    atlas_tiles_per_row: u32,
     affinity_dims: [u32; 3],
 ) -> [u8; COMPOSE_GRID_DIMS_SIZE] {
+    // Uniform buffers use native-endian (GPU-side); on-disk format (level-format) uses little-endian.
     let mut bytes = [0u8; COMPOSE_GRID_DIMS_SIZE];
     bytes[0..4].copy_from_slice(&grid_dimensions[0].to_ne_bytes());
     bytes[4..8].copy_from_slice(&grid_dimensions[1].to_ne_bytes());
@@ -392,6 +415,7 @@ fn build_compose_grid_bytes(
     bytes[32..36].copy_from_slice(&affinity_dims[0].to_ne_bytes());
     bytes[36..40].copy_from_slice(&affinity_dims[1].to_ne_bytes());
     bytes[40..44].copy_from_slice(&affinity_dims[2].to_ne_bytes());
+    bytes[44..48].copy_from_slice(&atlas_tiles_per_row.to_ne_bytes());
     bytes
 }
 
@@ -714,7 +738,7 @@ mod tests {
 
     #[test]
     fn compose_grid_bytes_pack_atlas_tile_and_affinity_contract() {
-        let bytes = build_compose_grid_bytes([7, 5, 3], [42, 90], 6, 1, [2, 2, 1]);
+        let bytes = build_compose_grid_bytes([7, 5, 3], [42, 90], 6, 1, 7, [2, 2, 1]);
 
         let read_u32 =
             |range: std::ops::Range<usize>| u32::from_ne_bytes(bytes[range].try_into().unwrap());
@@ -730,7 +754,7 @@ mod tests {
         assert_eq!(read_u32(32..36), 2);
         assert_eq!(read_u32(36..40), 2);
         assert_eq!(read_u32(40..44), 1);
-        assert_eq!(read_u32(44..48), 0);
+        assert_eq!(read_u32(44..48), 7);
     }
 
     #[test]

@@ -101,6 +101,9 @@ pub fn bake_delta_sh_volumes(
     if inputs.animated_lights.is_empty() {
         return None;
     }
+    if inputs.geometry.geometry.vertices.is_empty() {
+        return None;
+    }
     let probe_spacing = config.probe_spacing;
     let animated_light_count = inputs.animated_lights.len();
 
@@ -351,6 +354,8 @@ fn bake_subblock(
         let base = local * DEFAULT_DELTA_PROBE_F16_STRIDE;
         for (texel_index, texel) in tile.iter().enumerate() {
             let dst = base + texel_index * 4;
+            // alpha channel (texel.rgba[3]) is set to f16(1.0) for packing-path symmetry with
+            // base tiles; sh_compose.wgsl reads only delta.rgb (alpha unused downstream).
             out[dst..dst + 4].copy_from_slice(&texel.rgba);
         }
     }
@@ -518,6 +523,18 @@ mod tests {
                 index_offset: 0,
                 index_count: 3,
             }],
+        }
+    }
+
+    fn empty_geometry() -> GeometryResult {
+        GeometryResult {
+            geometry: GeometrySection {
+                vertices: Vec::new(),
+                indices: Vec::new(),
+                faces: Vec::new(),
+            },
+            texture_names: TextureNamesSection { names: Vec::new() },
+            face_index_ranges: Vec::new(),
         }
     }
 
@@ -807,6 +824,32 @@ mod tests {
         assert!(
             bake_delta_sh_volumes(&inputs, &crate::sh_bake::ShConfig { probe_spacing: 1.0 })
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn empty_geometry_with_animated_lights_returns_none() {
+        let geo = empty_geometry();
+        let bvh = bvh::bvh::Bvh { nodes: Vec::new() };
+        let prims: Vec<BvhPrimitive> = Vec::new();
+        let tree = tree_all_empty();
+        let exterior: HashSet<usize> = HashSet::new();
+        let lights = vec![animated_point_light(DVec3::ZERO, 4.0)];
+        let envelope = AnimatedBakedLights::from_lights(&lights);
+        let inputs = DeltaBakeInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            portals: &[],
+            animated_lights: &envelope,
+        };
+
+        assert!(
+            bake_delta_sh_volumes(&inputs, &crate::sh_bake::ShConfig { probe_spacing: 1.0 })
+                .is_none(),
+            "empty geometry has no base probe grid, so animated-light deltas must be omitted",
         );
     }
 

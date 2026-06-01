@@ -32,6 +32,11 @@ struct ShDirPair {
     b: vec3<f32>,
 }
 
+// Hand-mirrored from the Rust octahedral encoder. Source of truth for the
+// shared convention is `octahedral_oct_uv_matches_wgsl_reference` in
+// `crates/level-format/src/octahedral.rs`: if you change this mapping (L1
+// projection, the `z < 0` fold, or the `* 0.5 + 0.5` remap), update that test's
+// reference UVs to match, or the two sides will silently drift.
 fn oct_encode_unquantized(dir_in: vec3<f32>) -> vec2<f32> {
     let dir = normalize(dir_in);
     var p = dir.xy / max(abs(dir.x) + abs(dir.y) + abs(dir.z), 1.0e-6);
@@ -62,9 +67,12 @@ fn probe_tile_origin(idx: vec3<i32>) -> vec2<u32> {
     let x = u32(idx.x);
     let y = u32(idx.y);
     let z = u32(idx.z);
+    let probe_index = x + y * sh_grid.grid_dimensions.x
+        + z * sh_grid.grid_dimensions.x * sh_grid.grid_dimensions.y;
+    let tiles_per_row = max(sh_grid.atlas_tiles_per_row, 1u);
     return vec2<u32>(
-        x * sh_grid.tile_dimension,
-        (y + z * sh_grid.grid_dimensions.y) * sh_grid.tile_dimension,
+        (probe_index % tiles_per_row) * sh_grid.tile_dimension,
+        (probe_index / tiles_per_row) * sh_grid.tile_dimension,
     );
 }
 

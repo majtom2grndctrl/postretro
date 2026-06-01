@@ -34,7 +34,8 @@ pub const BIND_SH_DEPTH_MOMENTS: u32 = BIND_SCRIPTED_LIGHT_DESCRIPTORS + 1;
 ///   48..56  atlas_dimensions  (vec2<u32>)
 ///   56..60  tile_dimension    (u32)
 ///   60..64  tile_border       (u32)
-///   64..72  tile_grid_dims    (vec2<u32>: tiles wide, tiles high)
+///   64..68  atlas_tiles_per_row (u32)
+///   68..72  atlas_tile_rows   (u32)
 ///   72..76  tile_interior     (u32)
 ///   76..80  _pad2             (u32)
 ///   80..84  probe_occlusion   (u32, 0 or 1)
@@ -98,6 +99,8 @@ pub struct ShVolumeResources {
     pub tile_dimension: u32,
     #[allow(dead_code)]
     pub tile_border: u32,
+    #[allow(dead_code)]
+    pub atlas_tiles_per_row: u32,
     /// Sampled view over the base octahedral atlas; consumed by the compose pass.
     pub base_atlas_view: wgpu::TextureView,
     /// Storage-writeable view over the total octahedral atlas; consumed by the compose pass.
@@ -129,10 +132,10 @@ pub struct ShVolumeResources {
     /// Consumed by `sh_diagnostics::emit` for probe-marker coloring.
     #[cfg(feature = "dev-tools")]
     pub validity: Vec<u8>,
-    /// CPU mirror of each probe's center-tile irradiance as linear RGB,
-    /// z-major like `validity`; consumed by `sh_diagnostics::emit`.
+    /// CPU mirror of each probe's average tile-interior irradiance as linear
+    /// RGB, z-major like `validity`; consumed by `sh_diagnostics::emit`.
     #[cfg(feature = "dev-tools")]
-    pub probe_l0: Vec<[f32; 3]>,
+    pub probe_irradiance: Vec<[f32; 3]>,
     /// CPU copies of grid origin and cell size. `grid_info_buffer` is the
     /// canonical GPU-side source for the forward / fog / billboard shaders;
     /// these mirror the values consumed by `sh_diagnostics` (probe-marker
@@ -147,7 +150,7 @@ pub struct ShVolumeResources {
     /// Total atlas handle, retained so the diagnostics readback can copy it
     /// back to CPU each frame. Carries `COPY_SRC`.
     #[cfg(feature = "dev-tools")]
-    pub total_band0_texture: wgpu::Texture,
+    pub total_atlas_texture: wgpu::Texture,
 }
 
 /// Per-animated-light delta volume placement, mirrored on CPU for diagnostics.
@@ -277,9 +280,24 @@ impl ShVolumeResources {
         });
 
         // A zero-dimension grid is treated the same as a missing/empty section.
-        let usable = section.filter(|s| {
-            s.grid_dimensions[0] > 0 && s.grid_dimensions[1] > 0 && s.grid_dimensions[2] > 0
-        });
+        let max_texture_dimension_2d = device.limits().max_texture_dimension_2d;
+        let usable = section
+            .filter(|s| {
+                s.grid_dimensions[0] > 0 && s.grid_dimensions[1] > 0 && s.grid_dimensions[2] > 0
+            })
+            .filter(|s| {
+                let fits = s.atlas_dimensions[0] <= max_texture_dimension_2d
+                    && s.atlas_dimensions[1] <= max_texture_dimension_2d;
+                if !fits {
+                    log::error!(
+                        "[Renderer] Octahedral SH atlas {}x{} exceeds device maxTextureDimension2D {}; disabling SH volume for this level",
+                        s.atlas_dimensions[0],
+                        s.atlas_dimensions[1],
+                        max_texture_dimension_2d,
+                    );
+                }
+                fits
+            });
 
         let grid_origin: [f32; 3];
         let cell_size: [f32; 3];
@@ -287,6 +305,7 @@ impl ShVolumeResources {
         let atlas_dimensions: [u32; 2];
         let tile_dimension: u32;
         let tile_border: u32;
+        let atlas_tiles_per_row: u32;
         let present: bool;
         let base_atlas_texture: wgpu::Texture;
         let total_atlas_texture: wgpu::Texture;
@@ -299,7 +318,7 @@ impl ShVolumeResources {
 
         // Mirror the pack: invalid probes upload as zero, so store zero here too.
         #[cfg(feature = "dev-tools")]
-        let probe_l0: Vec<[f32; 3]> = usable
+        let probe_irradiance: Vec<[f32; 3]> = usable
             .map(|s| {
                 s.probes
                     .iter()
@@ -308,7 +327,7 @@ impl ShVolumeResources {
                         if p.validity == 0 {
                             [0.0; 3]
                         } else {
-                            probe_center_irradiance(s, i)
+                            probe_average_irradiance(s, i)
                         }
                     })
                     .collect()
@@ -337,6 +356,7 @@ impl ShVolumeResources {
             atlas_dimensions = sec.atlas_dimensions;
             tile_dimension = sec.tile_dimension;
             tile_border = sec.tile_border;
+            atlas_tiles_per_row = sec.atlas_tiles_per_row;
             present = true;
         } else {
             let dummy = dummy_depth_moment_payload();
@@ -357,6 +377,7 @@ impl ShVolumeResources {
             atlas_dimensions = [1, 1];
             tile_dimension = 1;
             tile_border = 0;
+            atlas_tiles_per_row = 1;
             present = false;
         }
 
@@ -403,6 +424,7 @@ impl ShVolumeResources {
             atlas_dimensions,
             tile_dimension,
             tile_border,
+            atlas_tiles_per_row,
             present,
             probe_occlusion_enabled,
         });
@@ -482,7 +504,7 @@ impl ShVolumeResources {
         // `wgpu::Texture` handle is an Arc clone — the views above already keep
         // the texture alive, this just gives the readback a handle to copy from.
         #[cfg(feature = "dev-tools")]
-        let total_band0_texture = total_atlas_texture.clone();
+        let total_atlas_texture = total_atlas_texture.clone();
 
         let animation = AnimatedLightBuffers {
             descriptors: anim_descriptors_buffer,
@@ -500,6 +522,7 @@ impl ShVolumeResources {
             atlas_dimensions,
             tile_dimension,
             tile_border,
+            atlas_tiles_per_row,
             base_atlas_view,
             total_atlas_storage_view,
             depth_moment_texture,
@@ -510,13 +533,13 @@ impl ShVolumeResources {
             #[cfg(feature = "dev-tools")]
             validity,
             #[cfg(feature = "dev-tools")]
-            probe_l0,
+            probe_irradiance,
             grid_origin,
             cell_size,
             grid_info_buffer,
             probe_occlusion_enabled,
             #[cfg(feature = "dev-tools")]
-            total_band0_texture,
+            total_atlas_texture,
         }
     }
 
@@ -544,6 +567,7 @@ impl ShVolumeResources {
             atlas_dimensions: self.atlas_dimensions,
             tile_dimension: self.tile_dimension,
             tile_border: self.tile_border,
+            atlas_tiles_per_row: self.atlas_tiles_per_row,
             present: self.present,
             probe_occlusion_enabled: enabled,
         });
@@ -740,9 +764,10 @@ fn create_total_atlas_texture(
     atlas_dimensions: [u32; 2],
     label: &str,
 ) -> wgpu::Texture {
-    // dev-tools reads back band 0 (L0) for the irradiance probe-marker overlay,
-    // which needs COPY_SRC. The flag is only added under the feature so release
-    // builds — where the readback path is compiled out — keep the minimal usage.
+    // dev-tools reads back the composed atlas for the irradiance probe-marker
+    // overlay, which needs COPY_SRC. The flag is only added under the feature so
+    // release builds — where the readback path is compiled out — keep the
+    // minimal usage.
     #[allow(unused_mut)]
     let mut usage = wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING;
     #[cfg(feature = "dev-tools")]
@@ -766,27 +791,42 @@ fn create_total_atlas_texture(
 }
 
 #[cfg(feature = "dev-tools")]
-fn probe_center_irradiance(section: &OctahedralShVolumeSection, probe_index: usize) -> [f32; 3] {
+fn probe_average_irradiance(section: &OctahedralShVolumeSection, probe_index: usize) -> [f32; 3] {
     let origin = postretro_level_format::octahedral::irradiance_tile_origin(
         probe_index,
-        section.grid_dimensions,
         section.tile_dimension,
+        section.atlas_tiles_per_row,
     );
-    let center = section.tile_dimension / 2;
-    let x = (origin[0] + center).min(section.atlas_dimensions[0].saturating_sub(1));
-    let y = (origin[1] + center).min(section.atlas_dimensions[1].saturating_sub(1));
-    let idx = (y * section.atlas_dimensions[0] + x) as usize;
-    section
-        .atlas_texels
-        .get(idx)
-        .map(|texel| {
-            [
-                f16_bits_to_f32_local(texel.rgba[0]),
-                f16_bits_to_f32_local(texel.rgba[1]),
-                f16_bits_to_f32_local(texel.rgba[2]),
-            ]
-        })
-        .unwrap_or([0.0; 3])
+    let interior_start = section.tile_border.min(section.tile_dimension);
+    let interior_end = section
+        .tile_dimension
+        .saturating_sub(section.tile_border)
+        .max(interior_start);
+    let mut sum = [0.0f32; 3];
+    let mut count = 0u32;
+    for local_y in interior_start..interior_end {
+        for local_x in interior_start..interior_end {
+            let x = origin[0]
+                .saturating_add(local_x)
+                .min(section.atlas_dimensions[0].saturating_sub(1));
+            let y = origin[1]
+                .saturating_add(local_y)
+                .min(section.atlas_dimensions[1].saturating_sub(1));
+            let idx = (y * section.atlas_dimensions[0] + x) as usize;
+            if let Some(texel) = section.atlas_texels.get(idx) {
+                sum[0] += f16_bits_to_f32_local(texel.rgba[0]);
+                sum[1] += f16_bits_to_f32_local(texel.rgba[1]);
+                sum[2] += f16_bits_to_f32_local(texel.rgba[2]);
+                count += 1;
+            }
+        }
+    }
+    if count == 0 {
+        [0.0; 3]
+    } else {
+        let inv = 1.0 / count as f32;
+        [sum[0] * inv, sum[1] * inv, sum[2] * inv]
+    }
 }
 
 #[cfg(feature = "dev-tools")]
@@ -931,6 +971,7 @@ pub(crate) struct ShGridInfoParams {
     pub atlas_dimensions: [u32; 2],
     pub tile_dimension: u32,
     pub tile_border: u32,
+    pub atlas_tiles_per_row: u32,
     pub present: bool,
     pub probe_occlusion_enabled: bool,
 }
@@ -956,9 +997,13 @@ pub(crate) fn build_grid_info_bytes(params: ShGridInfoParams) -> [u8; SH_GRID_IN
     bytes[52..56].copy_from_slice(&params.atlas_dimensions[1].to_ne_bytes());
     bytes[56..60].copy_from_slice(&params.tile_dimension.to_ne_bytes());
     bytes[60..64].copy_from_slice(&params.tile_border.to_ne_bytes());
-    bytes[64..68].copy_from_slice(&params.grid_dimensions[0].to_ne_bytes());
-    let tile_rows = params.grid_dimensions[1].saturating_mul(params.grid_dimensions[2]);
-    bytes[68..72].copy_from_slice(&tile_rows.to_ne_bytes());
+    bytes[64..68].copy_from_slice(&params.atlas_tiles_per_row.to_ne_bytes());
+    // atlas_tile_rows (68..72) is vestigial: no shader reads it — tile placement
+    // derives from `atlas_tiles_per_row` + `tile_dimension`. It occupies the slot
+    // the old `tile_grid_dimensions.y` used, so the word is retained to preserve
+    // the uniform's byte offsets. Written as 0 so a reader can't mistake it for a
+    // load-bearing value (the offset/size stay unchanged either way).
+    bytes[68..72].copy_from_slice(&0u32.to_ne_bytes());
     let interior = params
         .tile_dimension
         .saturating_sub(params.tile_border.saturating_mul(2));
@@ -1077,6 +1122,10 @@ mod tests {
         animation_descriptors: Vec<AnimationDescriptor>,
     ) -> OctahedralShVolumeSection {
         let probe_count = grid[0] as usize * grid[1] as usize * grid[2] as usize;
+        let atlas_dimensions =
+            postretro_level_format::octahedral::irradiance_atlas_dimensions(grid, 6);
+        let atlas_tiles_per_row =
+            postretro_level_format::octahedral::irradiance_atlas_tiles_per_row(grid).unwrap();
         OctahedralShVolumeSection {
             grid_origin: [0.0; 3],
             cell_size: [1.0; 3],
@@ -1084,11 +1133,12 @@ mod tests {
             probe_stride: postretro_level_format::sh_volume::OCTAHEDRAL_PROBE_STRIDE,
             tile_dimension: 6,
             tile_border: 1,
-            atlas_dimensions: [grid[0].max(1) * 6, grid[1].max(1) * grid[2].max(1) * 6],
+            atlas_dimensions,
+            atlas_tiles_per_row,
             probes: vec![OctahedralShProbe::default(); probe_count],
             atlas_texels: vec![
                 OctahedralAtlasTexel::default();
-                (grid[0].max(1) * 6 * grid[1].max(1) * grid[2].max(1) * 6) as usize
+                (atlas_dimensions[0] * atlas_dimensions[1]) as usize
             ],
             animation_descriptors,
             slot_for_map_light: Vec::new(),
@@ -1117,9 +1167,10 @@ mod tests {
             grid_origin: [1.5, 2.5, 3.5],
             cell_size: [0.25, 0.5, 1.0],
             grid_dimensions: [4, 5, 6],
-            atlas_dimensions: [24, 180],
+            atlas_dimensions: [66, 66],
             tile_dimension: 6,
             tile_border: 1,
+            atlas_tiles_per_row: 11,
             present: true,
             probe_occlusion_enabled: true,
         });
@@ -1133,6 +1184,7 @@ mod tests {
         let gy = u32::from_ne_bytes(bytes[36..40].try_into().unwrap());
         let atlas_w = u32::from_ne_bytes(bytes[48..52].try_into().unwrap());
         let tile_dim = u32::from_ne_bytes(bytes[56..60].try_into().unwrap());
+        let tiles_per_row = u32::from_ne_bytes(bytes[64..68].try_into().unwrap());
         let tile_rows = u32::from_ne_bytes(bytes[68..72].try_into().unwrap());
         let tile_interior = u32::from_ne_bytes(bytes[72..76].try_into().unwrap());
         let probe_occlusion = u32::from_ne_bytes(bytes[80..84].try_into().unwrap());
@@ -1141,9 +1193,11 @@ mod tests {
         assert_eq!(flag, 1);
         assert_eq!(cx, 0.25);
         assert_eq!(gy, 5);
-        assert_eq!(atlas_w, 24);
+        assert_eq!(atlas_w, 66);
         assert_eq!(tile_dim, 6);
-        assert_eq!(tile_rows, 30);
+        assert_eq!(tiles_per_row, 11);
+        // atlas_tile_rows is vestigial and written as 0 (no shader reads it).
+        assert_eq!(tile_rows, 0);
         assert_eq!(tile_interior, 4);
         assert_eq!(probe_occlusion, 1);
     }
@@ -1157,6 +1211,7 @@ mod tests {
             atlas_dimensions: [1, 1],
             tile_dimension: 1,
             tile_border: 0,
+            atlas_tiles_per_row: 1,
             present: false,
             probe_occlusion_enabled: true,
         });
@@ -1182,6 +1237,7 @@ mod tests {
                 atlas_dimensions: [1, 1],
                 tile_dimension: 1,
                 tile_border: 0,
+                atlas_tiles_per_row: 1,
                 present: true,
                 probe_occlusion_enabled: enabled,
             });
@@ -1357,6 +1413,7 @@ mod tests {
             atlas_dimensions: [1, 1],
             tile_dimension: 1,
             tile_border: 0,
+            atlas_tiles_per_row: 1,
             present: false,
             probe_occlusion_enabled: true,
         });

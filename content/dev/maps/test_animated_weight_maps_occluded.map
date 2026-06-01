@@ -81,5 +81,5 @@
 "origin" "128 128 112"
 "light" "300"
 "style" "2"
-"_fade" "2048"
+"_falloff_range" "2048"
 }

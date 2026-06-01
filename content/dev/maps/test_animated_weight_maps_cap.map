@@ -72,7 +72,7 @@
 "origin" "64 64 80"
 "light" "80"
 "style" "1"
-"_fade" "256"
+"_falloff_range" "256"
 }
 // entity 3
 {
@@ -81,7 +81,7 @@
 "light" "80"
 "style" "2"
 "_phase" "0.2"
-"_fade" "256"
+"_falloff_range" "256"
 }
 // entity 4
 {
@@ -90,7 +90,7 @@
 "light" "80"
 "style" "3"
 "_phase" "0.4"
-"_fade" "256"
+"_falloff_range" "256"
 }
 // entity 5
 {
@@ -99,5 +99,5 @@
 "light" "80"
 "style" "5"
 "_phase" "0.6000000000000001"
-"_fade" "256"
+"_falloff_range" "256"
 }

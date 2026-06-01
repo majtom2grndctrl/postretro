@@ -492,6 +492,8 @@ mod tests {
             color: [1.0, 1.0, 1.0],
             falloff_model: FalloffModel::Linear,
             falloff_range: 5.0,
+            light_size: 0.0,
+            angular_diameter: 0.0,
             cone_angle_inner: None,
             cone_angle_outer: None,
             cone_direction: None,

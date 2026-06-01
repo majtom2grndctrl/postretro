@@ -7,8 +7,8 @@ use glam::DVec3;
 use thiserror::Error;
 
 use crate::map_data::{
-    FalloffModel, KEYFRAME_RESAMPLE_RATE_HZ, LightAnimation, LightType, MapLight, ShadowType,
-    resample_keyframes,
+    DEFAULT_ANGULAR_DIAMETER_DEG, DEFAULT_LIGHT_SIZE, FalloffModel, KEYFRAME_RESAMPLE_RATE_HZ,
+    LightAnimation, LightType, MapLight, ShadowType, resample_keyframes,
 };
 use crate::map_format::MapFormat;
 
@@ -130,15 +130,15 @@ pub fn translate_light(
         }
     };
 
-    // `_fade` is authored in Quake units (inches); convert to engine meters at the translation boundary.
+    // `_falloff_range` is authored in Quake units (inches); convert to engine meters at the translation boundary.
     let map_scale = MapFormat::IdTech2.units_to_meters() as f32;
     let falloff_range = match light_type {
         LightType::Point | LightType::Spot => {
-            let fade_units = parse_optional_int(props, "_fade")?
-                .ok_or(TranslateError::MissingProperty("_fade"))?;
+            let fade_units = parse_optional_int(props, "_falloff_range")?
+                .ok_or(TranslateError::MissingProperty("_falloff_range"))?;
             if fade_units <= 0 {
                 return Err(TranslateError::InvalidProperty {
-                    key: "_fade",
+                    key: "_falloff_range",
                     value: fade_units.to_string(),
                     reason: "must be > 0",
                 });
@@ -146,6 +146,23 @@ pub fn translate_light(
             fade_units as f32 * map_scale
         }
         LightType::Directional => 0.0,
+    };
+
+    // Bake-only area-light size inputs (soft shadows). Authored in world units
+    // directly (no inches→meters scale): `_light_size` is a meter radius for
+    // Point/Spot, `_angular_diameter` is degrees for Directional. Both are
+    // clamped non-negative. The "absent → nonzero default, authored 0 → keep 0"
+    // distinction lets existing maps soften on recompile while letting an author
+    // opt back into hard shadows with an explicit 0.
+    let (light_size, angular_diameter) = match light_type {
+        LightType::Point | LightType::Spot => (
+            parse_optional_size(props, "_light_size", DEFAULT_LIGHT_SIZE)?,
+            0.0,
+        ),
+        LightType::Directional => (
+            0.0,
+            parse_optional_size(props, "_angular_diameter", DEFAULT_ANGULAR_DIAMETER_DEG)?,
+        ),
     };
 
     let mut cone_angle_inner = None;
@@ -491,6 +508,8 @@ pub fn translate_light(
         color,
         falloff_model,
         falloff_range,
+        light_size,
+        angular_diameter,
         cone_angle_inner,
         cone_angle_outer,
         cone_direction,
@@ -535,6 +554,37 @@ fn parse_optional_int(
 
 fn parse_f32(s: &str) -> Option<f32> {
     s.trim().parse::<f32>().ok()
+}
+
+/// Parse a bake-only area-light size KVP (`_light_size` / `_angular_diameter`).
+/// An absent or blank value yields `default` (so existing maps soften on
+/// recompile); an authored value — including an explicit `0` — is taken
+/// verbatim and clamped non-negative. Negative authored values clamp to `0`.
+fn parse_optional_size(
+    props: &HashMap<String, String>,
+    key: &'static str,
+    default: f32,
+) -> Result<f32, TranslateError> {
+    match props.get(key).map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        None => Ok(default),
+        Some(s) => {
+            let v = s
+                .parse::<f32>()
+                .map_err(|_| TranslateError::InvalidProperty {
+                    key,
+                    value: s.to_string(),
+                    reason: "expected a non-negative number",
+                })?;
+            if !v.is_finite() {
+                return Err(TranslateError::InvalidProperty {
+                    key,
+                    value: s.to_string(),
+                    reason: "expected a finite number",
+                });
+            }
+            Ok(v.max(0.0))
+        }
+    }
 }
 
 /// Parse a "R G B" triple (each 0-255) into linear RGB 0-1.
@@ -894,7 +944,7 @@ mod tests {
         let p = props(&[
             ("light", "250"),
             ("_color", "255 128 64"),
-            ("_fade", "4096"),
+            ("_falloff_range", "4096"),
             ("delay", "2"),
         ]);
         let light = translate_light(&p, DVec3::new(1.0, 2.0, 3.0), "light")
@@ -922,7 +972,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "2048"),
+            ("_falloff_range", "2048"),
             ("_cone", "20"),
             ("_cone2", "40"),
             ("angles", "-90 0 0"),
@@ -958,14 +1008,17 @@ mod tests {
     }
 
     #[test]
-    fn point_missing_fade_errors() {
+    fn point_missing_falloff_range_errors() {
         let p = props(&[("light", "300"), ("_color", "255 255 255")]);
         let err = translate_light(&p, DVec3::ZERO, "light").expect_err("should error");
-        assert!(matches!(err, TranslateError::MissingProperty("_fade")));
+        assert!(matches!(
+            err,
+            TranslateError::MissingProperty("_falloff_range")
+        ));
     }
 
     #[test]
-    fn spot_missing_fade_errors() {
+    fn spot_missing_falloff_range_errors() {
         let p = props(&[
             ("light", "300"),
             ("_cone", "30"),
@@ -973,14 +1026,34 @@ mod tests {
             ("angles", "0 0 0"),
         ]);
         let err = translate_light(&p, DVec3::ZERO, "light_spot").expect_err("should error");
-        assert!(matches!(err, TranslateError::MissingProperty("_fade")));
+        assert!(matches!(
+            err,
+            TranslateError::MissingProperty("_falloff_range")
+        ));
+    }
+
+    /// Rename guard: the old `_fade` key is no longer recognized. A map still
+    /// authoring `_fade` (and not `_falloff_range`) fails with the same
+    /// `MissingProperty` error as omitting the key — no silent alias.
+    #[test]
+    fn legacy_fade_key_is_not_aliased_to_falloff_range() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "255 255 255"),
+            ("_fade", "1024"),
+        ]);
+        let err = translate_light(&p, DVec3::ZERO, "light").expect_err("should error");
+        assert!(
+            matches!(err, TranslateError::MissingProperty("_falloff_range")),
+            "_fade must not be accepted as a falloff-range alias"
+        );
     }
 
     #[test]
     fn spot_missing_angles_errors() {
         let p = props(&[
             ("light", "300"),
-            ("_fade", "2048"),
+            ("_falloff_range", "2048"),
             ("_cone", "30"),
             ("_cone2", "45"),
         ]);
@@ -992,7 +1065,7 @@ mod tests {
     fn spot_with_target_errors_pointing_to_angles() {
         let p = props(&[
             ("light", "300"),
-            ("_fade", "2048"),
+            ("_falloff_range", "2048"),
             ("angles", "-45 0 0"),
             ("target", "some_entity"),
         ]);
@@ -1004,7 +1077,7 @@ mod tests {
     fn angles_non_numeric_errors() {
         let p = props(&[
             ("light", "300"),
-            ("_fade", "2048"),
+            ("_falloff_range", "2048"),
             ("_cone", "30"),
             ("_cone2", "45"),
             ("angles", "down 0 banana"),
@@ -1026,7 +1099,7 @@ mod tests {
     // --- _shadow_type parsing + tier dispatch (sdf-per-light-shadows Task 2) ---
 
     fn point_light_props(extra: &[(&str, &str)]) -> HashMap<String, String> {
-        let mut pairs = vec![("light", "300"), ("_fade", "2048")];
+        let mut pairs = vec![("light", "300"), ("_falloff_range", "2048")];
         pairs.extend_from_slice(extra);
         props(&pairs)
     }
@@ -1156,7 +1229,7 @@ mod tests {
         let p = props(&[
             ("_light", "200"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
         assert!((light.intensity - (200.0 / 300.0)).abs() < 1e-6);
@@ -1168,7 +1241,7 @@ mod tests {
             ("light", "300"),
             ("_light", "999"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
         assert_eq!(light.intensity, 1.0);
@@ -1179,7 +1252,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
             ("style", "1"),
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
@@ -1199,7 +1272,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
             ("style", "0"),
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
@@ -1211,7 +1284,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
             ("style", "1"),
             ("_phase", "0.5"),
         ]);
@@ -1225,7 +1298,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
             ("style", "1"),
             ("_phase", "1.5"),
         ]);
@@ -1236,7 +1309,7 @@ mod tests {
         let p2 = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
             ("style", "1"),
             ("_phase", "-0.3"),
         ]);
@@ -1250,7 +1323,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
             ("style", "0"),
             ("_phase", "0.5"),
         ]);
@@ -1272,7 +1345,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "2048"),
+            ("_falloff_range", "2048"),
             ("_cone", "50"),
             ("_cone2", "30"),
             ("angles", "-45 0 0"),
@@ -1285,7 +1358,7 @@ mod tests {
 
     #[test]
     fn missing_color_defaults_to_white() {
-        let p = props(&[("light", "300"), ("_fade", "1024")]);
+        let p = props(&[("light", "300"), ("_falloff_range", "1024")]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
         assert_eq!(light.color, [1.0, 1.0, 1.0]);
     }
@@ -1296,7 +1369,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1000"),
+            ("_falloff_range", "1000"),
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
         assert!((light.falloff_range - 25.4).abs() < 1e-4);
@@ -1307,7 +1380,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
         assert!(!light.bake_only);
@@ -1318,7 +1391,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
             ("_bake_only", "0"),
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
@@ -1330,7 +1403,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
             ("_bake_only", "1"),
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
@@ -1342,7 +1415,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
         assert!(!light.is_dynamic);
@@ -1357,7 +1430,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
             ("_dynamic", "1"),
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
@@ -1374,7 +1447,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
             ("brightness_curve", "[0, 0.2] [500, 1.0]"),
             ("period_ms", "1000"),
         ]);
@@ -1391,7 +1464,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
         assert!(!light.casts_entity_shadows);
@@ -1402,7 +1475,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
             ("_cast_entity_shadows", "0"),
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
@@ -1414,7 +1487,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
             ("_cast_entity_shadows", "1"),
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
@@ -1426,7 +1499,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
             ("_cast_entity_shadows", "2"),
         ]);
         let err = translate_light(&p, DVec3::ZERO, "light").expect_err("should error");
@@ -1444,7 +1517,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
             ("brightness_curve", "[0, 0.1] [500, 1.0] [1000, 0.3]"),
             ("period_ms", "1000"),
         ]);
@@ -1466,7 +1539,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
             ("_cone", "20"),
             ("_cone2", "40"),
             ("angles", "-90 0 0"),
@@ -1491,7 +1564,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
             ("brightness_curve", "[0, 0.5, 9] [500, 1.0]"), // 3 values instead of expected 2
             ("period_ms", "500"),
         ]);
@@ -1510,7 +1583,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
             ("brightness_curve", "[500, 0.5] [200, 1.0]"),
             ("period_ms", "1000"),
         ]);
@@ -1528,7 +1601,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
             ("color_curve", "[0, 1, 0, 0] [500, 0, 1, 0]"),
             ("period_ms", "500"),
         ]);
@@ -1546,7 +1619,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
             ("_bake_only", "1"),
             ("color_curve", "[0, 1, 0, 0] [500, 0, 1, 0]"),
             ("period_ms", "500"),
@@ -1564,7 +1637,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
             ("_dynamic", "1"),
             ("color_curve", "[0, 1, 0, 0] [500, 0, 1, 0]"),
             ("period_ms", "500"),
@@ -1578,7 +1651,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
             ("style", "1"),
             ("brightness_curve", "[0, 0.2] [1000, 0.8]"),
             ("period_ms", "1000"),
@@ -1594,7 +1667,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
             ("brightness_curve", "[0, 0.5] [500, 1.0]"),
         ]);
         let err = translate_light(&p, DVec3::ZERO, "light").expect_err("should error");
@@ -1606,7 +1679,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
             ("brightness_curve", "[0, 0.2] [1000, 0.8]"),
             ("period_ms", "1000"),
             ("_curve_phase", "0.25"),
@@ -1621,7 +1694,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
             ("_tags", "hallway_wave"),
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
@@ -1633,7 +1706,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
             ("_tags", "ambientFill warm"),
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
@@ -1645,7 +1718,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
         assert!(light.tags.is_empty());
@@ -1656,7 +1729,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
             ("_tags", "   "),
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
@@ -1727,7 +1800,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
             ("_animated", "1"),
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
@@ -1750,7 +1823,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
         ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
         assert!(!light.is_animated);
@@ -1764,7 +1837,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
             ("_animated", "1"),
             ("color_curve", "[0, 1, 0, 0] [500, 0, 1, 0]"),
             ("period_ms", "500"),
@@ -1780,7 +1853,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
             ("_animated", "2"),
         ]);
         let err = translate_light(&p, DVec3::ZERO, "light").expect_err("should error");
@@ -1798,7 +1871,7 @@ mod tests {
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
-            ("_fade", "1024"),
+            ("_falloff_range", "1024"),
             ("_bake_only", "2"),
         ]);
         let err = translate_light(&p, DVec3::ZERO, "light").expect_err("should error");
@@ -1806,6 +1879,99 @@ mod tests {
             err,
             TranslateError::InvalidProperty {
                 key: "_bake_only",
+                ..
+            }
+        ));
+    }
+
+    // --- bake-only soft-shadow size inputs (baked-soft-lightmap-shadows Task 1) ---
+
+    #[test]
+    fn light_size_absent_yields_nonzero_default() {
+        // Existing maps (no `_light_size`) must soften on recompile — the
+        // absent case yields the documented nonzero default, never 0.
+        let light = translate_light(&point_light_props(&[]), DVec3::ZERO, "light")
+            .expect("should translate");
+        assert_eq!(light.light_size, DEFAULT_LIGHT_SIZE);
+        assert!(light.light_size > 0.0);
+    }
+
+    #[test]
+    fn light_size_authored_zero_is_preserved() {
+        // An explicit 0 opts back into a hard 1-texel shadow; it must NOT be
+        // replaced by the absent-case default.
+        let light = translate_light(
+            &point_light_props(&[("_light_size", "0")]),
+            DVec3::ZERO,
+            "light",
+        )
+        .expect("should translate");
+        assert_eq!(light.light_size, 0.0);
+    }
+
+    #[test]
+    fn light_size_authored_value_is_taken_verbatim() {
+        let light = translate_light(
+            &point_light_props(&[("_light_size", "0.5")]),
+            DVec3::ZERO,
+            "light",
+        )
+        .expect("should translate");
+        assert!((light.light_size - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn light_size_negative_clamps_to_zero() {
+        let light = translate_light(
+            &point_light_props(&[("_light_size", "-2.0")]),
+            DVec3::ZERO,
+            "light",
+        )
+        .expect("should translate");
+        assert_eq!(light.light_size, 0.0);
+    }
+
+    #[test]
+    fn directional_angular_diameter_absent_yields_nonzero_default() {
+        let p = props(&[("light", "200"), ("_color", "255 255 255")]);
+        let light = translate_light(&p, DVec3::ZERO, "light_sun").expect("should translate");
+        assert_eq!(light.angular_diameter, DEFAULT_ANGULAR_DIAMETER_DEG);
+        assert!(light.angular_diameter > 0.0);
+        // Directional sources do not use `light_size`.
+        assert_eq!(light.light_size, 0.0);
+    }
+
+    #[test]
+    fn directional_angular_diameter_authored_zero_is_preserved() {
+        let p = props(&[
+            ("light", "200"),
+            ("_color", "255 255 255"),
+            ("_angular_diameter", "0"),
+        ]);
+        let light = translate_light(&p, DVec3::ZERO, "light_sun").expect("should translate");
+        assert_eq!(light.angular_diameter, 0.0);
+    }
+
+    #[test]
+    fn point_light_ignores_angular_diameter_field() {
+        // Point/Spot carry size in `light_size`; `angular_diameter` stays 0.
+        let light = translate_light(&point_light_props(&[]), DVec3::ZERO, "light")
+            .expect("should translate");
+        assert_eq!(light.angular_diameter, 0.0);
+    }
+
+    #[test]
+    fn light_size_non_numeric_errors() {
+        let err = translate_light(
+            &point_light_props(&[("_light_size", "wide")]),
+            DVec3::ZERO,
+            "light",
+        )
+        .expect_err("should error");
+        assert!(matches!(
+            err,
+            TranslateError::InvalidProperty {
+                key: "_light_size",
                 ..
             }
         ));

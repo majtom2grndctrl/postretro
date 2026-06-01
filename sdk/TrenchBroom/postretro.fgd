@@ -31,7 +31,12 @@
 [
     light(integer) : "Intensity" : 300
     _color(color255) : "Color" : "255 255 255"
-    _fade(integer) : "Falloff Distance (map units)"
+    _falloff_range(integer) : "Falloff Distance (map units)"
+    // World-unit radius of the emitter used for bake-time area-light soft
+    // shadows (penumbra width scales with this). Absent → 0.25 (soft default);
+    // an authored 0 keeps the hard 1-texel shadow step. Bake-only; never
+    // serialized to a runtime PRL section.
+    _light_size(string) : "Light Size (world-unit radius; bake-only soft shadows)" : ""
     delay(choices) : "Falloff Model" : 0 =
     [
         0 : "Linear"
@@ -137,6 +142,11 @@
 [
     origin(origin)
     angles(angles) : "Direction (pitch yaw roll, degrees)" : "-90 0 0"
+    // Angular diameter (degrees) of the parallel source used for bake-time soft
+    // shadows — wider angle, softer penumbra. Absent → 0.5 (soft default); an
+    // authored 0 keeps the hard 1-texel shadow step. `_light_size` (inherited
+    // from Light) does not apply to directional sources. Bake-only.
+    _angular_diameter(string) : "Angular Diameter (degrees; bake-only soft shadows)" : ""
 ]
 
 // Dynamic-tier lights. The primary lighting split is bake participation: these
@@ -157,7 +167,7 @@
 [
     light(integer) : "Intensity" : 300
     _color(color255) : "Color" : "255 255 255"
-    _fade(integer) : "Falloff Distance (map units)"
+    _falloff_range(integer) : "Falloff Distance (map units)"
     delay(choices) : "Falloff Model" : 0 =
     [
         0 : "Linear"

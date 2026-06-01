@@ -41,7 +41,8 @@ Radiates light in all directions from a single point.
 |-----|------|---------|-------------|
 | `light` | integer | `300` | Brightness |
 | `_color` | RGB | `255 255 255` | Light color |
-| `_fade` | integer | **required** | How far the light reaches, in map units. The compiler will error if this is missing. |
+| `_falloff_range` | integer | **required** | How far the light reaches, in map units. The compiler will error if this is missing. |
+| `_light_size` | float | `0.25` | Emitter radius in world units, driving bake-time soft shadows (wider = softer penumbra). Leave blank for the soft default; set `0` for a hard 1-texel shadow. Point/spot only — ignored on `light_sun`. Bake-only (not stored at runtime). |
 | `delay` | 0/1/2 | `0` | Falloff shape: `0` = linear, `1` = inverse (1/x), `2` = inverse squared (1/x²) |
 | `style` | integer | `0` | Preset flicker/pulse animation — see the style table below |
 | `_phase` | float | `0.0` | Shifts the animation cycle (0.0–1.0). Set different values on nearby lights sharing the same style so they don't all pulse together. |
@@ -77,8 +78,9 @@ A single directional light that hits everything from the same angle, like sunlig
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `angles` | angles | `"-90 0 0"` | Direction as `"pitch yaw roll"` in degrees |
+| `_angular_diameter` | float | `0.5` | Angular size of the sun disc in degrees, driving bake-time soft shadows (wider = softer penumbra). Leave blank for the soft default; set `0` for a hard shadow. `_light_size` does not apply to directional lights. Bake-only. |
 
-All shared `light` keys (`light`, `_color`, `_fade`, `delay`, `style`, `_phase`, `brightness_curve`, `color_curve`, `direction_curve`, `period_ms`, `_curve_phase`, `_start_inactive`, `_dynamic`, `_bake_only`) apply.
+All shared `light` keys (`light`, `_color`, `_falloff_range`, `delay`, `style`, `_phase`, `brightness_curve`, `color_curve`, `direction_curve`, `period_ms`, `_curve_phase`, `_start_inactive`, `_dynamic`, `_bake_only`) apply. (`_falloff_range` and `_light_size` aside, `light_sun` ignores distance falloff and emitter radius.)
 
 ---
 
@@ -219,7 +221,7 @@ A **leak** is a gap in your brush hull. If you have a leak, interior rooms can v
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| Missing `_fade` on light | Every light entity requires `_fade` | Add `_fade` to every `light`, `light_spot`, and `light_sun` |
+| Missing `_falloff_range` on light | Every point/spot light requires `_falloff_range` (renamed from `_fade`; no alias) | Add `_falloff_range` to every `light` and `light_spot` |
 | `period_ms` missing | A `*_curve` key is present but no cycle length | Add `period_ms` to the same entity |
 | Lightmap atlas overflow | Too many surfaces at the current texel density | Increase `--lightmap-density` (the compiler retries automatically and logs a warning) |
 | Exterior leak | Gap in the brush hull | Seal the map and check the compiler output for the breach location |

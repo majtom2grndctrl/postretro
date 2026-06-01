@@ -71,7 +71,7 @@
 "classname" "light"
 "origin" "48 32 100"
 "light" "150"
-"_fade" "100"
+"_falloff_range" "100"
 }
 // entity 3
 {
@@ -79,5 +79,5 @@
 "origin" "224 224 36"
 "light" "150"
 "style" "2"
-"_fade" "100"
+"_falloff_range" "100"
 }

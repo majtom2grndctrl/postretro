@@ -198,6 +198,16 @@ pub struct LightAnimation {
     pub start_active: bool,
 }
 
+/// Default emitter radius (world units / meters) applied when `_light_size` is
+/// absent, so existing maps gain soft shadows on recompile. An explicit `0`
+/// authored value is preserved (hard shadow). See `MapLight::light_size`.
+pub const DEFAULT_LIGHT_SIZE: f32 = 0.25;
+
+/// Default directional angular diameter (degrees) applied when
+/// `_angular_diameter` is absent. An explicit `0` is preserved (hard shadow).
+/// See `MapLight::angular_diameter`.
+pub const DEFAULT_ANGULAR_DIAMETER_DEG: f32 = 0.5;
+
 /// Format-agnostic light record. The SH baker and runtime direct path both
 /// consume `Vec<MapLight>`; neither sees source-format vocabulary.
 ///
@@ -222,6 +232,21 @@ pub struct MapLight {
     /// distance (InverseDistance / InverseSquared). Meters. Must be `> 0`
     /// for Point and Spot lights; unused for Directional.
     pub falloff_range: f32,
+
+    /// World-unit (meter) radius of the emitter, driving bake-time area-light
+    /// soft shadows for Point and Spot lights. Authored FGD `_light_size`;
+    /// absent → [`DEFAULT_LIGHT_SIZE`], an authored `0` is preserved (hard
+    /// 1-texel shadow). Clamped non-negative. Bake-only — consumed by the
+    /// lightmap baker, never serialized to a runtime PRL section. Unused for
+    /// Directional (which uses `angular_diameter`).
+    pub light_size: f32,
+
+    /// Angular diameter in **degrees** of a Directional (sun) source, driving
+    /// bake-time soft shadows. Authored FGD `_angular_diameter`; absent →
+    /// [`DEFAULT_ANGULAR_DIAMETER_DEG`], an authored `0` is preserved (hard
+    /// shadow). Clamped non-negative. Bake-only. Unused for Point/Spot (which
+    /// use `light_size`).
+    pub angular_diameter: f32,
 
     /// Inner cone half-angle in radians. `Some` only for Spot lights.
     pub cone_angle_inner: Option<f32>,

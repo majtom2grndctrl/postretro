@@ -10,11 +10,18 @@ use parry3d::shape::Capsule;
 use crate::collision::{CollisionWorld, SKIN_DISTANCE, cast_capsule, cast_ray};
 use crate::scripting::components::player_movement::{MovementState, PlayerMovementComponent};
 
-/// Linear ground deceleration applied to horizontal velocity when grounded
-/// and no movement input is held. Plain exponential-style velocity decay
-/// (`v *= max(0, 1 - k*dt)`) — not the Q3 stop/slide-threshold friction
-/// model. Value matches Quake's default `sv_friction` (6.0). Promote to
-/// `GroundParams` if per-entity friction tuning becomes necessary.
+/// Exponential-style ground deceleration (`v *= max(0, 1 - k*dt)`) — not the Q3
+/// stop/slide-threshold friction model. Value matches Quake's default
+/// `sv_friction` (6.0). Two use sites:
+///   1. `Normal` step 6 / `apply_normal_horizontal_decay`: grounded with no
+///      movement input held — the stop-friction that bleeds idle speed. Gated
+///      on no-input because `pm_accelerate` already caps in-band grounded speed.
+///   2. `dash_intent`'s `dash_drag == 0` grounded boost path: applied
+///      UNCONDITIONALLY (no no-input gate). The boost deliberately sits above
+///      the grounded cap, so the no-input gate cannot apply — a held stick must
+///      still bleed the over-cap boost rather than freezing it.
+///
+/// Promote to `GroundParams` if per-entity friction tuning becomes necessary.
 const GROUND_STOP_FRICTION: f32 = 6.0;
 
 /// Hard upper bound on how long the `Dash` state can persist, in milliseconds.
@@ -558,7 +565,7 @@ fn integrate_collision(
 /// Air-jump (double-jump) gate: the airborne jump fires only while a charge
 /// remains in the budget AND upward velocity is still under `air.jump_ceiling`.
 /// The budget itself replenishes on floor contact via `refresh_on_landing`, so
-/// double-jump and the future air-dash budget reset through one mechanism. The
+/// double-jump and the air-dash budget reset through one mechanism. The
 /// ceiling rule keeps the charge from being spent at the apex of the rising arc.
 fn air_jump_ready(component: &PlayerMovementComponent) -> bool {
     component.air_jumps_remaining > 0 && component.velocity.y <= component.air.jump_ceiling
@@ -604,7 +611,7 @@ fn normal_intent(
     // 3. Air-jump (double-jump): a named airborne ability under the budget
     // model. Consumes one charge from `air_jumps_remaining`, which refreshes
     // uniformly on floor contact through `refresh_on_landing` (the single
-    // landing-refresh point shared with future air-budget abilities). The
+    // landing-refresh point shared with other air-budget abilities, e.g. air-dash). The
     // ceiling gate (`velocity.y <= air.jump_ceiling`) keeps it from firing at
     // the top of the rising arc; the launch reuses the ground jump velocity.
     else if !component.is_grounded && input.jump_pressed && air_jump_ready(component) {
@@ -779,7 +786,10 @@ fn try_enter_dash(
     }
 
     // Arm the cooldown for every dash. It decrements unconditionally each tick in
-    // `tick`, outside the per-state dispatch.
+    // `tick`, outside the per-state dispatch. Note: `tick` decrements by `dt*1000`
+    // on this same entry tick, so the effective cooldown is `cooldown_ms - dt*1000`
+    // (one tick short). Accepted as harmless — reordering the arm risks the
+    // cooldown test, and a sub-tick of cooldown makes no observable difference.
     component.dash_cooldown_ms = cooldown_ms;
 
     Some(MovementState::Dash {
@@ -789,7 +799,10 @@ fn try_enter_dash(
 }
 
 /// The `Dash` state's per-tick velocity intent. Gravity runs normally; the
-/// jump/air-jump branch is omitted. Input steering (`pm_accelerate`) is scaled by
+/// jump/air-jump branch is omitted by design — the dash is a short committed
+/// burst (hard-bounded by `DASH_MAX_MS`), so jump input is intentionally dropped
+/// for its duration; full jump access returns on exit to `Normal`. Input
+/// steering (`pm_accelerate`) is scaled by
 /// `steer_control` — omitted entirely at 0 (committed dash). Horizontal decay
 /// acts on the BOOST layer (D4); the retained base keeps decaying under
 /// `Normal`'s contextual friction throughout. Exits into `Normal` when total
@@ -847,11 +860,39 @@ fn dash_intent(
         );
     }
 
+    // Reconcile the tracked boost with what collision actually realized before
+    // splitting velocity into base/boost. Between ticks the substrate projects
+    // `component.velocity` against geometry (collide-and-slide); driving the dash
+    // into a wall zeroes the velocity component along the contact normal, but the
+    // stored `boost` keeps its full pre-collision magnitude. Without this step
+    // `base = velocity - boost` reconstructs a vector pointing OPPOSITE the dash
+    // direction — a phantom backward kick away from the wall (head-on into the
+    // x=5 wall: vx = -1.5 with base.x reconstructed as -15). Head-on self-corrects
+    // in one tick, but a glancing clip (slope, step, angled wall) leaves the
+    // phantom base alive across multiple dash ticks and breaks clean wall-slide.
+    //
+    // Fix: clamp the boost's magnitude along its OWN direction to the realized
+    // horizontal velocity's projection on that axis (floored at 0, capped at the
+    // tracked magnitude). When collision zeroes the boost axis the projection
+    // drops to ~0, so the clamped boost shrinks to match and `base = velocity -
+    // boost` can no longer point back out of the wall. An angled dash keeps its
+    // surviving tangential velocity in `base`, yielding the same clean slide a
+    // `Normal`-state approach would produce.
+    let mut boost = boost;
+    let boost_len = Vec2::new(boost.x, boost.z).length();
+    if boost_len > 0.0 {
+        let boost_dir = Vec3::new(boost.x / boost_len, 0.0, boost.z / boost_len);
+        let realized_along_boost =
+            (component.velocity.x * boost_dir.x + component.velocity.z * boost_dir.z).max(0.0);
+        let clamped_len = boost_len.min(realized_along_boost);
+        boost.x = boost_dir.x * clamped_len;
+        boost.z = boost_dir.z * clamped_len;
+    }
+
     // Decay. The base is the composite horizontal velocity minus the tracked
     // boost; only the boost is `dash_drag`-decayed, while the base always decays
     // under `Normal`'s contextual friction/cap so it never lingers above the
     // steady band.
-    let mut boost = boost;
     let mut base = Vec3::new(
         component.velocity.x - boost.x,
         0.0,
@@ -910,11 +951,14 @@ fn dash_intent(
 }
 
 /// Apply `Normal`'s contextual horizontal decay to a horizontal velocity vector
-/// in place: ground friction in the no-input case when grounded (mirroring
-/// `Normal` step 6), the airborne horizontal cap otherwise (mirroring steps
-/// 4/5). Reads the grounded flag and friction params off the component. Used by
-/// the dash decay step for both the retained base and (when `dash_drag == 0`)
-/// the boost layer.
+/// in place: when grounded, the no-input stop-friction branch of `Normal` step 6
+/// only; when airborne, the horizontal cap (mirroring steps 4/5). Step 6 has a
+/// second grounded branch — the held-input over-speed bleed above
+/// `OVERSPEED_BLEED_MARGIN` — which this helper deliberately omits: the vectors
+/// `dash_intent` passes in (the retained base; the boost only when
+/// `dash_drag == 0`) are already bounded below the run cap, so there is no
+/// over-cap residue for that branch to act on. Reads the grounded flag and
+/// friction params off the component.
 fn apply_normal_horizontal_decay(
     velocity: &mut Vec3,
     component: &PlayerMovementComponent,
@@ -3380,6 +3424,263 @@ mod tests {
             approx_eq(k.velocity.y, expected, VEL_EPS),
             "preserve_vertical=true should keep entering vy, expected ~{expected}, got {}",
             k.velocity.y
+        );
+    }
+
+    /// Walk a grounded player toward +X until just shy of the wall at x=5, then
+    /// return the settled component/position primed to dash into it.
+    fn approach_wall_grounded(
+        desc: &PlayerMovementDescriptor,
+        world: &CollisionWorld,
+    ) -> (PlayerMovementComponent, Vec3) {
+        let (mut comp, mut pos) = settle_player(desc);
+        run_ticks(&mut comp, world, &mut pos, 10, &idle_input());
+        let walk = MovementInput {
+            wish_dir: Vec2::new(1.0, 0.0),
+            jump_pressed: false,
+            dash_pressed: false,
+            running: true,
+            facing_yaw: 0.0,
+        };
+        // Walk toward +X until close to the wall but still clear of the capsule
+        // standoff (radius 0.4 ⇒ center stops near x≈4.6).
+        for _ in 0..200 {
+            let (next, _ev) = tick(&mut comp, &walk, world, GRAVITY, DT, pos);
+            pos = next;
+            if pos.x > 3.5 {
+                break;
+            }
+        }
+        (comp, pos)
+    }
+
+    // Regression: dashing head-on into geometry left a phantom backward velocity.
+    // Collide-and-slide zeroed the velocity component along the boost axis, but
+    // the tracked `boost` kept full magnitude, so `base = velocity - boost`
+    // reconstructed a vector pointing back out of the wall (empirically vx=-1.5,
+    // base.x=-15 the tick after entry). The boost/realized reconciliation in
+    // `dash_intent` clamps it. This test fails on the pre-fix code.
+    #[test]
+    fn dash_head_on_into_wall_does_not_reverse() {
+        let world = flat_floor_and_wall_world();
+        // High boost, no drag-into-band complications; rigid committed dash.
+        let desc = dash_descriptor(dash_params(15.0, 0.0, 0.0, 50.0, 0.0, 0, false));
+        let capsule_standoff = 5.0 - desc.capsule.radius; // wall x=5, radius 0.4
+        let (mut comp, mut pos) = approach_wall_grounded(&desc, &world);
+
+        let dash_into_wall = MovementInput {
+            wish_dir: Vec2::new(1.0, 0.0),
+            jump_pressed: false,
+            dash_pressed: true,
+            running: true,
+            facing_yaw: 0.0,
+        };
+        let (next, _ev) = tick(&mut comp, &dash_into_wall, &world, GRAVITY, DT, pos);
+        pos = next;
+        assert!(
+            matches!(comp.movement_state, MovementState::Dash { .. }),
+            "setup: dash should have entered, got {:?}",
+            comp.movement_state
+        );
+
+        // Hold the dash direction into the wall; track velocity and penetration
+        // across the whole dash AND the exit tick. No tick — including the one
+        // that transitions back to Normal — may leave a backward velocity. The
+        // phantom-base bug surfaces precisely on the tick after the wall zeroes
+        // the boost axis, which is also the tick the dash exits, so the check
+        // must run after each tick rather than only at the top of the loop.
+        let mut returned_to_normal = false;
+        for _ in 0..40 {
+            let (next, _ev) = tick(&mut comp, &dash_into_wall, &world, GRAVITY, DT, pos);
+            pos = next;
+            assert!(
+                comp.velocity.x > -VEL_EPS,
+                "dash into wall must not produce backward velocity, got vx={}",
+                comp.velocity.x
+            );
+            assert!(
+                pos.x < capsule_standoff + 0.05,
+                "player must not penetrate the wall (standoff {capsule_standoff}), got x={}",
+                pos.x
+            );
+            if matches!(comp.movement_state, MovementState::Normal) {
+                returned_to_normal = true;
+                break;
+            }
+        }
+        assert!(
+            returned_to_normal,
+            "dash blocked by the wall should exit cleanly into Normal"
+        );
+    }
+
+    // An angled dash into the wall (toward +X, along -Z) should slide along the
+    // wall: the tangential -Z speed survives while the into-wall +X component is
+    // clipped. The boost reconciliation must not stick or reverse the slide.
+    #[test]
+    fn dash_angled_into_wall_slides_along_it() {
+        let world = flat_floor_and_wall_world();
+        let desc = dash_descriptor(dash_params(15.0, 0.0, 0.0, 50.0, 0.0, 0, false));
+        let (mut comp, mut pos) = approach_wall_grounded(&desc, &world);
+
+        // wish_dir=(1,1): into +X (the wall) and along -Z (tangent, free). With
+        // facing_yaw=0, forward=-Z and right=+X, so this resolves to (1,0,-1).
+        let dash_diag = MovementInput {
+            wish_dir: Vec2::new(1.0, 1.0),
+            jump_pressed: false,
+            dash_pressed: true,
+            running: true,
+            facing_yaw: 0.0,
+        };
+        let (next, _ev) = tick(&mut comp, &dash_diag, &world, GRAVITY, DT, pos);
+        pos = next;
+        assert!(
+            matches!(comp.movement_state, MovementState::Dash { .. }),
+            "setup: angled dash should have entered"
+        );
+
+        // The tick after entry, collision has clipped the +X component but the
+        // tangential -Z slide must remain (clearly negative, not stuck/reversed).
+        let (next, _ev) = tick(&mut comp, &dash_diag, &world, GRAVITY, DT, pos);
+        pos = next;
+        assert!(
+            comp.velocity.z < -1.0,
+            "angled dash into the wall should retain tangential -Z slide, got vz={}",
+            comp.velocity.z
+        );
+        assert!(
+            comp.velocity.x > -VEL_EPS,
+            "angled dash must not reverse out of the wall, got vx={}",
+            comp.velocity.x
+        );
+        // The player should keep advancing along -Z (sliding), not stick.
+        let z_before = pos.z;
+        run_ticks(&mut comp, &world, &mut pos, 3, &dash_diag);
+        assert!(
+            pos.z < z_before - VEL_EPS,
+            "player should slide along the wall in -Z, z went {z_before} -> {}",
+            pos.z
+        );
+    }
+
+    // Finding #3: a grounded dash must not spend an air-dash charge — the consume
+    // is gated on `!is_grounded` in `try_enter_dash`.
+    #[test]
+    fn dash_grounded_preserves_air_dash_budget() {
+        let world = flat_floor_and_wall_world();
+        let desc = dash_descriptor(dash_params(10.0, 0.0, 0.0, 50.0, 0.0, 2, false));
+        let (mut comp, mut pos) = settle_player(&desc);
+        run_ticks(&mut comp, &world, &mut pos, 10, &idle_input());
+        assert!(comp.is_grounded, "setup: player should be grounded");
+        assert_eq!(
+            comp.air_dashes_remaining, 2,
+            "setup: full air-dash budget before the grounded dash"
+        );
+
+        let dash = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: false,
+            dash_pressed: true,
+            running: false,
+            facing_yaw: 0.0,
+        };
+        let (_next, _ev) = tick(&mut comp, &dash, &world, GRAVITY, DT, pos);
+        assert!(
+            matches!(comp.movement_state, MovementState::Dash { .. }),
+            "setup: grounded dash should have fired"
+        );
+        assert_eq!(
+            comp.air_dashes_remaining, 2,
+            "a grounded dash must not consume an air-dash charge"
+        );
+    }
+
+    // Finding #7: jump input during the Dash state is dropped by design —
+    // `dash_intent` omits the jump branch. vy should only follow gravity.
+    #[test]
+    fn dash_ignores_jump_input() {
+        let world = flat_floor_and_wall_world();
+        // preserve_vertical so entry does not zero vy, isolating the jump check.
+        let desc = dash_descriptor(dash_params(15.0, 0.0, 0.0, 50.0, 0.0, 3, true));
+        let (mut comp, pos) = airborne_aloft(&desc, &world);
+
+        // Enter the dash (airborne) without jump.
+        let air_dash = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: false,
+            dash_pressed: true,
+            running: false,
+            facing_yaw: 0.0,
+        };
+        let (pos, _ev) = tick(&mut comp, &air_dash, &world, GRAVITY, DT, pos);
+        assert!(
+            matches!(comp.movement_state, MovementState::Dash { .. }),
+            "setup: airborne dash should have entered"
+        );
+
+        // Now hold jump while in Dash; vy must only advance by gravity.
+        let dash_with_jump = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: true,
+            dash_pressed: false,
+            running: false,
+            facing_yaw: 0.0,
+        };
+        let vy_before = comp.velocity.y;
+        let (_next, _ev) = tick(&mut comp, &dash_with_jump, &world, GRAVITY, DT, pos);
+        let expected = vy_before + GRAVITY * DT;
+        assert!(
+            approx_eq(comp.velocity.y, expected, VEL_EPS),
+            "jump during dash must not add impulse: expected gravity-only vy ~{expected}, got {}",
+            comp.velocity.y
+        );
+    }
+
+    // Finding #6: an airborne dash with `dash_drag == 0` and a large boost should
+    // decay back into the steady band rather than stay pinned at boost speed —
+    // the boost folds into `Normal`'s contextual air cap.
+    #[test]
+    fn dash_airborne_zero_drag_decays_into_band() {
+        let world = flat_floor_and_wall_world();
+        // dash_drag=0, momentum_retention=0; large boost well above the band.
+        let desc = dash_descriptor(dash_params(15.0, 0.0, 0.0, 0.0, 0.0, 3, true));
+        let band = desc.ground.speed.run; // exit band is ground run speed
+        let (mut comp, mut pos) = airborne_aloft(&desc, &world);
+
+        let air_dash = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: false,
+            dash_pressed: true,
+            running: false,
+            facing_yaw: 0.0,
+        };
+        let (next, _ev) = tick(&mut comp, &air_dash, &world, GRAVITY, DT, pos);
+        pos = next;
+        let peak = horiz_speed(&comp);
+        assert!(
+            peak > band,
+            "setup: airborne dash should start above the band, got {peak}"
+        );
+
+        // Idle airborne; the boost must bleed back into the band before the
+        // DASH_MAX_MS guard would force the exit.
+        let mut settled = false;
+        for _ in 0..40 {
+            let (next, _ev) = tick(&mut comp, &idle_input(), &world, GRAVITY, DT, pos);
+            pos = next;
+            if matches!(comp.movement_state, MovementState::Normal) {
+                settled = true;
+                break;
+            }
+        }
+        assert!(
+            settled,
+            "zero-drag airborne dash should decay into Normal, not stay at boost speed"
+        );
+        assert!(
+            horiz_speed(&comp) <= band + VEL_EPS,
+            "post-dash horizontal speed should settle into the band, got {}",
+            horiz_speed(&comp)
         );
     }
 }

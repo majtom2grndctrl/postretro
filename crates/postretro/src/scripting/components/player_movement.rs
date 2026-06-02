@@ -1,8 +1,10 @@
 // Player movement component: live state carried on the player entity.
-// Materialized at spawn from `PlayerMovementDescriptor`; mutated each tick
-// by `crate::movement::tick`.
+// Owns `MovementState` (per-tick intent dispatcher) and `refresh_on_landing`
+// (unified ability-budget landing-refresh point). Materialized at spawn from
+// `PlayerMovementDescriptor`; mutated each tick by `crate::movement::tick`.
 //
 // See: context/lib/entity_model.md §7 (collision/movement)
+//      context/lib/movement.md §4 (state-machine seam)
 
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
@@ -90,8 +92,10 @@ pub(crate) struct PlayerMovementComponent {
     pub(crate) stuck_stop_threshold: f32,
     /// The active movement state. Drives `tick`'s per-tick velocity-intent
     /// dispatch. Defaults to `Normal`. NOT preserved across descriptor hot-reload:
-    /// the refresh planner resets it to `Normal` so an in-flight `Dash` can't
-    /// survive with a stale boost vector and a refilled budget.
+    /// `from_descriptor` reseeds `dash_cooldown_ms` to 0 and refills
+    /// `air_dashes_remaining` from the new descriptor, so an in-flight `Dash`
+    /// surviving a swap would continue with a cleared cooldown and a full charge
+    /// budget — a gameplay-state/budget mismatch. Resetting to `Normal` prevents it.
     pub(crate) movement_state: MovementState,
 }
 

@@ -30,6 +30,8 @@ Physical inputs map to logical actions. Game logic never queries "is W pressed" 
 
 A single action can have multiple physical bindings. W key and left stick Y both map to the forward/back movement axis. Bindings are data, not code.
 
+**Button signal width.** Each consumer chooses its own signal width when reading a button action from the snapshot. `is_active()` (Pressed|Held) is a level signal — it fires on every qualifying tick while the button is held. `ButtonState::Pressed` alone is a rising edge — it fires only on the first tick. Use a rising edge when a held input would wrongly re-trigger each qualifying tick: dash uses `ButtonState::Pressed` because a held dash would re-fire every cooldown-ready tick. Jump uses the level signal (`is_active()`) because the movement system self-gates it via a ceiling rule. Reference derivation: `run_movement_tick` in `main.rs`.
+
 ### Axis source tagging
 
 Axis values carry a source tag that determines how game logic integrates them:

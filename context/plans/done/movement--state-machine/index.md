@@ -46,27 +46,27 @@ Rationale: this is the modern movement-shooter representation (Titanfall/Apex sl
 ## Acceptance criteria
 
 ### Automated (test-gated)
-- [ ] The full existing movement regression suite passes unchanged: walk-advances, jump-launch, step-up traversal, wall-slide, no-orbital-jitter, run-vs-walk steady-state, airborne run cap. (Regression gate proving the substrate was lifted cleanly.) 'Unchanged' means behavior-unchanged (D2): existing test source may be mechanically updated to compile, and Task 5 adds a new air-jump fixture.
-- [ ] Fluid corner: with `momentumRetention=1` and `dashDrag=0`, a dash in the direction of travel while already running stacks — peak horizontal speed exceeds a standing dash (additive momentum) — and then decays through `Normal`'s friction back into its steady band, at which point control returns to `Normal`. (test parameters chosen so the speed-band exit occurs before the `DASH_MAX_MS` guard).
-- [ ] Rigid corner: with `momentumRetention=0`, `steerControl=0`, and `dashDrag>0`, the dash outcome (peak speed and the linear `dash_drag` decay curve) is identical regardless of entry velocity — bit-exact repeatability across differing entry states.
-- [ ] `steerControl`: at 0 input does not alter the dash trajectory mid-dash (committed); at >0 input steers it (one AC capturing the committed-vs-steerable contrast).
-- [ ] `momentumRetention`: at 0 the dash replaces prior horizontal velocity (with input and facing held constant, outcome independent of entry velocity); at 1 it adds to prior horizontal velocity.
-- [ ] Layered decay (D4): with `momentumRetention=1` and `dashDrag>0`, only the dash boost decays at the `dash_drag` rate while the retained base momentum continues under `Normal`'s friction — the post-dash steady speed settles into `Normal`'s band, i.e. the `dash_drag` bleed does not drag the retained base below it.
-- [ ] The `Dash` state cannot persist past the `DASH_MAX_MS` guard even if momentum stays high.
-- [ ] A dash requested while the cooldown is active is suppressed (no second impulse until cooldown elapses).
-- [ ] Holding the `Dash` button does not re-trigger a dash after the cooldown elapses; only a fresh press (rising edge) fires — distinct from `jump_pressed`'s level signal.
-- [ ] Air-dash fires while airborne up to the configured air-dash budget; the budget is exhausted after that many airborne dashes and is restored on landing.
-- [ ] A dash fired on the landing tick consumes an air-dash charge in the intent/transition step; the landing-refresh (substrate-result step) then restores the full budget, observable on the next tick.
-- [ ] Double-jump: with an air-jump budget of ≥1, a second jump fires while airborne under the existing ceiling rule; the air-jump budget is restored on landing.
-- [ ] An absent `dash` sub-object is valid and disables dash (no impulse; the `Normal`→`Dash` transition never fires). When `dash` is present, all its fields are required (present-then-all-required, like `ground`/`air`/`fall`).
-- [ ] Descriptor parsers reject invalid dash fields symmetrically in both the JS and Luau paths (each path's error names the offending field; exact wording and field granularity differ per path as documented in Task 3 — JS emits full dotted paths, the Luau u32 helper emits a bare leaf name): `boostSpeed` rejects missing/non-finite/non-positive (zero and negative both rejected); `momentumRetention` and `steerControl` reject missing/non-finite/out-of-`[0,1]`; `dashDrag` and `cooldownMs` reject missing/non-finite/negative (zero allowed); `airDashes` rejects negative/non-integer/non-finite; `preserveVertical` rejects non-bool.
-- [ ] The SDK type-drift test passes with the new dash descriptor type present in `sdk/types/postretro.d.ts` and `.d.luau`.
-- [ ] The `Dash` action is registered in the gameplay action set with default keyboard and gamepad bindings, and `input/defaults.rs`'s exhaustive `all_actions()` list and per-Action coverage tests are updated to include it.
-- [ ] On dash entry, `preserveVertical=false` zeroes vertical velocity and `preserveVertical=true` retains it (gravity then resumes normally) — verified for an airborne dash.
+- [x] The full existing movement regression suite passes unchanged: walk-advances, jump-launch, step-up traversal, wall-slide, no-orbital-jitter, run-vs-walk steady-state, airborne run cap. (Regression gate proving the substrate was lifted cleanly.) 'Unchanged' means behavior-unchanged (D2): existing test source may be mechanically updated to compile, and Task 5 adds a new air-jump fixture.
+- [x] Fluid corner: with `momentumRetention=1` and `dashDrag=0`, a dash in the direction of travel while already running stacks — peak horizontal speed exceeds a standing dash (additive momentum) — and then decays through `Normal`'s friction back into its steady band, at which point control returns to `Normal`. (test parameters chosen so the speed-band exit occurs before the `DASH_MAX_MS` guard).
+- [x] Rigid corner: with `momentumRetention=0`, `steerControl=0`, and `dashDrag>0`, the dash outcome (peak speed and the linear `dash_drag` decay curve) is identical regardless of entry velocity — bit-exact repeatability across differing entry states.
+- [x] `steerControl`: at 0 input does not alter the dash trajectory mid-dash (committed); at >0 input steers it (one AC capturing the committed-vs-steerable contrast).
+- [x] `momentumRetention`: at 0 the dash replaces prior horizontal velocity (with input and facing held constant, outcome independent of entry velocity); at 1 it adds to prior horizontal velocity.
+- [x] Layered decay (D4): with `momentumRetention=1` and `dashDrag>0`, only the dash boost decays at the `dash_drag` rate while the retained base momentum continues under `Normal`'s friction — the post-dash steady speed settles into `Normal`'s band, i.e. the `dash_drag` bleed does not drag the retained base below it.
+- [x] The `Dash` state cannot persist past the `DASH_MAX_MS` guard even if momentum stays high.
+- [x] A dash requested while the cooldown is active is suppressed (no second impulse until cooldown elapses).
+- [x] Holding the `Dash` button does not re-trigger a dash after the cooldown elapses; only a fresh press (rising edge) fires — distinct from `jump_pressed`'s level signal.
+- [x] Air-dash fires while airborne up to the configured air-dash budget; the budget is exhausted after that many airborne dashes and is restored on landing.
+- [x] A dash fired on the landing tick consumes an air-dash charge in the intent/transition step; the landing-refresh (substrate-result step) then restores the full budget, observable on the next tick.
+- [x] Double-jump: with an air-jump budget of ≥1, a second jump fires while airborne under the existing ceiling rule; the air-jump budget is restored on landing.
+- [x] An absent `dash` sub-object is valid and disables dash (no impulse; the `Normal`→`Dash` transition never fires). When `dash` is present, all its fields are required (present-then-all-required, like `ground`/`air`/`fall`).
+- [x] Descriptor parsers reject invalid dash fields symmetrically in both the JS and Luau paths (each path's error names the offending field; exact wording and field granularity differ per path as documented in Task 3 — JS emits full dotted paths, the Luau u32 helper emits a bare leaf name): `boostSpeed` rejects missing/non-finite/non-positive (zero and negative both rejected); `momentumRetention` and `steerControl` reject missing/non-finite/out-of-`[0,1]`; `dashDrag` and `cooldownMs` reject missing/non-finite/negative (zero allowed); `airDashes` rejects negative/non-integer/non-finite; `preserveVertical` rejects non-bool.
+- [x] The SDK type-drift test passes with the new dash descriptor type present in `sdk/types/postretro.d.ts` and `.d.luau`.
+- [x] The `Dash` action is registered in the gameplay action set with default keyboard and gamepad bindings, and `input/defaults.rs`'s exhaustive `all_actions()` list and per-Action coverage tests are updated to include it.
+- [x] On dash entry, `preserveVertical=false` zeroes vertical velocity and `preserveVertical=true` retains it (gravity then resumes normally) — verified for an airborne dash.
 
 ### Manual-visual (no automated verification — eyeball in-engine)
-- [ ] Dash reads as a fast burst, not a teleport; the camera tracks it without a visible hitch.
-- [ ] Sprint → dash → jump and dash → air-dash chains feel continuous, with no dead frame on state hand-off.
+- [x] Dash reads as a fast burst, not a teleport; the camera tracks it without a visible hitch. _(Verified in-engine on first playable run.)_
+- [x] Sprint → dash → jump and dash → air-dash chains feel continuous, with no dead frame on state hand-off. _(Verified in-engine on first playable run.)_
 
 ## Tasks
 

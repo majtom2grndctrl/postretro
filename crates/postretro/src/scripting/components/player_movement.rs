@@ -89,8 +89,9 @@ pub(crate) struct PlayerMovementComponent {
     /// 0.117 m) yet above floating-point and skin-distance noise (~1e-4 m).
     pub(crate) stuck_stop_threshold: f32,
     /// The active movement state. Drives `tick`'s per-tick velocity-intent
-    /// dispatch. Defaults to `Normal`; carried as live runtime state across
-    /// descriptor refresh.
+    /// dispatch. Defaults to `Normal`. NOT preserved across descriptor hot-reload:
+    /// the refresh planner resets it to `Normal` so an in-flight `Dash` can't
+    /// survive with a stale boost vector and a refilled budget.
     pub(crate) movement_state: MovementState,
 }
 

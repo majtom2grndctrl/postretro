@@ -1,5 +1,7 @@
-// Player movement system: gravity, jump, air control, friction, capsule sweep-and-slide.
-// Caller supplies the world gravity scalar (from `ScriptCtx::gravity`). See: context/lib/entity_model.md §5, §7
+// Player movement state machine: per-state velocity intent (Normal, Dash), the
+// shared physics substrate (capsule sweep-and-slide, step-up, ground-stick), and
+// the tick dispatcher.
+// Caller supplies the world gravity scalar (from `ScriptCtx::gravity`). See: context/lib/movement.md §4, context/lib/entity_model.md §5, §7
 
 use glam::{Vec2, Vec3};
 use parry3d::math::{Point, Vector};
@@ -211,8 +213,7 @@ fn step_up_lift(
 /// This is the collide-and-slide spine — iterative sweep-and-slide, the
 /// step-up probe, the per-tick floor-push budget, stuck-stop corner-wedge
 /// mitigation, the ground-stick down-cast, and the `is_grounded`/`air_ticks`
-/// collision-state resolution. Same constants, ordering, and outputs as the
-/// formerly-inlined code.
+/// collision-state resolution.
 ///
 /// Carve-out: the substrate resolves *collision* state (`is_grounded`,
 /// `air_ticks`) and reports landing/contact via `SubstrateResult`, but it does
@@ -856,15 +857,11 @@ fn dash_intent(
     let horiz_speed = (component.velocity.x * component.velocity.x
         + component.velocity.z * component.velocity.z)
         .sqrt();
-    let steady_cap = if component.is_grounded {
-        ground_speed
-    } else {
-        // Airborne steady band. When `bunny_hop` is off this matches `Normal`'s
-        // air cap (`ground_speed`); with `bunny_hop` on `Normal` enforces no air
-        // cap, so this is the band we choose to decay back into rather than one
-        // `Normal` maintains. Either way the dash is bounded by `DASH_MAX_MS`.
-        ground_speed
-    };
+    // Steady band is `ground_speed` whether grounded or airborne: when `bunny_hop`
+    // is off it matches `Normal`'s air cap; when on, `Normal` enforces no air cap,
+    // so `ground_speed` is the band we choose to exit into rather than one `Normal`
+    // maintains in that mode. Either way the dash is hard-bounded by `DASH_MAX_MS`.
+    let steady_cap = ground_speed;
     if horiz_speed <= steady_cap || elapsed_ms >= DASH_MAX_MS {
         return Some(MovementState::Normal);
     }
@@ -942,7 +939,7 @@ pub(crate) fn tick(
 
     // Landing-refresh point: the ability-budget reset is a gameplay-state write
     // the substrate deliberately leaves to the tick. Driven by the substrate's
-    // floor-contact result so every budget (air-jump today; air-dash later)
+    // floor-contact result so every budget (air-jump charges, air-dash charges)
     // replenishes uniformly on every floor touch, through one method.
     if substrate.hit_floor {
         component.refresh_on_landing();

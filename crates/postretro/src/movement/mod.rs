@@ -566,10 +566,10 @@ fn air_jump_ready(component: &PlayerMovementComponent) -> bool {
 /// grounded) and the substrate reads the post-intent flag.
 ///
 /// Sets `events.jumped` when a jump launches. Returns the next movement state if
-/// a transition is warranted, or `None` to stay in `Normal`. `Normal` is the
-/// only state today, so it never transitions and always returns `None`; the
-/// dispatch/apply plumbing in `tick` exists so later states (dash, etc.) plug in
-/// behind this seam without reshaping callers.
+/// a transition is warranted, or `None` to stay in `Normal`. Today `Normal`
+/// transitions to `Dash` on a rising-edge dash input (see `try_enter_dash`);
+/// future states (crouch, slide, wall-run) plug in behind the same seam without
+/// reshaping callers.
 fn normal_intent(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
@@ -859,9 +859,10 @@ fn dash_intent(
     let steady_cap = if component.is_grounded {
         ground_speed
     } else {
-        // Airborne steady band: the airborne horizontal cap. `Normal` caps air
-        // horizontal speed at `ground_speed` (run/walk) when `bunny_hop` is off,
-        // so use that as the band the dash decays back into.
+        // Airborne steady band. When `bunny_hop` is off this matches `Normal`'s
+        // air cap (`ground_speed`); with `bunny_hop` on `Normal` enforces no air
+        // cap, so this is the band we choose to decay back into rather than one
+        // `Normal` maintains. Either way the dash is bounded by `DASH_MAX_MS`.
         ground_speed
     };
     if horiz_speed <= steady_cap || elapsed_ms >= DASH_MAX_MS {
@@ -950,10 +951,11 @@ pub(crate) fn tick(
     events.landed = substrate.landed;
 
     // Apply any state transition the intent returned, after the substrate has
-    // resolved collision/landing. `Normal` never transitions today; the apply
-    // step is the seam a later `Dash` plugs into. Transition gating reads the
-    // same last-tick grounded flag the intent used — the one-tick staleness is
-    // consistent with how jump/air-jump already gate (no fresh ground probe).
+    // resolved collision/landing. `Normal` transitions to `Dash` on rising-edge
+    // dash input; `Dash` returns to `Normal` on speed-band exit or the
+    // DASH_MAX_MS elapsed guard. Transition gating reads the same last-tick
+    // grounded flag the intent used — the one-tick staleness is consistent with
+    // how jump/air-jump already gate (no fresh ground probe).
     if let Some(next_state) = transition {
         component.movement_state = next_state;
     }
@@ -2699,13 +2701,11 @@ mod tests {
         let replace_desc = dash_descriptor(dash_params(8.0, 0.0, 0.0, 20.0, 0.0, 0, false));
         let (mut standing, mut sp) = settle_player(&replace_desc);
         run_ticks(&mut standing, &world, &mut sp, 10, &idle_input());
-        let (next, _ev) = tick(&mut standing, &dash, &world, GRAVITY, DT, sp);
-        sp = next;
+        let (_next, _ev) = tick(&mut standing, &dash, &world, GRAVITY, DT, sp);
         let replace_standing = horiz_speed(&standing);
 
-        let (mut running, mut rp) = settle_and_run(&replace_desc, &world, 60);
-        let (next, _ev) = tick(&mut running, &dash, &world, GRAVITY, DT, rp);
-        rp = next;
+        let (mut running, rp) = settle_and_run(&replace_desc, &world, 60);
+        let (_next, _ev) = tick(&mut running, &dash, &world, GRAVITY, DT, rp);
         let replace_running = horiz_speed(&running);
         assert!(
             approx_eq(replace_standing, replace_running, VEL_EPS),
@@ -2828,7 +2828,7 @@ mod tests {
         let exit_tick = exited_by.expect("dash must exit by the DASH_MAX_MS guard");
         // +1 for the entry tick already consumed above.
         assert!(
-            exit_tick + 1 <= max_ticks + 1,
+            exit_tick <= max_ticks,
             "dash exited after {} ticks; DASH_MAX_MS bounds it at ~{} ticks",
             exit_tick + 1,
             max_ticks
@@ -3075,24 +3075,75 @@ mod tests {
         );
     }
 
-    // Landing-tick: a dash fired on the landing tick consumes an air-dash charge
-    // in the intent/transition step (classified airborne via the stale last-tick
-    // `is_grounded` flag); the landing-refresh runs AFTERWARD in the
-    // substrate-result step and restores the full budget — observable after the
-    // tick.
+    // Airborne classification spends exactly one charge: a dash fired on a tick
+    // whose last-tick `is_grounded` flag is airborne (and which makes no floor
+    // contact) consumes one air-dash charge in the intent step. With no floor
+    // touch there is no landing-refresh, so the spend is the sole effect on the
+    // budget — directly observable. This is the consume half of the
+    // landing-tick behavior, isolated so a silently-skipped consume (grounded
+    // misclassification) fails here rather than being masked by a same-tick
+    // refresh.
+    #[test]
+    fn dash_airborne_classification_spends_one_charge() {
+        let world = flat_floor_and_wall_world();
+        // 2 air dashes so a single consume (→1) is distinct from both a full
+        // budget (→2, consume skipped) and an exhausted one (→0).
+        let desc = dash_descriptor(dash_params(10.0, 0.0, 0.0, 50.0, 0.0, 2, true));
+        let (mut comp, pos) = airborne_aloft(&desc, &world);
+        // Aloft at y=20 with no nearby floor: this tick's sweep cannot contact
+        // the floor, so refresh_on_landing will not run.
+        assert!(!comp.is_grounded, "setup: airborne entering the tick");
+        assert_eq!(comp.air_dashes_remaining, 2, "setup: budget full aloft");
+
+        let air_dash = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: false,
+            dash_pressed: true,
+            running: false,
+            facing_yaw: 0.0,
+        };
+        let (_next, _ev) = tick(&mut comp, &air_dash, &world, GRAVITY, DT, pos);
+
+        assert!(
+            matches!(comp.movement_state, MovementState::Dash { .. }),
+            "setup: airborne dash should have fired"
+        );
+        assert!(
+            !comp.is_grounded,
+            "setup: no floor contact, so no landing-refresh this tick"
+        );
+        // Fails (stays at 2) if the airborne consume is skipped via a grounded
+        // misclassification — the spend is observable precisely because nothing
+        // refreshes it back.
+        assert_eq!(
+            comp.air_dashes_remaining, 1,
+            "airborne-classified dash spends exactly one air-dash charge"
+        );
+    }
+
+    // Landing-tick ordering: a dash fired on the landing tick consumes an
+    // air-dash charge in the intent/transition step (classified airborne via the
+    // stale last-tick `is_grounded` flag), and the landing-refresh runs AFTERWARD
+    // in the substrate-result step. Seeded one charge short of full so the
+    // consume-then-refresh order leaves a FULL budget, while the inverted
+    // refresh-then-consume order would leave it one short — making the ordering
+    // directly observable in the post-tick budget.
     #[test]
     fn dash_on_landing_tick_consumes_then_refreshes() {
         let world = flat_floor_and_wall_world();
-        // 2 air dashes so a consumed charge (→1) is distinct from a full budget
-        // (→2). preserve_vertical so the entering downward velocity carries the
-        // capsule into the floor on this single landing tick.
+        // air_dashes = 2 is the refresh target. Seed remaining = 1 (one short):
+        //   consume-then-refresh: 1 → 0 (consume) → 2 (refresh)  ⇒ 2 (full)
+        //   refresh-then-consume: 1 → 2 (refresh) → 1 (consume)  ⇒ 1 (one short)
+        // The post-tick value distinguishes the two orderings. preserve_vertical
+        // so the entering downward velocity carries the capsule into the floor on
+        // this single landing tick.
         let desc = dash_descriptor(dash_params(10.0, 0.0, 0.0, 50.0, 0.0, 2, true));
         let floor_y = desc.capsule.half_height + desc.capsule.radius;
 
         let mut comp = PlayerMovementComponent::from_descriptor(&desc);
         comp.is_grounded = false; // last-tick flag is airborne (stale on landing)
         comp.air_ticks = 5;
-        comp.air_dashes_remaining = 2; // budget full entering the landing tick
+        comp.air_dashes_remaining = 1; // one short of the refresh target (2)
         // A hair above the floor with a downward velocity so this single tick's
         // sweep registers floor contact (the landing tick).
         let pos = Vec3::new(0.0, floor_y + 0.02, 0.0);
@@ -3107,13 +3158,16 @@ mod tests {
         };
         let (_next, _ev) = tick(&mut comp, &air_dash, &world, GRAVITY, DT, pos);
 
-        // The dash fired (stale flag was airborne) and consumed one charge in the
-        // intent step; refresh_on_landing then restored the full budget in the
-        // substrate-result step, so the observable post-tick budget is full (2).
         assert!(
             comp.is_grounded,
             "setup: this tick should have landed the player"
         );
+        assert!(
+            matches!(comp.movement_state, MovementState::Dash { .. }),
+            "setup: airborne-classified dash should have fired on the landing tick"
+        );
+        // Full budget proves consume (1→0) ran BEFORE refresh (0→2). The inverted
+        // order would leave 1 here, so this also fails on an ordering inversion.
         assert_eq!(
             comp.air_dashes_remaining, 2,
             "landing-tick dash spends a charge in the intent step, then the \

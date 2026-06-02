@@ -190,10 +190,12 @@ impl WeaponDescriptor {
     }
 }
 
-/// Authored player-movement component preset. All fields are required when
-/// `movement` is present; the data-archetype spawn path materializes the
-/// runtime movement component from this. `ground.max_slope` is in degrees on
-/// the wire and converted to a cosine at materialization (not here).
+/// Authored player-movement component preset. The four core sub-objects
+/// (`capsule`, `ground`, `air`, `fall`) are required when `movement` is
+/// present; `dash` is optional — its absence disables dash entirely. The
+/// data-archetype spawn path materializes the runtime movement component from
+/// this. `ground.max_slope` is in degrees on the wire and converted to a
+/// cosine at materialization (not here).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct PlayerMovementDescriptor {
     pub(crate) capsule: CapsuleParams,

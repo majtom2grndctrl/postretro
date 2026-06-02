@@ -22,6 +22,15 @@ export const playerEntity = defineEntity({
         jumpCeiling: 0.0,
       },
       fall: { terminalVelocity: 40.0 },
+      dash: {
+        boostSpeed: 22.0,
+        momentumRetention: 0.5,
+        steerControl: 0.3,
+        dashDrag: 0,
+        cooldownMs: 600,
+        airDashes: 1,
+        preserveVertical: false,
+      },
     },
   },
 });

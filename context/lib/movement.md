@@ -2,7 +2,7 @@
 
 > **Read this when:** designing or extending player movement — states, abilities, the author/tuning surface, or anything in the `movement--*` spec series.
 > **Key invariant:** movement is custom kinematic, engine-internal, and authored declaratively. The player is a capsule whose velocity the engine sets each tick — never a simulated rigid body, never script-driven per tick.
-> **Related:** [Entity Model §5 update order, §7 collision, §7b component](./entity_model.md) · [Scripting](./scripting.md) · [Input](./input.md) · series spec: `plans/ready/movement--state-machine/`
+> **Related:** [Entity Model §5 update order, §7 collision, §7b component](./entity_model.md) · [Scripting](./scripting.md) · [Input](./input.md) · series spec: `plans/in-progress/movement--state-machine/`
 
 ---
 
@@ -56,12 +56,12 @@ We don't couple what we build to a single use case. We distill movement mechanic
 
 ## 4. State-machine seam
 
-The movement tick splits into two halves with a clean seam between them. (The `movement--state-machine` spec establishes this; until it lands the tick is monolithic.)
+The movement tick splits into two halves with a clean seam between them.
 
 - **Shared physics substrate.** Collide-and-slide: sweep-and-slide, step-up, floor-push, ground-stick, contact/landing resolution. Runs regardless of state. Takes a desired velocity, returns the resolved position plus contact results. Behavior is fixed — states change *intent*, not collision.
 - **Per-state velocity intent.** Each state authors the desired velocity for the tick (gravity, acceleration, friction, bursts). The current state is an explicit value on the movement component. A dispatch point runs the active state's intent, calls the substrate, then applies any returned transition.
 
-Today's walk/run/jump/air-control is the baseline `Normal` state; later states (dash, crouch, slide, wall-run, vault) plug in behind the same seam. Ability budgets (air-jump, air-dash) refresh through one landing-refresh point so they reset uniformly.
+Today's walk/run/jump/air-control is the baseline `Normal` state; later states (crouch, slide, wall-run, vault) plug in behind the same seam. Ability budgets (air-jump, air-dash) refresh through one landing-refresh point so they reset uniformly.
 
 ## 5. Design north-stars
 

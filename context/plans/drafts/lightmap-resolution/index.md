@@ -31,44 +31,48 @@ Lift the lightmap atlas resolution ceiling so baked lighting can resolve detail 
 - [ ] Raising the cap bumps the lightmap `STAGE_VERSION`; the existing version-bump test passes against the new value (previously-coarsened maps re-key).
 - [ ] A worldspawn `_lightmap_density` value sets the bake density and re-keys the cache; absent, the bake uses 0.04; `--lightmap-density` overrides the KVP; non-finite/≤0 warns and falls back to default.
 - [ ] Two `--no-cache` bakes of the same input each decode within tolerance — byte-equality not required (lossy encode; output bytes are an implementation detail). The cache keys on inputs, so encoder non-determinism never mis-keys it.
-- [ ] BC6H round-trip error on a synthetic HDR irradiance gradient is within a fixed tolerance (per-channel max relative error threshold, asserted in a compiler test).
+- [ ] BC6H round-trip error on a synthetic HDR irradiance gradient is within tolerance. The per-channel relative-error threshold is calibrated against the chosen encoder so the owner-verified no-banding gate holds — set tight enough that the manual check passes, then freeze as the regression guard. Both the determinism AC above and this round-trip AC gate against the same frozen threshold.
 - [ ] The lightmap PRL section round-trips `irradiance_format = BC6H`: `to_bytes`→`from_bytes` reproduces dimensions and the block-sized blob; `from_bytes` still accepts `irradiance_format = 0` (uncompressed).
-- [ ] Loading a BC6H lightmap section builds a `Bc6hRgbUfloat` texture bound as `Float { filterable: true }`; loading an uncompressed section still builds `Rgba16Float`. Both sample through the linear sampler.
-- [ ] A lightmap atlas larger than the granted `max_texture_dimension_2d` degrades to flat ambient with a logged `[Renderer]` error — no panic.
+- [ ] A lightmap atlas larger than the granted `max_texture_dimension_2d` degrades to flat ambient with a logged `[Renderer]` error — no panic. The guard is a pure dimension-vs-limit comparison; unit-testable by injecting a fake limit — no real oversize allocation needed.
 
-### Manual-visual (NOT machine-verified)
+### Manual / owner-verified (NOT machine-verified)
 
-- [ ] BC6H irradiance shows no perceptible banding versus uncompressed on a representative lit level (HDR lighting, smooth gradients).
+- [ ] Loading a BC6H lightmap section builds a `Bc6hRgbUfloat` texture bound as `Float { filterable: true }`; loading an uncompressed section still builds `Rgba16Float`. Both sample through the linear sampler. (Requires a real device — not CI-testable here.)
+- [ ] BC6H irradiance shows no perceptible banding versus uncompressed on `campaign-test` (HDR lighting, smooth gradients).
 - [ ] A level re-baked at 0.02 m/texel shows visibly less blocky soft-shadow contact edges than at 0.04, with the far penumbra unchanged.
 
 ### Measured (reported, not gated)
 
 - [ ] BC6H reduces the irradiance blob ~8× on disk and resident VRAM; report actual sizes for occlusion-test and campaign-test at 4096² and 8192².
-- [ ] Forward-pass time on the 5500M is unchanged by BC6H (hardware-decoded; identical tap count) — confirmed, not assumed.
+- [ ] No forward-pass regression beyond measurement noise on the 5500M (hardware BC6H decode is not guaranteed bit-for-bit identical bandwidth to `Rgba16Float` on RDNA1/Metal) — confirmed, not assumed.
 
 ## Tasks
 
 ### Task 1: Raise the cap + make the device requirement explicit
 
-Raise `MAX_ATLAS_DIMENSION` (`lightmap_bake.rs`) from 4096 to 8192. The bake is a CLI with no GPU device, so the cap is a constant chosen to match guaranteed device support, not a `device.limits()` read. Make that requirement explicit on the runtime side: add `max_texture_dimension_2d: 8192` to the requested `wgpu::Limits` in `render/mod.rs` (clamped to `adapter.limits()`; the current `required_limits` does not set this field and wgpu's default is already 8192, so this addition formalizes the requirement explicitly — the adapter pre-check and clamp are the load-bearing parts), and add an adapter pre-check that bails with a named `[Renderer]` error if the adapter grants less than 8192 — mirroring the sibling pre-checks (`TEXTURE_COMPRESSION_BC`, `atlas_format_filterable`). Add a runtime guard that validates a loaded lightmap atlas fits the granted `device.limits().max_texture_dimension_2d` and degrades to flat ambient with a logged error if not (mirror the disable-on-overflow posture of `sh_volume.rs`). The two guards are distinct paths: the init adapter pre-check fail-fasts to guarantee ≥8192 device support, while the runtime per-atlas guard is defensive for a baked atlas that exceeds the granted/clamped limit (e.g. future or corrupt content) and degrades to flat ambient rather than panicking. Bump the lightmap `STAGE_VERSION` (currently 6 → 7): the cap is not part of `input_hash`, so without the bump a map that previously overflowed-and-coarsened would serve stale coarse cache against an unchanged input. This single bump covers every bake-output change in this plan.
+Raise `MAX_ATLAS_DIMENSION` (`lightmap_bake.rs`) from 4096 to 8192. The bake is a CLI with no GPU device, so the cap is a constant chosen to match guaranteed device support, not a `device.limits()` read. Make that requirement explicit on the runtime side: add an adapter pre-check that bails with a named `[Renderer]` error if the adapter grants `max_texture_dimension_2d` less than 8192 — mirroring the sibling pre-checks (`TEXTURE_COMPRESSION_BC`, `atlas_format_filterable`). Then set `max_texture_dimension_2d: 8192` in the requested `wgpu::Limits` in `render/mod.rs`; the pre-check guarantees this is satisfiable, so no clamp is needed. (The current `required_limits` does not set this field and wgpu's default is already 8192; this formalizes the requirement — the pre-check is the load-bearing part.) Add a runtime guard that validates a loaded lightmap atlas fits the granted `device.limits().max_texture_dimension_2d` and degrades to flat ambient with a logged error if not (mirror the disable-on-overflow posture of `sh_volume.rs`). The two guards are distinct paths: the init adapter pre-check fail-fasts to guarantee ≥8192 device support, while the runtime per-atlas guard is defensive for a baked atlas that exceeds the granted limit (e.g. future or corrupt content) and degrades to flat ambient rather than panicking. Bump the lightmap `STAGE_VERSION` (currently 6 → 7): the cap is not part of `input_hash`, so without the bump a map that previously overflowed-and-coarsened would serve stale coarse cache against an unchanged input. This single bump covers every bake-output change in this plan.
 
 ### Task 2: Per-map density opt-in
 
-Add a `_lightmap_density` worldspawn KVP (float, meters) read by the compiler and routed into `LightmapConfig.lightmap_density`. Default stays `DEFAULT_TEXEL_DENSITY_METERS` (0.04) when absent. The existing `--lightmap-density` CLI flag overrides the KVP. Since `LightmapConfig` already feeds `input_hash`, an authored density change re-keys the cache for free. Also register `_lightmap_density` in the `worldspawn` FGD definition so it is exposed in the editor (the compiler reads worldspawn KVPs regardless, but editor authoring needs the FGD entry). Validate non-finite/≤0 per the worldspawn FGD invalid-KVP convention: warn (naming the key and entity origin) and fall back to default. The `--lightmap-density` CLI flag keeps its existing hard-reject posture. See Boundary inventory.
+Add a `_lightmap_density` worldspawn KVP (float, meters per texel — matching `DEFAULT_TEXEL_DENSITY_METERS`) read by the compiler and routed into `LightmapConfig.lightmap_density`. Default stays `DEFAULT_TEXEL_DENSITY_METERS` (0.04) when absent. The existing `--lightmap-density` CLI flag overrides the KVP. Since `LightmapConfig` already feeds `input_hash`, an authored density change re-keys the cache for free. Also register `_lightmap_density` in the `worldspawn` FGD definition so it is exposed in the editor (the compiler reads worldspawn KVPs regardless, but editor authoring needs the FGD entry). Validate non-finite/≤0 per the worldspawn FGD invalid-KVP convention: warn (naming the key and entity origin) and fall back to default. The `--lightmap-density` CLI flag keeps its existing hard-reject posture. See Boundary inventory.
 
 ### Task 3: BC6H irradiance compression at rest
 
 Add `IRRADIANCE_FORMAT_BC6H = 1` next to `IRRADIANCE_FORMAT_RGBA16F = 0` in the level-format lightmap section; widen the `from_bytes` validator to accept the new `irradiance_format` value (it reads the blob by the stored `irr_len`, not by recomputing block math); the bake producer writes `ceil(w/4)·ceil(h/4)·16` into `irr_len` instead of `w·h·8`. In the bake, encode the irradiance atlas to `Bc6hRgbUfloat` with a BC6H encoder and emit it under the BC6H tag; keep the uncompressed path selectable for debugging (a `LightmapConfig` bool, folded into `input_hash`). The direction atlas is unchanged. At runtime, branch the irradiance texture creation on the format tag: `Bc6hRgbUfloat` (block-compressed upload via `create_texture_with_data`) vs `Rgba16Float`, both bound `Float { filterable: true }` and sampled through the existing linear sampler. No shader change — the fetch already reads `.rgb`, and BC6H is RGB-only (drop the unused alpha in the BC6H encode only; the uncompressed-debug path stays byte-identical to today — `Rgba16Float`, `w·h·8`, alpha retained — so the format tag is the only divergence). `TEXTURE_COMPRESSION_BC` is already a required, granted feature (used for BC5 normals); no new feature request — a BC6H format-features check that fail-fasts at init with a named `[Renderer]` error (since BC6H is the default irradiance storage), matching the `atlas_format_filterable`/`Rgba16Float` sibling checks — not a silent log.
 
-### Task 4: Quality + cost validation
+### Task 4a: Automated validation
 
-Add the automated tests above (determinism, BC6H round-trip tolerance, section round-trip, atlas-sizing, over-limit degrade). Re-bake occlusion-test and campaign-test at 4096²/8192² and at 0.04/0.02 density; record irradiance disk + VRAM sizes (expect ~8× BC6H reduction). On the 5500M: confirm no forward-pass regression (BC6H hardware-decoded), and visually confirm no BC6H banding and reduced contact blockiness at finer density.
+Add the automated tests: determinism (two `--no-cache` bakes decode within the frozen tolerance), BC6H round-trip tolerance (synthetic HDR gradient, compiler test), section round-trip (`irradiance_format = BC6H` and `= 0`), atlas-sizing (power-of-two, 4-aligned, ≤cap), and over-limit degrade (inject fake limit, assert flat-ambient + logged error, no real oversize allocation).
+
+### Task 4b: Owner hardware / visual sign-off (5500M)
+
+Re-bake occlusion-test and campaign-test at 4096²/8192² and at 0.04/0.02 density. Record irradiance disk + VRAM sizes (expect ~8× BC6H reduction). Confirm no forward-pass regression beyond measurement noise. Confirm no BC6H banding on campaign-test and reduced contact blockiness at finer density.
 
 ## Sequencing
 
 **Phase 1 (sequential):** Task 1 — owns the `STAGE_VERSION` bump and the cap; everything else builds on it.
 **Phase 2 (concurrent):** Task 2 + Task 3 — independent surfaces (compiler frontend KVP vs bake-encode + format + runtime upload); both rely on Task 1's bump, neither bumps again.
-**Phase 3 (sequential):** Task 4 — consumes Task 3's BC6H output and Task 1's cap.
+**Phase 3 (sequential):** Task 4a (automated tests), then Task 4b (owner hardware/visual sign-off) — both consume Task 3's BC6H output and Task 1's cap.
 
 ## Rough sketch
 
@@ -83,7 +87,7 @@ Add the automated tests above (determinism, BC6H round-trip tolerance, section r
 
 | Name | Rust | Wire / serde | Luau | FGD KVP |
 |---|---|---|---|---|
-| lightmap density | `LightmapConfig.lightmap_density: f32` (meters) | baked into `LightmapSection.texel_density` (f32 LE) | n/a | `_lightmap_density` (worldspawn, float meters) |
+| lightmap density | `LightmapConfig.lightmap_density: f32` (meters per texel) | baked into `LightmapSection.texel_density` (f32 LE) | n/a | `_lightmap_density` (worldspawn, float, meters per texel) |
 | irradiance format BC6H | `IRRADIANCE_FORMAT_BC6H: u32 = 1` | `irradiance_format` u32 LE = `1` in section id 22 header | n/a | n/a |
 
 ## Wire format

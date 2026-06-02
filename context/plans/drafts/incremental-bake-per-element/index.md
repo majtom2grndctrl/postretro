@@ -18,6 +18,8 @@ Cut `prl-build` iteration time for the lighting loop. Decompose the static light
 
 Keyed on light *influence*, not map topology, so it holds up in large open arenas where one light floods most of the map (the case that breaks per-room/portal grain). Seam-free by construction: a light's contribution is exactly zero at `falloff_range`, so a layer fades to zero at its own support boundary — nothing to stitch. Linear and additive: both bakes sum per-light contributions with no per-light clamp or tone-map. Reuses the animated-light path (`sh_bake::bake_probe_indirect_rgb`, `affinity_grid`, `chunk_light_list_bake`), which already does single-light layer bakes for dynamic lights.
 
+**Deliberate cold-for-warm trade.** Campaign-test's bake is SH-dominated, and per-light SH re-casts each probe's shared primary rays per light — so cold builds get slower by roughly the *average per-probe light-overlap depth* (bounded by influence culling, not total light count). This is an accepted v1 cost: cold/full rebakes are rare, the warm-edit win is the goal, and primary-ray-hit caching (deferred — see Out of scope / Open questions) is the named lever if cold builds regress past tolerance.
+
 ## Decomposition reference (read before the tasks)
 
 The per-light pipeline becomes the **canonical** bake; the legacy monolithic lightmap/SH bake is retained only for the directional-light fallback (below). Two consequences the spec leans on throughout:
@@ -62,9 +64,15 @@ The per-light pipeline becomes the **canonical** bake; the legacy monolithic lig
 
 ## Tasks
 
-### Task 1: Storage-profiling spike
+### Task 1: Storage and cold-build profiling spike
 
-Before wiring, quantify the cost. Per-light layers are `O(texels × overlapping-lights)` for the lightmap and `O(probes-in-influence × lights)` for SH. Build or pick a heavily-lit open-arena fixture (many overlapping point/spot lights), instrument a throwaway per-light bake, and record peak intermediate memory and total on-disk layer bytes. Decide: does the existing flat-file `StageCache` (one file per entry, `sync_all` per put) hold at per-light entry counts, or is a batched/packed store needed? This plan assumes flat-file; a "batched store needed" outcome triggers re-planning before Phase 2 (no batched-store task exists here). Document the decision in `research.md`. Output is a go/no-go, not production code.
+Before wiring, quantify both costs. Per-light layers are `O(texels × overlapping-lights)` for the lightmap and `O(probes-in-influence × lights)` for SH. Build or pick a heavily-lit open-arena fixture (many overlapping point/spot lights) plus reuse campaign-test (SH-dominated), instrument a throwaway per-light bake, and record:
+
+- **Storage:** peak intermediate memory and total on-disk layer bytes. Decide whether the existing flat-file `StageCache` (one file per entry, `sync_all` per put) holds at per-light entry counts, or a batched/packed store is needed. This plan assumes flat-file; a "batched store needed" outcome triggers re-planning before Phase 2 (no batched-store task exists here).
+- **Cold-build inflation:** the measured per-light cold SH time vs. the current monolithic SH time, i.e. the realized average per-probe light-overlap depth. This is the number behind the accepted cold-for-warm trade — record it so "longer cold build" is a known multiplier, and flag if it exceeds a tolerance that would pull primary-ray-hit caching into v1 scope.
+- **Warm-build validation:** confirm that re-baking a single light's layers (all others hitting cache) is the expected fraction of a full bake.
+
+Document the decision and the three numbers in `research.md`. Output is a go/no-go, not production code.
 
 ### Task 2: Per-light layer types and serialization
 
@@ -88,7 +96,7 @@ Wire Tasks 3–5 into `main.rs`, replacing the current whole-stage point/spot co
 
 ### Task 7: Tests + determinism gate
 
-Cover: round-trip skip (build twice → all layers hit); single-light edit (only that light's layers miss); geometry-edit invalidation (only influence-overlapping layers miss); mixed point/spot + directional (no double-count); directional-only fallback; corruption recovery; `--no-cache` bypass. The determinism gate: cached composite byte-identical to the `--no-cache` per-light composite across every `content/dev/maps/` fixture, for both sections. If the Task 1 arena fixture is pathologically slow, the gate may time-bound or exclude it — record which.
+Cover: round-trip skip (build twice → all layers hit); single-light edit (only that light's layers miss); geometry-edit invalidation (only influence-overlapping layers miss); mixed point/spot + directional (no double-count); directional-only fallback; corruption recovery; `--no-cache` bypass. The determinism gate: cached composite byte-identical to the `--no-cache` per-light composite across every `content/dev/maps/` fixture, for both sections. Note the cold `--no-cache` per-light SH bake is slow on SH-dominated fixtures (campaign-test) and slowest on the arena stress fixture — if either is pathologically slow for CI, the gate may time-bound or exclude it; record which, and keep at least one SH-heavy fixture in the gate so the property is actually exercised.
 
 ## Sequencing
 
@@ -113,4 +121,4 @@ The one correctness-critical subtlety: the lightmap dominant-direction channel i
 ## Open questions
 
 - **Substrate (resolved by Task 1).** Flat-file `StageCache` vs. a batched/packed store, decided by the arena-fixture profile. Entry counts are bounded by point/spot-light count, far below the per-face "millions" — flat-file is the expected answer, pending the number.
-- **SH cold-build inflation.** Re-casting shared primary rays per light raises cold-build cost with light count. Acceptable for v1 (the delta path already pays it); primary-hit caching is the future optimization if cold builds regress unacceptably.
+- **SH cold-build inflation (decided: accept for v1).** Campaign-test is SH-dominated, and re-casting shared primary rays per light raises cold cost by ~the average per-probe light-overlap depth (bounded by influence culling, not total light count). Accepted as a deliberate cold-for-warm trade; Task 1 measures the realized multiplier. Primary-ray-hit caching (cache the light-independent per-probe geometry hits, reuse across layers) is the named lever that collapses the inflation back toward 1× — deferred unless Task 1's number, or real cold/CI build times, exceed tolerance.

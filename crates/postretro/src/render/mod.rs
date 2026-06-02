@@ -689,11 +689,11 @@ pub struct Renderer {
     /// Rebuilt in `Renderer::new` and `reload_geometry` from `filter_dynamic_lights`.
     dynamic_light_influences: Vec<LightInfluence>,
     /// Candidate set for the spot-shadow pool — sourced from the FULL level
-    /// light set filtered by `casts_entity_shadows`, NOT from `level_lights`.
-    /// Dynamic-tier lights (`light_dynamic`/`light_dynamic_spot`) are a
-    /// distinct classname, not re-tagged statics; `casts_entity_shadows` is
-    /// the per-light authoring opt-in for dynamic-entity (moving-mesh) shadows,
-    /// independent of which lights are dynamic-tier.
+    /// light set filtered by `is_dynamic || casts_entity_shadows`, NOT from
+    /// `level_lights`. Dynamic-tier lights (`light_dynamic`/`light_dynamic_spot`)
+    /// are pool-eligible by default so dynamic spotlights shadow static world
+    /// occluders (pillars); `casts_entity_shadows` (FGD `_cast_entity_shadows`)
+    /// is the per-light opt-in for non-dynamic lights (future moving-mesh shadows).
     shadow_candidate_lights: Vec<MapLight>,
     /// Influence volumes parallel to `shadow_candidate_lights`. Built
     /// alongside it from the full level light set.
@@ -2989,8 +2989,8 @@ impl Renderer {
     /// face-visible set — lights in empty reachable leaves stay eligible.
     ///
     /// Task 1b: the **candidate set** is `self.shadow_candidate_lights`
-    /// (full level lights filtered by `casts_entity_shadows`), NOT
-    /// `self.level_lights` (the `is_dynamic`-filtered forward set).
+    /// (full level lights filtered by `is_dynamic || casts_entity_shadows`),
+    /// NOT `self.level_lights` (the `is_dynamic`-filtered forward set).
     /// `effective_brightness` is keyed on `level_lights` indices though, so
     /// we re-key the per-candidate eligibility into the candidate index
     /// space below.
@@ -3002,9 +3002,9 @@ impl Renderer {
         effective_brightness: &[f32],
         light_reachable_leaf_mask: &[bool],
     ) {
-        // Candidate set is `casts_entity_shadows`-filtered; if no light has
-        // opted in, the pool stays empty. v1 expected state (real enemies
-        // land in M10) — early-return without disturbing previous slots.
+        // Candidate set is `is_dynamic || casts_entity_shadows`-filtered; if
+        // the map has no dynamic spots and no opted-in lights, the pool stays
+        // empty — early-return without disturbing previous slots.
         if self.shadow_candidate_lights.is_empty() {
             return;
         }
@@ -3888,19 +3888,23 @@ fn filter_dynamic_lights(
 }
 
 /// Pull the spot-shadow pool's candidate set from the **full** level light
-/// list filtered by `casts_entity_shadows` (FGD `_cast_entity_shadows`).
+/// list: every dynamic-tier light (`is_dynamic`) plus any light that opts
+/// into entity shadows via `casts_entity_shadows` (FGD `_cast_entity_shadows`).
+///
+/// Dynamic-tier spotlights cast world shadows by default — the shadow depth
+/// pass renders static world geometry, so a pooled dynamic spot shadows
+/// pillars and other occluders without a per-light flag, the behavior the
+/// dynamic tier was designed for. `casts_entity_shadows` remains the opt-in
+/// for non-dynamic lights (future enemy / moving-occluder shadows).
 ///
 /// Task 1b: this candidate set is intentionally decoupled from the
 /// `is_dynamic`-filtered `level_lights` used by the forward direct-light
-/// loop. After Task 2c re-tags every authored light static, `level_lights`
-/// goes empty for v1 content; ranking the shadow pool from it would
-/// silently drop the entire pool. The pool now ranks this independent
-/// `casts_entity_shadows`-filtered set, layered on top of the existing
-/// `eligible_lights` visibility/brightness slice in `rank_lights`.
-///
-/// In v1 with no light opted in (`_cast_entity_shadows` defaults `false`)
-/// the candidate set is empty — that's the expected v1 state, not a
-/// regression; real enemies land in M10.
+/// loop. After Task 2c re-tags every authored *baked* light static,
+/// `level_lights` keeps only the dynamic tier; ranking the shadow pool from
+/// the candidate set (rather than `level_lights`) keeps the
+/// `casts_entity_shadows` opt-in path independent. Ranking is layered on top
+/// of the existing `eligible_lights` visibility/brightness slice in
+/// `rank_lights`.
 fn filter_entity_shadow_candidates(
     lights: &[MapLight],
     influences: &[LightInfluence],
@@ -3908,7 +3912,7 @@ fn filter_entity_shadow_candidates(
     lights
         .iter()
         .enumerate()
-        .filter(|(_, l)| l.casts_entity_shadows)
+        .filter(|(_, l)| l.is_dynamic || l.casts_entity_shadows)
         .map(|(i, l)| {
             let inf = influences.get(i).cloned().unwrap_or(LightInfluence {
                 center: Vec3::ZERO,

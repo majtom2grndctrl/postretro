@@ -11,6 +11,22 @@ use crate::scripting::data_descriptors::{
     AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementDescriptor,
 };
 
+/// The player's active movement state. Mutually-exclusive: exactly one state
+/// owns the per-tick velocity intent at a time. `tick` dispatches to the
+/// active state's intent step, runs the shared collision substrate, then
+/// applies any transition the intent returns. Today only `Normal` exists
+/// (the walk/run/jump/air-control baseline); later states (dash, crouch,
+/// slide, wall-run, vault) plug in behind the same seam.
+///
+/// See: context/lib/movement.md §4 (state-machine seam).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub(crate) enum MovementState {
+    /// Baseline locomotion: gravity, jump/air-jump, ground acceleration,
+    /// ground friction, airborne cap. The behavior-unchanged baseline.
+    #[default]
+    Normal,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct PlayerMovementComponent {
     pub(crate) capsule: CapsuleParams,
@@ -46,6 +62,10 @@ pub(crate) struct PlayerMovementComponent {
     /// normal displacement at the canonical ground speed (7 m/s × 1/60 s ≈
     /// 0.117 m) yet above floating-point and skin-distance noise (~1e-4 m).
     pub(crate) stuck_stop_threshold: f32,
+    /// The active movement state. Drives `tick`'s per-tick velocity-intent
+    /// dispatch. Defaults to `Normal`; carried as live runtime state across
+    /// descriptor refresh.
+    pub(crate) movement_state: MovementState,
 }
 
 impl PlayerMovementComponent {
@@ -67,7 +87,17 @@ impl PlayerMovementComponent {
             air_ticks: 0,
             stuck_stop_enabled: desc.stuck_stop_enabled,
             stuck_stop_threshold: desc.stuck_stop_threshold,
+            movement_state: MovementState::Normal,
         }
+    }
+
+    /// Landing-refresh point: reset every ability budget on floor contact.
+    /// Invoked from `tick` after the collision substrate reports floor
+    /// contact (`SubstrateResult::hit_floor`). Today only `air_jumps_remaining`
+    /// resets; later budgets (air-dash, Task 4) hook this same single point so
+    /// every charge replenishes uniformly on landing.
+    pub(crate) fn refresh_on_landing(&mut self) {
+        self.air_jumps_remaining = self.air.jumps;
     }
 }
 

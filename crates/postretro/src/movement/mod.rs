@@ -6,7 +6,7 @@ use parry3d::math::{Point, Vector};
 use parry3d::shape::Capsule;
 
 use crate::collision::{CollisionWorld, SKIN_DISTANCE, cast_capsule, cast_ray};
-use crate::scripting::components::player_movement::PlayerMovementComponent;
+use crate::scripting::components::player_movement::{MovementState, PlayerMovementComponent};
 
 /// Linear ground deceleration applied to horizontal velocity when grounded
 /// and no movement input is held. Plain exponential-style velocity decay
@@ -533,17 +533,28 @@ fn integrate_collision(
     )
 }
 
-pub(crate) fn tick(
+/// The `Normal` state's per-tick velocity intent (movement-tick steps 1–6):
+/// gravity, jump/air-jump, ground/air acceleration, ground friction, and the
+/// airborne horizontal cap. This is the walk/run/jump/air-control baseline —
+/// the behavior-unchanged locomotion.
+///
+/// Operates on `component.velocity`, reading the grounded flag carried from the
+/// previous tick (`component.is_grounded`). Steps 2/3 may clear `is_grounded`
+/// when a jump launches; that clear is part of the intent (a jump is no longer
+/// grounded) and the substrate reads the post-intent flag.
+///
+/// Sets `events.jumped` when a jump launches. Returns the next movement state if
+/// a transition is warranted, or `None` to stay in `Normal`. `Normal` is the
+/// only state today, so it never transitions and always returns `None`; the
+/// dispatch/apply plumbing in `tick` exists so later states (dash, etc.) plug in
+/// behind this seam without reshaping callers.
+fn normal_intent(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
-    collision_world: &CollisionWorld,
     gravity: f32,
     dt: f32,
-    position: Vec3,
-) -> (Vec3, MovementEvents) {
-    let mut events = MovementEvents::default();
-    let was_grounded = component.is_grounded;
-
+    events: &mut MovementEvents,
+) -> Option<MovementState> {
     // 1. Gravity (airborne only).
     if !component.is_grounded {
         component.velocity.y += gravity * dt;
@@ -640,6 +651,31 @@ pub(crate) fn tick(
         }
     }
 
+    // `Normal` has no exit transitions yet — it is the only state. The plumbing
+    // in `tick` applies whatever a state returns here, so a later `Dash` plugs
+    // in without reshaping callers.
+    None
+}
+
+pub(crate) fn tick(
+    component: &mut PlayerMovementComponent,
+    input: &MovementInput,
+    collision_world: &CollisionWorld,
+    gravity: f32,
+    dt: f32,
+    position: Vec3,
+) -> (Vec3, MovementEvents) {
+    let mut events = MovementEvents::default();
+    let was_grounded = component.is_grounded;
+
+    // Per-state velocity intent: dispatch to the active state's intent step. It
+    // authors `component.velocity` (gravity, jump, acceleration, friction, caps)
+    // reading the grounded flag carried from last tick, and returns an optional
+    // transition to apply after the substrate resolves collision.
+    let transition = match component.movement_state {
+        MovementState::Normal => normal_intent(component, input, gravity, dt, &mut events),
+    };
+
     // 7 + 8. Shared physics substrate: sweep-and-slide, step-up, floor-push,
     // ground-stick, and collision-state/landing resolution. States change
     // intent (steps 1–6 above), not collision.
@@ -654,12 +690,22 @@ pub(crate) fn tick(
 
     // Landing-refresh point: the ability-budget reset is a gameplay-state write
     // the substrate deliberately leaves to the tick. Driven by the substrate's
-    // floor-contact result so air-jump charges replenish on every floor touch.
+    // floor-contact result so every budget (air-jump today; air-dash later)
+    // replenishes uniformly on every floor touch, through one method.
     if substrate.hit_floor {
-        component.air_jumps_remaining = component.air.jumps;
+        component.refresh_on_landing();
     }
 
     events.landed = substrate.landed;
+
+    // Apply any state transition the intent returned, after the substrate has
+    // resolved collision/landing. `Normal` never transitions today; the apply
+    // step is the seam a later `Dash` plugs into. Transition gating reads the
+    // same last-tick grounded flag the intent used — the one-tick staleness is
+    // consistent with how jump/air-jump already gate (no fresh ground probe).
+    if let Some(next_state) = transition {
+        component.movement_state = next_state;
+    }
 
     (current_pos, events)
 }

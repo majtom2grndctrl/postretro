@@ -485,6 +485,7 @@ fn plan_movement_replace(
     refreshed.is_grounded = live.is_grounded;
     refreshed.air_jumps_remaining = live.air_jumps_remaining;
     refreshed.air_ticks = live.air_ticks;
+    refreshed.movement_state = live.movement_state;
     Ok(ComponentValue::PlayerMovement(refreshed))
 }
 

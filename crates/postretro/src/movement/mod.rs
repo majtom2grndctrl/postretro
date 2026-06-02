@@ -66,6 +66,23 @@ pub(crate) struct MovementEvents {
     pub(crate) jumped: bool,
 }
 
+/// Contact/landing results returned by `integrate_collision` (the shared
+/// physics substrate). The substrate resolves collision state on the
+/// component itself (`is_grounded`, `air_ticks`, `velocity`); these fields
+/// report the gameplay-relevant outcomes the tick maps onto events and
+/// ability-budget refreshes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct SubstrateResult {
+    /// Floor contact was (re)acquired this tick — either through the slide
+    /// loop or the ground-stick down-cast. The tick uses this as the
+    /// landing-refresh point for ability budgets (e.g. `air_jumps_remaining`),
+    /// a gameplay-state write the substrate deliberately does not perform.
+    pub(crate) hit_floor: bool,
+    /// A genuine landing transition (airborne → grounded) cleared the
+    /// air-tick hysteresis gate. Maps directly to `MovementEvents::landed`.
+    pub(crate) landed: bool,
+}
+
 /// Quake-derived projection-capped acceleration: only adds speed along
 /// `wish_dir_3d` until `wish_speed` is reached. Bunny-hopping emerges
 /// naturally because perpendicular speed (built up earlier) is never bled
@@ -172,113 +189,33 @@ fn step_up_lift(
     }
 }
 
-pub(crate) fn tick(
+/// Shared physics substrate (movement-tick steps 7–8). Takes the desired
+/// velocity (already authored on `component.velocity` by the active state's
+/// intent) plus the current position/state, integrates it against the world,
+/// and returns the resolved position and contact/landing results.
+///
+/// Runs regardless of movement state: states change *intent*, not collision.
+/// This is the collide-and-slide spine — iterative sweep-and-slide, the
+/// step-up probe, the per-tick floor-push budget, stuck-stop corner-wedge
+/// mitigation, the ground-stick down-cast, and the `is_grounded`/`air_ticks`
+/// collision-state resolution. Same constants, ordering, and outputs as the
+/// formerly-inlined code.
+///
+/// Carve-out: the substrate resolves *collision* state (`is_grounded`,
+/// `air_ticks`) and reports landing/contact via `SubstrateResult`, but it does
+/// NOT touch gameplay ability budgets. The `air_jumps_remaining` refresh stays
+/// in `tick` (the landing-refresh point), driven by `SubstrateResult::hit_floor`.
+///
+/// `was_grounded` is the pre-intent grounded flag carried from the start of the
+/// tick; `jumped` is whether step 2/3 launched a jump this tick.
+fn integrate_collision(
     component: &mut PlayerMovementComponent,
-    input: &MovementInput,
     collision_world: &CollisionWorld,
-    gravity: f32,
     dt: f32,
     position: Vec3,
-) -> (Vec3, MovementEvents) {
-    let mut events = MovementEvents::default();
-    let was_grounded = component.is_grounded;
-
-    // 1. Gravity (airborne only).
-    if !component.is_grounded {
-        component.velocity.y += gravity * dt;
-        let terminal = component.fall.terminal_velocity;
-        if component.velocity.y < -terminal {
-            component.velocity.y = -terminal;
-        }
-    }
-
-    // 2. Jump from grounded.
-    if component.is_grounded && input.jump_pressed {
-        component.velocity.y = component.ground.jump_velocity;
-        component.is_grounded = false;
-        events.jumped = true;
-    }
-    // 3. Air jump: gated on remaining count and ceiling on upward velocity.
-    else if !component.is_grounded
-        && input.jump_pressed
-        && component.air_jumps_remaining > 0
-        && component.velocity.y <= component.air.jump_ceiling
-    {
-        component.velocity.y = component.ground.jump_velocity;
-        component.air_jumps_remaining -= 1;
-        events.jumped = true;
-    }
-
-    // 4 + 5. Locomotion: ground vs air branch on the same input. Sprint picks
-    // the run speed; the same value caps airborne horizontal speed so a
-    // sprint-then-jump arc doesn't instantly decelerate mid-air.
-    let ground_speed = if input.running {
-        component.ground.speed.run
-    } else {
-        component.ground.speed.walk
-    };
-    let input_dir_3d = wish_dir_from_input(input.wish_dir, input.facing_yaw);
-    if component.is_grounded {
-        if input_dir_3d.length_squared() > 0.0 {
-            pm_accelerate(
-                &mut component.velocity,
-                input_dir_3d,
-                ground_speed,
-                component.ground.accel,
-                dt,
-            );
-        }
-    } else if input_dir_3d.length_squared() > 0.0 {
-        // Blend toward facing only on forward/back input: strafing left/right
-        // should not redirect the capsule toward the player's nose.
-        let wish_dir_3d = if input.wish_dir.y.abs() > 1e-3 {
-            let facing_dir = Vec3::new(-input.facing_yaw.sin(), 0.0, -input.facing_yaw.cos());
-            let steer = component.air.forward_steer.clamp(0.0, 1.0);
-            let blended = input_dir_3d.lerp(facing_dir, steer);
-            if blended.length_squared() > 0.0 {
-                blended.normalize()
-            } else {
-                Vec3::ZERO
-            }
-        } else {
-            input_dir_3d
-        };
-        let wish_speed = component.air.max_control_speed;
-        pm_accelerate(
-            &mut component.velocity,
-            wish_dir_3d,
-            wish_speed,
-            component.air.accel,
-            dt,
-        );
-        if !component.air.bunny_hop {
-            // Cap horizontal speed; vertical velocity (jump/gravity) untouched.
-            let horiz = Vec2::new(component.velocity.x, component.velocity.z);
-            let h_speed = horiz.length();
-            let cap = ground_speed;
-            if h_speed > cap {
-                let scale = cap / h_speed;
-                component.velocity.x *= scale;
-                component.velocity.z *= scale;
-            }
-        }
-    }
-
-    // 6. Friction on the ground when no input — simple linear velocity decay.
-    // Applied only in the no-input case so PM_Accelerate's projection cap
-    // continues to govern actively-driven motion.
-    if component.is_grounded && input.wish_dir.length_squared() < 0.001 {
-        let horiz = Vec2::new(component.velocity.x, component.velocity.z);
-        let h_speed = horiz.length();
-        if h_speed > 0.0 {
-            let drop = h_speed * GROUND_STOP_FRICTION * dt;
-            let new_speed = (h_speed - drop).max(0.0);
-            let scale = new_speed / h_speed;
-            component.velocity.x *= scale;
-            component.velocity.z *= scale;
-        }
-    }
-
+    was_grounded: bool,
+    jumped: bool,
+) -> (Vec3, SubstrateResult) {
     // 7. Move + collide. Iterative sweep-and-slide against the world trimesh.
     let capsule = Capsule::new(
         Point::new(0.0, -component.capsule.half_height, 0.0),
@@ -488,7 +425,7 @@ pub(crate) fn tick(
     // Wall slide can project a small +vy when the capsule corners the edge of a
     // riser; clamp here so the ground-stick guard below still fires and prevents
     // the corner contact from latching the player above the floor.
-    if was_grounded && !events.jumped && component.velocity.y > 0.0 {
+    if was_grounded && !jumped && component.velocity.y > 0.0 {
         component.velocity.y = 0.0;
     }
 
@@ -560,11 +497,13 @@ pub(crate) fn tick(
         }
     }
 
-    // 8. Ground-state reset + landing event.
+    // 8. Ground-state reset + landing result. The collision-state writes
+    // (`is_grounded`, `air_ticks`) resolve here; the `air_jumps_remaining`
+    // ability-budget refresh is the tick's responsibility, driven by
+    // `SubstrateResult::hit_floor`.
     if hit_floor_this_tick {
         component.is_grounded = true;
-        component.air_jumps_remaining = component.air.jumps;
-    } else if was_grounded && !events.jumped {
+    } else if was_grounded && !jumped {
         // Stayed on / left the ground organically — only clear the flag when
         // no floor contact this tick. The jump branch already cleared it.
         component.is_grounded = false;
@@ -583,9 +522,144 @@ pub(crate) fn tick(
         component.air_ticks = component.air_ticks.saturating_add(1);
     }
 
-    if !was_grounded && component.is_grounded && prev_air_ticks >= 3 {
-        events.landed = true;
+    let landed = !was_grounded && component.is_grounded && prev_air_ticks >= 3;
+
+    (
+        current_pos,
+        SubstrateResult {
+            hit_floor: hit_floor_this_tick,
+            landed,
+        },
+    )
+}
+
+pub(crate) fn tick(
+    component: &mut PlayerMovementComponent,
+    input: &MovementInput,
+    collision_world: &CollisionWorld,
+    gravity: f32,
+    dt: f32,
+    position: Vec3,
+) -> (Vec3, MovementEvents) {
+    let mut events = MovementEvents::default();
+    let was_grounded = component.is_grounded;
+
+    // 1. Gravity (airborne only).
+    if !component.is_grounded {
+        component.velocity.y += gravity * dt;
+        let terminal = component.fall.terminal_velocity;
+        if component.velocity.y < -terminal {
+            component.velocity.y = -terminal;
+        }
     }
+
+    // 2. Jump from grounded.
+    if component.is_grounded && input.jump_pressed {
+        component.velocity.y = component.ground.jump_velocity;
+        component.is_grounded = false;
+        events.jumped = true;
+    }
+    // 3. Air jump: gated on remaining count and ceiling on upward velocity.
+    else if !component.is_grounded
+        && input.jump_pressed
+        && component.air_jumps_remaining > 0
+        && component.velocity.y <= component.air.jump_ceiling
+    {
+        component.velocity.y = component.ground.jump_velocity;
+        component.air_jumps_remaining -= 1;
+        events.jumped = true;
+    }
+
+    // 4 + 5. Locomotion: ground vs air branch on the same input. Sprint picks
+    // the run speed; the same value caps airborne horizontal speed so a
+    // sprint-then-jump arc doesn't instantly decelerate mid-air.
+    let ground_speed = if input.running {
+        component.ground.speed.run
+    } else {
+        component.ground.speed.walk
+    };
+    let input_dir_3d = wish_dir_from_input(input.wish_dir, input.facing_yaw);
+    if component.is_grounded {
+        if input_dir_3d.length_squared() > 0.0 {
+            pm_accelerate(
+                &mut component.velocity,
+                input_dir_3d,
+                ground_speed,
+                component.ground.accel,
+                dt,
+            );
+        }
+    } else if input_dir_3d.length_squared() > 0.0 {
+        // Blend toward facing only on forward/back input: strafing left/right
+        // should not redirect the capsule toward the player's nose.
+        let wish_dir_3d = if input.wish_dir.y.abs() > 1e-3 {
+            let facing_dir = Vec3::new(-input.facing_yaw.sin(), 0.0, -input.facing_yaw.cos());
+            let steer = component.air.forward_steer.clamp(0.0, 1.0);
+            let blended = input_dir_3d.lerp(facing_dir, steer);
+            if blended.length_squared() > 0.0 {
+                blended.normalize()
+            } else {
+                Vec3::ZERO
+            }
+        } else {
+            input_dir_3d
+        };
+        let wish_speed = component.air.max_control_speed;
+        pm_accelerate(
+            &mut component.velocity,
+            wish_dir_3d,
+            wish_speed,
+            component.air.accel,
+            dt,
+        );
+        if !component.air.bunny_hop {
+            // Cap horizontal speed; vertical velocity (jump/gravity) untouched.
+            let horiz = Vec2::new(component.velocity.x, component.velocity.z);
+            let h_speed = horiz.length();
+            let cap = ground_speed;
+            if h_speed > cap {
+                let scale = cap / h_speed;
+                component.velocity.x *= scale;
+                component.velocity.z *= scale;
+            }
+        }
+    }
+
+    // 6. Friction on the ground when no input — simple linear velocity decay.
+    // Applied only in the no-input case so PM_Accelerate's projection cap
+    // continues to govern actively-driven motion.
+    if component.is_grounded && input.wish_dir.length_squared() < 0.001 {
+        let horiz = Vec2::new(component.velocity.x, component.velocity.z);
+        let h_speed = horiz.length();
+        if h_speed > 0.0 {
+            let drop = h_speed * GROUND_STOP_FRICTION * dt;
+            let new_speed = (h_speed - drop).max(0.0);
+            let scale = new_speed / h_speed;
+            component.velocity.x *= scale;
+            component.velocity.z *= scale;
+        }
+    }
+
+    // 7 + 8. Shared physics substrate: sweep-and-slide, step-up, floor-push,
+    // ground-stick, and collision-state/landing resolution. States change
+    // intent (steps 1–6 above), not collision.
+    let (current_pos, substrate) = integrate_collision(
+        component,
+        collision_world,
+        dt,
+        position,
+        was_grounded,
+        events.jumped,
+    );
+
+    // Landing-refresh point: the ability-budget reset is a gameplay-state write
+    // the substrate deliberately leaves to the tick. Driven by the substrate's
+    // floor-contact result so air-jump charges replenish on every floor touch.
+    if substrate.hit_floor {
+        component.air_jumps_remaining = component.air.jumps;
+    }
+
+    events.landed = substrate.landed;
 
     (current_pos, events)
 }

@@ -2787,6 +2787,15 @@ impl Renderer {
         }
         self.queue
             .write_buffer(&self.lights_buffer, 0, lights_bytes);
+        // Keep the CPU mirror in lock-step with the GPU buffer. The bridge
+        // packs animated base data with sentinel shadow slots; the shadow pool
+        // (`update_dynamic_light_slots`) then patches the real slot field onto
+        // this mirror and re-uploads. Without this sync the pool's
+        // `scratch != last_lights_upload` guard compares against stale bytes and
+        // skips the slot write, so the bridge's sentinel slot persists and the
+        // forward shader never samples the shadow map.
+        self.last_lights_upload.clear();
+        self.last_lights_upload.extend_from_slice(lights_bytes);
     }
 
     /// Mismatched length logs a warning and skips upload — fail soft over crashing the frame.
@@ -3061,15 +3070,33 @@ impl Renderer {
             &slot_assignment,
         );
 
-        // Skip write_buffer when packed bytes are unchanged (common case: no light moved).
-        // Scratch Vec reused across frames — pack doesn't allocate.
-        let mut scratch = std::mem::take(&mut self.lights_pack_scratch);
-        pack_lights_with_slots_into(&mut scratch, &self.level_lights, &level_slots);
-        if scratch != self.last_lights_upload {
-            self.queue.write_buffer(&self.lights_buffer, 0, &scratch);
-            std::mem::swap(&mut scratch, &mut self.last_lights_upload);
+        // Patch the per-light shadow slot field onto the CPU mirror of the
+        // light buffer, then re-upload only if a slot changed. The mirror holds
+        // whatever was last uploaded — the animated bridge's base bytes once it
+        // has run, otherwise this fn's static pack. Patching (rather than
+        // re-packing static `level_lights`) is what lets the slot and the
+        // bridge's animated base data coexist: the two writers share one buffer,
+        // so a full re-pack here would clobber the animation, and the bridge's
+        // sentinel slot would clobber the shadow. See `upload_bridge_lights`.
+        let expected_len = self.level_lights.len() * crate::lighting::GPU_LIGHT_SIZE;
+        if self.last_lights_upload.len() == expected_len {
+            if crate::lighting::patch_shadow_slots(&mut self.last_lights_upload, &level_slots) {
+                self.queue
+                    .write_buffer(&self.lights_buffer, 0, &self.last_lights_upload);
+            }
+        } else {
+            // Mirror not yet sized to the current light set (before the first
+            // bridge upload, or the light count changed): full static pack so
+            // frame-zero still uploads valid lights + slots and seeds the mirror.
+            let mut scratch = std::mem::take(&mut self.lights_pack_scratch);
+            pack_lights_with_slots_into(&mut scratch, &self.level_lights, &level_slots);
+            if scratch != self.last_lights_upload {
+                self.queue.write_buffer(&self.lights_buffer, 0, &scratch);
+                self.last_lights_upload.clear();
+                self.last_lights_upload.extend_from_slice(&scratch);
+            }
+            self.lights_pack_scratch = scratch;
         }
-        self.lights_pack_scratch = scratch;
 
         // Upload slot matrices to both fragment-side storage (group 5 binding 2)
         // and vertex-side dynamic-offset uniform buffer. Matrices come from

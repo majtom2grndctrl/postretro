@@ -24,6 +24,14 @@ use crate::prl::{FalloffModel, LightType, MapLight};
 /// alignment is 16 and the array stride is an exact multiple of 16.
 pub const GPU_LIGHT_SIZE: usize = 64;
 
+/// Byte offset of the shadow-slot index within a packed `GpuLight`
+/// (`cone_angles_and_pad.z`). Exposed so the renderer can patch just this
+/// field into an already-packed light buffer without re-packing the whole
+/// record — the animated light bridge owns the base bytes, the shadow pool
+/// owns this slot field, and a full re-pack from either side would clobber
+/// the other.
+pub const SHADOW_SLOT_BYTE_OFFSET: usize = 56;
+
 /// Encode the `LightType` discriminant the way the shader expects it:
 /// a `u32` bit-cast into the `w` slot of the `position_and_type` vec4.
 fn light_type_u32(ty: LightType) -> u32 {
@@ -90,7 +98,7 @@ pub fn pack_light_with_slot(light: &MapLight, slot_index: u32) -> [u8; GPU_LIGHT
     write_f32(&mut bytes, 52, light.cone_angle_outer);
     // bytes 56..60 hold the shadow slot index (0..8 or 0xFFFFFFFF for no slot).
     // Shader reads as f32 then bitcasts back to u32; round-trip preserves bit patterns.
-    write_u32_as_f32(&mut bytes, 56, slot_index);
+    write_u32_as_f32(&mut bytes, SHADOW_SLOT_BYTE_OFFSET, slot_index);
     // bytes 60..64 stay zero — reserved pad.
 
     bytes
@@ -133,6 +141,30 @@ pub fn pack_lights_with_slots_into(bytes: &mut Vec<u8>, lights: &[MapLight], slo
     for (light, &slot) in lights.iter().zip(slot_indices.iter()) {
         bytes.extend_from_slice(&pack_light_with_slot(light, slot));
     }
+}
+
+/// Overwrite only the shadow-slot field of each already-packed light in
+/// `buffer` with the corresponding entry in `slots`, leaving every other byte
+/// (the animated base data the light bridge owns) untouched. Returns `true` if
+/// any byte changed, so the caller can skip a redundant GPU upload.
+///
+/// This is the seam that lets the animated-light bridge and the shadow pool
+/// share one GPU light buffer: the bridge packs base records (with sentinel
+/// slots) and the pool patches the live slot here. Re-packing the whole record
+/// from either side would clobber the other. `buffer` must already hold
+/// `slots.len()` packed `GpuLight` records.
+pub fn patch_shadow_slots(buffer: &mut [u8], slots: &[u32]) -> bool {
+    debug_assert!(buffer.len() >= slots.len() * GPU_LIGHT_SIZE);
+    let mut changed = false;
+    for (i, &slot) in slots.iter().enumerate() {
+        let off = i * GPU_LIGHT_SIZE + SHADOW_SLOT_BYTE_OFFSET;
+        let new = slot.to_ne_bytes();
+        if buffer[off..off + 4] != new {
+            buffer[off..off + 4].copy_from_slice(&new);
+            changed = true;
+        }
+    }
+    changed
 }
 
 #[inline]
@@ -348,6 +380,56 @@ mod tests {
         );
         // Second light at slot 2.
         assert_eq!(read_u32(&bytes, GPU_LIGHT_SIZE + 56), 2);
+    }
+
+    /// Regression: the animated light bridge packs base records with sentinel
+    /// shadow slots; the shadow pool must patch the live slot onto that buffer
+    /// without disturbing the base data, or the bridge's sentinel persists and
+    /// the forward shader never samples the shadow map.
+    #[test]
+    fn patch_shadow_slots_sets_slot_and_preserves_base_bytes() {
+        let lights = vec![sample_point(), sample_spot()];
+        // Start as the bridge would: every slot the sentinel.
+        let sentinel = crate::lighting::spot_shadow::NO_SHADOW_SLOT;
+        let mut bytes = Vec::new();
+        pack_lights_with_slots_into(&mut bytes, &lights, &[sentinel, sentinel]);
+        let base_before = bytes.clone();
+
+        // Pool assigns the second light to slot 1.
+        let changed = patch_shadow_slots(&mut bytes, &[sentinel, 1u32]);
+        assert!(
+            changed,
+            "patching a sentinel to a real slot must report change"
+        );
+        assert_eq!(
+            read_u32(&bytes, 56),
+            sentinel,
+            "first light stays unshadowed"
+        );
+        assert_eq!(
+            read_u32(&bytes, GPU_LIGHT_SIZE + 56),
+            1,
+            "second light gets slot 1"
+        );
+
+        // Every byte except the second light's slot field is untouched.
+        for (i, (a, b)) in base_before.iter().zip(bytes.iter()).enumerate() {
+            let in_patched_slot = (GPU_LIGHT_SIZE + SHADOW_SLOT_BYTE_OFFSET
+                ..GPU_LIGHT_SIZE + SHADOW_SLOT_BYTE_OFFSET + 4)
+                .contains(&i);
+            if !in_patched_slot {
+                assert_eq!(a, b, "base byte {i} must be preserved");
+            }
+        }
+    }
+
+    #[test]
+    fn patch_shadow_slots_no_change_reports_false() {
+        let lights = vec![sample_point(), sample_spot()];
+        let mut bytes = Vec::new();
+        pack_lights_with_slots_into(&mut bytes, &lights, &[3u32, 1u32]);
+        // Patching the same slots back is a no-op — caller skips the GPU upload.
+        assert!(!patch_shadow_slots(&mut bytes, &[3u32, 1u32]));
     }
 
     #[test]

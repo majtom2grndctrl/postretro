@@ -474,22 +474,21 @@ fn plan_movement_replace(
         ));
     }
 
-    if live.air_jumps_remaining > descriptor.air.jumps {
-        return Err(format!(
-            "live air_jumps_remaining ({}) exceeds refreshed air.jumps ({})",
-            live.air_jumps_remaining, descriptor.air.jumps
-        ));
-    }
     let mut refreshed = PlayerMovementComponent::from_descriptor(descriptor);
+    // Preserve only live physics-integration state — velocity, the grounded flag,
+    // and the airborne-tick counter. Everything descriptor-derived reseeds from
+    // the new descriptor.
     refreshed.velocity = live.velocity;
     refreshed.is_grounded = live.is_grounded;
-    refreshed.air_jumps_remaining = live.air_jumps_remaining;
     refreshed.air_ticks = live.air_ticks;
-    // Hot-reload is a descriptor swap, not a mid-game state resume: the dash
-    // ability state (`dash_cooldown_ms`, `air_dashes_remaining`) intentionally
-    // reseeds from the new descriptor via `from_descriptor` rather than carrying
-    // across, and `movement_state` resets to `Normal` so no in-flight `Dash`
-    // survives with a refreshed budget and cleared cooldown.
+    // Hot-reload is a descriptor swap, not a mid-game state resume: every ability
+    // budget reseeds from the new descriptor rather than carrying the live (now
+    // stale-against-the-new-max) count across. `air_jumps_remaining` and
+    // `air_dashes_remaining` come back full from `from_descriptor`,
+    // `dash_cooldown_ms` resets to 0, and `movement_state` drops to `Normal` so no
+    // in-flight `Dash` survives with a refreshed budget and cleared cooldown. This
+    // is what makes an authored change to `air.jumps` (or the dash budget) take
+    // effect immediately on save instead of only after the next landing.
     refreshed.movement_state = MovementState::Normal;
     Ok(ComponentValue::PlayerMovement(refreshed))
 }
@@ -988,8 +987,48 @@ mod tests {
         assert_eq!(component.air.jumps, 3);
         assert_eq!(component.velocity, Vec3::new(1.0, 2.0, 3.0));
         assert!(component.is_grounded);
-        assert_eq!(component.air_jumps_remaining, 1);
+        // The air-jump budget reseeds from the new descriptor (was live=1), so an
+        // authored jump-count change takes effect on save, not only after landing.
+        assert_eq!(component.air_jumps_remaining, 3);
         assert_eq!(component.air_ticks, 7);
+    }
+
+    #[test]
+    fn movement_refresh_raises_air_jumps_to_new_descriptor_max() {
+        // Regression: authoring a higher `air.jumps` and saving must make the new
+        // jump budget usable immediately on hot-reload — not only after the next
+        // landing, and not requiring an engine reboot. The live
+        // `air_jumps_remaining` reseeds from the new descriptor's max.
+        let old = vec![movement_descriptor("player", 2)];
+        let new = vec![movement_descriptor("player", 5)];
+        let mut registry = EntityRegistry::new();
+        let id = registry.spawn(standing_pawn_transform());
+        let mut live = PlayerMovementComponent::from_descriptor(old[0].movement.as_ref().unwrap());
+        live.is_grounded = true;
+        live.air_jumps_remaining = 2; // grounded, at the OLD max
+        registry.set_component(id, live).unwrap();
+        registry
+            .set_component(
+                id,
+                provenance("player", &[DescriptorComponentKind::Movement]),
+            )
+            .unwrap();
+
+        let plan = plan_descriptor_refresh(&old, &new, &registry);
+
+        assert!(plan.diagnostics.is_empty(), "{:?}", plan.diagnostics);
+        let DescriptorRefreshAction::Replace {
+            component: ComponentValue::PlayerMovement(component),
+            ..
+        } = &plan.actions[0]
+        else {
+            panic!("expected movement replacement");
+        };
+        assert_eq!(component.air.jumps, 5, "new max cap applied");
+        assert_eq!(
+            component.air_jumps_remaining, 5,
+            "live air-jump budget reseeds to the new max on reload"
+        );
     }
 
     #[test]
@@ -1032,15 +1071,15 @@ mod tests {
         else {
             panic!("expected movement replacement");
         };
-        // Dash ability state reseeds from the new descriptor; movement_state
+        // All ability budgets reseed from the new descriptor; movement_state
         // drops back to Normal.
         assert_eq!(component.movement_state, MovementState::Normal);
         assert_eq!(component.dash_cooldown_ms, 0.0);
         assert_eq!(component.air_dashes_remaining, 3);
-        // Compatible runtime fields are still preserved across the refresh.
+        assert_eq!(component.air_jumps_remaining, 3);
+        // Physics-integration state is still preserved across the refresh.
         assert_eq!(component.velocity, Vec3::new(1.0, 2.0, 3.0));
         assert!(component.is_grounded);
-        assert_eq!(component.air_jumps_remaining, 1);
         assert_eq!(component.air_ticks, 7);
     }
 

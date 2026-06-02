@@ -130,6 +130,25 @@ fn map_needs_sdf_atlas(lights: &[map_data::MapLight]) -> bool {
         .any(|l| l.shadow_type == map_data::ShadowType::Sdf)
 }
 
+/// Density to re-prepare the atlas at on a lightmap cache hit.
+///
+/// A placeholder section (no static lights / empty atlas) stores a sentinel
+/// `texel_density` of 1.0 rather than the density the atlas was prepared at, so
+/// re-preparing from it would mis-size the atlas and the downstream animated
+/// chunk/weight-map inputs. The bake path prepares placeholder atlases at the
+/// configured density, so mirror that here. A real atlas carries its actual
+/// (possibly retry-escalated) density in the section, which stays authoritative.
+fn resolve_cached_lightmap_density(
+    section: &postretro_level_format::lightmap::LightmapSection,
+    configured: f32,
+) -> f32 {
+    if section.width <= 1 && section.height <= 1 {
+        configured
+    } else {
+        section.texel_density
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let started = Instant::now();
     let args = parse_args()?;
@@ -299,18 +318,8 @@ fn main() -> anyhow::Result<()> {
 
         if let Some(section) = cached_section {
             log::info!("[cache] lightmap hit");
-            // A placeholder section (no static lights / empty atlas) stores a
-            // sentinel `texel_density` of 1.0 rather than the density the atlas
-            // was prepared at, so re-preparing from it would mis-size the atlas
-            // and the downstream animated chunk/weight-map inputs. The bake path
-            // prepares placeholder atlases at the configured density, so mirror
-            // that here. A real atlas carries its actual (possibly retry-escalated)
-            // density in the section, which stays authoritative.
-            let density = if section.width <= 1 && section.height <= 1 {
-                lightmap_config.lightmap_density
-            } else {
-                section.texel_density
-            };
+            let density =
+                resolve_cached_lightmap_density(&section, lightmap_config.lightmap_density);
             final_lightmap_density = density;
             let atlas =
                 lightmap_bake::prepare_atlas(&mut geo_result, &static_baked_lights, density)
@@ -552,15 +561,25 @@ fn main() -> anyhow::Result<()> {
         };
 
         // Build the input hash from owned/serializable data. Charts, placements,
-        // and the chunk section don't derive `Serialize`, but they're all
-        // deterministically derived from geometry + lights + density, so folding
-        // the chunk-section bytes + geometry + density + lights + atlas dims +
-        // sample count fully captures the bake inputs.
+        // and the chunk section don't derive `Serialize`, so the hash folds
+        // `animated_light_chunks_section.to_bytes()` as a proxy. That proxy is a
+        // valid fingerprint for charts AND placements because
+        // `build_animated_light_chunks` (and the upstream chart/placement
+        // construction) are deterministic given geometry + lights + density — the
+        // section bytes faithfully capture those derived inputs.
+        //
+        // Deliberate divergence from the lightmap/sh stages: those hash a
+        // pre-bake geometry clone, but this hashes the post-mutation `geo_result`.
+        // That's correct here — the weight-map bake consumes the mutated geometry,
+        // and the mutations (`split_shared_vertices`, UV assignment) are
+        // idempotent and deterministic, so post-mutation geometry is a stable
+        // function of the inputs. Do not "fix" this to a pre-bake clone; it would
+        // hash geometry the bake doesn't actually consume.
         let wm_input_hash = {
             let mut buf = postcard::to_allocvec(&animated_chunk_lights)
                 .expect("postcard serialize animated_chunk_lights");
             buf.extend_from_slice(
-                &postcard::to_allocvec(&geo_result.clone()).expect("postcard serialize geo_result"),
+                &postcard::to_allocvec(&geo_result).expect("postcard serialize geo_result"),
             );
             buf.extend_from_slice(&final_lightmap_density.to_le_bytes());
             buf.extend_from_slice(&atlas_width.to_le_bytes());
@@ -726,8 +745,8 @@ struct Args {
     /// Starting density in meters; baker retries at coarser densities on atlas overflow.
     lightmap_density: f32,
     /// Soft-shadow area-sample count (penumbra escalation target). Raising it
-    /// invalidates the cached lightmap stage and re-bakes; the uncached animated
-    /// stage recomputes from scratch. Default
+    /// invalidates both the cached lightmap stage and the cached animated
+    /// weight-map stage, triggering a re-bake of each. Default
     /// `lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT`.
     soft_shadow_samples: u32,
     /// SDF occluder-atlas voxel edge length in meters. Overrides
@@ -1111,6 +1130,34 @@ fn js_is_fresh(ts_path: &std::path::Path, js_path: &std::path::Path) -> Option<b
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_level_format::lightmap::LightmapSection;
+
+    // Regression: on a lightmap cache hit, a placeholder section's sentinel
+    // texel_density (1.0) was used to re-prepare the atlas instead of the
+    // configured density, making the build non-deterministic across cache state.
+    #[test]
+    fn resolve_cached_lightmap_density_uses_configured_for_placeholder() {
+        let section = LightmapSection::placeholder();
+        let configured = 0.0625;
+        let density = resolve_cached_lightmap_density(&section, configured);
+        assert!(
+            (density - configured).abs() < 1e-6,
+            "placeholder section must resolve to the configured density, got {density}"
+        );
+    }
+
+    #[test]
+    fn resolve_cached_lightmap_density_keeps_stored_for_real_atlas() {
+        let mut section = LightmapSection::placeholder();
+        section.width = 256;
+        section.height = 256;
+        section.texel_density = 0.04;
+        let density = resolve_cached_lightmap_density(&section, 0.0625);
+        assert!(
+            (density - 0.04).abs() < 1e-6,
+            "real atlas must keep its stored density, got {density}"
+        );
+    }
 
     #[test]
     fn parse_args_basic() {

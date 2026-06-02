@@ -1,5 +1,5 @@
 // Animated-light weight-map baker.
-// See: context/plans/in-progress/animated-light-weight-maps/index.md
+// See: context/lib/build_pipeline.md §Build Cache
 
 use bvh::bvh::Bvh;
 use glam::Vec3;
@@ -65,10 +65,9 @@ pub struct WeightMapInputs<'a> {
     pub atlas_width: u32,
     pub atlas_height: u32,
     /// Area-sample count for soft-shadow penumbra visibility (Task 6 knob).
-    /// Plain owned field, not a cache key: this stage is uncached (invoked
-    /// directly from `main.rs`, no `*Config`/`input_hash`), so every compile that
-    /// runs the animated bake recomputes from scratch with this value — there is
-    /// no stale-output risk to guard. Default
+    /// Folded into the stage's `wm_input_hash` in `main.rs` (via
+    /// `args.soft_shadow_samples.to_le_bytes()`), so changing this value
+    /// produces a cache miss and triggers a full re-bake. Default
     /// `lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT`.
     pub area_sample_count: u32,
 }
@@ -947,12 +946,11 @@ mod tests {
         assert!(section.texel_lights.is_empty());
     }
 
-    /// Task 6: the area-sample-count knob is a plain owned field on
-    /// `WeightMapInputs` (this stage is uncached — no `*Config`/`input_hash` to
-    /// fold it into), passed straight into the bake. Raising it changes the
-    /// penumbra weights at the higher stratification resolution, proving the
-    /// field reaches `soft_visibility`. Each build recomputes from scratch — the
-    /// only "invalidation" mechanism the uncached stage has.
+    /// Task 6: `area_sample_count` is folded into `wm_input_hash` in `main.rs`,
+    /// so changing it produces a cache miss and re-bake. This test verifies the
+    /// field actually reaches `soft_visibility` — raising it shifts penumbra
+    /// weights at the higher stratification resolution. The cache-miss contract
+    /// is covered separately by `stage_version_bump_misses_then_hits`.
     #[test]
     fn area_sample_count_field_changes_penumbra_weights() {
         let low = bake_with_sample_count(

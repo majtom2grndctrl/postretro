@@ -82,10 +82,12 @@
         0 : "Off (default)"
         1 : "On — reserve baked weight map; script writes the curve at runtime"
     ]
-    // `_cast_entity_shadows` opts a light into the dynamic-entity
-    // (enemy / moving-mesh) shadow-map pool. Default 0 — strictly opt-in.
-    // SDF static-occluder shadows are independent of this flag (handled
-    // separately by the SDF shadow pass).
+    // `_cast_entity_shadows` opts a baked-tier light into the dynamic-entity
+    // (enemy / moving-mesh) shadow-map pool. Default 0 — baked-tier lights are
+    // opt-in. Dynamic-tier lights (`light_dynamic`/`light_dynamic_spot`) are
+    // pool-eligible by default and do NOT need this flag — they cast world
+    // shadows automatically. SDF static-occluder shadows are independent of
+    // this flag (handled separately by the SDF shadow pass).
     _cast_entity_shadows(choices) : "Cast Entity (Dynamic-Occluder) Shadows" : 0 =
     [
         0 : "Off (default)"
@@ -160,9 +162,12 @@
 // `period_ms`, `_curve_phase`, `_bake_only`, `_shadow_type`, `_animated`):
 // nothing here bakes, so none of those keys apply. It retains only the shared
 // non-bake KVPs — intensity/color/geometry — plus `_tags` (scripts query
-// lights by tag, e.g. the arena script). Dynamic-only KVPs for light movement
-// and dynamic-entity (enemy) shadow opt-in are deferred until those features
-// land. The parser sets is_dynamic = true from the CLASSNAME, not a KVP.
+// lights by tag, e.g. the arena script). Dynamic spotlights cast WORLD shadows
+// by default — the spot-shadow depth pass renders static geometry, so a pooled
+// dynamic spot shadows pillars and other occluders with no per-light KVP.
+// Dynamic-only KVPs for light movement (and the enemy/moving-occluder shadow
+// opt-in) are deferred until those features land. The parser sets
+// is_dynamic = true from the CLASSNAME, not a KVP.
 // See context/plans/in-progress/sdf-per-light-shadows/.
 @BaseClass = DynamicLight
 [

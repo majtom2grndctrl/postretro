@@ -279,11 +279,13 @@ pub struct MapLight {
     /// orthogonal axes.
     pub is_dynamic: bool,
 
-    /// Per-light opt-in for shadow-map-pool eligibility for dynamic
+    /// Per-light opt-in for spot-shadow-pool eligibility for dynamic
     /// entities (enemies / moving meshes). FGD `_cast_entity_shadows`.
-    /// Default `false`. Enemy / dynamic-occluder shadows are strictly
-    /// opt-in — `casts_entity_shadows == false` excludes the light from
-    /// the spot-shadow pool candidate set in `rank_lights`.
+    /// Default `false`. This flag is the only path into the pool for
+    /// **non-dynamic** (baked-tier) lights; dynamic-tier lights are
+    /// pool-eligible by default (`rank_lights` gates on
+    /// `is_dynamic || casts_entity_shadows`), so a dynamic spot with this
+    /// `false` is NOT excluded.
     /// See `context/plans/in-progress/sdf-static-occluder-shadows/`.
     pub casts_entity_shadows: bool,
 

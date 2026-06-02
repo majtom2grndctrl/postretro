@@ -314,7 +314,7 @@ impl SpotShadowPool {
     ) -> Vec<u32> {
         let mut slot_assignment = vec![NO_SHADOW_SLOT; lights.len()];
 
-        // Collect visible entity-shadow-casting spot lights with their scores.
+        // Collect visible pool-eligible spot lights with their scores.
         let mut candidates: Vec<(usize, f32)> = lights
             .iter()
             .enumerate()
@@ -380,7 +380,7 @@ impl SpotShadowPool {
 
         if candidates.len() > SHADOW_POOL_SIZE {
             log::debug!(
-                "[ShadowPool] {} entity-shadow-casting spot lights visible; {} assigned to slots, {} unshadowed",
+                "[ShadowPool] {} pool-eligible spot lights visible; {} assigned to slots, {} unshadowed",
                 candidates.len(),
                 SHADOW_POOL_SIZE,
                 candidates.len() - SHADOW_POOL_SIZE
@@ -490,6 +490,21 @@ mod tests {
         let lights = vec![light];
         let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &[]);
         assert_ne!(assignment[0], NO_SHADOW_SLOT);
+    }
+
+    /// The pool is spotlights-only. Making the dynamic tier pool-eligible by
+    /// default widened the candidate set to every dynamic light, so the `Spot`
+    /// guard is now the sole thing keeping dynamic POINT lights
+    /// (`light_dynamic`) out of the spot pool. `campaign-test.map` ships such
+    /// lights, so cover the exclusion explicitly.
+    #[test]
+    fn dynamic_point_light_is_not_assigned() {
+        let mut light = test_light(0, [0.0, 0.0, 0.0], 10.0, false);
+        light.is_dynamic = true;
+        light.light_type = LightType::Point;
+        let lights = vec![light];
+        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &[]);
+        assert_eq!(assignment[0], NO_SHADOW_SLOT);
     }
 
     #[test]

@@ -137,6 +137,23 @@ Per-light **subsumes** the spatial schemes: "store light L's contribution over t
 5. **Indirect-ripple envelope.** Direct-only incremental + full-bake-for-release, vs. K-bounce energy-thresholded propagation. Defines the "acceptable seams" contract the stub asked for.
 6. **Packer rewrite scope (lightmap only).** Stable-slot/guillotine allocator vs. per-face sub-atlas pages — a prerequisite task, possibly its own plan.
 
+## 6. Grain reversal — per-channel hybrid (per-light lightmap + per-group SH)
+
+Settled during drafting/review, this supersedes §4d's "per-light for both" for the SH channel. The earlier analysis demoted per-room/per-probe-block grain on the arena flood-light case *while assuming per-light SH was cheap*. Exposing the true cost of per-light SH — and considering a per-channel hybrid §4d never evaluated — flips the SH decision.
+
+**Per-light SH is not cheap.** Decomposing the SH bake per light forces one of three bad choices:
+1. **Re-cast each probe's primary rays per light** → cold-build regression ≈ ×(average per-probe light-overlap depth), worst exactly in the open-arena flood-light case the grain is meant to serve.
+2. **Cache the primary-ray hits** (foundation-first) and re-shade per light → correct and no cold regression, but a ~100–200 MB *persisted* intermediate hit cache (millions of probe×ray records), a two-phase emit/shade refactor of the most numerically sensitive code, and whole-hit-cache invalidation on *any* geometry edit.
+3. **Cull probes by the light's influence AABB** (the delta path's approach) → **incorrect**: SH falloff is keyed on the *bounce hit point*, not the probe (`sh_bake.rs:524-597`), so a probe outside a light's AABB can still receive a real far-field bounce off a wall inside the light's range. Probe-AABB culling drops it — a visible GI change, not rounding.
+
+**Per-probe-group SH avoids all three.** Partition the probe grid into spatial groups; bake each group with the existing per-probe algorithm over its probe subset and a conservative reaching-light set. Because probes are independent in the single-pass indirect bake, out-of-range lights contribute exactly `0.0`, and adding `0.0` does not perturb a float sum, a group bake is **byte-identical** to the monolithic bake for those probes — bit-compatibility with today's `.prl` is preserved. No re-casting (no cold regression), no hit cache, no compositor, no directional fallback (directionals are ordinary members of every group's light set). Geometry-edit invalidation is local to groups whose geometry-in-reach changed.
+
+**Cost accepted:** SH invalidation locality is bounded by each light's spatial reach (`falloff_range + SH-ray-reach`) and occlusion, so a light flooding many groups — and any directional — invalidates broadly. This is the per-region weakness §4b/§4d flagged, but it is far more tolerable here because **the lightmap stays per-light**: editing any light (flood lights included) updates its *direct* contribution instantly, and direct is the dominant visual channel; the soft indirect SH catches up at group grain. Task 1 measures the realized single-light group-invalidation fraction.
+
+**Lightmap stays per-light (§4d holds).** Direct illumination has a hard `falloff_range` cutoff (`lightmap_bake.rs:849-869`), so per-light layers have bounded support, sum back to the monolithic result bit-for-bit (storing unnormalized weighted directions, normalizing once — risk 1 of §4d), and give instant single-light edits.
+
+**Net:** a per-channel hybrid — per-light lightmap layers + per-group SH cache entries — dominates uniform per-light on correctness (bit-identical), cold-build cost (no regression), simplicity (no hit cache / compositor / directional fallback), and cache size, losing only flood-light SH edit latency, which the per-light direct channel masks. Per-face and uniform per-light SH are both demoted.
+
 ## Key files
 
 - Substrate: `crates/level-compiler/src/cache.rs`, `main.rs` (cache wiring ~`:254-446`)

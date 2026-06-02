@@ -39,8 +39,16 @@ No WAD files. Textures are authored as PNGs.
 | Author | Create PNGs in `content/<mod>/textures/<collection>/<name>.png` (where `<mod>` is `base` for first-party content or `tests` for fixtures). TrenchBroom requires one subdirectory level. |
 | TrenchBroom | Browses the textures directory via the Postretro game config. |
 | prl-build | Reads PNGs, decodes them, runs Mitchell-Netravali downsampling in linear color space, and writes per-texture `.prm` mip sidecars to `<workspace>/.build-caches/prm-cache/<blake3-hex>.prm`. Stores a content-addressed blake3 key per texture in the `TextureCacheKeys` PRL section. Authored PNGs are not shipped or read at runtime for world materials. |
-| PRL output | `TextureNames` section stores a deduplicated texture name list. `TextureCacheKeys` section stores one 32-byte blake3 per name entry. No pixel data. |
+| PRL output | `TextureNames` section stores a deduplicated texture name list (verbatim from the `.map`, possibly collection-qualified). `TextureCacheKeys` section stores one 32-byte blake3 per name entry. No pixel data. |
 | Engine | Loads `.prm` sidecars at level load via the blake3 keys in `TextureCacheKeys`. Never opens a PNG for world materials. UI textures (splash, HUD) still load directly from PNGs. |
+
+### Texture name resolution (compile time)
+
+TrenchBroom identifies materials by their path **relative to the textures root**, so a `.map` may carry a **collection-qualified** name (e.g. `50-free-textures/concrete_pavement_036`) rather than the bare stem. Hand-authored maps may also use bare stems. `prl-build` (`crates/level-compiler/src/texture_mips.rs`) handles both:
+
+- The name→PNG index (`build_name_to_path_map`) keys each PNG under its path **relative to the texture root** — forward-slashed, lowercased, extension stripped (e.g. `50-free-textures/concrete_pavement_036`). It also inserts a **bare-stem alias** (`concrete_pavement_036`) for back-compat, but only when that stem is unique across all collections. On a stem collision the alias is dropped and a `warn!` names both paths, so a bare name never silently resolves to the wrong collection.
+- The incoming map name is normalized (lowercase, `\`→`/`, leading `textures/` stripped) so both `collection/stem` and root-inclusive `textures/collection/stem` map to the relative key. Lookup tries the normalized relative name, then falls back to the bare last path segment.
+- `_s`/`_n` siblings are derived by appending to **the same form that resolved the diffuse**, so siblings come from the same collection.
 
 ---
 

@@ -62,13 +62,27 @@ impl Material {
 
 /// Extract the material prefix from a texture name.
 ///
-/// The prefix is the first `_`-delimited token. If the name contains no
-/// underscore, the entire name is the prefix. Empty names return an
-/// empty string.
+/// Texture names may be collection-qualified (e.g.
+/// `50-free-textures/concrete_pavement_036`) because TrenchBroom identifies
+/// materials by their path relative to the textures root. The collection path
+/// is not part of the material identity, so any leading path is stripped (the
+/// substring after the last `/` is taken) before deriving the prefix. Forward
+/// slashes are the canonical separator at this point; the compiler normalizes
+/// backslashes to `/` upstream.
+///
+/// The prefix is then the first `_`-delimited token of the bare name. If the
+/// bare name contains no underscore, the entire bare name is the prefix. Empty
+/// names return an empty string.
 pub fn parse_prefix(texture_name: &str) -> &str {
-    match texture_name.split_once('_') {
-        Some((prefix, _)) => prefix,
+    // Strip any leading collection path; the material identity is the bare
+    // texture name. `rsplit_once` returns the segment after the last '/'.
+    let bare = match texture_name.rsplit_once('/') {
+        Some((_, stem)) => stem,
         None => texture_name,
+    };
+    match bare.split_once('_') {
+        Some((prefix, _)) => prefix,
+        None => bare,
     }
 }
 
@@ -141,6 +155,39 @@ mod tests {
     #[test]
     fn parse_prefix_multiple_underscores() {
         assert_eq!(parse_prefix("concrete_wall_03"), "concrete");
+    }
+
+    #[test]
+    fn parse_prefix_strips_collection_qualifier() {
+        // TrenchBroom writes collection-qualified names; the leading path is
+        // not part of the material identity.
+        assert_eq!(
+            parse_prefix("50-free-textures/concrete_pavement_036"),
+            "concrete"
+        );
+        assert_eq!(parse_prefix("metal/floor_01"), "floor");
+        assert_eq!(parse_prefix("collection/metal_panel"), "metal");
+    }
+
+    #[test]
+    fn parse_prefix_root_inclusive_qualifier() {
+        // Root-inclusive form (textures/collection/stem) takes the bare stem
+        // after the last slash, then its first underscore-token.
+        assert_eq!(
+            parse_prefix("textures/50-free-textures/wood_planks_02"),
+            "wood"
+        );
+    }
+
+    #[test]
+    fn parse_prefix_qualified_no_underscore_uses_bare_name() {
+        assert_eq!(parse_prefix("collection/lava"), "lava");
+    }
+
+    #[test]
+    fn parse_prefix_trailing_slash_returns_empty() {
+        // A name ending in '/' has an empty bare segment.
+        assert_eq!(parse_prefix("collection/"), "");
     }
 
     // -- Material lookup --

@@ -9,11 +9,51 @@ use postretro_level_format::prm::{
     cache_filename_for_key, expected_level_count,
 };
 
-/// Build a case-insensitive lookup from texture stem to PNG path, scanning
+/// Normalize a texture name read verbatim from a `.map` into the canonical
+/// lookup form used by [`build_name_to_path_map`]: lowercase, backslashes
+/// converted to forward slashes, and a leading `textures/` stripped (a no-op
+/// when absent). TrenchBroom may emit either `collection/stem` or the
+/// root-inclusive `textures/collection/stem`; both normalize to
+/// `collection/stem`. A bare `stem` normalizes to itself.
+fn normalize_map_texture_name(name: &str) -> String {
+    let lowered = name.to_lowercase().replace('\\', "/");
+    lowered
+        .strip_prefix("textures/")
+        .map(str::to_owned)
+        .unwrap_or(lowered)
+}
+
+/// The bare last path segment of an already-normalized name (the substring
+/// after the last `/`), used as the back-compat bare-stem lookup fallback.
+fn bare_segment(normalized: &str) -> &str {
+    match normalized.rsplit_once('/') {
+        Some((_, stem)) => stem,
+        None => normalized,
+    }
+}
+
+/// Build a case-insensitive lookup from texture name to PNG path, scanning
 /// every collection directory under `texture_root`. The compiler owns this
 /// helper so it does not depend on the runtime crate.
+///
+/// TrenchBroom identifies materials by their path relative to the textures
+/// root, so the `.map` may carry a **collection-qualified** name (e.g.
+/// `50-free-textures/concrete_pavement_036`) rather than the bare stem. Each
+/// PNG is therefore indexed under its path **relative to `texture_root`**,
+/// forward-slashed, lowercased, with the `.png` extension stripped (e.g.
+/// `50-free-textures/concrete_pavement_036`).
+///
+/// For back-compat with hand-authored maps that use bare stems, a **bare-stem
+/// alias** is also inserted — but only when that stem is unique across all
+/// collections. On a stem collision the alias is dropped (and a warning logged
+/// naming both paths) so a bare name never silently resolves to the wrong
+/// collection. The collection-qualified key always resolves unambiguously.
 fn build_name_to_path_map(texture_root: &Path) -> HashMap<String, PathBuf> {
     let mut map: HashMap<String, PathBuf> = HashMap::new();
+    // Tracks bare stems that are ambiguous (seen in more than one collection)
+    // so we can avoid inserting a misleading bare-stem alias.
+    let mut stem_owner: HashMap<String, PathBuf> = HashMap::new();
+    let mut ambiguous_stems: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     let collections = match std::fs::read_dir(texture_root) {
         Ok(entries) => entries,
@@ -26,19 +66,30 @@ fn build_name_to_path_map(texture_root: &Path) -> HashMap<String, PathBuf> {
         }
     };
 
-    for entry in collections.flatten() {
-        let collection_path = entry.path();
-        if !collection_path.is_dir() {
-            continue;
-        }
+    // Collect collection dirs, sorted for deterministic warning order.
+    let mut collection_dirs: Vec<PathBuf> = collections
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    collection_dirs.sort();
+
+    for collection_path in collection_dirs {
+        let collection_name = match collection_path.file_name().and_then(|s| s.to_str()) {
+            Some(s) => s.to_lowercase(),
+            None => continue,
+        };
 
         let files = match std::fs::read_dir(&collection_path) {
             Ok(entries) => entries,
             Err(_) => continue,
         };
 
-        for file_entry in files.flatten() {
-            let file_path = file_entry.path();
+        // Sort files for deterministic relative-key collision resolution.
+        let mut file_paths: Vec<PathBuf> = files.flatten().map(|e| e.path()).collect();
+        file_paths.sort();
+
+        for file_path in file_paths {
             let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
             if !ext.eq_ignore_ascii_case("png") {
                 continue;
@@ -47,16 +98,51 @@ fn build_name_to_path_map(texture_root: &Path) -> HashMap<String, PathBuf> {
                 Some(s) => s.to_lowercase(),
                 None => continue,
             };
-            if let Some(existing) = map.get(&stem) {
+
+            // Primary key: path relative to texture_root, forward-slashed,
+            // lowercased, no extension (e.g. `collection/stem`).
+            let rel_key = format!("{collection_name}/{stem}");
+            if let Some(existing) = map.get(&rel_key) {
                 log::warn!(
-                    "[prl-build] duplicate texture name '{stem}': found in {} and {}, using first found",
+                    "[prl-build] duplicate texture path '{rel_key}': found in {} and {}, using first found",
                     existing.display(),
                     file_path.display(),
                 );
             } else {
-                map.insert(stem, file_path);
+                map.insert(rel_key, file_path.clone());
+            }
+
+            // Track bare-stem ownership for the back-compat alias. A stem seen
+            // in two or more collections is ambiguous and gets no alias.
+            match stem_owner.get(&stem) {
+                Some(first) => {
+                    if !ambiguous_stems.contains(&stem) {
+                        log::warn!(
+                            "[prl-build] bare texture name '{stem}' exists in multiple collections \
+                             ({} and {}); the bare-stem alias is disabled — qualify it as \
+                             'collection/{stem}' to resolve",
+                            first.display(),
+                            file_path.display(),
+                        );
+                        ambiguous_stems.insert(stem.clone());
+                    }
+                }
+                None => {
+                    stem_owner.insert(stem.clone(), file_path.clone());
+                }
             }
         }
+    }
+
+    // Insert bare-stem aliases only for stems unique across all collections.
+    // A relative key already occupying a bare-stem slot (a PNG sitting at the
+    // texture root with no collection — not the documented layout) is left
+    // intact rather than overwritten.
+    for (stem, path) in stem_owner {
+        if ambiguous_stems.contains(&stem) {
+            continue;
+        }
+        map.entry(stem).or_insert(path);
     }
 
     map
@@ -554,10 +640,25 @@ pub fn bake_texture_mips(
     let mut out: HashMap<String, [u8; 32]> = HashMap::with_capacity(texture_names.len());
 
     for name in texture_names {
-        let key_lower = name.to_lowercase();
-        let diff_path = name_to_path.get(&key_lower).cloned();
-        let spec_path = name_to_path.get(&format!("{key_lower}_s")).cloned();
-        let norm_path = name_to_path.get(&format!("{key_lower}_n")).cloned();
+        // Normalize the incoming map name: lowercase, backslashes → forward
+        // slashes, and strip a leading `textures/` (a no-op when absent) so a
+        // root-inclusive TrenchBroom name (`textures/collection/stem`) matches
+        // the relative keys (`collection/stem`).
+        let normalized = normalize_map_texture_name(name);
+
+        // Resolve the diffuse against the normalized relative name first; on a
+        // miss, fall back to the bare last path segment (back-compat alias).
+        // Sibling `_s`/`_n` keys append to the SAME form that resolved the
+        // diffuse, so siblings come from the same collection.
+        let (diff_path, resolved_base) = match name_to_path.get(&normalized) {
+            Some(p) => (Some(p.clone()), normalized.clone()),
+            None => {
+                let bare = bare_segment(&normalized).to_string();
+                (name_to_path.get(&bare).cloned(), bare)
+            }
+        };
+        let spec_path = name_to_path.get(&format!("{resolved_base}_s")).cloned();
+        let norm_path = name_to_path.get(&format!("{resolved_base}_n")).cloned();
 
         // Read raw bytes (needed for both filename key and bundle hash).
         let diff_bytes = match diff_path.as_ref() {
@@ -981,6 +1082,135 @@ mod tests {
     #[test]
     fn all_absent_key_is_zero() {
         assert_eq!(filename_key_for(None, None, None), [0u8; 32]);
+    }
+
+    /// Resolver coverage: a collection subdir with a diffuse, a `_s` specular
+    /// sibling, and a `_n` normal sibling must resolve through ALL three name
+    /// forms TrenchBroom might emit — bare `stem`, `collection/stem`, and
+    /// root-inclusive `textures/collection/stem` — to the same PNG, and the
+    /// resolved form must carry the `_s`/`_n` siblings from that collection.
+    #[test]
+    fn resolver_matches_bare_qualified_and_root_inclusive_forms() {
+        let root = std::env::temp_dir().join(format!(
+            "prl-build-resolver-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let collection = root.join("50-free-textures");
+        std::fs::create_dir_all(&collection).unwrap();
+
+        // Minimal valid 1×1 PNGs (content is irrelevant to path resolution).
+        let png_bytes = |label: u8| -> Vec<u8> {
+            let img = image::RgbaImage::from_pixel(1, 1, image::Rgba([label, 0, 0, 255]));
+            let mut buf = std::io::Cursor::new(Vec::new());
+            img.write_to(&mut buf, image::ImageFormat::Png).unwrap();
+            buf.into_inner()
+        };
+        let diff = collection.join("concrete_pavement_036.png");
+        let spec = collection.join("concrete_pavement_036_s.png");
+        let norm = collection.join("concrete_pavement_036_n.png");
+        std::fs::write(&diff, png_bytes(1)).unwrap();
+        std::fs::write(&spec, png_bytes(2)).unwrap();
+        std::fs::write(&norm, png_bytes(3)).unwrap();
+
+        let map = build_name_to_path_map(&root);
+
+        // Diffuse resolves via the relative key and the bare-stem alias.
+        assert_eq!(
+            map.get("50-free-textures/concrete_pavement_036"),
+            Some(&diff)
+        );
+        assert_eq!(map.get("concrete_pavement_036"), Some(&diff));
+
+        // Siblings resolve under the relative collection key.
+        assert_eq!(
+            map.get("50-free-textures/concrete_pavement_036_s"),
+            Some(&spec)
+        );
+        assert_eq!(
+            map.get("50-free-textures/concrete_pavement_036_n"),
+            Some(&norm)
+        );
+
+        // All three incoming name forms normalize to the relative key and
+        // therefore resolve to the diffuse and its siblings.
+        for incoming in [
+            "concrete_pavement_036",
+            "50-free-textures/concrete_pavement_036",
+            "textures/50-free-textures/concrete_pavement_036",
+            // Backslash + mixed case must also normalize.
+            "Textures\\50-Free-Textures\\Concrete_Pavement_036",
+        ] {
+            let normalized = normalize_map_texture_name(incoming);
+            let (diff_path, base) = match map.get(&normalized) {
+                Some(p) => (Some(p.clone()), normalized.clone()),
+                None => {
+                    let bare = bare_segment(&normalized).to_string();
+                    (map.get(&bare).cloned(), bare)
+                }
+            };
+            assert_eq!(
+                diff_path.as_ref(),
+                Some(&diff),
+                "diffuse for '{incoming}' should resolve to {}",
+                diff.display()
+            );
+            assert_eq!(
+                map.get(&format!("{base}_s")),
+                Some(&spec),
+                "specular sibling for '{incoming}' should resolve from the same collection"
+            );
+            assert_eq!(
+                map.get(&format!("{base}_n")),
+                Some(&norm),
+                "normal sibling for '{incoming}' should resolve from the same collection"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Bare-stem alias is disabled when the same stem exists in two
+    /// collections: only the collection-qualified keys resolve, and the bare
+    /// stem misses (no silent wrong-collection match).
+    #[test]
+    fn resolver_drops_ambiguous_bare_stem_alias() {
+        let root = std::env::temp_dir().join(format!(
+            "prl-build-resolver-ambig-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let coll_a = root.join("alpha");
+        let coll_b = root.join("beta");
+        std::fs::create_dir_all(&coll_a).unwrap();
+        std::fs::create_dir_all(&coll_b).unwrap();
+
+        let png = {
+            let img = image::RgbaImage::from_pixel(1, 1, image::Rgba([9, 0, 0, 255]));
+            let mut buf = std::io::Cursor::new(Vec::new());
+            img.write_to(&mut buf, image::ImageFormat::Png).unwrap();
+            buf.into_inner()
+        };
+        let a = coll_a.join("metal_panel.png");
+        let b = coll_b.join("metal_panel.png");
+        std::fs::write(&a, &png).unwrap();
+        std::fs::write(&b, &png).unwrap();
+
+        let map = build_name_to_path_map(&root);
+
+        // Both qualified keys present and unambiguous.
+        assert_eq!(map.get("alpha/metal_panel"), Some(&a));
+        assert_eq!(map.get("beta/metal_panel"), Some(&b));
+        // Bare-stem alias dropped: the bare name misses.
+        assert_eq!(map.get("metal_panel"), None);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Pins the bundle-hash wire format to a known byte sequence. A diffuse-only

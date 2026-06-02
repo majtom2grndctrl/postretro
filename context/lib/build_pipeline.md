@@ -183,7 +183,7 @@ Disk-backed content-hash cache that lets `prl-build` skip the two expensive bake
 
 **Stage version bump rule.** Bump a stage's `STAGE_VERSION` when its output computation changes (algorithm, sampling, formula, or atlas packing). The substrate invalidates every entry for that stage on the next build. Do not bump for unrelated changes. Each stage's current value lives as a `u32` constant in its own module — the source is authoritative; this doc does not pin the number.
 
-**Determinism invariant.** Both cached stages produce byte-identical output for identical inputs. Any new code in `lightmap_bake.rs` or `sh_bake.rs` must preserve this. Common non-determinism sources to avoid: `HashMap` iteration feeding output ordering, non-order-preserving parallel reductions.
+**Determinism invariant.** Both cached stages produce byte-identical output for identical inputs. Any new code in `lightmap_bake.rs` or `sh_bake.rs` must preserve this. Common non-determinism sources to avoid: `HashMap` iteration feeding output ordering, non-order-preserving parallel reductions. **Exception:** lossy compressed outputs (BC6H irradiance) are exempt — output bytes are an implementation detail; correctness is round-trip within tolerance, not byte-equality. The cache stays correct regardless, since it keys on inputs, not outputs.
 
 **CLI flags.**
 

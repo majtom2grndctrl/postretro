@@ -10,7 +10,7 @@ Lift the lightmap atlas resolution ceiling so baked lighting can resolve detail 
 
 - Raise the bake atlas cap from 4096 to 8192, with the runtime explicitly requiring and validating that device support.
 - Per-map density opt-in (`_lightmap_density` worldspawn KVP) so only fidelity-critical maps pay the higher cost; default stays 0.04 m/texel.
-- BC6H compression at rest for the irradiance atlas: deterministic bake-time encode, stored under the already-versioned `irradiance_format` tag, uploaded as a hardware-decoded, hardware-filterable BC6H texture. ~8× smaller on disk and in VRAM.
+- BC6H compression at rest for the irradiance atlas: bake-time encode, stored under the already-versioned `irradiance_format` tag, uploaded as a hardware-decoded, hardware-filterable BC6H texture. ~8× smaller on disk and in VRAM.
 - A single `STAGE_VERSION` bump so previously-coarsened maps re-bake instead of serving stale cache.
 - Quality + cost validation on the AMD Radeon Pro 5500M floor.
 
@@ -30,7 +30,7 @@ Lift the lightmap atlas resolution ceiling so baked lighting can resolve detail 
 - [ ] Atlas dimensions stay power-of-two and ≤ the cap; both width and height remain 4-aligned (BC6H block requirement; satisfied for free since dimensions are always power-of-two ≥ 4, so `ceil(w/4)` is exact).
 - [ ] Raising the cap bumps the lightmap `STAGE_VERSION`; the existing version-bump test passes against the new value (previously-coarsened maps re-key).
 - [ ] A worldspawn `_lightmap_density` value sets the bake density and re-keys the cache; absent, the bake uses 0.04; `--lightmap-density` overrides the KVP; non-finite/≤0 warns and falls back to default.
-- [ ] BC6H bake is byte-identical across two `--no-cache` processes on the same input (determinism invariant holds with the encoder in the path).
+- [ ] Two `--no-cache` bakes of the same input each decode within tolerance — byte-equality not required (lossy encode; output bytes are an implementation detail). The cache keys on inputs, so encoder non-determinism never mis-keys it.
 - [ ] BC6H round-trip error on a synthetic HDR irradiance gradient is within a fixed tolerance (per-channel max relative error threshold, asserted in a compiler test).
 - [ ] The lightmap PRL section round-trips `irradiance_format = BC6H`: `to_bytes`→`from_bytes` reproduces dimensions and the block-sized blob; `from_bytes` still accepts `irradiance_format = 0` (uncompressed).
 - [ ] Loading a BC6H lightmap section builds a `Bc6hRgbUfloat` texture bound as `Float { filterable: true }`; loading an uncompressed section still builds `Rgba16Float`. Both sample through the linear sampler.
@@ -76,7 +76,7 @@ Add the automated tests above (determinism, BC6H round-trip tolerance, section r
 - **Explicit device requirement:** add `max_texture_dimension_2d` to `required_limits` (`render/mod.rs:969-975`) and a pre-check beside `:980-1026`. Runtime atlas-fits-device guard mirrors `sh_volume.rs:283-300` (log + disable → flat ambient).
 - **STAGE_VERSION:** `lightmap_bake.rs:54` 6 → 7; add a changelog entry in the bump-convention comment. The existing bump-enforcing test re-keys.
 - **Format tag:** `IRRADIANCE_FORMAT_RGBA16F` (`crates/level-format/src/lightmap.rs:68`) already documents BC6H as the intended extension. Add `IRRADIANCE_FORMAT_BC6H = 1`; widen the `!= 0` rejection in `from_bytes`. Header layout (28 bytes) unchanged.
-- **Encoder:** a deterministic BC6H encoder (e.g. `intel_tex_2` ISPC bindings — confirm byte-determinism across runs as an AC). Mirror the BC5 block-size accounting at `loaded_texture.rs:140` (`ceil(w/4)·ceil(h/4)·16`).
+- **Encoder:** any BC6H encoder (e.g. `intel_tex_2` ISPC bindings) — byte-determinism not required (lossy; gated on round-trip tolerance). Mirror the BC5 block-size accounting at `loaded_texture.rs:140` (`ceil(w/4)·ceil(h/4)·16`).
 - **Runtime format branch:** `upload_irradiance_texture` (`lighting/lightmap.rs:227-251`) selects `Bc6hRgbUfloat` vs `Rgba16Float` by tag. BGL `Float { filterable: true }` (binding 0) unchanged — the BGL entry is sample-type only, so both `Rgba16Float` and `Bc6hRgbUfloat` bind to the same BGL and pipeline; the per-tag branch needs no second BGL/pipeline variant. wgpu 29: `Bc6hRgbUfloat` is filterable with no extra feature; hardware-decoded before filtering.
 
 ## Boundary inventory
@@ -93,6 +93,6 @@ Lightmap section (id 22) header stays 28 bytes, little-endian, unchanged in shap
 ## Open questions
 
 - **One plan or split.** Cap-raise + density (Tasks 1–2) is small; BC6H (Task 3) is the substantial, dependency-bearing piece. Kept together because compression is what makes the raised cap affordable to actually use — but Task 3 could split into its own spec if the encoder dependency or determinism work proves large.
-- **Encoder choice + determinism.** `intel_tex_2` (ISPC BC6H) is the likely pick; the plan hard-requires byte-identical output across runs (AC). If the chosen encoder isn't deterministic, this blocks Task 3 and needs an alternative (a pure-Rust BC6H encoder, or pinning encoder settings).
+- **Encoder choice.** `intel_tex_2` (ISPC BC6H) is the likely pick; final selection on quality and build-deps. Determinism is not a gate — lossy output bytes need not be reproducible (correctness is round-trip tolerance, not byte-equality).
 - **BC6H default on vs opt-in.** Proposed: BC6H is the default irradiance storage (8× win, HDR-appropriate, smooth low-frequency data compresses cleanly), uncompressed retained behind the tag for debugging. Revisit if quality validation surfaces banding on any representative level.
 - **Density opt-in surface.** Proposed `_lightmap_density` worldspawn KVP as the durable per-map authoring surface (CLI overrides). Alternative: CLI-only, deferring the KVP — simpler but the build-command-carried density is easy to forget.

@@ -43,7 +43,7 @@ use winit::window::{Window, WindowAttributes};
 
 use crate::camera::Camera;
 use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
-use crate::input::{Action, DiagnosticAction, InputFocus};
+use crate::input::{Action, ButtonState, DiagnosticAction, InputFocus};
 use crate::render::Renderer;
 use crate::scripting::builtins::{
     ClassnameDispatch, PLAYER_START_CLASSNAME, apply_classname_dispatch,
@@ -789,10 +789,17 @@ impl ApplicationHandler for App {
                         // Order 1: movement-component tick (all entities carrying
                         // PlayerMovementComponent, per entity_model.md §5).
                         let jump_pressed = snapshot.button(Action::Jump).is_active();
+                        // Dash is a true rising edge (only `Pressed`, not
+                        // `Held`): a held dash would re-fire every cooldown-ready
+                        // tick. This intentionally differs from `jump_pressed`'s
+                        // level signal. See `MovementInput::dash_pressed`.
+                        let dash_pressed =
+                            matches!(snapshot.button(Action::Dash), ButtonState::Pressed);
                         let movement_events = self.run_movement_tick(
                             forward_axis,
                             right_axis,
                             jump_pressed,
+                            dash_pressed,
                             sprint,
                             tick_dt,
                         );
@@ -1797,6 +1804,7 @@ impl App {
         forward_axis: f32,
         right_axis: f32,
         jump_pressed: bool,
+        dash_pressed: bool,
         running: bool,
         tick_dt: f32,
     ) -> Vec<&'static str> {
@@ -1828,6 +1836,7 @@ impl App {
         let input = MovementInput {
             wish_dir: glam::Vec2::new(right_axis, forward_axis),
             jump_pressed,
+            dash_pressed,
             running,
             facing_yaw: self.camera.yaw,
         };

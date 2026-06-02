@@ -15,6 +15,14 @@ use crate::scripting::components::player_movement::{MovementState, PlayerMovemen
 /// `GroundParams` if per-entity friction tuning becomes necessary.
 const GROUND_STOP_FRICTION: f32 = 6.0;
 
+/// Hard upper bound on how long the `Dash` state can persist, in milliseconds.
+/// A seamed engine constant (not a descriptor field): it bounds the state so a
+/// dash with high retained momentum or zero drag cannot linger indefinitely.
+/// When the elapsed-time guard reaches this, the dash exits into `Normal`
+/// regardless of speed. 200 ms ≈ 12 ticks at 60 Hz — a snappy Doom-Eternal /
+/// Titanfall-shaped burst.
+const DASH_MAX_MS: f32 = 200.0;
+
 /// Separation nudge along the contact normal applied when parry reports a
 /// TOI=0 hit during the slide loop. `SKIN_DISTANCE` (the sweep's
 /// `target_distance`) already provides geometric clearance — this nudge is a
@@ -51,6 +59,11 @@ const SLIDE_REMAINING_EPSILON_SQ: f32 = 1.0e-10;
 pub(crate) struct MovementInput {
     pub(crate) wish_dir: Vec2, // x = right, y = forward
     pub(crate) jump_pressed: bool,
+    /// Dash rising edge: TRUE only on the tick the dash button is first pressed,
+    /// not while held. Unlike `jump_pressed` (a level signal — `Pressed|Held`),
+    /// a held dash would re-fire every cooldown-ready tick, so the edge is
+    /// mandatory. The call site derives it from `ButtonState::Pressed` only.
+    pub(crate) dash_pressed: bool,
     /// Sprint held this tick. Selects `ground.speed.run` over `.walk` as the
     /// omnidirectional horizontal speed target; affects strafe and forward
     /// motion equally (standard shooter sprint, not forward-only).
@@ -661,10 +674,235 @@ fn normal_intent(
         }
     }
 
-    // `Normal` has no exit transitions yet — it is the only state. The plumbing
-    // in `tick` applies whatever a state returns here, so a later `Dash` plugs
-    // in without reshaping callers.
+    // `Normal` → `Dash`: fire on the dash rising edge when the cooldown is ready
+    // and — if airborne — an air-dash charge remains. Disabled when no
+    // `DashParams` is materialized (descriptor omitted `movement.dash`). The
+    // entry blends velocity (retained base + boost), applies `preserve_vertical`,
+    // consumes the airborne charge, and arms the cooldown; it returns the seeded
+    // `Dash` state for `tick` to apply after the substrate resolves collision.
+    if input.dash_pressed {
+        if let Some(next) = try_enter_dash(component, input) {
+            return Some(next);
+        }
+    }
+
     None
+}
+
+/// Attempt the `Normal` → `Dash` transition this tick. Returns the seeded `Dash`
+/// state when the dash fires, or `None` when it is suppressed (dash disabled,
+/// cooldown active, or airborne with no charge left).
+///
+/// Grounded vs airborne is read from the last-tick `is_grounded` flag — the same
+/// one-tick staleness the jump gate uses (acceptable, consistent tradeoff).
+/// Grounded dashes are gated by cooldown ONLY and consume no air-dash charge;
+/// airborne dashes additionally require (and consume) one air-dash charge.
+/// Cooldown applies to every dash.
+fn try_enter_dash(
+    component: &mut PlayerMovementComponent,
+    input: &MovementInput,
+) -> Option<MovementState> {
+    let dash = component.dash.as_ref()?;
+    if component.dash_cooldown_ms > 0.0 {
+        return None;
+    }
+    if !component.is_grounded {
+        // Airborne dash additionally requires (and consumes) one air-dash charge.
+        if component.air_dashes_remaining == 0 {
+            return None;
+        }
+        component.air_dashes_remaining -= 1;
+    }
+
+    let boost_speed = dash.boost_speed;
+    let momentum_retention = dash.momentum_retention;
+    let cooldown_ms = dash.cooldown_ms;
+    let preserve_vertical = dash.preserve_vertical;
+
+    // Dash direction: the player's input `wish_dir` when non-zero (already
+    // rotated into world space and normalized by `wish_dir_from_input`), else
+    // the pure `facing_yaw` forward direction.
+    let dash_dir = {
+        let from_input = wish_dir_from_input(input.wish_dir, input.facing_yaw);
+        if from_input.length_squared() > 0.0 {
+            from_input
+        } else {
+            let yaw = input.facing_yaw;
+            Vec3::new(-yaw.sin(), 0.0, -yaw.cos())
+        }
+    };
+
+    // Layered velocity (D4). The retained term is the BASE (keeps decaying under
+    // `Normal`'s friction during the dash); `dash_direction × boost_speed` is the
+    // additive BOOST layer that `dash_drag` decays. Entry horizontal velocity =
+    // base + boost. At `momentum_retention = 0` the dash replaces prior
+    // horizontal velocity; at `1` it is fully additive.
+    let prior_horiz = Vec3::new(component.velocity.x, 0.0, component.velocity.z);
+    let base = prior_horiz * momentum_retention;
+    let boost = dash_dir * boost_speed;
+    component.velocity.x = base.x + boost.x;
+    component.velocity.z = base.z + boost.z;
+
+    // `preserve_vertical` is applied ONCE on entry: false zeroes vertical
+    // velocity; true keeps the entering value (gravity resumes from there).
+    if !preserve_vertical {
+        component.velocity.y = 0.0;
+    }
+
+    // Arm the cooldown for every dash. It decrements unconditionally each tick in
+    // `tick`, outside the per-state dispatch.
+    component.dash_cooldown_ms = cooldown_ms;
+
+    Some(MovementState::Dash {
+        elapsed_ms: 0.0,
+        boost,
+    })
+}
+
+/// The `Dash` state's per-tick velocity intent. Gravity runs normally; the
+/// jump/air-jump branch is omitted. Input steering (`pm_accelerate`) is scaled by
+/// `steer_control` — omitted entirely at 0 (committed dash). Horizontal decay
+/// acts on the BOOST layer (D4); the retained base keeps decaying under
+/// `Normal`'s contextual friction throughout. Exits into `Normal` when total
+/// horizontal speed falls back into the steady band, or when the `DASH_MAX_MS`
+/// elapsed guard fires, whichever is first.
+fn dash_intent(
+    component: &mut PlayerMovementComponent,
+    input: &MovementInput,
+    gravity: f32,
+    dt: f32,
+    elapsed_ms: f32,
+    boost: Vec3,
+) -> Option<MovementState> {
+    // Dash params must exist to be in this state (entry required `Some`). A
+    // descriptor swap that cleared `dash` mid-dash drops back to `Normal` rather
+    // than panicking.
+    let Some(dash) = component.dash.as_ref() else {
+        return Some(MovementState::Normal);
+    };
+    let steer_control = dash.steer_control;
+    let dash_drag = dash.dash_drag;
+
+    // Gravity runs normally (FPS-shaped: the dash does not suspend it).
+    if !component.is_grounded {
+        component.velocity.y += gravity * dt;
+        let terminal = component.fall.terminal_velocity;
+        if component.velocity.y < -terminal {
+            component.velocity.y = -terminal;
+        }
+    }
+
+    let ground_speed = if input.running {
+        component.ground.speed.run
+    } else {
+        component.ground.speed.walk
+    };
+
+    // Input steering, scaled by `steer_control`. At 0 the term is omitted
+    // entirely (committed dash); at 1 it is `Normal`'s full `pm_accelerate`.
+    // Steering adds to the composite velocity (base-level authority); it does
+    // not feed the tracked boost layer.
+    let input_dir_3d = wish_dir_from_input(input.wish_dir, input.facing_yaw);
+    if steer_control > 0.0 && input_dir_3d.length_squared() > 0.0 {
+        let context_accel = if component.is_grounded {
+            component.ground.accel
+        } else {
+            component.air.accel
+        };
+        pm_accelerate(
+            &mut component.velocity,
+            input_dir_3d,
+            ground_speed,
+            context_accel * steer_control,
+            dt,
+        );
+    }
+
+    // Decay. The base is the composite horizontal velocity minus the tracked
+    // boost; only the boost is `dash_drag`-decayed, while the base always decays
+    // under `Normal`'s contextual friction/cap so it never lingers above the
+    // steady band.
+    let mut boost = boost;
+    let mut base = Vec3::new(
+        component.velocity.x - boost.x,
+        0.0,
+        component.velocity.z - boost.z,
+    );
+    apply_normal_horizontal_decay(&mut base, component, input, ground_speed, dt);
+
+    if dash_drag <= 0.0 {
+        // `dash_drag == 0`: the boost folds into `Normal`'s contextual decay —
+        // the dash bleeds off exactly as `Normal` momentum would (fast on the
+        // ground, slow in air). Decay the boost through the same friction/cap
+        // path as the base so the composite decays at `Normal`'s rate.
+        apply_normal_horizontal_decay(&mut boost, component, input, ground_speed, dt);
+    } else {
+        // `dash_drag > 0`: constant LINEAR deceleration of the boost only
+        // (world-units/sec², units consistent with `ground.accel`/`air.accel`),
+        // decoupled from friction context. LINEAR, not exponential.
+        let boost_speed = boost.length();
+        if boost_speed > 0.0 {
+            let new_speed = (boost_speed - dash_drag * dt).max(0.0);
+            boost *= new_speed / boost_speed;
+        }
+    }
+
+    component.velocity.x = base.x + boost.x;
+    component.velocity.z = base.z + boost.z;
+
+    // Exit: total horizontal speed back inside `Normal`'s steady band (run speed
+    // grounded / air cap airborne) OR the `DASH_MAX_MS` elapsed guard.
+    let elapsed_ms = elapsed_ms + dt * 1000.0;
+    let horiz_speed = (component.velocity.x * component.velocity.x
+        + component.velocity.z * component.velocity.z)
+        .sqrt();
+    let steady_cap = if component.is_grounded {
+        ground_speed
+    } else {
+        // Airborne steady band: the airborne horizontal cap. `Normal` caps air
+        // horizontal speed at `ground_speed` (run/walk) when `bunny_hop` is off,
+        // so use that as the band the dash decays back into.
+        ground_speed
+    };
+    if horiz_speed <= steady_cap || elapsed_ms >= DASH_MAX_MS {
+        return Some(MovementState::Normal);
+    }
+
+    Some(MovementState::Dash { elapsed_ms, boost })
+}
+
+/// Apply `Normal`'s contextual horizontal decay to a horizontal velocity vector
+/// in place: ground friction in the no-input case when grounded (mirroring
+/// `Normal` step 6), the airborne horizontal cap otherwise (mirroring steps
+/// 4/5). Reads the grounded flag and friction params off the component. Used by
+/// the dash decay step for both the retained base and (when `dash_drag == 0`)
+/// the boost layer.
+fn apply_normal_horizontal_decay(
+    velocity: &mut Vec3,
+    component: &PlayerMovementComponent,
+    input: &MovementInput,
+    ground_speed: f32,
+    dt: f32,
+) {
+    if component.is_grounded {
+        if input.wish_dir.length_squared() < 0.001 {
+            let h_speed = Vec2::new(velocity.x, velocity.z).length();
+            if h_speed > 0.0 {
+                let drop = h_speed * GROUND_STOP_FRICTION * dt;
+                let new_speed = (h_speed - drop).max(0.0);
+                let scale = new_speed / h_speed;
+                velocity.x *= scale;
+                velocity.z *= scale;
+            }
+        }
+    } else if !component.air.bunny_hop {
+        let h_speed = Vec2::new(velocity.x, velocity.z).length();
+        if h_speed > ground_speed {
+            let scale = ground_speed / h_speed;
+            velocity.x *= scale;
+            velocity.z *= scale;
+        }
+    }
 }
 
 pub(crate) fn tick(
@@ -684,6 +922,9 @@ pub(crate) fn tick(
     // transition to apply after the substrate resolves collision.
     let transition = match component.movement_state {
         MovementState::Normal => normal_intent(component, input, gravity, dt, &mut events),
+        MovementState::Dash { elapsed_ms, boost } => {
+            dash_intent(component, input, gravity, dt, elapsed_ms, boost)
+        }
     };
 
     // 7 + 8. Shared physics substrate: sweep-and-slide, step-up, floor-push,
@@ -717,6 +958,14 @@ pub(crate) fn tick(
         component.movement_state = next_state;
     }
 
+    // Decrement the dash cooldown UNCONDITIONALLY each tick, outside the
+    // per-state intent dispatch, so it advances in every state (including
+    // `Dash`) and never inside a state intent. Armed to `dash.cooldown_ms` on
+    // dash entry; counts down off the same `dt` (seconds → ms via `dt * 1000`).
+    if component.dash_cooldown_ms > 0.0 {
+        component.dash_cooldown_ms = (component.dash_cooldown_ms - dt * 1000.0).max(0.0);
+    }
+
     (current_pos, events)
 }
 
@@ -724,7 +973,8 @@ pub(crate) fn tick(
 mod tests {
     use super::*;
     use crate::scripting::data_descriptors::{
-        AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementDescriptor, SpeedParams,
+        AirParams, CapsuleParams, DashParams, FallParams, GroundParams, PlayerMovementDescriptor,
+        SpeedParams,
     };
     use parry3d::math::Isometry;
     use parry3d::shape::TriMesh;
@@ -884,6 +1134,7 @@ mod tests {
         let idle = MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -902,6 +1153,7 @@ mod tests {
         let walk = MovementInput {
             wish_dir: Vec2::new(1.0, 0.0),
             jump_pressed: false,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -952,6 +1204,7 @@ mod tests {
         let jump = MovementInput {
             wish_dir: Vec2::new(1.0, 0.0),
             jump_pressed: true,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -1116,6 +1369,7 @@ mod tests {
         let idle = MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -1124,6 +1378,7 @@ mod tests {
         let walk = MovementInput {
             wish_dir: Vec2::new(1.0, 0.0),
             jump_pressed: false,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -1178,6 +1433,7 @@ mod tests {
         let idle = MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -1186,6 +1442,7 @@ mod tests {
         let walk = MovementInput {
             wish_dir: Vec2::new(1.0, 0.0),
             jump_pressed: false,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -1201,6 +1458,7 @@ mod tests {
         let diag = MovementInput {
             wish_dir: Vec2::new(1.0, 1.0).normalize(),
             jump_pressed: false,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -1235,6 +1493,7 @@ mod tests {
         let idle = MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -1243,6 +1502,7 @@ mod tests {
         let walk = MovementInput {
             wish_dir: Vec2::new(1.0, 0.0),
             jump_pressed: false,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -1377,6 +1637,7 @@ mod tests {
         let idle = MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -1392,6 +1653,7 @@ mod tests {
         let walk = MovementInput {
             wish_dir: Vec2::new(1.0, 0.0),
             jump_pressed: false,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -1433,6 +1695,7 @@ mod tests {
         let idle = MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -1441,6 +1704,7 @@ mod tests {
         let walk = MovementInput {
             wish_dir: Vec2::new(1.0, 0.0),
             jump_pressed: false,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -1489,6 +1753,7 @@ mod tests {
         let idle = MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -1497,6 +1762,7 @@ mod tests {
         let diag = MovementInput {
             wish_dir: Vec2::new(1.0, 1.0).normalize(),
             jump_pressed: false,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -1591,6 +1857,7 @@ mod tests {
         let idle = MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -1601,6 +1868,7 @@ mod tests {
         let toward_corner = MovementInput {
             wish_dir: Vec2::new(1.0, -1.0).normalize(),
             jump_pressed: false,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -1710,6 +1978,7 @@ mod tests {
         let idle = MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -1718,6 +1987,7 @@ mod tests {
         let diag = MovementInput {
             wish_dir: Vec2::new(1.0, 1.0).normalize(),
             jump_pressed: false,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -1755,6 +2025,7 @@ mod tests {
         let idle = MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -1763,6 +2034,7 @@ mod tests {
         let walk = MovementInput {
             wish_dir: Vec2::new(1.0, 0.0),
             jump_pressed: false,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -1797,6 +2069,7 @@ mod tests {
         let idle = MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -1809,6 +2082,7 @@ mod tests {
         let mv = MovementInput {
             wish_dir: Vec2::new(0.0, -1.0),
             jump_pressed: false,
+            dash_pressed: false,
             running,
             facing_yaw: 0.0,
         };
@@ -1857,6 +2131,7 @@ mod tests {
         let idle = MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -1868,6 +2143,7 @@ mod tests {
         let run = MovementInput {
             wish_dir: Vec2::new(0.0, -1.0),
             jump_pressed: false,
+            dash_pressed: false,
             running: true,
             facing_yaw: 0.0,
         };
@@ -1886,6 +2162,7 @@ mod tests {
         let run_jump = MovementInput {
             wish_dir: Vec2::new(0.0, -1.0),
             jump_pressed: true,
+            dash_pressed: false,
             running: true,
             facing_yaw: 0.0,
         };
@@ -1933,12 +2210,14 @@ mod tests {
         let jump = MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: true,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
         let idle = MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -1966,6 +2245,7 @@ mod tests {
         let idle = MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -1986,6 +2266,7 @@ mod tests {
         let jump = MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: true,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -2046,6 +2327,7 @@ mod tests {
         let idle = MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -2057,6 +2339,7 @@ mod tests {
         let jump = MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: true,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -2101,6 +2384,7 @@ mod tests {
         let idle = MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -2110,6 +2394,7 @@ mod tests {
         let jump = MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: true,
+            dash_pressed: false,
             running: false,
             facing_yaw: 0.0,
         };
@@ -2155,5 +2440,786 @@ mod tests {
                 comp.velocity.y
             );
         }
+    }
+
+    // ---- Dash (Task 4) ----------------------------------------------------
+
+    /// Build a `DashParams` with the three orthogonal knobs explicit so each
+    /// dash test can place itself on the rigid↔fluid spectrum (D3).
+    fn dash_params(
+        boost_speed: f32,
+        momentum_retention: f32,
+        steer_control: f32,
+        dash_drag: f32,
+        cooldown_ms: f32,
+        air_dashes: u32,
+        preserve_vertical: bool,
+    ) -> DashParams {
+        DashParams {
+            boost_speed,
+            momentum_retention,
+            steer_control,
+            dash_drag,
+            cooldown_ms,
+            air_dashes,
+            preserve_vertical,
+        }
+    }
+
+    /// Canonical descriptor with a dash configured. Defaults to a committed,
+    /// rigid dash (no steer, no retention, finite drag); tests override the
+    /// `dash` field for the corner they exercise.
+    fn dash_descriptor(dash: DashParams) -> PlayerMovementDescriptor {
+        let mut desc = canonical_descriptor();
+        desc.dash = Some(dash);
+        desc
+    }
+
+    fn idle_input() -> MovementInput {
+        MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: false,
+            dash_pressed: false,
+            running: false,
+            facing_yaw: 0.0,
+        }
+    }
+
+    fn horiz_speed(comp: &PlayerMovementComponent) -> f32 {
+        (comp.velocity.x.powi(2) + comp.velocity.z.powi(2)).sqrt()
+    }
+
+    /// Settle the player on flat ground, then build up run speed along -Z (away
+    /// from the wall at x=5) so dash tests start from a known grounded velocity.
+    fn settle_and_run(
+        desc: &PlayerMovementDescriptor,
+        world: &CollisionWorld,
+        run_ticks_n: usize,
+    ) -> (PlayerMovementComponent, Vec3) {
+        let (mut comp, mut pos) = settle_player(desc);
+        run_ticks(&mut comp, world, &mut pos, 10, &idle_input());
+        let run = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: false,
+            dash_pressed: false,
+            running: true,
+            facing_yaw: 0.0,
+        };
+        run_ticks(&mut comp, world, &mut pos, run_ticks_n, &run);
+        (comp, pos)
+    }
+
+    // Fluid corner: momentumRetention=1, dashDrag=0. A dash in the direction of
+    // travel while already running stacks (peak exceeds a standing dash), then
+    // decays through Normal's ground friction back into the run-speed band, at
+    // which point control returns to Normal — before the DASH_MAX_MS guard.
+    #[test]
+    fn dash_fluid_corner_stacks_then_decays_into_band() {
+        let world = flat_floor_and_wall_world();
+        let desc = dash_descriptor(dash_params(8.0, 1.0, 0.0, 0.0, 0.0, 0, false));
+        let run_cap = desc.ground.speed.run; // 11.0
+
+        // Reference: a standing dash (no prior velocity) peaks at boost_speed.
+        let (mut standing, mut spos) = settle_player(&desc);
+        run_ticks(&mut standing, &world, &mut spos, 10, &idle_input());
+        let dash_in_place = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: false,
+            dash_pressed: true,
+            running: false,
+            facing_yaw: 0.0,
+        };
+        let _ = tick(&mut standing, &dash_in_place, &world, GRAVITY, DT, spos);
+        let standing_peak = horiz_speed(&standing);
+
+        // Running dash: build up to the run cap, then dash forward.
+        let (mut comp, mut pos) = settle_and_run(&desc, &world, 60);
+        let pre_dash = horiz_speed(&comp);
+        assert!(
+            pre_dash > desc.ground.speed.walk,
+            "setup: should be running above walk speed, got {pre_dash}"
+        );
+        let (next, _ev) = tick(&mut comp, &dash_in_place, &world, GRAVITY, DT, pos);
+        pos = next;
+        let running_peak = horiz_speed(&comp);
+        assert!(
+            matches!(comp.movement_state, MovementState::Dash { .. }),
+            "should have entered Dash"
+        );
+        assert!(
+            running_peak > standing_peak + 1.0,
+            "running dash should stack over a standing dash: running={running_peak}, standing={standing_peak}"
+        );
+
+        // Release directional input; ground friction bleeds the dash back into
+        // the run-speed band, at which point control returns to Normal.
+        let mut returned = false;
+        for _ in 0..30 {
+            let (next, _ev) = tick(&mut comp, &idle_input(), &world, GRAVITY, DT, pos);
+            pos = next;
+            if matches!(comp.movement_state, MovementState::Normal) {
+                returned = true;
+                break;
+            }
+        }
+        assert!(returned, "dash should decay back into Normal via friction");
+        assert!(
+            horiz_speed(&comp) <= run_cap + VEL_EPS,
+            "post-dash speed should be within the run band, got {}",
+            horiz_speed(&comp)
+        );
+    }
+
+    // Rigid corner: momentumRetention=0, steerControl=0, dashDrag>0. The dash
+    // outcome (peak speed and the linear dash_drag decay curve) is identical
+    // regardless of entry velocity — bit-exact repeatability.
+    #[test]
+    fn dash_rigid_corner_identical_regardless_of_entry_velocity() {
+        let world = flat_floor_and_wall_world();
+        let desc = dash_descriptor(dash_params(15.0, 0.0, 0.0, 30.0, 0.0, 0, false));
+        let dash = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: false,
+            dash_pressed: true,
+            running: false,
+            facing_yaw: 0.0,
+        };
+
+        // Capture the dash speed curve from a standing entry.
+        let (mut standing, mut spos) = settle_player(&desc);
+        run_ticks(&mut standing, &world, &mut spos, 10, &idle_input());
+        let mut standing_curve = Vec::new();
+        let (next, _ev) = tick(&mut standing, &dash, &world, GRAVITY, DT, spos);
+        spos = next;
+        standing_curve.push(horiz_speed(&standing));
+        for _ in 0..10 {
+            let (next, _ev) = tick(&mut standing, &idle_input(), &world, GRAVITY, DT, spos);
+            spos = next;
+            standing_curve.push(horiz_speed(&standing));
+        }
+
+        // Capture the same curve from a fast running entry.
+        let (mut running, mut rpos) = settle_and_run(&desc, &world, 60);
+        let mut running_curve = Vec::new();
+        let (next, _ev) = tick(&mut running, &dash, &world, GRAVITY, DT, rpos);
+        rpos = next;
+        running_curve.push(horiz_speed(&running));
+        for _ in 0..10 {
+            let (next, _ev) = tick(&mut running, &idle_input(), &world, GRAVITY, DT, rpos);
+            rpos = next;
+            running_curve.push(horiz_speed(&running));
+        }
+
+        // momentumRetention=0 ⇒ entry velocity is fully replaced; the dash speed
+        // curve is the same regardless of entry state. The two runs differ only
+        // by sub-millimetre collision-position float noise (each run is at a
+        // different world position), so compare within a tight epsilon rather
+        // than bit-for-bit.
+        for (i, (a, b)) in standing_curve.iter().zip(running_curve.iter()).enumerate() {
+            assert!(
+                approx_eq(*a, *b, 1.0e-2),
+                "rigid dash speed at step {i} must match regardless of entry: standing={a}, running={b}"
+            );
+        }
+    }
+
+    // steerControl: at 0 input does not alter the dash trajectory mid-dash
+    // (committed); at >0 input steers it. One test capturing the contrast.
+    #[test]
+    fn dash_steer_control_committed_vs_steerable() {
+        let world = flat_floor_and_wall_world();
+        // Dash forward (-Z) from a standing start; mid-dash hold a +X steer.
+        let steer_input = MovementInput {
+            wish_dir: Vec2::new(1.0, 0.0),
+            jump_pressed: false,
+            dash_pressed: false,
+            running: false,
+            facing_yaw: 0.0,
+        };
+        let dash_forward = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: false,
+            dash_pressed: true,
+            running: false,
+            facing_yaw: 0.0,
+        };
+
+        // Committed: steer_control = 0. Mid-dash +X input must not add +X
+        // velocity.
+        let committed_desc = dash_descriptor(dash_params(15.0, 0.0, 0.0, 20.0, 0.0, 0, false));
+        let (mut c, mut cpos) = settle_player(&committed_desc);
+        run_ticks(&mut c, &world, &mut cpos, 10, &idle_input());
+        let (next, _ev) = tick(&mut c, &dash_forward, &world, GRAVITY, DT, cpos);
+        cpos = next;
+        for _ in 0..4 {
+            let (next, _ev) = tick(&mut c, &steer_input, &world, GRAVITY, DT, cpos);
+            cpos = next;
+        }
+        let committed_vx = c.velocity.x;
+
+        // Steerable: steer_control = 1. The same mid-dash +X input adds +X
+        // velocity.
+        let steer_desc = dash_descriptor(dash_params(15.0, 0.0, 1.0, 20.0, 0.0, 0, false));
+        let (mut s, mut spos) = settle_player(&steer_desc);
+        run_ticks(&mut s, &world, &mut spos, 10, &idle_input());
+        let (next, _ev) = tick(&mut s, &dash_forward, &world, GRAVITY, DT, spos);
+        spos = next;
+        for _ in 0..4 {
+            let (next, _ev) = tick(&mut s, &steer_input, &world, GRAVITY, DT, spos);
+            spos = next;
+        }
+        let steered_vx = s.velocity.x;
+
+        assert!(
+            committed_vx.abs() < VEL_EPS,
+            "committed dash (steer_control=0) must not gain +X from mid-dash input, got vx={committed_vx}"
+        );
+        assert!(
+            steered_vx > 0.5,
+            "steerable dash (steer_control=1) should gain +X from mid-dash input, got vx={steered_vx}"
+        );
+    }
+
+    // momentumRetention: at 0 the dash replaces prior horizontal velocity
+    // (input+facing held constant ⇒ outcome independent of entry velocity); at 1
+    // it adds to prior horizontal velocity.
+    #[test]
+    fn dash_momentum_retention_replace_vs_additive() {
+        let world = flat_floor_and_wall_world();
+        let dash = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: false,
+            dash_pressed: true,
+            running: false,
+            facing_yaw: 0.0,
+        };
+
+        // Retention 0: a standing dash and a running dash reach the same peak
+        // (prior velocity replaced).
+        let replace_desc = dash_descriptor(dash_params(8.0, 0.0, 0.0, 20.0, 0.0, 0, false));
+        let (mut standing, mut sp) = settle_player(&replace_desc);
+        run_ticks(&mut standing, &world, &mut sp, 10, &idle_input());
+        let (next, _ev) = tick(&mut standing, &dash, &world, GRAVITY, DT, sp);
+        sp = next;
+        let replace_standing = horiz_speed(&standing);
+
+        let (mut running, mut rp) = settle_and_run(&replace_desc, &world, 60);
+        let (next, _ev) = tick(&mut running, &dash, &world, GRAVITY, DT, rp);
+        rp = next;
+        let replace_running = horiz_speed(&running);
+        assert!(
+            approx_eq(replace_standing, replace_running, VEL_EPS),
+            "retention=0: dash peak must be independent of entry velocity, standing={replace_standing}, running={replace_running}"
+        );
+        assert!(
+            approx_eq(replace_standing, 8.0, VEL_EPS),
+            "retention=0 standing dash peak should equal boost_speed=8.0, got {replace_standing}"
+        );
+
+        // Retention 1: a running dash adds the boost on top of prior velocity.
+        let add_desc = dash_descriptor(dash_params(8.0, 1.0, 0.0, 20.0, 0.0, 0, false));
+        let (mut running2, mut rp2) = settle_and_run(&add_desc, &world, 60);
+        let pre = horiz_speed(&running2);
+        let (next, _ev) = tick(&mut running2, &dash, &world, GRAVITY, DT, rp2);
+        rp2 = next;
+        let _ = rp2;
+        let add_running = horiz_speed(&running2);
+        assert!(
+            add_running > pre + 4.0,
+            "retention=1: dash should add to prior velocity (pre={pre}, peak={add_running})"
+        );
+    }
+
+    // Layered decay (D4): momentumRetention=1, dashDrag>0. Only the boost decays
+    // at the dash_drag rate while the retained base continues under Normal's
+    // friction; post-dash steady speed settles into Normal's band (the dash_drag
+    // bleed does NOT drag the retained base below it).
+    #[test]
+    fn dash_layered_decay_base_survives_boost_drag() {
+        let world = flat_floor_and_wall_world();
+        // High drag bleeds the boost fast; retention=1 keeps the run-speed base.
+        let desc = dash_descriptor(dash_params(8.0, 1.0, 0.0, 60.0, 0.0, 0, false));
+        let run_cap = desc.ground.speed.run;
+
+        // Build up to the run cap, then dash forward and KEEP running forward so
+        // the base is sustained by ground accel (no friction while input held).
+        let (mut comp, mut pos) = settle_and_run(&desc, &world, 60);
+        let dash_run = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: false,
+            dash_pressed: true,
+            running: true,
+            facing_yaw: 0.0,
+        };
+        let (next, _ev) = tick(&mut comp, &dash_run, &world, GRAVITY, DT, pos);
+        pos = next;
+        let peak = horiz_speed(&comp);
+        assert!(
+            peak > run_cap + 4.0,
+            "setup: dash should stack over the run cap, got {peak}"
+        );
+
+        // Continue running forward; the boost drags off but the base is held at
+        // the run cap by ongoing input.
+        let run = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: false,
+            dash_pressed: false,
+            running: true,
+            facing_yaw: 0.0,
+        };
+        let mut returned = false;
+        for _ in 0..30 {
+            let (next, _ev) = tick(&mut comp, &run, &world, GRAVITY, DT, pos);
+            pos = next;
+            if matches!(comp.movement_state, MovementState::Normal) {
+                returned = true;
+                break;
+            }
+        }
+        assert!(returned, "dash should exit once the boost has bled off");
+        let settled = horiz_speed(&comp);
+        // The retained base settles back at the run cap — the dash_drag bleed did
+        // not drag it below the band.
+        assert!(
+            approx_eq(settled, run_cap, 0.2),
+            "retained base should settle at the run cap {run_cap}, got {settled}"
+        );
+    }
+
+    // DASH_MAX_MS guard: the Dash state cannot persist past DASH_MAX_MS even if
+    // momentum stays high.
+    #[test]
+    fn dash_max_ms_guard_bounds_state() {
+        let world = flat_floor_and_wall_world();
+        // Zero drag + full retention + sustained input keeps speed pinned above
+        // the band indefinitely, so only the elapsed guard can end the dash.
+        let desc = dash_descriptor(dash_params(8.0, 1.0, 1.0, 0.0, 0.0, 0, false));
+        let (mut comp, mut pos) = settle_and_run(&desc, &world, 60);
+        let dash_run = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: false,
+            dash_pressed: true,
+            running: true,
+            facing_yaw: 0.0,
+        };
+        let (next, _ev) = tick(&mut comp, &dash_run, &world, GRAVITY, DT, pos);
+        pos = next;
+        assert!(matches!(comp.movement_state, MovementState::Dash { .. }));
+
+        // DASH_MAX_MS / (dt*1000) ticks bound the state. Run a few past that.
+        let max_ticks = (DASH_MAX_MS / (DT * 1000.0)).ceil() as usize;
+        let mut exited_by = None;
+        let run = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: false,
+            dash_pressed: false,
+            running: true,
+            facing_yaw: 0.0,
+        };
+        for i in 0..(max_ticks + 5) {
+            let (next, _ev) = tick(&mut comp, &run, &world, GRAVITY, DT, pos);
+            pos = next;
+            if matches!(comp.movement_state, MovementState::Normal) {
+                exited_by = Some(i + 1);
+                break;
+            }
+        }
+        let exit_tick = exited_by.expect("dash must exit by the DASH_MAX_MS guard");
+        // +1 for the entry tick already consumed above.
+        assert!(
+            exit_tick + 1 <= max_ticks + 1,
+            "dash exited after {} ticks; DASH_MAX_MS bounds it at ~{} ticks",
+            exit_tick + 1,
+            max_ticks
+        );
+    }
+
+    // Cooldown: a dash requested while cooldown is active is suppressed — no
+    // second impulse until the cooldown elapses.
+    #[test]
+    fn dash_cooldown_suppresses_until_elapsed() {
+        let world = flat_floor_and_wall_world();
+        // 500 ms cooldown, instant drag so the first dash ends quickly and we
+        // return to Normal while the cooldown is still counting down.
+        let desc = dash_descriptor(dash_params(12.0, 0.0, 0.0, 200.0, 500.0, 0, false));
+        let (mut comp, mut pos) = settle_player(&desc);
+        run_ticks(&mut comp, &world, &mut pos, 10, &idle_input());
+        // Zero wish_dir so the dash takes its direction from facing (forward =
+        // -Z) and the suppression check sees ONLY the dash impulse — no Normal
+        // locomotion accelerating the player when the dash is gated off.
+        let dash = MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: false,
+            dash_pressed: true,
+            running: false,
+            facing_yaw: 0.0,
+        };
+        let (next, _ev) = tick(&mut comp, &dash, &world, GRAVITY, DT, pos);
+        pos = next;
+        assert!(comp.dash_cooldown_ms > 0.0, "cooldown should be armed");
+
+        // Let the first dash decay back to Normal (drag is strong).
+        for _ in 0..20 {
+            let (next, _ev) = tick(&mut comp, &idle_input(), &world, GRAVITY, DT, pos);
+            pos = next;
+            if matches!(comp.movement_state, MovementState::Normal) {
+                break;
+            }
+        }
+        assert!(matches!(comp.movement_state, MovementState::Normal));
+        assert!(
+            comp.dash_cooldown_ms > 0.0,
+            "cooldown should still be active well within 500ms"
+        );
+
+        // Request a dash while the cooldown is active: suppressed.
+        let speed_before = horiz_speed(&comp);
+        let (next, _ev) = tick(&mut comp, &dash, &world, GRAVITY, DT, pos);
+        pos = next;
+        assert!(
+            matches!(comp.movement_state, MovementState::Normal),
+            "dash must be suppressed while cooldown is active"
+        );
+        assert!(
+            horiz_speed(&comp) <= speed_before + VEL_EPS,
+            "no dash impulse should be applied during cooldown"
+        );
+
+        // Run out the cooldown, then a fresh dash fires again.
+        for _ in 0..40 {
+            if comp.dash_cooldown_ms <= 0.0 {
+                break;
+            }
+            let (next, _ev) = tick(&mut comp, &idle_input(), &world, GRAVITY, DT, pos);
+            pos = next;
+        }
+        assert!(comp.dash_cooldown_ms <= 0.0, "cooldown should have elapsed");
+        let (next, _ev) = tick(&mut comp, &dash, &world, GRAVITY, DT, pos);
+        pos = next;
+        let _ = pos;
+        assert!(
+            matches!(comp.movement_state, MovementState::Dash { .. }),
+            "dash should fire again once the cooldown has elapsed"
+        );
+    }
+
+    // Rising edge: holding the dash button does not re-trigger after the
+    // cooldown elapses; only a fresh press fires. `dash_pressed` is a true rising
+    // edge derived at the call site, so a held button presents as a single
+    // `true` then `false` — modeled here by holding `dash_pressed = false` after
+    // the initial press.
+    #[test]
+    fn dash_rising_edge_held_button_does_not_refire() {
+        let world = flat_floor_and_wall_world();
+        // Short cooldown so it elapses within the test window.
+        let desc = dash_descriptor(dash_params(12.0, 0.0, 0.0, 200.0, 100.0, 0, false));
+        let (mut comp, mut pos) = settle_player(&desc);
+        run_ticks(&mut comp, &world, &mut pos, 10, &idle_input());
+
+        // Initial press: the rising edge fires the dash.
+        let press = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: false,
+            dash_pressed: true,
+            running: false,
+            facing_yaw: 0.0,
+        };
+        let (next, _ev) = tick(&mut comp, &press, &world, GRAVITY, DT, pos);
+        pos = next;
+        assert!(matches!(comp.movement_state, MovementState::Dash { .. }));
+
+        // The button stays physically held, but the call site only emits a
+        // rising edge once — so dash_pressed is false for the held duration.
+        // Run long enough for the dash to end AND the cooldown to elapse.
+        let held = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: false,
+            dash_pressed: false,
+            running: false,
+            facing_yaw: 0.0,
+        };
+        let mut redashed = false;
+        for _ in 0..60 {
+            let (next, _ev) = tick(&mut comp, &held, &world, GRAVITY, DT, pos);
+            pos = next;
+            if comp.dash_cooldown_ms <= 0.0
+                && matches!(comp.movement_state, MovementState::Dash { .. })
+            {
+                redashed = true;
+                break;
+            }
+        }
+        assert!(
+            !redashed,
+            "a held button (no fresh rising edge) must not re-trigger the dash after cooldown"
+        );
+        assert!(
+            comp.dash_cooldown_ms <= 0.0,
+            "setup: cooldown should have elapsed"
+        );
+
+        // A fresh press now fires again.
+        let (next, _ev) = tick(&mut comp, &press, &world, GRAVITY, DT, pos);
+        pos = next;
+        let _ = pos;
+        assert!(
+            matches!(comp.movement_state, MovementState::Dash { .. }),
+            "a fresh rising edge after cooldown should fire the dash"
+        );
+    }
+
+    /// Place the player high above the floor, airborne, with ability budgets
+    /// full — giving ample air time for several airborne dashes before the long
+    /// fall back to y=0. Avoids the short, altitude-sensitive window a single
+    /// jump provides (a horizontal dash that zeroes vy lands almost immediately
+    /// from a low apex). The first tick the test runs establishes the airborne
+    /// `is_grounded=false` flag via the substrate.
+    fn airborne_aloft(
+        desc: &PlayerMovementDescriptor,
+        world: &CollisionWorld,
+    ) -> (PlayerMovementComponent, Vec3) {
+        let mut comp = PlayerMovementComponent::from_descriptor(desc);
+        comp.is_grounded = false;
+        comp.air_ticks = 10; // already settled into the airborne regime
+        let mut pos = Vec3::new(0.0, 20.0, 0.0);
+        // A few idle ticks let the substrate confirm airborne and build up a
+        // clearly-nonzero downward vy (so preserve-vertical tests can tell a
+        // retained fall from a zeroed one).
+        run_ticks(&mut comp, world, &mut pos, 8, &idle_input());
+        (comp, pos)
+    }
+
+    // Air-dash budget: dashes fire while airborne up to the configured budget,
+    // are exhausted after that many airborne dashes, and are restored on landing.
+    #[test]
+    fn dash_air_budget_exhausts_then_restores_on_landing() {
+        let world = flat_floor_and_wall_world();
+        // 2 air dashes, no cooldown so the budget (not cooldown) is the gate.
+        let desc = dash_descriptor(dash_params(10.0, 0.0, 0.0, 50.0, 0.0, 2, false));
+        let (mut comp, mut pos) = airborne_aloft(&desc, &world);
+        assert!(!comp.is_grounded, "setup: should be airborne");
+        assert_eq!(comp.air_dashes_remaining, 2, "budget starts full aloft");
+
+        let air_dash = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: false,
+            dash_pressed: true,
+            running: false,
+            facing_yaw: 0.0,
+        };
+
+        // First airborne dash consumes one charge.
+        let (next, _ev) = tick(&mut comp, &air_dash, &world, GRAVITY, DT, pos);
+        pos = next;
+        assert!(matches!(comp.movement_state, MovementState::Dash { .. }));
+        assert_eq!(
+            comp.air_dashes_remaining, 1,
+            "first air-dash consumes a charge"
+        );
+
+        // Return to Normal (drag bleeds the dash) so the next press is a fresh
+        // Normal→Dash transition, still airborne.
+        for _ in 0..20 {
+            let (next, _ev) = tick(&mut comp, &idle_input(), &world, GRAVITY, DT, pos);
+            pos = next;
+            if matches!(comp.movement_state, MovementState::Normal) {
+                break;
+            }
+        }
+        assert!(
+            !comp.is_grounded,
+            "setup: still airborne for the second dash"
+        );
+
+        // Second airborne dash consumes the last charge.
+        let (next, _ev) = tick(&mut comp, &air_dash, &world, GRAVITY, DT, pos);
+        pos = next;
+        assert_eq!(
+            comp.air_dashes_remaining, 0,
+            "second air-dash exhausts the budget"
+        );
+
+        for _ in 0..20 {
+            let (next, _ev) = tick(&mut comp, &idle_input(), &world, GRAVITY, DT, pos);
+            pos = next;
+            if matches!(comp.movement_state, MovementState::Normal) {
+                break;
+            }
+        }
+        assert!(
+            !comp.is_grounded,
+            "setup: still airborne for the exhausted attempt"
+        );
+
+        // Third attempt while exhausted: suppressed.
+        let (next, _ev) = tick(&mut comp, &air_dash, &world, GRAVITY, DT, pos);
+        pos = next;
+        assert!(
+            matches!(comp.movement_state, MovementState::Normal),
+            "an airborne dash must not fire with an exhausted budget"
+        );
+
+        // Fall and land; the budget is restored through refresh_on_landing.
+        for _ in 0..180 {
+            let (next, _ev) = tick(&mut comp, &idle_input(), &world, GRAVITY, DT, pos);
+            pos = next;
+            if comp.is_grounded {
+                break;
+            }
+        }
+        assert!(comp.is_grounded, "setup: player should have landed");
+        assert_eq!(
+            comp.air_dashes_remaining, 2,
+            "landing should restore the air-dash budget"
+        );
+    }
+
+    // Landing-tick: a dash fired on the landing tick consumes an air-dash charge
+    // in the intent/transition step (classified airborne via the stale last-tick
+    // `is_grounded` flag); the landing-refresh runs AFTERWARD in the
+    // substrate-result step and restores the full budget — observable after the
+    // tick.
+    #[test]
+    fn dash_on_landing_tick_consumes_then_refreshes() {
+        let world = flat_floor_and_wall_world();
+        // 2 air dashes so a consumed charge (→1) is distinct from a full budget
+        // (→2). preserve_vertical so the entering downward velocity carries the
+        // capsule into the floor on this single landing tick.
+        let desc = dash_descriptor(dash_params(10.0, 0.0, 0.0, 50.0, 0.0, 2, true));
+        let floor_y = desc.capsule.half_height + desc.capsule.radius;
+
+        let mut comp = PlayerMovementComponent::from_descriptor(&desc);
+        comp.is_grounded = false; // last-tick flag is airborne (stale on landing)
+        comp.air_ticks = 5;
+        comp.air_dashes_remaining = 2; // budget full entering the landing tick
+        // A hair above the floor with a downward velocity so this single tick's
+        // sweep registers floor contact (the landing tick).
+        let pos = Vec3::new(0.0, floor_y + 0.02, 0.0);
+        comp.velocity = Vec3::new(0.0, -2.0, 0.0);
+
+        let air_dash = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: false,
+            dash_pressed: true,
+            running: false,
+            facing_yaw: 0.0,
+        };
+        let (_next, _ev) = tick(&mut comp, &air_dash, &world, GRAVITY, DT, pos);
+
+        // The dash fired (stale flag was airborne) and consumed one charge in the
+        // intent step; refresh_on_landing then restored the full budget in the
+        // substrate-result step, so the observable post-tick budget is full (2).
+        assert!(
+            comp.is_grounded,
+            "setup: this tick should have landed the player"
+        );
+        assert_eq!(
+            comp.air_dashes_remaining, 2,
+            "landing-tick dash spends a charge in the intent step, then the \
+             landing-refresh restores the full budget"
+        );
+    }
+
+    // Disabled: absent DashParams ⇒ Normal→Dash never fires, no impulse
+    // regardless of input.
+    #[test]
+    fn dash_disabled_when_no_params() {
+        let world = flat_floor_and_wall_world();
+        let desc = canonical_descriptor();
+        assert!(desc.dash.is_none(), "canonical descriptor has no dash");
+        let (mut comp, mut pos) = settle_player(&desc);
+        run_ticks(&mut comp, &world, &mut pos, 10, &idle_input());
+
+        let speed_before = horiz_speed(&comp);
+        // Zero wish_dir: with dash disabled and no locomotion input, any speed
+        // gain could only come from a (forbidden) dash impulse.
+        let dash = MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: false,
+            dash_pressed: true,
+            running: false,
+            facing_yaw: 0.0,
+        };
+        for _ in 0..10 {
+            let (next, _ev) = tick(&mut comp, &dash, &world, GRAVITY, DT, pos);
+            pos = next;
+            assert!(
+                matches!(comp.movement_state, MovementState::Normal),
+                "dash must never fire when DashParams is absent"
+            );
+        }
+        assert!(
+            horiz_speed(&comp) <= speed_before + VEL_EPS,
+            "no dash impulse should ever be applied with dash disabled"
+        );
+    }
+
+    // preserveVertical: on an airborne dash, false zeroes vertical velocity and
+    // true retains it (gravity then resumes).
+    #[test]
+    fn dash_preserve_vertical_airborne() {
+        let world = flat_floor_and_wall_world();
+
+        let air_dash = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: false,
+            dash_pressed: true,
+            running: false,
+            facing_yaw: 0.0,
+        };
+
+        // The dash ENTERS in `Normal`'s intent step, which zeroes/keeps vy at the
+        // very end of that tick; the dash's own gravity resumes the NEXT tick (in
+        // `dash_intent`). So the entry-tick result is exactly zeroed/retained, and
+        // a following tick shows gravity resume.
+
+        // preserve_vertical = false: vy is zeroed on entry.
+        let zero_desc = dash_descriptor(dash_params(10.0, 0.0, 0.0, 50.0, 0.0, 3, false));
+        let (mut z, zpos) = airborne_aloft(&zero_desc, &world);
+        // Aloft and falling: a clearly-nonzero downward vy distinguishes a
+        // zeroed entry from a retained one.
+        assert!(
+            z.velocity.y < -1.0,
+            "setup: should have a clearly-nonzero downward vy aloft, got {}",
+            z.velocity.y
+        );
+        let (znext, _ev) = tick(&mut z, &air_dash, &world, GRAVITY, DT, zpos);
+        assert!(
+            matches!(z.movement_state, MovementState::Dash { .. }),
+            "setup: airborne dash should have fired"
+        );
+        // Entry zeroed vy exactly.
+        assert!(
+            approx_eq(z.velocity.y, 0.0, VEL_EPS),
+            "preserve_vertical=false should zero entering vy, got {}",
+            z.velocity.y
+        );
+        // Gravity resumes the next (in-Dash) tick: vy goes negative again.
+        let (_n, _e) = tick(&mut z, &idle_input(), &world, GRAVITY, DT, znext);
+        assert!(
+            z.velocity.y < -VEL_EPS,
+            "gravity should resume after a zeroed-vertical dash entry, got {}",
+            z.velocity.y
+        );
+
+        // preserve_vertical = true: vy is retained on entry.
+        let keep_desc = dash_descriptor(dash_params(10.0, 0.0, 0.0, 50.0, 0.0, 3, true));
+        let (mut k, kpos) = airborne_aloft(&keep_desc, &world);
+        let vy_before = k.velocity.y;
+        assert!(
+            vy_before < -1.0,
+            "setup: downward vy aloft, got {vy_before}"
+        );
+        let (_knext, _ev) = tick(&mut k, &air_dash, &world, GRAVITY, DT, kpos);
+        // The entry runs inside `Normal`'s intent step, so Normal's gravity for
+        // this tick already advanced vy before the keep; the retained value is
+        // therefore `vy_before + g*dt`, clearly distinct from the false case's 0.
+        let expected = vy_before + GRAVITY * DT;
+        assert!(
+            approx_eq(k.velocity.y, expected, VEL_EPS),
+            "preserve_vertical=true should keep entering vy, expected ~{expected}, got {}",
+            k.velocity.y
+        );
     }
 }

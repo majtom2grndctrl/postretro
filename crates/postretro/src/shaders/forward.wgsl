@@ -711,8 +711,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let dom = decode_lightmap_direction(textureSample(lightmap_direction, lightmap_sampler, in.lightmap_uv));
         let n_dot_l_mesh = max(dot(mesh_n, dom), 0.0);
         let n_dot_l_bump = max(dot(N_bump, dom), 0.0);
-        // NDOTL_EPS ~10°: dominant-direction bake is unreliable below ~10° and
-        // a tighter epsilon lets the ratio produce brightness pops at near-grazing angles.
+        // NDOTL_EPS is a tight cosine floor (~0.57° from grazing) — a divide-by-zero
+        // guard, not a wide grazing-angle fade. It gates the correction off and floors
+        // the ratio denominator so the bumped/mesh NdotL ratio can't blow up when the
+        // dominant light is near-perpendicular to the mesh normal.
         const NDOTL_EPS: f32 = 1.0e-2;
         // Skip correction when irradiance is negligible — dominant direction is
         // unreliable for unlit texels.

@@ -2,7 +2,7 @@
 
 > **Read this when:** designing or extending player movement — states, abilities, the author/tuning surface, or anything in the `movement--*` spec series.
 > **Key invariant:** movement is custom kinematic, engine-internal, and authored declaratively. The player is a capsule whose velocity the engine sets each tick — never a simulated rigid body, never script-driven per tick.
-> **Related:** [Entity Model §5 update order, §7 collision, §7b component](./entity_model.md) · [Scripting](./scripting.md) · [Input](./input.md) · series spec: `plans/drafts/movement--state-machine/`
+> **Related:** [Entity Model §5 update order, §7 collision, §7b component](./entity_model.md) · [Scripting](./scripting.md) · [Input](./input.md) · series spec: `plans/ready/movement--state-machine/`
 
 ---
 

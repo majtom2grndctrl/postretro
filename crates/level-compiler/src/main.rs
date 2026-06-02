@@ -299,7 +299,18 @@ fn main() -> anyhow::Result<()> {
 
         if let Some(section) = cached_section {
             log::info!("[cache] lightmap hit");
-            let density = section.texel_density;
+            // A placeholder section (no static lights / empty atlas) stores a
+            // sentinel `texel_density` of 1.0 rather than the density the atlas
+            // was prepared at, so re-preparing from it would mis-size the atlas
+            // and the downstream animated chunk/weight-map inputs. The bake path
+            // prepares placeholder atlases at the configured density, so mirror
+            // that here. A real atlas carries its actual (possibly retry-escalated)
+            // density in the section, which stays authoritative.
+            let density = if section.width <= 1 && section.height <= 1 {
+                lightmap_config.lightmap_density
+            } else {
+                section.texel_density
+            };
             final_lightmap_density = density;
             let atlas =
                 lightmap_bake::prepare_atlas(&mut geo_result, &static_baked_lights, density)
@@ -539,9 +550,51 @@ fn main() -> anyhow::Result<()> {
             atlas_height,
             area_sample_count: args.soft_shadow_samples,
         };
-        Some(animated_light_weight_maps::bake_animated_light_weight_maps(
-            &wm_inputs,
-        ))
+
+        // Build the input hash from owned/serializable data. Charts, placements,
+        // and the chunk section don't derive `Serialize`, but they're all
+        // deterministically derived from geometry + lights + density, so folding
+        // the chunk-section bytes + geometry + density + lights + atlas dims +
+        // sample count fully captures the bake inputs.
+        let wm_input_hash = {
+            let mut buf = postcard::to_allocvec(&animated_chunk_lights)
+                .expect("postcard serialize animated_chunk_lights");
+            buf.extend_from_slice(
+                &postcard::to_allocvec(&geo_result.clone()).expect("postcard serialize geo_result"),
+            );
+            buf.extend_from_slice(&final_lightmap_density.to_le_bytes());
+            buf.extend_from_slice(&atlas_width.to_le_bytes());
+            buf.extend_from_slice(&atlas_height.to_le_bytes());
+            buf.extend_from_slice(&animated_light_chunks_section.to_bytes());
+            buf.extend_from_slice(&args.soft_shadow_samples.to_le_bytes());
+            *blake3::hash(&buf).as_bytes()
+        };
+        let wm_key = cache::CacheKey::new(
+            "animated_lm_weight_maps",
+            animated_light_weight_maps::STAGE_VERSION,
+            &wm_input_hash,
+        );
+
+        let cached = stage_cache.as_ref().and_then(|c| c.get(&wm_key));
+        let cached_wm_section = cached.and_then(|bytes| {
+            postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection::from_bytes(&bytes)
+                .map_err(|e| {
+                    log::warn!("[cache] corrupt animated_lm_weight_maps entry, re-baking: {e}")
+                })
+                .ok()
+        });
+
+        if let Some(section) = cached_wm_section {
+            log::info!("[cache] animated_lm_weight_maps hit");
+            Some(section)
+        } else {
+            log::info!("[cache] animated_lm_weight_maps miss");
+            let section = animated_light_weight_maps::bake_animated_light_weight_maps(&wm_inputs);
+            if let Some(ref c) = stage_cache {
+                c.put(&wm_key, &section.to_bytes());
+            }
+            Some(section)
+        }
     };
     timings.push(("AnimWeightMaps", stage_start.elapsed()));
 

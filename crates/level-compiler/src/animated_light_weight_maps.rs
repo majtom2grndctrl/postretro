@@ -36,16 +36,20 @@ const WEIGHT_EPSILON: f32 = 1.0e-6;
 /// v4 bump (baked-soft-lightmap-shadows Task 4): the binary `shadow_visible`
 /// membership gate was replaced with a soft area-light visibility fraction
 /// multiplied into `TexelLight.weight` (penumbra texels now carry fractional
-/// weight instead of a 0/1 include). This stage is currently uncached —
-/// invoked directly from `main.rs` with no `CacheKey`/`input_hash` round-trip,
-/// so no cache invalidation fires at compile time. The `CacheKey`/STAGE_VERSION
-/// contract is still exercised by `stage_version_bump_misses_then_hits` in
-/// this module's test suite, anchoring the invariant if a cached path is added.
+/// weight instead of a 0/1 include).
 ///
 /// v5 bump (baked-soft-lightmap-shadows F1): `soft_visibility`'s probe set became
 /// a strided emitter subset, shifting the soft weight for some probe geometry.
-/// Bumped for consistency with `lightmap_bake`/`sh_bake`; this stage stays
-/// uncached, so the bump has no cache effect today (doc-marker only).
+/// Bumped for consistency with `lightmap_bake`/`sh_bake`.
+///
+/// This stage is now cached: `main.rs` wraps the bake in a `StageCache`
+/// get/insert round-trip under the `animated_lm_weight_maps` cache key, which
+/// folds this `STAGE_VERSION` in alongside the input hash — same shape as
+/// `lightmap_bake::STAGE_VERSION` and `sh_bake::STAGE_VERSION`. Bumping this
+/// constant invalidates every prior cache entry for the stage on the next
+/// build. The `CacheKey`/STAGE_VERSION contract is exercised by
+/// `stage_version_bump_misses_then_hits` and `stage_version_bump_changes_cache_key`
+/// in this module's test suite.
 pub const STAGE_VERSION: u32 = 5;
 
 pub struct WeightMapInputs<'a> {

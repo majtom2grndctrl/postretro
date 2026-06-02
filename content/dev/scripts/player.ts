@@ -9,7 +9,6 @@ export const playerEntity = defineEntity({
       ground: {
         speed: { walk: 7.0, run: 11.0 },
         accel: 8.0,
-        jumpVelocity: 9,
         stepHeight: 0.5,
         maxSlope: 45.0,
       },
@@ -19,6 +18,7 @@ export const playerEntity = defineEntity({
         maxControlSpeed: 2,
         bunnyHop: true,
         jumps: 0,
+        jumpVelocity: 9,
         jumpCeiling: 0.0,
       },
       fall: { terminalVelocity: 40.0 },

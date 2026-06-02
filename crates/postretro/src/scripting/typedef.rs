@@ -1281,8 +1281,6 @@ declare module \"postretro\" {
     speed: SpeedParams;
     /** Ground acceleration in world units/sec². */
     accel: number;
-    /** Vertical launch velocity applied on jump. */
-    jumpVelocity: number;
     /** Maximum step-up height in world units. */
     stepHeight: number;
     /** Maximum walkable slope in degrees; must lie in [0, 90]. */
@@ -1309,6 +1307,8 @@ declare module \"postretro\" {
     bunnyHop: boolean;
     /** Additional jumps allowed in air after the initial ground jump. 0 disables air jumps. */
     jumps: number;
+    /** Vertical launch velocity applied on jump. */
+    jumpVelocity: number;
     /** Maximum upward velocity an air jump can reach; required when `jumps > 0`. */
     jumpCeiling: number;
   };
@@ -1519,8 +1519,6 @@ export type GroundParams = {
   speed: SpeedParams,
   --- Ground acceleration in world units/sec².
   accel: number,
-  --- Vertical launch velocity applied on jump.
-  jumpVelocity: number,
   --- Maximum step-up height in world units.
   stepHeight: number,
   --- Maximum walkable slope in degrees; must lie in [0, 90].
@@ -1547,6 +1545,8 @@ export type AirParams = {
   bunnyHop: boolean,
   --- Additional jumps allowed in air after the initial ground jump. 0 disables air jumps.
   jumps: number,
+  --- Vertical launch velocity applied on jump.
+  jumpVelocity: number,
   --- Maximum upward velocity an air jump can reach; required when `jumps > 0`.
   jumpCeiling: number,
 }

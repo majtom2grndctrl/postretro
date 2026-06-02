@@ -604,7 +604,7 @@ fn normal_intent(
 
     // 2. Jump from grounded.
     if component.is_grounded && input.jump_pressed {
-        component.velocity.y = component.ground.jump_velocity;
+        component.velocity.y = component.air.jump_velocity;
         component.is_grounded = false;
         events.jumped = true;
     }
@@ -615,7 +615,7 @@ fn normal_intent(
     // ceiling gate (`velocity.y <= air.jump_ceiling`) keeps it from firing at
     // the top of the rising arc; the launch reuses the ground jump velocity.
     else if !component.is_grounded && input.jump_pressed && air_jump_ready(component) {
-        component.velocity.y = component.ground.jump_velocity;
+        component.velocity.y = component.air.jump_velocity;
         component.air_jumps_remaining -= 1;
         events.jumped = true;
     }
@@ -1081,7 +1081,6 @@ mod tests {
                     run: 11.0,
                 },
                 accel: 10.0,
-                jump_velocity: 5.5,
                 step_height: 0.3,
                 max_slope: 45.0,
             },
@@ -1091,6 +1090,7 @@ mod tests {
                 max_control_speed: 0.5,
                 bunny_hop: false,
                 jumps: 0,
+                jump_velocity: 5.5,
                 jump_ceiling: 0.0,
             },
             fall: FallParams {
@@ -1310,9 +1310,9 @@ mod tests {
                     comp.velocity.y
                 );
                 assert!(
-                    approx_eq(comp.velocity.y, desc.ground.jump_velocity, VEL_EPS),
+                    approx_eq(comp.velocity.y, desc.air.jump_velocity, VEL_EPS),
                     "vy after jump should equal jump_velocity={}, got {}",
-                    desc.ground.jump_velocity,
+                    desc.air.jump_velocity,
                     comp.velocity.y
                 );
                 jumped = true;
@@ -2393,9 +2393,9 @@ mod tests {
             "air-jump should consume exactly one charge"
         );
         assert!(
-            approx_eq(comp.velocity.y, desc.ground.jump_velocity, VEL_EPS),
+            approx_eq(comp.velocity.y, desc.air.jump_velocity, VEL_EPS),
             "air-jump should relaunch vy to jump_velocity={}, got {}",
-            desc.ground.jump_velocity,
+            desc.air.jump_velocity,
             comp.velocity.y
         );
     }

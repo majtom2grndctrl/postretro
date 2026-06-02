@@ -239,7 +239,6 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .doc("On-ground locomotion parameters. `maxSlope` is in degrees on the wire and converted to a cosine at materialization.")
         .field("speed", "SpeedParams", "Walk/run ground speeds in world units/sec.")
         .field("accel", "f32", "Ground acceleration in world units/sec².")
-        .field("jumpVelocity", "f32", "Vertical launch velocity applied on jump.")
         .field("stepHeight", "f32", "Maximum step-up height in world units.")
         .field("maxSlope", "f32", "Maximum walkable slope in degrees; must lie in [0, 90].")
         .finish();
@@ -257,6 +256,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("maxControlSpeed", "f32", "Speed cap that air-accel can push toward.")
         .field("bunnyHop", "bool", "Permit chained jumps on landing without releasing the jump input.")
         .field("jumps", "u32", "Additional jumps allowed in air after the initial ground jump. 0 disables air jumps.")
+        .field("jumpVelocity", "f32", "Vertical launch velocity applied on jump.")
         .field("jumpCeiling", "f32", "Maximum upward velocity an air jump can reach; required when `jumps > 0`.")
         .finish();
     registry

@@ -819,7 +819,6 @@ mod tests {
                         run: 11.0,
                     },
                     accel: 12.0,
-                    jump_velocity: 5.0,
                     step_height: 0.35,
                     max_slope: 45.0,
                 },
@@ -829,6 +828,7 @@ mod tests {
                     max_control_speed: 4.0,
                     bunny_hop: true,
                     jumps,
+                    jump_velocity: 5.0,
                     jump_ceiling: 2.0,
                 },
                 fall: FallParams {

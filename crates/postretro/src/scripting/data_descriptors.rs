@@ -238,7 +238,6 @@ pub(crate) struct CapsuleParams {
 pub(crate) struct GroundParams {
     pub(crate) speed: SpeedParams,
     pub(crate) accel: f32,
-    pub(crate) jump_velocity: f32,
     pub(crate) step_height: f32,
     pub(crate) max_slope: f32,
 }
@@ -261,6 +260,7 @@ pub(crate) struct AirParams {
     pub(crate) max_control_speed: f32,
     pub(crate) bunny_hop: bool,
     pub(crate) jumps: u32,
+    pub(crate) jump_velocity: f32,
     pub(crate) jump_ceiling: f32,
 }
 
@@ -709,10 +709,6 @@ fn movement_descriptor_from_js<'js>(
             get_required_f32_js(&ground_obj, "accel")?,
             "movement.ground.accel",
         )?,
-        jump_velocity: validate_non_negative_finite(
-            get_required_f32_js(&ground_obj, "jumpVelocity")?,
-            "movement.ground.jumpVelocity",
-        )?,
         step_height: validate_non_negative_finite(
             get_required_f32_js(&ground_obj, "stepHeight")?,
             "movement.ground.stepHeight",
@@ -758,6 +754,10 @@ fn movement_descriptor_from_js<'js>(
         )?,
         bunny_hop: get_required_bool_js(&air_obj, "bunnyHop")?,
         jumps,
+        jump_velocity: validate_non_negative_finite(
+            get_required_f32_js(&air_obj, "jumpVelocity")?,
+            "movement.air.jumpVelocity",
+        )?,
         jump_ceiling: if jumps > 0 || jump_ceiling_present {
             get_required_f32_js(&air_obj, "jumpCeiling")?
         } else {
@@ -1372,10 +1372,6 @@ fn movement_descriptor_from_lua(
             get_required_f32_lua(&ground_table, "accel")?,
             "movement.ground.accel",
         )?,
-        jump_velocity: validate_non_negative_finite(
-            get_required_f32_lua(&ground_table, "jumpVelocity")?,
-            "movement.ground.jumpVelocity",
-        )?,
         step_height: validate_non_negative_finite(
             get_required_f32_lua(&ground_table, "stepHeight")?,
             "movement.ground.stepHeight",
@@ -1413,6 +1409,10 @@ fn movement_descriptor_from_lua(
         )?,
         bunny_hop: get_required_bool_lua(&air_table, "bunnyHop")?,
         jumps,
+        jump_velocity: validate_non_negative_finite(
+            get_required_f32_lua(&air_table, "jumpVelocity")?,
+            "movement.air.jumpVelocity",
+        )?,
         jump_ceiling: if jumps > 0 || jump_ceiling_present {
             get_required_f32_lua(&air_table, "jumpCeiling")?
         } else {
@@ -2103,8 +2103,8 @@ mod tests {
         components: {
             movement: {
                 capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
-                ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
-                air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 },
+                ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
                 fall: { terminalVelocity: 40.0 }
             }
         }
@@ -2136,8 +2136,8 @@ mod tests {
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
-                    ground: { speed: { walk: 7.0 }, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
-                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 },
+                    ground: { speed: { walk: 7.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
                     fall: { terminalVelocity: 40.0 }
                 }
             }
@@ -2153,8 +2153,8 @@ mod tests {
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
-                    ground: { speed: { walk: 7.0, run: -1.0 }, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
-                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 },
+                    ground: { speed: { walk: 7.0, run: -1.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
                     fall: { terminalVelocity: 40.0 }
                 }
             }
@@ -2170,8 +2170,8 @@ mod tests {
             components = {
                 movement = {
                     capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 },
-                    ground = { speed = { walk = 7.0 }, accel = 10.0, jumpVelocity = 5.5, stepHeight = 0.3, maxSlope = 45.0 },
-                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpCeiling = 0.0 },
+                    ground = { speed = { walk = 7.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
+                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpVelocity = 5.5, jumpCeiling = 0.0 },
                     fall = { terminalVelocity = 40.0 }
                 }
             }
@@ -2188,8 +2188,8 @@ mod tests {
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
-                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
-                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, jumps: 0, jumpCeiling: 0.0 },
+                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
                     fall: { terminalVelocity: 40.0 }
                 }
             }
@@ -2205,8 +2205,8 @@ mod tests {
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
-                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
-                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 2 },
+                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 2, jumpVelocity: 5.5 },
                     fall: { terminalVelocity: 40.0 }
                 }
             }
@@ -2227,8 +2227,8 @@ mod tests {
             components: {
                 movement: {
                     capsule: { radius: 0.0, halfHeight: 0.8 },
-                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
-                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 },
+                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
                     fall: { terminalVelocity: 40.0 }
                 }
             }
@@ -2244,8 +2244,8 @@ mod tests {
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
-                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 95.0 },
-                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 },
+                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 95.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
                     fall: { terminalVelocity: 40.0 }
                 }
             }
@@ -2261,8 +2261,8 @@ mod tests {
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
-                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
-                    air: { forwardSteer: 1.5, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 },
+                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 1.5, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
                     fall: { terminalVelocity: 40.0 }
                 }
             }
@@ -2278,8 +2278,8 @@ mod tests {
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
-                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
-                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 },
+                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
                     fall: { terminalVelocity: 0.0 }
                 }
             }
@@ -2297,8 +2297,8 @@ mod tests {
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.0 },
-                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
-                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 },
+                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
                     fall: { terminalVelocity: 40.0 }
                 }
             }
@@ -2315,8 +2315,8 @@ mod tests {
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 1.5 },
-                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
-                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 },
+                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
                     fall: { terminalVelocity: 40.0 }
                 }
             }
@@ -2333,8 +2333,8 @@ mod tests {
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 1.2 },
-                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
-                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 },
+                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
                     fall: { terminalVelocity: 40.0 }
                 }
             }
@@ -2350,8 +2350,8 @@ mod tests {
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8 },
-                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
-                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 },
+                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
                     fall: { terminalVelocity: 40.0 }
                 }
             }
@@ -2367,8 +2367,8 @@ mod tests {
             components = {
                 movement = {
                     capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 },
-                    ground = { speed = { walk = 7.0, run = 11.0 }, accel = 10.0, jumpVelocity = 5.5, stepHeight = 0.3, maxSlope = 45.0 },
-                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpCeiling = 0.0 },
+                    ground = { speed = { walk = 7.0, run = 11.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
+                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpVelocity = 5.5, jumpCeiling = 0.0 },
                     fall = { terminalVelocity = 40.0 }
                 }
             }
@@ -2376,7 +2376,7 @@ mod tests {
         let d = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap());
         let m = d.movement.expect("movement present");
         assert_eq!(m.capsule.eye_height, 0.5);
-        assert_eq!(m.ground.jump_velocity, 5.5);
+        assert_eq!(m.air.jump_velocity, 5.5);
         assert_eq!(m.air.jumps, 0);
         assert_eq!(m.fall.terminal_velocity, 40.0);
     }
@@ -2388,8 +2388,8 @@ mod tests {
             components = {
                 movement = {
                     capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 1.5 },
-                    ground = { speed = { walk = 7.0, run = 11.0 }, accel = 10.0, jumpVelocity = 5.5, stepHeight = 0.3, maxSlope = 45.0 },
-                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpCeiling = 0.0 },
+                    ground = { speed = { walk = 7.0, run = 11.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
+                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpVelocity = 5.5, jumpCeiling = 0.0 },
                     fall = { terminalVelocity = 40.0 }
                 }
             }
@@ -2405,8 +2405,8 @@ mod tests {
             components = {
                 movement = {
                     capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 },
-                    ground = { speed = { walk = 7.0, run = 11.0 }, accel = 10.0, jumpVelocity = 5.5, stepHeight = 0.3, maxSlope = 45.0 },
-                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 2 },
+                    ground = { speed = { walk = 7.0, run = 11.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
+                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 2, jumpVelocity = 5.5 },
                     fall = { terminalVelocity = 40.0 }
                 }
             }
@@ -2426,8 +2426,8 @@ mod tests {
             canonicalName = "player",
             components = {
                 movement = {
-                    ground = { speed = { walk = 7.0, run = 11.0 }, accel = 10.0, jumpVelocity = 5.5, stepHeight = 0.3, maxSlope = 45.0 },
-                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpCeiling = 0.0 },
+                    ground = { speed = { walk = 7.0, run = 11.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
+                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpVelocity = 5.5, jumpCeiling = 0.0 },
                     fall = { terminalVelocity = 40.0 }
                 }
             }
@@ -2445,8 +2445,8 @@ mod tests {
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
-                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
-                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0 },
+                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5 },
                     fall: { terminalVelocity: 40.0 }
                 }
             }
@@ -2466,8 +2466,8 @@ mod tests {
             components = {
                 movement = {
                     capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 },
-                    ground = { speed = { walk = 7.0, run = 11.0 }, accel = 10.0, jumpVelocity = 5.5, stepHeight = 0.3, maxSlope = 45.0 },
-                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0 },
+                    ground = { speed = { walk = 7.0, run = 11.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
+                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpVelocity = 5.5 },
                     fall = { terminalVelocity = 40.0 }
                 }
             }
@@ -2499,8 +2499,8 @@ mod tests {
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
-                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
-                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 },
+                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
                     fall: { terminalVelocity: 40.0 },
                     stuckStopEnabled: false,
                     stuckStopThreshold: 0.005
@@ -2520,8 +2520,8 @@ mod tests {
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
-                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
-                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 },
+                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
                     fall: { terminalVelocity: 40.0 },
                     stuckStopThreshold: -0.1
                 }
@@ -2538,8 +2538,8 @@ mod tests {
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
-                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 },
-                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 },
+                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
                     fall: { terminalVelocity: 40.0 },
                     stuckStopEnabled: "yes"
                 }
@@ -2556,8 +2556,8 @@ mod tests {
             components = {
                 movement = {
                     capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 },
-                    ground = { speed = { walk = 7.0, run = 11.0 }, accel = 10.0, jumpVelocity = 5.5, stepHeight = 0.3, maxSlope = 45.0 },
-                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpCeiling = 0.0 },
+                    ground = { speed = { walk = 7.0, run = 11.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
+                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpVelocity = 5.5, jumpCeiling = 0.0 },
                     fall = { terminalVelocity = 40.0 }
                 }
             }
@@ -2575,8 +2575,8 @@ mod tests {
             components = {
                 movement = {
                     capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 },
-                    ground = { speed = { walk = 7.0, run = 11.0 }, accel = 10.0, jumpVelocity = 5.5, stepHeight = 0.3, maxSlope = 45.0 },
-                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpCeiling = 0.0 },
+                    ground = { speed = { walk = 7.0, run = 11.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
+                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpVelocity = 5.5, jumpCeiling = 0.0 },
                     fall = { terminalVelocity = 40.0 },
                     stuckStopEnabled = false,
                     stuckStopThreshold = 0.005
@@ -2596,8 +2596,8 @@ mod tests {
             components = {
                 movement = {
                     capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 },
-                    ground = { speed = { walk = 7.0, run = 11.0 }, accel = 10.0, jumpVelocity = 5.5, stepHeight = 0.3, maxSlope = 45.0 },
-                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpCeiling = 0.0 },
+                    ground = { speed = { walk = 7.0, run = 11.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
+                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpVelocity = 5.5, jumpCeiling = 0.0 },
                     fall = { terminalVelocity = 40.0 },
                     stuckStopThreshold = -0.1
                 }
@@ -2618,8 +2618,8 @@ mod tests {
                 components: {{
                     movement: {{
                         capsule: {{ radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 }},
-                        ground: {{ speed: {{ walk: 7.0, run: 11.0 }}, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 }},
-                        air: {{ forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 }},
+                        ground: {{ speed: {{ walk: 7.0, run: 11.0 }}, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 }},
+                        air: {{ forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 }},
                         fall: {{ terminalVelocity: 40.0 }},
                         dash: {dash_body}
                     }}
@@ -2636,8 +2636,8 @@ mod tests {
                 components = {{
                     movement = {{
                         capsule = {{ radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 }},
-                        ground = {{ speed = {{ walk = 7.0, run = 11.0 }}, accel = 10.0, jumpVelocity = 5.5, stepHeight = 0.3, maxSlope = 45.0 }},
-                        air = {{ forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpCeiling = 0.0 }},
+                        ground = {{ speed = {{ walk = 7.0, run = 11.0 }}, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 }},
+                        air = {{ forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpVelocity = 5.5, jumpCeiling = 0.0 }},
                         fall = {{ terminalVelocity = 40.0 }},
                         dash = {dash_body}
                     }}
@@ -2664,8 +2664,8 @@ mod tests {
             components = {
                 movement = {
                     capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 },
-                    ground = { speed = { walk = 7.0, run = 11.0 }, accel = 10.0, jumpVelocity = 5.5, stepHeight = 0.3, maxSlope = 45.0 },
-                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpCeiling = 0.0 },
+                    ground = { speed = { walk = 7.0, run = 11.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
+                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpVelocity = 5.5, jumpCeiling = 0.0 },
                     fall = { terminalVelocity = 40.0 }
                 }
             }

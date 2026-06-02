@@ -25,6 +25,14 @@ const GROUND_STOP_FRICTION: f32 = 6.0;
 /// Titanfall-shaped burst.
 const DASH_MAX_MS: f32 = 200.0;
 
+/// Fractional margin above the run cap before the held-input grounded
+/// over-speed bleed (`normal_intent` step 6) engages. `pm_accelerate`'s
+/// projection clamp leaves sub-unit floating-point overshoot just above the cap
+/// during normal running (~1e-4); reacting to that would perturb steady-state
+/// motion. Real banked momentum (a dash handing off above the cap) clears this
+/// margin by a wide margin, so 0.2 % cleanly separates signal from float noise.
+const OVERSPEED_BLEED_MARGIN: f32 = 1.002;
+
 /// Separation nudge along the contact normal applied when parry reports a
 /// TOI=0 hit during the slide loop. `SKIN_DISTANCE` (the sweep's
 /// `target_distance`) already provides geometric clearance — this nudge is a
@@ -660,15 +668,35 @@ fn normal_intent(
         }
     }
 
-    // 6. Friction on the ground when no input — simple linear velocity decay.
-    // Applied only in the no-input case so PM_Accelerate's projection cap
-    // continues to govern actively-driven motion.
+    // 6. Ground friction. With no directional input, bleed toward a stop. With
+    // input held, bleed only the *over-speed* above the run cap back toward the
+    // cap: `pm_accelerate` governs actively-driven motion up to the cap but
+    // cannot remove speed already above it, and the stop-friction is
+    // no-input-only. In normal play a grounded player never exceeds the cap, so
+    // the input-held branch is a no-op there; it exists so post-dash over-speed
+    // decays even while the stick is held, and a dash hands back into the steady
+    // band cleanly after the `DASH_MAX_MS` guard.
     if component.is_grounded && input.wish_dir.length_squared() < 0.001 {
         let horiz = Vec2::new(component.velocity.x, component.velocity.z);
         let h_speed = horiz.length();
         if h_speed > 0.0 {
             let drop = h_speed * GROUND_STOP_FRICTION * dt;
             let new_speed = (h_speed - drop).max(0.0);
+            let scale = new_speed / h_speed;
+            component.velocity.x *= scale;
+            component.velocity.z *= scale;
+        }
+    } else if component.is_grounded {
+        // Input held: `pm_accelerate` governs motion up to the run cap but cannot
+        // remove speed already above it, and the stop-friction above is
+        // no-input-only. Bleed only the *over-speed* above the cap back toward it
+        // so a dash (which deliberately exceeds the cap) decays even while the
+        // stick is held. The `OVERSPEED_BLEED_MARGIN` guard keeps this a no-op in
+        // normal play, where running sits at the cap modulo float overshoot.
+        let h_speed = Vec2::new(component.velocity.x, component.velocity.z).length();
+        if h_speed > ground_speed * OVERSPEED_BLEED_MARGIN {
+            let drop = (h_speed - ground_speed) * GROUND_STOP_FRICTION * dt;
+            let new_speed = (h_speed - drop).max(ground_speed);
             let scale = new_speed / h_speed;
             component.velocity.x *= scale;
             component.velocity.z *= scale;
@@ -832,11 +860,23 @@ fn dash_intent(
     apply_normal_horizontal_decay(&mut base, component, input, ground_speed, dt);
 
     if dash_drag <= 0.0 {
-        // `dash_drag == 0`: the boost folds into `Normal`'s contextual decay —
-        // the dash bleeds off exactly as `Normal` momentum would (fast on the
-        // ground, slow in air). Decay the boost through the same friction/cap
-        // path as the base so the composite decays at `Normal`'s rate.
-        apply_normal_horizontal_decay(&mut boost, component, input, ground_speed, dt);
+        // `dash_drag == 0`: the boost bleeds off as `Normal` momentum would —
+        // fast on the ground, slow in air. On the ground, decay the boost toward
+        // zero with ground friction *regardless of input*: `Normal`'s
+        // stop-friction is no-input-only (because `pm_accelerate` caps grounded
+        // speed), but the boost is deliberately above that cap, so a held stick
+        // must not freeze it. Airborne, fold into `Normal`'s contextual cap.
+        if component.is_grounded {
+            let bspeed = Vec2::new(boost.x, boost.z).length();
+            if bspeed > 0.0 {
+                let drop = bspeed * GROUND_STOP_FRICTION * dt;
+                let scale = (bspeed - drop).max(0.0) / bspeed;
+                boost.x *= scale;
+                boost.z *= scale;
+            }
+        } else {
+            apply_normal_horizontal_decay(&mut boost, component, input, ground_speed, dt);
+        }
     } else {
         // `dash_drag > 0`: constant LINEAR deceleration of the boost only
         // (world-units/sec², units consistent with `ground.accel`/`air.accel`),
@@ -2565,6 +2605,75 @@ mod tests {
         assert!(
             horiz_speed(&comp) <= run_cap + VEL_EPS,
             "post-dash speed should be within the run band, got {}",
+            horiz_speed(&comp)
+        );
+    }
+
+    // Regression: a grounded dash held in the move direction must decay back to
+    // the run cap even while the stick stays down. Ground friction used to be
+    // no-input-only (it relies on `pm_accelerate` to cap grounded speed), so a
+    // held-input dash — which is deliberately above the cap — stayed locked at
+    // boost speed indefinitely until the player released the button.
+    #[test]
+    fn dash_held_input_decays_back_to_run_speed_on_ground() {
+        let world = flat_floor_and_wall_world();
+        // dashDrag = 0 (decay through Normal friction), momentumRetention = 0.5,
+        // steerControl = 0.3 — the dev-player tuning that exposed the bug.
+        let desc = dash_descriptor(dash_params(22.0, 0.5, 0.3, 0.0, 0.0, 0, false));
+        let run_cap = desc.ground.speed.run;
+
+        let (mut comp, mut pos) = settle_and_run(&desc, &world, 60);
+        let dash_held = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: false,
+            dash_pressed: true,
+            running: true,
+            facing_yaw: 0.0,
+        };
+        let (next, _ev) = tick(&mut comp, &dash_held, &world, GRAVITY, DT, pos);
+        pos = next;
+        let peak = horiz_speed(&comp);
+        assert!(
+            peak > run_cap + 1.0,
+            "dash should briefly exceed the run cap, got {peak}"
+        );
+
+        // Keep holding the SAME direction. Only the first tick was the dash
+        // rising edge, so `dash_pressed` is false hereafter (no re-entry).
+        let hold = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: false,
+            dash_pressed: false,
+            running: true,
+            facing_yaw: 0.0,
+        };
+        // Keep holding the direction and confirm the speed bleeds back to the run
+        // cap *while still grounded* — the actual bug was a held-input grounded
+        // dash never decaying. Break as soon as it reaches the band on the ground;
+        // asserting the grounded state rules out the speed merely being clamped by
+        // the airborne cap if the player later runs off the floor edge.
+        let mut grounded_in_band = false;
+        for _ in 0..120 {
+            let (next, _ev) = tick(&mut comp, &hold, &world, GRAVITY, DT, pos);
+            pos = next;
+            if matches!(comp.movement_state, MovementState::Normal)
+                && comp.is_grounded
+                && horiz_speed(&comp) <= run_cap + 0.05
+            {
+                grounded_in_band = true;
+                break;
+            }
+        }
+        assert!(
+            grounded_in_band,
+            "held-input dash never bled back to the run cap on the ground; final speed {:.3}, grounded {}",
+            horiz_speed(&comp),
+            comp.is_grounded,
+        );
+        // It settles at the cap, not below — the stick is still held.
+        assert!(
+            horiz_speed(&comp) > run_cap - 1.0,
+            "held-input dash should hold the run cap, not slow further: {}",
             horiz_speed(&comp)
         );
     }

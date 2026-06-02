@@ -208,6 +208,10 @@ pub(crate) struct PlayerMovementDescriptor {
     /// Horizontal-displacement threshold (metres) gating the deadzone. See
     /// `PlayerMovementComponent` for tuning rationale. Defaults to `1.0e-3`.
     pub(crate) stuck_stop_threshold: f32,
+    /// Optional dash tuning. Absent ⇒ dash disabled (no `DashParams`
+    /// materialized). When present, all of its fields are required, matching
+    /// the present-then-all-required discipline of `ground`/`air`/`fall`.
+    pub(crate) dash: Option<DashParams>,
 }
 
 impl PlayerMovementDescriptor {
@@ -261,6 +265,28 @@ pub(crate) struct AirParams {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct FallParams {
     pub(crate) terminal_velocity: f32,
+}
+
+/// Dash tuning. Optional on [`PlayerMovementDescriptor`] (absent disables
+/// dash); when present, all fields are required and validated. Field names are
+/// camelCase on the wire (`boostSpeed`, `momentumRetention`, …) and snake_case
+/// in Rust. Stored later by `PlayerMovementComponent` as `Option<DashParams>`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct DashParams {
+    /// Impulse magnitude applied on dash, world-units/sec. Must be finite > 0.
+    pub(crate) boost_speed: f32,
+    /// Fraction of pre-dash momentum folded into the dash, unitless `[0, 1]`.
+    pub(crate) momentum_retention: f32,
+    /// In-dash steering authority, unitless `[0, 1]`.
+    pub(crate) steer_control: f32,
+    /// Decay rate of the dash impulse, world-units/sec². `0` is legitimate.
+    pub(crate) dash_drag: f32,
+    /// Cooldown between dashes in milliseconds. `0` is legitimate.
+    pub(crate) cooldown_ms: f32,
+    /// Number of air dashes allowed before landing.
+    pub(crate) air_dashes: u32,
+    /// Whether the dash preserves the pre-dash vertical velocity.
+    pub(crate) preserve_vertical: bool,
 }
 
 /// The full bundle returned by a level's `setupLevel(ctx)` export.
@@ -755,6 +781,22 @@ fn movement_descriptor_from_js<'js>(
         None => PlayerMovementDescriptor::DEFAULT_STUCK_STOP_THRESHOLD,
     };
 
+    // `dash` is optional: absence disables dash. When present, every field is
+    // required and validated, matching the ground/air/fall discipline.
+    let dash = if obj.contains_key("dash").map_err(js_err)? {
+        let raw: JsValue = obj.get("dash").map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            None
+        } else {
+            let dash_obj = Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
+                reason: "`movement.dash` must be an object".to_string(),
+            })?;
+            Some(dash_params_from_js(&dash_obj)?)
+        }
+    } else {
+        None
+    };
+
     Ok(PlayerMovementDescriptor {
         capsule,
         ground,
@@ -762,6 +804,53 @@ fn movement_descriptor_from_js<'js>(
         fall,
         stuck_stop_enabled,
         stuck_stop_threshold,
+        dash,
+    })
+}
+
+fn dash_params_from_js<'js>(obj: &Object<'js>) -> Result<DashParams, DescriptorError> {
+    let boost_speed = validate_positive_finite(
+        get_required_f32_js(obj, "boostSpeed")?,
+        "movement.dash.boostSpeed",
+    )?;
+    let momentum_retention = validate_in_range_finite(
+        get_required_f32_js(obj, "momentumRetention")?,
+        0.0,
+        1.0,
+        "movement.dash.momentumRetention",
+    )?;
+    let steer_control = validate_in_range_finite(
+        get_required_f32_js(obj, "steerControl")?,
+        0.0,
+        1.0,
+        "movement.dash.steerControl",
+    )?;
+    let dash_drag = validate_non_negative_finite(
+        get_required_f32_js(obj, "dashDrag")?,
+        "movement.dash.dashDrag",
+    )?;
+    let cooldown_ms = validate_non_negative_finite(
+        get_required_f32_js(obj, "cooldownMs")?,
+        "movement.dash.cooldownMs",
+    )?;
+    let air_dashes_value = get_required_f32_js(obj, "airDashes")?;
+    if !air_dashes_value.is_finite() || air_dashes_value < 0.0 || air_dashes_value.fract() != 0.0 {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`movement.dash.airDashes` must be a non-negative integer, got {air_dashes_value}"
+            ),
+        });
+    }
+    let air_dashes = air_dashes_value as u32;
+    let preserve_vertical = get_required_bool_js(obj, "preserveVertical")?;
+    Ok(DashParams {
+        boost_speed,
+        momentum_retention,
+        steer_control,
+        dash_drag,
+        cooldown_ms,
+        air_dashes,
+        preserve_vertical,
     })
 }
 
@@ -1345,6 +1434,23 @@ fn movement_descriptor_from_lua(
         None => PlayerMovementDescriptor::DEFAULT_STUCK_STOP_THRESHOLD,
     };
 
+    // `dash` is optional: absence disables dash. When present, every field is
+    // required and validated, mirroring the JS path.
+    let dash = if table.contains_key("dash").map_err(lua_err)? {
+        let raw: LuaValue = table.get("dash").map_err(lua_err)?;
+        match raw {
+            LuaValue::Nil => None,
+            LuaValue::Table(t) => Some(dash_params_from_lua(&t)?),
+            other => {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!("`movement.dash` must be a table, got {}", other.type_name()),
+                });
+            }
+        }
+    } else {
+        None
+    };
+
     Ok(PlayerMovementDescriptor {
         capsule,
         ground,
@@ -1352,6 +1458,45 @@ fn movement_descriptor_from_lua(
         fall,
         stuck_stop_enabled,
         stuck_stop_threshold,
+        dash,
+    })
+}
+
+fn dash_params_from_lua(table: &Table) -> Result<DashParams, DescriptorError> {
+    let boost_speed = validate_positive_finite(
+        get_required_f32_lua(table, "boostSpeed")?,
+        "movement.dash.boostSpeed",
+    )?;
+    let momentum_retention = validate_in_range_finite(
+        get_required_f32_lua(table, "momentumRetention")?,
+        0.0,
+        1.0,
+        "movement.dash.momentumRetention",
+    )?;
+    let steer_control = validate_in_range_finite(
+        get_required_f32_lua(table, "steerControl")?,
+        0.0,
+        1.0,
+        "movement.dash.steerControl",
+    )?;
+    let dash_drag = validate_non_negative_finite(
+        get_required_f32_lua(table, "dashDrag")?,
+        "movement.dash.dashDrag",
+    )?;
+    let cooldown_ms = validate_non_negative_finite(
+        get_required_f32_lua(table, "cooldownMs")?,
+        "movement.dash.cooldownMs",
+    )?;
+    let air_dashes = get_required_u32_lua(table, "airDashes")?;
+    let preserve_vertical = get_required_bool_lua(table, "preserveVertical")?;
+    Ok(DashParams {
+        boost_speed,
+        momentum_retention,
+        steer_control,
+        dash_drag,
+        cooldown_ms,
+        air_dashes,
+        preserve_vertical,
     })
 }
 
@@ -2458,5 +2603,301 @@ mod tests {
         }"#;
         let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
         assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    // --- DashParams parsing ------------------------------------------------
+
+    /// JS movement block with a `dash` sub-object spliced into the `movement`
+    /// object. `dash_body` is the inner `{ ... }` text (no `dash:` key).
+    fn js_movement_with_dash(dash_body: &str) -> String {
+        format!(
+            r#"({{
+                canonicalName: "player",
+                components: {{
+                    movement: {{
+                        capsule: {{ radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 }},
+                        ground: {{ speed: {{ walk: 7.0, run: 11.0 }}, accel: 10.0, jumpVelocity: 5.5, stepHeight: 0.3, maxSlope: 45.0 }},
+                        air: {{ forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpCeiling: 0.0 }},
+                        fall: {{ terminalVelocity: 40.0 }},
+                        dash: {dash_body}
+                    }}
+                }}
+            }})"#
+        )
+    }
+
+    /// Luau movement block with a `dash` sub-table spliced in.
+    fn lua_movement_with_dash(dash_body: &str) -> String {
+        format!(
+            r#"return {{
+                canonicalName = "player",
+                components = {{
+                    movement = {{
+                        capsule = {{ radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 }},
+                        ground = {{ speed = {{ walk = 7.0, run = 11.0 }}, accel = 10.0, jumpVelocity = 5.5, stepHeight = 0.3, maxSlope = 45.0 }},
+                        air = {{ forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpCeiling = 0.0 }},
+                        fall = {{ terminalVelocity = 40.0 }},
+                        dash = {dash_body}
+                    }}
+                }}
+            }}"#
+        )
+    }
+
+    const JS_DASH_FULL: &str = r#"{ boostSpeed: 18.0, momentumRetention: 0.5, steerControl: 0.25, dashDrag: 60.0, cooldownMs: 800.0, airDashes: 1, preserveVertical: false }"#;
+    const LUA_DASH_FULL: &str = r#"{ boostSpeed = 18.0, momentumRetention = 0.5, steerControl = 0.25, dashDrag = 60.0, cooldownMs = 800.0, airDashes = 1, preserveVertical = false }"#;
+
+    #[test]
+    fn js_movement_dash_absent_is_valid_and_disabled() {
+        let d = eval_js(JS_PLAYER_MOVEMENT, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap()
+        });
+        assert!(d.movement.expect("movement present").dash.is_none());
+    }
+
+    #[test]
+    fn lua_movement_dash_absent_is_valid_and_disabled() {
+        let src = r#"return {
+            canonicalName = "player",
+            components = {
+                movement = {
+                    capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 },
+                    ground = { speed = { walk = 7.0, run = 11.0 }, accel = 10.0, jumpVelocity = 5.5, stepHeight = 0.3, maxSlope = 45.0 },
+                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpCeiling = 0.0 },
+                    fall = { terminalVelocity = 40.0 }
+                }
+            }
+        }"#;
+        let d = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap());
+        assert!(d.movement.expect("movement present").dash.is_none());
+    }
+
+    #[test]
+    fn js_movement_dash_full_shape_parses() {
+        let src = js_movement_with_dash(JS_DASH_FULL);
+        let d = eval_js(&src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+        let dash = d.movement.unwrap().dash.expect("dash present");
+        assert_eq!(dash.boost_speed, 18.0);
+        assert_eq!(dash.momentum_retention, 0.5);
+        assert_eq!(dash.steer_control, 0.25);
+        assert_eq!(dash.dash_drag, 60.0);
+        assert_eq!(dash.cooldown_ms, 800.0);
+        assert_eq!(dash.air_dashes, 1);
+        assert!(!dash.preserve_vertical);
+    }
+
+    #[test]
+    fn lua_movement_dash_full_shape_parses() {
+        let src = lua_movement_with_dash(LUA_DASH_FULL);
+        let d = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap());
+        let dash = d.movement.unwrap().dash.expect("dash present");
+        assert_eq!(dash.boost_speed, 18.0);
+        assert_eq!(dash.momentum_retention, 0.5);
+        assert_eq!(dash.steer_control, 0.25);
+        assert_eq!(dash.dash_drag, 60.0);
+        assert_eq!(dash.cooldown_ms, 800.0);
+        assert_eq!(dash.air_dashes, 1);
+        assert!(!dash.preserve_vertical);
+    }
+
+    #[test]
+    fn js_movement_dash_zero_dash_drag_and_cooldown_accepted() {
+        // dashDrag and cooldownMs both legitimately permit 0.
+        let src = js_movement_with_dash(
+            r#"{ boostSpeed: 18.0, momentumRetention: 0.5, steerControl: 0.25, dashDrag: 0.0, cooldownMs: 0.0, airDashes: 0, preserveVertical: true }"#,
+        );
+        let d = eval_js(&src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+        let dash = d.movement.unwrap().dash.expect("dash present");
+        assert_eq!(dash.dash_drag, 0.0);
+        assert_eq!(dash.cooldown_ms, 0.0);
+        assert!(dash.preserve_vertical);
+    }
+
+    #[test]
+    fn js_movement_dash_boost_speed_zero_is_rejected() {
+        let src = js_movement_with_dash(
+            r#"{ boostSpeed: 0.0, momentumRetention: 0.5, steerControl: 0.25, dashDrag: 60.0, cooldownMs: 800.0, airDashes: 1, preserveVertical: false }"#,
+        );
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_dash_boost_speed_negative_is_rejected() {
+        let src = js_movement_with_dash(
+            r#"{ boostSpeed: -1.0, momentumRetention: 0.5, steerControl: 0.25, dashDrag: 60.0, cooldownMs: 800.0, airDashes: 1, preserveVertical: false }"#,
+        );
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_dash_momentum_retention_out_of_range_is_rejected() {
+        let src = js_movement_with_dash(
+            r#"{ boostSpeed: 18.0, momentumRetention: 1.5, steerControl: 0.25, dashDrag: 60.0, cooldownMs: 800.0, airDashes: 1, preserveVertical: false }"#,
+        );
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_dash_steer_control_out_of_range_is_rejected() {
+        let src = js_movement_with_dash(
+            r#"{ boostSpeed: 18.0, momentumRetention: 0.5, steerControl: -0.1, dashDrag: 60.0, cooldownMs: 800.0, airDashes: 1, preserveVertical: false }"#,
+        );
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_dash_negative_drag_is_rejected() {
+        let src = js_movement_with_dash(
+            r#"{ boostSpeed: 18.0, momentumRetention: 0.5, steerControl: 0.25, dashDrag: -1.0, cooldownMs: 800.0, airDashes: 1, preserveVertical: false }"#,
+        );
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_dash_negative_cooldown_is_rejected() {
+        let src = js_movement_with_dash(
+            r#"{ boostSpeed: 18.0, momentumRetention: 0.5, steerControl: 0.25, dashDrag: 60.0, cooldownMs: -5.0, airDashes: 1, preserveVertical: false }"#,
+        );
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_dash_air_dashes_non_integer_is_rejected() {
+        let src = js_movement_with_dash(
+            r#"{ boostSpeed: 18.0, momentumRetention: 0.5, steerControl: 0.25, dashDrag: 60.0, cooldownMs: 800.0, airDashes: 1.5, preserveVertical: false }"#,
+        );
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_dash_air_dashes_negative_is_rejected() {
+        let src = js_movement_with_dash(
+            r#"{ boostSpeed: 18.0, momentumRetention: 0.5, steerControl: 0.25, dashDrag: 60.0, cooldownMs: 800.0, airDashes: -1, preserveVertical: false }"#,
+        );
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_dash_preserve_vertical_wrong_type_is_rejected() {
+        let src = js_movement_with_dash(
+            r#"{ boostSpeed: 18.0, momentumRetention: 0.5, steerControl: 0.25, dashDrag: 60.0, cooldownMs: 800.0, airDashes: 1, preserveVertical: "yes" }"#,
+        );
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_dash_missing_field_reports_missing_field() {
+        // boostSpeed omitted.
+        let src = js_movement_with_dash(
+            r#"{ momentumRetention: 0.5, steerControl: 0.25, dashDrag: 60.0, cooldownMs: 800.0, airDashes: 1, preserveVertical: false }"#,
+        );
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert_eq!(
+            err,
+            DescriptorError::MissingField {
+                field: "boostSpeed",
+            }
+        );
+    }
+
+    #[test]
+    fn lua_movement_dash_boost_speed_zero_is_rejected() {
+        let src = lua_movement_with_dash(
+            r#"{ boostSpeed = 0.0, momentumRetention = 0.5, steerControl = 0.25, dashDrag = 60.0, cooldownMs = 800.0, airDashes = 1, preserveVertical = false }"#,
+        );
+        let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_movement_dash_steer_control_out_of_range_is_rejected() {
+        let src = lua_movement_with_dash(
+            r#"{ boostSpeed = 18.0, momentumRetention = 0.5, steerControl = 1.5, dashDrag = 60.0, cooldownMs = 800.0, airDashes = 1, preserveVertical = false }"#,
+        );
+        let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_movement_dash_negative_cooldown_is_rejected() {
+        let src = lua_movement_with_dash(
+            r#"{ boostSpeed = 18.0, momentumRetention = 0.5, steerControl = 0.25, dashDrag = 60.0, cooldownMs = -5.0, airDashes = 1, preserveVertical = false }"#,
+        );
+        let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_movement_dash_zero_drag_and_cooldown_accepted() {
+        let src = lua_movement_with_dash(
+            r#"{ boostSpeed = 18.0, momentumRetention = 0.5, steerControl = 0.25, dashDrag = 0.0, cooldownMs = 0.0, airDashes = 0, preserveVertical = true }"#,
+        );
+        let d = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap());
+        let dash = d.movement.unwrap().dash.expect("dash present");
+        assert_eq!(dash.dash_drag, 0.0);
+        assert_eq!(dash.cooldown_ms, 0.0);
+        assert_eq!(dash.air_dashes, 0);
+    }
+
+    #[test]
+    fn lua_movement_dash_air_dashes_non_integer_is_rejected() {
+        let src = lua_movement_with_dash(
+            r#"{ boostSpeed = 18.0, momentumRetention = 0.5, steerControl = 0.25, dashDrag = 60.0, cooldownMs = 800.0, airDashes = 1.5, preserveVertical = false }"#,
+        );
+        let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_movement_dash_preserve_vertical_wrong_type_is_rejected() {
+        let src = lua_movement_with_dash(
+            r#"{ boostSpeed = 18.0, momentumRetention = 0.5, steerControl = 0.25, dashDrag = 60.0, cooldownMs = 800.0, airDashes = 1, preserveVertical = "yes" }"#,
+        );
+        let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_movement_dash_missing_field_reports_missing_field() {
+        // preserveVertical omitted.
+        let src = lua_movement_with_dash(
+            r#"{ boostSpeed = 18.0, momentumRetention = 0.5, steerControl = 0.25, dashDrag = 60.0, cooldownMs = 800.0, airDashes = 1 }"#,
+        );
+        let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert_eq!(
+            err,
+            DescriptorError::MissingField {
+                field: "preserveVertical",
+            }
+        );
     }
 }

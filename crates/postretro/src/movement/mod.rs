@@ -533,6 +533,15 @@ fn integrate_collision(
     )
 }
 
+/// Air-jump (double-jump) gate: the airborne jump fires only while a charge
+/// remains in the budget AND upward velocity is still under `air.jump_ceiling`.
+/// The budget itself replenishes on floor contact via `refresh_on_landing`, so
+/// double-jump and the future air-dash budget reset through one mechanism. The
+/// ceiling rule keeps the charge from being spent at the apex of the rising arc.
+fn air_jump_ready(component: &PlayerMovementComponent) -> bool {
+    component.air_jumps_remaining > 0 && component.velocity.y <= component.air.jump_ceiling
+}
+
 /// The `Normal` state's per-tick velocity intent (movement-tick steps 1–6):
 /// gravity, jump/air-jump, ground/air acceleration, ground friction, and the
 /// airborne horizontal cap. This is the walk/run/jump/air-control baseline —
@@ -570,12 +579,13 @@ fn normal_intent(
         component.is_grounded = false;
         events.jumped = true;
     }
-    // 3. Air jump: gated on remaining count and ceiling on upward velocity.
-    else if !component.is_grounded
-        && input.jump_pressed
-        && component.air_jumps_remaining > 0
-        && component.velocity.y <= component.air.jump_ceiling
-    {
+    // 3. Air-jump (double-jump): a named airborne ability under the budget
+    // model. Consumes one charge from `air_jumps_remaining`, which refreshes
+    // uniformly on floor contact through `refresh_on_landing` (the single
+    // landing-refresh point shared with future air-budget abilities). The
+    // ceiling gate (`velocity.y <= air.jump_ceiling`) keeps it from firing at
+    // the top of the rising arc; the launch reuses the ground jump velocity.
+    else if !component.is_grounded && input.jump_pressed && air_jump_ready(component) {
         component.velocity.y = component.ground.jump_velocity;
         component.air_jumps_remaining -= 1;
         events.jumped = true;
@@ -755,7 +765,21 @@ mod tests {
             },
             stuck_stop_enabled: PlayerMovementDescriptor::DEFAULT_STUCK_STOP_ENABLED,
             stuck_stop_threshold: PlayerMovementDescriptor::DEFAULT_STUCK_STOP_THRESHOLD,
+            dash: None,
         }
+    }
+
+    /// Descriptor with the air-jump (double-jump) budget enabled: one air
+    /// charge and a finite upward-velocity ceiling. Mirrors the canonical
+    /// descriptor otherwise so the double-jump tests vary only the air-jump
+    /// fields under test. `jump_ceiling = 2.0` sits below the 5.5 jump launch
+    /// velocity, so the charge cannot be spent at the top of the rising arc but
+    /// fires once the arc has decayed past the ceiling (or while falling).
+    fn double_jump_descriptor() -> PlayerMovementDescriptor {
+        let mut desc = canonical_descriptor();
+        desc.air.jumps = 1;
+        desc.air.jump_ceiling = 2.0;
+        desc
     }
 
     /// Build a `CollisionWorld` containing:
@@ -1896,5 +1920,240 @@ mod tests {
             desc.ground.speed.run,
             h_air
         );
+    }
+
+    /// Drive the player off a grounded tick into a single jump and return once
+    /// airborne. Mirrors the grounded-tick search the other jump tests use so
+    /// flat-floor `is_grounded` blips don't desync the launch.
+    fn ground_jump_into_air(
+        comp: &mut PlayerMovementComponent,
+        world: &CollisionWorld,
+        pos: &mut Vec3,
+    ) {
+        let jump = MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: true,
+            running: false,
+            facing_yaw: 0.0,
+        };
+        let idle = MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: false,
+            running: false,
+            facing_yaw: 0.0,
+        };
+        for _ in 0..60 {
+            if comp.is_grounded {
+                let (next, ev) = tick(comp, &jump, world, GRAVITY, DT, *pos);
+                *pos = next;
+                assert!(ev.jumped, "grounded + jump_pressed should emit jumped");
+                return;
+            }
+            let (next, _ev) = tick(comp, &idle, world, GRAVITY, DT, *pos);
+            *pos = next;
+        }
+        panic!("expected a grounded tick within 60 attempts");
+    }
+
+    // Double-jump fires while airborne once the rising arc has decayed past the
+    // ceiling, consuming one air charge. Proves the named air-jump ability under
+    // the budget model: a second jump airborne, gated by `air.jump_ceiling`.
+    #[test]
+    fn air_jump_fires_second_jump_while_airborne_under_ceiling() {
+        let desc = double_jump_descriptor();
+        let world = flat_floor_and_wall_world();
+        let (mut comp, mut pos) = settle_player(&desc);
+        let idle = MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: false,
+            running: false,
+            facing_yaw: 0.0,
+        };
+        run_ticks(&mut comp, &world, &mut pos, 10, &idle);
+        assert_eq!(
+            comp.air_jumps_remaining, desc.air.jumps,
+            "budget should start full on the ground"
+        );
+
+        // First jump from the ground. Launch vy is 5.5, well above the 2.0
+        // ceiling, so the air-jump must NOT fire on the launch tick.
+        ground_jump_into_air(&mut comp, &world, &mut pos);
+        assert_eq!(
+            comp.air_jumps_remaining, desc.air.jumps,
+            "air-jump budget untouched by the ground jump"
+        );
+
+        let jump = MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: true,
+            running: false,
+            facing_yaw: 0.0,
+        };
+        // While vy is still above the ceiling, holding jump must not consume a
+        // charge (the ceiling gate blocks it).
+        let blocked = tick(&mut comp, &jump, &world, GRAVITY, DT, pos);
+        pos = blocked.0;
+        assert!(
+            comp.velocity.y > desc.air.jump_ceiling,
+            "setup: vy should still be above the ceiling one tick after launch, got {}",
+            comp.velocity.y
+        );
+        assert_eq!(
+            comp.air_jumps_remaining, desc.air.jumps,
+            "air-jump must not fire while vy is above the ceiling"
+        );
+
+        // Let gravity decay vy under the ceiling, holding jump released so the
+        // charge isn't spent the instant the ceiling is crossed.
+        for _ in 0..60 {
+            if comp.velocity.y <= desc.air.jump_ceiling {
+                break;
+            }
+            let (next, _ev) = tick(&mut comp, &idle, &world, GRAVITY, DT, pos);
+            pos = next;
+        }
+        assert!(
+            comp.velocity.y <= desc.air.jump_ceiling,
+            "setup: vy should have decayed under the ceiling, got {}",
+            comp.velocity.y
+        );
+        assert!(!comp.is_grounded, "setup: player must still be airborne");
+
+        // Now the air-jump fires: a charge is consumed and vy relaunches to the
+        // jump velocity.
+        let (_next, ev) = tick(&mut comp, &jump, &world, GRAVITY, DT, pos);
+        assert!(ev.jumped, "air-jump under the ceiling should emit jumped");
+        assert_eq!(
+            comp.air_jumps_remaining,
+            desc.air.jumps - 1,
+            "air-jump should consume exactly one charge"
+        );
+        assert!(
+            approx_eq(comp.velocity.y, desc.ground.jump_velocity, VEL_EPS),
+            "air-jump should relaunch vy to jump_velocity={}, got {}",
+            desc.ground.jump_velocity,
+            comp.velocity.y
+        );
+    }
+
+    // The air-jump budget replenishes on landing through `refresh_on_landing`:
+    // after spending the charge airborne, returning to the floor restores it.
+    #[test]
+    fn air_jump_budget_restored_on_landing() {
+        let desc = double_jump_descriptor();
+        let world = flat_floor_and_wall_world();
+        let (mut comp, mut pos) = settle_player(&desc);
+        let idle = MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: false,
+            running: false,
+            facing_yaw: 0.0,
+        };
+        run_ticks(&mut comp, &world, &mut pos, 10, &idle);
+
+        // Spend the air charge directly while airborne: jump, drop vy under the
+        // ceiling, then air-jump.
+        ground_jump_into_air(&mut comp, &world, &mut pos);
+        let jump = MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: true,
+            running: false,
+            facing_yaw: 0.0,
+        };
+        for _ in 0..60 {
+            if comp.velocity.y <= desc.air.jump_ceiling {
+                let (next, _ev) = tick(&mut comp, &jump, &world, GRAVITY, DT, pos);
+                pos = next;
+                break;
+            }
+            let (next, _ev) = tick(&mut comp, &idle, &world, GRAVITY, DT, pos);
+            pos = next;
+        }
+        assert_eq!(
+            comp.air_jumps_remaining, 0,
+            "setup: the single air charge should be spent"
+        );
+
+        // Fall and land; the landing-refresh point restores the budget.
+        for _ in 0..120 {
+            let (next, _ev) = tick(&mut comp, &idle, &world, GRAVITY, DT, pos);
+            pos = next;
+            if comp.is_grounded {
+                break;
+            }
+        }
+        assert!(comp.is_grounded, "setup: player should have landed");
+        assert_eq!(
+            comp.air_jumps_remaining, desc.air.jumps,
+            "landing should restore the air-jump budget via refresh_on_landing"
+        );
+    }
+
+    // Budget exhaustion: with a one-charge budget, a second airborne jump cannot
+    // fire until landing replenishes it. Proves the air-jump count gates repeated
+    // airborne jumps within one airborne window.
+    #[test]
+    fn air_jump_exhausts_after_configured_count() {
+        let desc = double_jump_descriptor();
+        assert_eq!(desc.air.jumps, 1, "fixture uses a one-charge budget");
+        let world = flat_floor_and_wall_world();
+        let (mut comp, mut pos) = settle_player(&desc);
+        let idle = MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: false,
+            running: false,
+            facing_yaw: 0.0,
+        };
+        run_ticks(&mut comp, &world, &mut pos, 10, &idle);
+
+        ground_jump_into_air(&mut comp, &world, &mut pos);
+        let jump = MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: true,
+            running: false,
+            facing_yaw: 0.0,
+        };
+
+        // Spend the only charge once vy is under the ceiling.
+        let mut spent = false;
+        for _ in 0..60 {
+            if comp.velocity.y <= desc.air.jump_ceiling {
+                let (next, ev) = tick(&mut comp, &jump, &world, GRAVITY, DT, pos);
+                pos = next;
+                assert!(ev.jumped, "first air-jump should fire");
+                spent = true;
+                break;
+            }
+            let (next, _ev) = tick(&mut comp, &idle, &world, GRAVITY, DT, pos);
+            pos = next;
+        }
+        assert!(spent, "setup: should have spent the air charge");
+        assert_eq!(comp.air_jumps_remaining, 0, "budget exhausted");
+
+        // Keep holding jump while airborne and under the ceiling: with the
+        // budget at zero, no further air-jump may fire until landing.
+        for _ in 0..30 {
+            if comp.is_grounded {
+                break;
+            }
+            let vy_before = comp.velocity.y;
+            let (next, ev) = tick(&mut comp, &jump, &world, GRAVITY, DT, pos);
+            pos = next;
+            assert!(
+                !ev.jumped,
+                "no air-jump should fire with an exhausted budget while airborne"
+            );
+            assert_eq!(
+                comp.air_jumps_remaining, 0,
+                "budget must stay exhausted until landing"
+            );
+            // Vy keeps decaying under gravity — it is not relaunched.
+            assert!(
+                comp.velocity.y < vy_before + VEL_EPS,
+                "vy should not relaunch with an exhausted budget: before={}, after={}",
+                vy_before,
+                comp.velocity.y
+            );
+        }
     }
 }

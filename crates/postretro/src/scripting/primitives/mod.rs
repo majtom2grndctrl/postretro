@@ -206,11 +206,16 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("PlayerMovementDescriptor")
-        .doc("Authored player-movement component preset. All four sub-objects are required when `movement` is present; the data-archetype spawn path materializes the runtime movement component from this.")
+        .doc("Authored player-movement component preset. The four core sub-objects (`capsule`/`ground`/`air`/`fall`) are required when `movement` is present; `dash` is optional. The data-archetype spawn path materializes the runtime movement component from this.")
         .field("capsule", "CapsuleParams", "Collision capsule shape.")
         .field("ground", "GroundParams", "On-ground locomotion parameters.")
         .field("air", "AirParams", "Mid-air control parameters.")
         .field("fall", "FallParams", "Falling parameters.")
+        .field(
+            "dash?",
+            "DashParams",
+            "Optional dash tuning. When omitted, dash is disabled. When present, all of its fields are required.",
+        )
         .field(
             "stuckStopEnabled?",
             "bool",
@@ -262,6 +267,17 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "f32",
             "Terminal downward fall speed in world units/sec. Must be > 0.",
         )
+        .finish();
+    registry
+        .register_type("DashParams")
+        .doc("Dash tuning. Optional on `PlayerMovementDescriptor` — when omitted, dash is disabled. When present, all fields are required and validated.")
+        .field("boostSpeed", "f32", "Impulse magnitude applied on dash in world units/sec. Must be finite > 0.")
+        .field("momentumRetention", "f32", "Fraction of pre-dash momentum folded into the dash, unitless in [0, 1].")
+        .field("steerControl", "f32", "In-dash steering authority, unitless in [0, 1].")
+        .field("dashDrag", "f32", "Decay rate of the dash impulse in world units/sec². Must be finite and ≥ 0.")
+        .field("cooldownMs", "f32", "Cooldown between dashes in milliseconds. Must be finite and ≥ 0.")
+        .field("airDashes", "u32", "Number of air dashes allowed before landing.")
+        .field("preserveVertical", "bool", "Whether the dash preserves the pre-dash vertical velocity.")
         .finish();
     registry
         .register_type("ModManifest")

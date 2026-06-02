@@ -190,6 +190,10 @@ pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> OctahedralSh
             }
             let pos = vec3_from(probe_positions[i]);
             let (coeffs, sum_d, sum_d2) =
+                // `i as u64` is the flat probe index used as a deterministic seed for the
+                // soft-visibility lattice rotation. Numeric collisions with delta_sh_bake's
+                // probe_index space are harmless — the two bakes write separate PRL sections
+                // and are never combined.
                 bake_probe_rgb_with_moments(inputs, pos, &static_lights, far_sentinel, i as u64);
             // All RAYS_PER_PROBE rays accumulate (sky misses via the sentinel),
             // so these are exact divisions by the constant.

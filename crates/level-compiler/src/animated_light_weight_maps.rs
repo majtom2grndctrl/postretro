@@ -314,8 +314,11 @@ fn bake_one_chunk(
 /// derived from a fixed integer hash of the texel's atlas coordinate `(x, y)`.
 /// No `RandomState`, no hash-order dependence — same `(x, y)` always yields the
 /// same seed, so the bake is byte-identical across processes. Mixing follows the
-/// SplitMix64 finalizer so adjacent texels decorrelate. Mirrors the static
-/// lightmap stage's "texel `(x, y)` hash" seeding convention.
+/// SplitMix64 finalizer so adjacent texels decorrelate.
+///
+/// The static lightmap stage seeds the same way (deterministic per-texel) but with
+/// a different mixer (FNV-1a). The two need not match: each stage bakes into its
+/// own INDEPENDENT atlas, so per-stage determinism is all that's required.
 fn soft_visibility_texel_seed(x: u32, y: u32) -> u64 {
     let mut z = ((x as u64) << 32) | (y as u64);
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);

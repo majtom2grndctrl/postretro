@@ -55,7 +55,7 @@ Radiates light in all directions from a single point.
 | `_dynamic` | 0/1 | `0` | `1` = dynamic light (runs at runtime, not baked). Use for lights that change during gameplay. |
 | `_bake_only` | 0/1 | `0` | `1` = contributes to the baked lightmap and SH volume only; no runtime presence. Good for ambient fill that doesn't need to affect gameplay. |
 
-**Static vs. dynamic:** By default, lights are baked into the lightmap and indirect lighting volume at compile time — they're essentially free at runtime and cast hard-pixel shadows, which looks great. Set `_dynamic 1` if you need a light to move, change intensity during play, or be spawned by a script.
+**Static vs. dynamic:** By default, lights are baked into the lightmap and indirect lighting volume at compile time — they're essentially free at runtime and cast soft baked shadows (penumbra width controlled by `_light_size`/`_angular_diameter`; set to `0` for the classic hard-pixel look). Set `_dynamic 1` if you need a light to move, change intensity during play, or be spawned by a script.
 
 ---
 

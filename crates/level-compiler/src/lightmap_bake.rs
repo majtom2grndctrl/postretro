@@ -46,7 +46,7 @@ pub const DEFAULT_TEXEL_DENSITY_METERS: f32 = 0.04;
 /// v6 bump (baked-soft-lightmap-shadows F1): `soft_visibility`'s probe set moved
 /// from the first `SOFT_PROBE_SAMPLES` contiguous lattice indices to an evenly
 /// **strided subset** so the cheap probes sample the whole emitter (not just its
-/// top cap). Penumbra texts the old clustered probes missed (occluders crossing
+/// top cap). Penumbra tests the old clustered probes missed (occluders crossing
 /// the emitter's lower hemisphere) now escalate and bake a fraction instead of a
 /// hard 0/1. The per-texel output shifts with NO input change (maps using the
 /// default light size have identical inputs), so the cache would serve stale
@@ -887,9 +887,13 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
 /// An FNV-1a hash of the atlas-space `(x, y)` — a fixed integer mix, never a
 /// `RandomState` or any hash whose seed varies between processes — so the bake is
 /// byte-identical across separate runs (the build cache reuses stored bytes
-/// verbatim and would break on any run-to-run drift). Mirrors `sh_bake.rs`'s
-/// fixed-constant sampling convention; `soft_visibility` XORs this with
-/// `SAMPLING_LATTICE_OFFSET` internally.
+/// verbatim and would break on any run-to-run drift); `soft_visibility` XORs this
+/// with `SAMPLING_LATTICE_OFFSET` internally.
+///
+/// The animated weight-map stage derives its own per-texel seed with a different
+/// mixer (SplitMix64). The two need not match: they bake into INDEPENDENT atlases,
+/// so each only needs to be deterministic within its own stage — not byte-identical
+/// to the other.
 fn texel_seed(x: u32, y: u32) -> u64 {
     const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -1017,17 +1021,49 @@ pub(crate) const DEFAULT_AREA_SAMPLE_COUNT: u32 = 32;
 /// The snap uses the same per-light-type mapping the actual sampling uses
 /// (`fibonacci_sphere_sample` for Point/Spot, `cone_jittered_direction` for
 /// Directional) so probes land on real sample directions of that emitter.
+///
+/// The returned indices are always **distinct**: a very narrow emitter collapses
+/// its ideal probe directions together, so the naive nearest-index snap can pick
+/// the same full-lattice index for several probes. A duplicate would be
+/// double-counted into `clear` while a never-probed index is dropped — and at the
+/// minimum sample count (`full_samples == SOFT_PROBE_SAMPLES`) escalation has
+/// nothing left to add, so a real sub-0.05° penumbra would early-out to a hard
+/// 0/1. The equal-count case returns the identity index set; the general case
+/// skips already-chosen indices when snapping.
 fn probe_indices(light: &MapLight, full_samples: u32) -> [u32; SOFT_PROBE_SAMPLES as usize] {
+    // Equal-count fast path: the probe set IS the full set, so no snapping is
+    // needed — and snapping would be unsafe here. For a near-zero-span emitter
+    // the `SOFT_PROBE_SAMPLES` ideal directions collapse together, so the nearest
+    // full-lattice index can be the *same* index for several probes (e.g. all four
+    // snap to `0` below ~0.03°). With `full_samples == SOFT_PROBE_SAMPLES` there is
+    // then nothing left for escalation to add, and a real penumbra early-outs to a
+    // hard 0/1. Returning the identity `[0, 1, …, N-1]` keeps all probes distinct.
+    if full_samples == SOFT_PROBE_SAMPLES {
+        let mut out = [0u32; SOFT_PROBE_SAMPLES as usize];
+        for (k, slot) in out.iter_mut().enumerate() {
+            *slot = k as u32;
+        }
+        return out;
+    }
+
     let mut out = [0u32; SOFT_PROBE_SAMPLES as usize];
-    for (k, slot) in out.iter_mut().enumerate() {
+    for k in 0..SOFT_PROBE_SAMPLES as usize {
         // Ideal direction k of the small, well-separated probe-count lattice.
         let ideal = probe_sample_direction(light, k as u32, SOFT_PROBE_SAMPLES);
-        // Snap to the full-lattice index whose direction is closest. Ties resolve
-        // to the lowest index (the `>` keeps the first-seen best), so the choice is
-        // fully deterministic.
+        // Snap to the nearest full-lattice index whose direction is closest, but
+        // SKIP any index already chosen by an earlier probe so the four results
+        // are always distinct. Without this, a narrow emitter (whose ideal probe
+        // directions nearly coincide) can snap two probes to the same index — the
+        // duplicate would be double-counted into `clear` while a never-probed index
+        // is silently dropped, miscounting a penumbra. Ties resolve to the lowest
+        // index (the `>` keeps the first-seen best), so the choice stays
+        // deterministic.
         let mut best_index = 0u32;
         let mut best_dot = f32::NEG_INFINITY;
         for i in 0..full_samples {
+            if out[..k].contains(&i) {
+                continue;
+            }
             let dir = probe_sample_direction(light, i, full_samples);
             let dot = dir.dot(ideal);
             if dot > best_dot {
@@ -1035,7 +1071,7 @@ fn probe_indices(light: &MapLight, full_samples: u32) -> [u32; SOFT_PROBE_SAMPLE
                 best_index = i;
             }
         }
-        *slot = best_index;
+        out[k] = best_index;
     }
     out
 }
@@ -1075,9 +1111,11 @@ fn probe_sample_direction(light: &MapLight, i: u32, count: u32) -> Vec3 {
 /// `full_samples` is the area-sample-count bake knob (Task 6): the escalated
 /// (penumbra) sample target. The fixed `SOFT_PROBE_SAMPLES` probe set is a spread
 /// **subset** of the full lattice (see [`probe_indices`]), so `full_samples` is
-/// clamped to at least the probe count; the escalation threshold itself stays a
-/// fixed constant so the bake remains deterministic regardless of the knob's value.
-/// Callers without a knob pass [`DEFAULT_AREA_SAMPLE_COUNT`].
+/// clamped to at least the probe count. The escalation DECISION threshold (the
+/// probe-disagreement count that triggers the full trace) is a fixed constant;
+/// only the escalated sample count `full_samples` is caller-supplied — so the bake
+/// stays deterministic regardless of the knob's value. Callers without a knob pass
+/// [`DEFAULT_AREA_SAMPLE_COUNT`].
 pub(crate) fn soft_visibility(
     surface_point: Vec3,
     surface_normal: Vec3,
@@ -1092,7 +1130,9 @@ pub(crate) fn soft_visibility(
     let origin = surface_point + surface_normal * RAY_EPSILON;
 
     // An author's explicit `0` is a hard edge: collapse to the single hard ray so
-    // the result is identical to `shadow_visible` (1.0 clear / 0.0 occluded).
+    // the result is 1.0 clear / 0.0 occluded. (`shadow_visible` was the prior
+    // hard-gate function, removed when soft visibility subsumed it; its behavior is
+    // preserved here in the `radius <= 0` hard-ray branch.)
     let radius = match light.light_type {
         LightType::Point | LightType::Spot => light.light_size,
         LightType::Directional => light.angular_diameter,
@@ -1141,7 +1181,8 @@ pub(crate) fn soft_visibility(
     clear as f32 / full_samples as f32
 }
 
-/// Single hard-ray target, matching `shadow_visible`: the light origin for
+/// Single hard-ray target for the `radius <= 0` hard edge (see the note in
+/// `soft_visibility` on the removed `shadow_visible`): the light origin for
 /// Point/Spot, or a far point along `-cone_direction` for Directional.
 fn hard_ray_target(surface_point: Vec3, light: &MapLight) -> Vec3 {
     match light.light_type {
@@ -2433,6 +2474,31 @@ mod tests {
             "lower-hemisphere occluder should be a penumbra, got {v} \
              (clustered top-cap probes would have early-out to a hard edge)"
         );
+    }
+
+    /// Regression: a sub-0.05° directional emitter baked at the minimum sample
+    /// count (`full_samples == SOFT_PROBE_SAMPLES == 4`) used to collapse its four
+    /// probe indices (`probe_indices` snapped multiple probes to index 0), so a
+    /// partially-occluded texel double-counted a clear sample and early-out to a
+    /// hard 1.0 instead of a penumbra. With distinct probe indices the genuine
+    /// split now bakes a fraction. At 0.03° / full=4 the four cone samples have
+    /// x-offsets `{0, 0, -3.4, +2.8}`, so `to.x < 0.0` blocks exactly one sample.
+    #[test]
+    fn soft_visibility_narrow_directional_at_min_samples_is_fractional() {
+        let light = soft_directional_light(0.03);
+        let full_samples = SOFT_PROBE_SAMPLES; // 4 — the minimum, where escalation
+        // has no extra samples to recover a collapsed probe set.
+        let v = soft_visibility(Vec3::ZERO, Vec3::Y, &light, 13, full_samples, |_, to| {
+            to.x >= 0.0
+        });
+        assert!(
+            v > 0.0 && v < 1.0,
+            "narrow directional at min samples should be a penumbra, got {v} \
+             (a duplicated probe index would have double-counted to a hard 0/1)"
+        );
+        // Exactly one of the four distinct samples is blocked → 3/4 clear. A
+        // duplicated index would skew this off the 4-sample grid.
+        assert!((v - 0.75).abs() < EPS, "expected 3/4 clear, got {v}");
     }
 
     #[test]

@@ -168,7 +168,7 @@ pub fn translate_light(
         ),
         LightType::Directional => (
             0.0,
-            parse_optional_size(props, "_angular_diameter", DEFAULT_ANGULAR_DIAMETER_DEG)?,
+            parse_optional_angle(props, "_angular_diameter", DEFAULT_ANGULAR_DIAMETER_DEG)?,
         ),
     };
 
@@ -583,7 +583,7 @@ fn parse_optional_distance(
                 .map_err(|_| TranslateError::InvalidProperty {
                     key,
                     value: s.to_string(),
-                    reason: "expected a non-negative number",
+                    reason: "expected a number",
                 })?;
             if !v.is_finite() {
                 return Err(TranslateError::InvalidProperty {
@@ -601,7 +601,7 @@ fn parse_optional_distance(
 /// distance, so it is never scaled by `map_scale`. An absent or blank value yields
 /// `default`; an authored value — including an explicit `0` — is taken verbatim and
 /// clamped non-negative. Negative authored values clamp to `0`.
-fn parse_optional_size(
+fn parse_optional_angle(
     props: &HashMap<String, String>,
     key: &'static str,
     default: f32,
@@ -614,7 +614,7 @@ fn parse_optional_size(
                 .map_err(|_| TranslateError::InvalidProperty {
                     key,
                     value: s.to_string(),
-                    reason: "expected a non-negative number",
+                    reason: "expected a number",
                 })?;
             if !v.is_finite() {
                 return Err(TranslateError::InvalidProperty {

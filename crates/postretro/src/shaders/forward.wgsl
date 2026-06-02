@@ -201,7 +201,7 @@ struct AnimationDescriptor {
 // Filtering (Linear) sampler — used for the irradiance + animated atlases so
 // baked penumbra ramps read as continuous gradients under magnification.
 // `Rgba16Float` linear-filterability is a hard runtime requirement, checked at
-// init (see context/lib/rendering_pipeline.md §4). See baked-soft-lightmap-shadows/ §Task 5.
+// init (see context/lib/rendering_pipeline.md §4).
 @group(4) @binding(4) var lightmap_filtering_sampler: sampler;
 
 // Sample the irradiance atlas with hardware bilinear filtering through the

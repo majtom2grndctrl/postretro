@@ -105,7 +105,7 @@ If `style` appears in any other `context/lib/` file, remove or update the refere
 ## Non-goals
 
 - Removing `_phase`. It is promoted to a first-class field by Plan 2 and stays.
-- Removing any other light entity keys (`_color`, `_fade`, `delay`, `_dynamic`, `_bake_only`).
+- Removing any other light entity keys (`_color`, `_falloff_range`, `delay`, `_dynamic`, `_bake_only`).
 - Adding a compiler error for unknown entity keys. Useful but out of scope for this plan.
 - Updating autosave map files under `content/base/maps/autosave/`. Autosaves are not source assets; they can be left as-is or deleted as part of normal autosave rotation.
 - Updating `plans/done/` documents. Frozen at ship time; do not touch.

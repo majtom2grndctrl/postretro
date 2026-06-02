@@ -346,6 +346,10 @@ fn bake_subblock(
         // Stable per-probe index for the soft-visibility seed: the affinity cell
         // plus the in-cell local slot uniquely (and deterministically) identify
         // this delta probe across separate processes — no RNG, no hash order.
+        // Base-vs-delta numeric collisions are harmless: each bake writes a
+        // separate PRL section (DeltaShVolumes vs OctahedralShVolume) and the
+        // two are never combined — a shared seed just reuses the same lattice
+        // rotation, never mixing values between the bakes.
         let probe_index = cell as u64 * PROBES_PER_CELL as u64 + local as u64;
         let indirect = bake_probe_indirect_rgb(&ctx, pos, &lights_slice, probe_index);
         let tile = pack_octahedral_irradiance_tile(

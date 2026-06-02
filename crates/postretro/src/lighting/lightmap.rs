@@ -19,9 +19,9 @@ pub const BIND_SAMPLER: u32 = 2;
 pub const BIND_ANIMATED_ATLAS: u32 = 3;
 /// Filtering (Linear) sampler. Used for the irradiance and animated atlases so
 /// baked penumbra ramps read as continuous gradients under magnification
-/// instead of stair-stepping at atlas-texel boundaries. See
-/// baked-soft-lightmap-shadows/ §Task 5. `Rgba16Float` linear-filterability is a
-/// hard runtime requirement checked at init (see `atlas_format_filterable`).
+/// instead of stair-stepping at atlas-texel boundaries. `Rgba16Float`
+/// linear-filterability is a hard runtime requirement checked at init
+/// (see `atlas_format_filterable`; see also `rendering_pipeline.md §4`).
 pub const BIND_FILTERING_SAMPLER: u32 = 4;
 
 /// GPU-side lightmap atlas: irradiance texture, direction texture, sampler,
@@ -84,11 +84,10 @@ impl LightmapResources {
         });
 
         // Linear sampler for the irradiance + animated atlases (both
-        // Rgba16Float, which is filterable in core WebGPU). Turns baked
-        // multi-texel penumbra ramps into continuous gradients under
-        // magnification. On the manual 4-tap fallback path the shader ignores
-        // this binding, but it stays bound so the group-4 BGL is identical
-        // across both pipeline variants. See baked-soft-lightmap-shadows/ §Task 5.
+        // Rgba16Float). Turns baked penumbra ramps into continuous gradients
+        // under magnification. Always used — Rgba16Float linear-filterability
+        // is a hard runtime requirement; non-filterable adapters are rejected
+        // at init (see `atlas_format_filterable`). See rendering_pipeline.md §4.
         let filtering_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Lightmap Sampler (Linear)"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -157,14 +156,13 @@ fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 5] {
     // texture needs:
     //   - Irradiance (0) and animated atlas (3) are `Rgba16Float`, which is
     //     filterable in core WebGPU (only 32-bit float formats need the
-    //     `float32-filterable` feature). Marked `filterable: true` and sampled
-    //     through the linear sampler so baked penumbra ramps read as continuous
-    //     gradients instead of stair-stepping at texel boundaries.
+    //     `float32-filterable` feature). Marked `filterable: true` and always
+    //     sampled through the linear sampler so baked penumbra ramps read as
+    //     continuous gradients instead of stair-stepping at texel boundaries.
     //   - Direction (1) stays `filterable: false` on the nearest sampler:
     //     linear interpolation of octahedral-encoded unit vectors does not
     //     commute with slerp.
-    // The BGL is identical across the HW-filter and 4-tap-fallback pipeline
-    // variants — the fallback simply leaves the linear sampler unused.
+    // There is one pipeline variant; the BGL is fixed. No fallback path.
     [
         wgpu::BindGroupLayoutEntry {
             binding: BIND_IRRADIANCE,
@@ -193,8 +191,7 @@ fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 5] {
             count: None,
         },
         // Animated-light contribution atlas (Rgba16Float) — filterable in core
-        // WebGPU, sampled through the linear sampler at binding 4 (HW path) or
-        // a manual 4-tap lerp (fallback).
+        // WebGPU, always sampled through the linear sampler at binding 4.
         wgpu::BindGroupLayoutEntry {
             binding: BIND_ANIMATED_ATLAS,
             visibility: wgpu::ShaderStages::FRAGMENT,

@@ -230,7 +230,7 @@ This earns a milestone because the later specs cannot be fully written until ear
 
 Plans ship in this sequence:
 
-- [ ] **movement--state-machine** — split the monolithic player tick into a shared physics substrate (sweep-and-slide, step-up, ground-stick — moved intact) plus a per-state velocity-intent seam; refactor current walk/run/jump into a behavior-identical `Normal` state; ship dash/air-dash/double-jump on the new seam; establish the declarative descriptor author surface. Drafted, in review. `context/plans/drafts/movement--state-machine/`
+- [ ] **movement--state-machine** — split the monolithic player tick into a shared physics substrate (sweep-and-slide, step-up, ground-stick — moved intact) plus a per-state velocity-intent seam; refactor current walk/run/jump into a behavior-identical `Normal` state; ship dash/air-dash/double-jump on the new seam; establish the declarative descriptor author surface. Reviewed, ready. `context/plans/ready/movement--state-machine/`
 - [ ] **Cross-cutting movement policies** — settle momentum conservation (velocity carry across transitions) and input forgiveness (coyote time, jump buffering) as explicit foundations before the states that consume them. Detail-on-open from the state-machine seam. See `movement.md` §6.
 - [ ] **movement--crouch** — capsule resize plus stand-up ceiling probe. Independent thin slice; draftable early.
 - [ ] **movement--slide** — speed-preserving slide (Titanfall model); owns and consumes the momentum-conservation policy. Detail-on-open: depends on that policy and crouch's capsule resize.

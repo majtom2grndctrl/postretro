@@ -238,12 +238,19 @@ pub enum SdfShadowMode {
     // is sane at edges/corners vs garbage. Diagnostic only — remove with the
     // rest of the `// TEMP DEBUG:` markers.
     VisualizeNormals = 4,
+    // TEMP DEBUG: dynamic spot shadow-map visualization. For the primary spot
+    // shadow slot (0), paints R = stored occluder depth, G = this fragment's own
+    // light-space depth (both remapped to spread the [0.95,1] range), magenta =
+    // outside slot 0's frustum. R≈G across a surface means the map holds only
+    // that surface (occluder missing / empty map); R clearly < G behind an
+    // occluder means the occluder IS in the map. Diagnostic only.
+    VisualizeSpotShadow = 5,
 }
 
 impl SdfShadowMode {
     /// All variants in display order. Used by the debug UI dropdown.
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
-    pub const ALL_VARIANTS: [SdfShadowMode; 5] = [
+    pub const ALL_VARIANTS: [SdfShadowMode; 6] = [
         SdfShadowMode::On,
         SdfShadowMode::Off,
         SdfShadowMode::Visualize,
@@ -251,6 +258,8 @@ impl SdfShadowMode {
         SdfShadowMode::VisualizeDebugPaths,
         // TEMP DEBUG: SDF shadow path visualization.
         SdfShadowMode::VisualizeNormals,
+        // TEMP DEBUG: dynamic spot shadow-map visualization.
+        SdfShadowMode::VisualizeSpotShadow,
     ];
 
     #[allow(dead_code)]
@@ -263,6 +272,8 @@ impl SdfShadowMode {
             SdfShadowMode::VisualizeDebugPaths => "Visualize: debug paths",
             // TEMP DEBUG: SDF shadow path visualization.
             SdfShadowMode::VisualizeNormals => "Visualize: normals",
+            // TEMP DEBUG: dynamic spot shadow-map visualization.
+            SdfShadowMode::VisualizeSpotShadow => "Visualize: spot shadow map",
         }
     }
 }

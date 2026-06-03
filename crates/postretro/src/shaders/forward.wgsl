@@ -991,5 +991,34 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let n = textureLoad(sdf_shadow_factor, h, 0).rgb;
         return vec4<f32>(n, base_color.a);
     }
+    // TEMP DEBUG: dynamic spot shadow-map visualization (mode 5). Projects this
+    // fragment through the primary shadow slot's (0) light-space matrix and
+    // shows what the shadow comparison actually sees:
+    //   magenta          fragment is outside slot 0's frustum
+    //   R = stored depth  the nearest occluder written into the shadow map here
+    //   G = fragment depth this fragment's own depth from the light
+    // (both remapped [0.95,1]→[0,1] to be visible). R≈G across a lit surface
+    // means the map holds only that surface — the occluder never rasterized
+    // (empty/missing-geometry map), so nothing can shadow. R clearly darker
+    // than G behind a pillar means the occluder IS in the map and the bug is
+    // the compare/sample instead.
+    if uniforms.sdf_shadow_mode == 5u {
+        let lp = light_space_matrices.m[0];
+        let clip = lp * vec4<f32>(in.world_position, 1.0);
+        if clip.w <= 0.0 {
+            return vec4<f32>(1.0, 0.0, 1.0, base_color.a);
+        }
+        let ndc = clip.xyz / clip.w;
+        let uv = vec2<f32>(ndc.x * 0.5 + 0.5, ndc.y * -0.5 + 0.5);
+        if uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || ndc.z < 0.0 || ndc.z > 1.0 {
+            return vec4<f32>(1.0, 0.0, 1.0, base_color.a);
+        }
+        let dims = vec2<f32>(textureDimensions(spot_shadow_depth));
+        let px = vec2<i32>(clamp(uv * dims, vec2<f32>(0.0), dims - vec2<f32>(1.0)));
+        let stored = textureLoad(spot_shadow_depth, px, 0, 0);
+        let r = saturate((stored - 0.95) * 20.0);
+        let g = saturate((ndc.z - 0.95) * 20.0);
+        return vec4<f32>(r, g, 0.0, base_color.a);
+    }
     return vec4<f32>(rgb, base_color.a);
 }

@@ -3127,6 +3127,41 @@ impl Renderer {
             &self.shadow_candidate_influences,
         );
 
+        // Diagnostic: per-spot eligibility breakdown. For each spot candidate,
+        // show the three gates (leaf-reachable, brightness, camera-proximity
+        // frustum) and the resulting slot (4294967295 = none). A spot that is
+        // bright and leaf-ok but unslotted tells us which gate dropped it.
+        if log::log_enabled!(log::Level::Debug) {
+            for (i, light) in self.shadow_candidate_lights.iter().enumerate() {
+                if light.light_type != crate::prl::LightType::Spot {
+                    continue;
+                }
+                let leaf_ok = light.leaf_index != ALPHA_LIGHT_LEAF_UNASSIGNED
+                    && (light_reachable_leaf_mask.is_empty()
+                        || ((light.leaf_index as usize) < light_reachable_leaf_mask.len()
+                            && light_reachable_leaf_mask[light.leaf_index as usize]));
+                let bright =
+                    level_brightness_for_candidate(&self.level_lights, light, effective_brightness)
+                        .unwrap_or(1.0);
+                let light_pos = Vec3::new(
+                    light.origin[0] as f32,
+                    light.origin[1] as f32,
+                    light.origin[2] as f32,
+                );
+                let dist = (light_pos - camera_position).length();
+                let frustum_ok = self
+                    .shadow_candidate_influences
+                    .get(i)
+                    .map(|inf| inf.is_in_frustum_approx(camera_position))
+                    .unwrap_or(true);
+                log::debug!(
+                    "[ShadowElig] spot {i} leaf_ok={leaf_ok} bright={bright:.3} dist={dist:.1} falloff={:.1} frustum_ok={frustum_ok} slot={}",
+                    light.falloff_range,
+                    slot_assignment[i],
+                );
+            }
+        }
+
         // The GPU lights buffer is keyed on `level_lights`. Translate slot
         // assignments from candidate-index space into `level_lights`-index
         // space by identity-matching (origin + light_type). Candidates not

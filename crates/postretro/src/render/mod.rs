@@ -1033,6 +1033,24 @@ impl Renderer {
                  this — an adapter lacking it is below the supported floor"
             );
         }
+        // BC6H is the default irradiance storage at rest — the bake compresses
+        // the irradiance atlas to `Bc6hRgbUfloat` and the runtime uploads it
+        // through the same `Float { filterable: true }` BGL slot as the
+        // uncompressed debug variant. `TEXTURE_COMPRESSION_BC` is already
+        // required above; this fail-fast sibling check confirms the adapter
+        // also advertises `FILTERABLE` for `Bc6hRgbUfloat` specifically, so a
+        // misconfigured adapter fails here with a named message instead of an
+        // opaque `create_bind_group` crash later. Matches the
+        // `atlas_format_filterable` (`Rgba16Float`) check above.
+        if !crate::lighting::lightmap::bc6h_irradiance_filterable(&adapter) {
+            anyhow::bail!(
+                "[Renderer] GPU adapter does not support linear filtering of \
+                 Bc6hRgbUfloat; PostRetro requires it for the compressed \
+                 lightmap irradiance atlas. All supported backends \
+                 (Vulkan/Metal/DX12) provide this — an adapter lacking it is \
+                 below the supported floor"
+            );
+        }
         // The lightmap bake's `MAX_ATLAS_DIMENSION` (8192) is a fixed CLI-side
         // constant chosen to match guaranteed device support. Mirror that
         // requirement here: a baked atlas can be up to 8192² in either axis, so

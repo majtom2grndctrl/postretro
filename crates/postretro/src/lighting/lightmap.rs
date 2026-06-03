@@ -2,7 +2,7 @@
 // sampler, and bind group (group 4).
 // See: context/lib/rendering_pipeline.md §4
 
-use postretro_level_format::lightmap::LightmapSection;
+use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, LightmapSection};
 use wgpu::util::DeviceExt;
 
 /// Group 4 bindings. The layout is fixed — the fragment shader's
@@ -261,6 +261,21 @@ fn upload_irradiance_texture(
     queue: &wgpu::Queue,
     sec: &LightmapSection,
 ) -> wgpu::Texture {
+    // Branch the texture format on the section's stored tag. Both formats bind
+    // through the same group-4 BGL slot (`Float { filterable: true }`) and
+    // sample through the existing linear sampler — `Bc6hRgbUfloat` is hardware-
+    // decoded before filtering, so the shader's sample call is identical and
+    // requires no second pipeline variant. RGBA16F retains its alpha (legacy
+    // padding); BC6H is RGB-only and the shader's `.rgb` swizzle never reads
+    // alpha. `create_texture_with_data` accepts the block-compressed payload
+    // verbatim — the dimensions are the texel-space size and the data slice is
+    // `ceil(w/4)·ceil(h/4)·16` bytes.
+    let format = match sec.irradiance_format {
+        IRRADIANCE_FORMAT_BC6H => wgpu::TextureFormat::Bc6hRgbUfloat,
+        // `IRRADIANCE_FORMAT_RGBA16F` (or any value `from_bytes` already
+        // gated to one of the two known tags).
+        _ => wgpu::TextureFormat::Rgba16Float,
+    };
     device.create_texture_with_data(
         queue,
         &wgpu::TextureDescriptor {
@@ -273,13 +288,28 @@ fn upload_irradiance_texture(
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba16Float,
+            format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         },
         wgpu::util::TextureDataOrder::LayerMajor,
         &sec.irradiance,
     )
+}
+
+/// Whether `Bc6hRgbUfloat` (the default irradiance storage on disk) advertises
+/// the texture-binding and linear-filtering features the runtime relies on.
+/// Mirrors `atlas_format_filterable` for the BC6H sibling check: BC6H is the
+/// default storage and a `TEXTURE_COMPRESSION_BC`-granted adapter that fails
+/// to advertise filterable BC6H here would fail later at bind-group creation
+/// with an opaque error. `TEXTURE_COMPRESSION_BC` is already a required
+/// feature (see `render::mod.rs`'s adapter pre-check); this check confirms
+/// the format that feature unlocks supports the usages we need.
+pub fn bc6h_irradiance_filterable(adapter: &wgpu::Adapter) -> bool {
+    adapter
+        .get_texture_format_features(wgpu::TextureFormat::Bc6hRgbUfloat)
+        .flags
+        .contains(wgpu::TextureFormatFeatureFlags::FILTERABLE)
 }
 
 fn upload_direction_texture(
@@ -372,6 +402,7 @@ mod tests {
             height,
             texel_density: 0.04,
             irradiance: Vec::new(),
+            irradiance_format: postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F,
             direction: Vec::new(),
             mode: LightmapMode::Shadowed,
         }

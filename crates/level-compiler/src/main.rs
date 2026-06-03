@@ -5,6 +5,7 @@ pub mod affinity_grid;
 pub mod animated_light_chunks;
 pub mod animated_light_weight_maps;
 pub mod bc5;
+pub mod bc6h;
 pub mod bvh_build;
 pub mod cache;
 pub mod chart_raster;
@@ -299,6 +300,7 @@ fn main() -> anyhow::Result<()> {
     let lightmap_config = lightmap_bake::LightmapConfig {
         lightmap_density: effective_lightmap_density,
         area_sample_count: args.soft_shadow_samples,
+        uncompressed_irradiance: false,
     };
     let final_lightmap_density;
     let lightmap_bake_output = {
@@ -369,6 +371,7 @@ fn main() -> anyhow::Result<()> {
                     &lightmap_bake::LightmapConfig {
                         lightmap_density: density,
                         area_sample_count: args.soft_shadow_samples,
+                        uncompressed_irradiance: false,
                     },
                 ) {
                     Ok(result) => {
@@ -1666,6 +1669,7 @@ mod tests {
         let config = LightmapConfig {
             lightmap_density: 0.25,
             area_sample_count: lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
+            uncompressed_irradiance: false,
         };
         let hash = lightmap_input_hash(&inputs, &config);
         let key = CacheKey::new("lightmap", lightmap_bake::STAGE_VERSION, &hash);
@@ -1790,6 +1794,7 @@ mod tests {
         let config = LightmapConfig {
             lightmap_density: 0.25,
             area_sample_count: lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
+            uncompressed_irradiance: false,
         };
         let key_a = CacheKey::new(
             "lightmap",
@@ -1839,6 +1844,7 @@ mod tests {
         let config_default = LightmapConfig {
             lightmap_density: 0.25,
             area_sample_count: lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
+            uncompressed_irradiance: false,
         };
         let key_default = CacheKey::new(
             "lightmap",
@@ -1851,6 +1857,7 @@ mod tests {
         let config_high = LightmapConfig {
             lightmap_density: 0.25,
             area_sample_count: lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT * 2,
+            uncompressed_irradiance: false,
         };
         let key_high = CacheKey::new(
             "lightmap",
@@ -1892,6 +1899,7 @@ mod tests {
         let config = LightmapConfig {
             lightmap_density: 0.25,
             area_sample_count: lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
+            uncompressed_irradiance: false,
         };
 
         let key_first = CacheKey::new(
@@ -1962,6 +1970,7 @@ mod tests {
         let config = LightmapConfig {
             lightmap_density: 0.25,
             area_sample_count: lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
+            uncompressed_irradiance: false,
         };
         let hash = lightmap_input_hash(&inputs, &config);
         let key = CacheKey::new("lightmap", lightmap_bake::STAGE_VERSION, &hash);

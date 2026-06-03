@@ -7,8 +7,11 @@ use bvh::ray::Ray;
 use glam::Vec3;
 use nalgebra::{Point3, Vector3};
 use postretro_level_format::lightmap::{
-    LightmapMode, LightmapSection, encode_direction_oct, f32_to_f16_bits,
+    IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F, LightmapMode, LightmapSection,
+    encode_direction_oct, f32_to_f16_bits,
 };
+
+use crate::bc6h;
 use thiserror::Error;
 
 use crate::bvh_build::BvhPrimitive;
@@ -140,6 +143,14 @@ pub struct LightmapConfig {
     /// Folded into this stage's `input_hash`, so raising it invalidates the
     /// cache and re-bakes at the higher quality. Default [`DEFAULT_AREA_SAMPLE_COUNT`].
     pub area_sample_count: u32,
+    /// Debug bypass for the BC6H compression step. When `true` the irradiance
+    /// blob is emitted as uncompressed `Rgba16Float` (the pre-Task-3 layout) so
+    /// the bake side stays byte-identical to legacy output for owner-side A/B
+    /// comparisons. Default is `false` — BC6H is the production storage. The
+    /// field participates in `LightmapConfig`'s serde derivation, so flipping
+    /// the bool re-keys the cache; flipping it never silently serves a stale
+    /// bake from the wrong format.
+    pub uncompressed_irradiance: bool,
 }
 
 /// Output of a lightmap bake pass. The animated weight-map baker consumes
@@ -335,7 +346,19 @@ pub fn bake_lightmap(
         atlas_h,
     );
 
-    let irr_bytes = encode_irradiance_rgba16f(&irradiance);
+    // Compress to BC6H by default — `Bc6hRgbUfloat` is ~8× smaller than RGBA16F
+    // on disk and in VRAM, and the smooth low-frequency irradiance compresses
+    // cleanly under the in-tree single-mode encoder. The debug bypass leaves
+    // output byte-identical to the pre-BC6H path so owner-side A/B compares
+    // and round-trip determinism tests can run against a known-stable baseline.
+    let (irr_bytes, irradiance_format) = if config.uncompressed_irradiance {
+        (encode_irradiance_rgba16f(&irradiance), IRRADIANCE_FORMAT_RGBA16F)
+    } else {
+        (
+            bc6h::encode_bc6h_rgb_from_f32_rgba(&irradiance, atlas_w, atlas_h),
+            IRRADIANCE_FORMAT_BC6H,
+        )
+    };
     let dir_bytes = encode_direction_rgba8(&direction, &coverage);
 
     Ok(LightmapBakeOutput {
@@ -344,6 +367,7 @@ pub fn bake_lightmap(
             height: atlas_h,
             texel_density,
             irradiance: irr_bytes,
+            irradiance_format,
             direction: dir_bytes,
             // Lightmaps always bake shadowed: the `sdf` lights' direct term is
             // resolved at runtime, so a `static_light_map` light's shadow can
@@ -1551,6 +1575,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                uncompressed_irradiance: false,
             },
         )
         .unwrap()
@@ -1576,6 +1601,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                uncompressed_irradiance: false,
             },
         )
         .unwrap()
@@ -1601,6 +1627,10 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                // Test reads per-texel bytes assuming the 8-byte RGBA16F stride;
+                // request the uncompressed debug bypass so the byte layout stays
+                // readable without re-implementing the GPU's BC6H decode here.
+                uncompressed_irradiance: true,
             },
         )
         .unwrap()
@@ -1657,6 +1687,11 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                // See `single_static_light_produces_nonzero_irradiance`: this
+                // test reads per-texel bytes from the irradiance blob, so it
+                // requests the RGBA16F debug bypass rather than the default
+                // BC6H production layout.
+                uncompressed_irradiance: true,
             },
         )
         .unwrap()
@@ -1694,6 +1729,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                uncompressed_irradiance: false,
             },
         )
         .unwrap()
@@ -1724,6 +1760,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                uncompressed_irradiance: false,
             },
         )
         .unwrap()
@@ -1749,6 +1786,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                uncompressed_irradiance: false,
             },
         )
         .unwrap()
@@ -1778,6 +1816,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                uncompressed_irradiance: false,
             },
         )
         .unwrap()
@@ -1803,6 +1842,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                uncompressed_irradiance: false,
             },
         )
         .unwrap()
@@ -1908,6 +1948,7 @@ mod tests {
                 &LightmapConfig {
                     lightmap_density: 0.25,
                     area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                    uncompressed_irradiance: false,
                 },
             )
             .unwrap();
@@ -1942,6 +1983,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                uncompressed_irradiance: false,
             },
         )
         .unwrap();
@@ -2100,6 +2142,9 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                // Reads per-texel bytes — request the RGBA16F debug bypass
+                // so the 8-byte stride matches what this loop expects.
+                uncompressed_irradiance: true,
             },
         )
         .unwrap()
@@ -2185,6 +2230,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                uncompressed_irradiance: false,
             },
         );
         match result {
@@ -2278,6 +2324,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                uncompressed_irradiance: false,
             },
         )
         .unwrap();
@@ -2900,6 +2947,10 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.05,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                // `floor_irradiance_r` reads per-texel bytes from the
+                // irradiance blob — request the RGBA16F debug bypass so the
+                // 8-byte stride stays valid.
+                uncompressed_irradiance: true,
             },
         )
         .unwrap()
@@ -2947,6 +2998,7 @@ mod tests {
                 &LightmapConfig {
                     lightmap_density: 0.05,
                     area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                    uncompressed_irradiance: false,
                 },
             )
             .unwrap()

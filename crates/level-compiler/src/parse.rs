@@ -168,6 +168,35 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         .map(|v| v.clamp(0, 8) as u32)
         .unwrap_or(0);
 
+    // Worldspawn `_lightmap_density` (meters per texel, > 0). Optional opt-in
+    // for per-map lightmap fidelity. Absent → falls through to the documented
+    // `DEFAULT_TEXEL_DENSITY_METERS` default in the compiler. Non-finite/≤0
+    // values are warned-and-discarded per `build_pipeline.md` §Built-in
+    // Classname Routing (worldspawn has no meaningful per-entity origin to
+    // name; the warning names the key). The `--lightmap-density` CLI flag
+    // overrides any KVP value (and keeps its hard-reject posture).
+    let lightmap_density: Option<f32> =
+        match get_property(&geo_map, &worldspawn_id, "_lightmap_density") {
+            None => None,
+            Some(raw) => match raw.trim().parse::<f32>() {
+                Ok(parsed) if parsed.is_finite() && parsed > 0.0 => Some(parsed),
+                Ok(parsed) => {
+                    log::warn!(
+                        "[Compiler] worldspawn `_lightmap_density` value `{parsed}` is non-finite or \
+                         <= 0; falling back to default"
+                    );
+                    None
+                }
+                Err(e) => {
+                    log::warn!(
+                        "[Compiler] worldspawn `_lightmap_density` value `{raw}` is not a valid \
+                         float ({e}); falling back to default"
+                    );
+                    None
+                }
+            },
+        };
+
     // Worldspawn `initialGravity` (m/s², negative = downward). Required —
     // absence halts compilation so authors face an explicit choice rather
     // than inheriting an undocumented engine default.
@@ -534,6 +563,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         fog_volumes,
         fog_pixel_scale,
         initial_gravity,
+        lightmap_density,
     })
 }
 
@@ -2150,6 +2180,108 @@ mod tests {
         assert!(
             msg.contains("initialGravity"),
             "error should reference `initialGravity`, got: {msg}",
+        );
+    }
+
+    /// Write a worldspawn-only .map with the supplied extra KVP block (raw map
+    /// syntax, e.g. `"_lightmap_density" "0.02"`) and parse it. Shared by the
+    /// `_lightmap_density` round-trip tests below to avoid duplicating the
+    /// brush fixture six ways.
+    fn parse_worldspawn_with_kvp(extra_kvp: &str) -> MapData {
+        // Inline `extra_kvp` only when non-empty; an empty line between KVPs
+        // and the first brush trips shalrath's "no worldspawn entity found"
+        // path on some platforms.
+        let kvp_line = if extra_kvp.is_empty() {
+            String::new()
+        } else {
+            format!("{extra_kvp}\n")
+        };
+        let map_text = format!(
+            "\
+// entity 0
+{{
+\"classname\" \"worldspawn\"
+\"initialGravity\" \"-9.81\"
+{kvp_line}{{
+( -16 -16 -16 ) ( -16 -16 16 ) ( -16 16 -16 ) tex 0 0 0 1 1
+( -16 -16 -16 ) ( -16 16 -16 ) ( 16 -16 -16 ) tex 0 0 0 1 1
+( -16 -16 -16 ) ( 16 -16 -16 ) ( -16 -16 16 ) tex 0 0 0 1 1
+( 16 16 16 ) ( 16 -16 16 ) ( 16 16 -16 ) tex 0 0 0 1 1
+( 16 16 16 ) ( 16 16 -16 ) ( -16 16 16 ) tex 0 0 0 1 1
+( 16 16 16 ) ( -16 16 16 ) ( 16 -16 16 ) tex 0 0 0 1 1
+}}
+}}
+"
+        );
+        // Disambiguate the temp filename per-call: parallel test threads can
+        // collide on `subsec_nanos` alone, leading to one test stomping
+        // another's fixture mid-parse.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let tid = std::thread::current().id();
+        let tmp = std::env::temp_dir().join(format!(
+            "postretro_lightmap_density_{nanos}_{tid:?}.map"
+        ));
+        std::fs::write(&tmp, map_text).unwrap();
+        let result = parse_map_file(&tmp, MapFormat::IdTech2);
+        let _ = std::fs::remove_file(&tmp);
+        result.expect("fixture should parse without error")
+    }
+
+    #[test]
+    fn parse_map_file_reads_lightmap_density_from_worldspawn() {
+        let map_data = parse_worldspawn_with_kvp("\"_lightmap_density\" \"0.02\"");
+        assert_eq!(
+            map_data.lightmap_density,
+            Some(0.02),
+            "authored `_lightmap_density` must round-trip into MapData",
+        );
+    }
+
+    #[test]
+    fn parse_map_file_lightmap_density_absent_is_none() {
+        let map_data = parse_worldspawn_with_kvp("");
+        assert_eq!(
+            map_data.lightmap_density, None,
+            "absent `_lightmap_density` must surface as None so the compiler falls back to default",
+        );
+    }
+
+    #[test]
+    fn parse_map_file_lightmap_density_rejects_zero() {
+        let map_data = parse_worldspawn_with_kvp("\"_lightmap_density\" \"0\"");
+        assert_eq!(
+            map_data.lightmap_density, None,
+            "zero `_lightmap_density` must warn and fall back to default",
+        );
+    }
+
+    #[test]
+    fn parse_map_file_lightmap_density_rejects_negative() {
+        let map_data = parse_worldspawn_with_kvp("\"_lightmap_density\" \"-0.04\"");
+        assert_eq!(
+            map_data.lightmap_density, None,
+            "negative `_lightmap_density` must warn and fall back to default",
+        );
+    }
+
+    #[test]
+    fn parse_map_file_lightmap_density_rejects_nan() {
+        let map_data = parse_worldspawn_with_kvp("\"_lightmap_density\" \"nan\"");
+        assert_eq!(
+            map_data.lightmap_density, None,
+            "NaN `_lightmap_density` must warn and fall back to default",
+        );
+    }
+
+    #[test]
+    fn parse_map_file_lightmap_density_rejects_unparseable() {
+        let map_data = parse_worldspawn_with_kvp("\"_lightmap_density\" \"not-a-number\"");
+        assert_eq!(
+            map_data.lightmap_density, None,
+            "non-float `_lightmap_density` must warn and fall back to default",
         );
     }
 

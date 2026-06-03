@@ -476,6 +476,12 @@ pub struct MapData {
     /// — `parse_map_file` errors when absent so authors face an explicit
     /// choice rather than inheriting an undocumented engine default.
     pub initial_gravity: f32,
+    /// Worldspawn `_lightmap_density` (meters per texel). `None` when the KVP
+    /// is absent or invalid (non-finite/≤0 are logged and discarded at parse
+    /// time per `build_pipeline.md` §Built-in Classname Routing). The compiler
+    /// resolves the effective bake density from this plus the `--lightmap-density`
+    /// CLI flag (CLI overrides the KVP; KVP overrides `DEFAULT_TEXEL_DENSITY_METERS`).
+    pub lightmap_density: Option<f32>,
 }
 
 /// One fog volume entity, resolved to an AABB (and optionally a convex plane

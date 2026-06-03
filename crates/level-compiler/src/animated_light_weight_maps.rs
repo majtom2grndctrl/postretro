@@ -759,6 +759,7 @@ mod tests {
             &crate::lightmap_bake::LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: crate::lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
+                uncompressed_irradiance: false,
             },
         )
         .unwrap();

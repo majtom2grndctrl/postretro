@@ -7,8 +7,11 @@ use bvh::ray::Ray;
 use glam::Vec3;
 use nalgebra::{Point3, Vector3};
 use postretro_level_format::lightmap::{
-    LightmapMode, LightmapSection, encode_direction_oct, f32_to_f16_bits,
+    IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F, LightmapMode, LightmapSection,
+    encode_direction_oct, f32_to_f16_bits,
 };
+
+use crate::bc6h;
 use thiserror::Error;
 
 use crate::bvh_build::BvhPrimitive;
@@ -51,15 +54,26 @@ pub const DEFAULT_TEXEL_DENSITY_METERS: f32 = 0.04;
 /// hard 0/1. The per-texel output shifts with NO input change (maps using the
 /// default light size have identical inputs), so the cache would serve stale
 /// pre-F1 output unless the version advances.
-pub const STAGE_VERSION: u32 = 6;
+///
+/// v7 bump (lightmap-resolution Tasks 1 + 3): `MAX_ATLAS_DIMENSION` raised from
+/// 4096 to 8192 (Task 1) and default irradiance storage shifted from `Rgba16F`
+/// to `BC6H` (Task 3). The cap and the irradiance format are both constants, not
+/// inputs — neither is part of `input_hash`. Without this bump a map that
+/// previously overflowed at 4096 and coarsened would serve stale coarse cache
+/// against an unchanged input under the higher ceiling, and a pre-Task-3 cached
+/// `Rgba16F` entry could be served to a `BC6H`-expecting runtime. The single
+/// bump covers both changes and forces a re-bake so both take effect.
+pub const STAGE_VERSION: u32 = 7;
 
 /// Atlas width/height when no face would fit otherwise. Power-of-two for BC6H block alignment.
+/// The 4-alignment BC6H requires is satisfied for free since dimensions are always power-of-two
+/// ≥ 4 here, meaning `ceil(w/4)` is always exact (no partial trailing block).
 const MIN_ATLAS_DIMENSION: u32 = 64;
 
 /// Maximum atlas dimension. Beyond this the baker returns an error so the caller can retry at a
-/// coarser density. 4096 is well under the 8192 `max_texture_dimension_2d` floor required by
-/// wgpu and fits ~164 m at 4 cm/texel.
-const MAX_ATLAS_DIMENSION: u32 = 4096;
+/// coarser density. 8192 matches the `max_texture_dimension_2d` floor the runtime requires
+/// (see `crates/postretro/src/render/mod.rs`'s adapter pre-check) and fits ~328 m at 4 cm/texel.
+const MAX_ATLAS_DIMENSION: u32 = 8192;
 
 /// Shadow ray self-intersection offset. `pub(crate)` so the animated weight-map baker uses the
 /// same value — both bakers must agree or chunk boundaries show seams.
@@ -133,6 +147,14 @@ pub struct LightmapConfig {
     /// Folded into this stage's `input_hash`, so raising it invalidates the
     /// cache and re-bakes at the higher quality. Default [`DEFAULT_AREA_SAMPLE_COUNT`].
     pub area_sample_count: u32,
+    /// Debug bypass for the BC6H compression step. When `true` the irradiance
+    /// blob is emitted as uncompressed `Rgba16Float` (the pre-Task-3 layout) so
+    /// the bake side stays byte-identical to legacy output for owner-side A/B
+    /// comparisons. Default is `false` — BC6H is the production storage. The
+    /// field participates in `LightmapConfig`'s serde derivation, so flipping
+    /// the bool re-keys the cache; flipping it never silently serves a stale
+    /// bake from the wrong format.
+    pub uncompressed_irradiance: bool,
 }
 
 /// Output of a lightmap bake pass. The animated weight-map baker consumes
@@ -328,7 +350,22 @@ pub fn bake_lightmap(
         atlas_h,
     );
 
-    let irr_bytes = encode_irradiance_rgba16f(&irradiance);
+    // Compress to BC6H by default — `Bc6hRgbUfloat` is ~8× smaller than RGBA16F
+    // on disk and in VRAM, and the smooth low-frequency irradiance compresses
+    // cleanly under the in-tree single-mode encoder. The debug bypass leaves
+    // output byte-identical to the pre-BC6H path so owner-side A/B compares
+    // and round-trip determinism tests can run against a known-stable baseline.
+    let (irr_bytes, irradiance_format) = if config.uncompressed_irradiance {
+        (
+            encode_irradiance_rgba16f(&irradiance),
+            IRRADIANCE_FORMAT_RGBA16F,
+        )
+    } else {
+        (
+            bc6h::encode_bc6h_rgb_from_f32_rgba(&irradiance, atlas_w, atlas_h),
+            IRRADIANCE_FORMAT_BC6H,
+        )
+    };
     let dir_bytes = encode_direction_rgba8(&direction, &coverage);
 
     Ok(LightmapBakeOutput {
@@ -337,6 +374,7 @@ pub fn bake_lightmap(
             height: atlas_h,
             texel_density,
             irradiance: irr_bytes,
+            irradiance_format,
             direction: dir_bytes,
             // Lightmaps always bake shadowed: the `sdf` lights' direct term is
             // resolved at runtime, so a `static_light_map` light's shadow can
@@ -1544,6 +1582,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                uncompressed_irradiance: false,
             },
         )
         .unwrap()
@@ -1569,6 +1608,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                uncompressed_irradiance: false,
             },
         )
         .unwrap()
@@ -1594,6 +1634,10 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                // Test reads per-texel bytes assuming the 8-byte RGBA16F stride;
+                // request the uncompressed debug bypass so the byte layout stays
+                // readable without re-implementing the GPU's BC6H decode here.
+                uncompressed_irradiance: true,
             },
         )
         .unwrap()
@@ -1650,6 +1694,11 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                // See `single_static_light_produces_nonzero_irradiance`: this
+                // test reads per-texel bytes from the irradiance blob, so it
+                // requests the RGBA16F debug bypass rather than the default
+                // BC6H production layout.
+                uncompressed_irradiance: true,
             },
         )
         .unwrap()
@@ -1687,6 +1736,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                uncompressed_irradiance: false,
             },
         )
         .unwrap()
@@ -1717,6 +1767,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                uncompressed_irradiance: false,
             },
         )
         .unwrap()
@@ -1742,6 +1793,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                uncompressed_irradiance: false,
             },
         )
         .unwrap()
@@ -1771,6 +1823,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                uncompressed_irradiance: false,
             },
         )
         .unwrap()
@@ -1796,6 +1849,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                uncompressed_irradiance: false,
             },
         )
         .unwrap()
@@ -1832,6 +1886,51 @@ mod tests {
         }
     }
 
+    fn synthetic_chart(w: u32, h: u32) -> Chart {
+        Chart {
+            origin: Vec3::ZERO,
+            u_axis: Vec3::X,
+            v_axis: Vec3::Z,
+            uv_min: [0.0, 0.0],
+            uv_extent: [1.0, 1.0],
+            normal: Vec3::Y,
+            width_texels: w,
+            height_texels: h,
+        }
+    }
+
+    /// Cap raise (Task 1): a chart set whose total area requires more than
+    /// 4096² but ≤ 8192² must pack at the new cap without coarsening. Both
+    /// axes stay power-of-two and ≤ the cap.
+    #[test]
+    fn shelf_pack_uses_new_8192_cap_for_overflowing_set() {
+        // Many 256-wide, 4097-tall charts → atlas_h must exceed 4096 to host
+        // a single column; the old 4096 cap would have errored. With the new
+        // 8192 cap, the packer succeeds.
+        let charts: Vec<Chart> = (0..4).map(|_| synthetic_chart(256, 4097)).collect();
+        let (w, h, _) = shelf_pack(&charts, 0.04).expect("must pack under 8192 cap");
+        assert!(w <= 8192, "width must be within cap, got {w}");
+        assert!(h <= 8192, "height must be within cap, got {h}");
+        assert!(h > 4096, "height must have grown past the old 4096 cap");
+        assert!(w.is_power_of_two(), "width must be power-of-two, got {w}");
+        assert!(h.is_power_of_two(), "height must be power-of-two, got {h}");
+    }
+
+    /// Cap raise (Task 1): a chart set that exceeds 8192² still returns
+    /// `AtlasOverflow` so `main.rs`'s coarsen-retry loop kicks in.
+    #[test]
+    fn shelf_pack_overflows_past_8192_cap() {
+        // A single column of charts whose stacked height exceeds 8192.
+        let charts: Vec<Chart> = (0..3).map(|_| synthetic_chart(8192, 4096)).collect();
+        match shelf_pack(&charts, 0.04) {
+            Err(LightmapBakeError::AtlasOverflow { max, .. }) => {
+                assert_eq!(max, 8192, "AtlasOverflow must report the new cap");
+            }
+            Ok((w, h, _)) => panic!("expected AtlasOverflow at the new cap, got {w}x{h}"),
+            Err(other) => panic!("expected AtlasOverflow, got {other:?}"),
+        }
+    }
+
     /// Cache-determinism guard: the lightmap bake is consumed by the build-stage
     /// cache, which keys cache entries on input hash and reuses stored output
     /// verbatim. Any run-to-run drift in the encoded section (HashMap iteration
@@ -1856,6 +1955,7 @@ mod tests {
                 &LightmapConfig {
                     lightmap_density: 0.25,
                     area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                    uncompressed_irradiance: false,
                 },
             )
             .unwrap();
@@ -1871,6 +1971,172 @@ mod tests {
             "lightmap bake output drifted between runs; the build-stage cache requires \
              byte-identical output for identical inputs",
         );
+    }
+
+    /// Task 4a — determinism via decode. The plan AC reads: "Two `--no-cache`
+    /// bakes of the same input each decode within tolerance — byte-equality
+    /// not required." This test models that contract directly: run the bake
+    /// twice on identical inputs (the in-process equivalent of `--no-cache`,
+    /// which would force the cache substrate to re-invoke the bake), decode
+    /// each BC6H block back to f16 through the same hardware-matching
+    /// reference decoder the round-trip test uses, and assert per-channel
+    /// per-texel agreement within the same frozen `BC6H_ROUNDTRIP_TOLERANCE_REL`
+    /// the round-trip AC gates against.
+    ///
+    /// This is *not* redundant with `lightmap_bake_produces_byte_identical_output_on_repeated_runs`:
+    /// that sibling locks down byte-equality (a stricter cache-friendliness
+    /// invariant). This one is the plan-stated decoded-tolerance gate, so a
+    /// future encoder swap that produces non-byte-identical-but-still-correct
+    /// output (e.g. a cluster-fit refinement) keeps the determinism AC green
+    /// while the byte-identity test is updated alongside the encoder.
+    #[test]
+    fn two_bakes_decode_within_frozen_tolerance() {
+        fn run_bake() -> LightmapSection {
+            let mut geo = unit_quad_geometry();
+            let (bvh, prims, _) = build_bvh(&geo).unwrap();
+            let lights = vec![point_light_above()];
+            let static_lights = StaticBakedLights::from_lights(&lights);
+            let mut inputs = LightmapBakeCtx {
+                bvh: &bvh,
+                primitives: &prims,
+                geometry: &mut geo,
+                lights: &static_lights,
+            };
+            bake_lightmap(
+                &mut inputs,
+                &LightmapConfig {
+                    lightmap_density: 0.25,
+                    area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                    uncompressed_irradiance: false,
+                },
+            )
+            .unwrap()
+            .section
+        }
+
+        let a = run_bake();
+        let b = run_bake();
+
+        // The bake's `unit_quad_geometry` exercises the BC6H path (default
+        // config, `uncompressed_irradiance = false`). The two sections must
+        // agree on dimensions and irradiance format before we can do block-
+        // wise decode comparison.
+        assert_eq!(a.width, b.width, "width drifted between runs");
+        assert_eq!(a.height, b.height, "height drifted between runs");
+        assert_eq!(
+            a.irradiance_format,
+            postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H,
+            "determinism gate is BC6H-specific; bake unexpectedly emitted a different format",
+        );
+        assert_eq!(
+            a.irradiance_format, b.irradiance_format,
+            "irradiance format drifted between runs",
+        );
+        assert_eq!(
+            a.irradiance.len(),
+            b.irradiance.len(),
+            "irradiance blob length drifted; block math diverged across runs",
+        );
+
+        // Block-wise decode + relative-error comparison. The decoded f16 bits
+        // are first lifted to f32 so the relative-error metric matches the
+        // round-trip AC's gauge (a per-channel epsilon-floored ratio).
+        let blocks = a.irradiance.len() / 16;
+        for bi in 0..blocks {
+            let off = bi * 16;
+            let block_a: [u8; 16] = a.irradiance[off..off + 16].try_into().unwrap();
+            let block_b: [u8; 16] = b.irradiance[off..off + 16].try_into().unwrap();
+            let decoded_a = crate::bc6h::decode_bc6h_block_for_tests(&block_a);
+            let decoded_b = crate::bc6h::decode_bc6h_block_for_tests(&block_b);
+            for t in 0..16 {
+                for c in 0..3 {
+                    let va = crate::bc6h::f16_bits_to_f32(decoded_a[t][c]);
+                    let vb = crate::bc6h::f16_bits_to_f32(decoded_b[t][c]);
+                    let denom = va.abs().max(vb.abs()).max(1.0e-3);
+                    let rel = (va - vb).abs() / denom;
+                    assert!(
+                        rel <= crate::bc6h::BC6H_ROUNDTRIP_TOLERANCE_REL,
+                        "block {bi} texel {t} c{c}: two-bake relative drift {rel} > frozen \
+                         tolerance {} (a={va}, b={vb})",
+                        crate::bc6h::BC6H_ROUNDTRIP_TOLERANCE_REL,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Task 4a — atlas sizing. Across a representative chart set, the packed
+    /// atlas dimensions must be (a) power-of-two, (b) 4-aligned (BC6H block
+    /// requirement — satisfied for free when dimensions are power-of-two ≥ 4,
+    /// but pinned here as a contract because the bake's BC6H sizing math
+    /// (`ceil(w/4)·ceil(h/4)·16`) silently misreports if either axis is < 4),
+    /// and (c) ≤ `MAX_ATLAS_DIMENSION`. The single-set tests above (`shelf_pack_uses_new_8192_cap_for_overflowing_set`
+    /// and `shelf_pack_overflows_past_8192_cap`) pin the cap-raise contract;
+    /// this table-driven test extends the coverage across a representative
+    /// breadth so a regression that only triggers on, e.g., narrow-tall sets
+    /// is still caught.
+    #[test]
+    fn shelf_pack_dims_are_pow2_4aligned_under_cap_across_chart_sets() {
+        // Table of chart sets, each producing an atlas that the packer should
+        // resolve under the 8192 cap. Mixed shapes: square small, square
+        // large, narrow-tall, wide-short, and a single-chart degenerate.
+        let cases: &[(&str, Vec<Chart>)] = &[
+            ("single small square", vec![synthetic_chart(64, 64)]),
+            (
+                "many small squares",
+                (0..16).map(|_| synthetic_chart(128, 128)).collect(),
+            ),
+            (
+                "narrow-tall column",
+                (0..4).map(|_| synthetic_chart(256, 2048)).collect(),
+            ),
+            (
+                "wide-short row",
+                (0..4).map(|_| synthetic_chart(2048, 256)).collect(),
+            ),
+            (
+                "mixed shapes",
+                vec![
+                    synthetic_chart(512, 256),
+                    synthetic_chart(256, 512),
+                    synthetic_chart(1024, 128),
+                    synthetic_chart(128, 1024),
+                    synthetic_chart(256, 256),
+                ],
+            ),
+        ];
+        for (label, charts) in cases {
+            let (w, h, _) = shelf_pack(charts, 0.04)
+                .unwrap_or_else(|e| panic!("{label}: shelf_pack failed: {e:?}"));
+            assert!(
+                w.is_power_of_two(),
+                "{label}: atlas width must be power-of-two, got {w}",
+            );
+            assert!(
+                h.is_power_of_two(),
+                "{label}: atlas height must be power-of-two, got {h}",
+            );
+            assert!(w >= 4, "{label}: width must be ≥4 (BC6H block), got {w}");
+            assert!(h >= 4, "{label}: height must be ≥4 (BC6H block), got {h}");
+            assert_eq!(
+                w % 4,
+                0,
+                "{label}: width must be 4-aligned (BC6H block), got {w}",
+            );
+            assert_eq!(
+                h % 4,
+                0,
+                "{label}: height must be 4-aligned (BC6H block), got {h}",
+            );
+            assert!(
+                w <= MAX_ATLAS_DIMENSION,
+                "{label}: width must be ≤cap ({MAX_ATLAS_DIMENSION}), got {w}",
+            );
+            assert!(
+                h <= MAX_ATLAS_DIMENSION,
+                "{label}: height must be ≤cap ({MAX_ATLAS_DIMENSION}), got {h}",
+            );
+        }
     }
 
     #[test]
@@ -1890,6 +2156,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                uncompressed_irradiance: false,
             },
         )
         .unwrap();
@@ -2048,6 +2315,9 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                // Reads per-texel bytes — request the RGBA16F debug bypass
+                // so the 8-byte stride matches what this loop expects.
+                uncompressed_irradiance: true,
             },
         )
         .unwrap()
@@ -2071,7 +2341,7 @@ mod tests {
     fn oversize_face_returns_error_rather_than_panicking() {
         // Regression: the old path clamped atlas_h but left chart placements at pre-clamp
         // coordinates, causing out-of-bounds writes during bake and dilation.
-        let size = 200.0; // 5000 texels at 0.04 m/texel, beyond MAX_ATLAS_DIMENSION
+        let size = 400.0; // 10000 texels at 0.04 m/texel, beyond MAX_ATLAS_DIMENSION (8192)
         let v0 = Vertex::new(
             [0.0, 0.0, 0.0],
             [0.0, 0.0],
@@ -2133,6 +2403,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                uncompressed_irradiance: false,
             },
         );
         match result {
@@ -2226,6 +2497,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                uncompressed_irradiance: false,
             },
         )
         .unwrap();
@@ -2848,6 +3120,10 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.05,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                // `floor_irradiance_r` reads per-texel bytes from the
+                // irradiance blob — request the RGBA16F debug bypass so the
+                // 8-byte stride stays valid.
+                uncompressed_irradiance: true,
             },
         )
         .unwrap()
@@ -2895,6 +3171,7 @@ mod tests {
                 &LightmapConfig {
                     lightmap_density: 0.05,
                     area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                    uncompressed_irradiance: false,
                 },
             )
             .unwrap()
@@ -2910,22 +3187,30 @@ mod tests {
         );
     }
 
-    /// The cache-bump contract: Task 3 changed the per-texel output (hard gate →
-    /// soft area sum), so `STAGE_VERSION` must advance or recompiles serve stale
-    /// hard-shadow bytes. This exercises the real invalidation mechanism — the
-    /// current version's cache key must differ from the prior version's — rather
-    /// than asserting a constant, so it follows future bumps automatically.
+    /// The cache-bump contract: `STAGE_VERSION` must advance whenever bake outputs
+    /// change without a corresponding input change (cap raise, format switch, etc.)
+    /// so previously-cached entries are invalidated rather than served stale.
+    /// The `assert_eq!` pins the current value so a future agent who bumps the
+    /// constant is forced to update the v-N changelog comment above — do that
+    /// before changing the expected value here. The `assert_ne!` exercises the
+    /// real invalidation mechanism (the cache key differs across versions) and
+    /// follows future bumps automatically; keep both.
     #[test]
     fn stage_version_bump_changes_lightmap_cache_key() {
         use crate::cache::CacheKey;
+        assert_eq!(
+            STAGE_VERSION, 7,
+            "intentional bump — update the v7 changelog comment above when bumping, \
+             then update this expected value",
+        );
         let input_hash = [0x42u8; 32];
         let prior = CacheKey::new("lightmap", STAGE_VERSION - 1, &input_hash);
         let current = CacheKey::new("lightmap", STAGE_VERSION, &input_hash);
         assert_ne!(
             prior.as_filename(),
             current.as_filename(),
-            "the soft-shadow output change must bump STAGE_VERSION so the lightmap cache key \
-             differs from the prior version's and stale hard-shadow entries are invalidated",
+            "STAGE_VERSION must bump so the lightmap cache key differs from the prior \
+             version's and stale entries are invalidated",
         );
     }
 

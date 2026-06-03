@@ -1969,6 +1969,172 @@ mod tests {
         );
     }
 
+    /// Task 4a — determinism via decode. The plan AC reads: "Two `--no-cache`
+    /// bakes of the same input each decode within tolerance — byte-equality
+    /// not required." This test models that contract directly: run the bake
+    /// twice on identical inputs (the in-process equivalent of `--no-cache`,
+    /// which would force the cache substrate to re-invoke the bake), decode
+    /// each BC6H block back to f16 through the same hardware-matching
+    /// reference decoder the round-trip test uses, and assert per-channel
+    /// per-texel agreement within the same frozen `BC6H_ROUNDTRIP_TOLERANCE_REL`
+    /// the round-trip AC gates against.
+    ///
+    /// This is *not* redundant with `lightmap_bake_produces_byte_identical_output_on_repeated_runs`:
+    /// that sibling locks down byte-equality (a stricter cache-friendliness
+    /// invariant). This one is the plan-stated decoded-tolerance gate, so a
+    /// future encoder swap that produces non-byte-identical-but-still-correct
+    /// output (e.g. a cluster-fit refinement) keeps the determinism AC green
+    /// while the byte-identity test is updated alongside the encoder.
+    #[test]
+    fn two_bakes_decode_within_frozen_tolerance() {
+        fn run_bake() -> LightmapSection {
+            let mut geo = unit_quad_geometry();
+            let (bvh, prims, _) = build_bvh(&geo).unwrap();
+            let lights = vec![point_light_above()];
+            let static_lights = StaticBakedLights::from_lights(&lights);
+            let mut inputs = LightmapBakeCtx {
+                bvh: &bvh,
+                primitives: &prims,
+                geometry: &mut geo,
+                lights: &static_lights,
+            };
+            bake_lightmap(
+                &mut inputs,
+                &LightmapConfig {
+                    lightmap_density: 0.25,
+                    area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                    uncompressed_irradiance: false,
+                },
+            )
+            .unwrap()
+            .section
+        }
+
+        let a = run_bake();
+        let b = run_bake();
+
+        // The bake's `unit_quad_geometry` exercises the BC6H path (default
+        // config, `uncompressed_irradiance = false`). The two sections must
+        // agree on dimensions and irradiance format before we can do block-
+        // wise decode comparison.
+        assert_eq!(a.width, b.width, "width drifted between runs");
+        assert_eq!(a.height, b.height, "height drifted between runs");
+        assert_eq!(
+            a.irradiance_format,
+            postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H,
+            "determinism gate is BC6H-specific; bake unexpectedly emitted a different format",
+        );
+        assert_eq!(
+            a.irradiance_format, b.irradiance_format,
+            "irradiance format drifted between runs",
+        );
+        assert_eq!(
+            a.irradiance.len(),
+            b.irradiance.len(),
+            "irradiance blob length drifted; block math diverged across runs",
+        );
+
+        // Block-wise decode + relative-error comparison. The decoded f16 bits
+        // are first lifted to f32 so the relative-error metric matches the
+        // round-trip AC's gauge (a per-channel epsilon-floored ratio).
+        let blocks = a.irradiance.len() / 16;
+        for bi in 0..blocks {
+            let off = bi * 16;
+            let block_a: [u8; 16] = a.irradiance[off..off + 16].try_into().unwrap();
+            let block_b: [u8; 16] = b.irradiance[off..off + 16].try_into().unwrap();
+            let decoded_a = crate::bc6h::decode_bc6h_block_for_tests(&block_a);
+            let decoded_b = crate::bc6h::decode_bc6h_block_for_tests(&block_b);
+            for t in 0..16 {
+                for c in 0..3 {
+                    let va = crate::bc6h::f16_bits_to_f32(decoded_a[t][c]);
+                    let vb = crate::bc6h::f16_bits_to_f32(decoded_b[t][c]);
+                    let denom = va.abs().max(vb.abs()).max(1.0e-3);
+                    let rel = (va - vb).abs() / denom;
+                    assert!(
+                        rel <= crate::bc6h::BC6H_ROUNDTRIP_TOLERANCE_REL,
+                        "block {bi} texel {t} c{c}: two-bake relative drift {rel} > frozen \
+                         tolerance {} (a={va}, b={vb})",
+                        crate::bc6h::BC6H_ROUNDTRIP_TOLERANCE_REL,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Task 4a — atlas sizing. Across a representative chart set, the packed
+    /// atlas dimensions must be (a) power-of-two, (b) 4-aligned (BC6H block
+    /// requirement — satisfied for free when dimensions are power-of-two ≥ 4,
+    /// but pinned here as a contract because the bake's BC6H sizing math
+    /// (`ceil(w/4)·ceil(h/4)·16`) silently misreports if either axis is < 4),
+    /// and (c) ≤ `MAX_ATLAS_DIMENSION`. The single-set tests above (`shelf_pack_uses_new_8192_cap_for_overflowing_set`
+    /// and `shelf_pack_overflows_past_8192_cap`) pin the cap-raise contract;
+    /// this table-driven test extends the coverage across a representative
+    /// breadth so a regression that only triggers on, e.g., narrow-tall sets
+    /// is still caught.
+    #[test]
+    fn shelf_pack_dims_are_pow2_4aligned_under_cap_across_chart_sets() {
+        // Table of chart sets, each producing an atlas that the packer should
+        // resolve under the 8192 cap. Mixed shapes: square small, square
+        // large, narrow-tall, wide-short, and a single-chart degenerate.
+        let cases: &[(&str, Vec<Chart>)] = &[
+            ("single small square", vec![synthetic_chart(64, 64)]),
+            (
+                "many small squares",
+                (0..16).map(|_| synthetic_chart(128, 128)).collect(),
+            ),
+            (
+                "narrow-tall column",
+                (0..4).map(|_| synthetic_chart(256, 2048)).collect(),
+            ),
+            (
+                "wide-short row",
+                (0..4).map(|_| synthetic_chart(2048, 256)).collect(),
+            ),
+            (
+                "mixed shapes",
+                vec![
+                    synthetic_chart(512, 256),
+                    synthetic_chart(256, 512),
+                    synthetic_chart(1024, 128),
+                    synthetic_chart(128, 1024),
+                    synthetic_chart(256, 256),
+                ],
+            ),
+        ];
+        for (label, charts) in cases {
+            let (w, h, _) = shelf_pack(charts, 0.04)
+                .unwrap_or_else(|e| panic!("{label}: shelf_pack failed: {e:?}"));
+            assert!(
+                w.is_power_of_two(),
+                "{label}: atlas width must be power-of-two, got {w}",
+            );
+            assert!(
+                h.is_power_of_two(),
+                "{label}: atlas height must be power-of-two, got {h}",
+            );
+            assert!(w >= 4, "{label}: width must be ≥4 (BC6H block), got {w}");
+            assert!(h >= 4, "{label}: height must be ≥4 (BC6H block), got {h}");
+            assert_eq!(
+                w % 4,
+                0,
+                "{label}: width must be 4-aligned (BC6H block), got {w}",
+            );
+            assert_eq!(
+                h % 4,
+                0,
+                "{label}: height must be 4-aligned (BC6H block), got {h}",
+            );
+            assert!(
+                w <= MAX_ATLAS_DIMENSION,
+                "{label}: width must be ≤cap ({MAX_ATLAS_DIMENSION}), got {w}",
+            );
+            assert!(
+                h <= MAX_ATLAS_DIMENSION,
+                "{label}: height must be ≤cap ({MAX_ATLAS_DIMENSION}), got {h}",
+            );
+        }
+    }
+
     #[test]
     fn lightmap_uvs_in_zero_one_range_after_bake() {
         let mut geo = unit_quad_geometry();

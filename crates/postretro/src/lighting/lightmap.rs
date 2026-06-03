@@ -424,6 +424,32 @@ mod tests {
         );
     }
 
+    /// Task 4a — the over-limit degrade AC requires not just a drop-to-
+    /// placeholder, but a logged `[Renderer]`-prefixed error so triage can
+    /// trace the silent flat-ambient fall-through. Capture the log records
+    /// emitted during the filter call and assert the prefix + the format the
+    /// AC pins (no real oversize allocation; the test runs against the pure
+    /// dimension-comparison path).
+    #[test]
+    fn oversize_section_logs_renderer_prefixed_error() {
+        let oversize = fake_section(16_384, 4096);
+        // Capture log records on this thread, scoped to the filter call.
+        let records = crate::scripting::reactions::log_capture::capture(|| {
+            let _ = filter_usable_section(Some(&oversize), 8192);
+        });
+        assert!(
+            records
+                .iter()
+                .any(|(level, msg)| *level == log::Level::Error
+                    && msg.starts_with("[Renderer]")
+                    && msg.contains("Lightmap atlas")
+                    && msg.contains("16384")
+                    && msg.contains("8192")),
+            "expected a `[Renderer]`-prefixed error naming the oversize atlas and the granted \
+             limit; got records: {records:?}",
+        );
+    }
+
     #[test]
     fn at_or_under_limit_section_kept() {
         let at_limit = fake_section(8192, 8192);

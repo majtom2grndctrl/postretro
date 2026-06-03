@@ -258,95 +258,105 @@ fn write_bits(bits: &mut u128, cursor: &mut u32, value: u128, count: u32) {
     *cursor += count;
 }
 
+/// Frozen per-channel relative-error threshold for BC6H round-trip on smooth
+/// HDR irradiance. Calibrated against this encoder's actual output for the
+/// bake's representative data (smooth low-frequency gradients); the
+/// determinism AC in Task 4a gates against the same threshold. Set loose
+/// enough that small encoder tweaks don't trip the regression guard while
+/// still tight enough to catch genuine quality losses.
+///
+/// Lifted to module scope (out of `mod tests`) so the determinism test in
+/// `lightmap_bake.rs` can gate against the *same* frozen threshold rather
+/// than picking its own — keeping the plan's "Both ACs gate against the same
+/// frozen threshold" contract on a single constant.
+#[cfg(test)]
+pub(crate) const BC6H_ROUNDTRIP_TOLERANCE_REL: f32 = 0.08;
+
+/// Decode one BC6H Mode 11 block (16 bytes) back to 16 RGB f16 texels using
+/// the same hardware interpolation the encoder targets. Exposed at
+/// module scope (gated on `#[cfg(test)]`) so other crate tests (the
+/// determinism gate in `lightmap_bake.rs`) can decode bake output without
+/// duplicating the bit-unpack — lives here, not in production, because the
+/// runtime decode is the GPU's job.
+#[cfg(test)]
+pub(crate) fn decode_bc6h_block_for_tests(block: &[u8; 16]) -> [[u16; 3]; 16] {
+    let bits = u128::from_le_bytes(*block);
+    let mut cursor = 0u32;
+    let mode = read_bits_inline(bits, &mut cursor, 5);
+    assert_eq!(mode, 0b00011, "test decoder only handles Mode 11");
+    let mut ep0 = [0u16; 3];
+    let mut ep1 = [0u16; 3];
+    for slot in &mut ep0 {
+        *slot = read_bits_inline(bits, &mut cursor, 10) as u16;
+    }
+    for slot in &mut ep1 {
+        *slot = read_bits_inline(bits, &mut cursor, 10) as u16;
+    }
+    let mut indices = [0u8; 16];
+    indices[0] = read_bits_inline(bits, &mut cursor, 3) as u8;
+    for slot in indices.iter_mut().skip(1) {
+        *slot = read_bits_inline(bits, &mut cursor, 4) as u8;
+    }
+    let palette = build_internal_palette(ep0, ep1);
+    let mut out = [[0u16; 3]; 16];
+    for (i, texel_out) in out.iter_mut().enumerate() {
+        let idx = indices[i] as usize;
+        for (c, channel_out) in texel_out.iter_mut().enumerate() {
+            *channel_out = ((palette[c][idx] * 31) >> 6) as u16;
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+fn read_bits_inline(bits: u128, cursor: &mut u32, count: u32) -> u128 {
+    let value = (bits >> *cursor) & ((1u128 << count) - 1);
+    *cursor += count;
+    value
+}
+
+/// Half-float bit pattern → f32. Sufficient to convert decoded f16 samples
+/// back into a relative-error comparison space. Pub(crate) for the same
+/// reason as `decode_bc6h_block_for_tests`.
+#[cfg(test)]
+pub(crate) fn f16_bits_to_f32(h: u16) -> f32 {
+    let sign = ((h >> 15) & 0x1) as u32;
+    let exp = ((h >> 10) & 0x1f) as u32;
+    let mant = (h & 0x3ff) as u32;
+    let bits = if exp == 0 {
+        if mant == 0 {
+            sign << 31
+        } else {
+            let mut m = mant;
+            let mut e: i32 = -14;
+            while (m & 0x400) == 0 {
+                m <<= 1;
+                e -= 1;
+            }
+            m &= 0x3ff;
+            (sign << 31) | (((e + 127) as u32) << 23) | (m << 13)
+        }
+    } else if exp == 0x1f {
+        (sign << 31) | (0xff << 23) | (mant << 13)
+    } else {
+        (sign << 31) | ((exp + 127 - 15) << 23) | (mant << 13)
+    };
+    f32::from_bits(bits)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Decode one BC6H Mode 11 block (16 bytes) back to 16 RGB f16 texels using
-    /// the same hardware interpolation the encoder targets. Used by the
-    /// round-trip test to guard against encoder-vs-hardware drift; lives here
-    /// (not in production) because the runtime decode is the GPU's job.
+    /// Module-local alias preserved so the existing tests below read as
+    /// originally written; delegates to the shared crate-test helper.
     fn decode_bc6h_block(block: &[u8; 16]) -> [[u16; 3]; 16] {
-        let bits = u128::from_le_bytes(*block);
-        let mut cursor = 0u32;
-        let mode = read_bits(bits, &mut cursor, 5);
-        assert_eq!(mode, 0b00011, "test decoder only handles Mode 11");
-        let mut ep0 = [0u16; 3];
-        let mut ep1 = [0u16; 3];
-        for c in 0..3 {
-            ep0[c] = read_bits(bits, &mut cursor, 10) as u16;
-        }
-        for c in 0..3 {
-            ep1[c] = read_bits(bits, &mut cursor, 10) as u16;
-        }
-        let mut indices = [0u8; 16];
-        indices[0] = read_bits(bits, &mut cursor, 3) as u8;
-        for i in 1..16 {
-            indices[i] = read_bits(bits, &mut cursor, 4) as u8;
-        }
-        let palette = build_internal_palette(ep0, ep1);
-        let mut out = [[0u16; 3]; 16];
-        for i in 0..16 {
-            let idx = indices[i] as usize;
-            for c in 0..3 {
-                // UFloat finalize: `(interp * 31) >> 6` produces the f16 bit
-                // pattern the shader samples.
-                out[i][c] = ((palette[c][idx] * 31) >> 6) as u16;
-            }
-        }
-        out
+        super::decode_bc6h_block_for_tests(block)
     }
 
-    fn read_bits(bits: u128, cursor: &mut u32, count: u32) -> u128 {
-        let value = (bits >> *cursor) & ((1u128 << count) - 1);
-        *cursor += count;
-        value
-    }
-
-    /// Half-float bit pattern → f32. Sufficient to convert decoded f16 samples
-    /// back into a relative-error comparison space.
     fn f16_to_f32(h: u16) -> f32 {
-        let sign = ((h >> 15) & 0x1) as u32;
-        let exp = ((h >> 10) & 0x1f) as u32;
-        let mant = (h & 0x3ff) as u32;
-        let bits = if exp == 0 {
-            if mant == 0 {
-                sign << 31
-            } else {
-                // Subnormal — renormalize.
-                let mut m = mant;
-                let mut e: i32 = -14;
-                while (m & 0x400) == 0 {
-                    m <<= 1;
-                    e -= 1;
-                }
-                m &= 0x3ff;
-                (sign << 31) | (((e + 127) as u32) << 23) | (m << 13)
-            }
-        } else if exp == 0x1f {
-            (sign << 31) | (0xff << 23) | (mant << 13)
-        } else {
-            (sign << 31) | ((exp + 127 - 15) << 23) | (mant << 13)
-        };
-        f32::from_bits(bits)
+        super::f16_bits_to_f32(h)
     }
-
-    /// Frozen per-channel relative-error threshold for BC6H round-trip on
-    /// smooth HDR irradiance. Calibrated against this encoder's actual output
-    /// for the bake's representative data (smooth low-frequency gradients);
-    /// the determinism AC in Task 4a gates against the same threshold. Set
-    /// loose enough that small encoder tweaks don't trip the regression guard
-    /// while still tight enough to catch genuine quality losses (e.g. a wrong
-    /// mode-bit pack would blow this by orders of magnitude — pre-fix decode
-    /// produced relative errors > 0.9 against the same input).
-    ///
-    /// 6% is the floor the single-mode encoder comfortably hits on a 4×4-block
-    /// HDR gradient stepped at 0.04 m/texel and ~0.1 unit-per-texel intensity
-    /// change (the rate real irradiance varies within a block at the default
-    /// density). Sharper synthetic gradients would push higher — by design,
-    /// the test exercises the smooth case the bake produces, not pathological
-    /// content the format isn't tuned for.
-    pub const BC6H_ROUNDTRIP_TOLERANCE_REL: f32 = 0.08;
 
     /// Synthetic HDR gradient: smooth low-frequency irradiance, the case the
     /// bake actually produces. Per-texel variation is held under ~0.15 units

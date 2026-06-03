@@ -5,6 +5,7 @@ pub mod affinity_grid;
 pub mod animated_light_chunks;
 pub mod animated_light_weight_maps;
 pub mod bc5;
+pub mod bc6h;
 pub mod bvh_build;
 pub mod cache;
 pub mod chart_raster;
@@ -149,6 +150,20 @@ fn resolve_cached_lightmap_density(
     }
 }
 
+/// Resolve the effective lightmap density from the CLI flag and the
+/// worldspawn `_lightmap_density` KVP.
+///
+/// Precedence (highest first):
+///   1. `--lightmap-density` CLI flag (already validated by the CLI parser:
+///      finite, > 0; non-conforming values hard-reject at arg parse).
+///   2. `_lightmap_density` worldspawn KVP (validated in `parse_map_file`:
+///      non-finite/≤0 values are warned-and-discarded so they arrive as `None`).
+///   3. `lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS`.
+fn resolve_lightmap_density(cli: Option<f32>, kvp: Option<f32>) -> f32 {
+    cli.or(kvp)
+        .unwrap_or(lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS)
+}
+
 fn main() -> anyhow::Result<()> {
     let started = Instant::now();
     let args = parse_args()?;
@@ -280,9 +295,12 @@ fn main() -> anyhow::Result<()> {
     progress.start_stage("Lightmap bake...");
     let stage_start = Instant::now();
     let static_light_count = map_data.lights.iter().filter(|l| !l.is_dynamic).count();
+    let effective_lightmap_density =
+        resolve_lightmap_density(args.lightmap_density, map_data.lightmap_density);
     let lightmap_config = lightmap_bake::LightmapConfig {
-        lightmap_density: args.lightmap_density,
+        lightmap_density: effective_lightmap_density,
         area_sample_count: args.soft_shadow_samples,
+        uncompressed_irradiance: false,
     };
     let final_lightmap_density;
     let lightmap_bake_output = {
@@ -353,6 +371,7 @@ fn main() -> anyhow::Result<()> {
                     &lightmap_bake::LightmapConfig {
                         lightmap_density: density,
                         area_sample_count: args.soft_shadow_samples,
+                        uncompressed_irradiance: false,
                     },
                 ) {
                     Ok(result) => {
@@ -742,8 +761,13 @@ struct Args {
     verbose: bool,
     format: MapFormat,
     probe_spacing: f32,
-    /// Starting density in meters; baker retries at coarser densities on atlas overflow.
-    lightmap_density: f32,
+    /// Starting density in meters; baker retries at coarser densities on atlas
+    /// overflow. `None` means the flag was not passed — the effective bake
+    /// density falls through to the worldspawn `_lightmap_density` KVP, then
+    /// to `lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS`. Passing the flag
+    /// overrides any KVP (`--lightmap-density` keeps its hard-reject posture
+    /// on non-finite/≤0 values in the CLI parser).
+    lightmap_density: Option<f32>,
     /// Soft-shadow area-sample count (penumbra escalation target). Raising it
     /// invalidates both the cached lightmap stage and the cached animated
     /// weight-map stage, triggering a re-bake of each. Default
@@ -802,7 +826,7 @@ where
     let mut verbose = false;
     let mut format = DEFAULT_MAP_FORMAT;
     let mut probe_spacing = sh_bake::DEFAULT_PROBE_SPACING;
-    let mut lightmap_density = lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS;
+    let mut lightmap_density: Option<f32> = None;
     let mut soft_shadow_samples = lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT;
     let mut voxel_size = sdf_bake::DEFAULT_VOXEL_SIZE_METERS;
     let mut cache_dir: Option<PathBuf> = None;
@@ -853,7 +877,7 @@ where
                 if !parsed.is_finite() || parsed <= 0.0 {
                     anyhow::bail!("--lightmap-density must be a positive number of meters");
                 }
-                lightmap_density = parsed;
+                lightmap_density = Some(parsed);
             }
             "--soft-shadow-samples" => {
                 let samples_str = args
@@ -1271,6 +1295,57 @@ mod tests {
         assert_eq!(parsed.output, PathBuf::from("out.prl"));
     }
 
+    // resolve_lightmap_density precedence: CLI > KVP > default. The CLI flag's
+    // own validation lives in `parse_args_from`; the KVP's lives in
+    // `parse_map_file`. This resolver only composes the two precedences.
+
+    #[test]
+    fn resolve_lightmap_density_uses_default_when_neither_set() {
+        let d = resolve_lightmap_density(None, None);
+        assert_eq!(d, lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS);
+    }
+
+    #[test]
+    fn resolve_lightmap_density_uses_kvp_when_cli_absent() {
+        let d = resolve_lightmap_density(None, Some(0.02));
+        assert_eq!(d, 0.02);
+    }
+
+    #[test]
+    fn resolve_lightmap_density_cli_overrides_kvp() {
+        let d = resolve_lightmap_density(Some(0.01), Some(0.02));
+        assert_eq!(
+            d, 0.01,
+            "CLI --lightmap-density must override the worldspawn `_lightmap_density` KVP"
+        );
+    }
+
+    #[test]
+    fn resolve_lightmap_density_cli_overrides_default() {
+        let d = resolve_lightmap_density(Some(0.08), None);
+        assert_eq!(d, 0.08);
+    }
+
+    #[test]
+    fn parse_args_lightmap_density_unset_is_none() {
+        // Without --lightmap-density on the command line, Args carries None so
+        // the resolver can fall through to the KVP / default.
+        let args = vec!["input.map".to_string()];
+        let parsed = parse_args_from(args.into_iter()).unwrap();
+        assert_eq!(parsed.lightmap_density, None);
+    }
+
+    #[test]
+    fn parse_args_lightmap_density_set_is_some() {
+        let args = vec![
+            "input.map".to_string(),
+            "--lightmap-density".to_string(),
+            "0.03".to_string(),
+        ];
+        let parsed = parse_args_from(args.into_iter()).unwrap();
+        assert_eq!(parsed.lightmap_density, Some(0.03));
+    }
+
     #[test]
     fn parse_args_pvs_flag_rejected() {
         let args = vec!["input.map".to_string(), "--pvs".to_string()];
@@ -1594,6 +1669,7 @@ mod tests {
         let config = LightmapConfig {
             lightmap_density: 0.25,
             area_sample_count: lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
+            uncompressed_irradiance: false,
         };
         let hash = lightmap_input_hash(&inputs, &config);
         let key = CacheKey::new("lightmap", lightmap_bake::STAGE_VERSION, &hash);
@@ -1718,6 +1794,7 @@ mod tests {
         let config = LightmapConfig {
             lightmap_density: 0.25,
             area_sample_count: lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
+            uncompressed_irradiance: false,
         };
         let key_a = CacheKey::new(
             "lightmap",
@@ -1767,6 +1844,7 @@ mod tests {
         let config_default = LightmapConfig {
             lightmap_density: 0.25,
             area_sample_count: lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
+            uncompressed_irradiance: false,
         };
         let key_default = CacheKey::new(
             "lightmap",
@@ -1779,6 +1857,7 @@ mod tests {
         let config_high = LightmapConfig {
             lightmap_density: 0.25,
             area_sample_count: lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT * 2,
+            uncompressed_irradiance: false,
         };
         let key_high = CacheKey::new(
             "lightmap",
@@ -1820,6 +1899,7 @@ mod tests {
         let config = LightmapConfig {
             lightmap_density: 0.25,
             area_sample_count: lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
+            uncompressed_irradiance: false,
         };
 
         let key_first = CacheKey::new(
@@ -1890,6 +1970,7 @@ mod tests {
         let config = LightmapConfig {
             lightmap_density: 0.25,
             area_sample_count: lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
+            uncompressed_irradiance: false,
         };
         let hash = lightmap_input_hash(&inputs, &config);
         let key = CacheKey::new("lightmap", lightmap_bake::STAGE_VERSION, &hash);

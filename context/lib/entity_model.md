@@ -154,7 +154,7 @@ World collision resolves inline during each entity's movement — the entity sli
 
 ## 7b. Player Movement Component
 
-The dominant engine entity today is the player pawn. It carries a `PlayerMovement` component alongside its `Transform`. The component holds the capsule geometry, per-axis physics parameters (ground, air, fall), and mutable tick state (velocity, grounded flag, air-jumps remaining).
+The dominant engine entity today is the player pawn. It carries a `PlayerMovement` component alongside its `Transform`. The component holds the capsule geometry, per-axis physics parameters (ground, air, fall), and mutable tick state (velocity, grounded flag, air-jumps remaining, active movement-state variant, air-dashes remaining, dash cooldown timer).
 
 Movement is purely engine-internal. Scripts cannot read or write `PlayerMovement` through `worldQuery`; the movement system owns it exclusively. The camera follows the pawn's position each tick (eye-height offset above capsule center); yaw and pitch remain mouse-driven.
 

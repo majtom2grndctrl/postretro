@@ -15,6 +15,7 @@ pub enum Action {
     LookPitch,
     Sprint,
     Jump,
+    Dash,
     Use,
     Shoot,
     AltFire,

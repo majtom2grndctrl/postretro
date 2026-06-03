@@ -976,12 +976,21 @@ impl Renderer {
         // tracks the fix: sparse per-light delta storage that keeps the total
         // binding under the 128 MiB spec floor regardless of light count.
         const REQUIRED_STORAGE_BUFFER_BINDING_SIZE: u64 = 512 * 1024 * 1024;
+        // Lightmap atlases bake up to 8192² (see
+        // `crates/level-compiler/src/lightmap_bake.rs::MAX_ATLAS_DIMENSION`).
+        // The bake is a CLI with no GPU device, so its cap is a fixed constant —
+        // the runtime makes that requirement explicit by requesting the limit
+        // here and refusing under-spec adapters in the pre-check below. wgpu's
+        // default for this field is already 8192; setting it explicitly
+        // formalizes the dependency.
+        const REQUIRED_MAX_TEXTURE_DIMENSION_2D: u32 = 8192;
         let adapter_limits = adapter.limits();
         let required_limits = wgpu::Limits {
             max_bind_groups: 8,
             max_sampled_textures_per_shader_stage: REQUIRED_SAMPLED_TEXTURES,
             max_storage_textures_per_shader_stage: REQUIRED_STORAGE_TEXTURES,
             max_storage_buffer_binding_size: REQUIRED_STORAGE_BUFFER_BINDING_SIZE,
+            max_texture_dimension_2d: REQUIRED_MAX_TEXTURE_DIMENSION_2D,
             ..wgpu::Limits::default()
         };
 
@@ -1033,6 +1042,40 @@ impl Renderer {
                  Rgba16Float; PostRetro requires it for lightmap irradiance \
                  sampling. All supported backends (Vulkan/Metal/DX12) provide \
                  this — an adapter lacking it is below the supported floor"
+            );
+        }
+        // BC6H is the default irradiance storage at rest — the bake compresses
+        // the irradiance atlas to `Bc6hRgbUfloat` and the runtime uploads it
+        // through the same `Float { filterable: true }` BGL slot as the
+        // uncompressed debug variant. `TEXTURE_COMPRESSION_BC` is already
+        // required above; this fail-fast sibling check confirms the adapter
+        // also advertises `FILTERABLE` for `Bc6hRgbUfloat` specifically, so a
+        // misconfigured adapter fails here with a named message instead of an
+        // opaque `create_bind_group` crash later. Matches the
+        // `atlas_format_filterable` (`Rgba16Float`) check above.
+        if !crate::lighting::lightmap::bc6h_irradiance_filterable(&adapter) {
+            anyhow::bail!(
+                "[Renderer] GPU adapter does not support linear filtering of \
+                 Bc6hRgbUfloat; PostRetro requires it for the compressed \
+                 lightmap irradiance atlas. All supported backends \
+                 (Vulkan/Metal/DX12) provide this — an adapter lacking it is \
+                 below the supported floor"
+            );
+        }
+        // The lightmap bake's `MAX_ATLAS_DIMENSION` (8192) is a fixed CLI-side
+        // constant chosen to match guaranteed device support. Mirror that
+        // requirement here: a baked atlas can be up to 8192² in either axis, so
+        // an adapter that grants less cannot host one. Fail-fast with a named
+        // message rather than a deferred texture-creation crash. wgpu's default
+        // floor is 8192, so any in-spec desktop adapter satisfies this.
+        if adapter_limits.max_texture_dimension_2d < REQUIRED_MAX_TEXTURE_DIMENSION_2D {
+            anyhow::bail!(
+                "[Renderer] GPU adapter grants max_texture_dimension_2d = {}; \
+                 PostRetro requires at least {} to host the lightmap atlas at \
+                 its baked ceiling. All supported backends (Vulkan/Metal/DX12) \
+                 provide this — an adapter granting less is below the supported floor",
+                adapter_limits.max_texture_dimension_2d,
+                REQUIRED_MAX_TEXTURE_DIMENSION_2D,
             );
         }
 

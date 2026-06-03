@@ -2,7 +2,7 @@
 // sampler, and bind group (group 4).
 // See: context/lib/rendering_pipeline.md §4
 
-use postretro_level_format::lightmap::LightmapSection;
+use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, LightmapSection};
 use wgpu::util::DeviceExt;
 
 /// Group 4 bindings. The layout is fixed — the fragment shader's
@@ -99,7 +99,14 @@ impl LightmapResources {
             ..Default::default()
         });
 
-        let usable = section.filter(|s| s.width > 0 && s.height > 0);
+        // Defensive runtime guard: the init adapter pre-check guarantees the
+        // device grants at least 8192² (see `render::mod.rs`), and the bake's
+        // `MAX_ATLAS_DIMENSION` matches that ceiling. A baked atlas larger than
+        // the granted limit can only come from future content or a corrupt
+        // section. Drop to the neutral placeholder with a logged error rather
+        // than panicking on texture creation. Mirrors `render::sh_volume`'s
+        // atlas-fits-device filter.
+        let usable = filter_usable_section(section, device.limits().max_texture_dimension_2d);
         let present = usable.is_some();
 
         let (irradiance_tex, direction_tex) = match usable {
@@ -211,6 +218,28 @@ fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 5] {
     ]
 }
 
+/// Filter out an absent (`None`), zero-dimension, or oversize `LightmapSection`,
+/// returning `None` so the caller falls through to the neutral placeholder. Pure
+/// dimension-vs-limit comparison — unit-testable without a real wgpu device.
+fn filter_usable_section(
+    section: Option<&LightmapSection>,
+    max_texture_dimension_2d: u32,
+) -> Option<&LightmapSection> {
+    section.filter(|s| s.width > 0 && s.height > 0).filter(|s| {
+        let fits = s.width <= max_texture_dimension_2d && s.height <= max_texture_dimension_2d;
+        if !fits {
+            log::error!(
+                "[Renderer] Lightmap atlas {}x{} exceeds device maxTextureDimension2D {}; \
+                     degrading to neutral placeholder for this level",
+                s.width,
+                s.height,
+                max_texture_dimension_2d,
+            );
+        }
+        fits
+    })
+}
+
 /// Whether `Rgba16Float` (the irradiance + animated atlas format) advertises
 /// hardware bilinear filtering on this adapter. Checked once at init: the
 /// forward pass samples the irradiance + animated atlases through the linear
@@ -229,6 +258,21 @@ fn upload_irradiance_texture(
     queue: &wgpu::Queue,
     sec: &LightmapSection,
 ) -> wgpu::Texture {
+    // Branch the texture format on the section's stored tag. Both formats bind
+    // through the same group-4 BGL slot (`Float { filterable: true }`) and
+    // sample through the existing linear sampler — `Bc6hRgbUfloat` is hardware-
+    // decoded before filtering, so the shader's sample call is identical and
+    // requires no second pipeline variant. RGBA16F retains its alpha (legacy
+    // padding); BC6H is RGB-only and the shader's `.rgb` swizzle never reads
+    // alpha. `create_texture_with_data` accepts the block-compressed payload
+    // verbatim — the dimensions are the texel-space size and the data slice is
+    // `ceil(w/4)·ceil(h/4)·16` bytes.
+    let format = match sec.irradiance_format {
+        IRRADIANCE_FORMAT_BC6H => wgpu::TextureFormat::Bc6hRgbUfloat,
+        // `IRRADIANCE_FORMAT_RGBA16F` (or any value `from_bytes` already
+        // gated to one of the two known tags).
+        _ => wgpu::TextureFormat::Rgba16Float,
+    };
     device.create_texture_with_data(
         queue,
         &wgpu::TextureDescriptor {
@@ -241,13 +285,28 @@ fn upload_irradiance_texture(
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba16Float,
+            format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         },
         wgpu::util::TextureDataOrder::LayerMajor,
         &sec.irradiance,
     )
+}
+
+/// Whether `Bc6hRgbUfloat` (the default irradiance storage on disk) advertises
+/// the texture-binding and linear-filtering features the runtime relies on.
+/// Mirrors `atlas_format_filterable` for the BC6H sibling check: BC6H is the
+/// default storage and a `TEXTURE_COMPRESSION_BC`-granted adapter that fails
+/// to advertise filterable BC6H here would fail later at bind-group creation
+/// with an opaque error. `TEXTURE_COMPRESSION_BC` is already a required
+/// feature (see `render::mod.rs`'s adapter pre-check); this check confirms
+/// the format that feature unlocks supports the usages we need.
+pub fn bc6h_irradiance_filterable(adapter: &wgpu::Adapter) -> bool {
+    adapter
+        .get_texture_format_features(wgpu::TextureFormat::Bc6hRgbUfloat)
+        .flags
+        .contains(wgpu::TextureFormatFeatureFlags::FILTERABLE)
 }
 
 fn upload_direction_texture(
@@ -332,6 +391,96 @@ fn upload_placeholder_direction(device: &wgpu::Device, queue: &wgpu::Queue) -> w
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_level_format::lightmap::LightmapMode;
+
+    fn fake_section(width: u32, height: u32) -> LightmapSection {
+        LightmapSection {
+            width,
+            height,
+            texel_density: 0.04,
+            irradiance: Vec::new(),
+            irradiance_format: postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F,
+            direction: Vec::new(),
+            mode: LightmapMode::Shadowed,
+        }
+    }
+
+    /// Atlas-fits-device guard: a section that exceeds the granted
+    /// `max_texture_dimension_2d` is dropped so the caller falls through to the
+    /// neutral placeholder, rather than panicking on texture creation. Pure
+    /// dimension comparison — no real oversize allocation needed.
+    #[test]
+    fn oversize_section_filtered_out() {
+        let oversize = fake_section(16_384, 8192);
+        assert!(
+            filter_usable_section(Some(&oversize), 8192).is_none(),
+            "atlas wider than the granted limit must drop to placeholder",
+        );
+
+        let tall = fake_section(8192, 16_384);
+        assert!(
+            filter_usable_section(Some(&tall), 8192).is_none(),
+            "atlas taller than the granted limit must drop to placeholder",
+        );
+    }
+
+    /// Task 4a — the over-limit degrade AC requires not just a drop-to-
+    /// placeholder, but a logged `[Renderer]`-prefixed error so triage can
+    /// trace the silent flat-ambient fall-through. Capture the log records
+    /// emitted during the filter call and assert the prefix + the format the
+    /// AC pins (no real oversize allocation; the test runs against the pure
+    /// dimension-comparison path).
+    #[test]
+    fn oversize_section_logs_renderer_prefixed_error() {
+        let oversize = fake_section(16_384, 4096);
+        // Capture log records on this thread, scoped to the filter call.
+        let records = crate::scripting::reactions::log_capture::capture(|| {
+            let _ = filter_usable_section(Some(&oversize), 8192);
+        });
+        assert!(
+            records
+                .iter()
+                .any(|(level, msg)| *level == log::Level::Error
+                    && msg.starts_with("[Renderer]")
+                    && msg.contains("Lightmap atlas")
+                    && msg.contains("16384")
+                    && msg.contains("8192")),
+            "expected a `[Renderer]`-prefixed error naming the oversize atlas and the granted \
+             limit; got records: {records:?}",
+        );
+    }
+
+    #[test]
+    fn at_or_under_limit_section_kept() {
+        let at_limit = fake_section(8192, 8192);
+        assert!(
+            filter_usable_section(Some(&at_limit), 8192).is_some(),
+            "atlas exactly at the granted limit must be retained",
+        );
+
+        let under = fake_section(4096, 2048);
+        assert!(
+            filter_usable_section(Some(&under), 8192).is_some(),
+            "atlas under the granted limit must be retained",
+        );
+    }
+
+    #[test]
+    fn zero_dimension_section_filtered_out() {
+        let empty = fake_section(0, 0);
+        assert!(
+            filter_usable_section(Some(&empty), 8192).is_none(),
+            "zero-dimension section must drop to placeholder regardless of limit",
+        );
+    }
+
+    #[test]
+    fn missing_section_filtered_out() {
+        assert!(
+            filter_usable_section(None, 8192).is_none(),
+            "absent section drops to placeholder",
+        );
+    }
 
     // The group-4 BGL is a fixed contract with `forward.wgsl`'s `@binding`
     // decorators. This pins the sampler split decided in Task 5: which textures

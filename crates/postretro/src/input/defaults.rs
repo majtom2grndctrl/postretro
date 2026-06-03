@@ -23,6 +23,7 @@ pub fn default_keyboard_mouse_bindings() -> Vec<Binding> {
         // Button actions
         Binding::new(PhysicalInput::Key(KeyCode::ShiftLeft), Action::Sprint),
         Binding::new(PhysicalInput::Key(KeyCode::Space), Action::Jump),
+        Binding::new(PhysicalInput::Key(KeyCode::KeyF), Action::Dash),
         Binding::new(PhysicalInput::Key(KeyCode::KeyE), Action::Use),
         Binding::new(PhysicalInput::MouseButton(MouseButton::Left), Action::Shoot),
         Binding::new(
@@ -77,6 +78,10 @@ pub fn default_gamepad_bindings() -> Vec<Binding> {
             PhysicalInput::GamepadButton(GilrsButton::South),
             Action::Jump,
         ),
+        Binding::new(
+            PhysicalInput::GamepadButton(GilrsButton::East),
+            Action::Dash,
+        ),
         Binding::new(PhysicalInput::GamepadButton(GilrsButton::West), Action::Use),
         Binding::new(
             PhysicalInput::GamepadButton(GilrsButton::RightTrigger2),
@@ -115,6 +120,7 @@ mod tests {
             Action::LookPitch,
             Action::Sprint,
             Action::Jump,
+            Action::Dash,
             Action::Use,
             Action::Shoot,
             Action::AltFire,

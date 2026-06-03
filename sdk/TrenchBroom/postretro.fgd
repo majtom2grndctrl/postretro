@@ -20,6 +20,11 @@
     // absent so authors face an explicit choice. May be changed at runtime
     // via world.setGravity().
     initialGravity(float) : "REQUIRED. Starting gravity (m/s²); negative = downward, positive = upward (−9.81 = Earth). May be changed at runtime via world.setGravity()."
+    // Per-map lightmap density opt-in (meters per texel). Smaller = finer
+    // shadows but larger atlas. Default 0.04 m/texel; only fidelity-critical
+    // maps need to author this. Non-finite / <= 0 values are warned and the
+    // default is used. The `--lightmap-density` CLI flag overrides this KVP.
+    _lightmap_density(float) : "Lightmap texel size in meters (default 0.04; smaller = finer)" : ""
 ]
 
 @BaseClass = EntitySpawn

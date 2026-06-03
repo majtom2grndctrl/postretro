@@ -133,7 +133,7 @@ declare module "postretro" {
     resolution: ResolutionMode;
   };
 
-  /** Authored player-movement component preset. All four sub-objects are required when `movement` is present; the data-archetype spawn path materializes the runtime movement component from this. */
+  /** Authored player-movement component preset. The four core sub-objects (`capsule`/`ground`/`air`/`fall`) are required when `movement` is present; `dash` is optional. The data-archetype spawn path materializes the runtime movement component from this. */
   export type PlayerMovementDescriptor = {
     /** Collision capsule shape. */
     capsule: CapsuleParams;
@@ -143,6 +143,8 @@ declare module "postretro" {
     air: AirParams;
     /** Falling parameters. */
     fall: FallParams;
+    /** Optional dash tuning. When omitted, dash is disabled. When present, all of its fields are required. */
+    dash?: DashParams;
     /** Optional. Stuck-stop deadzone enable flag. When true (default), the slide loop zeroes horizontal velocity and rolls back XZ position when contradictory wall normals (≥60° apart) are seen within the same tick AND net horizontal displacement is below `stuckStopThreshold`. Suppresses orbital jitter in interior corners. Default true. */
     stuckStopEnabled?: boolean;
     /** Optional. Horizontal-displacement threshold in metres that gates the deadzone. Must be finite and ≥ 0. Default 1.0e-3. */
@@ -165,8 +167,6 @@ declare module "postretro" {
     speed: SpeedParams;
     /** Ground acceleration in world units/sec². */
     accel: number;
-    /** Vertical launch velocity applied on jump. */
-    jumpVelocity: number;
     /** Maximum step-up height in world units. */
     stepHeight: number;
     /** Maximum walkable slope in degrees; must lie in [0, 90]. */
@@ -193,6 +193,8 @@ declare module "postretro" {
     bunnyHop: boolean;
     /** Additional jumps allowed in air after the initial ground jump. 0 disables air jumps. */
     jumps: number;
+    /** Vertical launch velocity applied on jump. */
+    jumpVelocity: number;
     /** Maximum upward velocity an air jump can reach; required when `jumps > 0`. */
     jumpCeiling: number;
   };
@@ -201,6 +203,24 @@ declare module "postretro" {
   export type FallParams = {
     /** Terminal downward fall speed in world units/sec. Must be > 0. */
     terminalVelocity: number;
+  };
+
+  /** Dash tuning. Optional on `PlayerMovementDescriptor` — when omitted, dash is disabled. When present, all fields are required and validated. */
+  export type DashParams = {
+    /** Impulse magnitude applied on dash in world units/sec. Must be finite > 0. */
+    boostSpeed: number;
+    /** Fraction of pre-dash momentum folded into the dash, unitless in [0, 1]. */
+    momentumRetention: number;
+    /** In-dash steering authority, unitless in [0, 1]. */
+    steerControl: number;
+    /** Decay rate of the dash impulse in world units/sec². Must be finite and ≥ 0. */
+    dashDrag: number;
+    /** Cooldown between dashes in milliseconds. Must be finite and ≥ 0. */
+    cooldownMs: number;
+    /** Number of air dashes allowed before landing. */
+    airDashes: number;
+    /** Whether the dash preserves the pre-dash vertical velocity. */
+    preserveVertical: boolean;
   };
 
   /** Object returned from `setupMod()` in `start-script.{ts,luau}`. Identifies the mod to the engine. */

@@ -1,6 +1,6 @@
 // In-tree BC6H (`Bc6hRgbUfloat`) encoder for the irradiance lightmap atlas.
-// See: context/lib/build_pipeline.md §Baked texture mips,
-//      context/lib/rendering_pipeline.md §4
+// See: context/lib/build_pipeline.md §PRL Compilation (Lightmap section id 22),
+//      context/lib/build_pipeline.md §Build Cache (determinism / BC6H exemption)
 
 //! BC6H encodes 4×4 HDR RGB texel blocks as 128-bit (16-byte) payloads. The
 //! format supports 14 mode variants (one or two subsets, deltas, varying
@@ -144,7 +144,10 @@ fn encode_bc6h_block(texels: &[[u16; 3]; 16]) -> [u8; 16] {
     // Mode 11's fixup index (texel 0) stores 3 bits, not 4 — its top bit is
     // implicitly 0. If the best selector for texel 0 is ≥ 8, swap the
     // endpoints (and complement every selector) so texel 0 lands in [0, 7]
-    // while every block sample reconstructs identically.
+    // while every block sample reconstructs identically. The swap is sound
+    // because BC6H_WEIGHTS_4 is symmetric around 32 (w[15-i] = 64 - w[i]),
+    // so swapping ep0↔ep1 and replacing every selector s with 15-s leaves
+    // the interpolated value unchanged.
     if selectors[0] >= 8 {
         std::mem::swap(&mut ep0, &mut ep1);
         for s in &mut selectors {
@@ -259,11 +262,9 @@ fn write_bits(bits: &mut u128, cursor: &mut u32, value: u128, count: u32) {
 }
 
 /// Frozen per-channel relative-error threshold for BC6H round-trip on smooth
-/// HDR irradiance. Calibrated against this encoder's actual output for the
-/// bake's representative data (smooth low-frequency gradients); the
-/// determinism AC in Task 4a gates against the same threshold. Set loose
-/// enough that small encoder tweaks don't trip the regression guard while
-/// still tight enough to catch genuine quality losses.
+/// HDR irradiance. Calibrated at the tightest value this encoder passes on
+/// representative irradiance data — any encoder quality regression tightens
+/// the gate and trips the test, while an improvement does not.
 ///
 /// Lifted to module scope (out of `mod tests`) so the determinism test in
 /// `lightmap_bake.rs` can gate against the *same* frozen threshold rather

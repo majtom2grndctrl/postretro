@@ -175,6 +175,8 @@ Disk-backed content-hash cache that lets `prl-build` skip the two expensive bake
 
 **Participating stages.** Lightmap bake and SH volume bake. Parse, BSP, portals, geometry, and BVH run uncached — they are fast enough that caching yields no measurable speedup.
 
+**Warm vs cold builds.** A shippable map is a cold build — `--no-cache`, every stage baked exact. Warm (cached) builds trade exactness for iteration speed; they are not shippable. The split is per channel. The direct lightmap is exact in both modes: a cached lightmap is byte-identical to a full bake (pre-compression). Indirect SH is exact only cold. A warm build may bake SH at a finer-than-whole-volume grain, bounding each region's light set — a benign approximation, dimmer-or-equal in far-bounce regions, never miscolored. Judge final indirect lighting on a cold build. Run production and release bakes with `--no-cache`.
+
 **Key composition.** `blake3(stage_id || stage_version_le_bytes || input_hash)`.
 
 | Component | Form |
@@ -185,7 +187,7 @@ Disk-backed content-hash cache that lets `prl-build` skip the two expensive bake
 
 **Stage version bump rule.** Bump a stage's `STAGE_VERSION` when its output computation changes (algorithm, sampling, formula, or atlas packing). The substrate invalidates every entry for that stage on the next build. Do not bump for unrelated changes. Each stage's current value lives as a `u32` constant in its own module — the source is authoritative; this doc does not pin the number.
 
-**Determinism invariant.** Both cached stages produce byte-identical output for identical inputs. Any new code in `lightmap_bake.rs` or `sh_bake.rs` must preserve this. Common non-determinism sources to avoid: `HashMap` iteration feeding output ordering, non-order-preserving parallel reductions. **Exception:** lossy compressed outputs (BC6H irradiance) are exempt — output bytes are an implementation detail; correctness is round-trip within tolerance, not byte-equality. The cache stays correct regardless, since it keys on inputs, not outputs.
+**Determinism invariant.** Byte-identical output for identical inputs — with two scoped carve-outs. The guarantee holds for the direct lightmap before compression and for the cold whole-volume SH bake (the ship path). New code in `lightmap_bake.rs` or `sh_bake.rs` must preserve it. Avoid common non-determinism sources: `HashMap` iteration feeding output ordering, non-order-preserving parallel reductions. **Exempt:** (1) lossy compressed output (BC6H irradiance) — correctness is round-trip within tolerance, not byte-equality; (2) indirect SH baked finer than the whole volume (warm incremental builds) — a deliberate bounded approximation; the cold whole-volume bake stays exact. Either way the cache stays correct: it keys on inputs, not outputs. Every bake is self-consistent — same inputs, same bytes.
 
 **CLI flags.**
 

@@ -850,9 +850,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     total_light = total_light + specular_sum;
 
     let light_count = select(0u, uniforms.light_count, use_dynamic);
-    // DEBUG (mode 5): the dynamic spot light actually removed by the shadow
-    // term — i.e. the *visible* shadow. Accumulated alongside total_light.
-    var dynamic_shadow_removed = vec3<f32>(0.0);
+    // DEBUG (mode 5): split the dynamic spot lighting three ways so we can tell
+    // an eligibility problem from a geometry one.
+    var dyn_removed = vec3<f32>(0.0); // spot light removed by shadow (visible shadow)
+    var dyn_lit_slotted = vec3<f32>(0.0); // delivered by spots that HAVE a shadow slot
+    var dyn_lit_unslot = vec3<f32>(0.0); // delivered by spots with NO shadow slot
     for (var i: u32 = 0u; i < light_count; i = i + 1u) {
         // Influence-volume early-out: pure optimization — no pixel change.
         let influence = light_influence[i];
@@ -909,8 +911,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
         var L: vec3<f32>;
         var attenuation: f32;
-        // DEBUG (mode 5): spot attenuation removed by the shadow term, pre-NdotL.
-        var shadow_removed_atten: f32 = 0.0;
+        // DEBUG (mode 5): per-spot bookkeeping for the visible-shadow view.
+        var spot_unshadowed_atten: f32 = 0.0;
+        var spot_shadow: f32 = 1.0;
+        var spot_has_slot: bool = false;
 
         switch light_type {
             case 0u: {
@@ -932,12 +936,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 );
                 attenuation = dist_falloff * cone;
 
+                spot_unshadowed_atten = attenuation;
                 let slot_index = bitcast<u32>(light.cone_angles_and_pad.z);
                 if slot_index != 0xFFFFFFFFu {
+                    spot_has_slot = true;
                     let light_proj = light_space_matrices.m[slot_index];
-                    let shadow = sample_spot_shadow(slot_index, in.world_position, light_proj);
-                    shadow_removed_atten = attenuation * (1.0 - shadow);
-                    attenuation = attenuation * shadow;
+                    spot_shadow = sample_spot_shadow(slot_index, in.world_position, light_proj);
+                    attenuation = attenuation * spot_shadow;
                 }
             }
             default: {
@@ -949,8 +954,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
         let NdotL = max(dot(N_bump, L), 0.0);
         total_light = total_light + effective_color * attenuation * NdotL;
-        dynamic_shadow_removed = dynamic_shadow_removed
-            + effective_color * shadow_removed_atten * NdotL;
+        if light_type == 1u {
+            let lit = effective_color * spot_unshadowed_atten * NdotL;
+            if spot_has_slot {
+                dyn_lit_slotted = dyn_lit_slotted + lit;
+                dyn_removed = dyn_removed + lit * (1.0 - spot_shadow);
+            } else {
+                dyn_lit_unslot = dyn_lit_unslot + lit;
+            }
+        }
     }
 
     let rgb = base_color.rgb * total_light;
@@ -1001,22 +1013,22 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let n = textureLoad(sdf_shadow_factor, h, 0).rgb;
         return vec4<f32>(n, base_color.a);
     }
-    // TEMP DEBUG: dynamic spot shadow-map visualization (mode 5). Shows the
-    // dynamic spot light *actually removed by the shadow term* — i.e. the
-    // VISIBLE shadow, exactly as the lighting path applies it (delivered cone
-    // light × (1 - shadow), summed over every slotted spot). This is the honest
-    // "where would a shadow appear" view: unlike the raw slot-0 frustum sample,
-    // it is zero wherever the spot doesn't actually light the surface.
-    //   black            no shadow effect (lit-and-unshadowed, or unlit)
-    //   bright (warm)    the spot lights this surface AND the pillar blocks it
-    //                    → this is the shadow you'd see in DynamicOnly.
-    // Brightness is the magnitude of removed light, scaled up so faint shadows
-    // are still visible. An all-black frame means the shadows fall only where
-    // the spots deliver no light (so nothing darkens) — a content/geometry
-    // problem, not the pipeline.
+    // TEMP DEBUG: dynamic spot shadow visibility view (mode 5). Splits the spot
+    // lighting so we can tell an eligibility problem from a geometry one:
+    //   R (red)    = spot light REMOVED by a shadow here → the visible shadow.
+    //   G (green)  = surface lit by a spot that HAS a shadow slot (can shadow).
+    //   B (blue)   = surface lit by a spot with NO shadow slot (cannot shadow).
+    // So, reading the pillar area:
+    //   red/yellow → shadow is landing on lit surface (should show in DynamicOnly)
+    //   pure green → a shadow-casting spot lights it, but nothing occludes it here
+    //   pure blue  → the spot lighting it has no slot → ELIGIBILITY is the bug
+    //   black      → no spot lights this surface at all (geometry/placement)
     if uniforms.sdf_shadow_mode == 5u {
-        let removed = dynamic_shadow_removed * 4.0;
-        return vec4<f32>(removed, base_color.a);
+        let lum = vec3<f32>(0.299, 0.587, 0.114);
+        let r = clamp(dot(dyn_removed, lum) * 4.0, 0.0, 1.0);
+        let g = clamp(dot(dyn_lit_slotted, lum) * 1.5, 0.0, 1.0);
+        let b = clamp(dot(dyn_lit_unslot, lum) * 1.5, 0.0, 1.0);
+        return vec4<f32>(r, g, b, base_color.a);
     }
     return vec4<f32>(rgb, base_color.a);
 }

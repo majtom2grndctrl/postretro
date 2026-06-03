@@ -352,7 +352,10 @@ pub fn bake_lightmap(
     // output byte-identical to the pre-BC6H path so owner-side A/B compares
     // and round-trip determinism tests can run against a known-stable baseline.
     let (irr_bytes, irradiance_format) = if config.uncompressed_irradiance {
-        (encode_irradiance_rgba16f(&irradiance), IRRADIANCE_FORMAT_RGBA16F)
+        (
+            encode_irradiance_rgba16f(&irradiance),
+            IRRADIANCE_FORMAT_RGBA16F,
+        )
     } else {
         (
             bc6h::encode_bc6h_rgb_from_f32_rgba(&irradiance, atlas_w, atlas_h),

@@ -209,10 +209,15 @@ fn build_internal_palette(ep0: [u16; 3], ep1: [u16; 3]) -> [[u32; 16]; 3] {
 fn best_index_internal(texel: &[u32; 3], palette: &[[u32; 16]; 3]) -> usize {
     let mut best_idx = 0usize;
     let mut best_err = u64::MAX;
-    for i in 0..16 {
-        let dr = palette[0][i] as i64 - texel[0] as i64;
-        let dg = palette[1][i] as i64 - texel[1] as i64;
-        let db = palette[2][i] as i64 - texel[2] as i64;
+    for (i, ((&r, &g), &b)) in palette[0]
+        .iter()
+        .zip(palette[1].iter())
+        .zip(palette[2].iter())
+        .enumerate()
+    {
+        let dr = r as i64 - texel[0] as i64;
+        let dg = g as i64 - texel[1] as i64;
+        let db = b as i64 - texel[2] as i64;
         let err = (dr * dr + dg * dg + db * db) as u64;
         if err < best_err {
             best_err = err;
@@ -229,18 +234,21 @@ fn pack_mode11_block(ep0: [u16; 3], ep1: [u16; 3], selectors: [u8; 16]) -> [u8; 
     // mode = 0b00011 (5 bits)
     write_bits(&mut bits, &mut cursor, 0b00011, 5);
     // Endpoints, RGB pairs interleaved as (r0, g0, b0, r1, g1, b1), 10 bits each.
-    for c in 0..3 {
-        write_bits(&mut bits, &mut cursor, ep0[c] as u128, 10);
+    for &v in &ep0 {
+        write_bits(&mut bits, &mut cursor, v as u128, 10);
     }
-    for c in 0..3 {
-        write_bits(&mut bits, &mut cursor, ep1[c] as u128, 10);
+    for &v in &ep1 {
+        write_bits(&mut bits, &mut cursor, v as u128, 10);
     }
     // Indices: texel 0 is 3 bits (fixup), texels 1..=15 are 4 bits each.
     write_bits(&mut bits, &mut cursor, (selectors[0] & 0x7) as u128, 3);
     for sel in &selectors[1..] {
         write_bits(&mut bits, &mut cursor, (*sel & 0xf) as u128, 4);
     }
-    debug_assert_eq!(cursor, 128, "BC6H Mode 11 block must pack to exactly 128 bits");
+    debug_assert_eq!(
+        cursor, 128,
+        "BC6H Mode 11 block must pack to exactly 128 bits"
+    );
 
     bits.to_le_bytes()
 }

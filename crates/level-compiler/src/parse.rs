@@ -175,27 +175,30 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     // Classname Routing (worldspawn has no meaningful per-entity origin to
     // name; the warning names the key). The `--lightmap-density` CLI flag
     // overrides any KVP value (and keeps its hard-reject posture).
-    let lightmap_density: Option<f32> =
-        match get_property(&geo_map, &worldspawn_id, "_lightmap_density") {
-            None => None,
-            Some(raw) => match raw.trim().parse::<f32>() {
-                Ok(parsed) if parsed.is_finite() && parsed > 0.0 => Some(parsed),
-                Ok(parsed) => {
-                    log::warn!(
-                        "[Compiler] worldspawn `_lightmap_density` value `{parsed}` is non-finite or \
+    let lightmap_density: Option<f32> = match get_property(
+        &geo_map,
+        &worldspawn_id,
+        "_lightmap_density",
+    ) {
+        None => None,
+        Some(raw) => match raw.trim().parse::<f32>() {
+            Ok(parsed) if parsed.is_finite() && parsed > 0.0 => Some(parsed),
+            Ok(parsed) => {
+                log::warn!(
+                    "[Compiler] worldspawn `_lightmap_density` value `{parsed}` is non-finite or \
                          <= 0; falling back to default"
-                    );
-                    None
-                }
-                Err(e) => {
-                    log::warn!(
-                        "[Compiler] worldspawn `_lightmap_density` value `{raw}` is not a valid \
+                );
+                None
+            }
+            Err(e) => {
+                log::warn!(
+                    "[Compiler] worldspawn `_lightmap_density` value `{raw}` is not a valid \
                          float ({e}); falling back to default"
-                    );
-                    None
-                }
-            },
-        };
+                );
+                None
+            }
+        },
+    };
 
     // Worldspawn `initialGravity` (m/s², negative = downward). Required —
     // absence halts compilation so authors face an explicit choice rather
@@ -2221,9 +2224,8 @@ mod tests {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         let tid = std::thread::current().id();
-        let tmp = std::env::temp_dir().join(format!(
-            "postretro_lightmap_density_{nanos}_{tid:?}.map"
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("postretro_lightmap_density_{nanos}_{tid:?}.map"));
         std::fs::write(&tmp, map_text).unwrap();
         let result = parse_map_file(&tmp, MapFormat::IdTech2);
         let _ = std::fs::remove_file(&tmp);

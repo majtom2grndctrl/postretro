@@ -225,22 +225,19 @@ fn filter_usable_section(
     section: Option<&LightmapSection>,
     max_texture_dimension_2d: u32,
 ) -> Option<&LightmapSection> {
-    section
-        .filter(|s| s.width > 0 && s.height > 0)
-        .filter(|s| {
-            let fits =
-                s.width <= max_texture_dimension_2d && s.height <= max_texture_dimension_2d;
-            if !fits {
-                log::error!(
-                    "[Renderer] Lightmap atlas {}x{} exceeds device maxTextureDimension2D {}; \
+    section.filter(|s| s.width > 0 && s.height > 0).filter(|s| {
+        let fits = s.width <= max_texture_dimension_2d && s.height <= max_texture_dimension_2d;
+        if !fits {
+            log::error!(
+                "[Renderer] Lightmap atlas {}x{} exceeds device maxTextureDimension2D {}; \
                      degrading to neutral placeholder for this level",
-                    s.width,
-                    s.height,
-                    max_texture_dimension_2d,
-                );
-            }
-            fits
-        })
+                s.width,
+                s.height,
+                max_texture_dimension_2d,
+            );
+        }
+        fits
+    })
 }
 
 /// Whether `Rgba16Float` (the irradiance + animated atlas format) advertises

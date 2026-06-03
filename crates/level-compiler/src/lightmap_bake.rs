@@ -51,15 +51,22 @@ pub const DEFAULT_TEXEL_DENSITY_METERS: f32 = 0.04;
 /// hard 0/1. The per-texel output shifts with NO input change (maps using the
 /// default light size have identical inputs), so the cache would serve stale
 /// pre-F1 output unless the version advances.
-pub const STAGE_VERSION: u32 = 6;
+///
+/// v7 bump (lightmap-resolution Task 1): `MAX_ATLAS_DIMENSION` raised from 4096
+/// to 8192. The cap is a constant chosen to match guaranteed device support, not
+/// an input — so it is not part of `input_hash`. Without this bump a map that
+/// previously overflowed at 4096 and coarsened would serve stale coarse cache
+/// against an unchanged input under the higher ceiling. The bump forces a
+/// re-bake so the new cap takes effect.
+pub const STAGE_VERSION: u32 = 7;
 
 /// Atlas width/height when no face would fit otherwise. Power-of-two for BC6H block alignment.
 const MIN_ATLAS_DIMENSION: u32 = 64;
 
 /// Maximum atlas dimension. Beyond this the baker returns an error so the caller can retry at a
-/// coarser density. 4096 is well under the 8192 `max_texture_dimension_2d` floor required by
-/// wgpu and fits ~164 m at 4 cm/texel.
-const MAX_ATLAS_DIMENSION: u32 = 4096;
+/// coarser density. 8192 matches the `max_texture_dimension_2d` floor the runtime requires
+/// (see `crates/postretro/src/render/mod.rs`'s adapter pre-check) and fits ~328 m at 4 cm/texel.
+const MAX_ATLAS_DIMENSION: u32 = 8192;
 
 /// Shadow ray self-intersection offset. `pub(crate)` so the animated weight-map baker uses the
 /// same value — both bakers must agree or chunk boundaries show seams.
@@ -1832,6 +1839,51 @@ mod tests {
         }
     }
 
+    fn synthetic_chart(w: u32, h: u32) -> Chart {
+        Chart {
+            origin: Vec3::ZERO,
+            u_axis: Vec3::X,
+            v_axis: Vec3::Z,
+            uv_min: [0.0, 0.0],
+            uv_extent: [1.0, 1.0],
+            normal: Vec3::Y,
+            width_texels: w,
+            height_texels: h,
+        }
+    }
+
+    /// Cap raise (Task 1): a chart set whose total area requires more than
+    /// 4096² but ≤ 8192² must pack at the new cap without coarsening. Both
+    /// axes stay power-of-two and ≤ the cap.
+    #[test]
+    fn shelf_pack_uses_new_8192_cap_for_overflowing_set() {
+        // Many 256-wide, 4097-tall charts → atlas_h must exceed 4096 to host
+        // a single column; the old 4096 cap would have errored. With the new
+        // 8192 cap, the packer succeeds.
+        let charts: Vec<Chart> = (0..4).map(|_| synthetic_chart(256, 4097)).collect();
+        let (w, h, _) = shelf_pack(&charts, 0.04).expect("must pack under 8192 cap");
+        assert!(w <= 8192, "width must be within cap, got {w}");
+        assert!(h <= 8192, "height must be within cap, got {h}");
+        assert!(h > 4096, "height must have grown past the old 4096 cap");
+        assert!(w.is_power_of_two(), "width must be power-of-two, got {w}");
+        assert!(h.is_power_of_two(), "height must be power-of-two, got {h}");
+    }
+
+    /// Cap raise (Task 1): a chart set that exceeds 8192² still returns
+    /// `AtlasOverflow` so `main.rs`'s coarsen-retry loop kicks in.
+    #[test]
+    fn shelf_pack_overflows_past_8192_cap() {
+        // A single column of charts whose stacked height exceeds 8192.
+        let charts: Vec<Chart> = (0..3).map(|_| synthetic_chart(8192, 4096)).collect();
+        match shelf_pack(&charts, 0.04) {
+            Err(LightmapBakeError::AtlasOverflow { max, .. }) => {
+                assert_eq!(max, 8192, "AtlasOverflow must report the new cap");
+            }
+            Ok((w, h, _)) => panic!("expected AtlasOverflow at the new cap, got {w}x{h}"),
+            Err(other) => panic!("expected AtlasOverflow, got {other:?}"),
+        }
+    }
+
     /// Cache-determinism guard: the lightmap bake is consumed by the build-stage
     /// cache, which keys cache entries on input hash and reuses stored output
     /// verbatim. Any run-to-run drift in the encoded section (HashMap iteration
@@ -2071,7 +2123,7 @@ mod tests {
     fn oversize_face_returns_error_rather_than_panicking() {
         // Regression: the old path clamped atlas_h but left chart placements at pre-clamp
         // coordinates, causing out-of-bounds writes during bake and dilation.
-        let size = 200.0; // 5000 texels at 0.04 m/texel, beyond MAX_ATLAS_DIMENSION
+        let size = 400.0; // 10000 texels at 0.04 m/texel, beyond MAX_ATLAS_DIMENSION (8192)
         let v0 = Vertex::new(
             [0.0, 0.0, 0.0],
             [0.0, 0.0],

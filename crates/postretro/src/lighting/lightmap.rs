@@ -99,7 +99,14 @@ impl LightmapResources {
             ..Default::default()
         });
 
-        let usable = section.filter(|s| s.width > 0 && s.height > 0);
+        // Defensive runtime guard: the init adapter pre-check guarantees the
+        // device grants at least 8192² (see `render::mod.rs`), and the bake's
+        // `MAX_ATLAS_DIMENSION` matches that ceiling. A baked atlas larger than
+        // the granted limit can only come from future content or a corrupt
+        // section. Drop to the neutral placeholder with a logged error rather
+        // than panicking on texture creation. Mirrors `render::sh_volume`'s
+        // atlas-fits-device filter.
+        let usable = filter_usable_section(section, device.limits().max_texture_dimension_2d);
         let present = usable.is_some();
 
         let (irradiance_tex, direction_tex) = match usable {
@@ -209,6 +216,31 @@ fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 5] {
             count: None,
         },
     ]
+}
+
+/// Drop an empty, zero-dimension, or oversize `LightmapSection` so the caller
+/// falls through to the neutral placeholder. Pure dimension-vs-limit
+/// comparison — unit-testable without a real wgpu device.
+fn filter_usable_section(
+    section: Option<&LightmapSection>,
+    max_texture_dimension_2d: u32,
+) -> Option<&LightmapSection> {
+    section
+        .filter(|s| s.width > 0 && s.height > 0)
+        .filter(|s| {
+            let fits =
+                s.width <= max_texture_dimension_2d && s.height <= max_texture_dimension_2d;
+            if !fits {
+                log::error!(
+                    "[Renderer] Lightmap atlas {}x{} exceeds device maxTextureDimension2D {}; \
+                     degrading to neutral placeholder for this level",
+                    s.width,
+                    s.height,
+                    max_texture_dimension_2d,
+                );
+            }
+            fits
+        })
 }
 
 /// Whether `Rgba16Float` (the irradiance + animated atlas format) advertises
@@ -332,6 +364,69 @@ fn upload_placeholder_direction(device: &wgpu::Device, queue: &wgpu::Queue) -> w
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_level_format::lightmap::LightmapMode;
+
+    fn fake_section(width: u32, height: u32) -> LightmapSection {
+        LightmapSection {
+            width,
+            height,
+            texel_density: 0.04,
+            irradiance: Vec::new(),
+            direction: Vec::new(),
+            mode: LightmapMode::Shadowed,
+        }
+    }
+
+    /// Atlas-fits-device guard: a section that exceeds the granted
+    /// `max_texture_dimension_2d` is dropped so the caller falls through to the
+    /// neutral placeholder, rather than panicking on texture creation. Pure
+    /// dimension comparison — no real oversize allocation needed.
+    #[test]
+    fn oversize_section_filtered_out() {
+        let oversize = fake_section(16_384, 8192);
+        assert!(
+            filter_usable_section(Some(&oversize), 8192).is_none(),
+            "atlas wider than the granted limit must drop to placeholder",
+        );
+
+        let tall = fake_section(8192, 16_384);
+        assert!(
+            filter_usable_section(Some(&tall), 8192).is_none(),
+            "atlas taller than the granted limit must drop to placeholder",
+        );
+    }
+
+    #[test]
+    fn at_or_under_limit_section_kept() {
+        let at_limit = fake_section(8192, 8192);
+        assert!(
+            filter_usable_section(Some(&at_limit), 8192).is_some(),
+            "atlas exactly at the granted limit must be retained",
+        );
+
+        let under = fake_section(4096, 2048);
+        assert!(
+            filter_usable_section(Some(&under), 8192).is_some(),
+            "atlas under the granted limit must be retained",
+        );
+    }
+
+    #[test]
+    fn zero_dimension_section_filtered_out() {
+        let empty = fake_section(0, 0);
+        assert!(
+            filter_usable_section(Some(&empty), 8192).is_none(),
+            "zero-dimension section must drop to placeholder regardless of limit",
+        );
+    }
+
+    #[test]
+    fn missing_section_filtered_out() {
+        assert!(
+            filter_usable_section(None, 8192).is_none(),
+            "absent section drops to placeholder",
+        );
+    }
 
     // The group-4 BGL is a fixed contract with `forward.wgsl`'s `@binding`
     // decorators. This pins the sampler split decided in Task 5: which textures

@@ -55,15 +55,19 @@ pub const DEFAULT_TEXEL_DENSITY_METERS: f32 = 0.04;
 /// default light size have identical inputs), so the cache would serve stale
 /// pre-F1 output unless the version advances.
 ///
-/// v7 bump (lightmap-resolution Task 1): `MAX_ATLAS_DIMENSION` raised from 4096
-/// to 8192. The cap is a constant chosen to match guaranteed device support, not
-/// an input — so it is not part of `input_hash`. Without this bump a map that
+/// v7 bump (lightmap-resolution Tasks 1 + 3): `MAX_ATLAS_DIMENSION` raised from
+/// 4096 to 8192 (Task 1) and default irradiance storage shifted from `Rgba16F`
+/// to `BC6H` (Task 3). The cap and the irradiance format are both constants, not
+/// inputs — neither is part of `input_hash`. Without this bump a map that
 /// previously overflowed at 4096 and coarsened would serve stale coarse cache
-/// against an unchanged input under the higher ceiling. The bump forces a
-/// re-bake so the new cap takes effect.
+/// against an unchanged input under the higher ceiling, and a pre-Task-3 cached
+/// `Rgba16F` entry could be served to a `BC6H`-expecting runtime. The single
+/// bump covers both changes and forces a re-bake so both take effect.
 pub const STAGE_VERSION: u32 = 7;
 
 /// Atlas width/height when no face would fit otherwise. Power-of-two for BC6H block alignment.
+/// The 4-alignment BC6H requires is satisfied for free since dimensions are always power-of-two
+/// ≥ 4 here, meaning `ceil(w/4)` is always exact (no partial trailing block).
 const MIN_ATLAS_DIMENSION: u32 = 64;
 
 /// Maximum atlas dimension. Beyond this the baker returns an error so the caller can retry at a
@@ -3183,22 +3187,31 @@ mod tests {
         );
     }
 
-    /// The cache-bump contract: Task 3 changed the per-texel output (hard gate →
-    /// soft area sum), so `STAGE_VERSION` must advance or recompiles serve stale
-    /// hard-shadow bytes. This exercises the real invalidation mechanism — the
-    /// current version's cache key must differ from the prior version's — rather
-    /// than asserting a constant, so it follows future bumps automatically.
+    /// The cache-bump contract: `STAGE_VERSION` must advance whenever bake outputs
+    /// change without a corresponding input change (cap raise, format switch, etc.)
+    /// so previously-cached entries are invalidated rather than served stale.
+    /// The `assert_eq!` pins the current value so a future agent who bumps the
+    /// constant is forced to update the v-N changelog comment above — do that
+    /// before changing the expected value here. The `assert_ne!` exercises the
+    /// real invalidation mechanism (the cache key differs across versions) and
+    /// follows future bumps automatically; keep both.
     #[test]
     fn stage_version_bump_changes_lightmap_cache_key() {
         use crate::cache::CacheKey;
+        assert_eq!(
+            STAGE_VERSION,
+            7,
+            "intentional bump — update the v7 changelog comment above when bumping, \
+             then update this expected value",
+        );
         let input_hash = [0x42u8; 32];
         let prior = CacheKey::new("lightmap", STAGE_VERSION - 1, &input_hash);
         let current = CacheKey::new("lightmap", STAGE_VERSION, &input_hash);
         assert_ne!(
             prior.as_filename(),
             current.as_filename(),
-            "the soft-shadow output change must bump STAGE_VERSION so the lightmap cache key \
-             differs from the prior version's and stale hard-shadow entries are invalidated",
+            "STAGE_VERSION must bump so the lightmap cache key differs from the prior \
+             version's and stale entries are invalidated",
         );
     }
 

@@ -991,34 +991,31 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let n = textureLoad(sdf_shadow_factor, h, 0).rgb;
         return vec4<f32>(n, base_color.a);
     }
-    // TEMP DEBUG: dynamic spot shadow-map visualization (mode 5). Projects this
-    // fragment through the primary shadow slot's (0) light-space matrix and
-    // shows what the shadow comparison actually sees:
-    //   magenta          fragment is outside slot 0's frustum
-    //   R = stored depth  the nearest occluder written into the shadow map here
-    //   G = fragment depth this fragment's own depth from the light
-    // (both remapped [0.95,1]→[0,1] to be visible). R≈G across a lit surface
-    // means the map holds only that surface — the occluder never rasterized
-    // (empty/missing-geometry map), so nothing can shadow. R clearly darker
-    // than G behind a pillar means the occluder IS in the map and the bug is
-    // the compare/sample instead.
+    // TEMP DEBUG: dynamic spot shadow-map visualization (mode 5). Shows the
+    // EXACT shadow comparison the lighting path uses, for the primary shadow
+    // slot (0), immune to the near-far depth-precision crush that makes a raw
+    // depth view read flat:
+    //   magenta   fragment is outside slot 0's frustum (this cone misses it)
+    //   white     lit  (sample_spot_shadow == 1.0)
+    //   black     shadowed (an occluder is closer to the light here)
+    // Any black/grey region behind a pillar = the shadow IS being computed;
+    // an all-white frustum = nothing occludes (geometry/coverage, not the
+    // pipeline). Run with default bias so self-shadow acne doesn't add noise.
     if uniforms.sdf_shadow_mode == 5u {
         let lp = light_space_matrices.m[0];
         let clip = lp * vec4<f32>(in.world_position, 1.0);
-        if clip.w <= 0.0 {
+        var in_frustum = clip.w > 0.0;
+        if in_frustum {
+            let ndc = clip.xyz / clip.w;
+            let uv = vec2<f32>(ndc.x * 0.5 + 0.5, ndc.y * -0.5 + 0.5);
+            in_frustum = uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0
+                && ndc.z >= 0.0 && ndc.z <= 1.0;
+        }
+        if !in_frustum {
             return vec4<f32>(1.0, 0.0, 1.0, base_color.a);
         }
-        let ndc = clip.xyz / clip.w;
-        let uv = vec2<f32>(ndc.x * 0.5 + 0.5, ndc.y * -0.5 + 0.5);
-        if uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || ndc.z < 0.0 || ndc.z > 1.0 {
-            return vec4<f32>(1.0, 0.0, 1.0, base_color.a);
-        }
-        let dims = vec2<f32>(textureDimensions(spot_shadow_depth));
-        let px = vec2<i32>(clamp(uv * dims, vec2<f32>(0.0), dims - vec2<f32>(1.0)));
-        let stored = textureLoad(spot_shadow_depth, px, 0, 0);
-        let r = saturate((stored - 0.95) * 20.0);
-        let g = saturate((ndc.z - 0.95) * 20.0);
-        return vec4<f32>(r, g, 0.0, base_color.a);
+        let shadow = sample_spot_shadow(0u, in.world_position, lp);
+        return vec4<f32>(shadow, shadow, shadow, base_color.a);
     }
     return vec4<f32>(rgb, base_color.a);
 }

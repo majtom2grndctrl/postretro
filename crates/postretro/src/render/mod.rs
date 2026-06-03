@@ -3157,6 +3157,44 @@ impl Renderer {
             let m = crate::lighting::spot_shadow::light_space_matrix(
                 &self.shadow_candidate_lights[light_idx],
             );
+            // Diagnostic: project the camera (a point standing in the lit room)
+            // and a point 5 m down the light's own axis through this slot's
+            // matrix. If `cam_uv` is far outside [0,1], or `cam_w <= 0`, or
+            // `cam_ndcz` is outside [0,1], the shadow frustum does not cover the
+            // room — the depth map is effectively empty and `sample_spot_shadow`
+            // returns 1.0 (lit) everywhere. The axis point should land near
+            // uv (0.5, 0.5) for any sane matrix.
+            if log::log_enabled!(log::Level::Debug) {
+                let light = &self.shadow_candidate_lights[light_idx];
+                let eye = Vec3::new(
+                    light.origin[0] as f32,
+                    light.origin[1] as f32,
+                    light.origin[2] as f32,
+                );
+                let mut dir = Vec3::new(
+                    light.cone_direction[0],
+                    light.cone_direction[1],
+                    light.cone_direction[2],
+                );
+                if dir.length_squared() > 1e-8 {
+                    dir = dir.normalize();
+                }
+                let project = |p: Vec3| {
+                    let clip = m * p.extend(1.0);
+                    let ndc = if clip.w.abs() > 1e-9 {
+                        clip.truncate() / clip.w
+                    } else {
+                        clip.truncate()
+                    };
+                    (clip.w, ndc.z, ndc.x * 0.5 + 0.5, ndc.y * -0.5 + 0.5)
+                };
+                let (cw, cz, cu, cv) = project(camera_position);
+                let (_aw, az, au, av) = project(eye + dir * 5.0);
+                log::debug!(
+                    "[ShadowMat] slot={slot} eye={eye:?} falloff={:.2} | cam_uv=({cu:.3},{cv:.3}) cam_w={cw:.3} cam_ndcz={cz:.4} | axis5_uv=({au:.3},{av:.3}) axis5_ndcz={az:.4}",
+                    light.falloff_range,
+                );
+            }
             let cols = m.to_cols_array();
             let mut bytes = [0u8; MAT_BYTES];
             for (i, v) in cols.iter().enumerate() {

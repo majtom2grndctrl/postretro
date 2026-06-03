@@ -4,9 +4,11 @@
 
 use crate::FormatError;
 
-/// Byte stride of one irradiance texel on disk: RGBA16F, 4 half-floats = 8 bytes.
-/// Alpha is currently unused (carries no AO term yet) and is written as 1.0 so
-/// fallback samplers that read alpha don't misinterpret it as transparency.
+/// Byte stride of one irradiance texel for the **RGBA16F path only**: 4 half-floats = 8 bytes.
+/// Not applicable to BC6H, which encodes 4×4 texel blocks (16 bytes each, so
+/// `ceil(w/4)·ceil(h/4)·16` bytes total). Alpha is currently unused (carries no AO
+/// term yet) and is written as 1.0 so fallback samplers that read alpha don't
+/// misinterpret it as transparency.
 pub const IRRADIANCE_TEXEL_BYTES: usize = 8;
 
 /// Byte stride of one direction texel on disk: RGBA8Unorm, 4 bytes.
@@ -27,17 +29,21 @@ const HEADER_SIZE: usize = 28;
 ///     u32 width
 ///     u32 height
 ///     f32 texel_density_meters   (world-space size of one atlas texel)
-///     u32 irradiance_format      (0 = Rgba16Float)
+///     u32 irradiance_format      (0 = Rgba16Float, 1 = Bc6hRgbUfloat)
 ///     u32 direction_format       (0 = Rgba8Unorm octahedral)
-///     u32 irradiance_byte_count
-///     u32 direction_byte_count
+///     u32 irradiance_byte_count  (irr_len)
+///     u32 direction_byte_count   (dir_len)
 ///
-///   Irradiance blob (irradiance_byte_count bytes):
-///     u16 × 4 × width × height   row-major (y * width + x)
+///   Irradiance blob (irr_len bytes, format-dependent):
+///     Rgba16Float: u16 × 4 × width × height  row-major (y * width + x)
+///     Bc6hRgbUfloat: ceil(w/4)·ceil(h/4)·16  bytes of Mode-11 blocks
 ///
-///   Direction blob (direction_byte_count bytes):
+///   Direction blob (dir_len bytes):
 ///     u8 × 4 × width × height    row-major (y * width + x)
 /// ```
+///
+/// The header carries explicit `irr_len`/`dir_len` byte counts; `from_bytes`
+/// slices the irradiance blob by the stored length without recomputing block math.
 ///
 /// Irradiance texels for atlas positions not covered by any face chart are
 /// zero. Edge dilation is applied at bake time so bilinear sampling at chart
@@ -57,8 +63,9 @@ pub struct LightmapSection {
     pub irradiance: Vec<u8>,
     /// Format tag for `irradiance` — one of `IRRADIANCE_FORMAT_RGBA16F` or
     /// `IRRADIANCE_FORMAT_BC6H`. Written into the section header; the runtime
-    /// branches its texture format on this value. Placeholders and legacy
-    /// callers default to RGBA16F via `Self::placeholder`.
+    /// branches its texture format on this value. `LightmapSection::placeholder`
+    /// always emits RGBA16F; the bake chooses BC6H vs RGBA16F via
+    /// `LightmapConfig::uncompressed_irradiance`.
     pub irradiance_format: u32,
     /// Raw bytes for direction texels (Rgba8Unorm, octahedral, row-major).
     pub direction: Vec<u8>,
@@ -71,9 +78,11 @@ pub struct LightmapSection {
 }
 
 /// Format tag for the irradiance blob. Uncompressed `Rgba16Float` (4 half-floats
-/// per texel, `w·h·8` bytes total). Retained behind the bake's debug bypass
-/// (`LightmapConfig::uncompressed_irradiance`) so a build with the bypass on
-/// stays byte-identical to pre-BC6H output; default is BC6H.
+/// per texel, `w·h·8` bytes total). Used in two cases: (1) the bake's debug
+/// bypass (`LightmapConfig::uncompressed_irradiance = true`), and (2) all
+/// placeholder sections (`LightmapSection::placeholder` always emits RGBA16F —
+/// placeholders never go through BC6H). `from_bytes`/`to_bytes` read and write
+/// the blob by the stored `irr_len`, not by recomputing `w·h·8`.
 pub const IRRADIANCE_FORMAT_RGBA16F: u32 = 0;
 
 /// Format tag for the irradiance blob. Block-compressed `Bc6hRgbUfloat` — 4×4
@@ -86,7 +95,8 @@ pub const IRRADIANCE_FORMAT_RGBA16F: u32 = 0;
 pub const IRRADIANCE_FORMAT_BC6H: u32 = 1;
 
 /// Format tag for the direction blob. Only octahedral-in-Rgba8Unorm exists
-/// today; same forward-compat rationale as `IRRADIANCE_FORMAT_RGBA16F`.
+/// today. The tag is stored in the header so a future encoder can add new
+/// direction encodings without breaking existing parsers that reject unknown tags.
 pub const DIRECTION_FORMAT_OCT_RGBA8: u32 = 0;
 
 /// Magic tag introducing the bake-mode trailer, ASCII `"LMOD"` little-endian.

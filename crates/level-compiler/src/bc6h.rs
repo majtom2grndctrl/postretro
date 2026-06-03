@@ -32,19 +32,27 @@
 //! encoder enforces that by reordering endpoints if texel 0 maps closer to
 //! `ep1` than `ep0` (swap endpoints so its selector lands in `[0, 7]`).
 //!
-//! Hardware decode for `Bc6hRgbUfloat`:
-//!   1. `unq(x)` lifts 10-bit endpoint to 16-bit: `unq = (x << 6) | (x >> 4)`
-//!      with `unq(0) = 0` and `unq(0x3ff) = 0xffff` as endpoint specials.
+//! Hardware decode for `Bc6hRgbUfloat` (DirectX / Khronos BC6H UFloat spec,
+//! endpoint precision `epb = 10`):
+//!   1. `unq(x)` lifts a 10-bit endpoint to a 16-bit "internal" value:
+//!      `unq(0) = 0`, `unq(0x3ff) = 0xffff`, and otherwise
+//!      `unq(x) = ((x << 15) + 0x4000) >> (epb - 1)` which for `epb = 10`
+//!      reduces to the exact integer form `unq(x) = 64·x + 32`.
+//!      Note this is **not** BC7-style bit-replication (`(x << 6) | (x >> 4)`);
+//!      the two formulas agree at the endpoints but diverge mid-range (at
+//!      `x = 1` the spec gives 96, bit-rep gives 64).
 //!   2. `interp = ((64 - w) * unq0 + w * unq1 + 32) >> 6` for index weight `w`
 //!      drawn from the BC6H 4-bit weight table.
 //!   3. Final f16 bit pattern: `(interp * 31) >> 6` (unsigned-float
 //!      finalization). This is the value the shader reads.
 //!
-//! The encoder picks endpoints by walking the 10-bit quantization grid for the
-//! per-channel `[min, max]` range of the block (mirroring `bc5.rs`'s min/max
-//! approach), then picks per-texel selectors by minimizing reconstructed-f16
-//! error against the original f16 input. No cluster-fit refinement; the
-//! round-trip tolerance gates the result.
+//! The encoder picks endpoints by quantizing each channel's `[min, max]` in
+//! internal space to 10-bit values via the inverse of `unq` (mirroring
+//! `bc5.rs`'s min/max approach), then picks per-texel selectors by minimizing
+//! squared error in the same internal 16-bit space against the input texel's
+//! internal value. Comparing in internal space is equivalent to comparing in
+//! output-f16 space because the finalize step is a monotonic linear scale.
+//! No cluster-fit refinement; the round-trip tolerance gates the result.
 
 use postretro_level_format::lightmap::f32_to_f16_bits;
 
@@ -170,23 +178,41 @@ fn f16_to_internal(v: u16) -> u32 {
 }
 
 /// Round-to-nearest quantization from a 16-bit internal value to a 10-bit
-/// endpoint. The endpoint reconstruction is `(ep << 6) | (ep >> 4)` which is
-/// approximately `ep * 64.0625`, so this inverts to `round(internal / 64.0625)`
-/// — equivalently `round(internal * 1023 / 0xffff)`. Clamp at the 10-bit
-/// ceiling.
+/// endpoint — the exact inverse of `unq`. With `unq(0) = 0`,
+/// `unq(0x3ff) = 0xffff`, and `unq(x) = 64·x + 32` for `x ∈ 1..=0x3fe`, the
+/// midpoint between `unq(0) = 0` and `unq(1) = 96` is 48, and the midpoint
+/// between `unq(0x3fe) = 65440` and `unq(0x3ff) = 65535` is 65487.5. Inside
+/// the regular linear range, `round((v - 32) / 64) = v >> 6`.
+///
+/// The `quantize_inverts_unq_across_10bit_range` test asserts this matches a
+/// brute-force nearest-neighbor search across the full 0..=0x3ff grid.
 fn quantize_internal_to_10(v: u32) -> u16 {
-    let q = (v * 0x3ff + 0x7fff) / 0xffff;
-    q.min(0x3ff) as u16
+    if v <= 48 {
+        return 0;
+    }
+    if v >= 65488 {
+        return 0x3ff;
+    }
+    (v >> 6).clamp(1, 0x3fe) as u16
 }
 
 /// Unquantize a 10-bit endpoint to the 16-bit internal value used in the
-/// hardware interpolation. Hardware uses bit-replication: `(x << 6) | (x >> 4)`,
-/// with `unq(0) = 0` and `unq(0x3ff) = 0xffff` as the endpoint specials. The
-/// generic formula already produces these for `x = 0` and `x = 0x3ff`, so no
-/// branch is required.
+/// hardware interpolation. Implements the DirectX / Khronos `Bc6hRgbUfloat`
+/// spec for `epb = 10`: endpoint specials at `x = 0` (→ 0) and `x = 0x3ff`
+/// (→ `0xffff`); for the rest, `((x << 15) + 0x4000) >> 9`, which is the
+/// exact integer `64·x + 32`. (Earlier code here used BC7-style
+/// bit-replication `(x << 6) | (x >> 4)` — that matches at the endpoints
+/// but diverges mid-range and would optimize the encoder against the wrong
+/// reconstruction.)
 fn unq(x: u16) -> u32 {
     let x = x as u32;
-    (x << 6) | (x >> 4)
+    if x == 0 {
+        0
+    } else if x == 0x3ff {
+        0xffff
+    } else {
+        64 * x + 32
+    }
 }
 
 /// Build the 16-entry per-channel internal-space palette the hardware
@@ -452,6 +478,80 @@ mod tests {
             assert!((r - 1.5).abs() / 1.5 <= BC6H_ROUNDTRIP_TOLERANCE_REL);
             assert!((g - 0.75).abs() / 0.75 <= BC6H_ROUNDTRIP_TOLERANCE_REL);
             assert!((b - 2.25).abs() / 2.25 <= BC6H_ROUNDTRIP_TOLERANCE_REL);
+        }
+    }
+
+    /// Anchors the `unq` spec formula at a representative table of inputs:
+    /// the two endpoint specials, the first non-trivial value (where BC7-style
+    /// bit-replication would diverge most visibly), the mid-range, and the
+    /// last regular value before the upper special. Reference values are the
+    /// closed-form `((x << 15) + 0x4000) >> 9` from the BC6H UFloat spec.
+    #[test]
+    fn unq_matches_bc6h_ufloat_spec_table() {
+        assert_eq!(super::unq(0x000), 0x0000);
+        assert_eq!(super::unq(0x001), 96);
+        assert_eq!(super::unq(0x002), 160);
+        assert_eq!(super::unq(512), 64 * 512 + 32);
+        assert_eq!(super::unq(1022), 65440);
+        assert_eq!(super::unq(0x3ff), 0xffff);
+        // Spot-check the closed form against the spec's bit expression for
+        // every x in the regular range; cheap and pins the algebra.
+        for x in 1u16..0x3ff {
+            let spec = (((x as u32) << 15) + 0x4000) >> 9;
+            assert_eq!(super::unq(x), spec, "spec mismatch at x={x}");
+        }
+    }
+
+    /// `quantize_internal_to_10` must be the exact inverse of `unq` on every
+    /// 10-bit input — i.e. round-trip through the encoder's endpoint
+    /// quantization is lossless on the lattice the hardware actually uses.
+    #[test]
+    fn quantize_inverts_unq_across_10bit_range() {
+        for x in 0u16..=0x3ff {
+            let v = super::unq(x);
+            assert_eq!(
+                super::quantize_internal_to_10(v),
+                x,
+                "quantize_internal_to_10(unq({x})) != {x} (v={v})"
+            );
+        }
+    }
+
+    /// `quantize_internal_to_10`'s choice must be among the brute-force
+    /// nearest-neighbor minima across the 10-bit grid for every reachable
+    /// internal value (0..=0xffff). Pins the closed-form midpoint logic
+    /// against an obviously correct reference.
+    ///
+    /// The spec's `unq` grid has two kinds of exact midpoints where multiple
+    /// 10-bit endpoints tie for minimum absolute error: boundary ties at
+    /// v=48 (`|unq(0)-48| = |unq(1)-48| = 48`) and v=65487
+    /// (`|unq(0x3fe)-v| = |unq(0x3ff)-v| ≈ 47`), and interior ties at every
+    /// v = 64·x + 64 for x ∈ 1..=0x3fd (`unq(x) = 64x+32`,
+    /// `unq(x+1) = 64x+96`, midpoint exactly between). Choice among tied
+    /// candidates is loss-equivalent — both produce the same hardware
+    /// reconstruction error — so the test asserts membership in the tie set
+    /// rather than a specific tie-break, while still pinning the closed form
+    /// against an external nearest-neighbor reference.
+    #[test]
+    fn quantize_matches_brute_force_nearest_neighbor() {
+        fn brute_min_err(v: u32) -> i64 {
+            let mut best_err = i64::MAX;
+            for x in 0u16..=0x3ff {
+                let err = (super::unq(x) as i64 - v as i64).abs();
+                if err < best_err {
+                    best_err = err;
+                }
+            }
+            best_err
+        }
+        for v in 0u32..=0xffff {
+            let chosen = super::quantize_internal_to_10(v);
+            let chosen_err = (super::unq(chosen) as i64 - v as i64).abs();
+            let min_err = brute_min_err(v);
+            assert_eq!(
+                chosen_err, min_err,
+                "closed-form chose x={chosen} (err {chosen_err}) at v={v}; brute force min err {min_err}",
+            );
         }
     }
 

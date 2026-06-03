@@ -287,10 +287,11 @@ fn write_bits(bits: &mut u128, cursor: &mut u32, value: u128, count: u32) {
     *cursor += count;
 }
 
-/// Frozen per-channel relative-error threshold for BC6H round-trip on smooth
-/// HDR irradiance. Calibrated at the tightest value this encoder passes on
-/// representative irradiance data — any encoder quality regression tightens
-/// the gate and trips the test, while an improvement does not.
+/// Frozen regression guard for the BC6H round-trip test. Measured peak
+/// relative error on the synthetic gradient is ~0.055; the tolerance is set
+/// with headroom under the "re-pin when measured drops below ½× current"
+/// convention, so harmless encoder noise won't trip the test but a real
+/// quality regression will.
 ///
 /// Lifted to module scope (out of `mod tests`) so the determinism test in
 /// `lightmap_bake.rs` can gate against the *same* frozen threshold rather
@@ -484,8 +485,9 @@ mod tests {
     /// Anchors the `unq` spec formula at a representative table of inputs:
     /// the two endpoint specials, the first non-trivial value (where BC7-style
     /// bit-replication would diverge most visibly), the mid-range, and the
-    /// last regular value before the upper special. Reference values are the
-    /// closed-form `((x << 15) + 0x4000) >> 9` from the BC6H UFloat spec.
+    /// last regular value before the upper special. Reference values use the
+    /// spec's bit expression `((x << 15) + 0x4000) >> 9` directly; the closed
+    /// integer form `64·x + 32` is what `unq` implements.
     #[test]
     fn unq_matches_bc6h_ufloat_spec_table() {
         assert_eq!(super::unq(0x000), 0x0000);

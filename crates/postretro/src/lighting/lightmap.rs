@@ -218,9 +218,9 @@ fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 5] {
     ]
 }
 
-/// Drop an empty, zero-dimension, or oversize `LightmapSection` so the caller
-/// falls through to the neutral placeholder. Pure dimension-vs-limit
-/// comparison — unit-testable without a real wgpu device.
+/// Filter out an absent (`None`), zero-dimension, or oversize `LightmapSection`,
+/// returning `None` so the caller falls through to the neutral placeholder. Pure
+/// dimension-vs-limit comparison — unit-testable without a real wgpu device.
 fn filter_usable_section(
     section: Option<&LightmapSection>,
     max_texture_dimension_2d: u32,

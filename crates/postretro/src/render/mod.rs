@@ -3098,6 +3098,48 @@ impl Renderer {
             self.lights_pack_scratch = scratch;
         }
 
+        // Diagnostic: bisect the candidate→level→buffer slot pipeline. Logs the
+        // candidate-space slots (what `rank_lights` produced), the level-space
+        // slots (what `slot_assignment_for_level_lights` translated them to —
+        // the index space the forward shader's `lights_buffer` uses), and the
+        // actual slot bytes now sitting in the uploaded buffer mirror. If the
+        // level/buffer columns are empty while candidate is non-empty, the slot
+        // never reaches the shader (CPU bug); if all three agree, the break is
+        // GPU-side (matrix/depth/sample). Enable with `RUST_LOG=postretro=debug`.
+        if log::log_enabled!(log::Level::Debug) {
+            let cand: Vec<(usize, u32)> = slot_assignment
+                .iter()
+                .enumerate()
+                .filter(|&(_, &s)| s != crate::lighting::spot_shadow::NO_SHADOW_SLOT)
+                .map(|(i, &s)| (i, s))
+                .collect();
+            if !cand.is_empty() {
+                let lvl: Vec<(usize, u32)> = level_slots
+                    .iter()
+                    .enumerate()
+                    .filter(|&(_, &s)| s != crate::lighting::spot_shadow::NO_SHADOW_SLOT)
+                    .map(|(i, &s)| (i, s))
+                    .collect();
+                // Read back the slot field actually present in the uploaded mirror
+                // for each level light that should be shadowed.
+                let buf: Vec<(usize, u32)> = lvl
+                    .iter()
+                    .filter_map(|&(li, _)| {
+                        let off = li * crate::lighting::GPU_LIGHT_SIZE
+                            + crate::lighting::SHADOW_SLOT_BYTE_OFFSET;
+                        let bytes = self.last_lights_upload.get(off..off + 4)?;
+                        Some((li, u32::from_ne_bytes(bytes.try_into().ok()?)))
+                    })
+                    .collect();
+                log::debug!(
+                    "[ShadowDbg] cand_slots={cand:?} level_slots={lvl:?} buffer_slots={buf:?} mirror_len={} expected={expected_len} level_lights={} candidates={}",
+                    self.last_lights_upload.len(),
+                    self.level_lights.len(),
+                    self.shadow_candidate_lights.len(),
+                );
+            }
+        }
+
         // Upload slot matrices to both fragment-side storage (group 5 binding 2)
         // and vertex-side dynamic-offset uniform buffer. Matrices come from
         // the candidate list — that's the index space `slot_assignment` is

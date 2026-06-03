@@ -850,6 +850,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     total_light = total_light + specular_sum;
 
     let light_count = select(0u, uniforms.light_count, use_dynamic);
+    // DEBUG (mode 5): the dynamic spot light actually removed by the shadow
+    // term — i.e. the *visible* shadow. Accumulated alongside total_light.
+    var dynamic_shadow_removed = vec3<f32>(0.0);
     for (var i: u32 = 0u; i < light_count; i = i + 1u) {
         // Influence-volume early-out: pure optimization — no pixel change.
         let influence = light_influence[i];
@@ -906,6 +909,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
         var L: vec3<f32>;
         var attenuation: f32;
+        // DEBUG (mode 5): spot attenuation removed by the shadow term, pre-NdotL.
+        var shadow_removed_atten: f32 = 0.0;
 
         switch light_type {
             case 0u: {
@@ -931,6 +936,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 if slot_index != 0xFFFFFFFFu {
                     let light_proj = light_space_matrices.m[slot_index];
                     let shadow = sample_spot_shadow(slot_index, in.world_position, light_proj);
+                    shadow_removed_atten = attenuation * (1.0 - shadow);
                     attenuation = attenuation * shadow;
                 }
             }
@@ -943,6 +949,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
         let NdotL = max(dot(N_bump, L), 0.0);
         total_light = total_light + effective_color * attenuation * NdotL;
+        dynamic_shadow_removed = dynamic_shadow_removed
+            + effective_color * shadow_removed_atten * NdotL;
     }
 
     let rgb = base_color.rgb * total_light;
@@ -994,30 +1002,21 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         return vec4<f32>(n, base_color.a);
     }
     // TEMP DEBUG: dynamic spot shadow-map visualization (mode 5). Shows the
-    // EXACT shadow comparison the lighting path uses, for the primary shadow
-    // slot (0), immune to the near-far depth-precision crush that makes a raw
-    // depth view read flat:
-    //   magenta   fragment is outside slot 0's frustum (this cone misses it)
-    //   white     lit  (sample_spot_shadow == 1.0)
-    //   black     shadowed (an occluder is closer to the light here)
-    // Any black/grey region behind a pillar = the shadow IS being computed;
-    // an all-white frustum = nothing occludes (geometry/coverage, not the
-    // pipeline). Run with default bias so self-shadow acne doesn't add noise.
+    // dynamic spot light *actually removed by the shadow term* — i.e. the
+    // VISIBLE shadow, exactly as the lighting path applies it (delivered cone
+    // light × (1 - shadow), summed over every slotted spot). This is the honest
+    // "where would a shadow appear" view: unlike the raw slot-0 frustum sample,
+    // it is zero wherever the spot doesn't actually light the surface.
+    //   black            no shadow effect (lit-and-unshadowed, or unlit)
+    //   bright (warm)    the spot lights this surface AND the pillar blocks it
+    //                    → this is the shadow you'd see in DynamicOnly.
+    // Brightness is the magnitude of removed light, scaled up so faint shadows
+    // are still visible. An all-black frame means the shadows fall only where
+    // the spots deliver no light (so nothing darkens) — a content/geometry
+    // problem, not the pipeline.
     if uniforms.sdf_shadow_mode == 5u {
-        let lp = light_space_matrices.m[0];
-        let clip = lp * vec4<f32>(in.world_position, 1.0);
-        var in_frustum = clip.w > 0.0;
-        if in_frustum {
-            let ndc = clip.xyz / clip.w;
-            let uv = vec2<f32>(ndc.x * 0.5 + 0.5, ndc.y * -0.5 + 0.5);
-            in_frustum = uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0
-                && ndc.z >= 0.0 && ndc.z <= 1.0;
-        }
-        if !in_frustum {
-            return vec4<f32>(1.0, 0.0, 1.0, base_color.a);
-        }
-        let shadow = sample_spot_shadow(0u, in.world_position, lp);
-        return vec4<f32>(shadow, shadow, shadow, base_color.a);
+        let removed = dynamic_shadow_removed * 4.0;
+        return vec4<f32>(removed, base_color.a);
     }
     return vec4<f32>(rgb, base_color.a);
 }

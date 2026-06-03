@@ -3199,8 +3199,7 @@ mod tests {
     fn stage_version_bump_changes_lightmap_cache_key() {
         use crate::cache::CacheKey;
         assert_eq!(
-            STAGE_VERSION,
-            7,
+            STAGE_VERSION, 7,
             "intentional bump — update the v7 changelog comment above when bumping, \
              then update this expected value",
         );

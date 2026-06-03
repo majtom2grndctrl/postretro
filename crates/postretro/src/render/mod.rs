@@ -1811,6 +1811,23 @@ impl Renderer {
             label: Some("Spot Shadow Shader"),
             source: wgpu::ShaderSource::Wgsl(SPOT_SHADOW_SHADER_SOURCE.into()),
         });
+        // Shadow depth bias. These spots can graze surfaces at steep incidence,
+        // where the slope-scaled term dominates and over-biasing detaches the
+        // shadow (peter-panning to the point of vanishing). Tunable via env so
+        // the bias can be A/B'd against a live scene without a recompile; set
+        // both to 0 to see the un-biased shadow (expect acne).
+        let shadow_bias_constant = std::env::var("POSTRETRO_SHADOW_BIAS_CONST")
+            .ok()
+            .and_then(|v| v.trim().parse::<i32>().ok())
+            .unwrap_or(2);
+        let shadow_bias_slope = std::env::var("POSTRETRO_SHADOW_BIAS_SLOPE")
+            .ok()
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .unwrap_or(1.5);
+        log::info!(
+            "[ShadowBias] constant={shadow_bias_constant} slope_scale={shadow_bias_slope} \
+             (override with POSTRETRO_SHADOW_BIAS_CONST / POSTRETRO_SHADOW_BIAS_SLOPE)"
+        );
         let shadow_depth_pipeline =
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("Spot Shadow Depth Pipeline"),
@@ -1841,8 +1858,8 @@ impl Renderer {
                     depth_compare: Some(wgpu::CompareFunction::Less),
                     stencil: wgpu::StencilState::default(),
                     bias: wgpu::DepthBiasState {
-                        constant: 2,
-                        slope_scale: 1.5,
+                        constant: shadow_bias_constant,
+                        slope_scale: shadow_bias_slope,
                         clamp: 0.0,
                     },
                 }),

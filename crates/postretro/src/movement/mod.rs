@@ -7,7 +7,10 @@ use glam::{Vec2, Vec3};
 use parry3d::math::{Point, Vector};
 use parry3d::shape::Capsule;
 
+mod carry;
+
 use crate::collision::{CollisionWorld, SKIN_DISTANCE, cast_capsule, cast_ray};
+use crate::movement::carry::{CarryRule, apply_boost, apply_horizontal};
 use crate::scripting::components::player_movement::{MovementState, PlayerMovementComponent};
 
 /// Exponential-style ground deceleration (`v *= max(0, 1 - k*dt)`) — not the Q3
@@ -111,6 +114,18 @@ pub(crate) struct SubstrateResult {
     /// A genuine landing transition (airborne → grounded) cleared the
     /// air-tick hysteresis gate. Maps directly to `MovementEvents::landed`.
     pub(crate) landed: bool,
+}
+
+/// A state transition a per-state intent warrants this tick: the `next` state to
+/// enter paired with the `carry`-rule the DISPATCH layer applies to the OUTGOING
+/// velocity at the edge. Pairing the carry with the next state keeps the
+/// velocity transform out of the intents (D6) — the intent declares *what* the
+/// edge does; the dispatch *applies* it against the outgoing resolved velocity
+/// and boost before the new state is written. See `context/lib/movement.md` §6.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Transition {
+    pub(crate) next: MovementState,
+    pub(crate) carry: CarryRule,
 }
 
 /// Quake-derived projection-capped acceleration: only adds speed along
@@ -581,8 +596,8 @@ fn air_jump_ready(component: &PlayerMovementComponent) -> bool {
 /// when a jump launches; that clear is part of the intent (a jump is no longer
 /// grounded) and the substrate reads the post-intent flag.
 ///
-/// Sets `events.jumped` when a jump launches. Returns the next movement state if
-/// a transition is warranted, or `None` to stay in `Normal`. Today `Normal`
+/// Sets `events.jumped` when a jump launches. Returns the warranted transition
+/// (next state + its carry-rule) or `None` to stay in `Normal`. Today `Normal`
 /// transitions to `Dash` on a rising-edge dash input (see `try_enter_dash`);
 /// future states (crouch, slide, wall-run) plug in behind the same seam without
 /// reshaping callers.
@@ -592,7 +607,7 @@ fn normal_intent(
     gravity: f32,
     dt: f32,
     events: &mut MovementEvents,
-) -> Option<MovementState> {
+) -> Option<Transition> {
     // 1. Gravity (airborne only).
     if !component.is_grounded {
         component.velocity.y += gravity * dt;
@@ -717,8 +732,8 @@ fn normal_intent(
     // consumes the airborne charge, and arms the cooldown; it returns the seeded
     // `Dash` state for `tick` to apply after the substrate resolves collision.
     if input.dash_pressed {
-        if let Some(next) = try_enter_dash(component, input) {
-            return Some(next);
+        if let Some(transition) = try_enter_dash(component, input) {
+            return Some(transition);
         }
     }
 
@@ -726,8 +741,8 @@ fn normal_intent(
 }
 
 /// Attempt the `Normal` → `Dash` transition this tick. Returns the seeded `Dash`
-/// state when the dash fires, or `None` when it is suppressed (dash disabled,
-/// cooldown active, or airborne with no charge left).
+/// state paired with its carry-rule when the dash fires, or `None` when it is
+/// suppressed (dash disabled, cooldown active, or airborne with no charge left).
 ///
 /// Grounded vs airborne is read from the last-tick `is_grounded` flag — the same
 /// one-tick staleness the jump gate uses (acceptable, consistent tradeoff).
@@ -737,7 +752,7 @@ fn normal_intent(
 fn try_enter_dash(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
-) -> Option<MovementState> {
+) -> Option<Transition> {
     let dash = component.dash.as_ref()?;
     if component.dash_cooldown_ms > 0.0 {
         return None;
@@ -792,9 +807,17 @@ fn try_enter_dash(
     // cooldown test, and a sub-tick of cooldown makes no observable difference.
     component.dash_cooldown_ms = cooldown_ms;
 
-    Some(MovementState::Dash {
-        elapsed_ms: 0.0,
-        boost,
+    // `Normal` → `Dash` carries no momentum transform at the seam: the entry
+    // blend (retained base + boost, `preserve_vertical`) is authored above on
+    // `component.velocity`, so the dispatch-applied carry must leave it exactly
+    // as authored. `KEEP_ALL` is that no-op (the parity guarantee). `Normal`
+    // carries no boost vector, so `keepBoost` operates on a zero boost here.
+    Some(Transition {
+        next: MovementState::Dash {
+            elapsed_ms: 0.0,
+            boost,
+        },
+        carry: CarryRule::KEEP_ALL,
     })
 }
 
@@ -813,7 +836,9 @@ fn try_enter_dash(
 /// active `Dash` variant — the dispatch resolves the component-vs-state borrow
 /// once (see `dispatch_state_intent`), so this intent mutates its own data
 /// directly rather than receiving it by value and re-packing it. The return is
-/// purely a transition: `Some(Normal)` on exit, `None` to stay in `Dash`.
+/// purely a transition: `Some({ Normal, KEEP_ALL })` on exit, `None` to stay in
+/// `Dash`. The exit carry is `KEEP_ALL` because the dash already hands velocity
+/// back into the steady band itself — the seam must not perturb it (parity).
 fn dash_intent(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
@@ -821,12 +846,15 @@ fn dash_intent(
     dt: f32,
     elapsed_ms: &mut f32,
     boost: &mut Vec3,
-) -> Option<MovementState> {
+) -> Option<Transition> {
     // Dash params must exist to be in this state (entry required `Some`). A
     // descriptor swap that cleared `dash` mid-dash drops back to `Normal` rather
     // than panicking.
     let Some(dash) = component.dash.as_ref() else {
-        return Some(MovementState::Normal);
+        return Some(Transition {
+            next: MovementState::Normal,
+            carry: CarryRule::KEEP_ALL,
+        });
     };
     let steer_control = dash.steer_control;
     let dash_drag = dash.dash_drag;
@@ -951,7 +979,10 @@ fn dash_intent(
     // maintains in that mode. Either way the dash is hard-bounded by `DASH_MAX_MS`.
     let steady_cap = ground_speed;
     if horiz_speed <= steady_cap || *elapsed_ms >= DASH_MAX_MS {
-        return Some(MovementState::Normal);
+        return Some(Transition {
+            next: MovementState::Normal,
+            carry: CarryRule::KEEP_ALL,
+        });
     }
 
     None
@@ -994,6 +1025,35 @@ fn apply_normal_horizontal_decay(
     }
 }
 
+/// The outgoing horizontal boost vector a state carries as it leaves (the D4
+/// additive layer). `Dash` carries its live `boost`; `Normal` carries none, so
+/// `keepBoost`/drop operate on a zero boost — a no-op. Read at the transition
+/// edge so the carry sees the boost as it leaves, before the new state is written.
+fn outgoing_boost(state: &MovementState) -> Vec3 {
+    match state {
+        MovementState::Normal => Vec3::ZERO,
+        MovementState::Dash { boost, .. } => *boost,
+    }
+}
+
+/// Apply a transition's carry-rule to `component.velocity` at the transition
+/// edge — the DISPATCH-layer velocity transform (D6), never inside a state
+/// intent. The outgoing velocity decomposes into the D4 layers: a horizontal
+/// base (`velocity - outgoing_boost`, vertical kept) and the outgoing `boost`.
+/// The `horizontal` rule transforms the base layer; the `boost` rule transforms
+/// the boost layer; the two recombine into the new resolved velocity.
+///
+/// `KEEP_ALL` is exactly a no-op: the base is kept and the kept boost is added
+/// back, reconstructing the outgoing velocity unchanged — the `Normal`↔`Dash`
+/// parity guarantee. Vertical velocity is preserved throughout (the carry
+/// vocabulary governs horizontal momentum only; the boost layer is horizontal).
+fn apply_carry(rule: CarryRule, velocity: &mut Vec3, boost: Vec3) {
+    let mut base = *velocity - boost;
+    apply_horizontal(rule.horizontal, &mut base);
+    let carried_boost = apply_boost(rule.boost, boost);
+    *velocity = base + carried_boost;
+}
+
 /// Run the active state's velocity intent, resolving the
 /// component-vs-active-state borrow ONCE so each state owns its live data in
 /// place behind one uniform convention.
@@ -1002,9 +1062,14 @@ fn apply_normal_horizontal_decay(
 /// placeholder) so the matched arm holds a `&mut` to the state's own live data
 /// while the intent also borrows `&mut component`. After the intent runs, the
 /// (in-place-mutated) state is written back; the returned `Option<MovementState>`
-/// is the transition `tick` applies after the substrate resolves collision —
-/// unchanged from the prior copy-out/re-pack flow, only now the per-state data
-/// is never copied out into the intent's parameter list nor re-packed on return.
+/// is the next state `tick` applies after the substrate resolves collision.
+///
+/// The CARRY STEP runs here, at the transition edge: when an intent returns a
+/// `Transition`, its carry-rule is applied to `component.velocity` reading the
+/// OUTGOING state's live boost (the `Dash` boost) BEFORE the outgoing `state`
+/// local is dropped — so the carry sees the boost as it leaves. Only the next
+/// state then flows out to `tick`. Velocity carry is owned by this dispatch
+/// point, never by a state intent (D6).
 ///
 /// Adding a new state means adding one arm here with its own `&mut` live data;
 /// `tick`'s structure and existing intent signatures are untouched.
@@ -1025,11 +1090,22 @@ fn dispatch_state_intent(
             dash_intent(component, input, gravity, dt, elapsed_ms, boost)
         }
     };
-    // Write the (mutated) live state back. A returned transition still overrides
-    // this in `tick` after the substrate runs; this restore is what carries an
-    // unchanged state's in-place data updates (the `Dash` boost/elapsed) forward.
-    component.movement_state = state;
-    transition
+    match transition {
+        Some(Transition { next, carry }) => {
+            // Carry step at the transition edge: apply the rule to the resolved
+            // OUTGOING velocity, reading the outgoing state's live boost before
+            // `state` is dropped. The new state is then handed to `tick`.
+            apply_carry(carry, &mut component.velocity, outgoing_boost(&state));
+            Some(next)
+        }
+        None => {
+            // No transition: write the (mutated) live state back so an unchanged
+            // state's in-place data updates (the `Dash` boost/elapsed) carry
+            // forward.
+            component.movement_state = state;
+            None
+        }
+    }
 }
 
 pub(crate) fn tick(

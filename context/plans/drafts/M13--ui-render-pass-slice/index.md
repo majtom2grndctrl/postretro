@@ -50,13 +50,20 @@ against a live screen with no gameplay state.
 - Once-per-frame published read handle: a narrow read-only snapshot **stored on
   the `Renderer`** after game logic, before render (research §4) — not threaded as
   a render-call parameter, keeping both render signatures stable. Carries the
-  splash text; the handle *shape* is the contract. Pre-gameplay it holds no
-  gameplay state — which stress-tests the once-per-frame contract in isolation.
-- Input-stage UI-dispatch seam + modal capture-vs-passthrough contract (research
-  §4, §12): a tap point ahead of the gameplay input forward; the descriptor's
-  mode decides consume-vs-passthrough; a UI-consumed event on frame N reaches game
-  logic no earlier than N+1. Capture routes through the reserved
-  `InputFocus::Menu` path; the splash descriptor is capture.
+  version/tagline string the shaped-text line renders, so the once-per-frame
+  contract is exercised with a real value, not an empty handle; the handle *shape*
+  is the contract. Pre-gameplay it holds no gameplay state — which stress-tests the
+  once-per-frame contract in isolation.
+- Input-stage UI-dispatch seam + N→N+1 frame-ordering contract (research §4, §12).
+  A locks the **seam and the ordering contract** — not an interaction feature
+  (interaction is Goal F). A tap point ahead of the gameplay input forward; the
+  descriptor carries a capture/passthrough **mode flag** that feeds the seam, but
+  its live effect is exercised by a **seam test with synthetic events** — the
+  splash runs pre-gameplay with no gameplay input to gate. A UI-consumed event on
+  frame N reaches game logic no earlier than N+1. The seam **reuses the reserved
+  `InputFocus::Menu` gate as the structural home** for capture; A does **not**
+  change live focus during the splash (no pre-gameplay cursor interaction to
+  manage).
 - Test harness: CPU draw-list / layout assertions as the **hard gate**; optional
   tolerance-scoped golden, self-skipping with no GPU adapter.
 
@@ -103,11 +110,13 @@ against a live screen with no gameplay state.
   scale from the backbuffer without stretching the logo or text.
 - [ ] The 9-slice panel preserves corner sizes when its rect grows — corners do
   not stretch; edges/center stretch per the 9-slice rule (vertex-expanded; no tiling in A).
-- [ ] A descriptor marked capture consumes a pointer/key event so it does not
-  reach the gameplay input system that frame; a passthrough descriptor lets the
-  same event through. Verifiable by toggling the mode on the splash descriptor.
+- [ ] At the dispatch seam, a **synthetic** event marked capture is not forwarded
+  to the gameplay input system on that frame; a passthrough event is. Asserted by
+  injecting an event at the seam — independent of the splash being interactive (the
+  splash is pre-gameplay and non-interactive).
 - [ ] An event consumed by UI on a frame is observable to game logic no earlier
-  than the following frame — never same-frame.
+  than the following frame — never same-frame. Proven by the seam test with a
+  synthetic event, not by live splash interaction.
 - [ ] `cargo test -p postretro` runs a draw-list / layout assertion that fails if
   the splash anchor, 9-slice corner rects, or logical-reference→device scale math regresses (the produced
   quad rects move) — independent of any GPU adapter.
@@ -194,9 +203,15 @@ its shaders (`splash_vert.wgsl` / `splash_frag.wgsl`), keeping `load_splash` /
 Add a UI tap point in the Input stage (`App::window_event` / `device_event`)
 ahead of the gameplay input forward, mirroring the `egui_consumed` gate. The
 active descriptor's capture/passthrough mode decides whether the event is
-consumed by UI or forwarded to gameplay; capture routes through the reserved
-`InputFocus::Menu` path. Guarantee any UI-consumed result is queued for game
-logic no earlier than the next frame's tick — no same-frame path.
+consumed by UI or forwarded to gameplay. The seam **reuses the reserved
+`InputFocus::Menu` gate as the structural home** for capture **without changing
+live focus in A** — the splash manages no cursor state pre-gameplay. The
+capture/passthrough decision and the N→N+1 ordering are **proven by a seam test
+injecting synthetic events**, not by splash interaction. Guarantee any
+UI-consumed result is queued for game logic no earlier than the next frame's tick
+— no same-frame path. This task touches only the Input stage; it does not alter
+the boot schedule, timing, or worker (the scope-guarded boot state machine stays
+intact).
 
 ### Task 6: Test harness
 (a) CPU draw-list / layout assertions (hard gate): feed the splash descriptor + a
@@ -239,7 +254,8 @@ Named types/files (behavior is in Tasks above):
   setter the `App` calls just before each render call — not a render-call
   parameter; both render signatures stay stable.
 - Input seam: a UI dispatch check in `App::window_event` paralleling
-  `egui_consumed`, routed through `InputFocus::Menu`.
+  `egui_consumed`, reusing the `InputFocus::Menu` gate as the structural home for
+  capture — no live focus change in A.
 - Byte packing via `bytemuck`. No `unsafe`.
 
 ## Boundary inventory
@@ -274,7 +290,7 @@ Goal C.
 - **Capture-result queueing.** The structure carrying a UI-consumed result to
   next-frame game logic (pending-intent queue vs. flag) is left to Task 5; the
   contract is "not same-frame." Goal F defines the intent vocabulary.
-- **Splash text content source.** A's shaped-text line (version/tagline) is
-  hardcoded in the descriptor; confirm whether the version string reads from an
-  existing build constant or is a literal in A. Either keeps the descriptor seam
-  intact for B/G1; pick the simpler at implementation.
+- **Splash text content source.** A's version/tagline string flows through the
+  read-handle snapshot; only its *source* is open — whether the version string
+  reads from an existing build constant or is a literal in A. Either keeps the
+  descriptor seam intact for B/G1; pick the simpler at implementation.

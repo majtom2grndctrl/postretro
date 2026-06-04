@@ -113,6 +113,7 @@ impl StageCache {
     /// swallowed so a flaky cache directory cannot break a build.
     pub fn put(&self, key: &CacheKey, bytes: &[u8]) {
         let final_path = self.entry_path(key);
+        // Distinct keys produce distinct hex filenames (no extension), so `<digest>.tmp` is unique per key — parallel group bakes never collide here.
         let tmp_path = final_path.with_extension("tmp");
 
         if let Err(err) = self.write_entry(&tmp_path, bytes) {

@@ -1,5 +1,5 @@
 // Per-probe-group SH bake + cache (warm iteration path).
-// See: context/plans/in-progress/incremental-bake-per-element/index.md (Task 6)
+// See: context/plans/done/incremental-bake-per-element/index.md (Task 6)
 //
 // Partitions the probe grid into 4³ spatial groups. Each group is baked over its
 // probe subset with the per-probe algorithm (`sh_bake::bake_probe`) and a
@@ -657,8 +657,8 @@ pub fn bake_sh_volume_grouped(
 
     // Groups bake in parallel; placement stays serial. The order-preserving
     // `par_iter().map().collect()` keeps assembly byte-identical to a serial bake
-    // (see the determinism rationale in `bake_or_load_group` / `place_group`:
-    // index-derived seeds, global-index reaching set, global-index placement).
+    // (see `bake_group` for the index-derived-seed rationale; `place_group` handles
+    // global-index placement).
     let baked_groups: Vec<BakedGroup> = groups
         .par_iter()
         .map(|group| {

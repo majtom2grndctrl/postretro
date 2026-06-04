@@ -9,6 +9,7 @@ pub mod debug_ui;
 pub mod fog_pass;
 pub mod frame_timing;
 pub mod loaded_texture;
+pub mod mesh_pass;
 pub mod sdf_atlas;
 pub mod sdf_shadow;
 pub mod sh_compose;
@@ -484,6 +485,24 @@ fn build_material_uniform(shininess: f32) -> [u8; MATERIAL_UNIFORM_SIZE] {
     bytes
 }
 
+/// Parse a 64-char hex blake3 cache key into 32 bytes. Returns the all-zero key
+/// (the `load_textures` "no source PNG" → silent placeholder sentinel) on any
+/// malformed input, so an absent/garbled key degrades to a placeholder rather
+/// than panicking. Used by the temp skinned-model material resolve.
+fn parse_blake3_key(hex: &str) -> [u8; 32] {
+    let mut key = [0u8; 32];
+    if hex.len() != 64 {
+        return [0u8; 32];
+    }
+    for (i, byte) in key.iter_mut().enumerate() {
+        match u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16) {
+            Ok(b) => *byte = b,
+            Err(_) => return [0u8; 32],
+        }
+    }
+    key
+}
+
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// Extent for the full-res depth pre-pass attachment. Recreated at the surface
@@ -553,6 +572,71 @@ pub struct LevelGeometry<'a> {
     /// term. Defaults to `Shadowed` for legacy PRLs.
     pub lightmap_mode: crate::prl::LightmapMode,
     pub texture_materials: &'a [crate::material::Material],
+}
+
+/// The skeleton + clip the per-frame palette is sampled from for the slice's
+/// one skinned model. Holds the CPU-side animation data (no wgpu); `sample_clip`
+/// reads it each frame and the mesh pass uploads the result. Renderer-side
+/// because the pass consumes the sampled palette (renderer owns GPU); the
+/// broadening many-instance task moves per-instance ownership behind the entity.
+struct MeshAnimationState {
+    skeleton: crate::model::skeleton::Skeleton,
+    clip: crate::model::skeleton::AnimationClip,
+}
+
+/// Log a pose-sampling summary once every this many samples. At ~60–144 FPS this
+/// emits roughly one line every few seconds — frequent enough to read on a run,
+/// quiet enough not to spam the hot path (development_guide §6).
+const POSE_SAMPLE_LOG_INTERVAL: u32 = 600;
+
+/// Tripwire 2 accumulator: rolling min/mean/max of per-frame `sample_clip` CPU
+/// cost. `record` is called each frame with the measured duration; every
+/// `POSE_SAMPLE_LOG_INTERVAL` samples it logs a `[Model]` summary and resets the
+/// window, so the steady-state log rate is bounded regardless of frame rate.
+#[derive(Default)]
+struct PoseSampleStats {
+    count: u32,
+    total_nanos: u128,
+    min_nanos: u64,
+    max_nanos: u64,
+    /// Joint count of the sampled skeleton, carried into the log line so the
+    /// figure is interpretable (cost scales with joint count).
+    joints: usize,
+}
+
+impl PoseSampleStats {
+    /// Fold one frame's `sample_clip` duration into the window; log + reset when
+    /// the window fills. Returns nothing — the periodic `log::info!` is the only
+    /// observable effect, keeping the per-frame path free of allocation/IO.
+    fn record(&mut self, elapsed: std::time::Duration, joints: usize) {
+        let nanos = elapsed.as_nanos().min(u64::MAX as u128) as u64;
+        if self.count == 0 {
+            self.min_nanos = nanos;
+            self.max_nanos = nanos;
+        } else {
+            self.min_nanos = self.min_nanos.min(nanos);
+            self.max_nanos = self.max_nanos.max(nanos);
+        }
+        self.total_nanos += nanos as u128;
+        self.count += 1;
+        self.joints = joints;
+
+        if self.count >= POSE_SAMPLE_LOG_INTERVAL {
+            let mean_us = (self.total_nanos as f64 / self.count as f64) / 1000.0;
+            let min_us = self.min_nanos as f64 / 1000.0;
+            let max_us = self.max_nanos as f64 / 1000.0;
+            log::info!(
+                "[Model] pose sample (CPU, 1 skeleton, {} joints): \
+                 min={:.1}us mean={:.1}us max={:.1}us over {} frames",
+                self.joints,
+                min_us,
+                mean_us,
+                max_us,
+                self.count,
+            );
+            *self = Self::default();
+        }
+    }
 }
 
 /// Logo texture + its bind group for the active splash. The texture owns the view
@@ -762,6 +846,39 @@ pub struct Renderer {
 
     /// Idle (no draw) on maps with no registered collections. See §7.4.
     smoke_pass: SmokePass,
+
+    /// Skinned-mesh forward pass. Idle (no draw) until a model is uploaded via
+    /// `load_skinned_model` (driven by the entity spawn seam at level install).
+    mesh_pass: mesh_pass::MeshPass,
+
+    /// Per-frame skinned-mesh draw list: final per-instance world matrices to
+    /// draw this frame. Refilled each frame via `set_mesh_draws` from the
+    /// render-frame mesh collector (which culls each entity via
+    /// `mesh_pass::mesh_visible` against the frame's `VisibleCells` + the
+    /// `LevelWorld`, then packs survivors). Empty when no mesh entity is visible.
+    mesh_draws: Vec<Mat4>,
+
+    /// The skinned model's skeleton + first animation clip, retained so the
+    /// per-frame palette is sampled from the live clip. `None` until
+    /// `load_skinned_model` succeeds. Single-model this slice; the broadening
+    /// many-instance task moves per-instance ownership behind the entity.
+    mesh_animation: Option<MeshAnimationState>,
+
+    /// Reusable bone-palette scratch for per-frame sampling. Cleared + refilled
+    /// each frame by `sample_clip`, so steady-state frames allocate nothing.
+    /// Lives on the renderer (not in the GPU pass) — it is CPU-side pose data the
+    /// pass merely uploads.
+    bone_palette_scratch: Vec<crate::model::BonePaletteEntry>,
+
+    /// Tripwire 2 (measure-and-report, not gated): rolling stats for the
+    /// per-frame CPU cost of `sample_clip` (one skeleton → palette). Accumulated
+    /// every frame and logged as a min/mean/max summary once per
+    /// `POSE_SAMPLE_LOG_INTERVAL` samples, NEVER per frame (the hot path stays
+    /// quiet per development_guide §6). `context/plans/done/M10--model-pipeline-slice/findings.md`
+    /// projects the mean to wave scale; this is CPU-side ONLY (GPU skinning +
+    /// palette upload at N instances is the many-instance task's measurement,
+    /// unmeasured here).
+    pose_sample_stats: PoseSampleStats,
 
     /// Instanced UI quad / 9-slice pass for panels and images plus glyphon text.
     /// Built alongside `fog`; records the splash (splash phase) and an empty draw
@@ -1963,6 +2080,19 @@ impl Renderer {
             &sh_volume_resources.bind_group_layout,
         );
 
+        // Skinned-mesh pass: reuses the camera (group 0) + material (group 1)
+        // layouts. `upload_identity_palette` pre-fills the palette at startup so
+        // the draw list would render in bind pose. Sampled poses overwrite the
+        // palette each frame via `update_palette` before the draw is recorded.
+        let mesh_pass = mesh_pass::MeshPass::new(
+            &device,
+            surface_format,
+            DEPTH_FORMAT,
+            &uniform_bind_group_layout,
+            &texture_bind_group_layout,
+        );
+        mesh_pass.upload_identity_palette(&queue);
+
         // UI quad / 9-slice + text pass — sibling to fog. Owns all UI GPU state
         // (quad pipeline, glyphon atlas/renderer, white texel). The splash phase
         // and the gameplay path both record through it.
@@ -2077,6 +2207,11 @@ impl Renderer {
             debug_prev_vp_hash: u32::MAX,
             debug_prev_visible: ("init", usize::MAX),
             smoke_pass,
+            mesh_pass,
+            mesh_draws: Vec::new(),
+            mesh_animation: None,
+            bone_palette_scratch: Vec::new(),
+            pose_sample_stats: PoseSampleStats::default(),
             ui,
             active_splash: None,
             splash_logo: None,
@@ -2477,6 +2612,113 @@ impl Renderer {
         self.loaded_textures = loaded;
         self.gpu_textures = gpu_textures;
         log::info!("[Renderer] Textures installed: {}", self.gpu_textures.len());
+    }
+
+    /// Load the slice's one skinned model, resolve its material through the
+    /// existing `.prm` → `LoadedTexture` path (pre-baked key — no runtime
+    /// hashing) and upload it to the mesh pass.
+    /// Returns `true` on success so the caller (the entity spawn seam) decides
+    /// whether to spawn the mesh entity; on a load error this logs a `warn!`
+    /// naming the path, leaves the pass idle, and returns `false` (no spawn).
+    ///
+    /// The renderer owns the GPU upload + the retained `MeshAnimationState`
+    /// (skeleton + clip) for the slice's one model; the per-frame draw list
+    /// (`mesh_draws`) is supplied each frame by the render-frame mesh collector
+    /// via [`set_mesh_draws`], not seeded here.
+    ///
+    /// [`set_mesh_draws`]: Self::set_mesh_draws
+    pub fn load_skinned_model(&mut self, model_path: &Path, prm_cache_root: &Path) -> bool {
+        let model = match crate::model::gltf_loader::load_model(model_path) {
+            Ok(m) => m,
+            Err(err) => {
+                log::warn!(
+                    "[Model] skinned model load failed for {} : {err} — mesh pass idle",
+                    model_path.display(),
+                );
+                return false;
+            }
+        };
+
+        // Resolve the (single) material key through the SAME `.prm`-open path
+        // `load_textures` uses: parse the pre-staged 64-char hex blake3 key into
+        // a 32-byte key, wrap it in a one-entry cache-keys section, and load.
+        let material_bind_group = self.resolve_skinned_model_material(&model, prm_cache_root);
+        self.mesh_pass
+            .set_model(&self.device, &model.mesh, material_bind_group);
+
+        // Retain the skeleton + first clip so the per-frame palette is sampled
+        // from the live animation. No clip → leave `mesh_animation` None; the
+        // pass keeps the identity (bind-pose) palette it was seeded with. This
+        // CPU pose data is renderer-side because the pass uploads it (renderer
+        // owns GPU); the slice carries one model, so a single field suffices.
+        let crate::model::gltf_loader::LoadedModel {
+            skeleton, clips, ..
+        } = model;
+        let clip_count = clips.len();
+        self.mesh_animation = clips.into_iter().next().map(|clip| {
+            log::info!(
+                "[Model] skinned model animation: clip '{}' ({:.2}s), {} joints",
+                clip.name,
+                clip.duration,
+                skeleton.joints.len(),
+            );
+            MeshAnimationState { skeleton, clip }
+        });
+
+        log::info!(
+            "[Model] skinned model uploaded: {} clip(s) parsed",
+            clip_count,
+        );
+        true
+    }
+
+    /// Replace this frame's skinned-mesh draw list with the matrices packed by
+    /// the render-frame mesh collector (already culled). Called once per frame in
+    /// the collection sub-stage, before `render_frame_indirect`. The renderer
+    /// records one direct draw per matrix; it needs no world reference because
+    /// the cull already happened game-side.
+    pub fn set_mesh_draws(&mut self, draws: &[Mat4]) {
+        self.mesh_draws.clear();
+        self.mesh_draws.extend_from_slice(draws);
+    }
+
+    /// Build the material bind group for the skinned model from its first
+    /// material key (pre-baked blake3 hex → `.prm`). Degrades to a placeholder
+    /// when the key is absent/malformed or the `.prm` is missing (load_textures
+    /// already handles the latter two). No runtime PNG hashing.
+    fn resolve_skinned_model_material(
+        &mut self,
+        model: &crate::model::gltf_loader::LoadedModel,
+        prm_cache_root: &Path,
+    ) -> wgpu::BindGroup {
+        // Single-primitive model this slice; the broadening glTF task maps all primitive material keys. Name is a diagnostic wgpu label only.
+        let key_hex = model
+            .material_keys
+            .first()
+            .map(String::as_str)
+            .unwrap_or("");
+        let key = parse_blake3_key(key_hex);
+        let keys = TextureCacheKeysSection { keys: vec![key] };
+        let names = vec!["decraniated_baseColor".to_string()];
+
+        let loaded = load_textures(&self.device, &self.queue, &names, &keys, prm_cache_root);
+        let tex = loaded
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| placeholder_loaded_texture(&self.device, &self.queue));
+
+        let aniso_sampler = self
+            .mip_count_aniso_samplers
+            .entry(tex.mip_count)
+            .or_insert_with(|| create_mip_aniso_sampler(&self.device, tex.mip_count));
+        build_material_bind_group(
+            &self.device,
+            &self.texture_bind_group_layout,
+            &tex,
+            aniso_sampler,
+            Material::Default,
+            "Skinned Model Material",
+        )
     }
 
     /// Normalize texel-space UVs on every BVH-leaf-bound vertex to `[0,1]`
@@ -3755,6 +3997,92 @@ impl Renderer {
                         }),
                     );
                 }
+            }
+        }
+
+        // Skinned-mesh pass — after the opaque world forward, before billboards.
+        // Its own render pass so it can WRITE depth (the forward pass holds the
+        // depth attachment read-only). Loads the existing color + depth so the
+        // mesh composites over the world and depth-tests (`Less`) against it.
+        //
+        // `mesh_draws` is the per-frame draw list, filled by `set_mesh_draws`
+        // from the render-frame mesh collector. Each entry is a FINAL
+        // per-instance matrix already culled by the collector (it calls
+        // `mesh_pass::mesh_visible` against this frame's `VisibleCells` + the
+        // `LevelWorld` BEFORE the cells are reclaimed in `main.rs`, which happens
+        // after this method returns — so the read is safe). The renderer GPU
+        // pass intentionally needs no world reference.
+        if self.mesh_pass.has_model() && !self.mesh_draws.is_empty() {
+            // One mesh entity this slice, drawn against the single shared
+            // bone-palette run at base index 0. A second entry would silently
+            // render as a duplicate of the first, sharing this one pose — the
+            // broadening many-instance work gives each instance its own palette
+            // base. The assert documents that single-run invariant.
+            debug_assert!(
+                self.mesh_draws.len() <= 1,
+                "skinned-mesh slice draws ONE instance against the single shared \
+                 bone-palette run at base index 0; many-instance support must \
+                 generalize the per-instance palette base before lifting this"
+            );
+            // Sample the clip into the shared palette for this frame's one
+            // instance (base 0) BEFORE recording the draw. `now_seconds` is the
+            // render clock used as animation time — render-rate sampling is fine
+            // for the slice (no fixed timestep needed for visuals). It advances
+            // on paused/menu frames that still render, and f32 loses precision
+            // over very long sessions; `sample_clip`'s rem_euclid wrap into the
+            // clip's [0, duration) bounds the visible effect (and loops). The
+            // broadening work revisits the time source. Reuses
+            // `bone_palette_scratch`, so a steady-state frame allocates nothing.
+            // Single-model this slice; the broadening many-instance task samples
+            // each instance's clip into its own palette run.
+            // TODO(broadening): drive animation phase from tick time, not render wall-clock
+            if let Some(anim) = &self.mesh_animation {
+                // Tripwire 2: time the CPU pose sample (one skeleton → palette).
+                // CPU only — the GPU palette upload + vertex skinning at N
+                // instances is the many-instance task's measurement, NOT here.
+                // Accumulated and logged periodically, never per frame
+                // (logging rules: context/lib/development_guide.md §6.1).
+                let sample_start = std::time::Instant::now();
+                crate::model::anim::sample_clip(
+                    &anim.clip,
+                    &anim.skeleton,
+                    now_seconds as f32,
+                    &mut self.bone_palette_scratch,
+                );
+                self.pose_sample_stats
+                    .record(sample_start.elapsed(), anim.skeleton.joints.len());
+                self.mesh_pass
+                    .update_palette(&self.queue, 0, &self.bone_palette_scratch);
+            }
+            let mut mesh_enc = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Skinned Mesh Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                ..Default::default()
+            });
+            mesh_enc.set_bind_group(0, &self.uniform_bind_group, &[]);
+            // Slice draws one instance at palette base 0. Sampled poses were
+            // written above via `mesh_pass.update_palette`; the broadening
+            // many-instance task scales the base index per instance.
+            for model in &self.mesh_draws {
+                self.mesh_pass
+                    .record_draw(&self.device, &mut mesh_enc, *model, 0);
             }
         }
 
@@ -5201,5 +5529,31 @@ mod tests {
         assert_eq!(out_influences[0].center, Vec3::new(1.0, 0.0, 0.0));
         assert_eq!(out_influences[1].center, Vec3::new(3.0, 0.0, 0.0));
         assert_eq!(out_influences[2].center, Vec3::new(5.0, 0.0, 0.0));
+    }
+
+    /// Valid 64-char hex string round-trips to the expected 32 bytes.
+    #[test]
+    fn parse_blake3_key_parses_valid_hex_to_expected_bytes() {
+        // 32 bytes: 00 01 02 … 1e 1f
+        let hex = (0u8..32).map(|b| format!("{b:02x}")).collect::<String>();
+        let result = parse_blake3_key(&hex);
+        let expected: [u8; 32] = std::array::from_fn(|i| i as u8);
+        assert_eq!(result, expected);
+    }
+
+    /// A hex string that is too short yields the zero sentinel key.
+    #[test]
+    fn parse_blake3_key_wrong_length_returns_zero_sentinel() {
+        // 63 chars — one short of the required 64.
+        let short = "a".repeat(63);
+        assert_eq!(parse_blake3_key(&short), [0u8; 32]);
+    }
+
+    /// A non-hex character anywhere in the string yields the zero sentinel key.
+    #[test]
+    fn parse_blake3_key_non_hex_chars_return_zero_sentinel() {
+        // 64 chars but contains 'zz' at the start — not valid hex.
+        let bad = format!("zz{}", "00".repeat(31));
+        assert_eq!(parse_blake3_key(&bad), [0u8; 32]);
     }
 }

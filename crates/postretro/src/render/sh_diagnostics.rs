@@ -1,5 +1,5 @@
 // SH volume diagnostic overlay: emits debug-line segments visualizing baked SH
-// irradiance volumes. Gated on `dev-tools`. See: context/lib/rendering_pipeline.md §11
+// irradiance volumes. Gated on `dev-tools`. See: context/lib/rendering_pipeline.md §12
 //
 use std::sync::Arc;
 use std::sync::Mutex;

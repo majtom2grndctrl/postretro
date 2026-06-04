@@ -1,5 +1,5 @@
 // Immediate-mode debug-line renderer: per-frame CPU buffer of LineList segments uploaded each frame.
-// See: context/lib/rendering_pipeline.md §11 Debug-Line Renderer
+// See: context/lib/rendering_pipeline.md §12 Debug-Line Renderer
 
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;

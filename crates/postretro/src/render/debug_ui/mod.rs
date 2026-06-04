@@ -1,5 +1,5 @@
 // Debug UI overlay: egui context, winit event bridge, diagnostics panel.
-// See: context/lib/rendering_pipeline.md §11 · context/lib/input.md §7
+// See: context/lib/rendering_pipeline.md §12 · context/lib/input.md §7
 
 use winit::event::WindowEvent;
 use winit::window::Window;

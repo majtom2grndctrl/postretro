@@ -137,5 +137,19 @@ Only the Rust ↔ serde boundary is crossed this slice (scripting/FGD spawning d
 
 ## Open questions
 
-- **Tangent confirmation (low-stakes).** Tangent is committed into the vertex layout by default. Confirm with the lighting-rewrite owner whether dynamic meshes get tangent-space normal mapping. A "yes" is already satisfied; a "no" wastes 4 bytes per vertex — cheap either way, so this is a courtesy check, not a blocker.
-- **`gltf` crate version.** Pin at implementation to the current stable release; note it pulls `image` (already a dependency) for embedded textures, though the slice uses external PNG references.
+- **Tangent confirmation (low-stakes).** ~~Tangent is committed into the vertex layout by default. Confirm with the lighting-rewrite owner whether dynamic meshes get tangent-space normal mapping.~~ **Resolved.** The chosen asset ships a glTF `TANGENT` attribute, so the committed tangent is populated straight from source (not derived) — the layout is exercised by a real model. The lighting-consumer confirmation remains the courtesy check originally described; it does not block the slice.
+- **`gltf` crate version.** ~~Pin at implementation to the current stable release.~~ **Resolved: `gltf = "1.4"`** (workspace dep). It pulls `image` (already a dependency); the slice uses external PNG references, not embedded textures.
+
+## Implementation notes (as-built)
+
+Material deviations from the planned approach. The durable architecture now lives in `rendering_pipeline.md` §9 (Skinned Model Pipeline) — the governing context section, pointed to by the module file headers; the two tripwire measurements, the coordinate read, and the deferral recommendations live in `findings.md`. Both are referenced here, not duplicated.
+
+- **Hardcoded asset.** The seam resolves to `decraniated_low_poly_retro_pixel` — a skinned 26-joint model, one clip (`mixamo.com`), external-PNG materials (baseColor + normal + metallicRoughness). It ships a glTF `TANGENT` attribute, so the committed tangent contract is fed by real source data (resolving the tangent Open Question above).
+
+- **`Skeleton`/`Joint` gained a rest-pose local TRS (`rest_local`).** The original skeleton description was "joint hierarchy + inverse-bind matrices." The shipped clip animates **rotation + translation only — no scale channels**, so an un-animated channel must fall back to the joint's rest pose, not identity. Each joint therefore stores its node-default TRS as the per-channel fallback. A genuine data-model addition; see §9 ("Skeleton + clips") and `skeleton.rs`.
+
+- **Spawn placement (concretizes "single hardcoded seam carrying a model handle").** When the map has a `player_spawn`, the seam plants the model a few meters ahead of the player start along the camera's yaw-forward, facing back at the camera, so it sits in the initial view for the manual-visual check; it falls back to the level geometry center when no `player_spawn` exists. The seam bakes a yaw into the entity `Transform`. See the spawn seam in `main.rs`.
+
+- **Tripwires.** Both measured/instrumented — recorded in `findings.md`. Tripwire 2 (CPU pose sampling) is **measured**: ~3.6 µs/skeleton, projected ~0.73 ms at N=200. Tripwire 1 (parse+upload) is instrumented; the debug figure is recorded and the representative `--release` number is still pending a GPU run.
+
+- **AC status.** Automated gates pass. The manual-visual ACs were human-confirmed on macOS this session (no panic, model spawns ahead of the player). The release Tripwire 1 number remains pending per `findings.md`.

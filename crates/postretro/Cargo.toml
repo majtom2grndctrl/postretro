@@ -35,6 +35,9 @@ gilrs.workspace = true
 # Image loading
 image.workspace = true
 
+# glTF model loading (CPU-side `model` module).
+gltf.workspace = true
+
 # Error handling
 thiserror.workspace = true
 anyhow.workspace = true

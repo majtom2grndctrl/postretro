@@ -27,7 +27,7 @@ States live natively in Rust. Authors control **which states exist, their tuning
 
 ### The shape of the surface
 
-In its full form the declarative surface is a **transition graph** assembled from three engine-owned, *closed* vocabularies — never an expression language. Tuning ships first; author-defined transitions follow across the series.
+In its full form the declarative surface is a **transition graph** assembled from three engine-owned, *closed* vocabularies. Closed does not mean small — a closed vocabulary can be arbitrarily expressive (`scripting.md` §11). What it forbids is author-shipped runtime code: the engine owns the evaluator, authors describe behavior as data. Tuning ships first; author-defined transitions follow across the series.
 
 | Vocabulary | Author picks | Engine owns |
 |---|---|---|
@@ -37,7 +37,9 @@ In its full form the declarative surface is a **transition graph** assembled fro
 
 A transition is one data row — `{ from, to, when, carry }`. The author wires native states into chains the engine never pre-built (dash → wall-run → wall-launch); the velocity math under each state and each carry-rule stays native.
 
-**The line — one test:** a declarative element is anything the engine can evaluate each tick *from data alone*, with no author code and no reads outside the movement component. Author-written per-tick expressions, predicates over arbitrary world state (e.g. player health), and free-form velocity math are out — they reintroduce the FFI/determinism cost and break the momentum-carry invariant. New predicates and carry-rules are added deliberately, vetted against the flexibility band (§3) — never via a general escape hatch.
+**The line — one test:** a declarative element is anything the engine can evaluate each tick *from data alone*, with no author-shipped runtime code, no per-tick movement callback, and no reads outside the movement component. What is forbidden is a retained author function the engine calls each tick — that reintroduces the FFI/determinism cost on the hottest path and breaks the fixed-tick determinism and momentum-carry invariant. The constraint is on *who owns the evaluator*, not on how expressive the vocabulary is.
+
+A richer authored surface — response curves, a velocity expression like `boost = f(speed, charges, grounded)` — is reachable *without* an author function: the **Typed Command Buffer** (`scripting.md` §11) lets the author describe such behavior as a typed, engine-evaluated IR that crosses the FFI as data. Movement may adopt it later (a transition graph, response curves) and it is the canonical mechanism if so. Nothing here commits to it now. New predicates and carry-rules are still added deliberately, vetted against the flexibility band (§3) — never via a general escape hatch.
 
 ## 3. The flexibility band
 

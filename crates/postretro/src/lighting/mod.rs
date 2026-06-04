@@ -18,7 +18,7 @@ use crate::prl::{FalloffModel, LightType, MapLight};
 ///   0: position_and_type        (xyz = world position, w = bitcast<f32>(light_type))
 ///   1: color_and_falloff_model  (xyz = linear RGB × intensity, w = bitcast<f32>(falloff_model))
 ///   2: direction_and_range      (xyz = aim direction, w = falloff_range meters)
-///   3: cone_angles_and_pad      (x = inner angle rad, y = outer angle rad, zw = pad)
+///   3: cone_angles_and_pad      (x = inner angle rad, y = outer angle rad, z = shadow-slot index (bitcast u32), w = pad)
 ///
 /// Each vec4<f32> is 16 bytes; the struct has only vec4 members so its
 /// alignment is 16 and the array stride is an exact multiple of 16.
@@ -158,9 +158,15 @@ pub fn patch_shadow_slots(buffer: &mut [u8], slots: &[u32]) -> bool {
     let mut changed = false;
     for (i, &slot) in slots.iter().enumerate() {
         let off = i * GPU_LIGHT_SIZE + SHADOW_SLOT_BYTE_OFFSET;
+        // Guard the slice in release builds too; a mismatch between buffer size
+        // and slots length should be caught by the debug_assert above, but skip
+        // rather than panic or corrupt a neighbour record if it slips through.
+        let Some(field) = buffer.get_mut(off..off + 4) else {
+            continue;
+        };
         let new = slot.to_ne_bytes();
-        if buffer[off..off + 4] != new {
-            buffer[off..off + 4].copy_from_slice(&new);
+        if *field != new {
+            field.copy_from_slice(&new);
             changed = true;
         }
     }
@@ -173,11 +179,10 @@ fn write_f32(dst: &mut [u8], offset: usize, value: f32) {
 }
 
 /// Write a `u32` into the slot, reusing the same 4 bytes a `f32` would
-/// occupy. The shader reconstructs the integer via `bitcast<u32>(...)` on
-/// the vec4's `w` component. Using `to_ne_bytes` matches `write_f32` and
-/// survives the cross-field copy because both use native byte order and
-/// wgpu rejects mismatched layouts at pipeline creation time if anything
-/// gets skewed.
+/// occupy. The round-trip is safe because the shader reads the field with
+/// `bitcast<u32>(...)`, recovering the original integer bit-for-bit.
+/// Using `to_ne_bytes` matches `write_f32` so both keep the same native
+/// byte order in the packed record.
 #[inline]
 fn write_u32_as_f32(dst: &mut [u8], offset: usize, value: u32) {
     dst[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());

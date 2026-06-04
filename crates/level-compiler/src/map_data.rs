@@ -286,7 +286,6 @@ pub struct MapLight {
     /// pool-eligible by default (`rank_lights` gates on
     /// `is_dynamic || casts_entity_shadows`), so a dynamic spot with this
     /// `false` is NOT excluded.
-    /// See `context/plans/in-progress/sdf-static-occluder-shadows/`.
     pub casts_entity_shadows: bool,
 
     /// Declarative authoring: the light has **static geometry** but its

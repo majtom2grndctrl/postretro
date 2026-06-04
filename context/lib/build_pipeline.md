@@ -173,7 +173,12 @@ Disk-backed content-hash cache that lets `prl-build` skip the two expensive bake
 
 **Location.** `.build-caches/prl-cache/` at the workspace root (the parent directory containing `Cargo.toml`). Created automatically on first build. Safe to delete at any time — the next build recreates it. The cache root `.build-caches/` also contains `prm-cache/` (texture mip sidecars; see §Baked texture mips).
 
-**Participating stages.** Lightmap bake and SH volume bake. Parse, BSP, portals, geometry, and BVH run uncached — they are fast enough that caching yields no measurable speedup.
+**Participating stages.** Lightmap bake and SH volume bake, plus the animated-light weight-map and SDF-atlas stages. Parse, BSP, portals, geometry, and BVH run uncached — they are fast enough that caching yields no measurable speedup.
+
+**Cache grain (lightmap + SH).** These two channels are cached *per element*, not per whole stage, so editing one light refreshes only the affected entries:
+
+- **Lightmap — per-light layers.** Each static light's contribution (linear irradiance + unnormalized weighted direction + coverage, full-precision) is a separate `"lightmap_layer"` entry, keyed on that light's params, its influence-bounded geometry slice, density/sample-count, and the atlas layout. The compositor sums the layers (in global light order) and normalizes once, reproducing the monolithic `bake_face_chart` byte-for-byte (pre-BC6H). Exact in both warm and cold builds.
+- **SH — per-probe-group entries.** The probe grid is partitioned into 4³-probe groups; each is a `"sh_group"` entry baked over its probe subset with a *bounded reaching-light set* (`falloff_range` dilated by a finite reach cutoff), then assembled (byte-copy placement) into the volume. Bounding the light set is what localizes a light edit; it also makes warm SH a benign approximation (out-of-reach lights drop — dimmer-or-equal, never miscolored). The cold `--no-cache` path runs the exact whole-volume bake instead. SH rays trace full geometry, so any geometry edit re-bakes every group.
 
 **Warm vs cold builds.** A shippable map is a cold build — `--no-cache`, every stage baked exact. Warm (cached) builds trade exactness for iteration speed; they are not shippable. The split is per channel. The direct lightmap is exact in both modes: a cached lightmap is byte-identical to a full bake (pre-compression). Indirect SH is exact only cold. A warm build may bake SH at a finer-than-whole-volume grain, bounding each region's light set — a benign approximation, dimmer-or-equal in far-bounce regions, never miscolored. Judge final indirect lighting on a cold build. Run production and release bakes with `--no-cache`.
 
@@ -181,8 +186,8 @@ Disk-backed content-hash cache that lets `prl-build` skip the two expensive bake
 
 | Component | Form |
 |-----------|------|
-| `stage_id` | string literal — `"lightmap"` or `"sh_volume"` |
-| `stage_version` | `u32` constant (`STAGE_VERSION`) in each stage's module; bumped manually when the baking algorithm changes |
+| `stage_id` | string literal — `"lightmap_layer"` (per-light), `"sh_group"` (per-probe-group), `"animated_lm_weight_maps"`, or `"sdf_atlas"` |
+| `stage_version` | `u32` constant in each stage's module, bumped manually when that stage's algorithm or payload format changes. Each stage owns its own constant and version-bumps independently — the per-light-layer and per-group-SH formats version separately from each other and from the legacy whole-stage bakes |
 | `input_hash` | `blake3(postcard(StageInputs) || postcard(StageConfig))` — covers the serialized data the stage reads |
 
 **Stage version bump rule.** Bump a stage's `STAGE_VERSION` when its output computation changes (algorithm, sampling, formula, or atlas packing). The substrate invalidates every entry for that stage on the next build. Do not bump for unrelated changes. Each stage's current value lives as a `u32` constant in its own module — the source is authoritative; this doc does not pin the number.

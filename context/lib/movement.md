@@ -27,7 +27,7 @@ States live natively in Rust. Authors control **which states exist, their tuning
 
 ### The shape of the surface
 
-In its full form the declarative surface is a **transition graph** assembled from three engine-owned, *closed* vocabularies — never an expression language. Tuning ships first; author-defined transitions follow across the series.
+In its full form the declarative surface is a **transition graph** assembled from three engine-owned, *closed* vocabularies. Closed does not mean small — a closed vocabulary can be arbitrarily expressive (`scripting.md` §11). What it forbids is author-shipped runtime code: the engine owns the evaluator, authors describe behavior as data. Tuning ships first; author-defined transitions follow across the series.
 
 | Vocabulary | Author picks | Engine owns |
 |---|---|---|
@@ -37,7 +37,9 @@ In its full form the declarative surface is a **transition graph** assembled fro
 
 A transition is one data row — `{ from, to, when, carry }`. The author wires native states into chains the engine never pre-built (dash → wall-run → wall-launch); the velocity math under each state and each carry-rule stays native.
 
-**The line — one test:** a declarative element is anything the engine can evaluate each tick *from data alone*, with no author code and no reads outside the movement component. Author-written per-tick expressions, predicates over arbitrary world state (e.g. player health), and free-form velocity math are out — they reintroduce the FFI/determinism cost and break the momentum-carry invariant. New predicates and carry-rules are added deliberately, vetted against the flexibility band (§3) — never via a general escape hatch.
+**The line — one test:** a declarative element is anything the engine can evaluate each tick *from data alone*, with no author-shipped runtime code, no per-tick movement callback, and no reads outside the movement component. What is forbidden is a retained author function the engine calls each tick — that reintroduces the FFI/determinism cost on the hottest path and breaks the fixed-tick determinism and momentum-carry invariant. The constraint is on *who owns the evaluator*, not on how expressive the vocabulary is.
+
+A richer authored surface — response curves, a velocity expression like `boost = f(speed, charges, grounded)` — is reachable *without* an author function: the **Typed Command Buffer** (`scripting.md` §11) lets the author describe such behavior as a typed, engine-evaluated IR that crosses the FFI as data. Movement may adopt it later (a transition graph, response curves) and it is the canonical mechanism if so. Nothing here commits to it now. New predicates and carry-rules are still added deliberately, vetted against the flexibility band (§3) — never via a general escape hatch.
 
 ## 3. The flexibility band
 
@@ -61,6 +63,10 @@ The movement tick splits into two halves with a clean seam between them.
 - **Shared physics substrate.** Collide-and-slide: sweep-and-slide, step-up, floor-push, ground-stick, contact/landing resolution. Runs regardless of state. Takes a desired velocity, returns the resolved position plus contact results. Behavior is fixed — states change *intent*, not collision.
 - **Per-state velocity intent.** Each state authors the desired velocity for the tick (gravity, acceleration, friction, bursts). The current state is an explicit value on the movement component. A dispatch point runs the active state's intent, calls the substrate, then applies any returned transition.
 
+**Contact flows forward, not sideways.** The substrate is the sole collision-query path. A state intent that needs surface contact (wall normal, floor normal) reads it from the substrate's contact result carried forward from the prior tick — never by querying collision itself. This holds the split: intents author velocity, the substrate owns collision.
+
+**Per-state data ownership.** Each state's live data (timers, boosts) is owned through one uniform convention; the dispatch resolves the component-vs-active-state borrow once. A new state adds its data without widening the dispatch.
+
 Today's walk/run/jump/air-control is the baseline `Normal` state; later states (crouch, slide, wall-run, vault) plug in behind the same seam. Ability budgets (air-jump, air-dash) refresh through one landing-refresh point so they reset uniformly.
 
 ## 5. Design north-stars
@@ -75,8 +81,8 @@ Today's walk/run/jump/air-control is the baseline `Normal` state; later states (
 
 Two policies cut across every state and define the modern feel. Both are foundations, not per-state details — settle each before the specs that need it, not by emerging from one state and refactoring the rest. Settle the policy and seam, not the full breadth; breadth grows with the states.
 
-- **Momentum conservation.** The biggest modern-feel differentiator — slide→jump keeps slide speed, wall-run→jump launches off the wall vector — and the transition seam's spine; four later states depend on it. Set the velocity-carry policy at the transition layer before `movement--slide`. Deciding it inside slide bakes in slide-shaped logic that wall-run and vault then refactor.
-- **Input forgiveness.** Coyote time (jump grace after leaving a ledge), jump buffering (jump pressed just before landing fires on contact). Foundation-level — shapes edge-input derivation, which every state reads. Settle the edge-input model up front, not after five states consume those edges.
+- **Momentum conservation.** The biggest modern-feel differentiator — slide→jump keeps slide speed, wall-run→jump launches off the wall vector — and the transition seam's spine; four later states depend on it. Set the velocity-carry policy at the transition layer before `movement--slide`. Deciding it inside slide bakes in slide-shaped logic that wall-run and vault then refactor. **Decided** (`movement--cross-cutting-policies`): velocity carry is owned by the dispatch point that applies the transition, never inside a state intent. A transition's `carry` composes a horizontal-rule and a boost-rule (the base+boost velocity model) over §2's closed vocabulary; wall-relative rules (`projectOntoWallPlane`, `reflect`) land with `movement--wall-run`.
+- **Input forgiveness.** Coyote time (jump grace after leaving a ledge), jump buffering (jump pressed just before landing fires on contact). Foundation-level — shapes edge-input derivation, which every state reads. Settle the edge-input model up front, not after five states consume those edges. **Decided** (`movement--cross-cutting-policies`): coyote and jump-buffer windows are descriptor-tuned, derived once per tick into edges that intents consume in place of raw button bits.
 
 ## 7. Non-goals
 

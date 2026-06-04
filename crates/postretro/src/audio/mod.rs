@@ -3,8 +3,14 @@
 // this module's public surface.
 // See: context/lib/audio.md
 
+mod assets;
+
+use std::path::Path;
+
 use kira::listener::ListenerHandle;
 use kira::{AudioManager, AudioManagerSettings, Capacities, DefaultBackend};
+
+pub(crate) use assets::SoundRegistry;
 
 /// Failures from audio init or asset loading. Init failure is non-fatal: the
 /// caller logs and runs the game silent (`Audio` stays `None`). The kira
@@ -64,6 +70,11 @@ pub struct Audio {
     /// manager does.
     #[allow(dead_code)]
     listener: ListenerHandle,
+    /// Per-level sound assets, keyed by content-relative name. Populated at
+    /// level install and cleared at unload so it follows level lifetime, like
+    /// textures (`resource_management.md` §7.2). Consumed by the play API
+    /// (Task 4).
+    registry: SoundRegistry,
 }
 
 impl Audio {
@@ -102,7 +113,34 @@ impl Audio {
             .add_listener([0.0_f32, 0.0, 0.0], Self::IDENTITY_ORIENTATION)
             .map_err(|err| AudioError::Init(err.to_string()))?;
 
-        Ok(Self { manager, listener })
+        Ok(Self {
+            manager,
+            listener,
+            registry: SoundRegistry::new(),
+        })
+    }
+
+    /// Load every decodable sound under `<content_root>/_sounds/` into the
+    /// registry, replacing any sounds from a previously installed level. Wired
+    /// into `install_level_payload` so the sound set follows level lifetime.
+    /// Missing directory or undecodable files degrade gracefully (warn, skip);
+    /// never panics. Delegates to the asset module.
+    pub fn load_level_sounds(&mut self, content_root: &Path) {
+        self.registry.load_from_content_root(content_root);
+    }
+
+    /// Drop every registered sound. Wired into the level-unload / shutdown path
+    /// so registry memory is released with the level. After this the registry is
+    /// empty and a subsequent `load_level_sounds` repopulates it.
+    pub fn release_level_sounds(&mut self) {
+        self.registry.clear();
+    }
+
+    /// The per-level sound registry, for the play API (Task 4). Read-only so
+    /// callers resolve `SoundRequest::sound` keys to loaded entries.
+    #[allow(dead_code)]
+    pub(crate) fn registry(&self) -> &SoundRegistry {
+        &self.registry
     }
 
     /// Drop the manager, stopping the audio thread and releasing the device.

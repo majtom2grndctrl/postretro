@@ -1268,6 +1268,12 @@ impl ApplicationHandler for App {
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // Release the level's sound registry at teardown, mirroring the texture
+        // release on level unload (`resource_management.md` §7.2). This engine
+        // has a single level for its lifetime, so unload coincides with exit.
+        if let Some(audio) = &mut self.audio {
+            audio.release_level_sounds();
+        }
         self.renderer = None;
         self.window_state = None;
         log::info!("[Engine] Exited");
@@ -1628,6 +1634,15 @@ impl App {
             self.collision_world.populate_from_level(world);
         }
         self.level_timings.record("bridges_populated");
+
+        // Sound registry follows level lifetime, parallel to textures: load the
+        // level's sounds from `_sounds/` here, release them at unload. Fault-
+        // tolerant — a missing directory or undecodable file warns and is
+        // skipped. Silent if audio init failed (`audio` is `None`).
+        if let Some(audio) = &mut self.audio {
+            audio.load_level_sounds(&self.content_root);
+        }
+        self.level_timings.record("audio_load");
 
         // Sweep map entities through classname dispatch. The returned set of
         // handled classnames is stashed and consumed by the data-archetype

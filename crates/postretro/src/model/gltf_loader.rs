@@ -1,5 +1,5 @@
 // glTF → engine skinned-model loader (CPU-only; no wgpu).
-// See: context/lib/rendering_pipeline.md §9 · context/lib/build_pipeline.md
+// See: context/lib/rendering_pipeline.md §9 · context/lib/build_pipeline.md §Baked texture mips
 //
 // Narrow by design (M10 model-pipeline slice): one model, external-PNG textures,
 // a single animation clip. The loop is general enough to survive the real

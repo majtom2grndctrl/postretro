@@ -86,7 +86,11 @@ struct VertexOutput {
 };
 
 // Octahedral unit-vector decode — copied verbatim from forward.wgsl so the
-// skinned stream decodes normals with identical math.
+// skinned stream decodes normals with identical math. This is a deliberate
+// deviation from rendering_pipeline.md §8's shared-helper append pattern:
+// WGSL's string-append composition doesn't support the binding-agnostic
+// helper shape for a pure math function like this. As a consequence, this
+// copy MUST be updated in lock-step if `forward.wgsl::oct_decode` ever changes.
 fn oct_decode(enc: vec2<u32>) -> vec3<f32> {
     let ox = f32(enc.x) / 65535.0 * 2.0 - 1.0;
     let oy = f32(enc.y) / 65535.0 * 2.0 - 1.0;
@@ -137,6 +141,10 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     let n_bind = oct_decode(in.normal_oct);
     let skin3 = mat3x3<f32>(skin[0].xyz, skin[1].xyz, skin[2].xyz);
     let model3 = mat3x3<f32>(instance.model[0].xyz, instance.model[1].xyz, instance.model[2].xyz);
+    // Upper-3×3 is correct only for rotation and uniform scale. Per-instance
+    // non-uniform scale requires the inverse-transpose of model3 here instead;
+    // the broadening lighting task must make that switch if it introduces
+    // non-uniform scale on skinned instances.
     out.world_normal = normalize(model3 * (skin3 * n_bind));
 
     return out;

@@ -160,7 +160,9 @@ impl MeshPass {
                 //   joints (u8x4)  Uint8x4    @ 24  → vec4<u32>
                 //   weights (u8x4) Unorm8x4   @ 28  → vec4<f32> (0..1)
                 // Stride 32. The tangent attribute is carried (committed layout)
-                // but unused by the flat-lit fragment this slice.
+                // but unused by the flat-lit fragment this slice; committing it
+                // now lets depth-only, lighting, and normal-map passes reuse
+                // this vertex layout without a format change.
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<crate::model::mesh::SkinnedVertex>()
                         as wgpu::BufferAddress,
@@ -308,9 +310,7 @@ impl MeshPass {
         queue.write_buffer(&self.palette_buffer, offset, bytemuck::cast_slice(entries));
     }
 
-    /// Default the whole palette run to identity matrices (bind pose). Initialize
-    /// the palette to identity (bind pose) at startup, before the first sampled
-    /// frame.
+    /// Initialize the shared bone palette to identity (bind pose) before the first sampled frame.
     pub fn upload_identity_palette(&self, queue: &wgpu::Queue) {
         let identity = BonePaletteEntry {
             matrix: glam::Mat4::IDENTITY.to_cols_array_2d(),
@@ -320,10 +320,10 @@ impl MeshPass {
     }
 
     /// Record the skinned draw for one instance into `pass`. Sets the pipeline,
-    /// group 0 (camera) is set by the caller (it owns the camera bind group),
-    /// group 1 (material), group 3 (palette + per-instance model matrix), the
-    /// vertex / index buffers, and issues a DIRECT `draw_indexed` for the one
-    /// instance. No-op if no model is uploaded.
+    /// group 1 (material), and group 3 (palette + per-instance model matrix);
+    /// binds the vertex/index buffers; and issues a direct `draw_indexed`.
+    /// Group 0 (camera) must be set by the caller before recording — it owns
+    /// the camera bind group. No-op if no model is uploaded.
     ///
     /// `base_index` is the instance's offset into the shared palette buffer
     /// (0 this slice). `model` is the final per-instance world matrix.

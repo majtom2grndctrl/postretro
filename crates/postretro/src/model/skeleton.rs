@@ -65,7 +65,7 @@ pub struct Skeleton {
 ///
 /// glTF mixamo clips author LINEAR interpolation for translation and rotation
 /// and omit scale; the loader stores the raw samples and `crate::model::anim::sample_clip`
-/// interpolates (lerp for translation/scale, nlerp/slerp for rotation). Interpolation mode is
+/// interpolates (lerp for translation/scale, slerp (normalized) for rotation). Interpolation mode is
 /// not stored — the slice samples LINEAR; a STEP/CUBICSPLINE-carrying clip is the
 /// broadening task's concern and would add a mode tag here.
 #[derive(Debug, Clone, Default, PartialEq)]

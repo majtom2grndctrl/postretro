@@ -5,7 +5,8 @@
 // Single clip, LINEAR interpolation, no blend, no state machine — the slice's
 // scope. Reuse-friendly: `sample_clip` writes into a caller-owned `Vec` and
 // keeps a thread-local scratch for the world-pose sweep, so steady-state frames
-// allocate nothing; per-frame `sample_clip` cost is measured by `crate::render::PoseSampleStats`.
+// allocate nothing; per-frame `sample_clip` cost is tracked by the renderer's
+// rolling pose-sample stats (see `render/mod.rs`).
 
 use std::cell::RefCell;
 
@@ -266,10 +267,12 @@ mod tests {
         let skeleton = Skeleton {
             joints: vec![joint(None, Mat4::IDENTITY, RestLocal::default())],
         };
-        let mut tracks = JointTracks::default();
-        tracks.translation = Track {
-            times: vec![0.0, 2.0],
-            values: vec![Vec3::new(0.0, 0.0, 0.0), Vec3::new(10.0, -4.0, 2.0)],
+        let tracks = JointTracks {
+            translation: Track {
+                times: vec![0.0, 2.0],
+                values: vec![Vec3::new(0.0, 0.0, 0.0), Vec3::new(10.0, -4.0, 2.0)],
+            },
+            ..Default::default()
         };
         let clip = translation_clip("t", 2.0, vec![tracks]);
 
@@ -288,10 +291,12 @@ mod tests {
         };
         let q0 = Quat::IDENTITY;
         let q1 = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2); // 90°
-        let mut tracks = JointTracks::default();
-        tracks.rotation = Track {
-            times: vec![0.0, 1.0],
-            values: vec![q0, q1],
+        let tracks = JointTracks {
+            rotation: Track {
+                times: vec![0.0, 1.0],
+                values: vec![q0, q1],
+            },
+            ..Default::default()
         };
         let clip = translation_clip("r", 1.0, vec![tracks]);
 
@@ -316,10 +321,12 @@ mod tests {
         };
         // Clip animates ONLY translation; scale + rotation tracks are empty and
         // must fall back to rest (rest scale 0.5, NOT 1.0).
-        let mut tracks = JointTracks::default();
-        tracks.translation = Track {
-            times: vec![0.0, 1.0],
-            values: vec![Vec3::new(1.0, 2.0, 3.0), Vec3::new(1.0, 2.0, 3.0)],
+        let tracks = JointTracks {
+            translation: Track {
+                times: vec![0.0, 1.0],
+                values: vec![Vec3::new(1.0, 2.0, 3.0), Vec3::new(1.0, 2.0, 3.0)],
+            },
+            ..Default::default()
         };
         let clip = translation_clip("partial", 1.0, vec![tracks]);
 
@@ -343,10 +350,12 @@ mod tests {
         let skeleton = Skeleton {
             joints: vec![joint(None, Mat4::IDENTITY, RestLocal::default())],
         };
-        let mut tracks = JointTracks::default();
-        tracks.translation = Track {
-            times: vec![0.0, 2.0],
-            values: vec![Vec3::new(0.0, 0.0, 0.0), Vec3::new(8.0, 0.0, 0.0)],
+        let tracks = JointTracks {
+            translation: Track {
+                times: vec![0.0, 2.0],
+                values: vec![Vec3::new(0.0, 0.0, 0.0), Vec3::new(8.0, 0.0, 0.0)],
+            },
+            ..Default::default()
         };
         let clip = translation_clip("wrap", 2.0, vec![tracks]);
 

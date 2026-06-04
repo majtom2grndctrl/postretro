@@ -869,9 +869,10 @@ pub struct Renderer {
     /// per-frame CPU cost of `sample_clip` (one skeleton → palette). Accumulated
     /// every frame and logged as a min/mean/max summary once per
     /// `POSE_SAMPLE_LOG_INTERVAL` samples, NEVER per frame (the hot path stays
-    /// quiet per development_guide §6). `findings.md` projects the mean to wave
-    /// scale; this is CPU-side ONLY (GPU skinning + palette upload at N instances
-    /// is the many-instance task's measurement, unmeasured here).
+    /// quiet per development_guide §6). `context/plans/in-progress/M10--model-pipeline-slice/findings.md`
+    /// projects the mean to wave scale; this is CPU-side ONLY (GPU skinning +
+    /// palette upload at N instances is the many-instance task's measurement,
+    /// unmeasured here).
     pose_sample_stats: PoseSampleStats,
 
     /// Fullscreen splash render pass. Pipeline created at `Renderer::new`;
@@ -2665,6 +2666,7 @@ impl Renderer {
         model: &crate::model::gltf_loader::LoadedModel,
         prm_cache_root: &Path,
     ) -> wgpu::BindGroup {
+        // Single-primitive model this slice; the broadening glTF task maps all primitive material keys. Name is a diagnostic wgpu label only.
         let key_hex = model
             .material_keys
             .first()
@@ -3865,6 +3867,7 @@ impl Renderer {
             // `bone_palette_scratch`, so a steady-state frame allocates nothing.
             // Single-model this slice; the broadening many-instance task samples
             // each instance's clip into its own palette run.
+            // TODO(broadening): drive animation phase from tick time, not render wall-clock
             if let Some(anim) = &self.mesh_animation {
                 // Tripwire 2: time the CPU pose sample (one skeleton → palette).
                 // CPU only — the GPU palette upload + vertex skinning at N
@@ -5291,5 +5294,31 @@ mod tests {
         assert_eq!(out_influences[0].center, Vec3::new(1.0, 0.0, 0.0));
         assert_eq!(out_influences[1].center, Vec3::new(3.0, 0.0, 0.0));
         assert_eq!(out_influences[2].center, Vec3::new(5.0, 0.0, 0.0));
+    }
+
+    /// Valid 64-char hex string round-trips to the expected 32 bytes.
+    #[test]
+    fn parse_blake3_key_parses_valid_hex_to_expected_bytes() {
+        // 32 bytes: 00 01 02 … 1e 1f
+        let hex = (0u8..32).map(|b| format!("{b:02x}")).collect::<String>();
+        let result = parse_blake3_key(&hex);
+        let expected: [u8; 32] = std::array::from_fn(|i| i as u8);
+        assert_eq!(result, expected);
+    }
+
+    /// A hex string that is too short yields the zero sentinel key.
+    #[test]
+    fn parse_blake3_key_wrong_length_returns_zero_sentinel() {
+        // 63 chars — one short of the required 64.
+        let short = "a".repeat(63);
+        assert_eq!(parse_blake3_key(&short), [0u8; 32]);
+    }
+
+    /// A non-hex character anywhere in the string yields the zero sentinel key.
+    #[test]
+    fn parse_blake3_key_non_hex_chars_return_zero_sentinel() {
+        // 64 chars but contains 'zz' at the start — not valid hex.
+        let bad = format!("zz{}", "00".repeat(31));
+        assert_eq!(parse_blake3_key(&bad), [0u8; 32]);
     }
 }

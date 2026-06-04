@@ -179,9 +179,13 @@ Run:
 ```
 RUST_LOG=info cargo run --release -p postretro -- content/dev/maps/campaign-test.prl
 ```
-The model spawns at the level's `spawn_position` (nudged `MESH_SPAWN_Y_OFFSET =
--1.0` m in `main.rs`) — near where the camera starts looking. A human should
-confirm, in order:
+When the map has a `player_spawn` entity the model is planted
+`MESH_SPAWN_DISTANCE` (3 m) straight ahead of `player_start`, facing back toward
+the camera (yaw + π), then nudged `MESH_SPAWN_Y_OFFSET = -1.0` m vertically so
+its feet sit near the floor. When there is **no** `player_spawn` the model falls
+back to the level geometry center (`spawn_position`), same nudge applied. Both
+paths are in the hardcoded spawn seam in `main.rs`. A human should confirm, in
+order:
 
 1. **Upright, un-mirrored, correctly scaled.** The model stands the right way up,
    is not flipped left/right (text/asymmetry reads correctly), and is roughly
@@ -229,7 +233,10 @@ The model's baseColor material resolves through a **pre-staged offline-baked**
 This directory is **gitignored** — the `.prm` is a **local build artifact**, not
 committed. **A fresh checkout must re-bake it** (run the production baker /
 `prl-build` over the model's baseColor PNG once, offline) before the model renders
-with its texture; without it, `load_textures` degrades to the silent placeholder.
+with its texture; without it, `load_textures` degrades to a **visible magenta/black checkerboard**
+placeholder (`placeholder_loaded_texture` in `render/loaded_texture.rs`). This
+is actually the better degrade for the manual-visual acceptance check — a missing
+`.prm` is immediately obvious on screen rather than silently invisible.
 This is the **baked-over-computed** invariant in action: the runtime never hashes
 the PNG. Automating model-PNG → `.prm` baking (so a fresh checkout self-heals) is
 the deferred **glTF mesh loading** broadening task, not this slice.

@@ -2372,7 +2372,7 @@ mod tests {
     #[test]
     fn spawn_seam_spawns_one_mesh_entity_when_model_loads() {
         use crate::scripting::components::mesh::MeshComponent;
-        use crate::scripting::registry::{Component, ComponentKind, EntityRegistry};
+        use crate::scripting::registry::{ComponentKind, EntityRegistry};
 
         let mut registry = EntityRegistry::new();
         let id = spawn_mesh_entity_if_loaded(

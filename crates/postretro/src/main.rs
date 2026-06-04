@@ -1,6 +1,7 @@
 // Postretro engine entry point, boot state machine, and level-load orchestration.
 // See: context/lib/boot_sequence.md §8 · context/lib/index.md
 
+mod audio;
 mod camera;
 mod collision;
 mod compute_cull;
@@ -162,6 +163,7 @@ fn main() -> Result<()> {
 
     let mut app = App {
         renderer: None,
+        audio: None,
         window_state: None,
         level: None,
         map_path,
@@ -226,6 +228,12 @@ fn window_attributes() -> WindowAttributes {
 
 struct App {
     renderer: Option<Renderer>,
+
+    /// Audio subsystem. `None` until `resumed()` builds it after the renderer,
+    /// and stays `None` if kira init fails — the game then runs silent.
+    /// See: context/lib/audio.md
+    audio: Option<audio::Audio>,
+
     window_state: Option<WindowState>,
     level: Option<prl::LevelWorld>,
 
@@ -445,6 +453,19 @@ impl ApplicationHandler for App {
 
         self.renderer = Some(renderer);
         self.window_state = Some(WindowState { window });
+
+        // Fault-tolerant audio init: on failure log and run silent, never
+        // crash. See: context/lib/audio.md §1.
+        match audio::Audio::new() {
+            Ok(audio) => {
+                self.audio = Some(audio);
+                log::info!("[Audio] Initialized");
+            }
+            Err(err) => {
+                log::error!("[Audio] Init failed, running silent: {err}");
+                self.audio = None;
+            }
+        }
 
         #[cfg(feature = "dev-tools")]
         {

@@ -122,6 +122,7 @@ fn rust_to_ts(ty_name: &str) -> String {
         "AirParams" => "AirParams".to_string(),
         "FallParams" => "FallParams".to_string(),
         "DashParams" => "DashParams".to_string(),
+        "ForgivenessParams" => "ForgivenessParams".to_string(),
         "FogAnimation" => "FogAnimation".to_string(),
         "FogVolumeComponent" => "FogVolumeComponent".to_string(),
         "FogVolumeEntity" => "FogVolumeEntity".to_string(),
@@ -215,6 +216,7 @@ fn rust_to_luau(ty_name: &str) -> String {
         "AirParams" => "AirParams".to_string(),
         "FallParams" => "FallParams".to_string(),
         "DashParams" => "DashParams".to_string(),
+        "ForgivenessParams" => "ForgivenessParams".to_string(),
         "FogAnimation" => "FogAnimation".to_string(),
         "FogVolumeComponent" => "FogVolumeComponent".to_string(),
         "FogVolumeEntity" => "FogVolumeEntity".to_string(),
@@ -1259,6 +1261,8 @@ declare module \"postretro\" {
     fall: FallParams;
     /** Optional dash tuning. When omitted, dash is disabled. When present, all of its fields are required. */
     dash?: DashParams;
+    /** Optional input-forgiveness tuning (coyote time + jump buffer). When the whole object is omitted, the documented engine defaults apply (~100ms each). When present, each field is itself optional and falls back to its engine default; 0 disables that grace. */
+    forgiveness?: ForgivenessParams;
     /** Optional. Stuck-stop deadzone enable flag. When true (default), the slide loop zeroes horizontal velocity and rolls back XZ position when contradictory wall normals (≥60° apart) are seen within the same tick AND net horizontal displacement is below `stuckStopThreshold`. Suppresses orbital jitter in interior corners. Default true. */
     stuckStopEnabled?: boolean;
     /** Optional. Horizontal-displacement threshold in metres that gates the deadzone. Must be finite and ≥ 0. Default 1.0e-3. */
@@ -1335,6 +1339,14 @@ declare module \"postretro\" {
     airDashes: number;
     /** Whether the dash preserves the pre-dash vertical velocity. */
     preserveVertical: boolean;
+  };
+
+  /** Input-forgiveness tuning (coyote time + jump buffering). Optional on `PlayerMovementDescriptor` — when the whole `forgiveness` object is omitted, the documented engine defaults apply. When present, each field is itself optional and falls back to its engine default; an explicit 0 disables that grace independently. Both windows are in milliseconds. */
+  export type ForgivenessParams = {
+    /** Coyote-time window in milliseconds: a grounded jump is permitted for this long after leaving a ledge (with no prior jump). 0 disables coyote time. Default 100.0. */
+    coyoteMs?: number;
+    /** Jump-buffer window in milliseconds: a jump pressed this long before landing fires on the landing tick. 0 disables jump buffering. Default 100.0. */
+    jumpBufferMs?: number;
   };
 
   /** Object returned from `setupMod()` in `start-script.{ts,luau}`. Identifies the mod to the engine. */
@@ -1497,6 +1509,8 @@ export type PlayerMovementDescriptor = {
   fall: FallParams,
   --- Optional dash tuning. When omitted, dash is disabled. When present, all of its fields are required.
   dash: DashParams?,
+  --- Optional input-forgiveness tuning (coyote time + jump buffer). When the whole object is omitted, the documented engine defaults apply (~100ms each). When present, each field is itself optional and falls back to its engine default; 0 disables that grace.
+  forgiveness: ForgivenessParams?,
   --- Optional. Stuck-stop deadzone enable flag. When true (default), the slide loop zeroes horizontal velocity and rolls back XZ position when contradictory wall normals (≥60° apart) are seen within the same tick AND net horizontal displacement is below `stuckStopThreshold`. Suppresses orbital jitter in interior corners. Default true.
   stuckStopEnabled: boolean?,
   --- Optional. Horizontal-displacement threshold in metres that gates the deadzone. Must be finite and ≥ 0. Default 1.0e-3.
@@ -1573,6 +1587,14 @@ export type DashParams = {
   airDashes: number,
   --- Whether the dash preserves the pre-dash vertical velocity.
   preserveVertical: boolean,
+}
+
+--- Input-forgiveness tuning (coyote time + jump buffering). Optional on `PlayerMovementDescriptor` — when the whole `forgiveness` object is omitted, the documented engine defaults apply. When present, each field is itself optional and falls back to its engine default; an explicit 0 disables that grace independently. Both windows are in milliseconds.
+export type ForgivenessParams = {
+  --- Coyote-time window in milliseconds: a grounded jump is permitted for this long after leaving a ledge (with no prior jump). 0 disables coyote time. Default 100.0.
+  coyoteMs: number?,
+  --- Jump-buffer window in milliseconds: a jump pressed this long before landing fires on the landing tick. 0 disables jump buffering. Default 100.0.
+  jumpBufferMs: number?,
 }
 
 --- Object returned from `setupMod()` in `start-script.{ts,luau}`. Identifies the mod to the engine.

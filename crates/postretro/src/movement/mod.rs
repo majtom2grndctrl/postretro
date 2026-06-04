@@ -7,7 +7,10 @@ use glam::{Vec2, Vec3};
 use parry3d::math::{Point, Vector};
 use parry3d::shape::Capsule;
 
+mod carry;
+
 use crate::collision::{CollisionWorld, SKIN_DISTANCE, cast_capsule, cast_ray};
+use crate::movement::carry::{CarryRule, apply_boost, apply_horizontal};
 use crate::scripting::components::player_movement::{MovementState, PlayerMovementComponent};
 
 /// Exponential-style ground deceleration (`v *= max(0, 1 - k*dt)`) — not the Q3
@@ -111,6 +114,18 @@ pub(crate) struct SubstrateResult {
     /// A genuine landing transition (airborne → grounded) cleared the
     /// air-tick hysteresis gate. Maps directly to `MovementEvents::landed`.
     pub(crate) landed: bool,
+}
+
+/// A state transition a per-state intent warrants this tick: the `next` state to
+/// enter paired with the `carry`-rule the DISPATCH layer applies to the OUTGOING
+/// velocity at the edge. Pairing the carry with the next state keeps the
+/// velocity transform out of the intents (D6) — the intent declares *what* the
+/// edge does; the dispatch *applies* it against the outgoing resolved velocity
+/// and boost before the new state is written. See `context/lib/movement.md` §6.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Transition {
+    pub(crate) next: MovementState,
+    pub(crate) carry: CarryRule,
 }
 
 /// Quake-derived projection-capped acceleration: only adds speed along
@@ -571,6 +586,91 @@ fn air_jump_ready(component: &PlayerMovementComponent) -> bool {
     component.air_jumps_remaining > 0 && component.velocity.y <= component.air.jump_ceiling
 }
 
+/// Derived jump edges for the tick, computed ONCE before the per-state intents
+/// run (D5). Intents consume these in place of the raw `jump_pressed` button bit
+/// so forgiveness (coyote time + jump buffering) is never re-derived per state.
+///
+/// `grounded` routes through `Normal`'s grounded-jump step (consumes NO air-jump
+/// charge); `air` routes through the air-jump step (consumes a charge). At most
+/// one is true in a tick where they would compete — the derivation prefers the
+/// grounded edge so a coyote/buffered jump never also spends an air charge.
+#[derive(Debug, Clone, Copy, Default)]
+struct JumpEdges {
+    /// Fire a grounded jump this tick: a fresh grounded press, a coyote-granted
+    /// press (ground recently lost, no jump spent), or a buffered press landing.
+    grounded: bool,
+    /// Fire an air jump this tick (airborne press while the grounded edge did
+    /// not claim it).
+    air: bool,
+    /// The grounded edge was satisfied by consuming the pending jump buffer —
+    /// the tick must clear `jump_buffer_timer_ms` so it fires exactly once.
+    consumed_buffer: bool,
+}
+
+/// Derive the grounded-jump and air-jump edges from the raw `jump_pressed` bit,
+/// the pre-tick grounded flag, and the forgiveness timers/flags. Reads state
+/// only; the timer advance and buffer arm/clear are applied by `tick` around the
+/// dispatch (see `advance_forgiveness` / the buffer arm step).
+///
+/// Coyote: a grounded jump is permitted while `coyote_timer_ms <= coyote_ms`
+/// after ground is lost, gated on `!jump_spent` so it cannot re-arm once any
+/// jump (ground or air) has been spent this airborne stretch. When grounded the
+/// timer is 0, so a normal grounded press always satisfies the edge.
+///
+/// Buffer: a pending buffered jump (`jump_buffer_timer_ms > 0`) fires as a
+/// grounded jump the first tick the player is observed grounded again, even with
+/// no fresh press — the landing-tick fire.
+fn derive_jump_edges(component: &PlayerMovementComponent, jump_pressed: bool) -> JumpEdges {
+    let grounded = component.is_grounded;
+
+    // A grounded jump from a fresh press: either truly grounded, or within the
+    // coyote window after leaving the ground with no prior jump spent. When
+    // `coyote_ms == 0` and airborne, `coyote_timer_ms` has already advanced past
+    // 0 (the timer ticks at end of the leaving tick), so the coyote path is a
+    // no-op — exact raw-edge timing is preserved.
+    let coyote_ok = !component.jump_spent && component.coyote_timer_ms <= component.coyote_ms;
+    let fresh_grounded_press = jump_pressed && (grounded || coyote_ok);
+
+    // A pending buffered jump fires on the first observed-grounded tick (the
+    // landing-tick fire), independent of a fresh press. Gated on `!jump_spent`
+    // so a jump already taken this stretch does not also drain the buffer.
+    let buffer_fires = grounded && component.jump_buffer_timer_ms > 0.0 && !component.jump_spent;
+
+    let grounded_edge = fresh_grounded_press || buffer_fires;
+
+    // Air jump only when the grounded edge did not claim the press: an airborne
+    // raw press that coyote did not convert into a grounded jump.
+    let air_edge = jump_pressed && !grounded_edge && !grounded;
+
+    JumpEdges {
+        grounded: grounded_edge,
+        air: air_edge,
+        consumed_buffer: buffer_fires,
+    }
+}
+
+/// Advance the forgiveness timers for the NEXT tick, after the substrate has
+/// resolved collision (so `component.is_grounded` reflects this tick's outcome).
+/// Coyote accumulates airborne ms; reset to 0 each grounded tick here and at the
+/// landing-refresh point (`refresh_on_landing`). The jump buffer counts down
+/// while airborne and DROPS SILENTLY when it expires before landing. Windows
+/// stay in ms, advanced off `dt * 1000` like the dash cooldown.
+fn advance_forgiveness(component: &mut PlayerMovementComponent, dt: f32) {
+    let dt_ms = dt * 1000.0;
+    if component.is_grounded {
+        // Grounded: coyote timer is held at 0 (also reset by the landing-refresh
+        // point). A pending buffer is left for the next tick's grounded edge to
+        // consume — it is NOT counted down or dropped while grounded.
+        component.coyote_timer_ms = 0.0;
+    } else {
+        component.coyote_timer_ms += dt_ms;
+        if component.jump_buffer_timer_ms > 0.0 {
+            // Expire toward zero; reaching 0 drops the buffer with no jump.
+            component.jump_buffer_timer_ms = (component.jump_buffer_timer_ms - dt_ms).max(0.0);
+        }
+    }
+}
+
 /// The `Normal` state's per-tick velocity intent (movement-tick steps 1–6):
 /// gravity, jump/air-jump, ground/air acceleration, ground friction, and the
 /// airborne horizontal cap. This is the walk/run/jump/air-control baseline —
@@ -581,18 +681,24 @@ fn air_jump_ready(component: &PlayerMovementComponent) -> bool {
 /// when a jump launches; that clear is part of the intent (a jump is no longer
 /// grounded) and the substrate reads the post-intent flag.
 ///
-/// Sets `events.jumped` when a jump launches. Returns the next movement state if
-/// a transition is warranted, or `None` to stay in `Normal`. Today `Normal`
+/// Sets `events.jumped` when a jump launches. Returns the warranted transition
+/// (next state + its carry-rule) or `None` to stay in `Normal`. Today `Normal`
 /// transitions to `Dash` on a rising-edge dash input (see `try_enter_dash`);
 /// future states (crouch, slide, wall-run) plug in behind the same seam without
 /// reshaping callers.
+///
+/// `jump_edges` are the forgiveness-derived edges (coyote + buffer), computed
+/// ONCE per tick by `derive_jump_edges` before this intent runs (D5). The jump
+/// steps consume `jump_edges.grounded` / `jump_edges.air` IN PLACE OF the raw
+/// `jump_pressed` bit so forgiveness is never re-derived here.
 fn normal_intent(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
+    jump_edges: JumpEdges,
     gravity: f32,
     dt: f32,
     events: &mut MovementEvents,
-) -> Option<MovementState> {
+) -> Option<Transition> {
     // 1. Gravity (airborne only).
     if !component.is_grounded {
         component.velocity.y += gravity * dt;
@@ -602,21 +708,29 @@ fn normal_intent(
         }
     }
 
-    // 2. Jump from grounded.
-    if component.is_grounded && input.jump_pressed {
+    // 2. Grounded jump — fired off the DERIVED grounded edge (a fresh grounded
+    // press, a coyote-granted press, or a buffered press landing) rather than
+    // raw `jump_pressed`. Consumes NO air-jump charge: a coyote/buffered jump is
+    // a grounded jump. Sets `jump_spent` so coyote cannot re-arm this stretch.
+    if jump_edges.grounded {
         component.velocity.y = component.air.jump_velocity;
         component.is_grounded = false;
+        component.jump_spent = true;
         events.jumped = true;
     }
     // 3. Air-jump (double-jump): a named airborne ability under the budget
-    // model. Consumes one charge from `air_jumps_remaining`, which refreshes
-    // uniformly on floor contact through `refresh_on_landing` (the single
-    // landing-refresh point shared with other air-budget abilities, e.g. air-dash). The
-    // ceiling gate (`velocity.y <= air.jump_ceiling`) keeps it from firing at
-    // the top of the rising arc; the launch reuses the ground jump velocity.
-    else if !component.is_grounded && input.jump_pressed && air_jump_ready(component) {
+    // model. Fires off the DERIVED air edge (an airborne press the grounded edge
+    // did not claim) AND the budget/ceiling gate. Consumes one charge from
+    // `air_jumps_remaining`, which refreshes uniformly on floor contact through
+    // `refresh_on_landing` (the single landing-refresh point shared with other
+    // air-budget abilities, e.g. air-dash). The ceiling gate
+    // (`velocity.y <= air.jump_ceiling`) keeps it from firing at the top of the
+    // rising arc; the launch reuses the ground jump velocity. Spends the
+    // jump-spent flag so coyote cannot re-arm after an air jump.
+    else if jump_edges.air && air_jump_ready(component) {
         component.velocity.y = component.air.jump_velocity;
         component.air_jumps_remaining -= 1;
+        component.jump_spent = true;
         events.jumped = true;
     }
 
@@ -717,8 +831,8 @@ fn normal_intent(
     // consumes the airborne charge, and arms the cooldown; it returns the seeded
     // `Dash` state for `tick` to apply after the substrate resolves collision.
     if input.dash_pressed {
-        if let Some(next) = try_enter_dash(component, input) {
-            return Some(next);
+        if let Some(transition) = try_enter_dash(component, input) {
+            return Some(transition);
         }
     }
 
@@ -726,8 +840,8 @@ fn normal_intent(
 }
 
 /// Attempt the `Normal` → `Dash` transition this tick. Returns the seeded `Dash`
-/// state when the dash fires, or `None` when it is suppressed (dash disabled,
-/// cooldown active, or airborne with no charge left).
+/// state paired with its carry-rule when the dash fires, or `None` when it is
+/// suppressed (dash disabled, cooldown active, or airborne with no charge left).
 ///
 /// Grounded vs airborne is read from the last-tick `is_grounded` flag — the same
 /// one-tick staleness the jump gate uses (acceptable, consistent tradeoff).
@@ -737,7 +851,7 @@ fn normal_intent(
 fn try_enter_dash(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
-) -> Option<MovementState> {
+) -> Option<Transition> {
     let dash = component.dash.as_ref()?;
     if component.dash_cooldown_ms > 0.0 {
         return None;
@@ -792,9 +906,17 @@ fn try_enter_dash(
     // cooldown test, and a sub-tick of cooldown makes no observable difference.
     component.dash_cooldown_ms = cooldown_ms;
 
-    Some(MovementState::Dash {
-        elapsed_ms: 0.0,
-        boost,
+    // `Normal` → `Dash` carries no momentum transform at the seam: the entry
+    // blend (retained base + boost, `preserve_vertical`) is authored above on
+    // `component.velocity`, so the dispatch-applied carry must leave it exactly
+    // as authored. `KEEP_ALL` is that no-op (the parity guarantee). `Normal`
+    // carries no boost vector, so `keepBoost` operates on a zero boost here.
+    Some(Transition {
+        next: MovementState::Dash {
+            elapsed_ms: 0.0,
+            boost,
+        },
+        carry: CarryRule::KEEP_ALL,
     })
 }
 
@@ -808,19 +930,30 @@ fn try_enter_dash(
 /// `Normal`'s contextual friction throughout. Exits into `Normal` when total
 /// horizontal speed falls back into the steady band, or when the `DASH_MAX_MS`
 /// elapsed guard fires, whichever is first.
+///
+/// Per-state live data (`elapsed_ms`, `boost`) is borrowed in place from the
+/// active `Dash` variant — the dispatch resolves the component-vs-state borrow
+/// once (see `dispatch_state_intent`), so this intent mutates its own data
+/// directly rather than receiving it by value and re-packing it. The return is
+/// purely a transition: `Some({ Normal, KEEP_ALL })` on exit, `None` to stay in
+/// `Dash`. The exit carry is `KEEP_ALL` because the dash already hands velocity
+/// back into the steady band itself — the seam must not perturb it (parity).
 fn dash_intent(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
     gravity: f32,
     dt: f32,
-    elapsed_ms: f32,
-    boost: Vec3,
-) -> Option<MovementState> {
+    elapsed_ms: &mut f32,
+    boost: &mut Vec3,
+) -> Option<Transition> {
     // Dash params must exist to be in this state (entry required `Some`). A
     // descriptor swap that cleared `dash` mid-dash drops back to `Normal` rather
     // than panicking.
     let Some(dash) = component.dash.as_ref() else {
-        return Some(MovementState::Normal);
+        return Some(Transition {
+            next: MovementState::Normal,
+            carry: CarryRule::KEEP_ALL,
+        });
     };
     let steer_control = dash.steer_control;
     let dash_drag = dash.dash_drag;
@@ -878,7 +1011,6 @@ fn dash_intent(
     // boost` can no longer point back out of the wall. An angled dash keeps its
     // surviving tangential velocity in `base`, yielding the same clean slide a
     // `Normal`-state approach would produce.
-    let mut boost = boost;
     let boost_len = Vec2::new(boost.x, boost.z).length();
     if boost_len > 0.0 {
         let boost_dir = Vec3::new(boost.x / boost_len, 0.0, boost.z / boost_len);
@@ -916,7 +1048,7 @@ fn dash_intent(
                 boost.z *= scale;
             }
         } else {
-            apply_normal_horizontal_decay(&mut boost, component, input, ground_speed, dt);
+            apply_normal_horizontal_decay(boost, component, input, ground_speed, dt);
         }
     } else {
         // `dash_drag > 0`: constant LINEAR deceleration of the boost only
@@ -925,7 +1057,7 @@ fn dash_intent(
         let boost_speed = boost.length();
         if boost_speed > 0.0 {
             let new_speed = (boost_speed - dash_drag * dt).max(0.0);
-            boost *= new_speed / boost_speed;
+            *boost *= new_speed / boost_speed;
         }
     }
 
@@ -933,8 +1065,10 @@ fn dash_intent(
     component.velocity.z = base.z + boost.z;
 
     // Exit: total horizontal speed back inside `Normal`'s steady band (run speed
-    // grounded / air cap airborne) OR the `DASH_MAX_MS` elapsed guard.
-    let elapsed_ms = elapsed_ms + dt * 1000.0;
+    // grounded / air cap airborne) OR the `DASH_MAX_MS` elapsed guard. The live
+    // `elapsed_ms` accumulates in place; the dispatch writes the mutated `Dash`
+    // data back when this returns `None` (stay).
+    *elapsed_ms += dt * 1000.0;
     let horiz_speed = (component.velocity.x * component.velocity.x
         + component.velocity.z * component.velocity.z)
         .sqrt();
@@ -943,11 +1077,14 @@ fn dash_intent(
     // so `ground_speed` is the band we choose to exit into rather than one `Normal`
     // maintains in that mode. Either way the dash is hard-bounded by `DASH_MAX_MS`.
     let steady_cap = ground_speed;
-    if horiz_speed <= steady_cap || elapsed_ms >= DASH_MAX_MS {
-        return Some(MovementState::Normal);
+    if horiz_speed <= steady_cap || *elapsed_ms >= DASH_MAX_MS {
+        return Some(Transition {
+            next: MovementState::Normal,
+            carry: CarryRule::KEEP_ALL,
+        });
     }
 
-    Some(MovementState::Dash { elapsed_ms, boost })
+    None
 }
 
 /// Apply `Normal`'s contextual horizontal decay to a horizontal velocity vector
@@ -987,6 +1124,96 @@ fn apply_normal_horizontal_decay(
     }
 }
 
+/// The outgoing horizontal boost vector a state carries as it leaves (the D4
+/// additive layer). `Dash` carries its live `boost`; `Normal` carries none, so
+/// `keepBoost`/drop operate on a zero boost — a no-op. Read at the transition
+/// edge so the carry sees the boost as it leaves, before the new state is written.
+fn outgoing_boost(state: &MovementState) -> Vec3 {
+    match state {
+        MovementState::Normal => Vec3::ZERO,
+        MovementState::Dash { boost, .. } => *boost,
+    }
+}
+
+/// Apply a transition's carry-rule to `component.velocity` at the transition
+/// edge — the DISPATCH-layer velocity transform (D6), never inside a state
+/// intent. The outgoing velocity decomposes into the D4 layers: a horizontal
+/// base (`velocity - outgoing_boost`, vertical kept) and the outgoing `boost`.
+/// The `horizontal` rule transforms the base layer; the `boost` rule transforms
+/// the boost layer; the two recombine into the new resolved velocity.
+///
+/// `KEEP_ALL` is exactly a no-op: the base is kept and the kept boost is added
+/// back, reconstructing the outgoing velocity unchanged — the `Normal`↔`Dash`
+/// parity guarantee. Vertical velocity is preserved throughout (the carry
+/// vocabulary governs horizontal momentum only; the boost layer is horizontal).
+fn apply_carry(rule: CarryRule, velocity: &mut Vec3, boost: Vec3) {
+    let mut base = *velocity - boost;
+    apply_horizontal(rule.horizontal, &mut base);
+    let carried_boost = apply_boost(rule.boost, boost);
+    *velocity = base + carried_boost;
+}
+
+/// Run the active state's velocity intent, resolving the
+/// component-vs-active-state borrow ONCE so each state owns its live data in
+/// place behind one uniform convention.
+///
+/// The active state is moved out of the component (replaced with the `Normal`
+/// placeholder) so the matched arm holds a `&mut` to the state's own live data
+/// while the intent also borrows `&mut component`. After the intent runs, the
+/// (in-place-mutated) state is written back.
+///
+/// The CARRY STEP runs here, at the transition edge — NOT in `tick`: when an
+/// intent returns a `Transition`, its carry-rule is applied to
+/// `component.velocity` reading the OUTGOING state's live boost (the `Dash`
+/// boost) BEFORE the outgoing `state` local is dropped — so the carry sees the
+/// boost as it leaves. The returned `Option<MovementState>` is ONLY the next
+/// state for `tick` to write after the substrate resolves collision; by the time
+/// `tick` sees it, carry is already committed. Searching `tick` for carry
+/// application will come up empty by design — it lives here. Velocity carry is
+/// owned by this dispatch point, never by a state intent (D6).
+///
+/// `jump_edges` are the forgiveness-derived jump edges `tick` computed once
+/// before dispatch; only `normal_intent` consumes them (the `Dash` state drops
+/// jump input by design).
+///
+/// Adding a new state means adding one arm here with its own `&mut` live data;
+/// `tick`'s structure and existing intent signatures are untouched.
+fn dispatch_state_intent(
+    component: &mut PlayerMovementComponent,
+    input: &MovementInput,
+    jump_edges: JumpEdges,
+    gravity: f32,
+    dt: f32,
+    events: &mut MovementEvents,
+) -> Option<MovementState> {
+    // Resolve the borrow once: move the live state into a local so its data can
+    // be borrowed `&mut` independently of `&mut component`. The `Normal`
+    // placeholder left behind is overwritten below (write-back or transition).
+    let mut state = std::mem::replace(&mut component.movement_state, MovementState::Normal);
+    let transition = match &mut state {
+        MovementState::Normal => normal_intent(component, input, jump_edges, gravity, dt, events),
+        MovementState::Dash { elapsed_ms, boost } => {
+            dash_intent(component, input, gravity, dt, elapsed_ms, boost)
+        }
+    };
+    match transition {
+        Some(Transition { next, carry }) => {
+            // Carry step at the transition edge: apply the rule to the resolved
+            // OUTGOING velocity, reading the outgoing state's live boost before
+            // `state` is dropped. The new state is then handed to `tick`.
+            apply_carry(carry, &mut component.velocity, outgoing_boost(&state));
+            Some(next)
+        }
+        None => {
+            // No transition: write the (mutated) live state back so an unchanged
+            // state's in-place data updates (the `Dash` boost/elapsed) carry
+            // forward.
+            component.movement_state = state;
+            None
+        }
+    }
+}
+
 pub(crate) fn tick(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
@@ -998,16 +1225,42 @@ pub(crate) fn tick(
     let mut events = MovementEvents::default();
     let was_grounded = component.is_grounded;
 
+    // Input forgiveness (D5): derive the grounded-jump and buffered/coyote jump
+    // edges ONCE, here, before the intents run. The intents read these derived
+    // edges in place of the raw `jump_pressed` bit and never re-derive
+    // forgiveness. A buffer the grounded edge consumes is cleared below so it
+    // fires exactly once; a fresh airborne press that produced no jump arms the
+    // buffer for the landing-tick fire.
+    let jump_edges = derive_jump_edges(component, input.jump_pressed);
+
     // Per-state velocity intent: dispatch to the active state's intent step. It
     // authors `component.velocity` (gravity, jump, acceleration, friction, caps)
     // reading the grounded flag carried from last tick, and returns an optional
-    // transition to apply after the substrate resolves collision.
-    let transition = match component.movement_state {
-        MovementState::Normal => normal_intent(component, input, gravity, dt, &mut events),
-        MovementState::Dash { elapsed_ms, boost } => {
-            dash_intent(component, input, gravity, dt, elapsed_ms, boost)
-        }
-    };
+    // transition to apply after the substrate resolves collision. The dispatch
+    // resolves the component-vs-active-state borrow once and owns the per-state
+    // live data, so a new state plugs in without widening this call.
+    let transition = dispatch_state_intent(component, input, jump_edges, gravity, dt, &mut events);
+
+    // The grounded edge consumed a pending buffer this tick — clear it so the
+    // buffered jump fires exactly once on landing, never twice.
+    if jump_edges.consumed_buffer {
+        component.jump_buffer_timer_ms = 0.0;
+    }
+
+    // Arm the jump buffer from a fresh airborne press the intents did NOT turn
+    // into a jump (no coyote/air jump fired): retain it for the landing-tick
+    // fire. Only arm when no buffer is already pending (`<= 0.0`): re-arming a
+    // live buffer on a held button would reset its countdown each tick,
+    // extending the window indefinitely. The guard ensures the window counts
+    // from the first press and re-arms only after full expiry or consumption.
+    if input.jump_pressed
+        && !was_grounded
+        && !events.jumped
+        && component.jump_buffer_ms > 0.0
+        && component.jump_buffer_timer_ms <= 0.0
+    {
+        component.jump_buffer_timer_ms = component.jump_buffer_ms;
+    }
 
     // 7 + 8. Shared physics substrate: sweep-and-slide, step-up, floor-push,
     // ground-stick, and collision-state/landing resolution. States change
@@ -1049,6 +1302,12 @@ pub(crate) fn tick(
         component.dash_cooldown_ms = (component.dash_cooldown_ms - dt * 1000.0).max(0.0);
     }
 
+    // Advance the forgiveness timers for the next tick, after the substrate has
+    // resolved this tick's grounded flag: accumulate coyote ms while airborne
+    // (reset to 0 on the ground / at the landing-refresh point), and count the
+    // jump buffer down toward a silent drop if it expires before landing.
+    advance_forgiveness(component, dt);
+
     (current_pos, events)
 }
 
@@ -1056,8 +1315,8 @@ pub(crate) fn tick(
 mod tests {
     use super::*;
     use crate::scripting::data_descriptors::{
-        AirParams, CapsuleParams, DashParams, FallParams, GroundParams, PlayerMovementDescriptor,
-        SpeedParams,
+        AirParams, CapsuleParams, DashParams, FallParams, ForgivenessParams, GroundParams,
+        PlayerMovementDescriptor, SpeedParams,
     };
     use parry3d::math::Isometry;
     use parry3d::shape::TriMesh;
@@ -1099,6 +1358,14 @@ mod tests {
             stuck_stop_enabled: PlayerMovementDescriptor::DEFAULT_STUCK_STOP_ENABLED,
             stuck_stop_threshold: PlayerMovementDescriptor::DEFAULT_STUCK_STOP_THRESHOLD,
             dash: None,
+            // Regression fixtures pin both forgiveness windows to ZERO (D5) so
+            // grounded-jump and buffered-jump edges collapse onto raw
+            // `jump_pressed` and exact edge timing is preserved. The new
+            // forgiveness tests build descriptors with non-zero windows.
+            forgiveness: Some(ForgivenessParams {
+                coyote_ms: 0.0,
+                jump_buffer_ms: 0.0,
+            }),
         }
     }
 
@@ -3681,6 +3948,348 @@ mod tests {
             horiz_speed(&comp) <= band + VEL_EPS,
             "post-dash horizontal speed should settle into the band, got {}",
             horiz_speed(&comp)
+        );
+    }
+
+    // ----- Input forgiveness (coyote time + jump buffer) -------------------
+    //
+    // These cover D5: coyote/buffer windows are descriptor-tuned, derived once
+    // per tick as edges the `Normal` jump steps consume. The canonical fixture
+    // pins both windows to zero, so these tests build descriptors with explicit
+    // windows to exercise the grace paths.
+
+    const JUMP_VELOCITY: f32 = 5.5;
+    /// Ticks that fit inside a 100 ms window at 60 Hz (100 / 16.67 ≈ 6).
+    const WITHIN_100MS_TICKS: usize = 4;
+    /// Ticks that clear a 100 ms window with margin.
+    const PAST_100MS_TICKS: usize = 9;
+
+    /// Canonical descriptor with explicit forgiveness windows (ms). A `coyote`
+    /// of 0 disables coyote; a `buffer` of 0 disables jump buffering.
+    fn forgiveness_descriptor(coyote_ms: f32, jump_buffer_ms: f32) -> PlayerMovementDescriptor {
+        let mut desc = canonical_descriptor();
+        desc.forgiveness = Some(ForgivenessParams {
+            coyote_ms,
+            jump_buffer_ms,
+        });
+        desc
+    }
+
+    fn jump_input() -> MovementInput {
+        MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: true,
+            dash_pressed: false,
+            running: false,
+            facing_yaw: 0.0,
+        }
+    }
+
+    /// Settle the player grounded on a flat floor, then lift them off the ground
+    /// and run one idle tick so the substrate clears `is_grounded`. After this
+    /// the player is airborne with the coyote timer holding ~one tick — the
+    /// deterministic "just walked off the ledge" state the coyote edge keys off.
+    fn settle_then_leave_ground(
+        desc: &PlayerMovementDescriptor,
+        world: &CollisionWorld,
+    ) -> (PlayerMovementComponent, Vec3) {
+        let (mut comp, mut pos) = settle_player(desc);
+        run_ticks(&mut comp, world, &mut pos, 10, &idle_input());
+        assert!(comp.is_grounded, "test setup: player should be grounded");
+        // Teleport up out of floor range, then one idle tick drops `is_grounded`.
+        pos.y += 2.0;
+        run_ticks(&mut comp, world, &mut pos, 1, &idle_input());
+        assert!(
+            !comp.is_grounded,
+            "test setup: player should be airborne after leaving the ground"
+        );
+        assert!(
+            !comp.jump_spent,
+            "test setup: no jump should be spent yet after leaving the ground"
+        );
+        (comp, pos)
+    }
+
+    #[test]
+    fn coyote_jump_within_window_launches_grounded_jump() {
+        let desc = forgiveness_descriptor(100.0, 0.0);
+        let world = flat_floor_and_wall_world();
+        let (mut comp, mut pos) = settle_then_leave_ground(&desc, &world);
+
+        // Stay airborne briefly (still inside the 100 ms coyote window), then
+        // press jump. The coyote grace routes through the grounded-jump step.
+        run_ticks(
+            &mut comp,
+            &world,
+            &mut pos,
+            WITHIN_100MS_TICKS,
+            &idle_input(),
+        );
+        let events = run_ticks(&mut comp, &world, &mut pos, 1, &jump_input());
+
+        assert!(events.jumped, "coyote jump within the window should fire");
+        assert!(
+            approx_eq(comp.velocity.y, JUMP_VELOCITY, VEL_EPS),
+            "coyote jump should apply the full grounded jump velocity, got {}",
+            comp.velocity.y
+        );
+    }
+
+    #[test]
+    fn coyote_jump_after_window_does_not_fire() {
+        let desc = forgiveness_descriptor(100.0, 0.0);
+        let world = flat_floor_and_wall_world();
+        let (mut comp, mut pos) = settle_then_leave_ground(&desc, &world);
+
+        // Linger past the coyote window before pressing — no grounded jump, and
+        // canonical `air.jumps == 0` means no air jump either.
+        run_ticks(&mut comp, &world, &mut pos, PAST_100MS_TICKS, &idle_input());
+        let vy_before = comp.velocity.y;
+        let events = run_ticks(&mut comp, &world, &mut pos, 1, &jump_input());
+
+        assert!(
+            !events.jumped,
+            "a jump pressed after the coyote window should not fire"
+        );
+        // Falling, not launched: vy keeps decreasing under gravity.
+        assert!(
+            comp.velocity.y < vy_before,
+            "no jump means vy keeps falling, got {} (was {})",
+            comp.velocity.y,
+            vy_before
+        );
+    }
+
+    #[test]
+    fn coyote_jump_does_not_consume_air_jump_budget() {
+        // A double-jump budget is available, but the coyote jump must route
+        // through the GROUNDED path and leave the air-jump budget untouched.
+        let mut desc = double_jump_descriptor();
+        desc.forgiveness = Some(ForgivenessParams {
+            coyote_ms: 100.0,
+            jump_buffer_ms: 0.0,
+        });
+        let world = flat_floor_and_wall_world();
+        let (mut comp, mut pos) = settle_then_leave_ground(&desc, &world);
+        assert_eq!(
+            comp.air_jumps_remaining, 1,
+            "test setup: one air jump should be available"
+        );
+
+        run_ticks(
+            &mut comp,
+            &world,
+            &mut pos,
+            WITHIN_100MS_TICKS,
+            &idle_input(),
+        );
+        let events = run_ticks(&mut comp, &world, &mut pos, 1, &jump_input());
+
+        assert!(events.jumped, "coyote jump should fire");
+        assert_eq!(
+            comp.air_jumps_remaining, 1,
+            "coyote jump must NOT spend an air-jump charge"
+        );
+    }
+
+    #[test]
+    fn coyote_does_not_rearm_after_a_jump() {
+        // Spend a grounded jump first; leaving the ground afterward must grant
+        // no fresh coyote ground-jump (jump_spent gates re-arming).
+        let desc = forgiveness_descriptor(100.0, 0.0);
+        let world = flat_floor_and_wall_world();
+        let (mut comp, mut pos) = settle_player(&desc);
+        run_ticks(&mut comp, &world, &mut pos, 10, &idle_input());
+        assert!(comp.is_grounded);
+
+        // Grounded jump.
+        let events = run_ticks(&mut comp, &world, &mut pos, 1, &jump_input());
+        assert!(events.jumped, "the initial grounded jump should fire");
+        assert!(comp.jump_spent, "a fired jump should set jump_spent");
+
+        // Now airborne with the jump spent. Press again within what would be the
+        // coyote window — no second grounded jump (and air.jumps == 0).
+        run_ticks(&mut comp, &world, &mut pos, 2, &idle_input());
+        let vy_before = comp.velocity.y;
+        let events = run_ticks(&mut comp, &world, &mut pos, 1, &jump_input());
+        assert!(
+            !events.jumped,
+            "coyote must not re-arm after a jump was already spent"
+        );
+        assert!(
+            comp.velocity.y < vy_before,
+            "no second launch: vy keeps falling, got {} (was {})",
+            comp.velocity.y,
+            vy_before
+        );
+    }
+
+    #[test]
+    fn buffered_jump_fires_exactly_once_on_landing() {
+        // Press jump (a single tap) while airborne, inside the buffer window,
+        // before landing — it must fire exactly once on the landing tick. Use a
+        // generous window so it comfortably survives the descent; the point
+        // under test is exactly-once, not the window length (expiry is covered
+        // separately).
+        let desc = forgiveness_descriptor(0.0, 2000.0);
+        let world = flat_floor_and_wall_world();
+        let (mut comp, mut pos) = settle_player(&desc);
+        run_ticks(&mut comp, &world, &mut pos, 10, &idle_input());
+
+        // Launch into the air with a normal grounded jump, then release jump.
+        let events = run_ticks(&mut comp, &world, &mut pos, 1, &jump_input());
+        assert!(events.jumped, "test setup: initial grounded jump");
+        assert!(comp.jump_spent);
+        // Rise a few ticks (jump released).
+        run_ticks(&mut comp, &world, &mut pos, 3, &idle_input());
+
+        // Single-tap a buffered jump while airborne, then fall to the floor. The
+        // landing clears jump_spent, and the buffered press fires once.
+        run_ticks(&mut comp, &world, &mut pos, 1, &jump_input());
+        assert!(
+            comp.jump_buffer_timer_ms > 0.0,
+            "test setup: the airborne tap should arm the buffer"
+        );
+
+        // Fall back down (jump released) and count buffered launches across the
+        // descent + landing window.
+        let mut launches = 0;
+        for _ in 0..60 {
+            let (next, ev) = tick(&mut comp, &idle_input(), &world, GRAVITY, DT, pos);
+            pos = next;
+            if ev.jumped {
+                launches += 1;
+            }
+        }
+        assert_eq!(
+            launches, 1,
+            "a buffered jump must fire exactly once on landing, fired {launches}"
+        );
+    }
+
+    #[test]
+    fn single_press_near_ledge_yields_exactly_one_jump() {
+        // Coyote + buffer both enabled. A single grounded press near a ledge must
+        // not combine into two launches (one grounded + one buffered on landing).
+        let desc = forgiveness_descriptor(100.0, 100.0);
+        let world = flat_floor_and_wall_world();
+        let (mut comp, mut pos) = settle_player(&desc);
+        run_ticks(&mut comp, &world, &mut pos, 10, &idle_input());
+
+        // One grounded press, then release. Count every launch through the full
+        // jump-and-land arc.
+        let mut launches = 0;
+        let first = run_ticks(&mut comp, &world, &mut pos, 1, &jump_input());
+        if first.jumped {
+            launches += 1;
+        }
+        for _ in 0..60 {
+            let (next, ev) = tick(&mut comp, &idle_input(), &world, GRAVITY, DT, pos);
+            pos = next;
+            if ev.jumped {
+                launches += 1;
+            }
+        }
+        assert_eq!(
+            launches, 1,
+            "a single press must yield exactly one jump, got {launches}"
+        );
+    }
+
+    #[test]
+    fn buffered_jump_expires_before_landing_drops_silently() {
+        // A buffered jump whose window expires before landing must fire no jump.
+        // Short buffer (one tick worth) tapped high above the floor.
+        let desc = forgiveness_descriptor(0.0, 10.0);
+        let world = flat_floor_and_wall_world();
+        let (mut comp, mut pos) = settle_player(&desc);
+        run_ticks(&mut comp, &world, &mut pos, 10, &idle_input());
+
+        // Big grounded jump to gain plenty of airtime, release.
+        run_ticks(&mut comp, &world, &mut pos, 1, &jump_input());
+        run_ticks(&mut comp, &world, &mut pos, 2, &idle_input());
+
+        // Single-tap a buffered jump; with only a 10 ms window it expires long
+        // before the player descends and lands.
+        run_ticks(&mut comp, &world, &mut pos, 1, &jump_input());
+
+        let mut launches = 0;
+        for _ in 0..60 {
+            let (next, ev) = tick(&mut comp, &idle_input(), &world, GRAVITY, DT, pos);
+            pos = next;
+            if ev.jumped {
+                launches += 1;
+            }
+        }
+        assert_eq!(
+            launches, 0,
+            "an expired buffer must drop silently, fired {launches}"
+        );
+        assert_eq!(
+            comp.jump_buffer_timer_ms, 0.0,
+            "the expired buffer timer should be cleared"
+        );
+    }
+
+    #[test]
+    fn forgiveness_windows_are_descriptor_tunable_and_zero_disables() {
+        // Zero coyote disables the coyote ground-jump independently of buffer.
+        let world = flat_floor_and_wall_world();
+
+        let desc_no_coyote = forgiveness_descriptor(0.0, 100.0);
+        let (mut comp, mut pos) = settle_then_leave_ground(&desc_no_coyote, &world);
+        run_ticks(&mut comp, &world, &mut pos, 1, &idle_input());
+        let vy_before = comp.velocity.y;
+        let events = run_ticks(&mut comp, &world, &mut pos, 1, &jump_input());
+        assert!(
+            !events.jumped,
+            "coyoteMs = 0 must disable the coyote ground-jump"
+        );
+        assert!(
+            comp.velocity.y < vy_before,
+            "no launch with coyote disabled"
+        );
+
+        // Nonzero coyote on the same seam DOES grant the jump — tunability.
+        let desc_coyote = forgiveness_descriptor(100.0, 0.0);
+        let (mut comp, mut pos) = settle_then_leave_ground(&desc_coyote, &world);
+        run_ticks(&mut comp, &world, &mut pos, 1, &idle_input());
+        let events = run_ticks(&mut comp, &world, &mut pos, 1, &jump_input());
+        assert!(events.jumped, "coyoteMs > 0 must grant the coyote jump");
+    }
+
+    #[test]
+    fn absent_forgiveness_applies_documented_engine_defaults() {
+        // An absent `forgiveness` sub-object materializes the documented engine
+        // defaults (~100 ms each), not zero. Verify by exercising the coyote
+        // grace, which only works when the default window is nonzero.
+        let mut desc = canonical_descriptor();
+        desc.forgiveness = None;
+        let comp = PlayerMovementComponent::from_descriptor(&desc);
+        assert_eq!(
+            comp.coyote_ms,
+            ForgivenessParams::DEFAULT_COYOTE_MS,
+            "absent forgiveness should apply the default coyote window"
+        );
+        assert_eq!(
+            comp.jump_buffer_ms,
+            ForgivenessParams::DEFAULT_JUMP_BUFFER_MS,
+            "absent forgiveness should apply the default buffer window"
+        );
+
+        let world = flat_floor_and_wall_world();
+        let (mut comp, mut pos) = settle_then_leave_ground(&desc, &world);
+        run_ticks(
+            &mut comp,
+            &world,
+            &mut pos,
+            WITHIN_100MS_TICKS,
+            &idle_input(),
+        );
+        let events = run_ticks(&mut comp, &world, &mut pos, 1, &jump_input());
+        assert!(
+            events.jumped,
+            "default (absent) forgiveness should permit a coyote jump in-window"
         );
     }
 }

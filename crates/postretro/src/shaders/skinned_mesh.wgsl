@@ -1,5 +1,5 @@
 // Skinned-mesh forward pass — GPU vertex skinning + flat-lit base-color output.
-// See: context/lib/rendering_pipeline.md §5
+// See: context/lib/rendering_pipeline.md §9
 //
 // Vertex skinning: each vertex carries 4 joint indices + 4 normalized weights.
 // Each joint's matrix is fetched from a SHARED bone-palette storage buffer at
@@ -9,9 +9,11 @@
 // camera view-projection.
 //
 // Vertex attribute decode (base_uv / normal_oct / tangent_packed) mirrors
-// `forward.wgsl` EXACTLY so the skinned stream and world stream share one
-// encoding (Task 2 encoded these with the same octahedral helper). `oct_decode`
-// and the tangent unpack below are copied verbatim from forward.wgsl.
+// `forward.wgsl` so the skinned stream and world stream share one encoding;
+// `gltf_loader.rs` encodes these with the same shared
+// `postretro_level_format::octahedral` helper. `oct_decode` is copied verbatim
+// from forward.wgsl. `tangent_packed` (location 3) is carried but unused this
+// slice (flat-lit); its decode lands with the lighting / normal-mapping work.
 //
 // Lighting: flat-lit this slice — the fragment samples the material base-color
 // texture (group 1) and outputs it with a trivial constant ambient term. The
@@ -82,7 +84,7 @@ struct VertexOutput {
 };
 
 // Octahedral unit-vector decode — copied verbatim from forward.wgsl so the
-// skinned stream decodes normals/tangents with identical math.
+// skinned stream decodes normals with identical math.
 fn oct_decode(enc: vec2<u32>) -> vec3<f32> {
     let ox = f32(enc.x) / 65535.0 * 2.0 - 1.0;
     let oy = f32(enc.y) / 65535.0 * 2.0 - 1.0;

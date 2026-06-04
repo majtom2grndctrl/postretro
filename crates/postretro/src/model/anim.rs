@@ -1,11 +1,11 @@
 // Animation sampling: clip + time + skeleton → world bone palette (CPU math).
-// See: context/lib/rendering_pipeline.md §5
+// See: context/lib/rendering_pipeline.md §9
 //
 // CPU-only (no wgpu): glam math here, palette UPLOAD lives in the render pass.
 // Single clip, LINEAR interpolation, no blend, no state machine — the slice's
 // scope. Reuse-friendly: `sample_clip` writes into a caller-owned `Vec` and
 // keeps a thread-local scratch for the world-pose sweep, so steady-state frames
-// allocate nothing (Task 6 measures per-frame pose-sampling cost).
+// allocate nothing; per-frame `sample_clip` cost is measured by `crate::render::PoseSampleStats`.
 
 use std::cell::RefCell;
 

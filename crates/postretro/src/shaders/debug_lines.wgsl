@@ -1,5 +1,5 @@
 // Immediate-mode debug line shader — depth-tested, no depth write.
-// See: context/lib/rendering_pipeline.md §11 Debug-Line Renderer
+// See: context/lib/rendering_pipeline.md §12 Debug-Line Renderer
 
 struct Uniforms {
     view_proj: mat4x4<f32>,

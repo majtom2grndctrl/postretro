@@ -200,7 +200,7 @@ Renders world geometry as a line-list overlay using depth from the shared depth 
 
 ### 7.7 Debug Lines (`dev-tools` only)
 
-Immediate-mode line segments uploaded from a CPU buffer each frame. Depth test on, depth write off — lines occlude against opaque geometry but do not occlude each other. Runs after the wireframe overlay. See §11 for the full debug-line renderer contract.
+Immediate-mode line segments uploaded from a CPU buffer each frame. Depth test on, depth write off — lines occlude against opaque geometry but do not occlude each other. Runs after the wireframe overlay. See §12 for the full debug-line renderer contract.
 
 ---
 
@@ -210,7 +210,51 @@ Shared WGSL helpers are appended to consumer shader source via string concatenat
 
 ---
 
-## 9. Boundary Rule
+## 9. Skinned Model Pipeline
+
+Animated meshes (characters, monsters) draw through a separate forward pass from world geometry. World geometry is baked, BVH-organized, and GPU-culled (§5); a skinned model is a runtime entity with a per-frame bone pose. The split keeps each path simple: the world pipeline never carries skinning attributes, the skinned pipeline never touches the indirect-draw machinery.
+
+### CPU model module (no wgpu)
+
+The model module is CPU-only by contract — it never imports wgpu. It produces plain Pod types the renderer uploads. Four concerns:
+
+- **glTF load.** Parses a glTF document into engine structs: one merged skinned mesh (all primitives in one interleaved stream, plus one material key per primitive), the skeleton, and animation clips. Materials are referenced by a **pre-staged offline material key** — the loader looks up a baseColor texture's `.prm` cache key (a blake3 of the source PNG, baked once offline by the level compiler) by image URI. The runtime never hashes a PNG at load (baked-over-computed; see `index.md` §2). An unrecognized material degrades to the placeholder key. Malformed or unsupported input returns an error; the loader never panics.
+- **Skinned vertex.** The interleaved vertex mirrors `WorldVertex`'s encoding so both streams share one decode: position (`f32×3`), base UV (`u16×2`), octahedral normal (`u16×2`), packed tangent (`u16×2`, bitangent sign in the high bit), then the skinning attributes — joint indices (`u8×4`) and weights (`u8×4`, normalized in the vertex shader). A rigid (unskinned) primitive uses the degenerate single-bone case: joint 0 at full weight, which resolves to the instance's world transform.
+- **Skeleton + clips.** Joints are stored **parent-before-child** (topological) so pose composition is a single forward sweep. Each joint carries its inverse-bind matrix and its rest-pose local TRS; the rest pose is the fallback for any animation channel a clip omits (a missing channel holds rest, never identity). An animation clip is per-joint translation/rotation/scale keyframe tracks, parallel to the joint array.
+- **Pose sampling.** Sampling a clip at a time produces the **bone palette**: one skinning matrix per joint (composed world transform × inverse-bind), in joint order. Interpolation is LINEAR — component lerp for translation/scale, shortest-path slerp for rotation. Time wraps into the clip duration so clips loop. The world sweep relies on the parent-before-child order. Sampling writes into a caller-owned buffer and keeps a reusable scratch, so steady-state frames allocate nothing.
+
+### GPU pass
+
+The skinned-mesh render pass owns all wgpu for skinned models. It uploads a mesh's vertex/index buffers, builds the pipeline (deriving the wgpu vertex layout from the skinned-vertex field widths — the model module stays wgpu-free), and records a **direct** `draw_indexed` for one instance. Skinning runs on the GPU in the vertex shader: each vertex blends its four joint matrices, fetched from the palette, and applies skin → model → view-projection.
+
+**Shared bone-palette storage buffer.** All skinned instances' palettes live in one shared storage buffer. Each instance occupies a contiguous run; a per-instance **base index** selects its run, and the vertex shader addresses a joint as `base_index + joint`. One buffer for the whole frame, one small per-draw scalar — not a buffer or bind group per instance.
+
+The mesh is not in the world depth pre-pass, so it depth-tests `Less` against the world depth *and* writes its own depth (self-occludes correctly), in a dedicated render pass that loads the existing depth attachment writably. Instance culling is the caller's job — a pure leaf-membership test (does the instance's BSP leaf fall in the frame's visible-cell set) mirroring the world path, decided CPU-side before the draw is recorded.
+
+### Bind-group allocation (differs from §10)
+
+The skinned pass owns its **own pipeline layout**, so its group mapping is independent of the world-geometry mapping in §10 — no runtime collision. Its groups:
+
+| Group | Contents |
+|-------|---------|
+| 0 | Camera uniforms (shared with the forward pass) |
+| 1 | Material (the shared material bind group; the flat-lit fragment samples only base color, but the full layout is reused so the bind group stays compatible) |
+| 2 | **Reserved (provisional)** — the dynamic-entity lighting bind group goes here when the broadening lighting work settles its interface. Left unallocated now; the pipeline layout passes through an empty slot so that work *adds* a group rather than renumbering. |
+| 3 | Per-instance data: the shared bone-palette storage buffer + a per-instance uniform (model matrix + palette base index) |
+
+This differs from §10's world mapping (where group 2 is dynamic lights / influence volumes / per-chunk light lists and group 3 is the octahedral irradiance atlas). The two layouts coexist because each pipeline declares its own; the shared groups (0 camera, 1 material) carry compatible bind groups.
+
+### Committed vs. provisional
+
+The **vertex attribute set** (the encoding above) and the **shared-palette + base-index scheme** are committed — consumers build against them. What is flat-lit or held open now is a deliberate, consumer-bound choice, not missing work:
+
+- **Lighting.** The fragment is flat-lit (base color × constant ambient). Group 2 is reserved for a settled dynamic-entity lighting interface (SH ambient + dynamic direct) that adds additively. The vertex stage already carries the skinned world-space normal for it.
+- **Instancing.** One direct draw per instance. The many-instance path is expected to carry per-instance data (base index included) through an indirect instance buffer; the palette scheme already supports many contiguous runs.
+- **Depth variant.** A depth-only skinned pipeline (for shadows) would reuse the same palette + base-index scheme with position/joints/weights only. Not built here; the skinning vertex stage is kept separable for it.
+
+---
+
+## 10. Boundary Rule
 
 All wgpu calls live in the renderer module. Map loader, game logic, audio, and input never import wgpu types. Data crosses the boundary as engine-defined types; the renderer translates to GPU operations. Per-subsystem contracts: vertex format §6, cells and BVH §5, lighting §4.
 
@@ -228,13 +272,15 @@ All wgpu calls live in the renderer module. Map loader, game logic, audio, and i
 
 Groups 0, 2, 3, and 5 are shared across the forward, billboard, and fog pipelines — the same bind-group objects are reused, not re-uploaded. When a new pipeline stage consumes a shared BGL, each accessed binding's `visibility` must include that stage (e.g. `FRAGMENT → FRAGMENT | COMPUTE`) — wgpu validates this at pipeline creation, not compile time. One budget slot remains; a pass needing a ninth group must consolidate, not raise the limit.
 
+The mapping above is the world-geometry path. The skinned model pass (§9) owns its own pipeline layout with a **distinct group mapping** — groups 0/1 carry the same camera/material bind groups, but groups 2 and 3 differ. No collision: each pipeline declares its own layout. See §9.
+
 The renderer also requires `max_texture_dimension_2d ≥ 8192` (the lightmap atlas cap; wgpu's default already grants 8192). An adapter pre-check fail-fasts with a named `[Renderer]` error if the limit is below 8192, and a per-atlas runtime guard degrades a loaded lightmap larger than the granted limit to the neutral placeholder rather than panicking.
 
-**Target hardware.** The renderer targets mid-2020 mid-range discrete GPUs — the envelope the lean wgpu pipeline is built toward. **Perf floor** (must hold an acceptable framerate): NVIDIA GTX 16-series (Turing, e.g. GTX 1660 Super). No RT cores at this tier, so SDF shadows sphere-trace in compute (§4) and hardware ray tracing stays a non-goal (§12). **Compatibility floor** (must run, not perf-tuned): AMD Radeon Pro 5500M-class (RDNA1, the 2020 16-inch MacBook Pro discrete GPU) on the Metal backend; a live-tunable quality panel (dev-tools) explores settings on this class. Perf-gated renderer decisions — SDF shadow budgets and the like (§4) — are measured against this envelope; measured per-pass numbers live with the `POSTRETRO_GPU_TIMING` diagnostics (§11), not here.
+**Target hardware.** The renderer targets mid-2020 mid-range discrete GPUs — the envelope the lean wgpu pipeline is built toward. **Perf floor** (must hold an acceptable framerate): NVIDIA GTX 16-series (Turing, e.g. GTX 1660 Super). No RT cores at this tier, so SDF shadows sphere-trace in compute (§4) and hardware ray tracing stays a non-goal (§13). **Compatibility floor** (must run, not perf-tuned): AMD Radeon Pro 5500M-class (RDNA1, the 2020 16-inch MacBook Pro discrete GPU) on the Metal backend; a live-tunable quality panel (dev-tools) explores settings on this class. Perf-gated renderer decisions — SDF shadow budgets and the like (§4) — are measured against this envelope; measured per-pass numbers live with the `POSTRETRO_GPU_TIMING` diagnostics (§12), not here.
 
 ---
 
-## 10. Camera
+## 11. Camera
 
 ### Coordinate System
 
@@ -259,7 +305,7 @@ Camera position and orientation produce a view matrix each frame, feeding:
 
 ---
 
-## 11. Diagnostics
+## 12. Diagnostics
 
 ### GPU Pass Timing
 
@@ -271,11 +317,11 @@ Set `POSTRETRO_GPU_TIMING=1` to enable per-pass GPU timing. Requires adapter sup
 
 ---
 
-## 12. Non-Goals
+## 13. Non-Goals
 
 - **Deferred rendering** — forward lighting with influence-volume early-out keeps per-fragment iteration proportional to nearby lights. Indoor portal-isolated geometry bounds the set further. Deferred adds complexity without benefit.
 - **PBR materials** — albedo + normal map is the full material vocabulary. Metallic/roughness is out of scope.
-- **Hardware ray tracing** — not in baseline wgpu, and absent at the §9 perf floor (Turing GTX 16-series has no RT cores). Shadow maps cover dynamic shadowing; SH volume covers indirect; SDF shadows sphere-trace in compute.
+- **Hardware ray tracing** — not in baseline wgpu, and absent at the §10 perf floor (Turing GTX 16-series has no RT cores). Shadow maps cover dynamic shadowing; SH volume covers indirect; SDF shadows sphere-trace in compute.
 - **Mesh shaders** — not baseline in wgpu. GPU-driven culling uses compute + `draw_indexed_indirect`.
 - **Runtime level compilation** — maps compiled offline by prl-build. Engine is a consumer only.
 - **Multiplayer / networking** — single-player engine. Out of project scope.

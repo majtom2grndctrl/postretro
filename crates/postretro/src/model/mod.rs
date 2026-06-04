@@ -1,15 +1,9 @@
 // CPU-only skinned-model module: mesh, skeleton, glTF load, animation sampling.
-// See: context/lib/rendering_pipeline.md §5
+// See: context/lib/rendering_pipeline.md §9
 //
 // This module is CPU-only by contract: it must not import or depend on `wgpu`.
 // The renderer (`crate::render`) owns GPU and builds the vertex layout / bind
 // groups from these plain Pod types. Keep it that way.
-//
-// Task 1 lands the CPU-only type surface; Tasks 2 (load), 3 (render pass),
-// 4 (sample), and 5 (collect) wire it up. Until then the loader / mesh / palette
-// types are constructed only by tests, so allow dead code module-wide rather
-// than scatter per-item attributes that the wiring tasks then have to remove.
-#![allow(dead_code)]
 
 pub(crate) mod anim;
 pub(crate) mod gltf_loader;
@@ -31,11 +25,11 @@ use bytemuck::{Pod, Zeroable};
 ///
 /// --- Provisional contracts (named, not frozen — the broadening tasks vote) ---
 ///
-/// * **Per-instance / per-draw alignment to M3.5 indirect.** When the
-///   many-instance task lands, the per-instance base index is expected to live
-///   in the same per-instance data path the M3.5 indirect-draw shape carries
-///   (instance data SSBO indexed by draw), not a push constant. The exact
-///   carrier is that task's call.
+/// * **Per-instance / per-draw alignment to indirect draw.** When the
+///   many-instance indirect-draw task lands, the per-instance base index is
+///   expected to live in the same per-instance data path that task's
+///   indirect-draw shape carries (instance data SSBO indexed by draw), not a
+///   push constant. The exact carrier is that task's call.
 /// * **Depth-only skinned variant.** The shadow task chooses the depth-only
 ///   skinned vertex/pipeline shape. It is expected to reuse this same palette
 ///   buffer + base-index scheme (position + joints/weights only); the color

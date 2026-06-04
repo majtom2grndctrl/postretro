@@ -1,5 +1,5 @@
 // Skinned mesh CPU types: the Pod skinned vertex and its index buffer.
-// See: context/lib/rendering_pipeline.md §5
+// See: context/lib/rendering_pipeline.md §9
 
 use bytemuck::{Pod, Zeroable};
 
@@ -39,6 +39,8 @@ impl SkinnedVertex {
     /// Used when a mesh primitive carries no skinning attributes (a static mesh
     /// hung under the skinned path) — joint 0 then resolves to the instance's
     /// world transform.
+    // Kept for the loader-broadening task that admits non-skinned primitives.
+    #[allow(dead_code)]
     pub fn rigid(
         position: [f32; 3],
         base_uv: [u16; 2],
@@ -87,8 +89,8 @@ mod tests {
     #[test]
     fn skinned_vertex_layout_carries_a_tangent() {
         // Guards the committed layout: the skinned vertex must carry a packed
-        // tangent so normal mapping survives skinning. The glTF loader (Task 2)
-        // relies on a matching TANGENT source attribute.
+        // tangent so normal mapping survives skinning. The glTF loader (`gltf_loader`)
+        // requires a matching TANGENT source attribute.
         let v = SkinnedVertex::rigid([0.0; 3], [0, 0], [0, 0], [0xABCD, 0x1234]);
         assert_eq!(v.tangent_packed, [0xABCD, 0x1234]);
     }

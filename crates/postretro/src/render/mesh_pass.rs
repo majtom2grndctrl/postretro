@@ -1,5 +1,5 @@
 // Skinned-mesh render pass: forward draw of skinned models with a shared bone palette.
-// See: context/lib/rendering_pipeline.md §5
+// See: context/lib/rendering_pipeline.md §9
 //
 // Mirrors the shape of `crate::render::smoke::SmokePass` (`new` builds the
 // pipeline + layouts; `record_draw` sets bind groups + buffers and issues the
@@ -16,17 +16,18 @@
 //               (binding 0) + per-instance uniform carrying the model matrix and
 //               the palette base index (binding 1)
 //
-// Coordinate basis (Task 3 de-risk): the engine world is Y-up, right-handed,
-// metric (camera builds via `look_at_rh` / `perspective_rh` with up = +Y; the
-// level compiler works in meters). glTF is ALSO Y-up, right-handed, meters, and
-// Task 2 stored positions verbatim. So the glTF→engine basis conversion is the
-// IDENTITY — no axis swap, no mirror, no scale. Winding matches too: glTF front
-// faces are CCW and the engine forward pipeline is `front_face: Ccw` +
-// `cull_mode: Back`, so we keep that here and front faces render. The per-
-// instance model matrix is therefore the entity transform applied directly. (A
-// model authored facing a particular axis may need a yaw baked into the entity
-// transform — that is gameplay-facing, not a basis bug; flagged for the Task 6
-// visual check.)
+// Coordinate basis: the engine world is Y-up, right-handed, metric (camera
+// builds via `look_at_rh` / `perspective_rh` with up = +Y; the level compiler
+// works in meters). glTF is ALSO Y-up, right-handed, meters, and positions are
+// stored verbatim. So the glTF→engine basis conversion is the IDENTITY — no
+// axis swap, no mirror, no scale. Winding matches too: glTF front faces are CCW
+// and the engine forward pipeline is `front_face: Ccw` + `cull_mode: Back`, so
+// we keep that here and front faces render. The per-instance model matrix is
+// therefore the entity transform applied directly. (A model authored facing a
+// particular axis may need a yaw baked into the entity transform — that is
+// gameplay-facing, not a basis bug; see
+// `context/plans/in-progress/M10--model-pipeline-slice/findings.md`
+// (coordinate-system read).)
 
 use wgpu::util::DeviceExt;
 
@@ -285,9 +286,9 @@ impl MeshPass {
         self.model.is_some()
     }
 
-    /// Write a run of bone-palette entries starting at `base_index`. Task 4
-    /// (animation sampling) supplies sampled poses; this slice defaults to the
-    /// identity (bind pose) — see `upload_identity_palette`.
+    /// Write a run of bone-palette entries starting at `base_index`. Called each
+    /// frame with the sampled pose from `model::anim::sample_clip` to upload the
+    /// current-frame palette before the draw is recorded.
     pub fn update_palette(
         &self,
         queue: &wgpu::Queue,
@@ -301,9 +302,9 @@ impl MeshPass {
         queue.write_buffer(&self.palette_buffer, offset, bytemuck::cast_slice(entries));
     }
 
-    /// Default the whole palette run to identity matrices (bind pose). Drawing
-    /// with an identity palette renders the mesh in bind pose — the correct
-    /// placeholder until Task 4 supplies sampled poses.
+    /// Default the whole palette run to identity matrices (bind pose). Initialize
+    /// the palette to identity (bind pose) at startup, before the first sampled
+    /// frame.
     pub fn upload_identity_palette(&self, queue: &wgpu::Queue) {
         let identity = BonePaletteEntry {
             matrix: glam::Mat4::IDENTITY.to_cols_array_2d(),
@@ -321,9 +322,10 @@ impl MeshPass {
     /// `base_index` is the instance's offset into the shared palette buffer
     /// (0 this slice). `model` is the final per-instance world matrix.
     ///
-    /// Cull is the caller's job — see [`mesh_visible`]. The caller (or Task 5's
-    /// collector, which holds the `LevelWorld`) tests visibility before calling
-    /// this; an uploaded-but-culled instance simply isn't recorded.
+    /// Cull is the caller's job — see [`mesh_visible`]. The caller
+    /// (`scripting::systems::mesh_render::MeshRenderCollector`, which holds the
+    /// `LevelWorld`) tests visibility before calling this; an uploaded-but-culled
+    /// instance simply isn't recorded.
     pub fn record_draw(
         &self,
         device: &wgpu::Device,
@@ -473,14 +475,39 @@ mod tests {
 
     #[test]
     fn instance_uniform_packs_model_and_base_index() {
+        // Guard the WGSL layout contract: InstanceUniforms { model: mat4x4<f32>,
+        // base_and_pad: vec4<u32> } — model at offset 0 (64 B), base_index at
+        // offset 64 (first u32 of the trailing vec4), total 80 B. If either side
+        // (Rust packer or WGSL struct) is edited silently, this assertion fires.
+        assert_eq!(
+            INSTANCE_UNIFORM_SIZE, 80,
+            "INSTANCE_UNIFORM_SIZE must match WGSL InstanceUniforms total (80 B)",
+        );
+
         let m = glam::Mat4::from_translation(Vec3::new(4.0, 5.0, 6.0));
         let bytes = build_instance_uniform(m, 7);
+        assert_eq!(bytes.len(), 80);
+
+        // Model matrix occupies bytes 0..64 (column-major f32x16).
+        // Verify a known column: col 0 = (1,0,0,0) for a pure-translation matrix.
+        let col0_x = f32::from_ne_bytes(bytes[0..4].try_into().unwrap());
+        assert_eq!(col0_x, 1.0, "model matrix col 0 x must be 1.0 at offset 0");
+
         // Translation lands in the 4th column (offsets 48,52,56 for x,y,z).
         let tx = f32::from_ne_bytes(bytes[48..52].try_into().unwrap());
         let ty = f32::from_ne_bytes(bytes[52..56].try_into().unwrap());
         let tz = f32::from_ne_bytes(bytes[56..60].try_into().unwrap());
         assert_eq!([tx, ty, tz], [4.0, 5.0, 6.0]);
+
+        // base_index at byte 64 (first u32 of base_and_pad vec4).
         let base = u32::from_ne_bytes(bytes[64..68].try_into().unwrap());
-        assert_eq!(base, 7);
+        assert_eq!(base, 7, "base_index must be packed at byte offset 64");
+
+        // Padding bytes 68..80 must be zero.
+        assert_eq!(
+            &bytes[68..80],
+            &[0u8; 12],
+            "padding bytes 68..80 must be zero"
+        );
     }
 }

@@ -1,5 +1,5 @@
 // Skeleton + animation-clip CPU types for skinned models.
-// See: context/lib/rendering_pipeline.md §5
+// See: context/lib/rendering_pipeline.md §9
 
 use glam::{Quat, Vec3};
 
@@ -33,8 +33,8 @@ impl Default for RestLocal {
 /// transforms a vertex from model space into this joint's local bind space —
 /// the standard glTF inverse-bind matrix.
 ///
-/// Populated by the glTF loader (Task 2). The animation sampler (Task 4) walks
-/// these parent links to compose world-space joint matrices.
+/// Populated by `crate::model::gltf_loader`. The animation sampler in
+/// `crate::model::anim` walks these parent links to compose world-space joint matrices.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Joint {
     /// Parent joint index, or `None` for the root. An index keeps the hierarchy
@@ -51,7 +51,7 @@ pub struct Joint {
 
 /// A skeleton: the ordered joint hierarchy a skinned mesh binds against.
 /// Joints are stored parent-before-child so animation sampling is a single
-/// forward sweep. Filled by Task 2 (load).
+/// forward sweep. Populated by `gltf_loader::load_model`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Skeleton {
     pub joints: Vec<Joint>,
@@ -64,8 +64,8 @@ pub struct Skeleton {
 /// joint (the sampler falls back to the joint's bind-pose component).
 ///
 /// glTF mixamo clips author LINEAR interpolation for translation and rotation
-/// and omit scale; the loader stores the raw samples and Task 4 interpolates
-/// (lerp for translation/scale, nlerp/slerp for rotation). Interpolation mode is
+/// and omit scale; the loader stores the raw samples and `crate::model::anim::sample_clip`
+/// interpolates (lerp for translation/scale, nlerp/slerp for rotation). Interpolation mode is
 /// not stored — the slice samples LINEAR; a STEP/CUBICSPLINE-carrying clip is the
 /// broadening task's concern and would add a mode tag here.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -76,6 +76,8 @@ pub struct Track<T> {
 
 impl<T> Track<T> {
     /// True when no samples were authored for this channel.
+    // Kept for the sampler-broadening task that handles unanimated-channel fallback.
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.times.is_empty()
     }
@@ -98,8 +100,8 @@ pub struct JointTracks {
 /// A single named animation clip.
 ///
 /// Keyframe storage is per-joint TRS tracks in [`AnimationClip::joints`], one
-/// entry per skeleton joint and in the same order as [`Skeleton::joints`]. Task 4
-/// samples a joint's tracks at a time `t` to recover its local TRS, composes the
+/// entry per skeleton joint and in the same order as [`Skeleton::joints`].
+/// `model::anim::sample_clip` samples a joint's tracks at a time `t` to recover its local TRS, composes the
 /// hierarchy (parent-before-child), and applies each joint's inverse-bind matrix.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AnimationClip {

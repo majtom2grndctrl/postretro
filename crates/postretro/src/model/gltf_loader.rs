@@ -1,5 +1,5 @@
 // glTF → engine skinned-model loader (CPU-only; no wgpu).
-// See: context/lib/rendering_pipeline.md §5 · context/lib/build_pipeline.md
+// See: context/lib/rendering_pipeline.md §9 · context/lib/build_pipeline.md
 //
 // Narrow by design (M10 model-pipeline slice): one model, external-PNG textures,
 // a single animation clip. The loop is general enough to survive the real
@@ -452,8 +452,9 @@ fn remap_joint_quad(quad: [u16; 4], skin_joint_to_topo: &HashMap<usize, usize>) 
 }
 
 /// Normalize four `u8` weights so they sum to 255 (a fully-weighted vertex). The
-/// largest weight absorbs the rounding remainder so the sum is exact. An all-zero
-/// quad (unweighted) becomes full weight on slot 0.
+/// largest weight absorbs the rounding remainder so the sum is exact for any
+/// non-degenerate input (non-zero sum). An all-zero quad (unweighted) becomes
+/// full weight on slot 0.
 fn normalize_weights(weights: [u8; 4]) -> [u8; 4] {
     let sum: u32 = weights.iter().map(|&w| w as u32).sum();
     if sum == 0 {
@@ -466,9 +467,15 @@ fn normalize_weights(weights: [u8; 4]) -> [u8; 4] {
         running += out[i] as u32;
     }
     // Push the rounding remainder onto the heaviest slot so the sum is 255.
+    // The clamp is a defensive fallback; for valid inputs the correction fits in [0, 255].
     let heaviest = (0..4).max_by_key(|&i| weights[i]).unwrap();
     let corrected = out[heaviest] as i32 + (255 - running as i32);
     out[heaviest] = corrected.clamp(0, 255) as u8;
+    debug_assert_eq!(
+        out.iter().map(|&w| w as u32).sum::<u32>(),
+        255,
+        "normalize_weights: post-condition violated for input {weights:?}"
+    );
     out
 }
 

@@ -860,9 +860,9 @@ pub struct Renderer {
     mesh_animation: Option<MeshAnimationState>,
 
     /// Reusable bone-palette scratch for per-frame sampling. Cleared + refilled
-    /// each frame by `sample_clip`, so steady-state frames allocate nothing
-    /// (Task 6 measures this). Lives on the renderer (not in the GPU pass) — it
-    /// is CPU-side pose data the pass merely uploads.
+    /// each frame by `sample_clip`, so steady-state frames allocate nothing.
+    /// Lives on the renderer (not in the GPU pass) — it is CPU-side pose data the
+    /// pass merely uploads.
     bone_palette_scratch: Vec<crate::model::BonePaletteEntry>,
 
     /// Tripwire 2 (measure-and-report, not gated): rolling stats for the
@@ -2059,8 +2059,9 @@ impl Renderer {
         );
 
         // Skinned-mesh pass: reuses the camera (group 0) + material (group 1)
-        // layouts. Identity palette is uploaded so the (yet-empty) draw list
-        // would render in bind pose; Task 4 supplies sampled poses.
+        // layouts. `upload_identity_palette` pre-fills the palette at startup so
+        // the draw list would render in bind pose. Sampled poses overwrite the
+        // palette each frame via `update_palette` before the draw is recorded.
         let mesh_pass = mesh_pass::MeshPass::new(
             &device,
             surface_format,
@@ -3842,19 +3843,34 @@ impl Renderer {
         // after this method returns — so the read is safe). The renderer GPU
         // pass intentionally needs no world reference.
         if self.mesh_pass.has_model() && !self.mesh_draws.is_empty() {
+            // One mesh entity this slice, drawn against the single shared
+            // bone-palette run at base index 0. A second entry would silently
+            // render as a duplicate of the first, sharing this one pose — the
+            // broadening many-instance work gives each instance its own palette
+            // base. The assert documents that single-run invariant.
+            debug_assert!(
+                self.mesh_draws.len() <= 1,
+                "skinned-mesh slice draws ONE instance against the single shared \
+                 bone-palette run at base index 0; many-instance support must \
+                 generalize the per-instance palette base before lifting this"
+            );
             // Sample the clip into the shared palette for this frame's one
             // instance (base 0) BEFORE recording the draw. `now_seconds` is the
-            // animation time — render-rate sampling is fine for the slice (no
-            // fixed timestep needed for visuals); `sample_clip` wraps it into the
-            // clip's [0, duration) so it loops. Reuses `bone_palette_scratch`, so
-            // a steady-state frame allocates nothing (Task 6 measures this).
+            // render clock used as animation time — render-rate sampling is fine
+            // for the slice (no fixed timestep needed for visuals). It advances
+            // on paused/menu frames that still render, and f32 loses precision
+            // over very long sessions; `sample_clip`'s rem_euclid wrap into the
+            // clip's [0, duration) bounds the visible effect (and loops). The
+            // broadening work revisits the time source. Reuses
+            // `bone_palette_scratch`, so a steady-state frame allocates nothing.
             // Single-model this slice; the broadening many-instance task samples
             // each instance's clip into its own palette run.
             if let Some(anim) = &self.mesh_animation {
                 // Tripwire 2: time the CPU pose sample (one skeleton → palette).
                 // CPU only — the GPU palette upload + vertex skinning at N
                 // instances is the many-instance task's measurement, NOT here.
-                // Accumulated and logged periodically (never per frame, §6).
+                // Accumulated and logged periodically, never per frame
+                // (logging rules: context/lib/development_guide.md §6.1).
                 let sample_start = Instant::now();
                 crate::model::anim::sample_clip(
                     &anim.clip,
@@ -3890,9 +3906,9 @@ impl Renderer {
                 ..Default::default()
             });
             mesh_enc.set_bind_group(0, &self.uniform_bind_group, &[]);
-            // Slice draws one instance at palette base 0 (identity/bind-pose
-            // palette this slice). Task 4 supplies sampled poses via
-            // `mesh_pass.update_palette`; the broadening task scales base index.
+            // Slice draws one instance at palette base 0. Sampled poses were
+            // written above via `mesh_pass.update_palette`; the broadening
+            // many-instance task scales the base index per instance.
             for model in &self.mesh_draws {
                 self.mesh_pass
                     .record_draw(&self.device, &mut mesh_enc, *model, 0);

@@ -326,6 +326,36 @@ dominant visual term — stays exact and instant regardless. The cold `--no-cach
 ship source of truth. Recommend proceeding with Task 6 as specced, with cutoff dilation 16 m, group size
 4³, and the floored tolerance gate.
 
+### Gate 3 follow-up — the metric was wrong, not the cutoff (corrects the committed value above)
+
+When Task 8's `warm_sh_within_tolerance_on_fixtures` first ran the floored metric against **real** fixtures
+(not the spike's tiny synthetic corridor), the committed `max` form failed: campaign-test reported
+`max = 0.356` vs the 0.15 tolerance. Diagnosing the full distribution (1,234,998 floored samples) showed
+this is a **`max`-metric artifact, not a quality problem**:
+
+| stat | campaign-test | occlusion-test | small fixtures |
+|---|---|---|---|
+| mean | 0.0019 | 0.0007 | 0.000 |
+| p99 | 0.043 | 0.013 | 0.000 |
+| p99.9 | **0.090** | 0.029 | 0.000 |
+| p99.99 | 0.133 | 0.045 | — |
+| max | **0.356** | 0.065 | 0.000 |
+| samples > 0.15 | 80 (0.0065%) | 0 | 0 |
+| samples > 0.35 | 1 | 0 | 0 |
+
+The channel is overwhelmingly faithful (mean 0.19%, p99.9 = 9%) and strictly dimmer-or-equal; the 0.356
+was a **single floor-boundary probe** out of 1.23M (one barely above the 0.02 floor that lost most of its
+light to the cutoff, so a tiny absolute miss reads as a large relative one). The spike's `max` measured
+clean only because it ran over a handful of probes — `max` over millions catches the rare outlier.
+
+**Resolution (owner-approved "diagnose + fix metric"):** the gate metric is changed from `max` to the
+**99.9th percentile** of the floored relative error, and the constant renamed
+`WARM_SH_MAX_REL_IRRADIANCE_ERROR` → **`WARM_SH_P999_REL_IRRADIANCE_ERROR`**, value kept at **0.15**
+(~1.7× headroom over the observed p99.9 of 0.090). The **cutoff (16 m), group size (4³), and all bake
+behavior are unchanged** — only how the gate *judges* the (already-correct, benign-underestimate) warm
+output. p99.9 bounds the body of the distribution and is robust to the floor-boundary outlier the `max`
+form over-weighted. Gate now passes on every fixture (campaign 0.090, occlusion 0.029, small ≤ 0.000).
+
 ## Key files
 
 - Substrate: `crates/level-compiler/src/cache.rs`, `main.rs` (cache wiring ~`:254-446`)

@@ -1,6 +1,7 @@
 // Postretro engine entry point, boot state machine, and level-load orchestration.
 // See: context/lib/boot_sequence.md §8 · context/lib/index.md
 
+mod audio;
 mod camera;
 mod collision;
 mod compute_cull;
@@ -162,6 +163,7 @@ fn main() -> Result<()> {
 
     let mut app = App {
         renderer: None,
+        audio: None,
         window_state: None,
         level: None,
         map_path,
@@ -226,6 +228,12 @@ fn window_attributes() -> WindowAttributes {
 
 struct App {
     renderer: Option<Renderer>,
+
+    /// Audio subsystem. `None` until `resumed()` builds it after the renderer,
+    /// and stays `None` if kira init fails — the game then runs silent.
+    /// See: context/lib/audio.md
+    audio: Option<audio::Audio>,
+
     window_state: Option<WindowState>,
     level: Option<prl::LevelWorld>,
 
@@ -445,6 +453,19 @@ impl ApplicationHandler for App {
 
         self.renderer = Some(renderer);
         self.window_state = Some(WindowState { window });
+
+        // Fault-tolerant audio init: on failure log and run silent, never
+        // crash. See: context/lib/audio.md §1.
+        match audio::Audio::new() {
+            Ok(audio) => {
+                self.audio = Some(audio);
+                log::info!("[Audio] Initialized");
+            }
+            Err(err) => {
+                log::error!("[Audio] Init failed, running silent: {err}");
+                self.audio = None;
+            }
+        }
 
         #[cfg(feature = "dev-tools")]
         {
@@ -845,12 +866,47 @@ impl ApplicationHandler for App {
                     let _ = fire_named_event(event_name, &self.script_ctx.data_registry.borrow());
                 }
 
+                // Audio step — third in frame order (Input → Game logic →
+                // Audio → Render → Present, development_guide.md §4.3). Runs after
+                // game logic settles every entity and before render. Convert the
+                // glam-typed camera to the primitive `ListenerState` here at the
+                // call site (the boundary carries no glam); `forward` uses the
+                // aim ray's direction so it includes pitch, unlike yaw-only
+                // `forward()`, and `up` is world up per the `ListenerState`
+                // contract. Guarded for the silent (init-failed) case.
+                if let Some(audio) = &mut self.audio {
+                    let listener = audio::ListenerState {
+                        position: self.camera.position.to_array(),
+                        forward: self.camera.aim_ray().1.to_array(),
+                        up: [0.0, 1.0, 0.0],
+                    };
+                    audio.update(listener, frame_dt);
+                }
+
                 // Level-relative monotonic clock consumed by light_bridge.update,
                 // the emitter sim, and the map-light collector.
                 // Widen to f64 at the accumulation boundary so summing across
                 // long sessions (30+ min at 144 Hz) doesn't quantize the
                 // millisecond-precision clock the fog volume bridge consumes.
-                self.script_time += frame_dt as f64;
+                //
+                // Dev-tools freeze must stop BOTH clocks together. The GPU `time`
+                // uniform is fed `script_time`, and the CPU light bridge computes
+                // `effective_brightness` (which gates shadow-pool eligibility)
+                // from the same clock. Freezing only the GPU uniform would let
+                // the CPU clock advance, re-creating the CPU/GPU animation-phase
+                // desync this branch fixed. Read the freeze flag from the
+                // renderer — it owns the toggle (driven by the debug panel) — and
+                // skip the increment while frozen so both sides hold one phase.
+                #[cfg(feature = "dev-tools")]
+                let frozen = self
+                    .renderer
+                    .as_ref()
+                    .is_some_and(|renderer| renderer.freeze_time());
+                #[cfg(not(feature = "dev-tools"))]
+                let frozen = false;
+                if !frozen {
+                    self.script_time += frame_dt as f64;
+                }
 
                 // Position interpolated from tick-state slots; yaw/pitch from
                 // `self.camera` directly so zero-tick frames still see this
@@ -996,7 +1052,11 @@ impl ApplicationHandler for App {
                     let point_bytes = self.fog_volume_bridge.update_points(&all_lights);
                     renderer.upload_fog_points(point_bytes);
 
-                    renderer.update_per_frame_uniforms(view_proj, interp.position);
+                    renderer.update_per_frame_uniforms(
+                        view_proj,
+                        interp.position,
+                        self.script_time as f32,
+                    );
 
                     if renderer.is_ready() {
                         // Particle render — packs `SpriteInstance` bytes per
@@ -1225,6 +1285,12 @@ impl ApplicationHandler for App {
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // Release the level's sound registry at teardown, mirroring the texture
+        // release on level unload (`resource_management.md` §7.2). This engine
+        // has a single level for its lifetime, so unload coincides with exit.
+        if let Some(audio) = &mut self.audio {
+            audio.release_level_sounds();
+        }
         self.renderer = None;
         self.window_state = None;
         log::info!("[Engine] Exited");
@@ -1585,6 +1651,15 @@ impl App {
             self.collision_world.populate_from_level(world);
         }
         self.level_timings.record("bridges_populated");
+
+        // Sound registry follows level lifetime, parallel to textures: load the
+        // level's sounds from `_sounds/` here, release them at unload. Fault-
+        // tolerant — a missing directory or undecodable file warns and is
+        // skipped. Silent if audio init failed (`audio` is `None`).
+        if let Some(audio) = &mut self.audio {
+            audio.load_level_sounds(&self.content_root);
+        }
+        self.level_timings.record("audio_load");
 
         // Sweep map entities through classname dispatch. The returned set of
         // handled classnames is stashed and consumed by the data-archetype
@@ -1962,6 +2037,20 @@ impl App {
                     // when the user is staring at it to see what changed.
                     self.frame_rate_meter.clear();
                     log::info!("[Renderer] vsync {}", if enabled { "on" } else { "off" },);
+                }
+            }
+            // Real-device audio smoke check: play the test tone on the SFX bus
+            // so an operator can confirm output reaches the OS. Guarded for the
+            // silent (init-failed) case; needs a level loaded for the sound
+            // registry to hold the fixture, otherwise `play` warns gracefully.
+            DiagnosticAction::PlayTestSfx => {
+                if let Some(audio) = &mut self.audio {
+                    audio.play(audio::SoundRequest {
+                        bus: "sfx".to_string(),
+                        sound: "sfx/test_tone".to_string(),
+                        looping: false,
+                    });
+                    log::info!("[Audio] smoke check: played sfx/test_tone on SFX bus");
                 }
             }
             // Toggle just flips visibility and shifts InputFocus to gate

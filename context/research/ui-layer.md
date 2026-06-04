@@ -13,6 +13,31 @@
 
 ---
 
+## Amendment (2026-06) — modern text + 720p reference
+
+Two decisions made during Milestone 13 planning supersede parts of this
+exploration. They change the rendering substrate, not the descriptor / state /
+reaction model — §1–6, §9–18 stand as written.
+
+- **Modern font rendering is the default.** `glyphon`-shaped, anti-aliased
+  glyphs at device resolution, from the first slice onward. This **supersedes**
+  the baked-bitmap-font default in §8 (the bitmap font is no longer the default
+  text path) and the "subpixel-positioned anti-aliased text" non-goal in §20.
+  The retro feel is carried by art (9-slice panels, flat fills) and integer
+  device-pixel snapping of quads/panels — not by low-resolution glyphs.
+- **720p 16:9 is the supported floor; layout uses a logical reference space.**
+  UI lays out in a **1280×720 logical reference** scaled by a factor to the
+  native backbuffer and **renders at native resolution**. This **supersedes**
+  the fixed low design-resolution (e.g. 320×240) + nearest-neighbor upscale in
+  §7 — there is no offscreen low-res UI target. Pixel snapping in §7 still
+  applies to quads/panels at device pixels; glyphs render AA at native res.
+
+Everything downstream (pixel snapping of panels, anchors, safe area, theming,
+state slots, reactions) is unchanged. See roadmap Milestone 13 "Rendering
+model" and the Goal A spec.
+
+---
+
 ## 1. Problem
 
 PostRetro needs UI for built-in concerns (HUD, damage feedback, level load,

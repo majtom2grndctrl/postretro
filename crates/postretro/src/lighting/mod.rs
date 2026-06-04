@@ -18,11 +18,19 @@ use crate::prl::{FalloffModel, LightType, MapLight};
 ///   0: position_and_type        (xyz = world position, w = bitcast<f32>(light_type))
 ///   1: color_and_falloff_model  (xyz = linear RGB × intensity, w = bitcast<f32>(falloff_model))
 ///   2: direction_and_range      (xyz = aim direction, w = falloff_range meters)
-///   3: cone_angles_and_pad      (x = inner angle rad, y = outer angle rad, zw = pad)
+///   3: cone_angles_and_pad      (x = inner angle rad, y = outer angle rad, z = shadow-slot index (bitcast u32), w = pad)
 ///
 /// Each vec4<f32> is 16 bytes; the struct has only vec4 members so its
 /// alignment is 16 and the array stride is an exact multiple of 16.
 pub const GPU_LIGHT_SIZE: usize = 64;
+
+/// Byte offset of the shadow-slot index within a packed `GpuLight`
+/// (`cone_angles_and_pad.z`). Exposed so the renderer can patch just this
+/// field into an already-packed light buffer without re-packing the whole
+/// record — the animated light bridge owns the base bytes, the shadow pool
+/// owns this slot field, and a full re-pack from either side would clobber
+/// the other.
+pub const SHADOW_SLOT_BYTE_OFFSET: usize = 56;
 
 /// Encode the `LightType` discriminant the way the shader expects it:
 /// a `u32` bit-cast into the `w` slot of the `position_and_type` vec4.
@@ -90,7 +98,7 @@ pub fn pack_light_with_slot(light: &MapLight, slot_index: u32) -> [u8; GPU_LIGHT
     write_f32(&mut bytes, 52, light.cone_angle_outer);
     // bytes 56..60 hold the shadow slot index (0..8 or 0xFFFFFFFF for no slot).
     // Shader reads as f32 then bitcasts back to u32; round-trip preserves bit patterns.
-    write_u32_as_f32(&mut bytes, 56, slot_index);
+    write_u32_as_f32(&mut bytes, SHADOW_SLOT_BYTE_OFFSET, slot_index);
     // bytes 60..64 stay zero — reserved pad.
 
     bytes
@@ -135,17 +143,46 @@ pub fn pack_lights_with_slots_into(bytes: &mut Vec<u8>, lights: &[MapLight], slo
     }
 }
 
+/// Overwrite only the shadow-slot field of each already-packed light in
+/// `buffer` with the corresponding entry in `slots`, leaving every other byte
+/// (the animated base data the light bridge owns) untouched. Returns `true` if
+/// any byte changed, so the caller can skip a redundant GPU upload.
+///
+/// This is the seam that lets the animated-light bridge and the shadow pool
+/// share one GPU light buffer: the bridge packs base records (with sentinel
+/// slots) and the pool patches the live slot here. Re-packing the whole record
+/// from either side would clobber the other. `buffer` must already hold
+/// `slots.len()` packed `GpuLight` records.
+pub fn patch_shadow_slots(buffer: &mut [u8], slots: &[u32]) -> bool {
+    debug_assert!(buffer.len() >= slots.len() * GPU_LIGHT_SIZE);
+    let mut changed = false;
+    for (i, &slot) in slots.iter().enumerate() {
+        let off = i * GPU_LIGHT_SIZE + SHADOW_SLOT_BYTE_OFFSET;
+        // Guard the slice in release builds too; a mismatch between buffer size
+        // and slots length should be caught by the debug_assert above, but skip
+        // rather than panic or corrupt a neighbour record if it slips through.
+        let Some(field) = buffer.get_mut(off..off + 4) else {
+            continue;
+        };
+        let new = slot.to_ne_bytes();
+        if *field != new {
+            field.copy_from_slice(&new);
+            changed = true;
+        }
+    }
+    changed
+}
+
 #[inline]
 fn write_f32(dst: &mut [u8], offset: usize, value: f32) {
     dst[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
 }
 
 /// Write a `u32` into the slot, reusing the same 4 bytes a `f32` would
-/// occupy. The shader reconstructs the integer via `bitcast<u32>(...)` on
-/// the vec4's `w` component. Using `to_ne_bytes` matches `write_f32` and
-/// survives the cross-field copy because both use native byte order and
-/// wgpu rejects mismatched layouts at pipeline creation time if anything
-/// gets skewed.
+/// occupy. The round-trip is safe because the shader reads the field with
+/// `bitcast<u32>(...)`, recovering the original integer bit-for-bit.
+/// Using `to_ne_bytes` matches `write_f32` so both keep the same native
+/// byte order in the packed record.
 #[inline]
 fn write_u32_as_f32(dst: &mut [u8], offset: usize, value: u32) {
     dst[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
@@ -348,6 +385,56 @@ mod tests {
         );
         // Second light at slot 2.
         assert_eq!(read_u32(&bytes, GPU_LIGHT_SIZE + 56), 2);
+    }
+
+    /// Regression: the animated light bridge packs base records with sentinel
+    /// shadow slots; the shadow pool must patch the live slot onto that buffer
+    /// without disturbing the base data, or the bridge's sentinel persists and
+    /// the forward shader never samples the shadow map.
+    #[test]
+    fn patch_shadow_slots_sets_slot_and_preserves_base_bytes() {
+        let lights = vec![sample_point(), sample_spot()];
+        // Start as the bridge would: every slot the sentinel.
+        let sentinel = crate::lighting::spot_shadow::NO_SHADOW_SLOT;
+        let mut bytes = Vec::new();
+        pack_lights_with_slots_into(&mut bytes, &lights, &[sentinel, sentinel]);
+        let base_before = bytes.clone();
+
+        // Pool assigns the second light to slot 1.
+        let changed = patch_shadow_slots(&mut bytes, &[sentinel, 1u32]);
+        assert!(
+            changed,
+            "patching a sentinel to a real slot must report change"
+        );
+        assert_eq!(
+            read_u32(&bytes, 56),
+            sentinel,
+            "first light stays unshadowed"
+        );
+        assert_eq!(
+            read_u32(&bytes, GPU_LIGHT_SIZE + 56),
+            1,
+            "second light gets slot 1"
+        );
+
+        // Every byte except the second light's slot field is untouched.
+        for (i, (a, b)) in base_before.iter().zip(bytes.iter()).enumerate() {
+            let in_patched_slot = (GPU_LIGHT_SIZE + SHADOW_SLOT_BYTE_OFFSET
+                ..GPU_LIGHT_SIZE + SHADOW_SLOT_BYTE_OFFSET + 4)
+                .contains(&i);
+            if !in_patched_slot {
+                assert_eq!(a, b, "base byte {i} must be preserved");
+            }
+        }
+    }
+
+    #[test]
+    fn patch_shadow_slots_no_change_reports_false() {
+        let lights = vec![sample_point(), sample_spot()];
+        let mut bytes = Vec::new();
+        pack_lights_with_slots_into(&mut bytes, &lights, &[3u32, 1u32]);
+        // Patching the same slots back is a no-op — caller skips the GPU upload.
+        assert!(!patch_shadow_slots(&mut bytes, &[3u32, 1u32]));
     }
 
     #[test]

@@ -182,10 +182,13 @@ pub struct MapLight {
     /// the animated-baked path (Task 2c), not here. Legacy PRLs retain
     /// their stored value on parse.
     pub is_dynamic: bool,
-    /// Per-light opt-in for shadow-map-pool (spot shadow) eligibility for
-    /// dynamic entities (enemies / moving meshes). Mirrors FGD
-    /// `_cast_entity_shadows`. Default `false`. Legacy PRLs without this
-    /// field deserialize with `casts_entity_shadows == false` (opt-in).
+    /// Per-light opt-in for spot-shadow-pool eligibility for dynamic entities
+    /// (enemies / moving meshes). Mirrors FGD `_cast_entity_shadows`. Default
+    /// `false`. This flag is the opt-in path for **non-dynamic** lights;
+    /// dynamic-tier lights (`is_dynamic == true`) are pool-eligible by default
+    /// via `is_dynamic || casts_entity_shadows`, so a `light_dynamic_spot` with
+    /// this `false` still casts world shadows. Legacy PRLs without this field
+    /// deserialize as `false`.
     pub casts_entity_shadows: bool,
     /// Slot into the SH-volume animated-light descriptor table when the
     /// compiler reserved one for this map light, else `None`. Resolved once

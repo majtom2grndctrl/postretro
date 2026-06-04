@@ -26,7 +26,6 @@ mod sdf_light_select_test;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
 
 use anyhow::{Context, Result};
 use glam::{Mat4, Vec3};
@@ -678,9 +677,11 @@ pub struct Renderer {
     /// Last bytes uploaded to `lights_buffer`. Reused each frame to skip a
     /// redundant `queue.write_buffer` when the packed bytes are unchanged.
     last_lights_upload: Vec<u8>,
-    /// Scratch buffer for repacking each frame. On change, contents are swapped
-    /// into `last_lights_upload` and the old bytes become the new scratch, so
-    /// no allocation happens in either branch.
+    /// Scratch buffer for the fallback full-repack path. Used only when
+    /// `last_lights_upload` is not yet sized to the current light set
+    /// (first frame or light-count change). The hot path patches
+    /// `last_lights_upload` in place via `patch_shadow_slots` — scratch
+    /// is not touched in that branch.
     lights_pack_scratch: Vec<u8>,
     #[allow(dead_code)]
     level_lights: Vec<MapLight>,
@@ -689,11 +690,11 @@ pub struct Renderer {
     /// Rebuilt in `Renderer::new` and `reload_geometry` from `filter_dynamic_lights`.
     dynamic_light_influences: Vec<LightInfluence>,
     /// Candidate set for the spot-shadow pool — sourced from the FULL level
-    /// light set filtered by `casts_entity_shadows`, NOT from `level_lights`.
-    /// Dynamic-tier lights (`light_dynamic`/`light_dynamic_spot`) are a
-    /// distinct classname, not re-tagged statics; `casts_entity_shadows` is
-    /// the per-light authoring opt-in for dynamic-entity (moving-mesh) shadows,
-    /// independent of which lights are dynamic-tier.
+    /// light set filtered by `is_dynamic || casts_entity_shadows`, NOT from
+    /// `level_lights`. Dynamic-tier lights (`light_dynamic`/`light_dynamic_spot`)
+    /// are pool-eligible by default so dynamic spotlights shadow static world
+    /// occluders (pillars); `casts_entity_shadows` (FGD `_cast_entity_shadows`)
+    /// is the per-light opt-in for non-dynamic lights (future moving-mesh shadows).
     shadow_candidate_lights: Vec<MapLight>,
     /// Influence volumes parallel to `shadow_candidate_lights`. Built
     /// alongside it from the full level light set.
@@ -750,10 +751,6 @@ pub struct Renderer {
     debug_prev_bitmask: (u32, u32),
     debug_prev_vp_hash: u32,
     debug_prev_visible: (&'static str, usize),
-
-    /// `app_start.elapsed()` feeds the `time` uniform; shaders wrap it via
-    /// `fract(time / period + phase)` for SH animation curves.
-    app_start: Instant,
 
     /// Idle (no draw) on maps with no registered collections. See §7.4.
     smoke_pass: SmokePass,
@@ -2053,7 +2050,6 @@ impl Renderer {
             debug_prev_bitmask: (u32::MAX, u32::MAX),
             debug_prev_vp_hash: u32::MAX,
             debug_prev_visible: ("init", usize::MAX),
-            app_start: Instant::now(),
             smoke_pass,
             splash_pipeline,
             fog,
@@ -2751,16 +2747,36 @@ impl Renderer {
         self.is_surface_configured = true;
     }
 
-    pub fn update_per_frame_uniforms(&mut self, view_proj: Mat4, camera_position: Vec3) {
+    pub fn update_per_frame_uniforms(
+        &mut self,
+        view_proj: Mat4,
+        camera_position: Vec3,
+        script_time: f32,
+    ) {
+        // Animation clock is the level-relative `script_time` (the same clock
+        // the light bridge evaluates animation curves against on the CPU). The
+        // GPU scripted-light pulse, SH animation, and animated-lightmap compose
+        // all wrap this via `fract(time / period + phase)`. Using wall-clock
+        // here instead would desync the GPU-rendered brightness from the CPU
+        // `effective_brightness` that gates shadow-pool eligibility, so the pool
+        // would shadow lights other than the ones actually lit on screen.
         #[cfg(not(feature = "dev-tools"))]
-        let time = self.app_start.elapsed().as_secs_f32();
+        let time = script_time;
         // Dev-tools: hold `time` when frozen (debug aid), else track live time so
         // toggling the freeze on holds the current animation phase.
+        //
+        // Freeze stops BOTH clocks together. While `freeze_time` is set, `App`
+        // reads it (`renderer.freeze_time()`) and stops advancing `script_time`
+        // (main.rs), so the CPU light bridge's `effective_brightness` (which
+        // gates shadow-pool eligibility) and this GPU `time` uniform hold the
+        // same phase. The held `frozen_time` here matches that pinned
+        // `script_time`, so CPU and GPU stay aligned under freeze — no
+        // animation-phase desync for a shadow debugger to chase.
         #[cfg(feature = "dev-tools")]
         let time = if self.freeze_time {
             self.frozen_time
         } else {
-            self.frozen_time = self.app_start.elapsed().as_secs_f32();
+            self.frozen_time = script_time;
             self.frozen_time
         };
         // The per-light SDF visibility multiply is enabled whenever a baked SDF
@@ -2814,7 +2830,12 @@ impl Renderer {
             .write_descriptor(slot as usize, bytes);
     }
 
-    /// Must run before `update_dynamic_light_slots` — slot assignment reads then rewrites this buffer.
+    /// Must run before `update_dynamic_light_slots` — slot assignment reads
+    /// then patches this buffer. If the order is reversed, `update_dynamic_light_slots`
+    /// runs first and seeds `last_lights_upload` with static bytes; the subsequent
+    /// bridge upload overwrites the mirror with animated base data but skips
+    /// re-patching the shadow slot, so the bridge's sentinel slot persists and
+    /// the forward shader never samples the shadow map for that frame.
     pub fn upload_bridge_lights(&mut self, lights_bytes: &[u8]) {
         debug_assert_eq!(
             lights_bytes.len(),
@@ -2830,6 +2851,16 @@ impl Renderer {
         }
         self.queue
             .write_buffer(&self.lights_buffer, 0, lights_bytes);
+        // Keep the CPU mirror in lock-step with the GPU buffer. The bridge
+        // packs animated base data with sentinel shadow slots; the shadow pool
+        // (`update_dynamic_light_slots`) then patches the real slot field onto
+        // this mirror and re-uploads. Without this sync `last_lights_upload`
+        // stays the wrong length or holds stale bytes: `update_dynamic_light_slots`
+        // checks `last_lights_upload.len() == expected_len` and takes the fallback
+        // full static-repack path when the lengths mismatch, clobbering the
+        // animated base data written here with static bytes.
+        self.last_lights_upload.clear();
+        self.last_lights_upload.extend_from_slice(lights_bytes);
     }
 
     /// Mismatched length logs a warning and skips upload — fail soft over crashing the frame.
@@ -3031,9 +3062,9 @@ impl Renderer {
     /// (includes empty `face_count == 0` portal-reachable leaves), not the
     /// face-visible set — lights in empty reachable leaves stay eligible.
     ///
-    /// Task 1b: the **candidate set** is `self.shadow_candidate_lights`
-    /// (full level lights filtered by `casts_entity_shadows`), NOT
-    /// `self.level_lights` (the `is_dynamic`-filtered forward set).
+    /// The **candidate set** is `self.shadow_candidate_lights`
+    /// (full level lights filtered by `is_dynamic || casts_entity_shadows`),
+    /// NOT `self.level_lights` (the `is_dynamic`-filtered forward set).
     /// `effective_brightness` is keyed on `level_lights` indices though, so
     /// we re-key the per-candidate eligibility into the candidate index
     /// space below.
@@ -3045,9 +3076,9 @@ impl Renderer {
         effective_brightness: &[f32],
         light_reachable_leaf_mask: &[bool],
     ) {
-        // Candidate set is `casts_entity_shadows`-filtered; if no light has
-        // opted in, the pool stays empty. v1 expected state (real enemies
-        // land in M10) — early-return without disturbing previous slots.
+        // Candidate set is `is_dynamic || casts_entity_shadows`-filtered; if
+        // the map has no dynamic spots and no opted-in lights, the pool stays
+        // empty — early-return without disturbing previous slots.
         if self.shadow_candidate_lights.is_empty() {
             return;
         }
@@ -3093,26 +3124,46 @@ impl Renderer {
         // The GPU lights buffer is keyed on `level_lights`. Translate slot
         // assignments from candidate-index space into `level_lights`-index
         // space by identity-matching (origin + light_type). Candidates not
-        // in `level_lights` (the common v1 case: opted-in static lights) get
-        // no per-light forward-shader slot — they still drive the
-        // shadow-map render targets below via the candidate-indexed matrix
-        // upload, but the forward shader cannot sample their shadow until
-        // a separate forward/shadow bridge lands (post-1b).
+        // in `level_lights` (the uncommon case: opted-in static lights via
+        // `casts_entity_shadows`) get no per-light forward-shader slot —
+        // dynamic-tier spots (the common pool-eligible case) ARE in
+        // `level_lights` and receive their slot normally. Opted-in static
+        // lights still drive shadow-map render targets below via the
+        // candidate-indexed matrix upload, but the forward shader cannot
+        // sample their shadow until a separate forward/shadow bridge lands.
         let level_slots = slot_assignment_for_level_lights(
             &self.level_lights,
             &self.shadow_candidate_lights,
             &slot_assignment,
         );
 
-        // Skip write_buffer when packed bytes are unchanged (common case: no light moved).
-        // Scratch Vec reused across frames — pack doesn't allocate.
-        let mut scratch = std::mem::take(&mut self.lights_pack_scratch);
-        pack_lights_with_slots_into(&mut scratch, &self.level_lights, &level_slots);
-        if scratch != self.last_lights_upload {
-            self.queue.write_buffer(&self.lights_buffer, 0, &scratch);
-            std::mem::swap(&mut scratch, &mut self.last_lights_upload);
+        // Patch the per-light shadow slot field onto the CPU mirror of the
+        // light buffer, then re-upload only if a slot changed. The mirror holds
+        // whatever was last uploaded — the animated bridge's base bytes once it
+        // has run, otherwise this fn's static pack. Patching (rather than
+        // re-packing static `level_lights`) is what lets the slot and the
+        // bridge's animated base data coexist: the two writers share one buffer,
+        // so a full re-pack here would clobber the animation, and the bridge's
+        // sentinel slot would clobber the shadow. See `upload_bridge_lights`.
+        let expected_len = self.level_lights.len() * crate::lighting::GPU_LIGHT_SIZE;
+        if self.last_lights_upload.len() == expected_len {
+            if crate::lighting::patch_shadow_slots(&mut self.last_lights_upload, &level_slots) {
+                self.queue
+                    .write_buffer(&self.lights_buffer, 0, &self.last_lights_upload);
+            }
+        } else {
+            // Mirror not yet sized to the current light set (before the first
+            // bridge upload, or the light count changed): full static pack so
+            // frame-zero still uploads valid lights + slots and seeds the mirror.
+            let mut scratch = std::mem::take(&mut self.lights_pack_scratch);
+            pack_lights_with_slots_into(&mut scratch, &self.level_lights, &level_slots);
+            if scratch != self.last_lights_upload {
+                self.queue.write_buffer(&self.lights_buffer, 0, &scratch);
+                self.last_lights_upload.clear();
+                self.last_lights_upload.extend_from_slice(&scratch);
+            }
+            self.lights_pack_scratch = scratch;
         }
-        self.lights_pack_scratch = scratch;
 
         // Upload slot matrices to both fragment-side storage (group 5 binding 2)
         // and vertex-side dynamic-offset uniform buffer. Matrices come from
@@ -3931,19 +3982,22 @@ fn filter_dynamic_lights(
 }
 
 /// Pull the spot-shadow pool's candidate set from the **full** level light
-/// list filtered by `casts_entity_shadows` (FGD `_cast_entity_shadows`).
+/// list: every dynamic-tier light (`is_dynamic`) plus any light that opts
+/// into entity shadows via `casts_entity_shadows` (FGD `_cast_entity_shadows`).
 ///
-/// Task 1b: this candidate set is intentionally decoupled from the
+/// Dynamic-tier spotlights cast world shadows by default — the shadow depth
+/// pass renders static world geometry, so a pooled dynamic spot shadows
+/// pillars and other occluders without a per-light flag, the behavior the
+/// dynamic tier was designed for. `casts_entity_shadows` remains the opt-in
+/// for non-dynamic lights (future enemy / moving-occluder shadows).
+///
+/// This candidate set is intentionally decoupled from the
 /// `is_dynamic`-filtered `level_lights` used by the forward direct-light
-/// loop. After Task 2c re-tags every authored light static, `level_lights`
-/// goes empty for v1 content; ranking the shadow pool from it would
-/// silently drop the entire pool. The pool now ranks this independent
-/// `casts_entity_shadows`-filtered set, layered on top of the existing
-/// `eligible_lights` visibility/brightness slice in `rank_lights`.
-///
-/// In v1 with no light opted in (`_cast_entity_shadows` defaults `false`)
-/// the candidate set is empty — that's the expected v1 state, not a
-/// regression; real enemies land in M10.
+/// loop. `level_lights` keeps only the dynamic tier; ranking the shadow pool
+/// from the candidate set (rather than `level_lights`) keeps the
+/// `casts_entity_shadows` opt-in path independent. Ranking is layered on top
+/// of the existing `eligible_lights` visibility/brightness slice in
+/// `rank_lights`.
 fn filter_entity_shadow_candidates(
     lights: &[MapLight],
     influences: &[LightInfluence],
@@ -3951,7 +4005,7 @@ fn filter_entity_shadow_candidates(
     lights
         .iter()
         .enumerate()
-        .filter(|(_, l)| l.casts_entity_shadows)
+        .filter(|(_, l)| l.is_dynamic || l.casts_entity_shadows)
         .map(|(i, l)| {
             let inf = influences.get(i).cloned().unwrap_or(LightInfluence {
                 center: Vec3::ZERO,
@@ -3965,13 +4019,27 @@ fn filter_entity_shadow_candidates(
 /// Identity-match a shadow candidate against the `level_lights` slice
 /// (origin + light_type) and return that level-light's per-frame
 /// effective brightness. Returns `None` when the candidate isn't in
-/// `level_lights` (the common v1 case: a static `_cast_entity_shadows`
-/// light not in the `is_dynamic`-filtered forward set).
+/// `level_lights` (the uncommon case: opted-in static lights via
+/// `casts_entity_shadows` that aren't in the `is_dynamic`-filtered
+/// forward set; dynamic-tier spots ARE in `level_lights` and are the
+/// common candidate).
 fn level_brightness_for_candidate(
     level_lights: &[MapLight],
     candidate: &MapLight,
     effective_brightness: &[f32],
 ) -> Option<f32> {
+    // Re-keys by float-exact `origin` equality. Both `level_lights` and
+    // `shadow_candidate_lights` are immutable load-time snapshots filtered from
+    // the same `world.lights` source, so origins match exactly today. The match
+    // breaks only once runtime light-movement lands and mutates one side's
+    // origins live (the candidate snapshot would keep a stale origin and
+    // silently lose the forward shadow slot). That feature doesn't exist —
+    // `is_dynamic` is a dormant seam with no authoring surface and
+    // `self.level_lights` is never mutated post-load — so keying on a stable id
+    // now would be scaffolding for an unlanded feature. When movement lands, key
+    // both sites on the `world.lights` source index (the natural shared id;
+    // currently discarded by `filter_dynamic_lights` /
+    // `filter_entity_shadow_candidates`) instead of origin equality.
     level_lights
         .iter()
         .enumerate()
@@ -3997,6 +4065,12 @@ fn slot_assignment_for_level_lights(
             continue;
         }
         let cand = &candidates[cand_idx];
+        // Re-keys by float-exact `origin` equality — same constraint as
+        // `level_brightness_for_candidate`: exact today because both collections
+        // are immutable load-time snapshots of the same `world.lights` source.
+        // A moving spot (unlanded; see that fn) would carry a stale candidate
+        // origin and silently drop its slot. Key both sites on the
+        // `world.lights` source index when light-movement lands.
         if let Some((level_idx, _)) = level_lights
             .iter()
             .enumerate()
@@ -4883,6 +4957,32 @@ mod tests {
         // indirect_scale at bytes 92..96.
         let scale = f32::from_ne_bytes(data[92..96].try_into().unwrap());
         assert!((scale - indirect_scale).abs() < 1e-6);
+    }
+
+    // Regression: spot-shadow clock skew — GPU `time` uniform must equal
+    // `script_time` so shadow-pool eligibility (CPU) and GPU animation phase
+    // stay in sync. Using wall-clock here instead would desync them.
+    #[test]
+    fn uniform_data_encodes_script_time_as_gpu_time_field() {
+        let script_time = 3.75_f32;
+        let data = build_uniform_data(&FrameUniforms {
+            view_proj: Mat4::IDENTITY,
+            camera_position: Vec3::ZERO,
+            ambient_floor: 0.0,
+            light_count: 0,
+            time: script_time,
+            lighting_isolation: LightingIsolation::Normal,
+            indirect_scale: 1.0,
+            sdf_shadow_flags: 0,
+            sdf_shadow_mode: SdfShadowMode::On,
+            sdf_force_visibility_one: false,
+        });
+        // time at bytes 84..88.
+        let t = f32::from_ne_bytes(data[84..88].try_into().unwrap());
+        assert!(
+            (t - script_time).abs() < 1e-6,
+            "GPU time ({t}) must equal script_time ({script_time})",
+        );
     }
 
     /// Static lights are baked into the lightmap; including them in the

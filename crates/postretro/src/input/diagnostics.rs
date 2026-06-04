@@ -44,6 +44,11 @@ pub enum DiagnosticAction {
     /// against real CPU cost when the meter is saturated against the frame
     /// budget.
     ToggleVsync,
+    /// Play the test SFX tone (`sfx/test_tone`) on the SFX bus. Bound to
+    /// `Alt+Shift+P`. A real-device audio smoke check: confirms a played sound
+    /// reaches the OS. Needs a level loaded so the sound registry is populated;
+    /// if the fixture isn't present `Audio::play` warns gracefully.
+    PlayTestSfx,
     /// Toggle the egui debug panel visibility. Bound to `Alt+Shift+Backquote`.
     /// Fires through `App::handle_diagnostic_action`, which also shifts
     /// `InputFocus` between `DevTools` and `Gameplay`. Feature-gated:
@@ -146,6 +151,11 @@ pub fn default_diagnostic_chords() -> Vec<DiagnosticChord> {
             modifiers: Modifiers::ALT_SHIFT,
             key: KeyCode::KeyV,
             action: DiagnosticAction::ToggleVsync,
+        },
+        DiagnosticChord {
+            modifiers: Modifiers::ALT_SHIFT,
+            key: KeyCode::KeyP,
+            action: DiagnosticAction::PlayTestSfx,
         },
         #[cfg(feature = "dev-tools")]
         DiagnosticChord {

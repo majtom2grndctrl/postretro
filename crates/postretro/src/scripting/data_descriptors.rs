@@ -214,6 +214,10 @@ pub(crate) struct PlayerMovementDescriptor {
     /// materialized). When present, all of its fields are required, matching
     /// the present-then-all-required discipline of `ground`/`air`/`fall`.
     pub(crate) dash: Option<DashParams>,
+    /// Optional input-forgiveness tuning (coyote time + jump buffer). Absent ⇒
+    /// the documented engine defaults apply (both ~100 ms). Per-field zero
+    /// disables that grace independently. See `ForgivenessParams`.
+    pub(crate) forgiveness: Option<ForgivenessParams>,
 }
 
 impl PlayerMovementDescriptor {
@@ -221,6 +225,48 @@ impl PlayerMovementDescriptor {
     /// when the descriptor omits them so existing scripts keep working.
     pub(crate) const DEFAULT_STUCK_STOP_ENABLED: bool = true;
     pub(crate) const DEFAULT_STUCK_STOP_THRESHOLD: f32 = 1.0e-3;
+}
+
+/// Input-forgiveness tuning: coyote time (a grounded jump permitted for a window
+/// after leaving a ledge) and jump buffering (a jump pressed shortly before
+/// landing fires on the landing tick). Both windows are in MILLISECONDS,
+/// advanced off the same `dt` the movement tick already accumulates
+/// (`dt * 1000.0` per tick), mirroring the dash cooldown's ms accounting.
+///
+/// This sub-object is OPTIONAL on [`PlayerMovementDescriptor`]: when the whole
+/// `forgiveness` object is absent, the documented engine defaults apply (see the
+/// `DEFAULT_*` constants). When the object is present, each field is itself
+/// optional and falls back to its engine default; an explicit `0` disables that
+/// grace independently (the regression fixtures pin both to zero to preserve
+/// exact edge timing). Field names are camelCase on the wire (`coyoteMs`,
+/// `jumpBufferMs`) and snake_case in Rust.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ForgivenessParams {
+    /// Coyote-time window in milliseconds: a grounded jump is permitted for this
+    /// long after ground is lost (with no prior jump). `0` disables coyote time.
+    pub(crate) coyote_ms: f32,
+    /// Jump-buffer window in milliseconds: a jump pressed while airborne is
+    /// retained for this long and fires on the landing tick. `0` disables jump
+    /// buffering.
+    pub(crate) jump_buffer_ms: f32,
+}
+
+impl ForgivenessParams {
+    /// Feel-friendly engine default for the coyote-time window (milliseconds),
+    /// applied when the `forgiveness` sub-object or the `coyoteMs` field is
+    /// absent. ~100 ms ≈ 6 ticks at 60 Hz — a forgiving-but-tight grace.
+    pub(crate) const DEFAULT_COYOTE_MS: f32 = 100.0;
+    /// Feel-friendly engine default for the jump-buffer window (milliseconds),
+    /// applied when the `forgiveness` sub-object or the `jumpBufferMs` field is
+    /// absent. ~100 ms ≈ 6 ticks at 60 Hz.
+    pub(crate) const DEFAULT_JUMP_BUFFER_MS: f32 = 100.0;
+
+    /// The defaults materialized as a struct, used when the whole `forgiveness`
+    /// sub-object is omitted.
+    pub(crate) const DEFAULT: ForgivenessParams = ForgivenessParams {
+        coyote_ms: Self::DEFAULT_COYOTE_MS,
+        jump_buffer_ms: Self::DEFAULT_JUMP_BUFFER_MS,
+    };
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -799,6 +845,23 @@ fn movement_descriptor_from_js<'js>(
         None
     };
 
+    // `forgiveness` is an optional sub-object: absence applies the engine
+    // defaults at materialization. When present, each field is itself optional
+    // and falls back to its engine default; an explicit 0 disables that grace.
+    let forgiveness = if obj.contains_key("forgiveness").map_err(js_err)? {
+        let raw: JsValue = obj.get("forgiveness").map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            None
+        } else {
+            let f_obj = Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
+                reason: "`movement.forgiveness` must be an object".to_string(),
+            })?;
+            Some(forgiveness_params_from_js(&f_obj)?)
+        }
+    } else {
+        None
+    };
+
     Ok(PlayerMovementDescriptor {
         capsule,
         ground,
@@ -807,6 +870,24 @@ fn movement_descriptor_from_js<'js>(
         stuck_stop_enabled,
         stuck_stop_threshold,
         dash,
+        forgiveness,
+    })
+}
+
+fn forgiveness_params_from_js<'js>(
+    obj: &Object<'js>,
+) -> Result<ForgivenessParams, DescriptorError> {
+    let coyote_ms = match get_optional_f32_js(obj, "coyoteMs")? {
+        Some(v) => validate_non_negative_finite(v, "movement.forgiveness.coyoteMs")?,
+        None => ForgivenessParams::DEFAULT_COYOTE_MS,
+    };
+    let jump_buffer_ms = match get_optional_f32_js(obj, "jumpBufferMs")? {
+        Some(v) => validate_non_negative_finite(v, "movement.forgiveness.jumpBufferMs")?,
+        None => ForgivenessParams::DEFAULT_JUMP_BUFFER_MS,
+    };
+    Ok(ForgivenessParams {
+        coyote_ms,
+        jump_buffer_ms,
     })
 }
 
@@ -1453,6 +1534,26 @@ fn movement_descriptor_from_lua(
         None
     };
 
+    // `forgiveness` is an optional sub-object; mirrors the JS path (absent →
+    // engine defaults; each field optional with a 0-disables semantic).
+    let forgiveness = if table.contains_key("forgiveness").map_err(lua_err)? {
+        let raw: LuaValue = table.get("forgiveness").map_err(lua_err)?;
+        match raw {
+            LuaValue::Nil => None,
+            LuaValue::Table(t) => Some(forgiveness_params_from_lua(&t)?),
+            other => {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`movement.forgiveness` must be a table, got {}",
+                        other.type_name()
+                    ),
+                });
+            }
+        }
+    } else {
+        None
+    };
+
     Ok(PlayerMovementDescriptor {
         capsule,
         ground,
@@ -1461,6 +1562,22 @@ fn movement_descriptor_from_lua(
         stuck_stop_enabled,
         stuck_stop_threshold,
         dash,
+        forgiveness,
+    })
+}
+
+fn forgiveness_params_from_lua(table: &Table) -> Result<ForgivenessParams, DescriptorError> {
+    let coyote_ms = match get_optional_f32_lua(table, "coyoteMs")? {
+        Some(v) => validate_non_negative_finite(v, "movement.forgiveness.coyoteMs")?,
+        None => ForgivenessParams::DEFAULT_COYOTE_MS,
+    };
+    let jump_buffer_ms = match get_optional_f32_lua(table, "jumpBufferMs")? {
+        Some(v) => validate_non_negative_finite(v, "movement.forgiveness.jumpBufferMs")?,
+        None => ForgivenessParams::DEFAULT_JUMP_BUFFER_MS,
+    };
+    Ok(ForgivenessParams {
+        coyote_ms,
+        jump_buffer_ms,
     })
 }
 
@@ -2901,5 +3018,130 @@ mod tests {
                 field: "preserveVertical",
             }
         );
+    }
+
+    // --- ForgivenessParams parsing -----------------------------------------
+
+    /// JS movement block with a `forgiveness` sub-object spliced in. `body` is
+    /// the inner `{ ... }` text (no `forgiveness:` key).
+    fn js_movement_with_forgiveness(body: &str) -> String {
+        format!(
+            r#"({{
+                canonicalName: "player",
+                components: {{
+                    movement: {{
+                        capsule: {{ radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 }},
+                        ground: {{ speed: {{ walk: 7.0, run: 11.0 }}, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 }},
+                        air: {{ forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 }},
+                        fall: {{ terminalVelocity: 40.0 }},
+                        forgiveness: {body}
+                    }}
+                }}
+            }})"#
+        )
+    }
+
+    /// Luau movement block with a `forgiveness` sub-table spliced in.
+    fn lua_movement_with_forgiveness(body: &str) -> String {
+        format!(
+            r#"return {{
+                canonicalName = "player",
+                components = {{
+                    movement = {{
+                        capsule = {{ radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 }},
+                        ground = {{ speed = {{ walk = 7.0, run = 11.0 }}, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 }},
+                        air = {{ forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpVelocity = 5.5, jumpCeiling = 0.0 }},
+                        fall = {{ terminalVelocity = 40.0 }},
+                        forgiveness = {body}
+                    }}
+                }}
+            }}"#
+        )
+    }
+
+    #[test]
+    fn js_movement_forgiveness_absent_is_none() {
+        // No `forgiveness` key → None; `from_descriptor` applies engine defaults.
+        let d = eval_js(JS_PLAYER_MOVEMENT, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap()
+        });
+        assert!(d.movement.expect("movement present").forgiveness.is_none());
+    }
+
+    #[test]
+    fn js_movement_forgiveness_explicit_values_parse() {
+        let src = js_movement_with_forgiveness(r#"{ coyoteMs: 120.0, jumpBufferMs: 80.0 }"#);
+        let d = eval_js(&src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+        let f = d
+            .movement
+            .unwrap()
+            .forgiveness
+            .expect("forgiveness present");
+        assert_eq!(f.coyote_ms, 120.0);
+        assert_eq!(f.jump_buffer_ms, 80.0);
+    }
+
+    #[test]
+    fn js_movement_forgiveness_omitted_fields_default_per_field() {
+        // Present object, each field optional with its own engine default.
+        let src = js_movement_with_forgiveness(r#"{ coyoteMs: 0.0 }"#);
+        let d = eval_js(&src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+        let f = d
+            .movement
+            .unwrap()
+            .forgiveness
+            .expect("forgiveness present");
+        assert_eq!(f.coyote_ms, 0.0, "explicit 0 disables coyote");
+        assert_eq!(
+            f.jump_buffer_ms,
+            ForgivenessParams::DEFAULT_JUMP_BUFFER_MS,
+            "omitted jumpBufferMs falls back to its engine default"
+        );
+    }
+
+    #[test]
+    fn js_movement_forgiveness_negative_is_rejected() {
+        let src = js_movement_with_forgiveness(r#"{ coyoteMs: -5.0, jumpBufferMs: 80.0 }"#);
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_movement_forgiveness_explicit_values_parse() {
+        let src = lua_movement_with_forgiveness(r#"{ coyoteMs = 120.0, jumpBufferMs = 80.0 }"#);
+        let d = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap());
+        let f = d
+            .movement
+            .unwrap()
+            .forgiveness
+            .expect("forgiveness present");
+        assert_eq!(f.coyote_ms, 120.0);
+        assert_eq!(f.jump_buffer_ms, 80.0);
+    }
+
+    #[test]
+    fn lua_movement_forgiveness_omitted_fields_default_per_field() {
+        let src = lua_movement_with_forgiveness(r#"{ jumpBufferMs = 0.0 }"#);
+        let d = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap());
+        let f = d
+            .movement
+            .unwrap()
+            .forgiveness
+            .expect("forgiveness present");
+        assert_eq!(f.jump_buffer_ms, 0.0, "explicit 0 disables jump buffer");
+        assert_eq!(
+            f.coyote_ms,
+            ForgivenessParams::DEFAULT_COYOTE_MS,
+            "omitted coyoteMs falls back to its engine default"
+        );
+    }
+
+    #[test]
+    fn lua_movement_forgiveness_negative_is_rejected() {
+        let src = lua_movement_with_forgiveness(r#"{ coyoteMs = 100.0, jumpBufferMs = -1.0 }"#);
+        let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
     }
 }

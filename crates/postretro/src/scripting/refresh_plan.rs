@@ -837,6 +837,7 @@ mod tests {
                 stuck_stop_enabled: true,
                 stuck_stop_threshold: 0.001,
                 dash: None,
+                forgiveness: None,
             }),
             weapon: None,
         }

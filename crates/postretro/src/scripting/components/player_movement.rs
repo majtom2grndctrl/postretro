@@ -10,7 +10,8 @@ use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
 use crate::scripting::data_descriptors::{
-    AirParams, CapsuleParams, DashParams, FallParams, GroundParams, PlayerMovementDescriptor,
+    AirParams, CapsuleParams, DashParams, FallParams, ForgivenessParams, GroundParams,
+    PlayerMovementDescriptor,
 };
 
 /// The player's active movement state. Mutually-exclusive: exactly one state
@@ -97,6 +98,33 @@ pub(crate) struct PlayerMovementComponent {
     /// surviving a swap would continue with a cleared cooldown and a full charge
     /// budget — a gameplay-state/budget mismatch. Resetting to `Normal` prevents it.
     pub(crate) movement_state: MovementState,
+    // --- Input-forgiveness state (coyote time + jump buffer) ---
+    //
+    // Plain component fields (NOT per-state live data): `Normal` reads them
+    // globally and the edges are derived ONCE per tick before the intents run.
+    // The windows are materialized from the descriptor; the timers advance off
+    // the same `dt` the dash cooldown uses (`dt * 1000` ms per tick). See
+    // context/lib/movement.md §6 (input-forgiveness decision).
+    /// Coyote-time window in milliseconds (materialized from the descriptor).
+    /// `0` disables coyote time. A grounded jump is permitted while
+    /// `coyote_timer_ms <= coyote_ms` after ground is lost.
+    pub(crate) coyote_ms: f32,
+    /// Jump-buffer window in milliseconds (materialized from the descriptor).
+    /// `0` disables jump buffering.
+    pub(crate) jump_buffer_ms: f32,
+    /// Milliseconds since ground was last held, accumulated while airborne and
+    /// reset to 0 at the landing-refresh point. The coyote ground-jump edge is
+    /// armed while this is within `coyote_ms` (and no jump has been spent).
+    pub(crate) coyote_timer_ms: f32,
+    /// Milliseconds a pending buffered jump has left to live, counted DOWN each
+    /// airborne tick. `0` means no buffer is pending. Set to `jump_buffer_ms`
+    /// when jump is pressed airborne; cleared on consumption (the landing tick)
+    /// or when it expires before landing (the buffer drops with no jump).
+    pub(crate) jump_buffer_timer_ms: f32,
+    /// Set when ANY jump (grounded, coyote-grounded, or air) fires; cleared at
+    /// the landing-refresh point. Gates coyote so it cannot re-arm once a jump
+    /// has been spent for the current airborne stretch.
+    pub(crate) jump_spent: bool,
 }
 
 impl PlayerMovementComponent {
@@ -109,6 +137,10 @@ impl PlayerMovementComponent {
         // Mirror how `air_jumps_remaining` is seeded from `air.jumps`: the
         // air-dash budget starts full at construction, 0 when dash is disabled.
         let air_dashes_remaining = desc.dash.as_ref().map_or(0, |d| d.air_dashes);
+        // Forgiveness windows materialize here: an absent `forgiveness`
+        // sub-object applies the documented engine defaults; a present one
+        // already merged per-field defaults at parse time (0 disables a grace).
+        let forgiveness = desc.forgiveness.unwrap_or(ForgivenessParams::DEFAULT);
         Self {
             capsule: desc.capsule.clone(),
             ground: desc.ground.clone(),
@@ -125,6 +157,14 @@ impl PlayerMovementComponent {
             stuck_stop_enabled: desc.stuck_stop_enabled,
             stuck_stop_threshold: desc.stuck_stop_threshold,
             movement_state: MovementState::Normal,
+            coyote_ms: forgiveness.coyote_ms,
+            jump_buffer_ms: forgiveness.jump_buffer_ms,
+            // Seed the player as "freshly grounded": coyote armed (timer 0), no
+            // buffer pending, no jump spent. The first airborne stretch then
+            // accumulates the coyote timer from a clean state.
+            coyote_timer_ms: 0.0,
+            jump_buffer_timer_ms: 0.0,
+            jump_spent: false,
         }
     }
 
@@ -140,6 +180,12 @@ impl PlayerMovementComponent {
         if let Some(dash) = &self.dash {
             self.air_dashes_remaining = dash.air_dashes;
         }
+        // Input-forgiveness landing refresh: clearing the jump-spent flag and
+        // resetting the coyote timer re-arms coyote for the NEXT time the player
+        // leaves the ground. The jump buffer is consumed/expired in the tick's
+        // edge derivation, not here.
+        self.jump_spent = false;
+        self.coyote_timer_ms = 0.0;
     }
 }
 

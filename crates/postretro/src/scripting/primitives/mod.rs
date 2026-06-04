@@ -217,6 +217,11 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "Optional dash tuning. When omitted, dash is disabled. When present, all of its fields are required.",
         )
         .field(
+            "forgiveness?",
+            "ForgivenessParams",
+            "Optional input-forgiveness tuning (coyote time + jump buffer). When the whole object is omitted, the documented engine defaults apply (~100ms each). When present, each field is itself optional and falls back to its engine default; 0 disables that grace.",
+        )
+        .field(
             "stuckStopEnabled?",
             "bool",
             "Optional. Stuck-stop deadzone enable flag. When true (default), the slide loop zeroes horizontal velocity and rolls back XZ position when contradictory wall normals (≥60° apart) are seen within the same tick AND net horizontal displacement is below `stuckStopThreshold`. Suppresses orbital jitter in interior corners. Default true.",
@@ -278,6 +283,12 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("cooldownMs", "f32", "Cooldown between dashes in milliseconds. Must be finite and ≥ 0.")
         .field("airDashes", "u32", "Number of air dashes allowed before landing.")
         .field("preserveVertical", "bool", "Whether the dash preserves the pre-dash vertical velocity.")
+        .finish();
+    registry
+        .register_type("ForgivenessParams")
+        .doc("Input-forgiveness tuning (coyote time + jump buffering). Optional on `PlayerMovementDescriptor` — when the whole `forgiveness` object is omitted, the documented engine defaults apply. When present, each field is itself optional and falls back to its engine default; an explicit 0 disables that grace independently. Both windows are in milliseconds.")
+        .field("coyoteMs?", "f32", "Coyote-time window in milliseconds: a grounded jump is permitted for this long after leaving a ledge (with no prior jump). 0 disables coyote time. Default 100.0.")
+        .field("jumpBufferMs?", "f32", "Jump-buffer window in milliseconds: a jump pressed this long before landing fires on the landing tick. 0 disables jump buffering. Default 100.0.")
         .finish();
     registry
         .register_type("ModManifest")

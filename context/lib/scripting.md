@@ -205,7 +205,40 @@ Six tag-targeted reaction primitives operate on `FogVolumeComponent`: `setFogDen
 
 ---
 
-## 11. Non-Goals
+## 11. Typed Command Buffer
+
+**Authored behavior crosses the FFI as data, never as a retained function.** A closed vocabulary is not a small one. The engine owns the evaluator; the author owns a description the evaluator runs. Expressiveness comes from how rich the vocabulary is, not from shipping code the engine executes at runtime — cf. shader graphs, SQL, GraphQL, the WebGPU command encoder, all arbitrarily expressive yet closed.
+
+**The mechanism.** At load time the author calls an engine-provided builder API. Calling it looks like writing a function, but it does not produce one — it constructs a **typed, serializable IR**: a tree of closed-vocabulary opcodes whose leaf nodes reference engine-provided inputs by name. That IR crosses the FFI as plain data. The VM drops; Rust owns the IR and a **total evaluator** that binds the named input leaves to live state and evaluates the tree each tick. The author thus expresses behavior that depends on live state — `boost = f(speed, charges, grounded)` — with no retained closure and no live VM.
+
+**This generalizes patterns already in the engine.** Two existing instances:
+
+- **Reactions** cross the FFI as `{name, JSON args}` and dispatch to a Rust handler keyed by name (§10). A reaction is a one-instruction command buffer: a single opcode plus its serialized arguments.
+- **Light/fog animation** crosses as keyframe sample arrays (`FogAnimation` channels, §10.2; keyframe utilities, §7) and is evaluated by a Rust/WGSL sampler each frame. The authored curve is data; the engine owns the sampler.
+
+The typed command buffer is the shape these already take, extended from a fixed opcode to a vocabulary of composable ones.
+
+> **Invariant — the evaluator is engine-owned.** Authors never ship code the engine executes at runtime. Behavior crosses as a typed command buffer. This is the durable form of "scripts declare, Rust executes" (§1) for behavior that depends on live state.
+
+**Preserves the two hard rules.** The VM still drops after load (§1, §2) — the IR is plain data that outlives it, so no live VM is needed at tick time. The vocabulary still arrives through generated typedefs (§7): builder opcodes are registered like any primitive and emitted into `postretro.d.ts` / `postretro.d.luau`.
+
+**Node constraints — determinism and totality.** Every node must be **pure, total, and bounded**:
+
+- No wall-clock, no unseeded RNG, no unbounded loops, no per-eval heap allocation.
+- Guaranteed termination. Turing-incompleteness is a feature, not a limitation.
+- A request for a `while` / unbounded-loop node is the signal the design is drifting back toward a forbidden runtime expression language — reject it.
+
+Start the node set minimal: named-input leaves, arithmetic, `clamp`, `lerp`, `select(cond, a, b)`, comparisons. Add richer or stateful nodes only when a concrete use case demands one.
+
+**The typedef is the contract.** The generated `.d.ts` / `.d.luau` (§7) *is* the vocabulary — and therefore the documentation of its limits. If a node is not in the typedef the author cannot type it, so the boundary is clear by construction. No separate "what's allowed" list to drift out of sync.
+
+**Scope.** This is a cross-cutting engine pattern, not a feature. Nothing is implemented now; this records the principle. Movement is one candidate adopter (`movement.md` §2) but not necessarily the first.
+
+> **Open question — IR versioning.** A serialized command buffer baked into a mod must survive engine-version changes. IR / command-buffer versioning for mod compatibility is a real obligation to design before the first shipping use, not after.
+
+---
+
+## 12. Non-Goals
 
 - General-purpose scripting host (only explicitly registered Rust functions are callable)
 - Synchronous cross-VM communication (QuickJS and Luau are independent runtimes)

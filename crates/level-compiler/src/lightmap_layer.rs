@@ -917,7 +917,7 @@ mod tests {
     /// this runs the real fixtures through both paths.
     ///
     /// `#[ignore]` because each fixture bake casts the full per-texel ray load
-    /// (campaign-test takes minutes). Run manually:
+    /// (a few minutes across the gate fixture set). Run manually:
     ///   cargo test -p postretro-level-compiler -- --ignored --nocapture \
     ///       lightmap_composite_equals_monolithic_on_fixtures
     #[test]

@@ -28,10 +28,14 @@ use crate::partition::BspTree;
 use crate::{parse, partition, portals, visibility};
 
 /// The fixtures the SH/lightmap determinism gates loop over. Names (no extension) under
-/// `content/dev/maps/`. campaign-test + occlusion-test are the heavily-lit
-/// pair; soft_shadow_test and the animated-weight-map maps round out coverage.
+/// `content/dev/maps/`. gate-heavily-lit is the compact, purpose-built heavily-lit
+/// stress fixture (a long narrow corridor whose >24 m length makes the warm-vs-cold
+/// SH approximation non-vacuous under the 16 m reach cutoff — see gate 3); it replaces
+/// campaign-test (194k probes, ~10 min/SH-bake) at a fraction of the cost. occlusion-test
+/// rounds out the heavily-lit coverage; soft_shadow_test and the animated-weight-map
+/// maps cover the remaining cases.
 pub const GATE_FIXTURES: &[&str] = &[
-    "campaign-test",
+    "gate-heavily-lit",
     "occlusion-test",
     "soft_shadow_test",
     "test_animated_weight_maps_cap",

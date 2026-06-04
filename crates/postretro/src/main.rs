@@ -1870,7 +1870,7 @@ impl App {
         self.level_timings.record("bridges_populated");
 
         // Sound registry follows level lifetime, parallel to textures: load the
-        // level's sounds from `_sounds/` here, release them at unload. Fault-
+        // level's sounds from `sounds/` here, release them at unload. Fault-
         // tolerant — a missing directory or undecodable file warns and is
         // skipped. Silent if audio init failed (`audio` is `None`).
         if let Some(audio) = &mut self.audio {

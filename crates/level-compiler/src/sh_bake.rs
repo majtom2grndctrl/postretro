@@ -29,19 +29,6 @@ use crate::partition::{BspTree, find_leaf_for_point};
 /// Default grid cell size in meters. Overridden by `--probe-spacing`.
 pub const DEFAULT_PROBE_SPACING: f32 = 1.0;
 
-/// Bump this when the SH baking algorithm changes. Invalidates all existing
-/// cache entries for this stage.
-///
-/// 4 → 5: the indirect-bounce shadow gate softened from a binary hard ray to the
-/// area-light `soft_visibility` fraction (baked-soft-lightmap-shadows Task 4b), so
-/// the cached `sh_volume` irradiance values shift.
-///
-/// 5 → 6 (baked-soft-lightmap-shadows F1): `soft_visibility`'s probe set (shared
-/// with the lightmap baker) became a strided emitter subset, shifting the soft
-/// fraction for some probe geometry. The SH indirect-bounce output uses that same
-/// fraction, so its cached values shift too — the bump forces a re-bake.
-pub const STAGE_VERSION: u32 = 6;
-
 const RAYS_PER_PROBE: u32 = 256;
 
 /// Indirect-only: lightmap carries the direct term; folding direct into SH would double-count it at runtime.
@@ -101,19 +88,6 @@ impl Default for BakedProbe {
             metadata: OctahedralShProbe::default(),
         }
     }
-}
-
-/// Owned, serializable snapshot of the data the SH volume bake reads. Used for
-/// cache key derivation: postcard-serialize this + ShConfig to get the input hash.
-#[derive(serde::Serialize)]
-pub struct ShInputs {
-    pub static_lights: Vec<crate::map_data::MapLight>,
-    pub animated_lights: Vec<crate::map_data::MapLight>,
-    pub geometry: crate::geometry::GeometryResult,
-    /// Sorted list of exterior BSP leaf indices. Probes in these leaves are
-    /// flagged invalid. Included so the hash catches changes that affect probe
-    /// validity even when geometry is otherwise unchanged.
-    pub exterior_leaves: Vec<usize>,
 }
 
 /// CLI-driven configuration for the SH volume bake.
@@ -256,6 +230,8 @@ pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> OctahedralSh
                 inputs,
                 vec3_from(layout.probe_positions[i]),
                 &static_lights,
+                // Whole-volume bake: the slice IS the global set, so identity.
+                None,
                 far_sentinel,
                 layout.validity[i] != 0,
                 i as u64,
@@ -347,9 +323,11 @@ pub fn log_stats(section: &OctahedralShVolumeSection) {
 }
 
 /// Decode IEEE 754 binary16 bits → f32. The inverse of
-/// `lightmap::f32_to_f16_bits` for the depth moments; used only for the
-/// diagnostic stats aggregate, so it covers finite non-negative magnitudes.
-fn f16_bits_to_f32(bits: u16) -> f32 {
+/// `lightmap::f32_to_f16_bits` for the depth moments; covers finite non-negative
+/// magnitudes (the diagnostic stats aggregate and the `sh_group` warm-SH gate,
+/// which decode depth moments / octahedral-tile irradiance — both finite
+/// non-negative).
+pub(crate) fn f16_bits_to_f32(bits: u16) -> f32 {
     let sign = (bits >> 15) & 0x1;
     let exp = (bits >> 10) & 0x1f;
     let mant = bits & 0x3ff;
@@ -843,6 +821,8 @@ pub(crate) fn bake_probe_indirect_rgb(
             probe_pos,
             *dir,
             lights,
+            // Delta path: single-light slice, seed unchanged (slice position).
+            None,
             f32::INFINITY,
             probe_index,
             ray_index as u64,
@@ -865,6 +845,7 @@ fn bake_probe_rgb_with_moments(
     inputs: &ShBakeCtx<'_>,
     probe_pos: Vec3,
     static_lights: &[&MapLight],
+    light_global_indices: Option<&[u64]>,
     far_sentinel: f32,
     probe_index: u64,
 ) -> ([f32; 27], f32, f32) {
@@ -880,6 +861,7 @@ fn bake_probe_rgb_with_moments(
             probe_pos,
             *dir,
             static_lights,
+            light_global_indices,
             far_sentinel,
             probe_index,
             ray_index as u64,
@@ -899,10 +881,17 @@ fn bake_probe_rgb_with_moments(
 /// lattice rotation, so passing the same global index in either path keeps the
 /// per-probe output byte-identical. Invalid probes bake nothing and return the
 /// default (zeroed) record, matching the volume path.
+///
+/// `light_global_indices` maps each `static_lights[i]` to its position in the
+/// full global light slice for the soft-visibility seed (see
+/// `sample_radiance_rgb`). The whole-volume path passes `None` (its slice IS the
+/// global set); the warm per-group path passes the bounded set's global indices so
+/// a kept light gets the same lattice rotation it would in the full-set bake.
 pub(crate) fn bake_probe(
     inputs: &ShBakeCtx<'_>,
     probe_pos: Vec3,
     static_lights: &[&MapLight],
+    light_global_indices: Option<&[u64]>,
     far_sentinel: f32,
     valid: bool,
     probe_index: u64,
@@ -910,8 +899,14 @@ pub(crate) fn bake_probe(
     if !valid {
         return BakedProbe::default();
     }
-    let (coefficients, sum_d, sum_d2) =
-        bake_probe_rgb_with_moments(inputs, probe_pos, static_lights, far_sentinel, probe_index);
+    let (coefficients, sum_d, sum_d2) = bake_probe_rgb_with_moments(
+        inputs,
+        probe_pos,
+        static_lights,
+        light_global_indices,
+        far_sentinel,
+        probe_index,
+    );
     // All RAYS_PER_PROBE rays accumulate (sky misses via the sentinel), so these
     // are exact divisions by the constant.
     let mean_distance = sum_d / RAYS_PER_PROBE as f32;
@@ -929,8 +924,11 @@ pub(crate) fn bake_probe(
 /// Deterministic per-(probe, ray, light) seed for the soft-visibility area-sample
 /// rotation. `sh_bake` has no texel coordinate to hash (unlike the lightmap/animated
 /// callers), so the seed is mixed from the probe index, ray index, and the light's
-/// position in the bake slice — the three indices that uniquely identify a shadow
-/// query in this bake. SplitMix64-style integer avalanche of those indices plus
+/// GLOBAL `static_lights` index — the three indices that uniquely identify a shadow
+/// query in this bake. Using the global (not bake-slice) light index keeps a kept
+/// light's lattice rotation identical whether the bake sees the full light set
+/// (cold) or a bounded subset (warm per-group), preserving the strict
+/// dimmer-or-equal warm-SH contract. SplitMix64-style integer avalanche of those indices plus
 /// `SAMPLING_LATTICE_OFFSET`: a pure function of the indices, so it reproduces
 /// byte-for-byte across separate processes. NO `RandomState`, NO hash-map iteration
 /// order — the byte-identical-`.prl` determinism AC depends on this staying
@@ -961,11 +959,27 @@ fn soft_visibility_seed(probe_index: u64, ray_index: u64, light_index: u64) -> u
 /// fraction so bounced shadows soften in lockstep with the direct static term
 /// (an authored hard light — `_light_size`/`_angular_diameter == 0` — collapses to
 /// the single hard ray inside `soft_visibility`, matching the old binary gate).
+///
+/// `light_global_indices` carries each `lights[i]`'s position in the global
+/// `static_lights` slice, used as the third seed axis. The warm per-group path
+/// passes a *bounded* `lights` subset, so seeding off the slice position would
+/// give a kept light a different lattice rotation than the cold (full-set) bake —
+/// warm could then read slightly brighter, breaking the strict dimmer-or-equal
+/// contract. Threading the global index keeps a kept light's rotation identical
+/// in either bake. `None` means identity (slice position == global index): the
+/// monolithic SH path and the delta path pass `None`, leaving their seeds — and
+/// thus their bytes — unchanged.
+// Each argument is a distinct, irreducible input to the per-ray bounce sample
+// (geometry ctx, ray origin/dir, the light slice + its global-index map, the sky
+// sentinel, and the two seed axes). Bundling them into a struct would only move
+// the plumbing, not reduce it.
+#[allow(clippy::too_many_arguments)]
 fn sample_radiance_rgb(
     ctx: &RaytracingCtx<'_>,
     origin: Vec3,
     dir: Vec3,
     lights: &[&MapLight],
+    light_global_indices: Option<&[u64]>,
     far_sentinel: f32,
     probe_index: u64,
     ray_index: u64,
@@ -975,7 +989,10 @@ fn sample_radiance_rgb(
         Some(hit) => {
             let mut radiance = Vec3::ZERO;
             for (light_index, light) in lights.iter().enumerate() {
-                let seed = soft_visibility_seed(probe_index, ray_index, light_index as u64);
+                let global_index = light_global_indices
+                    .map(|g| g[light_index])
+                    .unwrap_or(light_index as u64);
+                let seed = soft_visibility_seed(probe_index, ray_index, global_index);
                 // SH bounce is low-frequency, so it has no author-facing
                 // sample-count knob — it always uses the default full-sample
                 // target (Task 6 wires the knob only to the lightmap and animated
@@ -1596,12 +1613,12 @@ mod tests {
 
         // Large area radius so the sphere straddles the +X occluder edge.
         let soft_light = soft_point_light(DVec3::new(0.0, 5.0, 0.0), 2.0);
-        let soft = sample_radiance_rgb(&ctx, probe, dir, &[&soft_light], far, 0, 0).0;
+        let soft = sample_radiance_rgb(&ctx, probe, dir, &[&soft_light], None, far, 0, 0).0;
 
         // Reference: same light with shadows disabled → fully-clear bounce (v = 1).
         let mut clear_light = soft_light.clone();
         clear_light.cast_shadows = false;
-        let clear = sample_radiance_rgb(&ctx, probe, dir, &[&clear_light], far, 0, 0).0;
+        let clear = sample_radiance_rgb(&ctx, probe, dir, &[&clear_light], None, far, 0, 0).0;
 
         // Fractional, not binary: strictly dimmer than fully-clear yet nonzero.
         assert!(clear.length() > 0.0, "reference clear bounce should be lit");
@@ -1714,8 +1731,14 @@ mod tests {
 
         // Pre-rounding f32 moments: divide the raw sums by RAYS_PER_PROBE before
         // any f16 encoding (the f16 store happens later in `bake_sh_volume`).
-        let (_coeffs, sum_d, sum_d2) =
-            bake_probe_rgb_with_moments(&inputs, probe_pos, &static_light_refs, far_sentinel, 0);
+        let (_coeffs, sum_d, sum_d2) = bake_probe_rgb_with_moments(
+            &inputs,
+            probe_pos,
+            &static_light_refs,
+            None,
+            far_sentinel,
+            0,
+        );
         let mean_d = sum_d / RAYS_PER_PROBE as f32;
         let mean_sq_d = sum_d2 / RAYS_PER_PROBE as f32;
 

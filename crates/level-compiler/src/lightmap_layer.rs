@@ -16,10 +16,10 @@ use crate::map_data::{LightType, MapLight};
 use glam::DVec3;
 
 /// Bump when the per-light layer payload format or the single-light bake math
-/// changes. Folded into every `"lightmap_layer"` cache key (Task 7 wiring), so a
-/// bump invalidates all cached layers and forces a re-bake. Independent of
-/// `lightmap_bake::STAGE_VERSION` — the layer codec evolves separately from the
-/// whole-stage bake.
+/// changes. Folded into every `"lightmap_layer"` cache key, so a bump
+/// invalidates all cached layers and forces a re-bake. Each cached stage owns
+/// its own version constant and bumps independently — the layer codec evolves
+/// separately from the per-group SH and animated-weight-map stages.
 pub const LAYER_FORMAT_VERSION: u32 = 1;
 
 /// One covered atlas texel's contribution from a single light.
@@ -56,8 +56,10 @@ pub struct LayerTexel {
 /// Deliberately not value-sparse: the byte-identity gate requires the composite
 /// to reproduce coverage *and* the fallback normal on covered-but-dark texels, so
 /// each layer must enumerate the full covered set. Storage is therefore
-/// atlas-sized per layer rather than influence-sparse — accepted for a warm-only
-/// compiler cache (see plan Task 2 / research §1).
+/// atlas-sized per layer rather than influence-sparse — these are compiler-internal
+/// cache blobs, not shipped runtime data, so the storage overhead is acceptable;
+/// storing every covered texel (not just lit ones) is what lets the compositor
+/// reproduce the monolithic bake's coverage and dark-texel fallback exactly.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LightmapLayer {
     pub atlas_width: u32,

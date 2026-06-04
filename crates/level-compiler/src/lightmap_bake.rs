@@ -23,48 +23,6 @@ use crate::map_data::{FalloffModel, LightType, MapLight};
 /// Default atlas texel density: 4 cm per texel.
 pub const DEFAULT_TEXEL_DENSITY_METERS: f32 = 0.04;
 
-/// Bump this when the lightmap baking algorithm changes. Invalidates all
-/// existing cache entries for this stage.
-///
-/// v2 bump: lightmap bake gained a shadowed/unshadowed mode flag whose section
-/// trailer the runtime now reads. Re-bakes existing maps so cached entries
-/// carry the explicit mode and so the unshadowed bake's visibility-skip branch
-/// is exercised on a fresh cache miss.
-///
-/// v3: per-light `_shadow_type` routing (sdf-per-light-shadows).
-/// v4 bump (sdf-per-light-shadows Task 3): the shadow-type exclusion moved to
-/// the direct lightmap consumer and keys on the renamed two-value `ShadowType`
-/// (`sdf` dropped here; dynamic-tier lights drop via the position-axis
-/// namespace). A stale cached lightmap could carry a direct shadow for an `sdf`
-/// light the runtime now resolves separately (double-count), so the bump forces
-/// a re-bake of the now-disjoint direct set.
-///
-/// v5 bump (baked-soft-lightmap-shadows Task 3): the per-texel static-light gate
-/// changed from a hard 1-texel `shadow_visible` step to an area-sampled
-/// `soft_visibility` fraction multiplied into irradiance and the
-/// dominant-direction accumulation. The per-texel output values shift, so a
-/// stale cached lightmap would serve the old hard-shadow output; the bump forces
-/// a re-bake into the soft-shadow values.
-///
-/// v6 bump (baked-soft-lightmap-shadows F1): `soft_visibility`'s probe set moved
-/// from the first `SOFT_PROBE_SAMPLES` contiguous lattice indices to an evenly
-/// **strided subset** so the cheap probes sample the whole emitter (not just its
-/// top cap). Penumbra tests the old clustered probes missed (occluders crossing
-/// the emitter's lower hemisphere) now escalate and bake a fraction instead of a
-/// hard 0/1. The per-texel output shifts with NO input change (maps using the
-/// default light size have identical inputs), so the cache would serve stale
-/// pre-F1 output unless the version advances.
-///
-/// v7 bump (lightmap-resolution Tasks 1 + 3): `MAX_ATLAS_DIMENSION` raised from
-/// 4096 to 8192 (Task 1) and default irradiance storage shifted from `Rgba16F`
-/// to `BC6H` (Task 3). The cap and the irradiance format are both constants, not
-/// inputs — neither is part of `input_hash`. Without this bump a map that
-/// previously overflowed at 4096 and coarsened would serve stale coarse cache
-/// against an unchanged input under the higher ceiling, and a pre-Task-3 cached
-/// `Rgba16F` entry could be served to a `BC6H`-expecting runtime. The single
-/// bump covers both changes and forces a re-bake so both take effect.
-pub const STAGE_VERSION: u32 = 7;
-
 /// Atlas width/height when no face would fit otherwise. Power-of-two for BC6H block alignment.
 /// The 4-alignment BC6H requires is satisfied for free since dimensions are always power-of-two
 /// ≥ 4 here, meaning `ceil(w/4)` is always exact (no partial trailing block).
@@ -124,18 +82,6 @@ pub struct LightmapBakeCtx<'a> {
     /// Mutable: baker writes per-vertex lightmap UVs back after atlas placement.
     pub geometry: &'a mut GeometryResult,
     pub lights: &'a StaticBakedLights<'a>,
-}
-
-/// Owned, serializable snapshot of the data the lightmap bake reads. Used for
-/// cache key derivation: postcard-serialize this + LightmapConfig to get the
-/// input hash.
-#[derive(serde::Serialize)]
-pub struct LightmapInputs {
-    /// Static-baked lights (filter: !is_dynamic && animation.is_none()).
-    pub lights: Vec<crate::map_data::MapLight>,
-    /// Geometry at the point the bake runs. Pins vertex positions, UVs, and
-    /// index data — everything that affects chart shapes and shadow queries.
-    pub geometry: crate::geometry::GeometryResult,
 }
 
 /// CLI-driven configuration for the lightmap bake. Fields are included in the
@@ -257,9 +203,9 @@ impl CompositedAtlas {
 }
 
 /// Cheap pre-bake setup: chart planning, shelf packing, and writing lightmap
-/// UVs back into the geometry. Returned by [`prepare_atlas`] and consumed both
-/// by a fresh bake (cache miss) and by the cache-hit path that rebuilds
-/// charts/placements without re-running the per-texel ray casting.
+/// UVs back into the geometry. Returned by [`prepare_atlas`] and consumed by
+/// both the warm per-light composite path and the cold whole-atlas bake —
+/// called once before either branch, so the atlas layout is shared.
 #[derive(Debug)]
 pub struct PreparedAtlas {
     pub charts: Vec<Chart>,
@@ -272,10 +218,10 @@ pub struct PreparedAtlas {
 /// `split_shared_vertices`, `plan_charts`, `shelf_pack`, and
 /// `assign_lightmap_uvs`. Does NOT run the per-texel ray casting.
 ///
-/// Called both before a fresh bake (cache miss) and on cache hit to
-/// reconstruct charts/placements and re-apply lightmap UVs. The mutations
-/// applied here — vertex splitting and lightmap UV writes — run on all
-/// non-empty geometry, regardless of whether a full per-texel bake is
+/// Called once before either bake branch — the warm per-light composite path
+/// and the cold whole-atlas bake — so the atlas layout is shared. The
+/// mutations applied here — vertex splitting and lightmap UV writes — run on
+/// all non-empty geometry, regardless of whether a full per-texel bake is
 /// needed. Empty geometry returns a placeholder immediately without running
 /// any mutations.
 pub fn prepare_atlas(
@@ -3308,33 +3254,6 @@ mod tests {
             a, b,
             "soft-shadow bake drifted between runs; the area-sample seed must be a fixed \
              (x, y) hash with no RNG or hash-order dependence",
-        );
-    }
-
-    /// The cache-bump contract: `STAGE_VERSION` must advance whenever bake outputs
-    /// change without a corresponding input change (cap raise, format switch, etc.)
-    /// so previously-cached entries are invalidated rather than served stale.
-    /// The `assert_eq!` pins the current value so a future agent who bumps the
-    /// constant is forced to update the v-N changelog comment above — do that
-    /// before changing the expected value here. The `assert_ne!` exercises the
-    /// real invalidation mechanism (the cache key differs across versions) and
-    /// follows future bumps automatically; keep both.
-    #[test]
-    fn stage_version_bump_changes_lightmap_cache_key() {
-        use crate::cache::CacheKey;
-        assert_eq!(
-            STAGE_VERSION, 7,
-            "intentional bump — update the v7 changelog comment above when bumping, \
-             then update this expected value",
-        );
-        let input_hash = [0x42u8; 32];
-        let prior = CacheKey::new("lightmap", STAGE_VERSION - 1, &input_hash);
-        let current = CacheKey::new("lightmap", STAGE_VERSION, &input_hash);
-        assert_ne!(
-            prior.as_filename(),
-            current.as_filename(),
-            "STAGE_VERSION must bump so the lightmap cache key differs from the prior \
-             version's and stale entries are invalidated",
         );
     }
 

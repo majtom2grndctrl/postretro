@@ -356,6 +356,31 @@ behavior are unchanged** — only how the gate *judges* the (already-correct, be
 output. p99.9 bounds the body of the distribution and is robust to the floor-boundary outlier the `max`
 form over-weighted. Gate now passes on every fixture (campaign 0.090, occlusion 0.029, small ≤ 0.000).
 
+### Follow-up — warm-build group bake is serial (parallelism regression)
+
+`bake_sh_volume_grouped` (`sh_group.rs`) bakes groups in a serial `for group in &groups` loop
+(`bake_group` itself uses `.iter().map()`), while the monolithic `bake_sh_volume` bakes probes with
+`into_par_iter()`. So a cold-cache warm build #1 (every group a miss) runs materially slower than a
+`--no-cache` build of the same map — measured on occlusion-test: warm#1 **677 s** vs cold **228 s**
+(~3×). The deterministic fix is **rayon-over-groups**: each group's per-probe soft-visibility seed is
+its global probe index and there is no cross-group state, so a parallel group bake is byte-identical to
+the serial one. The only shared resource is the `StageCache` get/put — partition it per group or
+collect bakes then write. Tracked as a `// follow-up:` comment at the group loop.
+
+### Gate 3 follow-up (2) — global-index soft-visibility seed restores strict dimmer-or-equal
+
+The §2 "ordered-light-set caveat" (the soft-visibility seed mixing the light's *bake-slice* position)
+had a sharper consequence than just byte-identity: because the warm grouped path passes the **bounded**
+reaching set, a kept light sitting after a *dropped* light got a different sample-lattice rotation than
+in the cold (full-set) bake — so warm could come out slightly **brighter** in spots, contradicting the
+plan's strict "dimmer-or-equal, never brighter" claim. **Resolved** by threading each light's **global
+`static_lights` index** into `soft_visibility_seed` (via `sample_radiance_rgb`'s `light_global_indices`,
+plumbed through `bake_probe`/`bake_group`): a kept light now gets the SAME lattice rotation whether the
+bake sees the full set or the bounded set. The monolithic/cold path passes `None` (slice position ==
+global index), so its bytes are unchanged — `full_light_set_grouped_equals_monolithic` and the cold
+byte-identity gate still pass. The warm-SH p99.9 agreement tightens, and the dimmer-or-equal contract is
+now literally true.
+
 ## Key files
 
 - Substrate: `crates/level-compiler/src/cache.rs`, `main.rs` (cache wiring ~`:254-446`)

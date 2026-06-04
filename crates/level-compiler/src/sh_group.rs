@@ -35,8 +35,8 @@ use crate::sh_bake::{
 pub const SH_GROUP_STAGE_ID: &str = "sh_group";
 
 /// Bump this when the per-group SH bake algorithm, the reaching-light selection,
-/// the payload codec, or the assembly placement changes. Independent of
-/// `sh_bake::STAGE_VERSION` so each can evolve without invalidating the other.
+/// the payload codec, or the assembly placement changes. Versions independently
+/// from the other cached stages so each can evolve without invalidating the other.
 pub const SH_GROUP_STAGE_VERSION: u32 = 1;
 
 /// Edge length of a probe group, in probes, per axis. 4³ aligns with the
@@ -345,12 +345,20 @@ fn read_u16(data: &[u8], at: usize) -> Option<u16> {
 /// Bake one group's probes with its bounded reaching-light set, returning the
 /// per-probe `(BakedProbe, packed tile)` pairs in the group's ascending
 /// probe-index order. Rays trace full geometry; only the light sum is bounded.
+///
+/// `reaching` carries each kept light's global `static_lights` index, threaded
+/// into the soft-visibility seed (`bake_probe`'s `light_global_indices`) so a
+/// kept light gets the SAME lattice rotation whether the bake sees the full set
+/// (cold) or this bounded subset (warm) — preserving the strict dimmer-or-equal
+/// warm-SH contract.
 fn bake_group(
     inputs: &ShBakeCtx<'_>,
     layout: &ProbeGridLayout,
     group: &ProbeGroup,
-    reaching: &[&MapLight],
+    reaching: &[(usize, &MapLight)],
 ) -> Vec<(BakedProbe, Vec<OctahedralAtlasTexel>)> {
+    let reaching_refs: Vec<&MapLight> = reaching.iter().map(|(_, l)| *l).collect();
+    let global_indices: Vec<u64> = reaching.iter().map(|(i, _)| *i as u64).collect();
     group
         .probe_indices
         .iter()
@@ -358,7 +366,8 @@ fn bake_group(
             let probe = bake_probe(
                 inputs,
                 vec3_from(layout.probe_positions[global_index]),
-                reaching,
+                &reaching_refs,
+                Some(&global_indices),
                 layout.far_sentinel,
                 layout.validity[global_index] != 0,
                 global_index as u64,
@@ -380,10 +389,17 @@ fn bake_group(
 /// Derive the cache key for one group. Folds: the reach cutoff, the bounded
 /// reaching-light params (fixed postcard encoding, in `static_lights` order,
 /// each paired with its global index), the whole-map `GeometryResult` content
-/// hash, `probe_spacing`, and the probe-grid layout descriptor (origin /
-/// cell-size / dims + this group's probe bounds). Any geometry edit (via the
-/// whole-map hash) re-bakes every group; only the bounded light set localizes a
-/// *light* edit.
+/// hash, `probe_spacing`, the probe-grid layout descriptor (origin / cell-size /
+/// dims + this group's probe bounds), and this group's per-probe **validity**
+/// bytes. Any geometry edit (via the whole-map hash) re-bakes every group; only
+/// the bounded light set localizes a *light* edit.
+///
+/// Validity is folded because it is stored in the cached payload yet derives from
+/// `inputs.tree` / `exterior_leaves` — inputs the `GeometryResult` content hash
+/// does NOT cover. A brush edit that flips a leaf's solid/exterior status without
+/// changing emitted face geometry would otherwise serve a cached group with stale
+/// per-probe validity. Hashing the group's validity bytes captures that
+/// dependency directly and cheaply.
 pub(crate) fn group_cache_key(
     group: &ProbeGroup,
     reaching: &[(usize, &MapLight)],
@@ -427,6 +443,14 @@ pub(crate) fn group_cache_key(
         .chain(&group.probe_max)
     {
         hasher.update(&v.to_le_bytes());
+    }
+
+    // Per-probe validity for this group's probes (derived from tree /
+    // exterior_leaves, which the geometry content hash does not cover). Folded so
+    // a brush edit that flips a leaf's solid/exterior status — changing validity
+    // without changing emitted face geometry — invalidates the affected groups.
+    for &probe_index in &group.probe_indices {
+        hasher.update(&[layout.validity[probe_index]]);
     }
 
     let digest = hasher.finalize();
@@ -494,8 +518,7 @@ pub(crate) fn bake_or_load_group(
         }
     }
 
-    let reaching_refs: Vec<&MapLight> = reaching.iter().map(|(_, l)| *l).collect();
-    let baked = bake_group(inputs, layout, group, &reaching_refs);
+    let baked = bake_group(inputs, layout, group, &reaching);
 
     if let Some(cache) = cache {
         cache.put(&key, &encode_group_payload(&baked));
@@ -615,9 +638,11 @@ pub fn bake_sh_volume_grouped(
 ) -> OctahedralShVolumeSection {
     let layout = probe_grid_layout(inputs, config);
 
-    // Animation descriptors + slot table are whole-stage data the runtime needs;
-    // reuse the monolithic bake to produce them, then overwrite probes/atlas with
-    // the per-group assembly. Cheap relative to the per-probe ray bake.
+    // Animation descriptors + slot table are whole-stage data the runtime needs.
+    // `build_shell` is a parallel reimplementation of the monolithic bake's
+    // descriptor/slot-table logic (NOT a call into it) — its byte-identity to that
+    // path is pinned by `full_light_set_grouped_equals_monolithic`. Cheap relative
+    // to the per-probe ray bake.
     let shell = build_shell(inputs);
 
     let mut section = empty_assembled_section(&layout, shell);
@@ -628,6 +653,13 @@ pub fn bake_sh_volume_grouped(
     let static_lights = static_light_refs(inputs);
     let geom_hash = geometry_content_hash(inputs.geometry);
     let groups = partition_groups(layout.dims);
+    // follow-up: bake groups serially while the monolithic `bake_sh_volume` uses
+    // `into_par_iter()`, so a cold-cache warm build #1 runs materially slower than
+    // a `--no-cache` build (measured: occlusion-test warm#1 677s vs cold 228s,
+    // ~3x). The deterministic fix is rayon-over-groups: each group's per-probe
+    // seed is its global probe index and there is no cross-group state, so a
+    // parallel group bake is byte-identical to this serial one. (Cache get/put is
+    // the only shared resource; partition it or collect bakes then write.)
     for group in &groups {
         let baked = bake_or_load_group(
             inputs,
@@ -646,7 +678,9 @@ pub fn bake_sh_volume_grouped(
 /// Build the non-atlas shell (animation descriptors + slot table) for the warm
 /// assembled volume. These derive from the animated-light set + total light
 /// count, independent of the per-probe bake, so we recover them from a metadata
-/// view of the inputs rather than re-running the probe rays.
+/// view of the inputs rather than re-running the probe rays. This is a parallel
+/// reimplementation of the monolithic bake's descriptor/slot logic, not a call
+/// into it; byte-identity is pinned by `full_light_set_grouped_equals_monolithic`.
 fn build_shell(inputs: &ShBakeCtx<'_>) -> ShVolumeShell {
     use postretro_level_format::sh_volume::ANIMATED_SLOT_NONE;
     let animation_descriptors = inputs
@@ -675,7 +709,7 @@ mod tests {
     use crate::light_namespaces::{AnimatedBakedLights, StaticBakedLights};
     use crate::map_data::{FalloffModel, LightType, ShadowType};
     use crate::partition::{Aabb as CompilerAabb, BspLeaf, BspTree};
-    use crate::sh_bake::bake_sh_volume;
+    use crate::sh_bake::{bake_sh_volume, f16_bits_to_f32};
     use glam::DVec3;
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
     use postretro_level_format::texture_names::TextureNamesSection;
@@ -1169,6 +1203,66 @@ mod tests {
         );
     }
 
+    /// A change in per-probe validity (e.g. a brush edit that flips a leaf's
+    /// solid/exterior status without changing emitted face geometry) must change
+    /// the group's cache key — validity is stored in the cached payload but is not
+    /// covered by the `GeometryResult` content hash, so the key folds it directly.
+    #[test]
+    fn cache_key_changes_when_probe_validity_changes() {
+        let geo = floor_and_walls_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let tree = tree_all_empty();
+        let exterior: HashSet<usize> = HashSet::new();
+        let lights = vec![point_light(DVec3::new(2.0, 1.5, 2.0), 8.0, [1.0; 3])];
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let animated_lights = AnimatedBakedLights::from_lights(&lights);
+        let inputs = ShBakeCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
+            total_light_count: lights.len(),
+        };
+        let config = ShConfig { probe_spacing: 1.0 };
+        let layout = probe_grid_layout(&inputs, &config);
+        let geom_hash = geometry_content_hash(&geo);
+        let groups = partition_groups(layout.dims);
+        let static_refs = static_light_refs(&inputs);
+
+        let group = &groups[0];
+        let reaching = reaching_lights(&static_refs, group, &layout);
+        let base_key = group_cache_key(group, &reaching, &layout, config.probe_spacing, &geom_hash)
+            .as_filename();
+
+        // Flip one of this group's probes' validity; geometry hash is unchanged.
+        let mut edited_layout = ProbeGridLayout {
+            world_min: layout.world_min,
+            dims: layout.dims,
+            cell_size: layout.cell_size,
+            far_sentinel: layout.far_sentinel,
+            probe_positions: layout.probe_positions.clone(),
+            validity: layout.validity.clone(),
+        };
+        let probe = group.probe_indices[0];
+        edited_layout.validity[probe] ^= 1;
+
+        let edited_key = group_cache_key(
+            group,
+            &reaching,
+            &edited_layout,
+            config.probe_spacing,
+            &geom_hash,
+        )
+        .as_filename();
+        assert_ne!(
+            base_key, edited_key,
+            "flipping a probe's validity must change the group's cache key"
+        );
+    }
+
     /// Helper: shallow-clone an `ShBakeCtx` keeping the same borrows. Lets a test
     /// swap one field (the light set) via struct update syntax.
     fn clone_ctx<'a>(ctx: &ShBakeCtx<'a>) -> ShBakeCtx<'a> {
@@ -1426,45 +1520,59 @@ mod tests {
         }
     }
 
-    /// IEEE binary16 (stored as u16 bits in the octahedral tile) → f32. The tile
-    /// interior texels are exactly the post-f16-encode irradiance the gate-3
-    /// metric is defined on.
-    fn f16_bits_to_f32(bits: u16) -> f32 {
-        let sign = ((bits >> 15) & 0x1) as u32;
-        let exp = ((bits >> 10) & 0x1f) as u32;
-        let mant = (bits & 0x3ff) as u32;
-        let f = if exp == 0 {
-            if mant == 0 {
-                sign << 31
-            } else {
-                // Subnormal: normalize.
-                let mut e = -1i32;
-                let mut m = mant;
-                loop {
-                    e += 1;
-                    m <<= 1;
-                    if m & 0x400 != 0 {
-                        break;
-                    }
-                }
-                let exp32 = (127 - 15 - e) as u32;
-                let mant32 = (m & 0x3ff) << 13;
-                (sign << 31) | (exp32 << 23) | mant32
-            }
-        } else if exp == 0x1f {
-            (sign << 31) | (0xff << 23) | (mant << 13)
-        } else {
-            let exp32 = exp + (127 - 15);
-            (sign << 31) | (exp32 << 23) | (mant << 13)
-        };
-        f32::from_bits(f)
+    /// Partition + per-group bake + assemble using an UNBOUNDED reach: every
+    /// group sees the FULL static set (with identity global indices, since the
+    /// slice IS the global set), so no cutoff drops anything. This is the exact
+    /// "cold grouped" equivalent — the grouped path stripped of its only
+    /// approximation (the bounded light set) — letting gate (2) assert
+    /// byte-identity vs `bake_sh_volume` on EVERY fixture, not only those where
+    /// the production cutoff happens to admit every light. Mirrors
+    /// `bake_sh_volume_grouped`'s assembly exactly, differing only in the reach.
+    fn assemble_full_reach_grouped(
+        inputs: &ShBakeCtx<'_>,
+        config: &ShConfig,
+    ) -> OctahedralShVolumeSection {
+        let layout = probe_grid_layout(inputs, config);
+        let shell = super::build_shell(inputs);
+        let mut section = empty_assembled_section(&layout, shell);
+        if layout.is_empty() {
+            return section;
+        }
+
+        let static_refs = static_light_refs(inputs);
+        // Full set in global static_lights order → identity global indices.
+        let full_reaching: Vec<(usize, &MapLight)> = static_refs
+            .iter()
+            .enumerate()
+            .map(|(i, l)| (i, *l))
+            .collect();
+
+        for group in &partition_groups(layout.dims) {
+            let baked = bake_group(inputs, &layout, group, &full_reaching);
+            let records = baked
+                .into_iter()
+                .map(|(probe, tile)| GroupProbeRecord {
+                    metadata: probe.metadata,
+                    tile,
+                })
+                .collect();
+            place_group(
+                &mut section,
+                &BakedGroup {
+                    probe_indices: group.probe_indices.clone(),
+                    records,
+                },
+            );
+        }
+        section
     }
 
     /// Gate (2): a cold `--no-cache`-equivalent grouped bake with FULL
     /// (unbounded) reach is byte-identical to the monolithic `bake_sh_volume` on
-    /// every fixture — the ship-path regression guard. Extends the synthetic
-    /// `full_light_set_grouped_equals_monolithic` to real fixtures by forcing the
-    /// reach test to admit every light (an all-reaching set ⇒ no cutoff drop).
+    /// EVERY fixture — the ship-path regression guard. Drives the grouped bake
+    /// with an unbounded reach (`assemble_full_reach_grouped`, every light reaches
+    /// every group) so byte-identity is asserted unconditionally, not only on
+    /// fixtures where the production cutoff happens to drop nothing.
     #[test]
     #[ignore = "full-fixture SH bake; run with --ignored"]
     fn sh_cold_grouped_equals_monolithic_on_fixtures() {
@@ -1481,42 +1589,17 @@ mod tests {
             if layout.is_empty() {
                 continue;
             }
-            let static_refs = static_light_refs(&inputs);
-            let groups = partition_groups(layout.dims);
 
             // Cold/ship path: the exact whole-volume bake.
             let monolithic = bake_sh_volume(&inputs, &config);
+            // Cold grouped equivalent: every group sees the full light set.
+            let grouped = assemble_full_reach_grouped(&inputs, &config);
 
-            // The "cold grouped" equivalent: assemble per-group bakes that each
-            // see the FULL light set (the gate-2 guard is grouped-full == mono).
-            // We assert per-group that the bounded reach already admits every
-            // light at the production cutoff; on these fixtures the dilated reach
-            // covers the whole grid, so the grouped warm path IS the cold result.
-            let mut all_full = true;
-            for g in &groups {
-                if reaching_lights(&static_refs, g, &layout).len() != fx.lights.len() {
-                    all_full = false;
-                    break;
-                }
-            }
-            let grouped = bake_sh_volume_grouped(&inputs, &config, None);
-            if all_full {
-                assert_eq!(
-                    grouped.to_bytes(),
-                    monolithic.to_bytes(),
-                    "fixture {name}: full-reach grouped SH must equal the monolithic bake",
-                );
-            } else {
-                // Not every light reaches every group at the cutoff, so the
-                // grouped warm bake is a (benign) approximation here — gate (3)
-                // covers tolerance. Gate (2)'s byte-identity claim only holds for
-                // the full-reach case, which the synthetic test pins
-                // unconditionally. Record the situation so the run is legible.
-                eprintln!(
-                    "fixture {name}: cutoff drops some lights per group; \
-                     byte-identity guard deferred to the synthetic test, tolerance to gate (3)"
-                );
-            }
+            assert_eq!(
+                grouped.to_bytes(),
+                monolithic.to_bytes(),
+                "fixture {name}: full-reach grouped SH must equal the monolithic bake",
+            );
         }
     }
 
@@ -1560,6 +1643,13 @@ mod tests {
             for group in &groups {
                 let reaching = reaching_lights(&static_refs, group, &layout);
                 let reaching_refs: Vec<&MapLight> = reaching.iter().map(|(_, l)| *l).collect();
+                // Global static_lights indices of the bounded set — threaded into
+                // the warm bake's soft-visibility seed so a kept light keeps the
+                // SAME lattice rotation it gets in the full-set cold bake. Without
+                // this the warm bake could read slightly brighter, defeating the
+                // dimmer-or-equal property this gate measures.
+                let warm_global_indices: Vec<u64> =
+                    reaching.iter().map(|(i, _)| *i as u64).collect();
 
                 for &gi in &group.probe_indices {
                     if layout.validity[gi] == 0 {
@@ -1571,6 +1661,8 @@ mod tests {
                         &inputs,
                         pos,
                         &static_refs,
+                        // Cold: slice IS the global set, so identity (None).
+                        None,
                         layout.far_sentinel,
                         true,
                         gi as u64,
@@ -1579,6 +1671,7 @@ mod tests {
                         &inputs,
                         pos,
                         &reaching_refs,
+                        Some(&warm_global_indices),
                         layout.far_sentinel,
                         true,
                         gi as u64,

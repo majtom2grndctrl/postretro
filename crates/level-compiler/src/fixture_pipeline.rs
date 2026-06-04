@@ -1,4 +1,4 @@
-// Shared `#[cfg(test)]` fixture-loading helper for the Task 8 determinism gates.
+// Shared `#[cfg(test)]` fixture-loading helper for the SH/lightmap determinism gates.
 //
 // The compiler is a BINARY crate with no `[lib]` target, so cross-module
 // integration tests cannot live in `tests/` and `use` the in-crate modules —
@@ -11,7 +11,7 @@
 // only stores `data_script` as a string, so the gates need neither the
 // `scripts-build` sidecar nor any script compilation to obtain geometry/lights.
 //
-// See: context/plans/in-progress/incremental-bake-per-element/index.md (Task 8)
+// See: context/lib/build_pipeline.md §Build Cache
 
 #![cfg(test)]
 
@@ -27,7 +27,7 @@ use crate::map_format::MapFormat;
 use crate::partition::BspTree;
 use crate::{parse, partition, portals, visibility};
 
-/// The fixtures Task 8's gates loop over. Names (no extension) under
+/// The fixtures the SH/lightmap determinism gates loop over. Names (no extension) under
 /// `content/dev/maps/`. campaign-test + occlusion-test are the heavily-lit
 /// pair; soft_shadow_test and the animated-weight-map maps round out coverage.
 pub const GATE_FIXTURES: &[&str] = &[

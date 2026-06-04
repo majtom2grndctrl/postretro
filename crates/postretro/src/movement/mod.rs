@@ -808,13 +808,19 @@ fn try_enter_dash(
 /// `Normal`'s contextual friction throughout. Exits into `Normal` when total
 /// horizontal speed falls back into the steady band, or when the `DASH_MAX_MS`
 /// elapsed guard fires, whichever is first.
+///
+/// Per-state live data (`elapsed_ms`, `boost`) is borrowed in place from the
+/// active `Dash` variant — the dispatch resolves the component-vs-state borrow
+/// once (see `dispatch_state_intent`), so this intent mutates its own data
+/// directly rather than receiving it by value and re-packing it. The return is
+/// purely a transition: `Some(Normal)` on exit, `None` to stay in `Dash`.
 fn dash_intent(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
     gravity: f32,
     dt: f32,
-    elapsed_ms: f32,
-    boost: Vec3,
+    elapsed_ms: &mut f32,
+    boost: &mut Vec3,
 ) -> Option<MovementState> {
     // Dash params must exist to be in this state (entry required `Some`). A
     // descriptor swap that cleared `dash` mid-dash drops back to `Normal` rather
@@ -878,7 +884,6 @@ fn dash_intent(
     // boost` can no longer point back out of the wall. An angled dash keeps its
     // surviving tangential velocity in `base`, yielding the same clean slide a
     // `Normal`-state approach would produce.
-    let mut boost = boost;
     let boost_len = Vec2::new(boost.x, boost.z).length();
     if boost_len > 0.0 {
         let boost_dir = Vec3::new(boost.x / boost_len, 0.0, boost.z / boost_len);
@@ -916,7 +921,7 @@ fn dash_intent(
                 boost.z *= scale;
             }
         } else {
-            apply_normal_horizontal_decay(&mut boost, component, input, ground_speed, dt);
+            apply_normal_horizontal_decay(boost, component, input, ground_speed, dt);
         }
     } else {
         // `dash_drag > 0`: constant LINEAR deceleration of the boost only
@@ -925,7 +930,7 @@ fn dash_intent(
         let boost_speed = boost.length();
         if boost_speed > 0.0 {
             let new_speed = (boost_speed - dash_drag * dt).max(0.0);
-            boost *= new_speed / boost_speed;
+            *boost *= new_speed / boost_speed;
         }
     }
 
@@ -933,8 +938,10 @@ fn dash_intent(
     component.velocity.z = base.z + boost.z;
 
     // Exit: total horizontal speed back inside `Normal`'s steady band (run speed
-    // grounded / air cap airborne) OR the `DASH_MAX_MS` elapsed guard.
-    let elapsed_ms = elapsed_ms + dt * 1000.0;
+    // grounded / air cap airborne) OR the `DASH_MAX_MS` elapsed guard. The live
+    // `elapsed_ms` accumulates in place; the dispatch writes the mutated `Dash`
+    // data back when this returns `None` (stay).
+    *elapsed_ms += dt * 1000.0;
     let horiz_speed = (component.velocity.x * component.velocity.x
         + component.velocity.z * component.velocity.z)
         .sqrt();
@@ -943,11 +950,11 @@ fn dash_intent(
     // so `ground_speed` is the band we choose to exit into rather than one `Normal`
     // maintains in that mode. Either way the dash is hard-bounded by `DASH_MAX_MS`.
     let steady_cap = ground_speed;
-    if horiz_speed <= steady_cap || elapsed_ms >= DASH_MAX_MS {
+    if horiz_speed <= steady_cap || *elapsed_ms >= DASH_MAX_MS {
         return Some(MovementState::Normal);
     }
 
-    Some(MovementState::Dash { elapsed_ms, boost })
+    None
 }
 
 /// Apply `Normal`'s contextual horizontal decay to a horizontal velocity vector
@@ -987,6 +994,44 @@ fn apply_normal_horizontal_decay(
     }
 }
 
+/// Run the active state's velocity intent, resolving the
+/// component-vs-active-state borrow ONCE so each state owns its live data in
+/// place behind one uniform convention.
+///
+/// The active state is moved out of the component (replaced with the `Normal`
+/// placeholder) so the matched arm holds a `&mut` to the state's own live data
+/// while the intent also borrows `&mut component`. After the intent runs, the
+/// (in-place-mutated) state is written back; the returned `Option<MovementState>`
+/// is the transition `tick` applies after the substrate resolves collision —
+/// unchanged from the prior copy-out/re-pack flow, only now the per-state data
+/// is never copied out into the intent's parameter list nor re-packed on return.
+///
+/// Adding a new state means adding one arm here with its own `&mut` live data;
+/// `tick`'s structure and existing intent signatures are untouched.
+fn dispatch_state_intent(
+    component: &mut PlayerMovementComponent,
+    input: &MovementInput,
+    gravity: f32,
+    dt: f32,
+    events: &mut MovementEvents,
+) -> Option<MovementState> {
+    // Resolve the borrow once: move the live state into a local so its data can
+    // be borrowed `&mut` independently of `&mut component`. The `Normal`
+    // placeholder left behind is overwritten below (write-back or transition).
+    let mut state = std::mem::replace(&mut component.movement_state, MovementState::Normal);
+    let transition = match &mut state {
+        MovementState::Normal => normal_intent(component, input, gravity, dt, events),
+        MovementState::Dash { elapsed_ms, boost } => {
+            dash_intent(component, input, gravity, dt, elapsed_ms, boost)
+        }
+    };
+    // Write the (mutated) live state back. A returned transition still overrides
+    // this in `tick` after the substrate runs; this restore is what carries an
+    // unchanged state's in-place data updates (the `Dash` boost/elapsed) forward.
+    component.movement_state = state;
+    transition
+}
+
 pub(crate) fn tick(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
@@ -1001,13 +1046,10 @@ pub(crate) fn tick(
     // Per-state velocity intent: dispatch to the active state's intent step. It
     // authors `component.velocity` (gravity, jump, acceleration, friction, caps)
     // reading the grounded flag carried from last tick, and returns an optional
-    // transition to apply after the substrate resolves collision.
-    let transition = match component.movement_state {
-        MovementState::Normal => normal_intent(component, input, gravity, dt, &mut events),
-        MovementState::Dash { elapsed_ms, boost } => {
-            dash_intent(component, input, gravity, dt, elapsed_ms, boost)
-        }
-    };
+    // transition to apply after the substrate resolves collision. The dispatch
+    // resolves the component-vs-active-state borrow once and owns the per-state
+    // live data, so a new state plugs in without widening this call.
+    let transition = dispatch_state_intent(component, input, gravity, dt, &mut events);
 
     // 7 + 8. Shared physics substrate: sweep-and-slide, step-up, floor-push,
     // ground-stick, and collision-state/landing resolution. States change

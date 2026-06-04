@@ -5,6 +5,7 @@
 //
 // See: context/lib/entity_model.md §7 (collision/movement)
 //      context/lib/movement.md §4 (state-machine seam)
+//      context/lib/movement.md §6 (input forgiveness — D5)
 
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
@@ -170,9 +171,10 @@ impl PlayerMovementComponent {
 
     /// Landing-refresh point: reset every ability budget on floor contact.
     /// Invoked from `tick` after the collision substrate reports floor
-    /// contact (`SubstrateResult::hit_floor`). Today resets `air_jumps_remaining`
-    /// and (when dash is enabled) `air_dashes_remaining`. Future ability budgets
-    /// hook this same single point so all charges replenish uniformly on landing.
+    /// contact (`SubstrateResult::hit_floor`). Resets `air_jumps_remaining`,
+    /// `air_dashes_remaining` (when dash is enabled), `jump_spent`, and
+    /// `coyote_timer_ms`. Future ability budgets hook this same single point
+    /// so all charges replenish uniformly on landing.
     pub(crate) fn refresh_on_landing(&mut self) {
         self.air_jumps_remaining = self.air.jumps;
         // Air-dash budget refreshes through the same single landing point. When

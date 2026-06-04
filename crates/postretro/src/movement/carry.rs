@@ -15,8 +15,9 @@ use glam::Vec3;
 /// as non-breaking new variants when `movement--wall-run` lands.
 ///
 /// `Zero`/`Scale` ship as the transform library but have no production consumer
-/// yet — today only `Normal`↔`Dash` exist and both use the `KEEP_ALL` no-op.
-/// `movement--slide` is the first non-trivial consumer. The transforms are
+/// yet — today only the `Normal`↔`Dash` transitions exist and both use the
+/// `KEEP_ALL` no-op (`KeepHorizontal` + `KeepBoost`); `movement--slide` is the
+/// first non-trivial consumer of `Zero` or `Scale`. The transforms are
 /// unit-tested now so the seam, policy, and library land together.
 #[allow(dead_code)] // `Zero`/`Scale`: forward-looking vocabulary, consumed by `movement--slide`.
 #[derive(Debug, Clone, Copy, PartialEq)]

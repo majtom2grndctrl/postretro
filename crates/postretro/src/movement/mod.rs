@@ -651,10 +651,10 @@ fn derive_jump_edges(component: &PlayerMovementComponent, jump_pressed: bool) ->
 
 /// Advance the forgiveness timers for the NEXT tick, after the substrate has
 /// resolved collision (so `component.is_grounded` reflects this tick's outcome).
-/// Coyote accumulates airborne ms (reset on landing by `refresh_on_landing`);
-/// the jump buffer counts down while airborne and DROPS SILENTLY when it expires
-/// before landing. Windows stay in ms, advanced off `dt * 1000` like the dash
-/// cooldown.
+/// Coyote accumulates airborne ms; reset to 0 each grounded tick here and at the
+/// landing-refresh point (`refresh_on_landing`). The jump buffer counts down
+/// while airborne and DROPS SILENTLY when it expires before landing. Windows
+/// stay in ms, advanced off `dt * 1000` like the dash cooldown.
 fn advance_forgiveness(component: &mut PlayerMovementComponent, dt: f32) {
     let dt_ms = dt * 1000.0;
     if component.is_grounded {
@@ -1160,15 +1160,17 @@ fn apply_carry(rule: CarryRule, velocity: &mut Vec3, boost: Vec3) {
 /// The active state is moved out of the component (replaced with the `Normal`
 /// placeholder) so the matched arm holds a `&mut` to the state's own live data
 /// while the intent also borrows `&mut component`. After the intent runs, the
-/// (in-place-mutated) state is written back; the returned `Option<MovementState>`
-/// is the next state `tick` applies after the substrate resolves collision.
+/// (in-place-mutated) state is written back.
 ///
-/// The CARRY STEP runs here, at the transition edge: when an intent returns a
-/// `Transition`, its carry-rule is applied to `component.velocity` reading the
-/// OUTGOING state's live boost (the `Dash` boost) BEFORE the outgoing `state`
-/// local is dropped — so the carry sees the boost as it leaves. Only the next
-/// state then flows out to `tick`. Velocity carry is owned by this dispatch
-/// point, never by a state intent (D6).
+/// The CARRY STEP runs here, at the transition edge — NOT in `tick`: when an
+/// intent returns a `Transition`, its carry-rule is applied to
+/// `component.velocity` reading the OUTGOING state's live boost (the `Dash`
+/// boost) BEFORE the outgoing `state` local is dropped — so the carry sees the
+/// boost as it leaves. The returned `Option<MovementState>` is ONLY the next
+/// state for `tick` to write after the substrate resolves collision; by the time
+/// `tick` sees it, carry is already committed. Searching `tick` for carry
+/// application will come up empty by design — it lives here. Velocity carry is
+/// owned by this dispatch point, never by a state intent (D6).
 ///
 /// `jump_edges` are the forgiveness-derived jump edges `tick` computed once
 /// before dispatch; only `normal_intent` consumes them (the `Dash` state drops
@@ -1247,8 +1249,10 @@ pub(crate) fn tick(
 
     // Arm the jump buffer from a fresh airborne press the intents did NOT turn
     // into a jump (no coyote/air jump fired): retain it for the landing-tick
-    // fire. Only arm when no buffer is already pending so the window counts from
-    // the first airborne press (a held button re-arms only after expiry).
+    // fire. Only arm when no buffer is already pending (`<= 0.0`): re-arming a
+    // live buffer on a held button would reset its countdown each tick,
+    // extending the window indefinitely. The guard ensures the window counts
+    // from the first press and re-arms only after full expiry or consumption.
     if input.jump_pressed
         && !was_grounded
         && !events.jumped

@@ -235,11 +235,14 @@ impl PlayerMovementDescriptor {
 ///
 /// This sub-object is OPTIONAL on [`PlayerMovementDescriptor`]: when the whole
 /// `forgiveness` object is absent, the documented engine defaults apply (see the
-/// `DEFAULT_*` constants). When the object is present, each field is itself
-/// optional and falls back to its engine default; an explicit `0` disables that
-/// grace independently (the regression fixtures pin both to zero to preserve
-/// exact edge timing). Field names are camelCase on the wire (`coyoteMs`,
-/// `jumpBufferMs`) and snake_case in Rust.
+/// `DEFAULT_*` constants). When the object is present, each wire field is
+/// individually optional — `forgiveness_params_from_js` / `forgiveness_params_from_lua`
+/// substitute per-field defaults for any omitted key; the resulting Rust struct
+/// always carries concrete `f32` values (`coyote_ms == 0.0` means explicitly
+/// zeroed, not absent). An explicit `0` disables that grace independently (the
+/// regression fixtures pin both to zero to preserve exact edge timing). Field
+/// names are camelCase on the wire (`coyoteMs`, `jumpBufferMs`) and snake_case
+/// in Rust.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ForgivenessParams {
     /// Coyote-time window in milliseconds: a grounded jump is permitted for this

@@ -26,8 +26,10 @@ redesign of the vertex layout, bone palette, or CPU/GPU module split.
 - **Multi-primitive materials.** A mesh with multiple primitives currently merges into one stream
   but the renderer binds only `material_keys.first()`. Carry a per-primitive **submesh range**
   (material key + index range) on the loaded model; the renderer resolves every distinct key to a
-  material bind group and the mesh pass draws each submesh with its own material. Single-instance,
-  flat-lit (instancing + SH lighting stay the next task).
+  material bind group and the mesh pass draws each submesh with its own material. Per-primitive submesh
+  *draw splitting* is deliberately pulled into this task (the research brief had filed it under the
+  next render-pass task); only many-*instance* draw and SH lighting stay out. Single-instance,
+  flat-lit.
 - **`extras` → entity tags.** Enable the `gltf` crate `extras` feature. Read the model's top-level
   `extras` (raw JSON), extract a `tags` array of strings (mirroring map `_tags`), and carry it onto
   the spawned entity through the existing tags mechanism (`registry.set_tags` / `try_spawn`). Absent
@@ -50,9 +52,10 @@ redesign of the vertex layout, bone palette, or CPU/GPU module split.
   Read `TANGENT_0` if present; keep the placeholder when absent — unchanged from the slice.
 - **Model normal / metallic-roughness textures.** Only base-color resolves; the lighting steps bake
   and bind the rest.
-- **Model-PNG bake *discovery*.** This task is runtime-only. The model's base-color `.prm` is assumed
-  present in the cache (for the dev asset it already is — content-hashing reproduces the pre-baked
-  `581e80bb…` key). Automating prl-build discovery of model PNGs rides with classname spawning.
+- **Model-PNG bake *discovery*.** This task is runtime-only. The model's source base-color PNG must
+  be present beside the glTF at runtime (the resolver reads its bytes to content-hash); that PNG plus
+  its pre-baked `.prm` together reproduce the `581e80bb…` key. Automating prl-build discovery of
+  model PNGs rides with classname spawning.
 - **Multi-mesh documents.** One mesh per model (first mesh, all primitives). Documents with multiple
   meshes are deferred.
 - **Embedded / `.glb` images** (`gltf::image::Source::View`) — base-color must be an external URI;
@@ -72,7 +75,8 @@ redesign of the vertex layout, bone palette, or CPU/GPU module split.
 - [ ] The renderer builds one material bind group per distinct submesh key and the mesh pass records
       one draw per submesh; a model with N materials renders all N (not just the first).
 - [ ] A glTF carrying `extras` `{ "tags": ["a","b"] }` spawns an entity whose `get_tags` returns
-      those tags; absent/malformed `extras` spawns with no tags and no error.
+      those tags (verified via a Rust-side `registry.get_tags` assertion — `get_tags` is `pub(crate)`);
+      absent/malformed `extras` spawns with no tags and no error.
 - [ ] Malformed/unsupported glTF still returns `Err`, never panics (slice invariant preserved).
 - [ ] `cargo build` and `cargo test` pass workspace-wide (the `gltf` `extras` feature change builds
       every crate).
@@ -82,28 +86,53 @@ redesign of the vertex layout, bone palette, or CPU/GPU module split.
 ## Tasks
 
 ### Task 1: Image-decode-free loader entry
-Swap `load_model`'s `gltf::import` for `gltf::Gltf::open` + `gltf::import_buffers` (base = glTF
-parent dir). All existing readers (positions, skin, animation) consume the returned `buffer::Data`
-unchanged. No image data loaded. This is the foundation the material task builds on (it needs the
-parent dir + the no-decode guarantee).
+Swap `load_model`'s `gltf::import` for `gltf::Gltf::open` + `gltf::import_buffers`, called as
+`gltf::import_buffers(&document, Some(parent_dir), None)` for the external-`.gltf` path (the `.glb`
+blob arg is out of scope, consistent with the embedded-image non-goal). All existing readers
+(positions, skin, animation) consume the returned `buffer::Data` unchanged. No image data loaded.
+This is the foundation the material task builds on (it needs the parent dir + the no-decode guarantee).
 
 ### Task 2: Runtime content-hash materials + submesh ranges
-Add a `blake3` dependency to the `postretro` crate. Replace `staged_material_key` with a resolver:
-base-color URI → `parent_dir.join(uri)` → read bytes → `blake3` hex (zero sentinel when the URI is
-absent, embedded, or the file is unreadable). In `load_mesh`, record a per-primitive submesh range
-(key + `[start, len)` into the merged index buffer) alongside the merged stream. Restructure
-`LoadedModel` to carry submesh ranges instead of a bare `material_keys` vec. Update
-`resolve_skinned_model_material` → resolve every submesh key to a `LoadedTexture`/bind group, and
-`mesh_pass` to store per-submesh `(bind_group, index_range)` and iterate them in `record_draw`
-(single instance, base index 0 — unchanged).
+Add a `blake3` dependency to the `postretro` crate (`blake3` has no workspace entry to inherit — add
+it to the root `[workspace.dependencies]` and use `blake3.workspace = true` in
+`crates/postretro/Cargo.toml`, mirroring how `gltf`/`serde_json` are wired). Replace
+`staged_material_key` with a resolver: base-color URI → `parent_dir.join(uri)` → read bytes →
+`blake3` hex (zero sentinel when the URI is absent, embedded, or the file is unreadable). The loader
+*reproduces the recipe inline* (`*blake3::hash(png_bytes).as_bytes()` hex) — it cannot call
+`filename_key_for`, which is private and lives in the `level-compiler` crate; `parse_blake3_key` *is*
+reusable (it already lives in `render/mod.rs` beside `resolve_skinned_model_material`). In
+`load_mesh`, record a per-primitive submesh range (key + `Range<u32>` = `start..end` into the merged
+index buffer, as `draw_indexed` consumes) alongside the merged stream. Add a test asserting the
+per-primitive submesh ranges partition the merged index buffer with no gaps/overlaps and all indices in
+vertex range (matching the AC). Each submesh's `load_textures` call uses a generic diagnostic name
+(the material-key hex or primitive index), retiring the renderer-side hardcoded `"decraniated_baseColor"`
+literal currently passed at the single-material call (note: that literal is renderer-side, not
+loader-side). Restructure `LoadedModel` to carry `submeshes: Vec<Submesh>` instead of a bare
+`material_keys` vec — this also requires updating the `gltf_loader.rs` real-model test that pins the
+`581e80bb…` key and per-primitive count (it reads `model.material_keys`), plus the `material_keys`
+producer/consumer sites in `load_mesh`/`load_model` and `resolve_skinned_model_material`. Update
+`resolve_skinned_model_material` → resolve every submesh key to a `LoadedTexture`/bind group,
+returning `Vec<(BindGroup, Range<u32>)>`; update `set_model` to accept that vec (replacing its single
+`material_bind_group` param). Update `mesh_pass` to store per-submesh `(bind_group, index_range)` and
+iterate them in `record_draw` (single instance, base index 0 — unchanged).
 
 ### Task 3: `extras` → entity tags
-Enable `features = ["extras"]` on the workspace `gltf` dependency. In the loader, read the model's
+Enable `features = ["extras"]` on the workspace `gltf` dependency — this requires converting the
+workspace `gltf = "1.4"` string dep to table form `gltf = { version = "1.4", features = ["extras"] }`
+(default features retained; do not set `default-features = false`) and updating the adjacent
+default-features comment in the root `Cargo.toml`. In the loader, read the model's
 top-level `extras` `RawValue`, `serde_json`-parse a `{ "tags": [String] }` shape, and carry
 `tags: Vec<String>` on `LoadedModel`. Plumb the tags to the spawn seam: `load_skinned_model` returns
-`Option<Vec<String>>` (None = load failed / no spawn; `Some(tags)` = success), and
-`spawn_mesh_entity_if_loaded` applies them via `try_spawn(transform, &tags)` (replacing its `bool`
-gate). Update the single caller (`main.rs` level-install).
+`Option<Vec<String>>` (`None` = load failed, no spawn; `Some(tags)` = loaded and spawns, where `tags`
+may be empty — a successful load with no `extras` is `Some(vec![])`, not `None`). `spawn_mesh_entity_if_loaded`
+applies them via `try_spawn(transform, &tags)` (replacing its `bool` gate): the seam replaces its
+`loaded: bool` param with `Option<Vec<String>>`, calls `try_spawn(transform, &tags)` which returns
+`Option<EntityId>`, then still attaches `MeshComponent { model }` to the returned id (threading the
+slot-exhaustion `None`). The `MeshComponent` attachment must not be dropped. Update the single caller
+(`main.rs` level-install) and the two unit tests in `main.rs` that call `spawn_mesh_entity_if_loaded`
+with a `bool` (`spawn_seam_skips_entity_when_model_load_fails`,
+`spawn_seam_spawns_one_mesh_entity_when_model_loads`) — these test call sites must also migrate to the
+new `Option<Vec<String>>` signature.
 
 ## Sequencing
 
@@ -115,12 +144,18 @@ so coordinate the one struct's field additions.
 ## Rough sketch
 
 - Loader: `crates/postretro/src/model/gltf_loader.rs`. `LoadedModel` swaps `material_keys: Vec<String>`
-  for a `submeshes: Vec<Submesh>` (`{ material_key: String, indices: Range<u32> }` or equivalent) and
-  gains `tags: Vec<String>`. `load_mesh` returns submesh ranges; `load_model` reads `document.extras()`.
-- Material key: mirror `filename_key_for`'s diffuse case — `*blake3::hash(png_bytes).as_bytes()`
-  hex-encoded. The hex→`[u8;32]` round-trips through the existing `parse_blake3_key`.
+  for a `submeshes: Vec<Submesh>` (`{ material_key: String, indices: Range<u32> }` where `indices` is
+  `start..end` as `draw_indexed` consumes, not `[start, len)`) and gains `tags: Vec<String>`.
+  `load_mesh` returns submesh ranges; `load_model` reads `document.extras()` (`&Option<Box<RawValue>>`
+  — handle the `None`/absent arm as empty tags; deserialize into `{ tags: Option<Vec<String>> }` with
+  `#[serde(default)]`, ignoring unknown keys; any deserialize error yields no tags, not an error).
+- Material key: reproduce `filename_key_for`'s diffuse recipe inline — `*blake3::hash(png_bytes).as_bytes()`
+  hex-encoded (`filename_key_for` is private to `level-compiler` and not callable from `postretro`).
+  The hex→`[u8;32]` round-trips through the existing `parse_blake3_key` (lives in `render/mod.rs`).
 - Renderer: `crates/postretro/src/render/mod.rs` `resolve_skinned_model_material` becomes a
-  per-submesh loop (reuse `load_textures` + `build_material_bind_group` per distinct key);
+  per-submesh loop (reuse `load_textures` + `build_material_bind_group` per distinct key) and returns
+  `Vec<(BindGroup, Range<u32>)>`; `set_model`'s signature changes from a single `material_bind_group`
+  to `Vec<(BindGroup, Range<u32>)>`, which `resolve_skinned_model_material` produces and hands to it.
   `crates/postretro/src/render/mesh_pass.rs` `UploadedModel` holds `Vec<(BindGroup, Range<u32>)>`;
   `record_draw` sets each submesh's group 1 + draws its index range.
 - Tags: existing `registry.rs` `try_spawn(transform, tags)` / `set_tags`. No new entity surface.

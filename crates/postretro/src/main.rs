@@ -98,11 +98,17 @@ fn content_root_from_map(map_path: &str) -> PathBuf {
 /// no entity, no panic, slice continues (the degrade AC). On `true` it spawns
 /// one entity at `position` carrying `MeshComponent { model }`. Factored out so
 /// the spawn decision is unit-testable without a GPU context.
+///
+/// `yaw` is a Y-axis rotation (radians) baked into the entity `Transform` so the
+/// mesh-render collector orients the model via
+/// `Mat4::from_scale_rotation_translation`. The seam uses this to face the model
+/// toward the player start.
 fn spawn_mesh_entity_if_loaded(
     registry: &mut crate::scripting::registry::EntityRegistry,
     loaded: bool,
     model: &str,
     position: glam::Vec3,
+    yaw: f32,
 ) -> Option<crate::scripting::registry::EntityId> {
     use crate::scripting::components::mesh::MeshComponent;
     use crate::scripting::registry::Transform;
@@ -112,6 +118,7 @@ fn spawn_mesh_entity_if_loaded(
     }
     let id = registry.spawn(Transform {
         position,
+        rotation: glam::Quat::from_rotation_y(yaw),
         ..Transform::default()
     });
     if let Err(err) = registry.set_component(
@@ -123,7 +130,7 @@ fn spawn_mesh_entity_if_loaded(
         log::warn!("[Model] failed to attach MeshComponent for {model}: {err}");
         return None;
     }
-    log::info!("[Model] spawned mesh entity for {model} at {position:?}");
+    log::info!("[Model] spawned mesh entity for {model} at {position:?} (yaw={yaw:.3} rad)");
     Some(id)
 }
 
@@ -1607,14 +1614,49 @@ impl App {
                 .content_root
                 .join("models/decraniated_low_poly_retro_pixel/scene.gltf");
 
-            // PROVISIONAL spawn position (manual-visual knob — Task 6 tweaks
-            // this if the model isn't visible). Anchored to the level geometry
-            // center (`spawn_position`, the same fallback the camera uses with
-            // no `player_spawn`), nudged up so the model's feet sit near the
-            // floor center where the camera is looking. Engine world is Y-up
-            // metric; `MESH_SPAWN_Y_OFFSET` lifts the origin off the center.
+            // PROVISIONAL spawn placement (manual-visual knob) — the chokepoint a
+            // future classname handler replaces. When the map has a `player_spawn`
+            // we plant the model a few meters straight ahead of the player start,
+            // facing back toward the camera, so it sits in the initial view. With
+            // no `player_spawn` we fall back to the level geometry center (the same
+            // fallback the camera uses), nudged so the model's feet sit near the
+            // floor. Engine world is Y-up metric.
+            //
+            // `MESH_SPAWN_DISTANCE` is how far ahead of the player start to plant
+            // the model; `MESH_SPAWN_Y_OFFSET` lowers the origin toward the feet.
+            const MESH_SPAWN_DISTANCE: f32 = 3.0;
             const MESH_SPAWN_Y_OFFSET: f32 = -1.0;
-            let mut spawn_pos = world.spawn_position();
+
+            // Peek the first `player_spawn` straight from the world records (the
+            // `pending_spawn_points` partition runs later in this function). Engine
+            // convention angles: x=pitch, y=yaw, z=roll (radians).
+            let player_start = world
+                .map_entities
+                .iter()
+                .find(|e| e.classname == PLAYER_START_CLASSNAME)
+                .map(|e| (glam::Vec3::from(e.origin), e.angles[1]));
+
+            let (mut spawn_pos, model_yaw) = match player_start {
+                Some((player_origin, player_yaw)) => {
+                    // Reuse the camera's yaw→forward convention
+                    // (`Camera::forward`: `(-sin(yaw), 0, -cos(yaw))`) so "ahead of
+                    // the player" matches where the camera actually looks. Face the
+                    // model back at the player (yaw + PI) so its front is visible.
+                    let forward = glam::Vec3::new(-player_yaw.sin(), 0.0, -player_yaw.cos());
+                    let pos = player_origin + forward * MESH_SPAWN_DISTANCE;
+                    log::info!(
+                        "[Model] placing ahead of player_start: player at {player_origin:?} (yaw={player_yaw:.3}), model at {pos:?}",
+                    );
+                    (pos, player_yaw + std::f32::consts::PI)
+                }
+                None => {
+                    log::info!(
+                        "[Model] no player_spawn; falling back to geometry center {:?}",
+                        world.spawn_position(),
+                    );
+                    (world.spawn_position(), 0.0)
+                }
+            };
             spawn_pos.y += MESH_SPAWN_Y_OFFSET;
 
             let loaded = renderer.load_skinned_model(&model_path, &prm_cache_root);
@@ -1632,6 +1674,7 @@ impl App {
                 loaded,
                 &model_path.to_string_lossy(),
                 spawn_pos,
+                model_yaw,
             );
         }
 
@@ -2316,7 +2359,8 @@ mod tests {
         let mut registry = EntityRegistry::new();
         // `loaded = false` mirrors a malformed/missing glTF that the renderer's
         // `load_skinned_model` already warned about and rejected.
-        let result = spawn_mesh_entity_if_loaded(&mut registry, false, "bad/path.gltf", Vec3::ZERO);
+        let result =
+            spawn_mesh_entity_if_loaded(&mut registry, false, "bad/path.gltf", Vec3::ZERO, 0.0);
         assert!(result.is_none(), "no entity id when the load failed");
         assert_eq!(
             registry.iter_with_kind(ComponentKind::Mesh).count(),
@@ -2336,6 +2380,7 @@ mod tests {
             true,
             "models/decraniated/scene.gltf",
             Vec3::new(1.0, 2.0, 3.0),
+            std::f32::consts::FRAC_PI_2,
         )
         .expect("a successful load must spawn exactly one entity");
 
@@ -2346,6 +2391,16 @@ mod tests {
         );
         let mesh: &MeshComponent = registry.get_component(id).expect("MeshComponent attached");
         assert_eq!(mesh.model, "models/decraniated/scene.gltf");
+
+        // The yaw arg is baked into the Transform rotation so the render
+        // collector can orient the model toward the player.
+        let transform: &crate::scripting::registry::Transform =
+            registry.get_component(id).expect("Transform present");
+        let expected = glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        assert!(
+            transform.rotation.abs_diff_eq(expected, 1e-6),
+            "spawn yaw must be baked into the Transform rotation",
+        );
     }
 
     #[test]

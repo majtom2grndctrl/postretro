@@ -78,28 +78,39 @@ which invalidates every group via the whole-map geometry content hash).
 > checked by running `prl-build` (the `postretro-level-compiler` binary) plus the
 > `sh_group`/`sh_bake` test suites.
 
-- [ ] `full_light_set_grouped_equals_monolithic` still passes: the full-light-set
+- [x] `full_light_set_grouped_equals_monolithic` still passes: the full-light-set
       grouped bake is byte-identical to the monolithic `bake_sh_volume`.
-- [ ] `sh_cold_grouped_equals_monolithic_on_fixtures` still passes on every
+- [x] `sh_cold_grouped_equals_monolithic_on_fixtures` still passes on every
       `content/dev/maps/` fixture (the cold/full-reach SH ship-path regression
-      guard).
-- [ ] `warm_sh_within_tolerance_on_fixtures` still passes: warm SH stays within
+      guard). (Run with `--ignored`.)
+- [x] `warm_sh_within_tolerance_on_fixtures` still passes: warm SH stays within
       `WARM_SH_P999_REL_IRRADIANCE_ERROR` (p99.9 of the floored relative error) on
-      every fixture.
-- [ ] The existing `sh_group` suite still passes: `grouped_bake_is_self_consistent`
+      every fixture. (Run with `--ignored`.)
+- [x] The existing `sh_group` suite still passes: `grouped_bake_is_self_consistent`
       (a warm grouped bake is deterministic across two runs),
       `cache_round_trip_hits_on_second_build`, `corrupt_cache_entry_re_bakes`,
       `partition_covers_every_probe_exactly_once`.
-- [ ] On a heavily-lit fixture (occlusion-test or campaign-test): the cold-cache
+- [~] On a heavily-lit fixture (occlusion-test or campaign-test): the cold-cache
       warm build #1 (every group a miss) passes if warm #1 wall-clock ≤ 1.1× the
       `--no-cache` build on the named fixture (ideally faster); the original ~3x
-      regression is gone. Wall-clock for both is recorded.
-- [ ] A second (all-hit) warm build still serves every group from cache and emits
+      regression is gone. Wall-clock for both is recorded. **Result (occlusion-test):
+      warm #1 all-miss = 165 s, `--no-cache` cold = 120 s, warm #2 all-hit = 10 s.
+      The ~3x regression is gone (warm #1 fell from ~677 s to 165 s). The ≤1.1×
+      sub-clause is NOT met (1.375×): the ~45 s residual is `StageCache::put`'s
+      per-entry `sync_all()` fsync tax across ~900 group writes, which this plan
+      scoped out (see Open questions). Accepted by owner; see fsync follow-up below.**
+- [x] A second (all-hit) warm build still serves every group from cache and emits
       a `.prl` byte-identical to the first warm build (no regression to the
-      existing round-trip-skip behavior).
-- [ ] `cargo fmt --check`, `cargo clippy -p postretro-level-compiler -- -D warnings`, and `cargo test` are clean
+      existing round-trip-skip behavior). (warm #1 == warm #2, sha256 verified.)
+- [x] `cargo fmt --check`, `cargo clippy -p postretro-level-compiler -- -D warnings`, and `cargo test` are clean
       for the `postretro-level-compiler` crate.
-- [ ] No `unsafe`.
+- [x] No `unsafe`.
+
+> **Follow-up (deferred, owner-accepted):** the residual gap to the ≤1.1× target is
+> `StageCache::put`'s per-entry `sync_all()` (`cache.rs`), now parallel but still ~45 s
+> across ~900 concurrent puts on occlusion-test. Closing it (batched/deferred fsync, or
+> dropping per-entry `sync_all`) is out of scope here — file as its own perf task if the
+> cold-bake cache-write tax becomes a priority.
 
 ## Determinism (hard constraint)
 

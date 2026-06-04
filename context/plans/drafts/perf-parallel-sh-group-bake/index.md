@@ -35,8 +35,10 @@ which invalidates every group via the whole-map geometry content hash).
 ### In scope
 
 - Parallelize the all-miss warm SH bake with rayon, mirroring the monolithic
-  bake's order-preserving parallel structure. Either parallelism axis is on the
-  table (see Approach); the spec recommends rayon over the group list.
+  bake's order-preserving parallel structure. Group-level parallelism (rayon over
+  the group list) is the committed approach (see Approach); per-probe-within-group
+  parallelism is a documented fallback only if the wall-clock measurement shows
+  group count is too low to saturate cores.
 - Preserve byte-identical output: the existing determinism gates
   (`full_light_set_grouped_equals_monolithic`,
   `sh_cold_grouped_equals_monolithic_on_fixtures`,
@@ -46,19 +48,27 @@ which invalidates every group via the whole-map geometry content hash).
   requirement explicitly and satisfy it (see Cache writes).
 - Remove the `// follow-up:` comment at the group loop once the work lands.
 - Record before/after wall-clock on a heavily-lit fixture (the cold-cache warm
-  build #1 vs `--no-cache`).
+  build #1 vs `--no-cache`). To produce the all-miss warm build, delete the cache
+  dir (`.build-caches/prl-cache/` at the workspace root) and run `prl-build <map>`
+  (warm path, every group a miss); separately run `prl-build --no-cache <map>` for
+  the cold baseline; time both.
 
 ### Out of scope
 
 - The lightmap path (per-light layers, compositor) — untouched.
 - The cache key derivation (`group_cache_key`), the reach cutoff
-  (`SH_REACH_CUTOFF_METERS = 16.0`), the group size (`SH_GROUP_DIM = 4`), and the
-  warm/cold contract — unchanged. This is a parallelization of existing serial
-  code, not an algorithm change.
+  (`SH_REACH_CUTOFF_METERS = 16.0`), the group size (`SH_GROUP_DIM = 4`), the
+  warm/cold contract, and `encode_group_payload`/`decode_group_payload` (the
+  per-group cache payload encode/decode; the byte-stable-payload property the
+  determinism argument relies on must not be touched) — unchanged. This is a
+  parallelization of existing serial code, not an algorithm change.
 - The bake math: `bake_probe`, `pack_octahedral_irradiance_tile`, the per-probe
   global-index seeding, the reaching-light selection and ordering — unchanged.
 - Runtime, the PRL format, and the `OctahedralShVolume` section layout — untouched.
 - The monolithic `bake_sh_volume` — already parallel; no change.
+- `build_shell` (sh_group.rs:684, the shared volume-shell allocation that
+  `bake_sh_volume_grouped` calls) is unchanged; its byte-identity is already
+  pinned by `full_light_set_grouped_equals_monolithic`.
 - The separate `.prl` release-provenance-stamp follow-up (a PRL format change, its
   own plan) and any group-size or cutoff retuning.
 
@@ -81,13 +91,13 @@ which invalidates every group via the whole-map geometry content hash).
       `cache_round_trip_hits_on_second_build`, `corrupt_cache_entry_re_bakes`,
       `partition_covers_every_probe_exactly_once`.
 - [ ] On a heavily-lit fixture (occlusion-test or campaign-test): the cold-cache
-      warm build #1 (every group a miss) is no longer materially slower than a
-      `--no-cache` build of the same map. Wall-clock for both is recorded — the
-      original ~3x regression is gone (target: warm #1 ≤ cold, ideally faster).
+      warm build #1 (every group a miss) passes if warm #1 wall-clock ≤ 1.1× the
+      `--no-cache` build on the named fixture (ideally faster); the original ~3x
+      regression is gone. Wall-clock for both is recorded.
 - [ ] A second (all-hit) warm build still serves every group from cache and emits
       a `.prl` byte-identical to the first warm build (no regression to the
       existing round-trip-skip behavior).
-- [ ] `cargo fmt --check`, `cargo clippy -D warnings`, and `cargo test` are clean
+- [ ] `cargo fmt --check`, `cargo clippy -p postretro-level-compiler -- -D warnings`, and `cargo test` are clean
       for the `postretro-level-compiler` crate.
 - [ ] No `unsafe`.
 
@@ -131,8 +141,12 @@ passing.
 `StageCache` holds only a `dir: PathBuf`; `get` and `put` take `&self`, perform no
 interior mutation, and `put` writes atomically (temp file + `fs::rename`) to a
 filename derived from the entry's unique `CacheKey`. Distinct groups have distinct
-keys, so concurrent `put`s target distinct paths. `&StageCache` is `Sync`, so
-sharing it across rayon workers is sound, and concurrent `put`/`get` on
+keys — `group_cache_key` (sh_group.rs:403) folds in the group's identity, so
+distinct groups yield distinct `CacheKey`s, which is the property the
+no-collision argument depends on — so concurrent `put`s target distinct paths. `par_iter` over `&groups` visits each group exactly once and keys are 1:1 with
+groups (the partition is disjoint — `partition_covers_every_probe_exactly_once`),
+so no cache key is read or written by two workers concurrently. `&StageCache` is
+`Sync`, so sharing it across rayon workers is sound, and concurrent `put`/`get` on
 distinct keys do not race.
 
 **Requirement:** the parallelization must share the existing `&StageCache` across
@@ -200,11 +214,11 @@ thread-safety holds, keep all gates green, record before/after wall-clock.
 
 ## Open questions
 
-- **Group count vs. core count on the target fixture.** Task 1 of the shipped plan
-  measured ~3,032 groups (campaign 4³) / ~900 (occlusion) — ample for group-level
-  parallelism. If a smaller fixture has too few groups to saturate cores, switch
-  to per-probe parallelism within groups (not nested). The wall-clock measurement
-  decides; lean group-level.
+- **Group count vs. core count — resolved.** Group-level parallelism is the
+  committed approach: measured group counts (~3,032 campaign 4³ / ~900 occlusion)
+  far exceed any core count, so group-level saturation is guaranteed on these
+  fixtures. The per-probe fallback applies only if a smaller fixture proves too few
+  groups to saturate cores.
 - **Per-entry `sync_all` on the cold-bake write path.** `StageCache::put` calls
   `file.sync_all()` per entry (`cache.rs:150`). At a few thousand concurrent puts
   this is a one-time cold-bake tax, now spread across threads rather than serial.

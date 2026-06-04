@@ -272,9 +272,9 @@ fn build_skeleton(
             // A cycle (malformed skin) would stall progress; emit the rest in
             // their original order rather than loop forever. Worst case the
             // sampler composes a slightly-wrong pose; it never panics.
-            for skin_idx in 0..joint_nodes.len() {
-                if !emitted[skin_idx] {
-                    emitted[skin_idx] = true;
+            for (skin_idx, emitted_flag) in emitted.iter_mut().enumerate() {
+                if !*emitted_flag {
+                    *emitted_flag = true;
                     topo_order.push(skin_idx);
                 }
             }

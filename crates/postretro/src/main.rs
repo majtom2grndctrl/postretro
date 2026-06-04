@@ -1538,6 +1538,12 @@ impl App {
         renderer.install_level_geometry(&geometry);
         self.level_timings.record("geometry_upload");
 
+        // TEMP (Task 3): exercise the skinned-mesh GPU path by loading the one
+        // hardcoded model here, where `prm_cache_root` is in hand. Task 5
+        // relocates this behind the entity spawn seam and drives the draw list
+        // from the render-frame mesh collector.
+        renderer.load_temp_skinned_model(&prm_cache_root);
+
         // Reseed the SH diagnostic per-light visibility bitmap to match the
         // freshly-installed level's animated-light count. Reset `seeded` so the
         // panel re-pulls defaults on the next open.

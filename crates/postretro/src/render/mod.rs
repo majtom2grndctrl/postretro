@@ -486,6 +486,24 @@ fn build_material_uniform(shininess: f32) -> [u8; MATERIAL_UNIFORM_SIZE] {
     bytes
 }
 
+/// Parse a 64-char hex blake3 cache key into 32 bytes. Returns the all-zero key
+/// (the `load_textures` "no source PNG" → silent placeholder sentinel) on any
+/// malformed input, so an absent/garbled key degrades to a placeholder rather
+/// than panicking. Used by the temp skinned-model material resolve.
+fn parse_blake3_key(hex: &str) -> [u8; 32] {
+    let mut key = [0u8; 32];
+    if hex.len() != 64 {
+        return [0u8; 32];
+    }
+    for (i, byte) in key.iter_mut().enumerate() {
+        match u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16) {
+            Ok(b) => *byte = b,
+            Err(_) => return [0u8; 32],
+        }
+    }
+    key
+}
+
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// Extent for the full-res depth pre-pass attachment. Recreated at the surface
@@ -758,6 +776,19 @@ pub struct Renderer {
 
     /// Idle (no draw) on maps with no registered collections. See §7.4.
     smoke_pass: SmokePass,
+
+    /// Skinned-mesh forward pass. Idle (no draw) until a model is uploaded via
+    /// `load_temp_skinned_model` (this slice) / the entity spawn seam (Task 5).
+    mesh_pass: mesh_pass::MeshPass,
+
+    /// Per-frame skinned-mesh draw list: final per-instance world matrices to
+    /// draw this frame. EMPTY this slice — Task 5's render-frame mesh collector
+    /// populates it (it culls each entity via `mesh_pass::mesh_visible` against
+    /// the frame's `VisibleCells` + the `LevelWorld`, then pushes survivors).
+    /// Pre-emptive wiring: the per-frame draw loop reads it already. The TEMP
+    /// model load seeds one entry so the GPU path is exercised before Task 5
+    /// lands; Task 5 relocates the seed behind the spawn seam.
+    mesh_draws: Vec<Mat4>,
 
     /// Fullscreen splash render pass. Pipeline created at `Renderer::new`;
     /// bind group bound by `install_splash_from_loaded` and cleared by
@@ -1943,6 +1974,18 @@ impl Renderer {
             &sh_volume_resources.bind_group_layout,
         );
 
+        // Skinned-mesh pass: reuses the camera (group 0) + material (group 1)
+        // layouts. Identity palette is uploaded so the (yet-empty) draw list
+        // would render in bind pose; Task 4 supplies sampled poses.
+        let mesh_pass = mesh_pass::MeshPass::new(
+            &device,
+            surface_format,
+            DEPTH_FORMAT,
+            &uniform_bind_group_layout,
+            &texture_bind_group_layout,
+        );
+        mesh_pass.upload_identity_palette(&queue);
+
         // Bind group is None until `install_splash_from_loaded`.
         let splash_pipeline = SplashPipeline::new(&device, surface_format);
 
@@ -2056,6 +2099,8 @@ impl Renderer {
             debug_prev_visible: ("init", usize::MAX),
             app_start: Instant::now(),
             smoke_pass,
+            mesh_pass,
+            mesh_draws: Vec::new(),
             splash_pipeline,
             fog,
             fog_cell_masks: None,
@@ -2453,6 +2498,90 @@ impl Renderer {
         self.loaded_textures = loaded;
         self.gpu_textures = gpu_textures;
         log::info!("[Renderer] Textures installed: {}", self.gpu_textures.len());
+    }
+
+    /// TEMP (Task 3 GPU-path exercise): load the one hardcoded skinned model,
+    /// resolve its material through the existing `.prm` → `LoadedTexture` path
+    /// (pre-baked key — no runtime hashing), upload it to the mesh pass, and
+    /// seed ONE draw matrix so the skinned GPU path runs before its consumers
+    /// land. Called from the level-install path because that is where
+    /// `prm_cache_root` is in hand.
+    ///
+    /// TEMP: Task 5 moves this behind the entity spawn seam — it relocates the
+    /// `load_model` call + material resolve into the spawn chokepoint and drives
+    /// `mesh_draws` from the render-frame mesh collector (with per-entity cull
+    /// via `mesh_pass::mesh_visible`) instead of this single seeded matrix. On a
+    /// load error the seam logs a `warn!` and skips (the degrade AC); here the
+    /// same: log and leave the pass idle.
+    pub fn load_temp_skinned_model(&mut self, prm_cache_root: &Path) {
+        // Hardcoded model path — the chokepoint a classname handler resolves later.
+        let model_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../content/dev/models/decraniated_low_poly_retro_pixel/scene.gltf");
+
+        let model = match crate::model::gltf_loader::load_model(&model_path) {
+            Ok(m) => m,
+            Err(err) => {
+                log::warn!(
+                    "[Renderer] TEMP skinned model load failed for {} : {err} — mesh pass idle",
+                    model_path.display(),
+                );
+                return;
+            }
+        };
+
+        // Resolve the (single) material key through the SAME `.prm`-open path
+        // `load_textures` uses: parse the pre-staged 64-char hex blake3 key into
+        // a 32-byte key, wrap it in a one-entry cache-keys section, and load.
+        let material_bind_group = self.resolve_temp_model_material(&model, prm_cache_root);
+        self.mesh_pass
+            .set_model(&self.device, &model.mesh, material_bind_group);
+
+        // Seed one draw at the world origin (identity transform). Task 5 replaces
+        // this with the entity transform from the spawned `MeshComponent`.
+        self.mesh_draws = vec![Mat4::IDENTITY];
+        log::info!(
+            "[Renderer] TEMP skinned model uploaded: {} verts, {} indices",
+            model.mesh.vertices.len(),
+            model.mesh.indices.len(),
+        );
+    }
+
+    /// Build the material bind group for the temp skinned model from its first
+    /// material key (pre-baked blake3 hex → `.prm`). Degrades to a placeholder
+    /// when the key is absent/malformed or the `.prm` is missing (load_textures
+    /// already handles the latter two). No runtime PNG hashing.
+    fn resolve_temp_model_material(
+        &mut self,
+        model: &crate::model::gltf_loader::LoadedModel,
+        prm_cache_root: &Path,
+    ) -> wgpu::BindGroup {
+        let key_hex = model
+            .material_keys
+            .first()
+            .map(String::as_str)
+            .unwrap_or("");
+        let key = parse_blake3_key(key_hex);
+        let keys = TextureCacheKeysSection { keys: vec![key] };
+        let names = vec!["decraniated_baseColor".to_string()];
+
+        let loaded = load_textures(&self.device, &self.queue, &names, &keys, prm_cache_root);
+        let tex = loaded
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| placeholder_loaded_texture(&self.device, &self.queue));
+
+        let aniso_sampler = self
+            .mip_count_aniso_samplers
+            .entry(tex.mip_count)
+            .or_insert_with(|| create_mip_aniso_sampler(&self.device, tex.mip_count));
+        build_material_bind_group(
+            &self.device,
+            &self.texture_bind_group_layout,
+            &tex,
+            aniso_sampler,
+            Material::Default,
+            "Skinned Model Material",
+        )
     }
 
     /// Normalize texel-space UVs on every BVH-leaf-bound vertex to `[0,1]`
@@ -3588,6 +3717,51 @@ impl Renderer {
                         }),
                     );
                 }
+            }
+        }
+
+        // Skinned-mesh pass — after the opaque world forward, before billboards.
+        // Its own render pass so it can WRITE depth (the forward pass holds the
+        // depth attachment read-only). Loads the existing color + depth so the
+        // mesh composites over the world and depth-tests (`Less`) against it.
+        //
+        // `mesh_draws` is the per-frame draw list. EMPTY this slice unless the
+        // TEMP model seed (or Task 5's collector) populated it; each entry is a
+        // FINAL per-instance matrix already culled by the producer (Task 5's
+        // collector calls `mesh_pass::mesh_visible` against this frame's
+        // `VisibleCells` + the `LevelWorld` BEFORE the cells are reclaimed in
+        // `main.rs`, which happens after this method returns — so the read is
+        // safe). The renderer GPU pass intentionally needs no world reference.
+        if self.mesh_pass.has_model() && !self.mesh_draws.is_empty() {
+            let mut mesh_enc = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Skinned Mesh Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                ..Default::default()
+            });
+            mesh_enc.set_bind_group(0, &self.uniform_bind_group, &[]);
+            // Slice draws one instance at palette base 0 (identity/bind-pose
+            // palette this slice). Task 4 supplies sampled poses via
+            // `mesh_pass.update_palette`; the broadening task scales base index.
+            for model in &self.mesh_draws {
+                self.mesh_pass
+                    .record_draw(&self.device, &mut mesh_enc, *model, 0);
             }
         }
 

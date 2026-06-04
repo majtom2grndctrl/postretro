@@ -23,6 +23,18 @@ pub(crate) mod layout;
 /// drives the UI pass from it.
 pub(crate) mod splash;
 
+/// Hard-gate CPU draw-list / layout assertion for the splash (Task 6a): pins the
+/// device-pixel quad rects (anchor, scale, snap, 9-slice corners) the splash
+/// projects to. Pure CPU — no GPU adapter.
+#[cfg(test)]
+mod splash_layout_test;
+
+/// Optional headless golden (Task 6b): renders the splash UI pass into an
+/// offscreen target and asserts tolerance-scoped structural properties of the
+/// readback. Self-skips when no GPU adapter is present — never the hard gate.
+#[cfg(test)]
+mod splash_golden_test;
+
 const UI_QUAD_WGSL: &str = include_str!("../../shaders/ui_quad.wgsl");
 
 /// Engine default UI typeface: Inter (SIL Open Font License 1.1). Embedded at

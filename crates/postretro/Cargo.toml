@@ -38,6 +38,10 @@ image.workspace = true
 # glTF model loading (CPU-side `model` module).
 gltf.workspace = true
 
+# Content hashing — the model loader hashes baseColor PNG bytes to derive the
+# baked `.prm` cache key (mirrors the level compiler's filename-key recipe).
+blake3.workspace = true
+
 # Error handling
 thiserror.workspace = true
 anyhow.workspace = true

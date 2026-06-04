@@ -1,10 +1,10 @@
 // glTF → engine skinned-model loader (CPU-only; no wgpu).
 // See: context/lib/rendering_pipeline.md §9 · context/lib/build_pipeline.md §Baked texture mips
 //
-// Narrow by design (M10 model-pipeline slice): one model, external-PNG textures,
-// a single animation clip. The loop is general enough to survive the real
-// asset's structure (multi-primitive merge, TRS-or-matrix joint nodes) without
-// claiming multi-mesh / multi-clip generality — that is the broadening task.
+// One model, external-PNG textures, a single animation clip. Multi-primitive
+// meshes merge into one interleaved stream; the per-primitive material split is
+// preserved as submesh index ranges so the renderer can draw each material's
+// triangles separately. Multi-mesh / multi-clip generality is out of scope.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -16,17 +16,31 @@ use thiserror::Error;
 use super::mesh::{SkinnedMesh, SkinnedVertex};
 use super::skeleton::{AnimationClip, Joint, JointTracks, RestLocal, Skeleton, Track};
 
-/// A model loaded from glTF: one skinned mesh, its skeleton, its animation
-/// clips, and the material cache keys its primitives reference.
+/// One drawable run of the merged mesh: the triangles of a single primitive,
+/// paired with the material that draws them.
 ///
-/// The material is referenced by a **cache key** (the same string-keyed scheme
-/// the texture/material cache uses elsewhere) rather than an owned `Material`,
-/// so the renderer resolves and de-duplicates textures through the shared cache
-/// at upload time. One key per mesh primitive, in primitive order.
+/// The material is referenced by a **content-hash cache key** (`blake3` of the
+/// base-color PNG, hex-encoded — the same recipe the level compiler bakes `.prm`
+/// filenames with) rather than an owned `Material`, so the renderer resolves and
+/// de-duplicates textures through the shared cache at upload time. `indices` is a
+/// `start..end` range into the **merged** index buffer (what `draw_indexed`
+/// consumes directly), so the renderer draws this submesh by slicing that range.
+#[derive(Debug, Clone)]
+pub struct Submesh {
+    /// 64-char hex `blake3` of the base-color PNG (the baked `.prm` cache key),
+    /// or the all-zero sentinel when the material has no resolvable PNG.
+    pub material_key: String,
+    /// `start..end` into the merged index buffer — the half-open range of indices
+    /// this primitive contributed, as `draw_indexed` expects.
+    pub indices: std::ops::Range<u32>,
+}
+
+/// A model loaded from glTF: one skinned mesh, its skeleton, its animation
+/// clips, and the per-primitive submeshes (material key + index range).
 #[derive(Debug, Clone, Default)]
 pub struct LoadedModel {
     /// The skinned geometry. A model with multiple primitives merges them into
-    /// one interleaved stream; `material_keys` carries the per-primitive split.
+    /// one interleaved stream; `submeshes` carries the per-primitive split.
     pub mesh: SkinnedMesh,
     /// The joint hierarchy the mesh binds against, stored parent-before-child
     /// (topological) so the sampler composes world matrices in one forward
@@ -34,9 +48,11 @@ pub struct LoadedModel {
     pub skeleton: Skeleton,
     /// Animation clips parsed from the glTF. The hardcoded slice ships one clip.
     pub clips: Vec<AnimationClip>,
-    /// Material cache keys, one per mesh primitive in primitive order. The
-    /// renderer resolves each key against the shared material/texture cache.
-    pub material_keys: Vec<String>,
+    /// One submesh per mesh primitive, in primitive order: the material cache
+    /// key and the index range it occupies in the merged buffer. The renderer
+    /// resolves each key against the shared material/texture cache and draws each
+    /// range against its (possibly shared) material.
+    pub submeshes: Vec<Submesh>,
 }
 
 /// Errors surfaced while loading a glTF model. Every malformed/unsupported input
@@ -90,58 +106,66 @@ fn pack_tangent(tangent: [f32; 4]) -> [u16; 2] {
     [oct[0], v_15bit | sign_bit]
 }
 
-/// Pre-staged material cache keys, keyed by the glTF image URI of the material's
-/// base-color texture.
-///
-/// **The deliberate offline-baked-key seam (baked-over-computed invariant).**
-/// The runtime never hashes a PNG. The `.prm` for this model's baseColor was
-/// baked **once, offline**, by the production baker (`prl-build`'s
-/// `bake_texture_mips`), and its 32-byte blake3 key is the constant below. The
-/// loader looks the staged key up by image URI; it does not compute it. A future
-/// build-time-bake / runtime-hash path (the *glTF mesh loading* broadening task)
-/// replaces this lookup behind the same chokepoint.
-///
-/// Key recipe (per `build_pipeline.md` §Baked texture mips): for a
-/// diffuse-present texture the `.prm` filename key is `blake3(baseColor PNG
-/// bytes)`. The `.prm` lives at
-/// `<workspace>/.build-caches/prm-cache/<hex>.prm`; `load_textures` opens it via
-/// `cache_filename_for_key`. Only baseColor is baked — normal /
-/// metallicRoughness are not needed for the flat-lit slice (the broadening
-/// lighting pass bakes and binds them).
-const STAGED_MATERIAL_KEYS: &[(&str, &str)] = &[(
-    "textures/Scene_-_Root_baseColor.png",
-    "581e80bb91c2d2e6fbed2aca5ba8fc0252aa7485579ea21376eeb294e972f0f1",
-)];
+/// The all-zero cache key, hex-encoded (64 chars). `load_textures` reads this as
+/// the "no source PNG" sentinel and binds a silent placeholder.
+fn zero_material_key() -> String {
+    "0".repeat(64)
+}
 
-/// Resolve a material's base-color image URI to its pre-staged `.prm` cache key.
-/// Returns the all-zero key (the `load_textures` "no source PNG" sentinel → a
-/// silent placeholder) when the material has no staged base-color texture, so an
-/// unrecognized material degrades to a placeholder rather than failing the load.
-fn staged_material_key(material: &gltf::Material) -> String {
-    let uri = material
+/// Resolve a material's base-color texture to its baked `.prm` cache key by
+/// content-hashing the source PNG.
+///
+/// Recipe (mirrors the level compiler's `filename_key_for` for a
+/// diffuse-present texture, per `build_pipeline.md` §Baked texture mips):
+/// `blake3(baseColor PNG bytes)`, hex-encoded — the same key the offline baker
+/// names the `.prm` with, so `load_textures` opens `<key>.prm` directly. We
+/// reproduce the recipe inline because `filename_key_for` is private to the
+/// level-compiler crate.
+///
+/// Degrades to the zero sentinel (never errors/panics) when the base-color image
+/// has no URI, is embedded in a buffer view (`Source::View`), or its file is
+/// missing/unreadable — an unresolvable material renders a placeholder rather
+/// than failing the whole load.
+fn content_hash_material_key(material: &gltf::Material, parent_dir: &Path) -> String {
+    let Some(uri) = material
         .pbr_metallic_roughness()
         .base_color_texture()
         .and_then(|info| match info.texture().source().source() {
             gltf::image::Source::Uri { uri, .. } => Some(uri.to_string()),
             gltf::image::Source::View { .. } => None,
-        });
-    match uri.as_deref() {
-        Some(u) => STAGED_MATERIAL_KEYS
-            .iter()
-            .find(|(image_uri, _)| *image_uri == u)
-            .map(|(_, key)| (*key).to_string())
-            .unwrap_or_else(|| "0".repeat(64)),
-        None => "0".repeat(64),
+        })
+    else {
+        return zero_material_key();
+    };
+
+    let png_path = parent_dir.join(uri);
+    match std::fs::read(&png_path) {
+        Ok(png_bytes) => {
+            let key = *blake3::hash(&png_bytes).as_bytes();
+            hex_encode(&key)
+        }
+        Err(_) => zero_material_key(),
     }
+}
+
+/// Lowercase-hex encode a 32-byte cache key into the 64-char string
+/// `load_textures` / `cache_filename_for_key` consume.
+fn hex_encode(bytes: &[u8; 32]) -> String {
+    let mut s = String::with_capacity(64);
+    for b in bytes {
+        use std::fmt::Write;
+        let _ = write!(s, "{b:02x}");
+    }
+    s
 }
 
 /// Load a skinned model from a glTF file at `path`.
 ///
 /// Parses one mesh (all primitives merged into a single interleaved stream), its
 /// skeleton (joints stored parent-before-child with inverse-bind matrices), and
-/// its animation clips. Material textures resolve through pre-staged offline
-/// cache keys — no runtime PNG hashing. Returns an error (never panics) on
-/// malformed or unsupported input.
+/// its animation clips. Material textures resolve to their baked `.prm` cache key
+/// by content-hashing the source PNG at runtime. Returns an error (never panics)
+/// on malformed or unsupported input.
 pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
     let path_str = path.display().to_string();
     // Open the document and resolve only geometry/skin/animation buffers — no
@@ -189,7 +213,8 @@ pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
         .next()
         .ok_or_else(|| ModelLoadError::NoMesh(path_str.clone()))?;
 
-    let (skinned_mesh, material_keys) = load_mesh(&mesh, &buffers, &skin_joint_to_topo, &path_str)?;
+    let (skinned_mesh, submeshes) =
+        load_mesh(&mesh, &buffers, &skin_joint_to_topo, parent_dir, &path_str)?;
 
     // --- Animation clips --------------------------------------------------
     let clips = document
@@ -201,7 +226,7 @@ pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
         mesh: skinned_mesh,
         skeleton,
         clips,
-        material_keys,
+        submeshes,
     })
 }
 
@@ -350,18 +375,20 @@ fn build_skeleton(
 }
 
 /// Load every primitive of `mesh` into one merged interleaved stream, remapping
-/// skin-joint indices to topo order. Returns the mesh and one material key per
-/// primitive (in primitive order — the per-primitive split the merged stream
-/// otherwise loses).
+/// skin-joint indices to topo order. Returns the mesh and one [`Submesh`] per
+/// primitive (in primitive order): each carries its material content-hash key
+/// and the `start..end` range it occupies in the merged index buffer — the
+/// per-primitive split the merged stream otherwise loses.
 fn load_mesh(
     mesh: &gltf::Mesh,
     buffers: &[gltf::buffer::Data],
     skin_joint_to_topo: &HashMap<usize, usize>,
+    parent_dir: &Path,
     path_str: &str,
-) -> Result<(SkinnedMesh, Vec<String>), ModelLoadError> {
+) -> Result<(SkinnedMesh, Vec<Submesh>), ModelLoadError> {
     let buffer_data = |buffer: gltf::Buffer| buffers.get(buffer.index()).map(|d| &d.0[..]);
     let mut out = SkinnedMesh::default();
-    let mut material_keys: Vec<String> = Vec::new();
+    let mut submeshes: Vec<Submesh> = Vec::new();
 
     for primitive in mesh.primitives() {
         if primitive.mode() != gltf::mesh::Mode::Triangles {
@@ -429,7 +456,10 @@ fn load_mesh(
         }
 
         // Indices, offset into the merged stream. A primitive without an index
-        // buffer is a sequential triangle list.
+        // buffer is a sequential triangle list. `start..end` bracket this
+        // primitive's run in the merged index buffer — exactly the range
+        // `draw_indexed` consumes for this submesh.
+        let start = out.indices.len() as u32;
         match reader.read_indices() {
             Some(idx) => {
                 for i in idx.into_u32() {
@@ -442,11 +472,15 @@ fn load_mesh(
                 }
             }
         }
+        let end = out.indices.len() as u32;
 
-        material_keys.push(staged_material_key(&primitive.material()));
+        submeshes.push(Submesh {
+            material_key: content_hash_material_key(&primitive.material(), parent_dir),
+            indices: start..end,
+        });
     }
 
-    Ok((out, material_keys))
+    Ok((out, submeshes))
 }
 
 /// Remap one `[u16; 4]` joint quad (skin-joint indices) to topo-order `[u8; 4]`.
@@ -738,17 +772,76 @@ mod tests {
             "clip animates at least one joint's rotation"
         );
 
-        // Material: one key per primitive; the single primitive resolves to the
-        // pre-staged baseColor key (not the zero placeholder).
+        // Material: one submesh per primitive; the single primitive resolves to
+        // the baseColor key by content-hashing the dev PNG beside the glTF (not
+        // a hardcoded table, not the zero placeholder).
+        assert_eq!(model.submeshes.len(), 1, "one submesh per primitive");
         assert_eq!(
-            model.material_keys.len(),
-            1,
-            "one material key per primitive"
-        );
-        assert_eq!(
-            model.material_keys[0],
+            model.submeshes[0].material_key,
             "581e80bb91c2d2e6fbed2aca5ba8fc0252aa7485579ea21376eeb294e972f0f1",
-            "primitive resolves to the staged baseColor cache key"
+            "primitive resolves to the content-hashed baseColor cache key"
         );
+        // The single submesh covers the whole merged index buffer.
+        assert_eq!(
+            model.submeshes[0].indices,
+            0..model.mesh.indices.len() as u32,
+            "single submesh spans the entire merged index buffer"
+        );
+    }
+
+    // --- Submesh range partition (multi-primitive split bookkeeping) -------
+
+    #[test]
+    fn submesh_ranges_partition_merged_index_buffer() {
+        // A synthetic multi-material glTF fixture (two primitives, two
+        // materials) exercises the per-primitive submesh split without a GPU.
+        // The submesh ranges must tile the merged index buffer end-to-end with
+        // no gap or overlap, and every index must address a real merged vertex.
+        let fixture = multi_primitive_fixture_path();
+        let model = load_model(&fixture).expect("synthetic multi-primitive fixture loads");
+
+        assert!(
+            model.submeshes.len() >= 2,
+            "fixture has multiple primitives → multiple submeshes, got {}",
+            model.submeshes.len()
+        );
+
+        // Ranges partition [0, indices.len()): each starts where the previous
+        // ended, the first at 0, the last at the buffer end. No gaps, no overlap.
+        let total = model.mesh.indices.len() as u32;
+        let mut cursor = 0u32;
+        for (i, sub) in model.submeshes.iter().enumerate() {
+            assert_eq!(
+                sub.indices.start, cursor,
+                "submesh {i} starts at {} but previous ended at {cursor} (gap/overlap)",
+                sub.indices.start
+            );
+            assert!(
+                sub.indices.end >= sub.indices.start,
+                "submesh {i} range is not well-formed: {:?}",
+                sub.indices
+            );
+            cursor = sub.indices.end;
+        }
+        assert_eq!(
+            cursor, total,
+            "submesh ranges must cover the whole merged index buffer (end {cursor} vs {total})"
+        );
+
+        // Every index any submesh draws addresses a real merged vertex.
+        let vcount = model.mesh.vertices.len() as u32;
+        for sub in &model.submeshes {
+            for &idx in &model.mesh.indices[sub.indices.start as usize..sub.indices.end as usize] {
+                assert!(
+                    idx < vcount,
+                    "submesh index {idx} out of vertex range (0..{vcount})"
+                );
+            }
+        }
+    }
+
+    fn multi_primitive_fixture_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/multi_primitive/multi_primitive.gltf")
     }
 }

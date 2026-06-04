@@ -67,6 +67,11 @@ anyhow = "1"
 # Typed bit flags (e.g. .prm slot mask)
 bitflags = "2"
 
+# Content hashing. The level compiler keys baked `.prm` filenames by
+# `blake3(baseColor PNG bytes)`; the runtime glTF loader reproduces that recipe
+# to resolve material textures to their baked handle (no hardcoded key table).
+blake3 = "1"
+
 # Parallelism
 rayon = "1"
 

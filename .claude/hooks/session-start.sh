@@ -28,5 +28,10 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 export DEBIAN_FRONTEND=noninteractive
-$SUDO apt-get update -qq
+# Refresh only the main Ubuntu sources. The container ships extra third-party
+# PPAs (deadsnakes, ondrej/php) that the network policy blocks (403); a plain
+# `apt-get update` exits non-zero on those and, under `set -e`, would abort
+# before the install below ever runs. Dir::Etc::sourceparts="-" ignores
+# everything in sources.list.d so the failing PPAs can't sink the update.
+$SUDO apt-get update -qq -o Dir::Etc::sourceparts="-" -o APT::Get::List-Cleanup="0"
 $SUDO apt-get install -y -qq libasound2-dev libudev-dev >&2

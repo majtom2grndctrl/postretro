@@ -1,6 +1,7 @@
 # UI Layer — Design Exploration
 
 **Date investigated:** 2026-05-11
+**Updated:** 2026-06 (Milestone 13 rendering-model decisions folded in)
 **Status:** Pre-spec exploration. Not yet a draft plan.
 
 > **Read this when:** thinking about how PostRetro will render HUDs, menus,
@@ -35,7 +36,7 @@ in Rust, covers the surface area without a live VM.
 | **State values are the only dynamic surface.** | Engine-owned values (e.g. `player.health`) and modder-declared values are what widgets bind to. Renderer dereferences `StateValue<T>` handles each frame. |
 | **Reactions are the only event surface.** | UI events (input, focus, threshold crossings) fire pre-registered reactions from the engine-global reaction registry. |
 | **Renderer owns GPU.** | UI is one more pass in the renderer module. Layout produces draw commands; submission stays inside renderer. |
-| **Retro by default, capable underneath.** | Bitmap-grid layout, blocky panels, pixel snapping. Underlying stack supports shaped text and flex for SDK richness. |
+| **Retro by default, capable underneath.** | Retro feel comes from art — 9-slice panels, flat fills — and integer device-pixel snapping of quads and panels, with `glyphon`-shaped anti-aliased text underneath. Underlying stack supports shaped text and flex for SDK richness. |
 
 ---
 
@@ -154,11 +155,13 @@ Flexbox-style: parents distribute, children fill. `taffy` runs the math.
 
 - **Anchor + offset.** Top-level descriptors anchor to one of nine screen
   positions, with pixel offset. Anchors are aspect-ratio-stable.
-- **Pixel snapping.** All computed rects snap to integer pixels in the design
-  resolution before draw. Preserves retro aesthetic; avoids subpixel text
-  blur.
-- **Design resolution.** UI authors against a fixed grid (e.g. 320×240 base).
-  Renderer upscales the final UI render target with nearest-neighbor.
+- **Pixel snapping.** Computed quad and panel rects snap to integer device
+  pixels before draw. Preserves the retro aesthetic. Glyphs are exempt: text
+  renders anti-aliased at native resolution.
+- **Reference space.** UI lays out in a 1280×720 logical reference, scaled by a
+  factor to the native backbuffer, and renders at native resolution. 720p 16:9
+  is the supported floor. There is no offscreen low-res UI target and no
+  nearest-neighbor upscale.
 - **Safe area.** Gamepad-controlled platforms reserve a configurable safe
   area; built-in HUD respects it by default.
 
@@ -173,9 +176,9 @@ default theme.
 
 - **Tokens** are the durable contract: `critical`, `warning`, `ok`,
   `panel.default`, `font.body`, `font.mono`.
-- **Fonts** are registered like other assets. Default is a single bitmap
-  font baked into the engine. Mods register additional fonts (TTF) and
-  `glyphon` handles shaping.
+- **Fonts** are registered like other assets. The default text path is
+  `glyphon`-shaped, anti-aliased text from the first slice onward. Mods
+  register additional fonts (TTF); `glyphon` handles shaping for all of them.
 
 ---
 
@@ -211,21 +214,21 @@ export const player = defineState("player", {
 })
 ```
 
-`StateValue<T>` is the per-value handle. Three operations:
+`StateValue<T>` is the per-value handle. Its operations are authoring-time builders that emit data, not live VM I/O — a "handler" here is a pre-registered reaction or typed command buffer (`scripting.md` §10–§11), authored data the engine evaluates at event time, never a script closure invoked on the event. Operations:
 
 - `audio.master` — the handle. Pass to descriptors as a binding.
-- `audio.master.get()` — read current value. Legal only inside handlers.
-- `audio.master.set(v)` — write. Legal only inside handlers.
-- `audio.master.reset()` — restore declared default.
+- `audio.master.get()` — resolves to a named-input leaf bound to the slot's live value by the engine evaluator (`scripting.md` §11 named-leaf pattern). Not a runtime VM read.
+- `audio.master.set(v)` — emits a state-write reaction (data). The engine's reaction dispatcher performs the write at event time (§15 `setState`). Not a live VM call.
+- `audio.master.reset()` — emits a reaction restoring the declared default.
 
-**Handles vs. imperative I/O.** Descriptors take handles; the engine dereferences them at render time. Handlers do imperative I/O via `.get()` and `.set()`. Calling `.get()` during descriptor build captures a stale snapshot — exactly the bug the model prevents.
+**Handles vs. authored writes.** Descriptors take handles; the engine dereferences them at render time. `.set(v)` looks like writing a function but constructs serializable IR (`scripting.md` §11): a state-write reaction the engine's dispatcher runs. Calling `.get()` during descriptor build to read a concrete value would capture a stale snapshot — exactly the bug the model prevents; instead `.get()` yields a named leaf the evaluator resolves live.
 
 | Aspect | Behavior |
 |--------|----------|
 | **Engine-owned values** | `player.health`, `player.armor`, `player.ammo.<weapon>`, `player.weapon.current`, `level.name`, `hud.objective`. Stable names; survive refactor. `readonly: true` — scripts read, cannot write. |
 | **Modder-declared values** | `defineState(namespace, schema)` at load time. Types: number, boolean, string, enum, array. No nested objects. Flat surface. |
 | **Persistence** | `persist: true` survives map transitions. Rust serializes and restores on engine start. |
-| **Update path** | Game logic writes engine-owned values. Handlers write modder-declared values. No writes from descriptor build time. |
+| **Update path** | Game logic writes engine-owned `readonly` values. Writable modder-declared values are mutated by registered state-write reactions (§15 `setState`) that the engine dispatches at event time — not by imperative VM I/O. No writes from descriptor build time. |
 | **Diffing** | Renderer compares values across frames to invalidate cached layout regions. |
 
 ---
@@ -278,6 +281,11 @@ Reactions are tag-targeted, same registry as entity reactions.
 input, resolves it to a tagged reaction, the engine fires the reaction.
 `button` activation, `input` commit, navigation keys, and gamepad
 confirm/cancel are all reactions.
+
+**Writing a slot from an event** is itself a reaction: `setState` (§15) emits a
+state-write command (`scripting.md` §11) that the dispatcher applies to a
+writable modder-declared slot. Mutating `menu.currentTab` on a tab press, or the
+`audio.master` slider in §16, goes through `setState` — never a live VM write.
 
 ---
 
@@ -515,7 +523,11 @@ Mirrors the entity-domain convention from `scripting.md` §7:
 - `sdk/lib/ui/theme.{ts,luau}` — theme registration helpers.
 - `sdk/lib/ui/state.{ts,luau}` — `defineState`, `onStateCrossing`.
 - `sdk/lib/ui/reactions.{ts,luau}` — `flashScreen`, `playSound`, `rumble`,
-  `showDialog`, `openMenu`.
+  `showDialog`, `openMenu`, `setState`. `setState(slot, value)` emits a
+  state-write reaction targeting a writable modder-declared slot — the
+  on-principle way to mutate a slot at event time without a live VM. Engine-owned
+  `readonly` slots (`player.health`) are written by game logic, not by
+  `setState`.
 
 ---
 
@@ -544,6 +556,11 @@ Slider({
 When `capturesNav` is set, the listed intents are consumed by the widget before
 the container's navigation policy sees them. Widgets without `capturesNav` let
 all directional intents fall through to the container.
+
+The slider binds `audio.master` for display and writes it back through a
+`setState` reaction (§11, §15) on each adjustment — the consumed nav intent
+resolves to a state-write command the engine dispatches, with no live VM in the
+loop.
 
 Nav intents are template-literal-typed to catch typos at compile time:
 
@@ -661,7 +678,6 @@ vs. per-level registries are the same shape, separate Rust structures.
 - Live scripting VM driving UI logic.
 - Per-frame script callbacks.
 - Vector graphics (SVG, splines, beziers).
-- Subpixel-positioned anti-aliased text (retro aesthetic).
 - DOM-style mutation API for widgets after registration. Re-register the
   subtree instead.
 - Web/browser-compatible markup (HTML, CSS) — descriptor objects, not

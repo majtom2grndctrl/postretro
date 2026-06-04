@@ -90,7 +90,9 @@ const SURFACE_BAND_VOXELS: f32 = 1.0;
 const COARSE_SAFETY_MARGIN_VOXELS: f32 = 0.866_025_4;
 
 /// Owned, serialisable snapshot of the bake's inputs. Hashed into the cache
-/// key via postcard (mirrors `ShInputs` / `LightmapInputs`).
+/// key via postcard: a per-stage `*Inputs` struct holds exactly the data the
+/// bake reads, serialised deterministically so the digest captures every input
+/// the outputs depend on.
 #[derive(serde::Serialize)]
 pub struct SdfInputs {
     pub geometry: GeometryResult,

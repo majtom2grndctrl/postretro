@@ -1,6 +1,7 @@
 // Postretro engine entry point, boot state machine, and level-load orchestration.
 // See: context/lib/boot_sequence.md §8 · context/lib/index.md
 
+mod audio;
 mod camera;
 mod collision;
 mod compute_cull;
@@ -140,6 +141,14 @@ fn reload_summary_requires_mod_init(summary: ReloadSummary) -> bool {
     summary.mod_init
 }
 
+/// Version/tagline line the boot splash's shaped-text element renders. Sourced
+/// from the build's `CARGO_PKG_VERSION` (the simpler of the two options the plan
+/// leaves open) so the read-handle snapshot carries a real value. Flows through
+/// the `UiReadSnapshot`; the descriptor seam stays intact for Goal B/G1.
+fn splash_version_line() -> String {
+    format!("postretro v{}", env!("CARGO_PKG_VERSION"))
+}
+
 fn main() -> Result<()> {
     env_logger::init();
     log::info!("[Engine] Postretro starting");
@@ -207,6 +216,7 @@ fn main() -> Result<()> {
 
     let mut app = App {
         renderer: None,
+        audio: None,
         window_state: None,
         level: None,
         map_path,
@@ -216,6 +226,7 @@ fn main() -> Result<()> {
         input_system: input::InputSystem::new(input::default_bindings()),
         gameplay_input_latch: input::GameplayInputLatch::new(),
         input_focus: InputFocus::Gameplay,
+        ui_dispatch: input::UiDispatch::new(),
         gamepad_system: input::gamepad::GamepadSystem::new(),
         frame_timing: FrameTiming::new(initial_state),
         diagnostic_inputs: input::DiagnosticInputs::new(input::default_diagnostic_chords()),
@@ -272,6 +283,12 @@ fn window_attributes() -> WindowAttributes {
 
 struct App {
     renderer: Option<Renderer>,
+
+    /// Audio subsystem. `None` until `resumed()` builds it after the renderer,
+    /// and stays `None` if kira init fails — the game then runs silent.
+    /// See: context/lib/audio.md
+    audio: Option<audio::Audio>,
+
     window_state: Option<WindowState>,
     level: Option<prl::LevelWorld>,
 
@@ -292,6 +309,16 @@ struct App {
     /// Coarse owner of keyboard/mouse focus. Drives pointer-lock acquire/release
     /// via `set_input_focus`. See: context/lib/input.md
     input_focus: InputFocus,
+
+    /// Input-stage UI-dispatch seam: decides whether an event is consumed by the
+    /// UI layer (capture) or forwarded to gameplay (passthrough), ahead of the
+    /// gameplay input forward. Goal A leaves the mode at its inert `Passthrough`
+    /// default (no live UI descriptor yet), so the seam does not change gameplay
+    /// forwarding; Task 4 sources the mode from the active splash descriptor.
+    /// Captured events cross to game logic no earlier than the next frame
+    /// (N→N+1). `InputFocus::Menu` is the intended structural home for capture;
+    /// Goal A makes no live focus change. See: context/lib/input.md
+    ui_dispatch: input::UiDispatch,
     gamepad_system: Option<input::gamepad::GamepadSystem>,
     frame_timing: FrameTiming,
 
@@ -497,6 +524,19 @@ impl ApplicationHandler for App {
         self.renderer = Some(renderer);
         self.window_state = Some(WindowState { window });
 
+        // Fault-tolerant audio init: on failure log and run silent, never
+        // crash. See: context/lib/audio.md §1.
+        match audio::Audio::new() {
+            Ok(audio) => {
+                self.audio = Some(audio);
+                log::info!("[Audio] Initialized");
+            }
+            Err(err) => {
+                log::error!("[Audio] Init failed, running silent: {err}");
+                self.audio = None;
+            }
+        }
+
         #[cfg(feature = "dev-tools")]
         {
             if let (Some(renderer), Some(ws)) = (self.renderer.as_ref(), self.window_state.as_ref())
@@ -661,18 +701,33 @@ impl ApplicationHandler for App {
                         self.handle_diagnostic_action(action);
                     }
 
-                    // Only Gameplay forwards keys to the action system. When
-                    // the debug panel (or future menu) owns focus, WASD must
-                    // not drive the camera even though egui leaves
-                    // `consumed = false` for non-text widgets like sliders.
-                    // See: context/lib/input.md §5
-                    if self.input_focus == InputFocus::Gameplay {
+                    // UI-dispatch seam, ahead of the gameplay forward and
+                    // mirroring the `egui_consumed` gate: when the active UI
+                    // layer is in Capture mode the event is consumed (queued
+                    // for next-frame game logic) and NOT forwarded to the
+                    // action system this frame. `InputFocus::Menu` is the
+                    // intended structural home for this capture; Goal A makes
+                    // no live focus change, so the decision is the mode flag.
+                    // See: context/lib/input.md
+                    if self.ui_dispatch.dispatch_event().forwards_to_gameplay()
+                        && self.input_focus == InputFocus::Gameplay
+                    {
+                        // Only Gameplay forwards keys to the action system. When
+                        // the debug panel (or future menu) owns focus, WASD must
+                        // not drive the camera even though egui leaves
+                        // `consumed = false` for non-text widgets like sliders.
                         self.input_system.handle_keyboard_event(code, pressed);
                     }
                 }
             }
             WindowEvent::MouseInput { button, state, .. } => {
                 if egui_consumed {
+                    return;
+                }
+                // Same UI-dispatch seam as the keyboard path: a captured event
+                // is consumed by the UI layer and not forwarded to the action
+                // system this frame.
+                if !self.ui_dispatch.dispatch_event().forwards_to_gameplay() {
                     return;
                 }
                 // Same focus gate as the keyboard path: mouse-button actions
@@ -760,6 +815,21 @@ impl ApplicationHandler for App {
                         // Steady state — fall through to the normal frame loop.
                     }
                 }
+
+                // Game-logic phase begins here. Read the UI captures made
+                // available by the *previous* frame, THEN promote this frame's
+                // freshly captured events for the next frame. Taking before
+                // advancing is what enforces the N→N+1 contract: events captured
+                // during THIS frame's Input stage land in `pending` and are only
+                // promoted to `ready` by this `advance_frame` call — so they
+                // first become visible at the next frame's `take_ready`, never
+                // this frame. This holds regardless of winit's event/redraw
+                // ordering because both calls run here at game-logic time. Goal A
+                // has no intent consumer yet (Goal F defines the vocabulary), so
+                // the drained intents are dropped; the drain marks the seam where
+                // game logic reads them. See: context/lib/input.md
+                let _ui_intents = self.ui_dispatch.take_ready();
+                self.ui_dispatch.advance_frame();
 
                 if let Some(gp) = &mut self.gamepad_system {
                     gp.update(&mut self.input_system);
@@ -896,12 +966,47 @@ impl ApplicationHandler for App {
                     let _ = fire_named_event(event_name, &self.script_ctx.data_registry.borrow());
                 }
 
+                // Audio step — third in frame order (Input → Game logic →
+                // Audio → Render → Present, development_guide.md §4.3). Runs after
+                // game logic settles every entity and before render. Convert the
+                // glam-typed camera to the primitive `ListenerState` here at the
+                // call site (the boundary carries no glam); `forward` uses the
+                // aim ray's direction so it includes pitch, unlike yaw-only
+                // `forward()`, and `up` is world up per the `ListenerState`
+                // contract. Guarded for the silent (init-failed) case.
+                if let Some(audio) = &mut self.audio {
+                    let listener = audio::ListenerState {
+                        position: self.camera.position.to_array(),
+                        forward: self.camera.aim_ray().1.to_array(),
+                        up: [0.0, 1.0, 0.0],
+                    };
+                    audio.update(listener, frame_dt);
+                }
+
                 // Level-relative monotonic clock consumed by light_bridge.update,
                 // the emitter sim, and the map-light collector.
                 // Widen to f64 at the accumulation boundary so summing across
                 // long sessions (30+ min at 144 Hz) doesn't quantize the
                 // millisecond-precision clock the fog volume bridge consumes.
-                self.script_time += frame_dt as f64;
+                //
+                // Dev-tools freeze must stop BOTH clocks together. The GPU `time`
+                // uniform is fed `script_time`, and the CPU light bridge computes
+                // `effective_brightness` (which gates shadow-pool eligibility)
+                // from the same clock. Freezing only the GPU uniform would let
+                // the CPU clock advance, re-creating the CPU/GPU animation-phase
+                // desync this branch fixed. Read the freeze flag from the
+                // renderer — it owns the toggle (driven by the debug panel) — and
+                // skip the increment while frozen so both sides hold one phase.
+                #[cfg(feature = "dev-tools")]
+                let frozen = self
+                    .renderer
+                    .as_ref()
+                    .is_some_and(|renderer| renderer.freeze_time());
+                #[cfg(not(feature = "dev-tools"))]
+                let frozen = false;
+                if !frozen {
+                    self.script_time += frame_dt as f64;
+                }
 
                 // Position interpolated from tick-state slots; yaw/pitch from
                 // `self.camera` directly so zero-tick frames still see this
@@ -1047,7 +1152,11 @@ impl ApplicationHandler for App {
                     let point_bytes = self.fog_volume_bridge.update_points(&all_lights);
                     renderer.upload_fog_points(point_bytes);
 
-                    renderer.update_per_frame_uniforms(view_proj, interp.position);
+                    renderer.update_per_frame_uniforms(
+                        view_proj,
+                        interp.position,
+                        self.script_time as f32,
+                    );
 
                     if renderer.is_ready() {
                         // Particle render — packs `SpriteInstance` bytes per
@@ -1141,6 +1250,13 @@ impl ApplicationHandler for App {
                             }
                             out
                         };
+
+                        // Publish the once-per-frame read snapshot just before
+                        // the gameplay render call, mirroring the splash path so
+                        // the once-per-frame contract holds on both. Plumbing-only
+                        // in Goal A: the gameplay UI draw list is empty and the
+                        // snapshot has no consumer until B/BIS.
+                        renderer.set_ui_snapshot(render::ui::UiReadSnapshot::default());
 
                         let surface_texture = match renderer.render_frame_indirect(
                             &visible_cells,
@@ -1271,6 +1387,12 @@ impl ApplicationHandler for App {
         _device_id: DeviceId,
         event: DeviceEvent,
     ) {
+        // UI-dispatch seam, ahead of the gameplay forward: a captured raw
+        // delta is consumed by the UI layer and must not reach the look path.
+        // Mirrors the `window_event` seam; the decision is the mode flag.
+        if !self.ui_dispatch.dispatch_event().forwards_to_gameplay() {
+            return;
+        }
         // Raw mouse deltas only rotate the camera while gameplay owns input.
         // When the debug panel (DevTools) or a menu is open, the cursor is
         // released and raw deltas must not leak into the look path.
@@ -1289,6 +1411,12 @@ impl ApplicationHandler for App {
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // Release the level's sound registry at teardown, mirroring the texture
+        // release on level unload (`resource_management.md` §7.2). This engine
+        // has a single level for its lifetime, so unload coincides with exit.
+        if let Some(audio) = &mut self.audio {
+            audio.release_level_sounds();
+        }
         self.renderer = None;
         self.window_state = None;
         log::info!("[Engine] Exited");
@@ -1517,15 +1645,29 @@ impl App {
         }
     }
 
-    /// Paint a single splash-phase frame. Runs only the splash render pass:
-    /// clears to black and, if a splash texture is bound, draws the
-    /// fullscreen triangle. Used both for the first black frame (no splash
-    /// bound) and subsequent splash-visible frames.
+    /// Paint a single splash-phase frame via `UiPass::encode`. Always clears
+    /// to black. When a splash descriptor is installed, the pass also records
+    /// a fullscreen background fill, a framed 9-slice panel, the centered logo
+    /// image, and a shaped-text line as instanced quads plus glyphon text. The
+    /// first frame has no descriptor installed yet and renders only the clear.
     fn paint_splash(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(renderer) = self.renderer.as_mut() {
             if !renderer.is_ready() {
                 return;
             }
+            // Drive the input-dispatch seam from the active splash descriptor's
+            // capture mode (splash is non-interactive -> Passthrough). No-op when
+            // no splash is installed (frame 0). Locks the Task 5 seam wiring.
+            if let Some(mode) = renderer.splash_capture_mode() {
+                self.ui_dispatch.set_mode(mode);
+            }
+            // Publish the once-per-frame read snapshot just before the render
+            // call (the splash phase render path). The version/tagline line the
+            // shaped-text element renders rides through here, exercising the
+            // once-per-frame contract with a real value.
+            renderer.set_ui_snapshot(render::ui::UiReadSnapshot::with_version_line(
+                splash_version_line(),
+            ));
             if let Err(err) = renderer.render_splash_frame() {
                 self.exit_result = Err(err);
                 event_loop.exit();
@@ -1726,6 +1868,15 @@ impl App {
             self.collision_world.populate_from_level(world);
         }
         self.level_timings.record("bridges_populated");
+
+        // Sound registry follows level lifetime, parallel to textures: load the
+        // level's sounds from `_sounds/` here, release them at unload. Fault-
+        // tolerant — a missing directory or undecodable file warns and is
+        // skipped. Silent if audio init failed (`audio` is `None`).
+        if let Some(audio) = &mut self.audio {
+            audio.load_level_sounds(&self.content_root);
+        }
+        self.level_timings.record("audio_load");
 
         // Sweep map entities through classname dispatch. The returned set of
         // handled classnames is stashed and consumed by the data-archetype
@@ -2103,6 +2254,20 @@ impl App {
                     // when the user is staring at it to see what changed.
                     self.frame_rate_meter.clear();
                     log::info!("[Renderer] vsync {}", if enabled { "on" } else { "off" },);
+                }
+            }
+            // Real-device audio smoke check: play the test tone on the SFX bus
+            // so an operator can confirm output reaches the OS. Guarded for the
+            // silent (init-failed) case; needs a level loaded for the sound
+            // registry to hold the fixture, otherwise `play` warns gracefully.
+            DiagnosticAction::PlayTestSfx => {
+                if let Some(audio) = &mut self.audio {
+                    audio.play(audio::SoundRequest {
+                        bus: "sfx".to_string(),
+                        sound: "sfx/test_tone".to_string(),
+                        looping: false,
+                    });
+                    log::info!("[Audio] smoke check: played sfx/test_tone on SFX bus");
                 }
             }
             // Toggle just flips visibility and shifts InputFocus to gate

@@ -19,6 +19,14 @@ winit = "0.30"
 wgpu = "29"
 pollster = "0.4"
 
+# Shaped, anti-aliased text rendering on wgpu (cosmic-text + its own atlas and
+# pipeline). Pinned to 0.11: that release depends on `wgpu ^29.0.0` (confirmed
+# via crates.io dependency metadata), matching the workspace `wgpu = "29"`. The
+# preceding line (0.10) targets `wgpu ^28`, so 0.11 is the compatible release.
+# glyphon ships its own pipeline/atlas — it is NOT routed through the UI quad
+# pipeline. See context/plans/in-progress/M13--ui-render-pass-slice.
+glyphon = "0.11"
+
 # Math
 glam = { version = "0.32", features = ["serde"] }
 
@@ -32,8 +40,22 @@ bytemuck = { version = "1", features = ["derive"] }
 # Map parsing (level compiler)
 shambler = "0.2"
 
-# Audio
-kira = "0.12"
+# Audio. `default-features = false` drops the decoders the engine never uses
+# (mp3/flac and the rest of kira's default set) from the release binary; we
+# enable only what the asset loader needs: the cpal backend (`DefaultBackend`)
+# plus ogg+wav decoding. The split is container vs codec — `ogg` is the Ogg
+# container and `vorbis` its codec; `wav` is the RIFF/WAV container and `pcm` the
+# (uncompressed) codec the WAV fixtures store their samples in. Dropping any of
+# these makes a corresponding asset fail to decode. kira 0.12 has no `mock`
+# feature — its mock backend is always compiled — so test-only usage is kept out
+# of non-test code via `#[cfg(test)]` rather than a feature flag.
+kira = { version = "0.12", default-features = false, features = [
+    "cpal",
+    "ogg",
+    "vorbis",
+    "wav",
+    "pcm",
+] }
 
 # Gamepad input
 gilrs = "0.11"

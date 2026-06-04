@@ -30,8 +30,8 @@ const WEIGHT_EPSILON: f32 = 1.0e-6;
 /// lights (their direct term resolves at runtime), so a stale entry could carry
 /// a baked direct weight the runtime double-counts. Bumps invalidate any prior
 /// cache entries (the `animated_lm_weight_maps` cache key folds this in
-/// alongside the input hash — same shape as `lightmap_bake::STAGE_VERSION` and
-/// `sh_bake::STAGE_VERSION`).
+/// alongside the input hash — the same per-stage version-constant pattern every
+/// cached stage uses).
 ///
 /// v4 bump (baked-soft-lightmap-shadows Task 4): the binary `shadow_visible`
 /// membership gate was replaced with a soft area-light visibility fraction
@@ -44,10 +44,10 @@ const WEIGHT_EPSILON: f32 = 1.0e-6;
 ///
 /// This stage is now cached: `main.rs` wraps the bake in a `StageCache`
 /// get/insert round-trip under the `animated_lm_weight_maps` cache key, which
-/// folds this `STAGE_VERSION` in alongside the input hash — same shape as
-/// `lightmap_bake::STAGE_VERSION` and `sh_bake::STAGE_VERSION`. Bumping this
-/// constant invalidates every prior cache entry for the stage on the next
-/// build. The `CacheKey`/STAGE_VERSION contract is exercised by
+/// folds this `STAGE_VERSION` in alongside the input hash — the same per-stage
+/// version-constant pattern every cached stage uses. Bumping this constant
+/// invalidates every prior cache entry for the stage on the next build. The
+/// `CacheKey`/STAGE_VERSION contract is exercised by
 /// `stage_version_bump_misses_then_hits` and `stage_version_bump_changes_cache_key`
 /// in this module's test suite.
 pub const STAGE_VERSION: u32 = 5;

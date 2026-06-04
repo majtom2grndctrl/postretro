@@ -209,11 +209,18 @@ fn main() -> anyhow::Result<()> {
     }
 
     // Construct stage cache. Default dir = <workspace-root>/.build-caches/prl-cache/.
-    // --no-cache disables the cache entirely (no directory is created).
-    // --cache-dir <path> overrides the default location. When both flags are
-    // supplied, --no-cache wins.
-    let stage_cache: Option<cache::StageCache> = if args.no_cache {
-        log::info!("[prl-build] cache disabled via --no-cache");
+    // --no-cache and --release both disable the cache entirely (no directory is
+    // created), selecting the exact ship path (exact monolithic lightmap + exact
+    // whole-volume SH). --release is the intent-named equivalent of the mechanical
+    // --no-cache; routing both to `None` means the warm/cold branches below need no
+    // change. --cache-dir <path> overrides the default location for warm builds;
+    // when --no-cache or --release is also supplied, the cache stays disabled.
+    let stage_cache: Option<cache::StageCache> = if args.release || args.no_cache {
+        if args.release {
+            log::info!("[prl-build] release bake: exact lighting, cache bypassed");
+        } else {
+            log::info!("[prl-build] cache disabled via --no-cache");
+        }
         None
     } else {
         let dir = args.cache_dir.clone().unwrap_or_else(|| {
@@ -819,6 +826,12 @@ struct Args {
     cache_dir: Option<PathBuf>,
     /// When true, bypass cache reads and writes entirely.
     no_cache: bool,
+    /// When true, produce a shippable map: the exact ship path (exact monolithic
+    /// lightmap + exact whole-volume SH). Named for intent ("I am producing a
+    /// shippable map") rather than cache mechanics; it implies `--no-cache`, so
+    /// the warm/cold branches need no change — both flags route the stage cache
+    /// to `None`. Passing both is fine (identical effect, no conflict).
+    release: bool,
 }
 
 fn parse_args() -> anyhow::Result<Args> {
@@ -847,6 +860,7 @@ fn help_text() -> String {
          --sdf-voxel-size <METERS>  SDF occluder-atlas voxel edge length in meters, > 0 (default: {voxel})\n    \
          --cache-dir <PATH>         Override the stage-cache directory (default: <workspace>/.build-caches/prl-cache)\n    \
          --no-cache                 Disable the stage cache entirely; wins over --cache-dir (default: off)\n    \
+         --release                  Produce a shippable map: exact lighting, cache bypassed (implies --no-cache). The interactive default is a fast warm build with approximate indirect lighting; ship only --release artifacts (default: off)\n    \
          -h, --help                 Print this help and exit\n",
         probe = sh_bake::DEFAULT_PROBE_SPACING,
         density = lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS,
@@ -870,6 +884,7 @@ where
     let mut voxel_size = sdf_bake::DEFAULT_VOXEL_SIZE_METERS;
     let mut cache_dir: Option<PathBuf> = None;
     let mut no_cache = false;
+    let mut release = false;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -954,6 +969,9 @@ where
             "--no-cache" => {
                 no_cache = true;
             }
+            "--release" => {
+                release = true;
+            }
             _ if input.is_none() => {
                 input = Some(PathBuf::from(arg));
             }
@@ -967,7 +985,7 @@ where
         anyhow::anyhow!(
             "usage: prl-build <input.map> [-o <output.prl>] [-v|--verbose] \
              [--format <FORMAT>] [--sh-probe-spacing <METERS>] [--lightmap-density <METERS>] \
-             [--soft-shadow-samples <N>] [--sdf-voxel-size <METERS>] [--cache-dir <PATH>] [--no-cache]\n\
+             [--soft-shadow-samples <N>] [--sdf-voxel-size <METERS>] [--cache-dir <PATH>] [--no-cache] [--release]\n\
              (run `prl-build --help` for the full flag list)"
         )
     })?;
@@ -985,6 +1003,7 @@ where
         voxel_size,
         cache_dir,
         no_cache,
+        release,
     })
 }
 
@@ -1445,6 +1464,49 @@ mod tests {
         let parsed = parse_args_from(args.into_iter()).unwrap();
         assert!(!parsed.no_cache);
         assert!(parsed.cache_dir.is_none());
+    }
+
+    #[test]
+    fn parse_args_release_flag() {
+        let args = vec!["input.map".to_string(), "--release".to_string()];
+        let parsed = parse_args_from(args.into_iter()).unwrap();
+        assert!(parsed.release);
+    }
+
+    #[test]
+    fn parse_args_release_defaults_unset() {
+        let args = vec!["input.map".to_string()];
+        let parsed = parse_args_from(args.into_iter()).unwrap();
+        assert!(!parsed.release);
+    }
+
+    /// `--release` routes the stage cache to `None` exactly like `--no-cache`,
+    /// selecting the exact ship path. The cache-selection predicate is
+    /// `args.release || args.no_cache`; assert release alone satisfies it.
+    #[test]
+    fn parse_args_release_implies_no_cache_selection() {
+        let args = vec!["input.map".to_string(), "--release".to_string()];
+        let parsed = parse_args_from(args.into_iter()).unwrap();
+        // `--release` need not set `no_cache` itself; the cache predicate keys on
+        // either flag, so the observable (cache bypassed) holds.
+        assert!(
+            parsed.release || parsed.no_cache,
+            "release must bypass the stage cache like no-cache"
+        );
+    }
+
+    /// `--release` and `--no-cache` together parse without error (identical
+    /// effect, no conflict).
+    #[test]
+    fn parse_args_release_and_no_cache_coexist() {
+        let args = vec![
+            "input.map".to_string(),
+            "--release".to_string(),
+            "--no-cache".to_string(),
+        ];
+        let parsed = parse_args_from(args.into_iter()).unwrap();
+        assert!(parsed.release);
+        assert!(parsed.no_cache);
     }
 
     #[test]

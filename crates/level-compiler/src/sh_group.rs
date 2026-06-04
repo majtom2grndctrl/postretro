@@ -84,7 +84,7 @@ pub const WARM_SH_VISIBILITY_FLOOR: f32 = 0.02;
 /// assert the warm path carries the warning (a `log::warn!` macro call is not
 /// directly observable in a unit test).
 pub const WARM_SH_APPROX_WARNING: &str = "[prl-build] warm SH bake: indirect lighting is APPROXIMATE (bounded light reach). \
-     Run a clean `--no-cache` bake before shipping a final map.";
+     This is a dev/iteration build — run a `--release` bake (or `--no-cache`) before shipping a final map.";
 
 const TILE_DIMENSION: u32 = DEFAULT_IRRADIANCE_TILE_DIMENSION;
 const TILE_BORDER: u32 = DEFAULT_IRRADIANCE_TILE_BORDER;
@@ -1487,6 +1487,10 @@ mod tests {
         assert!(
             w.to_ascii_lowercase().contains("approximate"),
             "warning must flag indirect lighting as approximate"
+        );
+        assert!(
+            w.contains("--release"),
+            "warning must name the --release ship flag"
         );
         assert!(
             w.contains("--no-cache"),

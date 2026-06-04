@@ -4,9 +4,13 @@
 // See: context/lib/audio.md
 
 mod assets;
+mod buses;
+
+pub use buses::BusId;
 
 use std::path::Path;
 
+use buses::BusTree;
 use kira::listener::ListenerHandle;
 use kira::{AudioManager, AudioManagerSettings, Capacities, DefaultBackend};
 
@@ -62,7 +66,7 @@ pub struct SoundRequest {
 /// caller keeps its `Option<Audio>` as `None` and the game runs silent. Later
 /// tasks extend this with bus handles, a sound registry, and a play API.
 pub struct Audio {
-    // Read by the bus tree, sound registry, and play API in later tasks.
+    // Read by the sound registry and play API in later tasks.
     #[allow(dead_code)]
     manager: AudioManager<DefaultBackend>,
     /// Single listener created at init as the anchor for later spatial work.
@@ -75,6 +79,9 @@ pub struct Audio {
     /// textures (`resource_management.md` §7.2). Consumed by the play API
     /// (Task 4).
     registry: SoundRegistry,
+    /// Master → SFX/Music/UI mixer tree plus the per-bus voice budget. The play
+    /// API (Task 4) routes sounds to a bus and consults its voice counter.
+    buses: BusTree,
 }
 
 impl Audio {
@@ -113,11 +120,47 @@ impl Audio {
             .add_listener([0.0_f32, 0.0, 0.0], Self::IDENTITY_ORIENTATION)
             .map_err(|err| AudioError::Init(err.to_string()))?;
 
+        // Build the bus tree right after the manager/listener. A sub-track
+        // allocation failure folds into the fault-tolerant init path: the
+        // caller logs and runs silent.
+        let buses =
+            BusTree::build(&mut manager).map_err(|err| AudioError::Init(err.to_string()))?;
+
         Ok(Self {
             manager,
             listener,
             registry: SoundRegistry::new(),
+            buses,
         })
+    }
+
+    /// Set the runtime volume of a mixer bus, in decibels (0 dB = unity gain,
+    /// negative attenuates, positive boosts). Applied instantly. The public
+    /// volume control for SFX/Music/UI; delegates to the bus tree.
+    #[allow(dead_code)]
+    pub fn set_bus_volume(&mut self, bus: BusId, decibels: f32) {
+        self.buses.set_volume(bus, decibels);
+    }
+
+    /// Reserve a voice slot on `bus`, returning `true` on success (count
+    /// incremented) or `false` when the bus is at its cap. The play API (Task 4)
+    /// calls this before starting a sound and drops-and-logs on `false`.
+    #[allow(dead_code)]
+    pub(crate) fn try_acquire_voice(&mut self, bus: BusId) -> bool {
+        self.buses.try_acquire_voice(bus)
+    }
+
+    /// Release a voice slot previously reserved on `bus`. Saturating no-op if
+    /// the bus has no outstanding voices.
+    #[allow(dead_code)]
+    pub(crate) fn release_voice(&mut self, bus: BusId) {
+        self.buses.release_voice(bus);
+    }
+
+    /// Current active-voice count on `bus`.
+    #[allow(dead_code)]
+    pub(crate) fn active_voices(&self, bus: BusId) -> usize {
+        self.buses.active_voices(bus)
     }
 
     /// Load every decodable sound under `<content_root>/_sounds/` into the

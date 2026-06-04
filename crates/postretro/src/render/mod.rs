@@ -2765,15 +2765,13 @@ impl Renderer {
         // Dev-tools: hold `time` when frozen (debug aid), else track live time so
         // toggling the freeze on holds the current animation phase.
         //
-        // Known divergence: `freeze_time` pins only the GPU `time` uniform. It
-        // does NOT freeze `script_time` on the CPU or the light bridge's
-        // `effective_brightness` computation. In a frozen frame the CPU
-        // animation clock (and therefore `effective_brightness`) keeps
-        // advancing while the GPU sees a held phase — the exact CPU/GPU
-        // animation-phase desync that the clock-unification fix (script_time
-        // driving the GPU uniform) corrected for the normal path. A debugger
-        // chasing per-frame shadow-slot flicker under freeze should account for
-        // this. Freezing `script_time` propagation is tracked separately.
+        // Freeze stops BOTH clocks together. While `freeze_time` is set, `App`
+        // reads it (`renderer.freeze_time()`) and stops advancing `script_time`
+        // (main.rs), so the CPU light bridge's `effective_brightness` (which
+        // gates shadow-pool eligibility) and this GPU `time` uniform hold the
+        // same phase. The held `frozen_time` here matches that pinned
+        // `script_time`, so CPU and GPU stay aligned under freeze — no
+        // animation-phase desync for a shadow debugger to chase.
         #[cfg(feature = "dev-tools")]
         let time = if self.freeze_time {
             self.frozen_time
@@ -4030,12 +4028,18 @@ fn level_brightness_for_candidate(
     candidate: &MapLight,
     effective_brightness: &[f32],
 ) -> Option<f32> {
-    // Re-keys by float-exact `origin` equality. `shadow_candidate_lights` is a
-    // load-time snapshot and `level_lights` tracks the live set; this works only
-    // because shipping spots are stationary. If a dynamic spot ever moves at
-    // runtime its candidate entry will carry a stale origin, silently losing its
-    // forward shadow slot. Revisit when light-movement lands — switch to a
-    // stable light id/index rather than origin equality.
+    // Re-keys by float-exact `origin` equality. Both `level_lights` and
+    // `shadow_candidate_lights` are immutable load-time snapshots filtered from
+    // the same `world.lights` source, so origins match exactly today. The match
+    // breaks only once runtime light-movement lands and mutates one side's
+    // origins live (the candidate snapshot would keep a stale origin and
+    // silently lose the forward shadow slot). That feature doesn't exist —
+    // `is_dynamic` is a dormant seam with no authoring surface and
+    // `self.level_lights` is never mutated post-load — so keying on a stable id
+    // now would be scaffolding for an unlanded feature. When movement lands, key
+    // both sites on the `world.lights` source index (the natural shared id;
+    // currently discarded by `filter_dynamic_lights` /
+    // `filter_entity_shadow_candidates`) instead of origin equality.
     level_lights
         .iter()
         .enumerate()
@@ -4062,9 +4066,11 @@ fn slot_assignment_for_level_lights(
         }
         let cand = &candidates[cand_idx];
         // Re-keys by float-exact `origin` equality — same constraint as
-        // `level_brightness_for_candidate`. Works only while spots are
-        // stationary; a moving spot would carry a stale candidate origin and
-        // silently drop its shadow slot. Revisit with light-movement work.
+        // `level_brightness_for_candidate`: exact today because both collections
+        // are immutable load-time snapshots of the same `world.lights` source.
+        // A moving spot (unlanded; see that fn) would carry a stale candidate
+        // origin and silently drop its slot. Key both sites on the
+        // `world.lights` source index when light-movement lands.
         if let Some((level_idx, _)) = level_lights
             .iter()
             .enumerate()

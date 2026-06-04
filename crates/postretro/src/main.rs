@@ -850,7 +850,25 @@ impl ApplicationHandler for App {
                 // Widen to f64 at the accumulation boundary so summing across
                 // long sessions (30+ min at 144 Hz) doesn't quantize the
                 // millisecond-precision clock the fog volume bridge consumes.
-                self.script_time += frame_dt as f64;
+                //
+                // Dev-tools freeze must stop BOTH clocks together. The GPU `time`
+                // uniform is fed `script_time`, and the CPU light bridge computes
+                // `effective_brightness` (which gates shadow-pool eligibility)
+                // from the same clock. Freezing only the GPU uniform would let
+                // the CPU clock advance, re-creating the CPU/GPU animation-phase
+                // desync this branch fixed. Read the freeze flag from the
+                // renderer — it owns the toggle (driven by the debug panel) — and
+                // skip the increment while frozen so both sides hold one phase.
+                #[cfg(feature = "dev-tools")]
+                let frozen = self
+                    .renderer
+                    .as_ref()
+                    .is_some_and(|renderer| renderer.freeze_time());
+                #[cfg(not(feature = "dev-tools"))]
+                let frozen = false;
+                if !frozen {
+                    self.script_time += frame_dt as f64;
+                }
 
                 // Position interpolated from tick-state slots; yaw/pitch from
                 // `self.camera` directly so zero-tick frames still see this

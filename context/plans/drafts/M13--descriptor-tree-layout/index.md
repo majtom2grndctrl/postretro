@@ -35,13 +35,13 @@ Build the Rust-owned UI descriptor model, retained widget tree, and `taffy`-driv
 
 ## Acceptance criteria
 
-- [ ] A descriptor tree of all seven kinds round-trips through serde JSON: `{"kind":"vstack", ...}` deserializes and re-serializes to identical JSON; an unknown `kind` deserializes to an error, not a panic.
+- [ ] A descriptor tree of all seven kinds round-trips through serde JSON: a top-level placement envelope (`{ anchor, offset, root }`) wrapping a `vstack` root — `{"kind":"vstack", ...}` — deserializes and re-serializes to identical JSON; an unknown `kind` deserializes to an error, not a panic.
 - [ ] `taffy` lays out a nested `vstack`/`hstack`/`grid` tree; child rects match expected flex/grid distribution at the 1280×720 reference and scale uniformly at 4K (mirrors A's resolution tests).
 - [ ] A `text` node's computed size comes from `glyphon` shaped-run metrics, not a glyph-count estimate; two trees with different `content` values produce different measured widths (content is immutable after tree construction in B — this is a construct-two-trees comparison, not runtime mutation).
 - [ ] A top-level anchored tree centers against the letterbox on a non-16:9 viewport (reuses A's anchor assertion).
 - [ ] The boot splash renders through the retained descriptor tree — `build_splash_descriptor` returns a node tree — with panel, logo, and version text visually unchanged; version text centers via measured width. Verification reuses A's approach: pure-CPU draw-list assertions plus a manual run per the project build/run commands — no new golden image required.
 - [ ] Layout recomputes only on tree-structure change or viewport resize; a no-change frame performs no `taffy` recompute (verifiable via a recompute counter or dirty flag in a test).
-- [ ] The gameplay render path populates a non-empty UI draw list from a descriptor tree; an empty tree early-outs the UI pass (no `begin_render_pass`). The early-out is at the pass-orchestration level and applies to the gameplay path only; it must not regress the splash's frame-0 black clear, which currently relies on `encode` opening the pass with empty draw lists.
+- [ ] The renderer builds a non-empty UI draw list from a descriptor tree on the gameplay path (in B the test feeds a fixture tree, not a real screen); an empty tree early-outs the UI pass (no `begin_render_pass`). The early-out is at the pass-orchestration level and applies to the gameplay path only; it must not regress the splash's frame-0 black clear, which currently relies on `encode` opening the pass with empty draw lists.
 - [ ] Computed quad/panel rects snap to integer device pixels; text glyphs remain exempt (reuses A).
 - [ ] `taffy` is a workspace dependency; no QuickJS/Luau ingestion or `StateValue`/slot code is added.
 - [ ] The Boundary inventory table pins Rust/wire/JS/Luau casing for every kind and its fields.
@@ -58,7 +58,7 @@ Define the serde descriptor types: an internally-tagged enum (`#[serde(tag = "ki
 Build the Rust-owned node tree and the descriptor→`taffy` mapping: stack kind → flex direction, gap/padding/align/sizing → style, grid → CSS-grid columns/gap. Compute layout, read `taffy::Layout` rects back into `UiDrawList` through the existing projection path. Apply the `Anchor` + offset post-layout transform on the root rect. Wire `taffy` `mark_dirty` so relayout runs only on structural or viewport change. Text nodes get a placeholder intrinsic size here; real measurement lands in Task 4, fully replacing this path — the placeholder is not a lingering fallback.
 
 ### Task 4: Measure seam (`taffy` ↔ `glyphon`)
-Replace the text-node placeholder size with real measurement: attach a per-node text context carrying the `glyphon` shaping handle, and supply `taffy`'s measure closure so it shapes through `text.rs` and returns the measured `Size`. Layout now sizes text from glyph metrics. Consumes Task 3's tree and Task 1's `text.rs`.
+Replace the text-node placeholder size with real measurement: attach a per-node text context carrying the `glyphon` shaping handle, and supply `taffy`'s measure closure so it shapes through `text.rs` and returns the measured `Size`. Layout now sizes text from glyph metrics. Consumes Task 3's tree and Task 1's `text.rs`. Implementer note: `compute_layout_with_measure`'s closure needs `&mut FontSystem` to shape while it also borrows the tree, so the implementer picks the capture strategy — e.g. pass the shaper alongside the tree, keep the node context to `content` + `font_size`. The contract (text sized from real shaped-run metrics) is fixed; the borrow shape is the implementer's call.
 
 ### Task 5: Splash-on-tree + render integration + gate
 Reimplement `build_splash_descriptor` to emit a descriptor tree (panel + image + text); the splash logo resolves as an `image` node through the existing UI-texture path. Widen `UiReadSnapshot` to carry the laid-out output; populate `UiPass::encode` `batches`/`texts` on the gameplay path from a retained tree; add the empty-tree early-out (A follow-up #3); center version text from measured width (A follow-up #4). Extend A's CPU assertion harness to the full vocab as the hard gate (flex, grid, measured text, anchor, snapping). Splash output stays visually unchanged.
@@ -79,11 +79,11 @@ This is a layered foundation — each task consumes the prior, so the chain is m
 
 **`taffy`.** `taffy` is a pure-CPU layout crate with no `wgpu` dependency, so the workspace's wgpu-compat version-pinning rationale does not apply to it. Use `0.10`. Hold the tree in a `taffy::TaffyTree<NodeContext>` where `NodeContext` carries per-node data (text shaping handle for `text` nodes, image handle for `image`). Run `compute_layout_with_measure` with a single global measure closure; the closure shapes text nodes via `text.rs` and returns their `Size<f32>`. Grid maps to `taffy`'s CSS-grid track support.
 
-**Anchor.** Keep `Anchor` as the existing nine-variant enum and a reference-space concept (the A-locked native-render + 1280×720 logical-reference scaling model), not a `taffy` style. `Anchor` gains `#[derive(Serialize, Deserialize)]` with `#[serde(rename_all = "camelCase")]` on the enum itself, so its nine variants map `TopLeft` → `"topLeft"`, `Center` → `"center"`, etc. After `taffy` computes the root's content size, place that root in the reference box per anchor + offset, then project to device pixels through the existing `layout` path. Projection rule: uniform scale = `min(device_w / 1280, device_h / 720)`, root centered in the device viewport with letterbox bars filling the remainder.
+**Anchor.** Keep `Anchor` as the existing nine-variant enum and a reference-space concept (the A-locked native-render + 1280×720 logical-reference scaling model), not a `taffy` style. `Anchor` gains `#[derive(Serialize, Deserialize)]` with `#[serde(rename_all = "camelCase")]` on the enum itself, so its nine variants map `TopLeft` → `"topLeft"`, `Center` → `"center"`, etc. `anchor` and `offset` are not per-widget fields — they live on a top-level placement envelope that wraps the root widget: structurally `{ anchor, offset, root: Widget }` (Rust type name is the implementer's call, e.g. `TopLevel` / `Screen` / `AnchoredTree`). Rationale: placement is orthogonal to the per-kind widget union, and F's modal stack wants one `taffy` tree per top-level descriptor, so an envelope wrapping each root tree is the natural carrier. After `taffy` computes the root's content size, place that root in the reference box per the envelope's anchor + offset, then project to device pixels through the existing `layout` path. Projection rule: uniform scale = `min(device_w / 1280, device_h / 720)`, root centered in the device viewport with letterbox bars filling the remainder.
 
 **Tree multiplicity.** One `taffy` tree per top-level descriptor. F's modal stack will want independent trees; choosing per-tree now avoids that rework.
 
-**Render handle.** `UiReadSnapshot` (currently `version_line: String`) widens to carry the frame's laid-out output (or a handle the renderer resolves to `UiBatch`/`UiText`). Content stays static/literal in B — C owns slot-driven content. The snapshot remains the game-logic→render contract A established.
+**Render handle.** `UiReadSnapshot` (currently `version_line: String`) widens to carry the frame's descriptor tree — the content side. Layout (`taffy`/`glyphon`) lives in the renderer under the renderer-owns-GPU invariant, so the renderer lays out the descriptor tree and produces `UiBatch`/`UiText`; the snapshot does not carry laid-out rects. Content stays static/literal in B — C owns slot-driven content. The snapshot remains the game-logic→render contract A established.
 
 **Key files.** `render/ui/mod.rs` (split source, quad pass), new `render/ui/text.rs` (glyphon), `render/ui/layout.rs` (`Anchor`, `project`), `render/ui/splash.rs` (`build_splash_descriptor` seam), `render/mod.rs` (`record_splash_ui`, `UiReadSnapshot`, `set_ui_snapshot`), new descriptor + tree modules under `render/ui/`. Governing doc for wire/casing conventions: `context/lib/scripting.md`.
 
@@ -106,8 +106,10 @@ UI descriptors cross Rust ↔ wire (JSON) ↔ JS/TS ↔ Luau (script ingestion l
 | grid columns | `cols: u32` | `cols` | `cols` | `cols` |
 | spacer grow | `flex_grow: f32` | `flexGrow` | `flexGrow` | `flexGrow` |
 | children | `children: Vec<Widget>` | `children` (positional array) | positional args | positional args |
-| top-level anchor | `anchor: Anchor` | `anchor` (e.g. `"topLeft"`, `"center"`) | `anchor` | `anchor` |
-| top-level offset | `offset: [f32; 2]` | `offset` | `offset` | `offset` |
+| top-level anchor | `anchor: Anchor` (envelope field) | `anchor` (e.g. `"topLeft"`, `"center"`) | `anchor` | `anchor` |
+| top-level offset | `offset: [f32; 2]` (envelope field) | `offset` | `offset` | `offset` |
+
+`anchor` and `offset` are fields on the top-level placement envelope (`{ anchor, offset, root: Widget }`), not on every widget variant — see *Rough sketch*.
 
 Exact field set per kind is the implementer's call within these casing rules and the *Rough sketch* constraints; the table pins every cross-boundary name and its encoding.
 
@@ -116,6 +118,6 @@ Note: the descriptor wire `color` stays `[f32; 4]` RGBA. For `text` nodes it con
 ## Open questions
 
 - **`grid` test depth.** B has no grid screen to exercise (splash is panel + image + text), but the kind must ship to lock the vocab/wire enum. Recommendation: include the variant + `taffy` grid mapping, CPU-assert track placement only — no golden image without a consumer. Confirm at review.
-- **`UiReadSnapshot` shape.** Scoped to carry static laid-out output, no typed screen/slot handle (that is C's content contract). If de-risking C by pre-baking a typed tree/screen handle is wanted, decide at promotion.
+- **`UiReadSnapshot` shape.** Decided: carries the descriptor tree; the renderer lays it out (renderer-owns-GPU). Residual: whether to pre-bake a typed screen/slot handle to de-risk C. Recommendation: defer — C is next and sequential, so the handle is best shaped against C's content contract.
 - **`padding` scalar vs. per-edge.** Research shows a single `padding` value; `taffy` supports per-edge `Rect`. Recommendation: scalar in B, widen later if a screen needs asymmetric padding — low-cost additive change. Confirm.
 - **`image` missing-key behavior.** B builds a small key→bind-group registry but only pre-registers known keys; decide whether an unknown `asset` key falls back to a placeholder bind group or errors. Confirm at review.

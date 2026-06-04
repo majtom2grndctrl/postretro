@@ -15,7 +15,7 @@ use super::BusId;
 /// Opaque, primitive-backed id for a playing sound. Returned by `Audio::play`
 /// and consumed by `Audio::stop`. Deliberately wraps a plain `u64` so no kira
 /// type leaks across the audio public surface (the boundary-is-a-contract
-/// invariant in `index.md` §2).
+/// invariant: `audio.md` §1, "the boundary carries primitive types only").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SoundHandle(u64);
 
@@ -49,8 +49,8 @@ impl KiraVoice {
         }
     }
 
-    /// Stop playback with the given tween. The voice is removed from the table
-    /// immediately; kira applies its default ~10 ms tween to the audio fade.
+    /// Stop playback, fading out over `tween`. The caller chooses the tween;
+    /// the voice is removed from the table immediately at the call site.
     #[allow(dead_code)]
     fn stop(&mut self, tween: Tween) {
         match self {

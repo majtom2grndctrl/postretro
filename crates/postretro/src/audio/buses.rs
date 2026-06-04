@@ -8,8 +8,8 @@ use kira::track::{TrackBuilder, TrackHandle};
 use kira::{AudioManager, ResourceLimitReached, Tween};
 
 /// The three controllable mixer buses. Master is kira's main track and is
-/// addressed separately (see `Audio::set_master_volume`), so it has no variant
-/// here — every routable in-world/UI sound targets one of these.
+/// controlled via `Audio::set_main_volume`, so it has no `BusId` variant here —
+/// every routable in-world/UI sound targets one of these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BusId {
     /// In-world sound effects (footsteps, gunshots, impacts).
@@ -143,8 +143,9 @@ impl BusTree {
     }
 
     /// Set a bus's runtime volume in decibels. 0 dB is unity, negative
-    /// attenuates, positive boosts. The bus counter update is immediate; kira
-    /// applies its default ~10 ms tween to the audio fade.
+    /// attenuates, positive boosts. The control-plane command is issued
+    /// immediately; kira applies its default ~10 ms tween, so the level change
+    /// fades rather than cuts.
     #[allow(dead_code)]
     pub(crate) fn set_volume(&mut self, bus: BusId, decibels: f32) {
         self.tracks[bus.index()].set_volume(decibels, Tween::default());

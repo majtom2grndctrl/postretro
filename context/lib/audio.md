@@ -12,10 +12,10 @@ Audio is a self-contained subsystem. It does not depend on the renderer or wgpu.
 
 | Direction | Data |
 |-----------|------|
-| **Receives** | Listener position and orientation, sound event requests, current BSP leaf index (for reverb lookup — later goal, not yet consumed) |
+| **Receives** | Listener position and orientation, sound event requests |
 | **Produces** | Audio output (mixed and delivered to the OS by kira internally) |
 
-The boundary carries primitive types only. `ListenerState` (position + forward/up as `[f32; 3]`; world up is `[0, 1, 0]`) and `SoundRequest` (target bus, sound key, looping flag) cross the public API — no glam, no wgpu. Conversion from the glam-typed `Camera` happens at the frame-loop call site, not inside the module.
+The boundary carries primitive types only. `ListenerState` (position + forward/up as `[f32; 3]`; world up is `[0, 1, 0]`) and `SoundRequest` (target bus, sound key, looping flag) cross the public API — no glam, no wgpu. Conversion from the glam-typed `Camera` happens at the frame-loop call site, not inside the module. A BSP leaf index is not yet part of the boundary; it will be added when reverb zone lookup is implemented.
 
 Init is fault-tolerant: if the device or kira backend fails to start, the subsystem holds `None` and the game runs silent — never a crash, never a panic. Asset load and decode failures degrade the same way (warn, skip, no sound).
 
@@ -41,7 +41,7 @@ Each frame, the audio step:
 1. Updates listener position and orientation from camera/player state.
 2. Reclaims finished non-looping voices so bus capacity is not leaked.
 
-The step is control-plane only — it never decodes or touches disk. kira manages its own audio thread; per-frame work is listener updates and voice reclamation.
+The step is control-plane only — it never decodes or touches disk. kira manages its own audio thread; per-frame work is listener updates and voice reclamation. The `dt` parameter (frame delta in seconds) is part of the per-frame contract but is currently unused — it will drive spatialization tweening once that is implemented.
 
 ---
 
@@ -62,11 +62,9 @@ Surface-material-aware routing (varying footstep/impact sounds by texture prefix
 
 ---
 
-## 5. Spatial Positioning
+## 5. Spatial Positioning (future goal)
 
-M12 establishes the listener anchor and orientation (position + forward/up updated each frame). Full spatialization is a later goal.
-
-All in-world sounds will be positioned in 3D relative to the listener.
+The listener anchor and orientation are established and updated each frame (position + forward/up via `update`); no spatialization is applied yet — all sounds play dry. The parameters below describe the intended behavior once spatialization is implemented.
 
 | Parameter | Behavior |
 |-----------|----------|
@@ -77,6 +75,8 @@ All in-world sounds will be positioned in 3D relative to the listener.
 ---
 
 ## 6. Reverb Zones
+
+> **Not yet implemented — future goal.** Nothing in this section is shipped. The design below captures the intended architecture for mapper-placed reverb volumes.
 
 Reverb will vary spatially through mapper-placed brush entities.
 

@@ -34,6 +34,10 @@ fn orientation_from_forward_up(forward: [f32; 3], up: [f32; 3]) -> [f32; 4] {
     let f = normalize(forward);
     // `right = forward × up`; `up' = right × forward` re-orthogonalizes.
     let right = normalize(cross(f, up));
+    // `normalize` returns its input unchanged when near-zero, so a zero-length
+    // forward leaves `f` near-zero and this guard still catches it — the
+    // post-normalize length check is valid for both the zero-forward and
+    // forward-parallel-to-up (zero cross product) degenerate cases.
     if length(f) < f32::EPSILON || length(right) < f32::EPSILON {
         return [0.0, 0.0, 0.0, 1.0];
     }
@@ -135,7 +139,6 @@ pub enum AudioError {
 /// only — the glam-typed `Camera` is converted at the call site, not here.
 /// `up` is world up `[0.0, 1.0, 0.0]`; `Camera` has no up accessor and uses
 /// `Vec3::Y` internally.
-// Consumed by `update` each frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ListenerState {
     /// World-space listener position.
@@ -148,7 +151,6 @@ pub struct ListenerState {
 
 /// A request to play a sound, crossing the boundary as primitives only.
 /// The target bus and sound are named keys resolved inside the subsystem.
-// Consumed by `play`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SoundRequest {
     /// Mixer bus to route this sound to (e.g. "sfx", "music", "ui").
@@ -250,6 +252,17 @@ impl<B: kira::backend::Backend> Audio<B> {
         self.buses.set_volume(bus, decibels);
     }
 
+    /// Set the overall output volume, in decibels (0 dB = unity gain, negative
+    /// attenuates, positive boosts). This drives kira's main track — the parent
+    /// of the SFX/Music/UI sub-tracks — so it scales every bus at once. Same
+    /// decibel/`Tween` convention as [`set_bus_volume`](Self::set_bus_volume):
+    /// the level change fades over kira's default ~10 ms tween rather than
+    /// cutting.
+    #[allow(dead_code)]
+    pub fn set_main_volume(&mut self, db: f32) {
+        self.manager.main_track().set_volume(db, Tween::default());
+    }
+
     /// Reserve a voice slot on `bus`, returning `true` on success (count
     /// incremented) or `false` when the bus is at its cap. `play` calls this
     /// before starting a sound and drops-and-logs on `false`.
@@ -329,8 +342,9 @@ impl<B: kira::backend::Backend> Audio<B> {
             Some(LoadedSound::Static(data)) => Playable::Static(data.as_ref().clone()),
             Some(entry @ LoadedSound::Streaming { .. }) => {
                 // `open_streaming` does blocking disk I/O on this thread.
-                // Acceptable for the current smoke-trigger use; revisit when
-                // gameplay events route through `play` at goal-4 scale.
+                // Acceptable while music is the only streaming sound. If
+                // streaming sounds ever play on SFX/UI buses at gameplay
+                // frequency, move decoding off the game thread.
                 match entry.open_streaming() {
                     Some(data) => Playable::Streaming(data),
                     // `open_streaming` already warned; nothing acquired yet.
@@ -675,6 +689,42 @@ mod tests {
         assert!(
             quiet_rms < loud_rms * 0.5,
             "lowering SFX volume reduces output amplitude: quiet rms {quiet_rms} \
+             should be well under half of loud rms {loud_rms}",
+        );
+    }
+
+    #[test]
+    fn lowering_main_volume_reduces_output_amplitude() {
+        // Mirror of the bus-volume AC for the main track: lowering the overall
+        // output volume measurably reduces the amplitude of whatever plays. The
+        // main track is the parent of every bus, so attenuating it scales the
+        // SFX tone the same way a bus attenuation would. Set the volume before
+        // playing and warm the mixer up with a silent render window so kira's
+        // default 10 ms tween settles before any audio — the comparison stays
+        // about steady-state gain, not the tween ramp.
+        let frames = 4096;
+
+        let mut loud = capturing_audio();
+        loud.manager.backend_mut().capture_rms(frames);
+        loud.play(sfx_request()).expect("fixture plays");
+        let loud_rms = loud.manager.backend_mut().capture_rms(frames);
+
+        let mut quiet = capturing_audio();
+        // -24 dB ≈ 0.063× linear: a large, unambiguous attenuation.
+        quiet.set_main_volume(-24.0);
+        quiet.manager.backend_mut().capture_rms(frames);
+        quiet.play(sfx_request()).expect("fixture plays");
+        let quiet_rms = quiet.manager.backend_mut().capture_rms(frames);
+
+        assert!(
+            loud_rms > 0.001,
+            "baseline output carries audible energy (rms {loud_rms})",
+        );
+        // Well below half the baseline even allowing for envelope and resampling
+        // variation; expected linear factor is ~0.063.
+        assert!(
+            quiet_rms < loud_rms * 0.5,
+            "lowering main volume reduces output amplitude: quiet rms {quiet_rms} \
              should be well under half of loud rms {loud_rms}",
         );
     }

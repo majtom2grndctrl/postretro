@@ -11,6 +11,8 @@ pub mod cache;
 pub mod chart_raster;
 pub mod chunk_light_list_bake;
 pub mod delta_sh_bake;
+#[cfg(test)]
+pub mod fixture_pipeline;
 pub mod fog_cell_masks;
 pub mod format;
 pub mod geometry;
@@ -513,10 +515,7 @@ fn main() -> anyhow::Result<()> {
         // lights past the reach cutoff drop, so far-bounce regions run slightly
         // dim. Not byte-identical to the cold whole-volume bake; the cold
         // `--no-cache` build is the exact ship source of truth.
-        log::warn!(
-            "[prl-build] warm SH bake: indirect lighting is APPROXIMATE (bounded light reach). \
-             Run a clean `--no-cache` bake before shipping a final map."
-        );
+        log::warn!("{}", sh_group::WARM_SH_APPROX_WARNING);
         sh_group::bake_sh_volume_grouped(&sh_ctx, &sh_config, Some(cache))
     } else {
         // Cold / exact path (`--no-cache`): the monolithic whole-volume bake, the

@@ -623,4 +623,373 @@ mod tests {
         assert!(is_full_atlas_light(&directional_light()));
         assert!(!is_full_atlas_light(&point_light([0.0, 1.0, 0.0], 5.0)));
     }
+
+    // -----------------------------------------------------------------------
+    // Task 8 additions: cache wiring behaviors at the module API seam and the
+    // full-fixture determinism gate (1).
+
+    use crate::cache::{CacheKey, StageCache};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn fresh_cache_dir(label: &str) -> std::path::PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let nonce = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "postretro_lmlayer_test_{label}_{nonce}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    /// Build one light's layer cache key the same way the `main.rs` wiring does,
+    /// so the locality/round-trip tests assert on the production key derivation.
+    fn layer_key(
+        light: &MapLight,
+        shared: &SharedAtlas<'_>,
+        prims: &[BvhPrimitive],
+        geo: &GeometryResult,
+    ) -> CacheKey {
+        let h = layer_input_hash(light, shared, prims, geo, DENSITY, AREA_SAMPLES);
+        CacheKey::new("lightmap_layer", LAYER_FORMAT_VERSION, &h)
+    }
+
+    /// Round-trip skip: with a real `StageCache`, the first per-light bake is a
+    /// miss + put, the second build serves every layer from cache (hit) and
+    /// re-bakes nothing. Proves the lightmap-layer half of the
+    /// "build twice → all entries hit" AC (the sh_group half lives in
+    /// `cache_round_trip_hits_on_second_build`).
+    #[test]
+    fn layer_cache_round_trip_skips_rebake() {
+        let mut geo = two_quad_geometry();
+        let lights = vec![
+            point_light([0.5, 1.0, 0.5], 5.0),
+            point_light([3.5, 1.0, 0.5], 5.0),
+        ];
+        let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let shared = SharedAtlas {
+            charts: &prepared.charts,
+            placements: &prepared.placements,
+            atlas_width: prepared.atlas_width,
+            atlas_height: prepared.atlas_height,
+        };
+
+        let dir = fresh_cache_dir("roundtrip");
+        let cache = StageCache::new(&dir).expect("cache dir");
+
+        // First build: every light is a miss, so bake + put.
+        for light in &lights {
+            let key = layer_key(light, &shared, &prims, &geo);
+            assert!(cache.get(&key).is_none(), "first build must miss");
+            let layer = bake_light_layer(light, &shared, &bvh, &prims, &geo, AREA_SAMPLES);
+            cache.put(&key, &layer.to_bytes());
+        }
+
+        // Second build: every light hits and decodes; nothing re-bakes.
+        for light in &lights {
+            let key = layer_key(light, &shared, &prims, &geo);
+            let bytes = cache.get(&key).expect("second build must hit");
+            assert!(
+                LightmapLayer::from_bytes(&bytes).is_some(),
+                "cached layer must decode on the round-trip"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Single point-light edit: only the edited light's layer key changes; every
+    /// other light's key is untouched (so only its layer re-bakes, the rest hit).
+    /// This is the lightmap side of the "edit one point/spot light" AC.
+    #[test]
+    fn single_light_edit_invalidates_only_its_own_layer() {
+        let mut geo = two_quad_geometry();
+        // Two well-separated lights so an edit to one is provably outside the
+        // other's influence slice.
+        let lights = vec![
+            point_light([0.5, 1.0, 0.5], 1.0),
+            point_light([3.5, 1.0, 0.5], 1.0),
+        ];
+        let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let (_, prims, _) = build_bvh(&geo).unwrap();
+        let shared = SharedAtlas {
+            charts: &prepared.charts,
+            placements: &prepared.placements,
+            atlas_width: prepared.atlas_width,
+            atlas_height: prepared.atlas_height,
+        };
+
+        let base_keys: Vec<String> = lights
+            .iter()
+            .map(|l| layer_key(l, &shared, &prims, &geo).as_filename())
+            .collect();
+
+        // Edit the first light's color only.
+        let mut edited = lights.clone();
+        edited[0].color = [0.3, 0.3, 0.3];
+        let edited_keys: Vec<String> = edited
+            .iter()
+            .map(|l| layer_key(l, &shared, &prims, &geo).as_filename())
+            .collect();
+
+        assert_ne!(
+            base_keys[0], edited_keys[0],
+            "edited light's layer key must change (it re-bakes)"
+        );
+        assert_eq!(
+            base_keys[1], edited_keys[1],
+            "an untouched light's layer key must stay identical (it hits)"
+        );
+    }
+
+    /// Directional-light edit: the directional's own layer key changes, and no
+    /// other (point) light's layer key is affected. (The "all SH groups re-bake"
+    /// half of the directional-edit AC is covered in `sh_group.rs`; SH groups
+    /// fold the whole-map geometry hash and a directional reaches every group.)
+    #[test]
+    fn directional_light_edit_does_not_disturb_point_layers() {
+        let mut geo = two_quad_geometry();
+        let lights = vec![directional_light(), point_light([0.5, 1.0, 0.5], 2.0)];
+        let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let (_, prims, _) = build_bvh(&geo).unwrap();
+        let shared = SharedAtlas {
+            charts: &prepared.charts,
+            placements: &prepared.placements,
+            atlas_width: prepared.atlas_width,
+            atlas_height: prepared.atlas_height,
+        };
+
+        let dir_base = layer_key(&lights[0], &shared, &prims, &geo).as_filename();
+        let pt_base = layer_key(&lights[1], &shared, &prims, &geo).as_filename();
+
+        let mut edited = lights.clone();
+        edited[0].color = [0.5, 0.4, 0.3]; // edit the directional only
+        let dir_edited = layer_key(&edited[0], &shared, &prims, &geo).as_filename();
+        let pt_edited = layer_key(&edited[1], &shared, &prims, &geo).as_filename();
+
+        assert_ne!(
+            dir_base, dir_edited,
+            "edited directional layer must re-bake"
+        );
+        assert_eq!(
+            pt_base, pt_edited,
+            "a directional edit must not disturb a point light's layer key"
+        );
+    }
+
+    /// Localized geometry edit: moving the far quad changes the far light's
+    /// influence-bounded slice (its key — and only its key — changes), while the
+    /// near light's slice is provably unchanged (its key is identical, so it
+    /// hits). This exercises lightmap geometry-slice locality non-vacuously — at
+    /// least one layer misses and at least one hits on the same edit.
+    #[test]
+    fn localized_geometry_edit_invalidates_only_overlapping_layers() {
+        let geo = two_quad_geometry();
+        let mut prep_geo = two_quad_geometry();
+        let near = point_light([0.5, 0.5, 0.5], 1.0); // bounds the first quad only
+        let far = point_light([3.5, 0.5, 0.5], 1.0); // bounds the second quad only
+        let lights = vec![near.clone(), far.clone()];
+        let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
+        let prepared = prepare_atlas(&mut prep_geo, &static_lights, DENSITY).unwrap();
+        let (_, prims, _) = build_bvh(&geo).unwrap();
+        let shared = SharedAtlas {
+            charts: &prepared.charts,
+            placements: &prepared.placements,
+            atlas_width: prepared.atlas_width,
+            atlas_height: prepared.atlas_height,
+        };
+
+        let near_base = layer_key(&near, &shared, &prims, &geo).as_filename();
+        let far_base = layer_key(&far, &shared, &prims, &geo).as_filename();
+
+        // Edit the FAR quad's geometry (vertices 4..8).
+        let mut geo2 = two_quad_geometry();
+        for v in geo2.geometry.vertices[4..].iter_mut() {
+            v.position[1] += 0.5;
+        }
+        let (_, prims2, _) = build_bvh(&geo2).unwrap();
+
+        let near_edited = layer_key(&near, &shared, &prims2, &geo2).as_filename();
+        let far_edited = layer_key(&far, &shared, &prims2, &geo2).as_filename();
+
+        assert_eq!(
+            near_base, near_edited,
+            "near light's slice is outside the edit — its layer must hit"
+        );
+        assert_ne!(
+            far_base, far_edited,
+            "far light's slice covers the edited quad — its layer must re-bake"
+        );
+    }
+
+    /// Corruption recovery at the real `StageCache`: a stored layer overwritten
+    /// with garbage is detected (length/hash fail → `get` returns `None`, or a
+    /// format-skewed payload → `from_bytes` returns `None`), so the caller
+    /// re-bakes and the rebuilt layer is byte-identical to the original.
+    #[test]
+    fn corrupt_layer_entry_is_discarded_and_rebaked() {
+        let mut geo = two_quad_geometry();
+        let lights = vec![point_light([0.5, 1.0, 0.5], 5.0)];
+        let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let shared = SharedAtlas {
+            charts: &prepared.charts,
+            placements: &prepared.placements,
+            atlas_width: prepared.atlas_width,
+            atlas_height: prepared.atlas_height,
+        };
+
+        let dir = fresh_cache_dir("corrupt");
+        let cache = StageCache::new(&dir).expect("cache dir");
+        let key = layer_key(&lights[0], &shared, &prims, &geo);
+
+        let original = bake_light_layer(&lights[0], &shared, &bvh, &prims, &geo, AREA_SAMPLES);
+        cache.put(&key, &original.to_bytes());
+
+        // Corrupt every file in the cache dir.
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_file() {
+                std::fs::write(&path, b"corrupt").unwrap();
+            }
+        }
+
+        // The cache rejects it (returns None), so the wiring re-bakes.
+        let recovered = match cache
+            .get(&key)
+            .and_then(|bytes| LightmapLayer::from_bytes(&bytes))
+        {
+            Some(layer) => layer,
+            None => bake_light_layer(&lights[0], &shared, &bvh, &prims, &geo, AREA_SAMPLES),
+        };
+        assert_eq!(
+            original, recovered,
+            "re-bake after corruption must reproduce the original layer"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `--cache-dir` redirect (module-level): a `StageCache` opened on an
+    /// override directory writes its layer entries there, under that path —
+    /// nothing lands in the default `.build-caches/prl-cache/`.
+    #[test]
+    fn cache_dir_override_places_entries_under_override() {
+        let mut geo = two_quad_geometry();
+        let lights = vec![point_light([0.5, 1.0, 0.5], 5.0)];
+        let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let shared = SharedAtlas {
+            charts: &prepared.charts,
+            placements: &prepared.placements,
+            atlas_width: prepared.atlas_width,
+            atlas_height: prepared.atlas_height,
+        };
+
+        let dir = fresh_cache_dir("override");
+        let cache = StageCache::new(&dir).expect("cache dir");
+        let key = layer_key(&lights[0], &shared, &prims, &geo);
+        let layer = bake_light_layer(&lights[0], &shared, &bvh, &prims, &geo, AREA_SAMPLES);
+        cache.put(&key, &layer.to_bytes());
+
+        let entry = dir.join(key.as_filename());
+        assert!(
+            entry.is_file(),
+            "layer entry must land under the override dir: {}",
+            entry.display()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Determinism GATE (1): the warm per-light composite is byte-identical to
+    /// the monolithic `bake_face_chart` atlas (pre-BC6H `CompositedAtlas`) on
+    /// EVERY `content/dev/maps/` fixture. The synthetic
+    /// `composite_matches_monolithic_atlas_bit_for_bit` proves the mechanism;
+    /// this runs the real fixtures through both paths.
+    ///
+    /// `#[ignore]` because each fixture bake casts the full per-texel ray load
+    /// (campaign-test takes minutes). Run manually:
+    ///   cargo test -p postretro-level-compiler -- --ignored --nocapture \
+    ///       lightmap_composite_equals_monolithic_on_fixtures
+    #[test]
+    #[ignore = "full-fixture lightmap bake; run with --ignored"]
+    fn lightmap_composite_equals_monolithic_on_fixtures() {
+        use crate::fixture_pipeline::{GATE_FIXTURES, load_fixture};
+
+        for &name in GATE_FIXTURES {
+            let fx = load_fixture(name);
+            // Match the wiring's direct-lightmap light set: global static order,
+            // Sdf-shadow lights dropped (their direct term resolves at runtime).
+            let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&fx.lights);
+            let layer_lights: Vec<&MapLight> = static_lights
+                .entries()
+                .iter()
+                .map(|e| e.light)
+                .filter(|l| l.shadow_type != crate::map_data::ShadowType::Sdf)
+                .collect();
+            if layer_lights.is_empty() {
+                // Placeholder path; no atlas to compare. Skip (still meaningful
+                // for the other fixtures).
+                continue;
+            }
+
+            // Two geometry clones so each path's prepare_atlas mutates its own.
+            let mut mono_geo = fx.geometry.clone();
+            let mut layer_geo = fx.geometry.clone();
+            let density = crate::lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS;
+
+            let mono_prepared = prepare_atlas(&mut mono_geo, &static_lights, density).unwrap();
+            if mono_prepared.placements.is_empty() {
+                continue;
+            }
+            let (mono_bvh, mono_prims, _) = build_bvh(&mono_geo).unwrap();
+            let mono_atlas = bake_monolithic_atlas(
+                &mono_bvh,
+                &mono_prims,
+                &mono_geo,
+                &layer_lights,
+                &mono_prepared.charts,
+                &mono_prepared.placements,
+                mono_prepared.atlas_width,
+                mono_prepared.atlas_height,
+                AREA_SAMPLES,
+            );
+
+            let layer_prepared = prepare_atlas(&mut layer_geo, &static_lights, density).unwrap();
+            let (layer_bvh, layer_prims, _) = build_bvh(&layer_geo).unwrap();
+            let shared = SharedAtlas {
+                charts: &layer_prepared.charts,
+                placements: &layer_prepared.placements,
+                atlas_width: layer_prepared.atlas_width,
+                atlas_height: layer_prepared.atlas_height,
+            };
+            let layers: Vec<LightmapLayer> = layer_lights
+                .iter()
+                .map(|l| {
+                    bake_light_layer(
+                        l,
+                        &shared,
+                        &layer_bvh,
+                        &layer_prims,
+                        &layer_geo,
+                        AREA_SAMPLES,
+                    )
+                })
+                .collect();
+            let mut composite = composite_layers(&layers, shared.atlas_width, shared.atlas_height);
+            composite.dilate();
+
+            assert_eq!(
+                mono_atlas, composite,
+                "fixture {name}: per-light composite must equal the monolithic atlas bit-for-bit"
+            );
+        }
+    }
 }

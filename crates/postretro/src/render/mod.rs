@@ -9,6 +9,7 @@ pub mod debug_ui;
 pub mod fog_pass;
 pub mod frame_timing;
 pub mod loaded_texture;
+pub mod mesh_pass;
 pub mod sdf_atlas;
 pub mod sdf_shadow;
 pub mod sh_compose;

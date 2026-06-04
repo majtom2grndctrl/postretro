@@ -291,6 +291,7 @@ fn component_kind_name(k: ComponentKind) -> &'static str {
         ComponentKind::PlayerMovement => "player_movement",
         ComponentKind::Weapon => "weapon",
         ComponentKind::DescriptorProvenance => "descriptor_provenance",
+        ComponentKind::Mesh => "mesh",
     }
 }
 
@@ -553,6 +554,10 @@ impl<'js> IntoJs<'js> for ComponentValue {
                 ctx,
                 "Descriptor provenance is engine-managed and not exposed to scripts",
             )),
+            ComponentValue::Mesh(_) => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "Mesh component is engine-managed and not exposed to scripts",
+            )),
         }
     }
 }
@@ -713,6 +718,9 @@ impl IntoLua for ComponentValue {
             )),
             ComponentValue::DescriptorProvenance(_) => Err(mlua::Error::RuntimeError(
                 "Descriptor provenance is engine-managed and not exposed to scripts".to_string(),
+            )),
+            ComponentValue::Mesh(_) => Err(mlua::Error::RuntimeError(
+                "Mesh component is engine-managed and not exposed to scripts".to_string(),
             )),
         }
     }

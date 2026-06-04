@@ -10,6 +10,7 @@ mod geometry;
 mod input;
 mod lighting;
 mod material;
+mod model;
 mod movement;
 mod weapon;
 

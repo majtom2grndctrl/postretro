@@ -11,6 +11,7 @@ use thiserror::Error;
 use super::components::billboard_emitter::BillboardEmitterComponent;
 use super::components::fog_volume::FogAnimation;
 use super::components::light::LightComponent;
+use super::components::mesh::MeshComponent;
 use super::components::particle::ParticleState;
 use super::components::player_movement::PlayerMovementComponent;
 use super::components::sprite_visual::SpriteVisual;
@@ -95,6 +96,7 @@ pub(crate) enum ComponentKind {
     PlayerMovement = 6,
     Weapon = 7,
     DescriptorProvenance = 8,
+    Mesh = 9,
 }
 
 impl ComponentKind {
@@ -113,6 +115,7 @@ impl ComponentKind {
             ComponentKind::PlayerMovement,
             ComponentKind::Weapon,
             ComponentKind::DescriptorProvenance,
+            ComponentKind::Mesh,
         ];
         VARIANTS.len()
     };
@@ -157,6 +160,7 @@ pub(crate) enum ComponentValue {
     PlayerMovement(PlayerMovementComponent),
     Weapon(WeaponComponent),
     DescriptorProvenance(DescriptorProvenance),
+    Mesh(MeshComponent),
 }
 
 impl ComponentValue {
@@ -171,6 +175,7 @@ impl ComponentValue {
             ComponentValue::PlayerMovement(_) => ComponentKind::PlayerMovement,
             ComponentValue::Weapon(_) => ComponentKind::Weapon,
             ComponentValue::DescriptorProvenance(_) => ComponentKind::DescriptorProvenance,
+            ComponentValue::Mesh(_) => ComponentKind::Mesh,
         }
     }
 }
@@ -378,6 +383,21 @@ impl Component for DescriptorProvenance {
 
     fn into_value(self) -> ComponentValue {
         ComponentValue::DescriptorProvenance(self)
+    }
+}
+
+impl Component for MeshComponent {
+    const KIND: ComponentKind = ComponentKind::Mesh;
+
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::Mesh(m) => Some(m),
+            _ => None,
+        }
+    }
+
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::Mesh(self)
     }
 }
 

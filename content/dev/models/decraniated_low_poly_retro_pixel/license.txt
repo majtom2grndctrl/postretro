@@ -1,0 +1,11 @@
+Model Information:
+* title:	Decraniated (Low Poly Retro Pixel)
+* source:	https://sketchfab.com/3d-models/decraniated-low-poly-retro-pixel-2e551e0991e147489152e17ce15f2d4d
+* author:	KallMor (https://sketchfab.com/kallmor)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Decraniated (Low Poly Retro Pixel)" (https://sketchfab.com/3d-models/decraniated-low-poly-retro-pixel-2e551e0991e147489152e17ce15f2d4d) by KallMor (https://sketchfab.com/kallmor) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

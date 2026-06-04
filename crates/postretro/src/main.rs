@@ -1618,6 +1618,14 @@ impl App {
             spawn_pos.y += MESH_SPAWN_Y_OFFSET;
 
             let loaded = renderer.load_skinned_model(&model_path, &prm_cache_root);
+            // Tripwire 1 (measure-and-report, not gated): runtime glTF
+            // parse + GPU upload time, recorded as a level-load timing stage
+            // alongside the world stages above. `load_skinned_model` wraps
+            // `load_model` (parse) + `set_model` (GPU upload); this stage isolates
+            // their combined cost so the `[Startup] ... model_load=Xms` log line
+            // reports it against the near-instant-boot northstar. See
+            // `context/plans/in-progress/M10--model-pipeline-slice/findings.md`.
+            self.level_timings.record("model_load");
             let mut registry = self.script_ctx.registry.borrow_mut();
             spawn_mesh_entity_if_loaded(
                 &mut registry,

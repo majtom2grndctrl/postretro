@@ -585,6 +585,61 @@ struct MeshAnimationState {
     clip: crate::model::skeleton::AnimationClip,
 }
 
+/// Log a pose-sampling summary once every this many samples. At ~60–144 FPS this
+/// emits roughly one line every few seconds — frequent enough to read on a run,
+/// quiet enough not to spam the hot path (development_guide §6).
+const POSE_SAMPLE_LOG_INTERVAL: u32 = 600;
+
+/// Tripwire 2 accumulator: rolling min/mean/max of per-frame `sample_clip` CPU
+/// cost. `record` is called each frame with the measured duration; every
+/// `POSE_SAMPLE_LOG_INTERVAL` samples it logs a `[Model]` summary and resets the
+/// window, so the steady-state log rate is bounded regardless of frame rate.
+#[derive(Default)]
+struct PoseSampleStats {
+    count: u32,
+    total_nanos: u128,
+    min_nanos: u64,
+    max_nanos: u64,
+    /// Joint count of the sampled skeleton, carried into the log line so the
+    /// figure is interpretable (cost scales with joint count).
+    joints: usize,
+}
+
+impl PoseSampleStats {
+    /// Fold one frame's `sample_clip` duration into the window; log + reset when
+    /// the window fills. Returns nothing — the periodic `log::info!` is the only
+    /// observable effect, keeping the per-frame path free of allocation/IO.
+    fn record(&mut self, elapsed: std::time::Duration, joints: usize) {
+        let nanos = elapsed.as_nanos().min(u64::MAX as u128) as u64;
+        if self.count == 0 {
+            self.min_nanos = nanos;
+            self.max_nanos = nanos;
+        } else {
+            self.min_nanos = self.min_nanos.min(nanos);
+            self.max_nanos = self.max_nanos.max(nanos);
+        }
+        self.total_nanos += nanos as u128;
+        self.count += 1;
+        self.joints = joints;
+
+        if self.count >= POSE_SAMPLE_LOG_INTERVAL {
+            let mean_us = (self.total_nanos as f64 / self.count as f64) / 1000.0;
+            let min_us = self.min_nanos as f64 / 1000.0;
+            let max_us = self.max_nanos as f64 / 1000.0;
+            log::info!(
+                "[Model] pose sample (CPU, 1 skeleton, {} joints): \
+                 min={:.1}us mean={:.1}us max={:.1}us over {} frames",
+                self.joints,
+                min_us,
+                mean_us,
+                max_us,
+                self.count,
+            );
+            *self = Self::default();
+        }
+    }
+}
+
 pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -809,6 +864,15 @@ pub struct Renderer {
     /// (Task 6 measures this). Lives on the renderer (not in the GPU pass) — it
     /// is CPU-side pose data the pass merely uploads.
     bone_palette_scratch: Vec<crate::model::BonePaletteEntry>,
+
+    /// Tripwire 2 (measure-and-report, not gated): rolling stats for the
+    /// per-frame CPU cost of `sample_clip` (one skeleton → palette). Accumulated
+    /// every frame and logged as a min/mean/max summary once per
+    /// `POSE_SAMPLE_LOG_INTERVAL` samples, NEVER per frame (the hot path stays
+    /// quiet per development_guide §6). `findings.md` projects the mean to wave
+    /// scale; this is CPU-side ONLY (GPU skinning + palette upload at N instances
+    /// is the many-instance task's measurement, unmeasured here).
+    pose_sample_stats: PoseSampleStats,
 
     /// Fullscreen splash render pass. Pipeline created at `Renderer::new`;
     /// bind group bound by `install_splash_from_loaded` and cleared by
@@ -2123,6 +2187,7 @@ impl Renderer {
             mesh_draws: Vec::new(),
             mesh_animation: None,
             bone_palette_scratch: Vec::new(),
+            pose_sample_stats: PoseSampleStats::default(),
             splash_pipeline,
             fog,
             fog_cell_masks: None,
@@ -3786,12 +3851,19 @@ impl Renderer {
             // Single-model this slice; the broadening many-instance task samples
             // each instance's clip into its own palette run.
             if let Some(anim) = &self.mesh_animation {
+                // Tripwire 2: time the CPU pose sample (one skeleton → palette).
+                // CPU only — the GPU palette upload + vertex skinning at N
+                // instances is the many-instance task's measurement, NOT here.
+                // Accumulated and logged periodically (never per frame, §6).
+                let sample_start = Instant::now();
                 crate::model::anim::sample_clip(
                     &anim.clip,
                     &anim.skeleton,
                     now_seconds as f32,
                     &mut self.bone_palette_scratch,
                 );
+                self.pose_sample_stats
+                    .record(sample_start.elapsed(), anim.skeleton.joints.len());
                 self.mesh_pass
                     .update_palette(&self.queue, 0, &self.bone_palette_scratch);
             }

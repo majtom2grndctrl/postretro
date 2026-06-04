@@ -363,6 +363,68 @@ mod tests {
         assert_vec3_eq(p_wrapped, p_early, "t = duration + eps wraps to t = eps");
     }
 
+    /// Tripwire 2 (CPU-only, no GPU): measure per-frame `sample_clip` cost on the
+    /// real shipped skeleton + clip and print a min/mean/max summary. This is the
+    /// CPU pose-sampling figure `findings.md` projects to wave scale; it needs no
+    /// renderer, so it runs here. Gated on the asset existing (mirrors the loader's
+    /// real-model test) and `#[ignore]`d so it only runs on demand:
+    ///   cargo test -p postretro --release sample_clip_cpu_cost -- --ignored --nocapture
+    /// (Run `--release` for a representative steady-state figure; debug is far
+    /// slower and not the number to report.)
+    #[test]
+    #[ignore = "measurement; run explicitly with --ignored --nocapture (prefer --release)"]
+    fn sample_clip_cpu_cost_on_real_model() {
+        use std::path::PathBuf;
+        use std::time::Instant;
+
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../content/dev/models/decraniated_low_poly_retro_pixel/scene.gltf");
+        if !path.exists() {
+            eprintln!("skipping: model asset not present at {}", path.display());
+            return;
+        }
+        let model = crate::model::gltf_loader::load_model(&path).expect("model loads");
+        let clip = model.clips.first().expect("model has one clip");
+        let skeleton = &model.skeleton;
+
+        // Warm the thread-local scratch + caches so the first sample doesn't skew
+        // the window.
+        let mut out = Vec::new();
+        for i in 0..64 {
+            sample_clip(clip, skeleton, i as f32 * 0.016, &mut out);
+        }
+
+        const SAMPLES: u32 = 100_000;
+        let mut min = u64::MAX;
+        let mut max = 0u64;
+        let mut total: u128 = 0;
+        let mut t = 0.0f32;
+        for _ in 0..SAMPLES {
+            t += 0.016; // advance ~1 frame at 60fps so we sweep the whole clip
+            let start = Instant::now();
+            sample_clip(clip, skeleton, t, &mut out);
+            let ns = start.elapsed().as_nanos() as u64;
+            min = min.min(ns);
+            max = max.max(ns);
+            total += ns as u128;
+        }
+        let mean_us = (total as f64 / SAMPLES as f64) / 1000.0;
+        eprintln!(
+            "[sample_clip CPU cost] joints={} samples={} min={:.3}us mean={:.3}us max={:.3}us | \
+             projected wave N=200: {:.1}us/frame ({:.3}ms)",
+            skeleton.joints.len(),
+            SAMPLES,
+            min as f64 / 1000.0,
+            mean_us,
+            max as f64 / 1000.0,
+            mean_us * 200.0,
+            mean_us * 200.0 / 1000.0,
+        );
+
+        // Sanity only — the measurement is the print above, not a threshold.
+        assert!(out.len() == skeleton.joints.len());
+    }
+
     /// `out` is cleared and refilled, and reuse across calls does not change the
     /// result — the steady-state allocation-free reuse path the renderer uses.
     #[test]

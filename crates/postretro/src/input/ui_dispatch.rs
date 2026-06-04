@@ -129,9 +129,9 @@ impl UiDispatch {
         self.mode = mode;
     }
 
-    /// The active capture/passthrough mode. Retained alongside `set_mode` for the
-    /// future descriptor consumer and the seam tests.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// The active capture/passthrough mode. Reserved seam API: retained alongside
+    /// `set_mode` for the future descriptor/Goal-F consumer.
+    #[allow(dead_code)]
     pub fn mode(&self) -> UiCaptureMode {
         self.mode
     }

@@ -19,12 +19,11 @@ pub use types::{Action, AxisSource, AxisValue, Binding, ButtonState, PhysicalInp
 // `UiCaptureMode` is the descriptor-sourced mode flag (Task 4 wires it from the
 // splash descriptor through `Renderer::splash_capture_mode`).
 pub use ui_dispatch::{UiCaptureMode, UiDispatch};
-// `UiDispatchOutcome` is `dispatch_event`'s return type, named only at the App
-// seam via method chaining and in the seam tests; `UiIntent` (the queued capture
-// marker) has no production consumer in Goal A — Goal F consumes intents.
-// Re-exported now so those call sites land without re-plumbing; the seam tests
-// exercise both.
-#[cfg_attr(not(test), allow(unused_imports))]
+// `UiDispatchOutcome` is `dispatch_event`'s return type, named at the App seam
+// via method chaining (not by import); `UiIntent` (the queued capture marker)
+// has no production consumer in Goal A — Goal F consumes intents. Re-exported
+// now as reserved seam API so those call sites land without re-plumbing.
+#[allow(unused_imports)]
 pub use ui_dispatch::{UiDispatchOutcome, UiIntent};
 
 /// Default sensitivity: radians per raw mouse unit. Tuned for 800 DPI mice.

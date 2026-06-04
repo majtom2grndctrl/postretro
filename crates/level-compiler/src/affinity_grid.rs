@@ -40,7 +40,12 @@ pub const AFFINITY_FACTOR: u32 = 4;
 /// dropping those probes would silently under-cull the region. Must match
 /// `delta_sh_bake`'s padding so affinity cells and baked sub-blocks cover the
 /// same volume.
-const AABB_PADDING_METERS: f32 = 0.5;
+///
+/// `pub(crate)` so the per-light lightmap layer cache (`lightmap_layer.rs`)
+/// derives the same influence AABB this grid uses (Task 4 of
+/// `incremental-bake-per-element`). The `delta_sh_bake.rs` copy is a separate
+/// `f64` value feeding the shipped delta path and is intentionally NOT folded.
+pub(crate) const AABB_PADDING_METERS: f32 = 0.5;
 
 /// Hard cap on directional-light AABB size, meters. MUST equal `delta_sh_bake`'s
 /// value — if they diverge, affinity cells cover a different volume than the
@@ -255,7 +260,16 @@ fn cell_range(p: DVec3, base_min: DVec3, cell_meters: f64, dims: [u32; 3]) -> [u
 // Shared geometry helpers — mirror delta_sh_bake / sh_bake so the affinity grid
 // lines up with the base SH volume and the per-light delta AABBs.
 
-fn light_aabb(light: &MapLight, world_aabb: (DVec3, DVec3)) -> (DVec3, DVec3) {
+/// Influence AABB of a single light. Point/Spot → a cube of half-extent
+/// `falloff_range + AABB_PADDING_METERS` about the origin; Directional →
+/// the whole-world AABB (parallel light reaches everywhere).
+///
+/// `pub(crate)` so the per-light lightmap layer cache reuses the exact same
+/// influence bound the affinity grid uses (Task 4 of
+/// `incremental-bake-per-element`). This f32-falloff/f64-origin copy is
+/// authoritative for the lightmap layer key; the `delta_sh_bake.rs` copy
+/// (f64 padding, different cast order) stays separate.
+pub(crate) fn light_aabb(light: &MapLight, world_aabb: (DVec3, DVec3)) -> (DVec3, DVec3) {
     match light.light_type {
         LightType::Directional => world_aabb,
         LightType::Point | LightType::Spot => {

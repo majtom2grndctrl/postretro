@@ -89,9 +89,9 @@ impl<'a> ShBakeCtx<'a> {
 }
 
 #[derive(Clone, Copy)]
-struct BakedProbe {
-    coefficients: [f32; 27],
-    metadata: OctahedralShProbe,
+pub(crate) struct BakedProbe {
+    pub(crate) coefficients: [f32; 27],
+    pub(crate) metadata: OctahedralShProbe,
 }
 
 impl Default for BakedProbe {
@@ -122,45 +122,54 @@ pub struct ShConfig {
     pub probe_spacing: f32,
 }
 
-/// Returns an empty section (`grid_dimensions == [0,0,0]`) for empty geometry,
-/// matching the "no SH section" degradation path at runtime.
-pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> OctahedralShVolumeSection {
+/// Geometry-derived layout of the probe grid, independent of lighting. Shared by
+/// the whole-volume bake and the per-group warm path (`sh_group.rs`) so both
+/// resolve the same grid origin/dims, per-probe positions, validity, and
+/// `far_sentinel` — the warm group bake therefore lands probes at byte-identical
+/// positions and seeds to the monolithic bake.
+///
+/// `probe_positions`/`validity` are indexed by the flat linear probe index
+/// (`x + y*nx + z*nx*ny`, x-fastest). `is_empty()` is true when the map has no
+/// geometry (the empty-section degradation path).
+pub(crate) struct ProbeGridLayout {
+    pub(crate) world_min: DVec3,
+    pub(crate) dims: [u32; 3],
+    pub(crate) cell_size: [f32; 3],
+    pub(crate) far_sentinel: f32,
+    pub(crate) probe_positions: Vec<DVec3>,
+    pub(crate) validity: Vec<u8>,
+}
+
+impl ProbeGridLayout {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.probe_positions.is_empty()
+    }
+
+    pub(crate) fn total_probes(&self) -> usize {
+        self.probe_positions.len()
+    }
+}
+
+/// Build the probe-grid layout from geometry + probe spacing. Mirrors the grid
+/// setup `bake_sh_volume` performs; both call this so the warm group path stays
+/// aligned to the whole-volume grid.
+pub(crate) fn probe_grid_layout(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> ProbeGridLayout {
     let probe_spacing_meters = config.probe_spacing;
-    let geom = &inputs.geometry.geometry;
-    if geom.vertices.is_empty() {
-        return OctahedralShVolumeSection {
-            grid_origin: [0.0, 0.0, 0.0],
-            cell_size: [probe_spacing_meters; 3],
-            grid_dimensions: [0, 0, 0],
-            probe_stride: OCTAHEDRAL_PROBE_STRIDE,
-            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
-            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
-            atlas_dimensions: [0, 0],
-            atlas_tiles_per_row: 0,
-            probes: Vec::new(),
-            atlas_texels: Vec::new(),
-            animation_descriptors: Vec::new(),
-            slot_for_map_light: vec![ANIMATED_SLOT_NONE; inputs.total_light_count],
+    let cell_size = [probe_spacing_meters; 3];
+    if inputs.geometry.geometry.vertices.is_empty() {
+        return ProbeGridLayout {
+            world_min: DVec3::ZERO,
+            dims: [0, 0, 0],
+            cell_size,
+            far_sentinel: 4.0 * Vec3::from(cell_size).length(),
+            probe_positions: Vec::new(),
+            validity: Vec::new(),
         };
     }
 
     let (world_min, world_max) = world_aabb(inputs);
     let dims = grid_dimensions(world_min, world_max, probe_spacing_meters);
     let total = dims[0] as usize * dims[1] as usize * dims[2] as usize;
-    let cell_size = [probe_spacing_meters; 3];
-
-    let static_lights: Vec<&MapLight> = inputs
-        .static_lights
-        .entries()
-        .iter()
-        .map(|e| e.light)
-        .collect();
-    let animated_lights: Vec<&MapLight> = inputs
-        .animated_lights
-        .entries()
-        .iter()
-        .map(|e| e.light)
-        .collect();
 
     let probe_positions: Vec<DVec3> = (0..total)
         .map(|i| probe_position(i, dims, world_min, probe_spacing_meters))
@@ -182,31 +191,75 @@ pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> OctahedralSh
     // probe-spacing scale the runtime Chebyshev interpolant operates in.
     let far_sentinel = 4.0 * Vec3::from(cell_size).length();
 
+    ProbeGridLayout {
+        world_min,
+        dims,
+        cell_size,
+        far_sentinel,
+        probe_positions,
+        validity,
+    }
+}
+
+/// Collect the static-baked light slice in `static_lights` (global) order — the
+/// order the per-hit radiance sum iterates. Shared so the warm group path can
+/// derive a bounded subset that preserves this ordering.
+pub(crate) fn static_light_refs<'a>(inputs: &ShBakeCtx<'a>) -> Vec<&'a MapLight> {
+    inputs
+        .static_lights
+        .entries()
+        .iter()
+        .map(|e| e.light)
+        .collect()
+}
+
+/// Returns an empty section (`grid_dimensions == [0,0,0]`) for empty geometry,
+/// matching the "no SH section" degradation path at runtime.
+pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> OctahedralShVolumeSection {
+    let probe_spacing_meters = config.probe_spacing;
+    let layout = probe_grid_layout(inputs, config);
+    if layout.is_empty() {
+        return OctahedralShVolumeSection {
+            grid_origin: [0.0, 0.0, 0.0],
+            cell_size: [probe_spacing_meters; 3],
+            grid_dimensions: [0, 0, 0],
+            probe_stride: OCTAHEDRAL_PROBE_STRIDE,
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            atlas_dimensions: [0, 0],
+            atlas_tiles_per_row: 0,
+            probes: Vec::new(),
+            atlas_texels: Vec::new(),
+            animation_descriptors: Vec::new(),
+            slot_for_map_light: vec![ANIMATED_SLOT_NONE; inputs.total_light_count],
+        };
+    }
+
+    let world_min = layout.world_min;
+    let dims = layout.dims;
+    let total = layout.total_probes();
+    let cell_size = layout.cell_size;
+    let far_sentinel = layout.far_sentinel;
+
+    let static_lights: Vec<&MapLight> = static_light_refs(inputs);
+    let animated_lights: Vec<&MapLight> = inputs
+        .animated_lights
+        .entries()
+        .iter()
+        .map(|e| e.light)
+        .collect();
+
     let baked_probes: Vec<BakedProbe> = (0..total)
         .into_par_iter()
         .map(|i| {
-            if validity[i] == 0 {
-                return BakedProbe::default();
-            }
-            let pos = vec3_from(probe_positions[i]);
-            let (coeffs, sum_d, sum_d2) =
-                // `i as u64` is the flat probe index used as a deterministic seed for the
-                // soft-visibility lattice rotation. Numeric collisions with delta_sh_bake's
-                // probe_index space are harmless — the two bakes write separate PRL sections
-                // and are never combined.
-                bake_probe_rgb_with_moments(inputs, pos, &static_lights, far_sentinel, i as u64);
-            // All RAYS_PER_PROBE rays accumulate (sky misses via the sentinel),
-            // so these are exact divisions by the constant.
-            let mean_distance = sum_d / RAYS_PER_PROBE as f32;
-            let mean_sq_distance = sum_d2 / RAYS_PER_PROBE as f32;
-            BakedProbe {
-                coefficients: coeffs,
-                metadata: OctahedralShProbe {
-                    validity: 1,
-                    mean_distance: f32_to_f16_bits(mean_distance),
-                    mean_sq_distance: f32_to_f16_bits(mean_sq_distance),
-                },
-            }
+            bake_probe(
+                inputs,
+                vec3_from(layout.probe_positions[i]),
+                &static_lights,
+                far_sentinel,
+                layout.validity[i] != 0,
+                i as u64,
+            )
         })
         .collect();
     let base_probes: Vec<OctahedralShProbe> = baked_probes.iter().map(|p| p.metadata).collect();
@@ -369,7 +422,7 @@ fn probe_is_valid(tree: &BspTree, exterior: &HashSet<usize>, pos: DVec3) -> bool
     !exterior.contains(&leaf)
 }
 
-fn vec3_from(v: DVec3) -> Vec3 {
+pub(crate) fn vec3_from(v: DVec3) -> Vec3 {
     Vec3::new(v.x as f32, v.y as f32, v.z as f32)
 }
 
@@ -839,6 +892,40 @@ fn bake_probe_rgb_with_moments(
     (acc, sum_d, sum_d2)
 }
 
+/// Bake one probe's SH coefficients + depth-moment metadata. Shared between the
+/// whole-volume `bake_sh_volume` path and the per-group warm path
+/// (`sh_group.rs`). `probe_index` is the probe's flat linear index in the global
+/// grid (`x + y*nx + z*nx*ny`); it seeds only the deterministic soft-visibility
+/// lattice rotation, so passing the same global index in either path keeps the
+/// per-probe output byte-identical. Invalid probes bake nothing and return the
+/// default (zeroed) record, matching the volume path.
+pub(crate) fn bake_probe(
+    inputs: &ShBakeCtx<'_>,
+    probe_pos: Vec3,
+    static_lights: &[&MapLight],
+    far_sentinel: f32,
+    valid: bool,
+    probe_index: u64,
+) -> BakedProbe {
+    if !valid {
+        return BakedProbe::default();
+    }
+    let (coefficients, sum_d, sum_d2) =
+        bake_probe_rgb_with_moments(inputs, probe_pos, static_lights, far_sentinel, probe_index);
+    // All RAYS_PER_PROBE rays accumulate (sky misses via the sentinel), so these
+    // are exact divisions by the constant.
+    let mean_distance = sum_d / RAYS_PER_PROBE as f32;
+    let mean_sq_distance = sum_d2 / RAYS_PER_PROBE as f32;
+    BakedProbe {
+        coefficients,
+        metadata: OctahedralShProbe {
+            validity: 1,
+            mean_distance: f32_to_f16_bits(mean_distance),
+            mean_sq_distance: f32_to_f16_bits(mean_sq_distance),
+        },
+    }
+}
+
 /// Deterministic per-(probe, ray, light) seed for the soft-visibility area-sample
 /// rotation. `sh_bake` has no texel coordinate to hash (unlike the lightmap/animated
 /// callers), so the seed is mixed from the probe index, ray index, and the light's
@@ -937,6 +1024,13 @@ pub fn validate_light_animations(lights: &[MapLight]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Build the runtime animation descriptor for one animated light. `pub(crate)`
+/// so the warm per-group SH path (`sh_group.rs`) recovers the volume's
+/// animation-descriptor table without re-running the probe bake.
+pub(crate) fn animation_descriptor_for_light(light: &MapLight) -> AnimationDescriptor {
+    animation_descriptor_for(light)
 }
 
 fn animation_descriptor_for(light: &MapLight) -> AnimationDescriptor {

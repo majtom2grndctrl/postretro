@@ -2039,6 +2039,20 @@ impl App {
                     log::info!("[Renderer] vsync {}", if enabled { "on" } else { "off" },);
                 }
             }
+            // Real-device audio smoke check: play the test tone on the SFX bus
+            // so an operator can confirm output reaches the OS. Guarded for the
+            // silent (init-failed) case; needs a level loaded for the sound
+            // registry to hold the fixture, otherwise `play` warns gracefully.
+            DiagnosticAction::PlayTestSfx => {
+                if let Some(audio) = &mut self.audio {
+                    audio.play(audio::SoundRequest {
+                        bus: "sfx".to_string(),
+                        sound: "sfx/test_tone".to_string(),
+                        looping: false,
+                    });
+                    log::info!("[Audio] smoke check: played sfx/test_tone on SFX bus");
+                }
+            }
             // Toggle just flips visibility and shifts InputFocus to gate
             // game input. Lazy GPU init happens inside `render_debug_ui` on
             // the renderer the first time the panel paints; no explicit init

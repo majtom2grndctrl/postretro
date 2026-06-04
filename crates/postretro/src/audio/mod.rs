@@ -460,6 +460,99 @@ impl<B: kira::backend::Backend> Audio<B> {
 mod tests {
     use super::*;
     use kira::backend::mock::MockBackend;
+    use kira::backend::{Backend, Renderer};
+
+    /// A test backend that captures kira's [`Renderer`] so a test can pull the
+    /// mixer's processed output samples into a readable buffer.
+    ///
+    /// kira's own `MockBackend` discards rendered frames into a private `Vec`
+    /// with no accessor, so it cannot verify *output amplitude* — only that
+    /// control-plane commands don't panic. The `Renderer::process(&mut [f32],
+    /// channels)` API is public, though, and `start` hands the renderer to the
+    /// backend by value, so a custom backend can hold it and expose the samples.
+    /// This is the load-bearing readout for the volume→amplitude AC: it is the
+    /// only way to observe that lowering a bus's volume reduces the signal that
+    /// would reach the OS. `Audio<B>` being generic over the backend is what
+    /// lets a test construct `Audio<CapturingBackend>` and drive it device-free.
+    struct CapturingBackend {
+        renderer: Option<Renderer>,
+    }
+
+    impl Backend for CapturingBackend {
+        type Settings = u32; // sample rate
+        type Error = ();
+
+        fn setup(sample_rate: u32, _internal_buffer_size: usize) -> Result<(Self, u32), ()> {
+            // kira drives the renderer at `sample_rate`; the backend itself
+            // doesn't need to retain it, so just echo it back to the manager.
+            Ok((Self { renderer: None }, sample_rate))
+        }
+
+        fn start(&mut self, renderer: Renderer) -> Result<(), ()> {
+            self.renderer = Some(renderer);
+            Ok(())
+        }
+    }
+
+    impl CapturingBackend {
+        /// Drain queued control-plane commands (so freshly-played sounds become
+        /// audible) and render `frame_count` stereo frames, returning the peak
+        /// absolute sample amplitude across both channels. A return of `0.0`
+        /// means total silence.
+        fn capture_peak(&mut self, frame_count: usize) -> f32 {
+            let renderer = self.renderer.as_mut().expect("renderer started");
+            // Flush play/volume commands into the mixer before rendering.
+            renderer.on_start_processing();
+            let mut out = vec![0.0_f32; frame_count * 2];
+            renderer.process(&mut out, 2);
+            out.iter().fold(0.0_f32, |peak, s| peak.max(s.abs()))
+        }
+
+        /// Drain queued commands and render `frame_count` stereo frames,
+        /// returning the RMS (root-mean-square) sample amplitude across both
+        /// channels. RMS is the energy metric for the volume→amplitude check:
+        /// unlike peak, it integrates over the whole window, so a bus volume
+        /// tween that ramps in over its first few milliseconds still reads as a
+        /// proportionally quieter signal rather than being masked by the brief
+        /// pre-ramp transient at the very start of the clip.
+        fn capture_rms(&mut self, frame_count: usize) -> f32 {
+            let renderer = self.renderer.as_mut().expect("renderer started");
+            renderer.on_start_processing();
+            let mut out = vec![0.0_f32; frame_count * 2];
+            renderer.process(&mut out, 2);
+            let sum_sq: f64 = out.iter().map(|s| (*s as f64) * (*s as f64)).sum();
+            ((sum_sq / out.len() as f64).sqrt()) as f32
+        }
+    }
+
+    /// Build an `Audio` on the capturing backend at the fixture's real 8 kHz
+    /// sample rate, with the engine's capacities, bus tree, and fixture sounds
+    /// loaded. The 8 kHz rate matches the `test_tone.wav` fixture so rendered
+    /// frames carry the tone at full resolution (kira's `MockBackend` defaults
+    /// to 1 Hz, which would resample the clip away to near-nothing).
+    fn capturing_audio() -> Audio<CapturingBackend> {
+        let settings = AudioManagerSettings::<CapturingBackend> {
+            capacities: Audio::CAPACITIES,
+            backend_settings: 8_000,
+            ..Default::default()
+        };
+        let mut manager =
+            AudioManager::<CapturingBackend>::new(settings).expect("capturing backend starts");
+        let listener = manager
+            .add_listener([0.0_f32, 0.0, 0.0], Audio::IDENTITY_ORIENTATION)
+            .expect("listener allocates");
+        let buses = BusTree::build(&mut manager).expect("bus tree builds");
+
+        let mut audio = Audio {
+            manager,
+            listener,
+            registry: SoundRegistry::new(),
+            buses,
+            voices: VoiceTable::new(),
+        };
+        audio.load_level_sounds(&dev_content_root());
+        audio
+    }
 
     /// Absolute path to the repo's `content/dev`, so the committed sound fixtures
     /// resolve regardless of where `cargo test` runs from. Mirrors the helper in
@@ -506,6 +599,136 @@ mod tests {
             sound: "sfx/test_tone".to_string(),
             looping: false,
         }
+    }
+
+    #[test]
+    fn init_under_mock_backend_builds_bus_tree_and_loads_fixtures() {
+        // The fault-tolerant init contract: under a device-free backend the
+        // manager starts, the Master → SFX/Music/UI tree is created, and the
+        // level's fixture sounds register — all without a sound device. Proven
+        // by constructing through the same path `Audio::new` uses (manager +
+        // listener + bus tree + level load) and observing the resulting state.
+        let audio = mock_audio();
+
+        // Bus tree present: every bus starts at zero active voices.
+        for bus in BusId::ALL {
+            assert_eq!(
+                audio.active_voices(bus),
+                0,
+                "bus {bus:?} exists and starts idle",
+            );
+        }
+        // Fixtures loaded into the registry under their content-relative keys.
+        assert!(
+            audio.registry().contains("sfx/test_tone"),
+            "static SFX fixture is registered after init",
+        );
+        assert!(
+            audio.registry().contains("music/test_loop"),
+            "streaming music fixture is registered after init",
+        );
+    }
+
+    #[test]
+    fn play_produces_non_silent_output_under_capturing_backend() {
+        // `play` must actually route a signal into the mixer: rendering the
+        // mixer output after playing the tone yields non-silent frames. This is
+        // the device-free analog of "sound reaches the OS".
+        let mut audio = capturing_audio();
+        let handle = audio.play(sfx_request());
+        assert!(
+            handle.is_some(),
+            "fixture plays under the capturing backend"
+        );
+
+        // 4096 frames at 8 kHz is ~0.5s, covering the 0.25s tone fixture.
+        let peak = audio.manager.backend_mut().capture_peak(4096);
+        assert!(
+            peak > 0.01,
+            "playing the tone yields audible output (peak {peak} > 0.01)",
+        );
+    }
+
+    #[test]
+    fn lowering_bus_volume_reduces_output_amplitude() {
+        // Load-bearing AC: lowering a bus's volume measurably reduces the output
+        // amplitude of sounds routed to it. Measure the RMS energy of the tone
+        // played on SFX at unity gain, then attenuate the SFX bus, replay, and
+        // measure again — the attenuated RMS must be measurably lower.
+        //
+        // The bus volume is set *before* playing and the mixer is warmed up with
+        // a silent render window, so kira's default 10 ms volume tween fully
+        // settles before any audio plays. That keeps the comparison about the
+        // steady-state gain rather than the brief tween ramp.
+        let frames = 4096;
+
+        let mut loud = capturing_audio();
+        // Warm-up render at unity gain establishes steady state with no sound.
+        loud.manager.backend_mut().capture_rms(frames);
+        loud.play(sfx_request()).expect("fixture plays");
+        let loud_rms = loud.manager.backend_mut().capture_rms(frames);
+
+        let mut quiet = capturing_audio();
+        // -24 dB ≈ 0.063× linear: a large, unambiguous attenuation. Set before
+        // play and let the tween settle during the silent warm-up window.
+        quiet.set_bus_volume(BusId::Sfx, -24.0);
+        quiet.manager.backend_mut().capture_rms(frames);
+        quiet.play(sfx_request()).expect("fixture plays");
+        let quiet_rms = quiet.manager.backend_mut().capture_rms(frames);
+
+        assert!(
+            loud_rms > 0.001,
+            "baseline output carries audible energy (rms {loud_rms})",
+        );
+        // Measurably lower — well beyond float noise. The expected linear factor
+        // is ~0.063, so the attenuated RMS should sit far below half the
+        // baseline even allowing for envelope and resampling variation.
+        assert!(
+            quiet_rms < loud_rms * 0.5,
+            "lowering SFX volume reduces output amplitude: quiet rms {quiet_rms} \
+             should be well under half of loud rms {loud_rms}",
+        );
+    }
+
+    #[test]
+    fn play_drops_request_when_bus_is_at_its_voice_cap() {
+        // Fill the SFX bus to its voice cap via `play`, then assert the next
+        // `play` is dropped (`None`) and active voices never exceed the cap.
+        let mut audio = mock_audio();
+        let cap = BusId::Sfx.voice_cap();
+
+        for i in 0..cap {
+            assert!(
+                audio.play(sfx_request()).is_some(),
+                "play {i} within cap succeeds",
+            );
+        }
+        assert_eq!(
+            audio.active_voices(BusId::Sfx),
+            cap,
+            "the bus fills exactly to its cap",
+        );
+
+        // One past the cap is dropped, and the count stays pinned at the cap.
+        assert!(
+            audio.play(sfx_request()).is_none(),
+            "a play past the voice cap is dropped",
+        );
+        assert_eq!(
+            audio.active_voices(BusId::Sfx),
+            cap,
+            "active voices never exceed the cap",
+        );
+    }
+
+    #[test]
+    fn shutdown_drops_cleanly_after_playing() {
+        // `shutdown` consumes `Audio`, tearing down the manager (and its
+        // listener/tracks/voices). Playing first, then shutting down, must not
+        // panic — the device-free analog of a clean engine exit.
+        let mut audio = mock_audio();
+        audio.play(sfx_request()).expect("fixture plays");
+        audio.shutdown();
     }
 
     #[test]

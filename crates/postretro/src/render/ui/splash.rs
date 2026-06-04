@@ -26,41 +26,49 @@ const PANEL_BORDER_COLOR: [f32; 4] = [0.10, 0.55, 0.62, 1.0];
 /// keep this size when the panel scales; edges/center stretch (the 9-slice rule).
 const PANEL_BORDER_MARGIN: f32 = 12.0;
 
+/// Logo width in logical-reference px — about half the 1280-wide canvas, so the
+/// banner reads prominently. Height is derived from the decoded source aspect (see
+/// `logo_reference_size`), never a constant, so the logo is always shaped to the
+/// real asset and only the uniform device scale applies — never an x/y stretch.
+const LOGO_REFERENCE_WIDTH: f32 = 600.0;
+
+/// Horizontal padding between the logo and the framed panel's inner edge
+/// (logical-reference px, each side). The panel width is the logo width plus this
+/// on both sides, so the frame visibly contains the banner with breathing room.
+const PANEL_H_PADDING: f32 = 70.0;
+
 /// Framed panel size in logical-reference px. Non-fullscreen and centered, so the
 /// fullscreen background fill shows around it and the framed corners are on screen.
-const PANEL_SIZE: [f32; 2] = [560.0, 360.0];
+/// Width hugs the logo (+ horizontal padding); height is fixed tall enough to clear
+/// the (nudged-up) logo on top and the shaped-text line below, both with padding.
+/// Stays within the 1280x720 canvas when centered.
+const PANEL_SIZE: [f32; 2] = [LOGO_REFERENCE_WIDTH + 2.0 * PANEL_H_PADDING, 360.0];
 
 /// Inset of the fill panel inside the border frame (logical-reference px). The
 /// border draws at `PANEL_SIZE`; the fill draws inset by this on every edge so a
 /// rim of the border color frames the fill.
 const PANEL_BORDER_THICKNESS: f32 = 4.0;
 
-/// Logo source aspect ratio (width / height) of the committed
-/// `postretro-ascii-art.png`. The logo draws at a FIXED logical-reference size
-/// derived from this so only the uniform device scale ever applies — never an
-/// independent x/y stretch (the acceptance criterion "without stretching the
-/// logo"). The asset is ~roughly square ASCII art; a fixed reference height with
-/// the aspect-preserved width keeps it crisp at every backbuffer size.
-const LOGO_REFERENCE_HEIGHT: f32 = 220.0;
-const LOGO_ASPECT: f32 = 1.0;
-
 /// Vertical nudge of the logo above the panel center (logical-reference px), so
 /// the shaped-text line fits below it within the framed panel.
-const LOGO_OFFSET_Y: f32 = -28.0;
+const LOGO_OFFSET_Y: f32 = -40.0;
 
 /// Shaped-text line: device-independent font size in logical-reference px (the
 /// caller multiplies by `device_scale`), and its baseline-box offset below the
 /// panel center so it sits under the logo inside the frame.
 const TEXT_LOGICAL_FONT_SIZE: f32 = 22.0;
-const TEXT_OFFSET_Y: f32 = 110.0;
+const TEXT_OFFSET_Y: f32 = 90.0;
 
 /// Shaped-text color, sRGB 0..=255 + alpha — a soft off-white that reads against
 /// the dark panel.
 const TEXT_COLOR: [u8; 4] = [196, 214, 224, 255];
 
-/// The fixed logo size in logical-reference px, aspect-preserved from the source.
-fn logo_reference_size() -> [f32; 2] {
-    [LOGO_REFERENCE_HEIGHT * LOGO_ASPECT, LOGO_REFERENCE_HEIGHT]
+/// The logo size in logical-reference px: a fixed width with the height derived
+/// from the decoded source aspect (width / height), so the on-screen logo is
+/// always shaped to the real asset. Projection then applies only the uniform
+/// device scale to both axes — never an independent x/y stretch.
+fn logo_reference_size(logo_aspect: f32) -> [f32; 2] {
+    [LOGO_REFERENCE_WIDTH, LOGO_REFERENCE_WIDTH / logo_aspect]
 }
 
 /// Hardcoded splash content in logical-reference (1280x720) space. Carries the
@@ -85,9 +93,11 @@ pub(crate) struct SplashDescriptor {
 
 /// The single named builder seam. Returns the active splash content; Goal B/G1
 /// replace this body with descriptor parsing / script ingestion while keeping the
-/// `SplashDescriptor` shape and call sites stable.
-pub(crate) fn build_splash_descriptor() -> SplashDescriptor {
-    let logo_size = logo_reference_size();
+/// `SplashDescriptor` shape and call sites stable. `logo_aspect` is the decoded
+/// logo image's width/height — the caller passes the real dimensions so the logo
+/// is shaped to the asset rather than a hardcoded constant.
+pub(crate) fn build_splash_descriptor(logo_aspect: f32) -> SplashDescriptor {
+    let logo_size = logo_reference_size(logo_aspect);
 
     // Bordered 9-slice frame, centered. Margins exercise the 9-slice corners.
     let border = UiElement::panel_9slice(
@@ -198,11 +208,16 @@ mod tests {
     use super::super::layout::{device_scale, project};
     use super::*;
 
+    /// The real committed logo asset is 2028x582, a wide banner (aspect ~3.485).
+    /// The descriptor takes this from the decoded image; tests pass the real value
+    /// so they pin the same shaping the engine applies.
+    const ASSET_LOGO_ASPECT: f32 = 2028.0 / 582.0;
+
     #[test]
     fn descriptor_is_passthrough() {
         // The splash is non-interactive — the dispatch seam must stay passthrough.
         assert_eq!(
-            build_splash_descriptor().capture_mode(),
+            build_splash_descriptor(ASSET_LOGO_ASPECT).capture_mode(),
             UiCaptureMode::Passthrough
         );
     }
@@ -211,11 +226,11 @@ mod tests {
     fn panel_is_framed_and_centered_at_reference_res() {
         // The bordered frame is non-fullscreen and centered, so the fullscreen
         // background shows around it and the 9-slice corners are on screen.
-        let desc = build_splash_descriptor();
+        let desc = build_splash_descriptor(ASSET_LOGO_ASPECT);
         let list = project(&desc.panel_elements(), [1280, 720]);
         let border = list.instances[0];
-        // Centered 560x360 panel: top-left at ((1280-560)/2, (720-360)/2).
-        assert_eq!(border.rect, [360.0, 180.0, 560.0, 360.0]);
+        // Centered 740x360 panel: top-left at ((1280-740)/2, (720-360)/2).
+        assert_eq!(border.rect, [270.0, 180.0, 740.0, 360.0]);
         // Non-zero 9-slice margin so the shader expands real corners.
         assert!(border.margin.iter().all(|&m| m > 0.0));
         // Fill panel is inset inside the border.
@@ -226,20 +241,51 @@ mod tests {
 
     #[test]
     fn logo_keeps_aspect_under_scale() {
-        // The logo draws at a fixed logical-reference size; at 3x both axes scale
-        // by the same factor, so the aspect ratio is preserved (no x/y stretch).
-        let desc = build_splash_descriptor();
+        // Regression: the descriptor hardcoded a square logo (LOGO_ASPECT = 1.0),
+        // crushing the wide banner asset horizontally. The logo rect's aspect must
+        // now equal the SOURCE image aspect, not just stay self-consistent across
+        // resolutions — that consistency held even while the logo was wrongly square.
+        let desc = build_splash_descriptor(ASSET_LOGO_ASPECT);
         let r1 = project(&[desc.logo_element()], [1280, 720]).instances[0].rect;
         let r3 = project(&[desc.logo_element()], [3840, 2160]).instances[0].rect;
         let aspect1 = r1[2] / r1[3];
         let aspect3 = r3[2] / r3[3];
+        // Both match the source aspect (within the device-pixel snap tolerance).
         assert!(
-            (aspect1 - aspect3).abs() < 1e-3,
+            (aspect1 - ASSET_LOGO_ASPECT).abs() < 1e-2,
+            "logo rect aspect {aspect1} must match source aspect {ASSET_LOGO_ASPECT}"
+        );
+        assert!(
+            (aspect1 - aspect3).abs() < 1e-2,
             "logo aspect preserved at 4K"
         );
         // And the size tripled (uniform device scale only).
         assert!((r3[2] - r1[2] * 3.0).abs() < 2.0);
         assert!((r3[3] - r1[3] * 3.0).abs() < 2.0);
+    }
+
+    #[test]
+    fn logo_fits_within_framed_panel() {
+        // Composition invariant: the widened panel must fully contain the logo
+        // (including its LOGO_OFFSET_Y nudge), leaving room below for the text line.
+        // Guards against the logo overflowing the frame after the banner widening.
+        let desc = build_splash_descriptor(ASSET_LOGO_ASPECT);
+        let panels = project(&desc.panel_elements(), [1280, 720]);
+        let border = panels.instances[0].rect;
+        let logo = project(&[desc.logo_element()], [1280, 720]).instances[0].rect;
+
+        let (bx, by, bw, bh) = (border[0], border[1], border[2], border[3]);
+        let (lx, ly, lw, lh) = (logo[0], logo[1], logo[2], logo[3]);
+        assert!(lx >= bx, "logo left {lx} inside panel left {bx}");
+        assert!(lx + lw <= bx + bw, "logo right inside panel right");
+        assert!(ly >= by, "logo top {ly} inside panel top {by}");
+        assert!(ly + lh <= by + bh, "logo bottom inside panel bottom");
+
+        // The shaped-text line sits below the logo, still inside the panel.
+        let text = desc.text_line("v0.1.0", [1280, 720], device_scale([1280, 720]));
+        let text_top = text.position[1];
+        assert!(text_top > ly + lh, "text starts below the logo");
+        assert!(text_top < by + bh, "text top stays inside the panel");
     }
 
     #[test]
@@ -259,7 +305,7 @@ mod tests {
 
     #[test]
     fn text_line_is_device_scaled() {
-        let desc = build_splash_descriptor();
+        let desc = build_splash_descriptor(ASSET_LOGO_ASPECT);
         let scale = device_scale([3840, 2160]);
         let text = desc.text_line("v0.1.0", [3840, 2160], scale);
         // Font size is the logical size times the device scale.

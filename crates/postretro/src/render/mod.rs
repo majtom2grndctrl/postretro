@@ -2772,7 +2772,10 @@ impl Renderer {
             _texture: texture,
             bind_group,
         });
-        self.active_splash = Some(ui::splash::build_splash_descriptor());
+        // Shape the logo to the decoded image so it never stretches: the aspect
+        // flows from the real pixel dims, not a hardcoded constant.
+        let logo_aspect = dims[0] as f32 / dims[1] as f32;
+        self.active_splash = Some(ui::splash::build_splash_descriptor(logo_aspect));
         dims
     }
 

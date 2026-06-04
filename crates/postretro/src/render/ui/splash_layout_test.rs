@@ -39,6 +39,11 @@ fn assert_rect(label: &str, got: [f32; 4], want: [f32; 4]) {
     }
 }
 
+/// The real committed logo asset is 2028x582 (a wide banner, aspect ~3.485). The
+/// descriptor derives the logo's height from this decoded aspect, so the fixture
+/// builds the descriptor with the real value and pins rects shaped to the asset.
+const ASSET_LOGO_ASPECT: f32 = 2028.0 / 582.0;
+
 /// Reproduce the renderer's splash draw-list assembly (`record_splash_ui`): the
 /// oversized background fill first, then the framed panel quads, projected into
 /// one device-pixel list. The logo (its own textured batch) is returned
@@ -63,7 +68,7 @@ fn splash_panel_quads_anchor_centered_at_reference_resolution() {
     // framed panel must land dead-center and the background must cover the
     // canvas. If the Center anchor math or the panel size regresses, these rects
     // move and the test fails.
-    let desc = build_splash_descriptor();
+    let desc = build_splash_descriptor(ASSET_LOGO_ASPECT);
     let (panels, logo) = project_splash(&desc, [1280, 720]);
     assert_eq!(panels.len(), 3, "background + border + fill");
 
@@ -75,22 +80,22 @@ fn splash_panel_quads_anchor_centered_at_reference_resolution() {
         "background must cover the full backbuffer, got {bg:?}",
     );
 
-    // Border: 560x360 centered -> ((1280-560)/2, (720-360)/2) = (360, 180).
+    // Border: 740x360 centered -> ((1280-740)/2, (720-360)/2) = (270, 180).
     assert_rect(
         "border",
         panels.instances[BORDER].rect,
-        [360.0, 180.0, 560.0, 360.0],
+        [270.0, 180.0, 740.0, 360.0],
     );
-    // Fill: 552x352 (inset by 4px each edge) centered -> (364, 184).
+    // Fill: 732x352 (inset by 4px each edge) centered -> (274, 184).
     assert_rect(
         "fill",
         panels.instances[FILL].rect,
-        [364.0, 184.0, 552.0, 352.0],
+        [274.0, 184.0, 732.0, 352.0],
     );
 
-    // Logo: 220x220, centered with a -28 vertical nudge -> top-left
-    // (640-110, (360-28)-110) = (530, 222).
-    assert_rect("logo", logo.instances[0].rect, [530.0, 222.0, 220.0, 220.0]);
+    // Logo: 600 wide, height 600/3.485 ~ 172 (rounded), centered with the -40
+    // vertical nudge -> top-left (640-300, (360-40)-86) = (340, 234).
+    assert_rect("logo", logo.instances[0].rect, [340.0, 234.0, 600.0, 172.0]);
 }
 
 #[test]
@@ -98,27 +103,27 @@ fn splash_panel_quads_scale_uniformly_at_4k() {
     // Regression guard for the logical-reference->device scale math. 3840x2160 is
     // exactly 3x the 1280x720 reference, so every reference rect must triple in
     // position and size with no re-layout artifact between the two resolutions.
-    let desc = build_splash_descriptor();
+    let desc = build_splash_descriptor(ASSET_LOGO_ASPECT);
     assert!((device_scale([3840, 2160]) - 3.0).abs() <= EPS);
     let (panels, logo) = project_splash(&desc, [3840, 2160]);
 
-    // Border (360,180,560,360) * 3 -> (1080,540,1680,1080).
+    // Border (270,180,740,360) * 3 -> (810,540,2220,1080).
     assert_rect(
         "border@4k",
         panels.instances[BORDER].rect,
-        [1080.0, 540.0, 1680.0, 1080.0],
+        [810.0, 540.0, 2220.0, 1080.0],
     );
-    // Fill (364,184,552,352) * 3 -> (1092,552,1656,1056).
+    // Fill (274,184,732,352) * 3 -> (822,552,2196,1056).
     assert_rect(
         "fill@4k",
         panels.instances[FILL].rect,
-        [1092.0, 552.0, 1656.0, 1056.0],
+        [822.0, 552.0, 2196.0, 1056.0],
     );
-    // Logo (530,222,220,220) * 3 -> (1590,666,660,660).
+    // Logo: at 3x the 600x172.19 logical rect projects+snaps to (1020,702,1800,516).
     assert_rect(
         "logo@4k",
         logo.instances[0].rect,
-        [1590.0, 666.0, 660.0, 660.0],
+        [1020.0, 702.0, 1800.0, 516.0],
     );
 
     // 9-slice margin scales: 12px logical -> 36px device.
@@ -134,16 +139,16 @@ fn splash_panel_anchor_centers_against_letterbox_on_non_16_9() {
     // (1920-1280)/2 = 320px left margin. The panel must shift right by that
     // margin, NOT stretch — proving the canvas letterboxes rather than scaling
     // each axis independently.
-    let desc = build_splash_descriptor();
+    let desc = build_splash_descriptor(ASSET_LOGO_ASPECT);
     assert!((device_scale([1920, 720]) - 1.0).abs() <= EPS);
     let (panels, _logo) = project_splash(&desc, [1920, 720]);
 
-    // Border centered in the letterboxed canvas: reference (360,180) + (320,0)
-    // origin -> (680,180); size unchanged at scale 1.0.
+    // Border centered in the letterboxed canvas: reference (270,180) + (320,0)
+    // origin -> (590,180); size unchanged at scale 1.0.
     assert_rect(
         "border letterbox",
         panels.instances[BORDER].rect,
-        [680.0, 180.0, 560.0, 360.0],
+        [590.0, 180.0, 740.0, 360.0],
     );
 }
 
@@ -153,7 +158,7 @@ fn splash_panel_rects_snap_to_integer_device_pixels() {
     // projected edges are fractional pre-snap; every produced rect component must
     // round to a whole device pixel so panels show no subpixel edge blur. 1281x721
     // gives scale 1281/1280 ~ 1.00078, which moves edges off integer boundaries.
-    let desc = build_splash_descriptor();
+    let desc = build_splash_descriptor(ASSET_LOGO_ASPECT);
     let (panels, logo) = project_splash(&desc, [1281, 721]);
     for inst in panels.instances.iter().chain(logo.instances.iter()) {
         for v in inst.rect {
@@ -178,14 +183,14 @@ fn splash_border_9slice_corner_rects_are_fixed_size_and_pinned() {
     // keep their (scaled) fixed size and stay anchored to the four rect corners
     // at every resolution — if the corner derivation or the margin scale
     // regresses, the corners move/stretch and these pinned rects fail.
-    let desc = build_splash_descriptor();
+    let desc = build_splash_descriptor(ASSET_LOGO_ASPECT);
 
-    // Reference: 12px corners on the (360,180,560,360) border.
+    // Reference: 12px corners on the (270,180,740,360) border.
     let panels = project_splash(&desc, [1280, 720]).0;
     let border = panels.instances[BORDER];
     assert_corner_rects(border, 12.0);
 
-    // 4K: corners scale to 36px and stay pinned to the (1080,540,1680,1080) rect.
+    // 4K: corners scale to 36px and stay pinned to the (810,540,2220,1080) rect.
     let panels4k = project_splash(&desc, [3840, 2160]).0;
     assert_corner_rects(panels4k.instances[BORDER], 36.0);
 }
@@ -207,20 +212,30 @@ fn assert_corner_rects(inst: UiInstance, corner: f32) {
 
 #[test]
 fn splash_logo_preserves_aspect_across_resolutions() {
-    // Regression guard: the logo must scale by the uniform device factor only —
-    // never an independent x/y stretch — so its aspect is identical at 720p, 4K,
-    // and a non-16:9 size. "without stretching the logo" in the acceptance
-    // criteria.
-    let desc = build_splash_descriptor();
+    // Regression: the descriptor forced the logo square (LOGO_ASPECT = 1.0),
+    // crushing the wide banner asset. The logo rect must (a) match the SOURCE
+    // image aspect — not whatever the code emits — and (b) scale by the uniform
+    // device factor only, so the aspect is identical at 720p, 4K, and a non-16:9
+    // size. "without stretching the logo" in the acceptance criteria.
+    let desc = build_splash_descriptor(ASSET_LOGO_ASPECT);
     let sizes = [[1280u32, 720], [3840, 2160], [1920, 720]];
     let mut aspects = Vec::new();
     for size in sizes {
         let r = project_splash(&desc, size).1.instances[0].rect;
         aspects.push(r[2] / r[3]);
     }
+    // Each projected rect aspect matches the source banner aspect. The integer
+    // device-pixel snap perturbs it slightly, so the epsilon is looser than the
+    // exact-pixel EPS — but tight enough to catch a forced-square regression.
+    for a in &aspects {
+        assert!(
+            (a - ASSET_LOGO_ASPECT).abs() <= 1e-2,
+            "logo rect aspect {a} must match source aspect {ASSET_LOGO_ASPECT}: {aspects:?}",
+        );
+    }
     for a in &aspects[1..] {
         assert!(
-            (a - aspects[0]).abs() <= EPS,
+            (a - aspects[0]).abs() <= 1e-2,
             "logo aspect drifted across resolutions: {aspects:?}",
         );
     }

@@ -121,7 +121,10 @@ fn render_splash_offscreen(ctx: &GpuCtx) -> Readback {
     // Assemble the splash draw list exactly as `Renderer::record_splash_ui`:
     // oversized background fill first, then the framed panel quads (border, fill).
     let viewport = [TARGET_W, TARGET_H];
-    let desc: SplashDescriptor = build_splash_descriptor();
+    // The real banner asset is 2028x582; the structural golden only needs the
+    // panel-vs-background contrast, so any plausible logo aspect serves — pass the
+    // real source aspect so the descriptor is shaped exactly as the engine builds it.
+    let desc: SplashDescriptor = build_splash_descriptor(2028.0 / 582.0);
     let scale = device_scale(viewport);
 
     let bg = SplashDescriptor::background_element(splash_bg_rgba());
@@ -248,7 +251,7 @@ fn splash_background_fill_covers_target_with_bg_color() {
 
     let rb = render_splash_offscreen(&ctx);
 
-    // A corner pixel — well outside the centered 560x360 panel — is pure
+    // A corner pixel — well outside the centered 740x360 panel — is pure
     // background fill. SPLASH_BG_COLOR is "linear-space sRGB(21,27,35)", so the
     // sRGB texture encodes it back to ~ (21,27,35).
     let corner = rb.at(2, 2);

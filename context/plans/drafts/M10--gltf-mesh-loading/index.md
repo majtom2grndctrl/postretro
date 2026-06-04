@@ -125,7 +125,14 @@ top-level `extras` `RawValue`, `serde_json`-parse a `{ "tags": [String] }` shape
 `tags: Vec<String>` on `LoadedModel`. Plumb the tags to the spawn seam: `load_skinned_model` returns
 `Option<Vec<String>>` (`None` = load failed, no spawn; `Some(tags)` = loaded and spawns, where `tags`
 may be empty — a successful load with no `extras` is `Some(vec![])`, not `None`). `spawn_mesh_entity_if_loaded`
-applies them via `try_spawn(transform, &tags)` (replacing its `bool` gate): the seam replaces its
+applies them via `try_spawn(transform, &tags)` (replacing its `bool` gate). The renderer method
+returning entity metadata is a property of this temporary one-shot load seam — the very seam the next
+task (*Mesh render pass + `MeshComponent` carries a model handle*) rewrites, after which game logic
+reads `LoadedModel.tags` and attaches `MeshComponent(handle)` itself and the renderer collapses to
+"consume handle," returning no tags. A clean split now means separating CPU-side load from GPU upload
+so game logic reads `.tags` directly — exactly the model-handle/cache architecture this spec scopes
+out to that task. So the coupling stays: it evaporates with its cause rather than getting cleaned up
+later, confined to a seam with a known expiry. The seam replaces its
 `loaded: bool` param with `Option<Vec<String>>`, calls `try_spawn(transform, &tags)` which returns
 `Option<EntityId>`, then still attaches `MeshComponent { model }` to the returned id (threading the
 slot-exhaustion `None`). The `MeshComponent` attachment must not be dropped. Update the single caller
@@ -172,12 +179,9 @@ so coordinate the one struct's field additions.
 `extras.tags` strings pass through verbatim (author-defined; same vocabulary as map `_tags`). No new
 casing rules — tags reuse the existing entity-tag channel end to end.
 
-## Open questions
-
-- **`extras` tag shape.** This spec reads `extras.tags` as a `string[]` to mirror map `_tags`. If a
-  later task (skeletal hit zones) needs per-*node* extras (`head` / `limb` on a specific bone), that
-  is a different, per-node read it owns — model-level tags here do not preclude it. Confirm the
-  `tags` key name is the desired convention before promotion.
-- **`load_skinned_model` return type.** Returning `Option<Vec<String>>` couples a renderer method to
-  entity metadata. Acceptable because the seam is explicitly temporary (the next task rewrites the
-  spawn/handle path); flagged in case a cleaner load-game-side split is preferred now.
+The key is plain `tags`, not `_tags`. The map's underscore is a flat-KVP-namespace artifact (idTech
+lineage: `_`-prefix marks engine-reserved keys so they don't collide with gameplay classname
+properties in one shared bag). glTF `extras` is already a dedicated, author-namespaced bag, so that
+reason doesn't transfer — tag *vocabulary* mirrors map `_tags`, but the *key* is plain `tags`. The
+only future model-extras consumer (skeletal hit zones) is a per-*node* read in its own namespace, so
+it can't collide with model-level `tags`.

@@ -76,11 +76,11 @@ the single biggest design decision in this spec.
 | # | Gap | As-built (slice) | What the spec must decide/build |
 |---|-----|------------------|----------------------------------|
 | 3.1 | **Model PNG → `.prm` at build time** | Hardcoded `STAGED_MATERIAL_KEYS` (one entry) | **DECISION.** How does prl-build *discover* model PNGs to bake? Models aren't map-referenced. Options: scan a models dir, drive off a model manifest, bake-on-first-load, or extend prl-build to walk glTF material URIs. Milestone text says "conversion is implicit during prl-build." |
-| 3.2 | **Runtime material resolution** | Renderer resolves only `material_keys.first()` (`render/mod.rs:2689–2722`); one bind group for the whole model | Per-primitive material → per-submesh draw range + bind group. Decide multi-material support depth. |
-| 3.3 | **Model handle / cache** | `MeshComponent { model: String }`; one model loaded via a renderer seam at level-install (`main.rs:107–136`, `1804–1821`). No model handle table, no dedup, no multi-model | A model resource handle + cache parallel to the texture handle convention (`Vec<LoadedTexture>`/`GpuTexture`). Mint/dedup/lookup. |
+| 3.2 | **Runtime material resolution** | Renderer resolves only `material_keys.first()` (`render/mod.rs:2689–2722`); **`UploadedModel` carries exactly one `material_bind_group` for the whole model** (`mesh_pass.rs:64–69`, verified) | Per-primitive material → per-submesh draw range + bind group. Decide multi-material support depth. Genuinely absent at the render level, not just narrowed. |
+| 3.3 | **Model handle / cache** | **VERIFIED single-model:** `MeshPass.model: Option<UploadedModel>` (`mesh_pass.rs:86`); `set_model` "Replaces any previously uploaded model (the slice carries one)" (`:266`). `MeshComponent { model: String }`; loaded via a one-shot renderer seam at level-install (`main.rs:107–136`, `1804–1821`). No model handle table, no dedup, no multi-model | A model resource handle + cache parallel to the texture handle convention (`Vec<LoadedTexture>`/`GpuTexture`). Mint/dedup/lookup. **Net-new architecture, not generalize-in-place.** |
 | 3.4 | **Image-decode avoidance** | Loader calls `gltf::import`, which **decodes all PNGs then discards them** (`gltf_loader.rs:147`) | **CONTRACT.** Switch to `gltf::Gltf::open` + `gltf::import_buffers` to read geometry/skin buffers *without* decoding images; resolve PNG URIs through the engine cache instead. (Source-confirmed against gltf 1.4.1.) |
 | 3.5 | **`extras` metadata** | None read. **Also: the `gltf` `extras` cargo feature is OFF** — `extras()` returns the empty `Void` type today | **CONTRACT + DECISION.** Must enable `gltf = { features = ["extras"] }` or the task is dead on arrival. Then decide the entity-facing surface: `extras` is raw JSON (`RawValue`); where does it land (`MeshComponent`? a descriptor? scripting primitive)? `MeshComponent` is currently just `{model}`. |
-| 3.6 | **Coordinate convention** | Positions stored **verbatim** (glTF right-handed, **Y-up**, meters) | **CORRECTNESS.** Confirm PostRetro world axis. If engine is Z-up / different handedness, the basis change (positions + normals + tangent.xyz, winding flip, tangent-w sign) belongs in the loader. Verify before drafting — the slice's manual-visual "upright/un-mirrored" gate was run-pending. |
+| 3.6 | **Coordinate convention** | Positions stored **verbatim**; basis conversion is the **identity** — **VERIFIED correct by construction**: engine is Y-up, right-handed, meters (`camera.rs:98` `look_at_rh(_, _, Vec3::Y)` + `perspective_rh`; `Vec3::Y` up everywhere), glTF matches, winding matches (`Ccw` + cull `Back`). Documented at `mesh_pass.rs:19–30` | **Not an architectural risk.** Only the manual-visual "upright/un-mirrored" gate is GPU-run-pending — run it once to confirm. No loader basis change needed unless a future asset uses a different convention. |
 | 3.7 | **Tangent generation** | Stubbed `+X` placeholder when absent (`gltf_loader.rs:385–389`); fine only because slice is flat-lit | Decide: generate tangents (MikkTSpace) now, or defer to the SH-lit/normal-mapped "Mesh render pass" task. glTF spec: generate only when a normal map is present. |
 | 3.7b | **Embedded textures (`Source::View` / `.glb`)** | Skipped — only `Source::Uri` handled | Decide whether `.glb`/embedded images are in scope or explicitly a non-goal. |
 | 3.8 | **Multi-mesh** | Reads only `document.meshes().next()` | Decide: one mesh per model (likely fine at this scale) vs. multi-mesh. |
@@ -120,13 +120,14 @@ the single biggest design decision in this spec.
    question. Determines whether prl-build grows a model-asset walk, a manifest, or a per-mod scan.
 2. **(3.5) Where does `extras` land on the entity?** — `MeshComponent` field, a descriptor, or a
    scripting primitive? (Note the "primitive surface is a contract" invariant if it reaches scripts.)
-3. **(3.6) PostRetro world coordinate convention** — confirm Y-up match or specify the basis change.
-   *Verify in-code before drafting; do not assume.*
-4. **(3.7) Tangent generation — this task or deferred** to the SH-lit mesh-pass task?
-5. **(3.2/3.9) Scope line vs. neighboring tasks** — how much material/submesh breadth and which (if
+3. **(3.7) Tangent generation — this task or deferred** to the SH-lit mesh-pass task?
+4. **(3.2/3.9) Scope line vs. neighboring tasks** — how much material/submesh breadth and which (if
    any) of classname spawning belongs here vs. "Mesh render pass + MeshComponent" and the skeleton/
    clip task. Avoid double-owning.
-6. **(3.3) Model handle/cache shape** — mirror the texture handle convention; confirm dedup needs.
+5. **(3.3) Model handle/cache shape** — mirror the texture handle convention; confirm dedup needs.
+
+> **Resolved during research (no longer open):** (3.6) coordinate convention — engine is Y-up RH
+> meters, identity conversion, verified in-code; only the visual confirmation gate remains to run.
 
 ---
 

@@ -285,18 +285,23 @@ impl SpotShadowPool {
         );
     }
 
-    /// Compute the slot-assignment ranking for visible entity-shadow-casting spot lights.
+    /// Compute the slot-assignment ranking for visible shadow-casting spot lights.
     ///
     /// Takes the candidate light list and camera position. Identifies spot
-    /// lights opted-in via `casts_entity_shadows` that pass visibility +
-    /// frustum culling, ranks by influence-area heuristic, and assigns the
-    /// top `SHADOW_POOL_SIZE` to slots.
+    /// lights that are pool-eligible (`is_dynamic || casts_entity_shadows`)
+    /// and pass visibility + frustum culling, ranks by influence-area
+    /// heuristic, and assigns the top `SHADOW_POOL_SIZE` to slots.
     ///
     /// Task 1b decoupled the candidate set from `level_lights` (which is
     /// `is_dynamic`-filtered, and goes empty under the geometry-vs-intensity
-    /// reclassification of Task 2c). The caller now hands the
-    /// `casts_entity_shadows`-filtered full-level light slice; the gate
-    /// below is `casts_entity_shadows && Spot`, not `is_dynamic && Spot`.
+    /// reclassification of Task 2c). The caller now hands the full-level light
+    /// slice filtered by `is_dynamic || casts_entity_shadows`; the gate below
+    /// is `(is_dynamic || casts_entity_shadows) && Spot`. Dynamic-tier
+    /// spotlights are pool-eligible by default — the shadow depth pass renders
+    /// WORLD geometry, so a pooled dynamic spot shadows static occluders (e.g.
+    /// pillars) with no per-light opt-in, the behavior the dynamic tier was
+    /// designed for. `casts_entity_shadows` stays the opt-in for non-dynamic
+    /// lights (future enemy / moving-occluder shadows).
     ///
     /// Returns a Vec indexed by light index (into the slice the caller
     /// passes): entry is the slot index (`0..SHADOW_POOL_SIZE`) or NO_SHADOW_SLOT.
@@ -309,14 +314,18 @@ impl SpotShadowPool {
     ) -> Vec<u32> {
         let mut slot_assignment = vec![NO_SHADOW_SLOT; lights.len()];
 
-        // Collect visible entity-shadow-casting spot lights with their scores.
+        // Collect visible pool-eligible spot lights with their scores.
         let mut candidates: Vec<(usize, f32)> = lights
             .iter()
             .enumerate()
             .filter_map(|(idx, light)| {
-                // Per-light opt-in for the shadow-map pool. Default `false` —
-                // enemies / dynamic-occluder shadows are strictly opt-in.
-                if !light.casts_entity_shadows || light.light_type != LightType::Spot {
+                // Pool eligibility: dynamic-tier spotlights cast world shadows
+                // by default; non-dynamic lights opt in via `casts_entity_shadows`
+                // (default `false`). The shadow depth pass renders WORLD geometry,
+                // so a pooled dynamic spot shadows static occluders (pillars) with
+                // no per-light flag.
+                let pool_eligible = light.is_dynamic || light.casts_entity_shadows;
+                if !pool_eligible || light.light_type != LightType::Spot {
                     return None;
                 }
 
@@ -371,7 +380,7 @@ impl SpotShadowPool {
 
         if candidates.len() > SHADOW_POOL_SIZE {
             log::debug!(
-                "[ShadowPool] {} entity-shadow-casting spot lights visible; {} assigned to slots, {} unshadowed",
+                "[ShadowPool] {} pool-eligible spot lights visible; {} assigned to slots, {} unshadowed",
                 candidates.len(),
                 SHADOW_POOL_SIZE,
                 candidates.len() - SHADOW_POOL_SIZE
@@ -423,9 +432,10 @@ fn build_bind_group(
 mod tests {
     use super::*;
 
-    /// `casts_entity_shadows` controls pool eligibility post-1b. `is_dynamic`
-    /// here stays `false` to mirror the post-1b authored-content invariant —
-    /// only the entity-shadow opt-in gates the pool now.
+    /// Pool eligibility is `is_dynamic || casts_entity_shadows`. `is_dynamic`
+    /// here stays `false` so each test isolates the `casts_entity_shadows`
+    /// opt-in; the dynamic-tier path is exercised by
+    /// `dynamic_spot_qualifies_for_pool` which flips `is_dynamic` on.
     fn test_light(
         _idx: u32,
         origin: [f64; 3],
@@ -469,14 +479,29 @@ mod tests {
         assert_eq!(assignment[1], NO_SHADOW_SLOT);
     }
 
-    /// Regression: pre-1b the pool gated on `is_dynamic`. Post-1b
-    /// `is_dynamic` no longer feeds the pool — only `casts_entity_shadows`
-    /// does. A light marked `is_dynamic` but not opted into entity shadows
-    /// must NOT land in a pool slot.
+    /// Dynamic-tier spotlights are pool-eligible by default — they shadow
+    /// static world occluders (e.g. pillars) through the world-geometry depth
+    /// pass without any `_cast_entity_shadows` opt-in. A `is_dynamic` spot
+    /// with `casts_entity_shadows == false` must land in a pool slot.
     #[test]
-    fn is_dynamic_alone_does_not_qualify_for_pool() {
+    fn dynamic_spot_qualifies_for_pool() {
         let mut light = test_light(0, [0.0, 0.0, 0.0], 10.0, false);
         light.is_dynamic = true;
+        let lights = vec![light];
+        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &[]);
+        assert_ne!(assignment[0], NO_SHADOW_SLOT);
+    }
+
+    /// The pool is spotlights-only. Making the dynamic tier pool-eligible by
+    /// default widened the candidate set to every dynamic light, so the `Spot`
+    /// guard is now the sole thing keeping dynamic POINT lights
+    /// (`light_dynamic`) out of the spot pool. `campaign-test.map` ships such
+    /// lights, so cover the exclusion explicitly.
+    #[test]
+    fn dynamic_point_light_is_not_assigned() {
+        let mut light = test_light(0, [0.0, 0.0, 0.0], 10.0, false);
+        light.is_dynamic = true;
+        light.light_type = LightType::Point;
         let lights = vec![light];
         let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &[]);
         assert_eq!(assignment[0], NO_SHADOW_SLOT);

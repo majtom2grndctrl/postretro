@@ -327,9 +327,10 @@ pub fn translate_light(
         }
     };
 
-    // Per-light opt-in for shadow-map-pool eligibility for dynamic entities
-    // (enemies / moving meshes). Default `false` — dynamic-occluder shadows
-    // are strictly opt-in.
+    // Per-light opt-in for spot-shadow-pool eligibility for dynamic entities
+    // (enemies / moving meshes). Default `false`. This is the opt-in path for
+    // non-dynamic lights; dynamic-tier lights are pool-eligible by default
+    // regardless of this field (runtime gate: `is_dynamic || casts_entity_shadows`).
     let casts_entity_shadows = match parse_optional_int(props, "_cast_entity_shadows")? {
         None | Some(0) => false,
         Some(1) => true,

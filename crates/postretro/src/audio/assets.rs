@@ -1,5 +1,5 @@
 // Sound asset loading and the per-level sound registry. Resolves paths under
-// `content/<mod>/_sounds/`, decodes SFX in memory (static) and probes music for
+// `content/<mod>/sounds/`, decodes SFX in memory (static) and probes music for
 // streaming, and holds the result keyed by content-relative name. Consumed by
 // `play`. Load and decode failures degrade gracefully: a missing or undecodable
 // file logs an `[Audio]` warning, is skipped, and never panics.
@@ -17,7 +17,7 @@ use kira::sound::streaming::StreamingSoundData;
 const STREAMING_COLLECTION: &str = "music";
 
 /// Subdirectory under a mod's content root holding all sound assets.
-const SOUNDS_DIR: &str = "_sounds";
+const SOUNDS_DIR: &str = "sounds";
 
 /// A loaded sound entry held by the registry. The two kira sound-data types are
 /// modeled directly because they behave differently:
@@ -65,7 +65,7 @@ impl LoadedSound {
 }
 
 /// Sound assets for the currently installed level, keyed by content-relative
-/// name (the path under `_sounds/` with the extension stripped, e.g.
+/// name (the path under `sounds/` with the extension stripped, e.g.
 /// `sfx/test_tone` or `music/test_loop`). Populated at level install and cleared
 /// at level unload so the registry follows level lifetime, mirroring textures
 /// (`resource_management.md` §7.2).
@@ -106,10 +106,10 @@ impl SoundRegistry {
         self.sounds.clear();
     }
 
-    /// Scan `<content_root>/_sounds/` and register every decodable `.ogg`/`.wav`
+    /// Scan `<content_root>/sounds/` and register every decodable `.ogg`/`.wav`
     /// file found, replacing any previously registered sounds. Files under the
     /// top-level `music/` collection load as streaming; all others decode into
-    /// memory as static. A missing `_sounds/` directory is not an error (the mod
+    /// memory as static. A missing `sounds/` directory is not an error (the mod
     /// simply ships no sounds). Individual unreadable or undecodable files log an
     /// `[Audio]` warning, are skipped, and never panic.
     pub(crate) fn load_from_content_root(&mut self, content_root: &Path) {
@@ -142,7 +142,7 @@ impl SoundRegistry {
         );
     }
 
-    /// Decode and register a single sound file. `sounds_root` is the `_sounds/`
+    /// Decode and register a single sound file. `sounds_root` is the `sounds/`
     /// directory the key is made relative to. Failures warn and skip.
     fn register_file(&mut self, sounds_root: &Path, path: &Path) {
         let key = match registry_key(sounds_root, path) {
@@ -215,7 +215,7 @@ fn is_streaming(key: &str) -> bool {
 }
 
 /// Map an absolute sound path to its content-relative registry key: the path
-/// relative to `_sounds/`, with the extension stripped and separators
+/// relative to `sounds/`, with the extension stripped and separators
 /// normalized to `/`. Returns `None` if `path` is not under `sounds_root`.
 fn registry_key(sounds_root: &Path, path: &Path) -> Option<String> {
     let relative = path.strip_prefix(sounds_root).ok()?;
@@ -274,14 +274,14 @@ mod tests {
 
     #[test]
     fn registry_key_strips_root_and_extension() {
-        let root = Path::new("/content/dev/_sounds");
-        let path = Path::new("/content/dev/_sounds/sfx/test_tone.wav");
+        let root = Path::new("/content/dev/sounds");
+        let path = Path::new("/content/dev/sounds/sfx/test_tone.wav");
         assert_eq!(registry_key(root, path).as_deref(), Some("sfx/test_tone"));
     }
 
     #[test]
     fn registry_key_rejects_path_outside_root() {
-        let root = Path::new("/content/dev/_sounds");
+        let root = Path::new("/content/dev/sounds");
         let path = Path::new("/content/dev/textures/foo.wav");
         assert_eq!(registry_key(root, path), None);
     }
@@ -341,10 +341,10 @@ mod tests {
     #[test]
     fn missing_sounds_dir_degrades_to_empty_registry() {
         let mut registry = SoundRegistry::new();
-        // A content root with no `_sounds/` subdirectory: warn-free, no panic.
+        // A content root with no `sounds/` subdirectory: warn-free, no panic.
         let no_sounds = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         registry.load_from_content_root(&no_sounds);
-        assert_eq!(registry.len(), 0, "absent _sounds/ leaves registry empty");
+        assert_eq!(registry.len(), 0, "absent sounds/ leaves registry empty");
     }
 
     #[test]

@@ -136,10 +136,17 @@ against a live screen with no gameplay state.
 Create `render/ui/` with a pass struct owning its pipeline, BGL, sampler,
 vertex/instance buffers, and uniform buffer — modeled on `SplashPipeline`. One
 `.wgsl` under `src/shaders/` for the quad/9-slice program: instanced draws,
-alpha blend, depth disabled; the vertex shader expands a unit quad per instance
-(rect, UV rect, color, 9-slice margin). The quad shader is self-contained — no
-shared WGSL helper; any color-space conversion the Open question resolves follows
-the existing string-concat helper convention. The pass's `begin_render_pass` attaches
+alpha blend, depth disabled. **One draw-list record per panel/image** carries
+(rect, UV rect, color, 9-slice margin); the vertex shader expands that single
+instance into the 9-region geometry from the per-instance margin (corners
+fixed-size, edges/center stretched — a plain quad is the degenerate
+zero-margin case). The 9-slice split lives in the shader, not the draw list:
+layout (taffy in Goal B) resolves one rect per node, so the decomposition is a
+render-layer concern. Task 6a's "9-slice corner rects" are values *derived*
+CPU-side from rect + margin for assertion, not separate draw-list entries. The quad shader is self-contained — no
+shared WGSL helper; it writes linear color into the sRGB surface (no conversion;
+see Open questions), and any helper it ever needs follows the existing
+string-concat convention. The pass's `begin_render_pass` attaches
 the surface view as the sole color target with no depth attachment; both this
 quad pipeline and glyphon's `TextAtlas`/`TextRenderer` (Task 3) are built for
 that single-color-target, no-depth configuration so they share one render pass.
@@ -291,12 +298,14 @@ Goal C.
 
 ## Open questions
 
-- **AA text into the sRGB swapchain (color space).** glyphon's atlas/blend vs.
-  the sRGB-when-available surface format: confirm glyph coverage blends in the
-  correct space so text edges are neither over- nor under-darkened, and that the
-  panel alpha-composite matches the existing splash background math
-  (`SPLASH_BG_COLOR`, linear sRGB(21,27,35)). Resolve against glyphon's wgpu
-  integration at implementation.
+- **AA text into the sRGB swapchain (color space).** The **quad path is
+  determined** by the existing convention: no tonemap pass, sRGB-when-available
+  surface, shader writes linear and the hardware encodes — so panel colors are
+  authored and blended linear, matching the existing splash background math
+  (`SPLASH_BG_COLOR`, linear sRGB(21,27,35)). The only genuinely open piece is
+  **glyphon's internal coverage blend**: confirm glyph edges are neither over-
+  nor under-darkened, handled by constructing `TextAtlas` with the sRGB surface
+  format (research §glyphon model). Confirm-at-implementation, not a fork.
 - **glyphon ↔ wgpu version pairing.** A pins `glyphon` to the release compatible
   with the workspace `wgpu = "29"`; the exact version is resolved at `cargo add`
   time, not asserted here. If no compatible glyphon release exists yet for the

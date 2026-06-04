@@ -2,6 +2,7 @@
 
 > **Lifecycle:** reviewed and updated at the start of each milestone. Deleted when all milestones are complete.
 > **Purpose:** milestone-by-milestone plan from "wgpu window exists" through a moddable, playable game. Each milestone produces something visible and testable.
+> **Sequencing:** Milestones 1–9 built in order, each on the last. Milestones 10–13 are parallel tracks in unrelated domains — animated enemies, advanced movement, sound, UI. They share the Milestone 6/7 entity-and-collision foundation but none is a prerequisite to another. Build in any order.
 > **Related:** `context/lib/index.md`, `context/lib/rendering_pipeline.md`
 > **Status markers:** `[x]` shipped and in the tree · `[ ]` not yet built · cut-after-build items keep `[x]`, strike the description, and append **✂ Cut (YYYY-MM):** with the reason — so a "done" item that no longer exists in the tree reads as such · a later-revived cut item appends **↩ Revived (YYYY-MM):** pointing to the active work.
 
@@ -209,14 +210,13 @@ Plans ship in this sequence. The render foundation and combat tracks converge tw
 **Combat** (script-led, on the Milestone 6/7 foundation):
 
 - [x] **Weapon primitives** — script-declared weapon archetype + Rust hitscan fire system against the Milestone 7 collision world; spawns an impact, emits a typed `Hit(DamagePayload)` activation outcome and `activate`/`impact` sound events. Hitscan only; projectile, ammo, viewmodel deferred. `context/plans/done/M10--weapon-primitives/`
-- [ ] **Stub sound layer (Nintendo-style SFX)** — placeholder retro SFX (fire, impact, footstep, alert, pain, death) wired through the entity-emitted sound events weapons and enemies already raise — a live sink, not dead wiring. Explicitly a stub: the generic sound-event hook is durable; assets and backend are placeholder. Real spatial audio lands in Milestone 12.
 - [ ] **Entity health + damage surface** — minimal health/damage primitive on the Milestone 6 entity model: an entity carries HP, consumes a `DamagePayload`, dies at zero HP. Demonstrated on the enemy (the weapon's target) and reused for the player (the enemy's target), so the damage loop closes both ways. Pure Milestone 6 — no render, nav, or AI dependency. Shootable as a static proxy, so it gives the shipped weapon a target the day it lands.
 - [ ] **Navigation representation (baked)** — resolve the expensive, hard-to-reverse question first: where do walkable surfaces come from? Lead candidate is an offline bake in prl-build — derive a navmesh from world geometry (agent radius/height, slope filter), emitted as a new PRL section, kin to the baked BVH and collision trimesh. This is also the seed of a broader baked spatial-AI layer: the navmesh is the first hint data, and later intelligent-interaction data (cover points, jump links, hint nodes) extends the same section additively, no format break. The heavy, uncertain piece — front-loaded to surface any foundation problem early. Depends only on world geometry.
 - [ ] **Pathfinding + path following** — runtime query and steering: A* (or equivalent) over the baked representation, plus path following that moves an agent toward a target around obstacles without clipping. Smallest workable primitive that actually routes past walls and corners — naive steer-to-target would snag on the first concave wall. Richer queries (line-of-sight, patrol paths) deferred. Depends on the navigation representation and a movable agent entity (Milestone 6 transform + Milestone 7 collider).
 - [ ] **Skeletal hit zones** — dynamic hittable volumes: bone-parented proxy capsules posed each frame from the skeleton, raycast separately from the static collision world — net-new, since the weapon hitscans only static geometry today. Hit-zone identity comes from glTF `extras` tags (`head`, `limb`); per-archetype damage multipliers live in the descriptor script. Model ships the spatial tag, script ships the balance — mirroring map `_tags` → entity behavior. Depends on the skinned animation runtime's posed palette.
 - [ ] **Enemy AI behavior** — simple state machine (idle → alert → attack → death), authored in the SDK as a reference behavior. Drives navigation (move toward player), attack (emit a damage hit at the player), and animation state (select the clip per logical state). The behavioral convergence: depends on the entity health/damage surface, pathfinding + path following, and the skinned animation runtime. Behavioral time-slicing (distant agents think less often) is named for waves but stays shallow. A foundation to refine, not a stub.
 
-**Testable outcome:** a skinned-model enemy spawns from a map, walks toward the player without clipping playing its locomotion clip, switches to an attack clip and damages the player in range, takes hitscan weapon damage, and plays a death clip then despawns at zero HP — lit by baked SH (optionally casting a real-time shadow via the dynamic shadow pool), with placeholder SFX selling fire/impact/attack/death.
+**Testable outcome:** a skinned-model enemy spawns from a map, walks toward the player without clipping playing its locomotion clip, switches to an attack clip and damages the player in range, takes hitscan weapon damage, and plays a death clip then despawns at zero HP — lit by baked SH (optionally casting a real-time shadow via the dynamic shadow pool). Weapons and enemies emit typed sound events throughout; audible playback lands with the Sound Foundation milestone.
 
 ---
 
@@ -244,18 +244,20 @@ Plans ship in this sequence:
 
 ## Milestone 12: Sound Foundation
 
-Replace the Milestone 10 stub SFX layer with a real audio foundation: kira integration, spatial/3D audio, and reverb zones. The Milestone 10 sound-event hooks were designed so this swaps in behind them — no weapon or enemy code should need to change.
+A real audio foundation: kira integration, spatial/3D audio, and reverb zones. Builds behind the Milestone 6 entity event system — entities emit typed sound events (weapons already do; enemies will), and audio is their playback sink. No weapon or enemy code changes when audio lands.
 
-**Prerequisite:** Milestone 10 (stub sound layer + sound-event hooks to build behind).
+Independent of the other upcoming milestones. It does not wait on animated enemies; it needs only the entity event system to route through, and a richer combat soundscape simply follows whenever enemies ship.
+
+**Prerequisite:** Milestone 6 (entity event system — the sound-event source to build behind) ✓.
 
 Plans ship in this sequence:
 
 - [ ] **kira integration** — audio subsystem in its own module (subsystem-boundary principle); mixing, buses, lifecycle.
 - [ ] **Spatial audio** — positional sources with attenuation; listener driven by the player/camera.
 - [ ] **Reverb zones** — runtime playback for `env_reverb_zone` acoustic zones (baked data already resolves them to leaves at load; see `context/lib/audio.md`).
-- [ ] **Replace stub SFX** — route the Milestone 10 sound-event hooks through real mixed, spatialized playback; retire the placeholder layer.
+- [ ] **Sound-event playback** — route entity-emitted sound events through real mixed, spatialized playback; entities raise events, audio plays them.
 
-**Testable outcome:** spatialized combat and ambient audio; reverb zones audibly change acoustics; the Milestone 10 stub layer is fully replaced with no changes to weapon or enemy code.
+**Testable outcome:** spatialized combat and ambient audio; reverb zones audibly change acoustics; entity-emitted sound events drive real playback with no changes to weapon or enemy code.
 
 ---
 
@@ -263,7 +265,7 @@ Plans ship in this sequence:
 
 The full UI/HUD layer — health, ammo, crosshair, and menus — replacing the debug egui stand-in used during the vertical slice. The detailed design is captured in `context/research/ui-layer.md`; it is promoted to a ready plan when this milestone opens.
 
-**Prerequisite:** Milestone 10 (gameplay state to surface — health, ammo, hit feedback).
+Independent of the other upcoming milestones. The menu system and UI primitives carry no gameplay prerequisite. HUD widgets bind to gameplay state — health, ammo, hit feedback — as the entity health/damage surface and weapon systems expose it; that state can be sourced from a static proxy before animated enemies exist, so the UI need not wait on them.
 
 Plans ship in this sequence:
 
@@ -303,7 +305,7 @@ Features below are intended but not yet sequenced. Rough priority ordering withi
 
 - **Sector Graph + Portal Culling** — replace BSP-as-runtime-scaffolding with an author-defined sector graph. Latent portals (activate on event) support destruction reveals. Prerequisite for kinematic clusters that need their own sector graphs.
 - **Chunk Primitive** — unify static world geometry, kinematic clusters, and dynamic debris into one record type (mesh + collider + transform + sector membership). Deferred until two or more of those consumers exist and the duplication cost is clear.
-- **Audio foundation** — kira integration, spatial audio, reverb zones. → Sequenced as Milestone 12 (real layer replacing the Milestone 10 stub SFX).
+- **Audio foundation** — kira integration, spatial audio, reverb zones. → Sequenced as Milestone 12 (builds behind the entity event system; independent of the other upcoming milestones).
 - **HUD and UI** — health, ammo, crosshair, menus. → Sequenced as Milestone 13 (see `context/research/ui-layer.md`).
 - **`canonicalName` rename** — rename `classname` to `canonicalName` in scripting API and PRL. Source formats translate their identifier (Quake `.map` `classname`, UDMF thing-type, Blender prop) to this canonical name at compile time. Absence on an archetype means not directly placeable from source — script-spawned or marker-indirected only. Subsumes the `spawn_only` / `map_entity_classname` patterns into one field's presence.
 - **FGD generated from script registry** — scripts are the single source of truth for entity archetypes. FGD emitted at script compile time, not hand-edited. Removes the divergence class of bug where registry and FGD describe different archetypes.

@@ -14,17 +14,17 @@ content/
     start-script.{ts,luau}       # mod entry point — fixed path at mod root
     actors/                      # enemies, NPCs, any autonomous mobile entity
       <actor-name>/
-        _sounds/                 # actor-specific sounds
+        sounds/                  # actor-specific sounds
         <actor-name>.png         # actor-specific textures
         <actor-name>.ts          # schema + reactions
     weapons/
       <weapon-name>/
-        _sounds/                 # weapon-specific sounds
+        sounds/                  # weapon-specific sounds
         <weapon-name>.png
         <weapon-name>.ts
     levels/
       _textures/                 # shared level-surface textures (walls, floors, sky)
-      _sounds/                   # shared level ambient and music
+      sounds/                    # shared level ambient and music
       <level-name>/
         <level-name>.prl         # compiled level
         <level-name>.ts          # level-specific entity definitions; auto-discovered by name

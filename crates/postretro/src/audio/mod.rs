@@ -284,7 +284,7 @@ impl<B: kira::backend::Backend> Audio<B> {
         self.buses.active_voices(bus)
     }
 
-    /// Load every decodable sound under `<content_root>/_sounds/` into the
+    /// Load every decodable sound under `<content_root>/sounds/` into the
     /// registry, replacing any sounds from a previously installed level. Wired
     /// into `install_level_payload` so the sound set follows level lifetime.
     /// Missing directory or undecodable files degrade gracefully (warn, skip);

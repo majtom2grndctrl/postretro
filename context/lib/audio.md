@@ -19,7 +19,7 @@ The boundary carries primitive types only. `ListenerState` (position + forward/u
 
 Init is fault-tolerant: if the device or kira backend fails to start, the subsystem holds `None` and the game runs silent — never a crash, never a panic. Asset load and decode failures degrade the same way (warn, skip, no sound).
 
-Sound assets load at level install time from `content/<mod>/_sounds/<collection>/<name>.{ogg,wav}`. The sound registry follows level lifetime — populated at level install, released at unload. Static clips (all non-`music/` collections) are decoded into memory; music streams from disk via kira's streaming path.
+Sound assets load at level install time from `content/<mod>/sounds/<collection>/<name>.{ogg,wav}`. The sound registry follows level lifetime — populated at level install, released at unload. Static clips (all non-`music/` collections) are decoded into memory; music streams from disk via kira's streaming path.
 
 ### Mixer bus tree
 

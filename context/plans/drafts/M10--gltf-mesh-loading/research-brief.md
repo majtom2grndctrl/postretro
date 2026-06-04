@@ -114,20 +114,46 @@ the single biggest design decision in this spec.
 
 ---
 
-## 5. Open questions for the `/draft-spec` session (need a decision)
+## 5. Open questions — mostly resolved by reading the roadmap as the lens
 
-1. **(3.1) How are model PNGs discovered + baked into `.prm` at build time?** — the central design
-   question. Determines whether prl-build grows a model-asset walk, a manifest, or a per-mod scan.
-2. **(3.5) Where does `extras` land on the entity?** — `MeshComponent` field, a descriptor, or a
-   scripting primitive? (Note the "primitive surface is a contract" invariant if it reaches scripts.)
-3. **(3.7) Tangent generation — this task or deferred** to the SH-lit mesh-pass task?
-4. **(3.2/3.9) Scope line vs. neighboring tasks** — how much material/submesh breadth and which (if
-   any) of classname spawning belongs here vs. "Mesh render pass + MeshComponent" and the skeleton/
-   clip task. Avoid double-owning.
-5. **(3.3) Model handle/cache shape** — mirror the texture handle convention; confirm dedup needs.
+Re-reading the Milestone 10 framing against the gaps collapses most of these. Resolutions below
+cite the roadmap language that settles them.
 
-> **Resolved during research (no longer open):** (3.6) coordinate convention — engine is Y-up RH
-> meters, identity conversion, verified in-code; only the visual confirmation gate remains to run.
+**Resolved from the roadmap (fold into the draft as decided, not open):**
+
+- **(3.7) Tangent generation → DEFER.** The glTF-mesh-loading bullet's attribute list is
+  "positions, normals, UVs, joint indices, weights" (no tangents); the *Mesh render pass* bullet is
+  **"SH-lit,"** with no normal-mapped dynamic-mesh path anywhere in M10. Read TANGENT_0 if present
+  (already done), placeholder if absent; MikkTSpace generation has no M10 consumer.
+- **(3.2/3.9) Scope line → this task is the loader; classname spawning + many-instance SH-lit pass
+  are the NEXT task.** The roadmap files "classname wiring spawns mesh-bearing entities from a map"
+  under *Mesh render pass + `MeshComponent`*. This task = read glTF → engine structs + GPU buffers,
+  material `.prm` resolution, extras read. Per-primitive submesh *draw splitting* is a render-pass
+  concern; this task produces the per-primitive material *data* the next task consumes.
+- **(3.3) Model handle/cache → establish the handle here; cross-spawn dedup is next-task pressure.**
+  "Renderer consumes handles, never raw glTF" is this task's contract; "`MeshComponent` carries a
+  model handle" is named in the next. Replace `Option<UploadedModel>` with a handle-indexed store
+  mirroring `Vec<LoadedTexture>`/`GpuTexture`; minimal dedup here.
+- **(3.5) `extras` landing → mirror entity `_tags`.** Roadmap: extras "read here and carried onto
+  the entity"; *Skeletal hit zones* pins the shape — extras tags "mirror map `_tags` → entity
+  behavior." Entities already carry `_tags` (`build_pipeline.md:88,151`). So extras land as opaque
+  entity tag-data in the same shape as `_tags`, NOT a typed `MeshComponent` field; the hit-zone task
+  (later) is the consumer. (Still requires enabling the `gltf` `extras` cargo feature — §3.5.)
+- **(3.6) Coordinate convention → verified identity** (see §3 table); only the visual gate remains.
+
+**The one genuine decision left for a human:**
+
+1. **(3.1) Model-PNG bake discovery trigger.** The roadmap settles the *architecture*: the `.prm`
+   pipeline bakes model PNGs "**unchanged**," "implicit during prl-build," and this task is "the
+   runtime-loader half … **without the bake stage**." So this task is runtime-only — compute the
+   `blake3(png_bytes)` key from the model's material PNG and load the existing `.prm`; the
+   content-addressed cache makes a model PNG indistinguishable from a map texture once baked (which
+   is exactly what the slice's hardcoded `STAGED_MATERIAL_KEYS` stands in for). The residual: **how
+   prl-build comes to bake a model's PNGs** — walk the glTF material URIs during the build vs. scan
+   a model-assets dir (like the texture-collection scan). Leans toward feeding model-referenced PNGs
+   into the existing scan (minimal, content-addressed, "unchanged"), but whether that small
+   prl-build extension rides *in* this task or just beside it is the call to make, since "without
+   the bake stage" can be read as deliberately excluding it.
 
 ---
 

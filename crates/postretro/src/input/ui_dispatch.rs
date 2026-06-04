@@ -2,17 +2,17 @@
 // or forwarded to the gameplay input system, ahead of the gameplay forward.
 // See: context/lib/input.md
 
-//! This is the Input-stage tap point the UI layer owns, mirroring the
-//! `egui_consumed` gate in `App::window_event`. In Goal A there is no live UI
-//! descriptor yet (Task 4 brings the splash descriptor), so the capture decision
-//! is driven by a simple mode flag rather than a descriptor's mode. When the
-//! descriptor lands, Task 4 sources [`UiCaptureMode`] from the active
-//! descriptor's capture/passthrough mode instead of the App-set flag here.
+//! Input-stage tap point the UI layer owns, sitting between raw input collection
+//! and gameplay forwarding — mirroring the `egui_consumed` gate in
+//! `App::window_event`. The capture decision is sourced from the active UI
+//! descriptor's capture mode via `Renderer::splash_capture_mode`; the splash
+//! descriptor installs `Passthrough` so the seam is inert against gameplay while
+//! the splash is shown. A capturing UI (future menu or modal) drives `Capture`.
 //!
 //! `InputFocus::Menu` is the intended *structural* home for UI capture — the
-//! gate a future menu/modal system flips. Goal A makes no live focus change and
-//! enters no `Menu` state; the capture/passthrough decision is the mode flag at
-//! this seam alone.
+//! gate a future menu/modal system flips. The current splash makes no live focus
+//! change and enters no `Menu` state; the capture/passthrough decision is the
+//! mode flag at this seam alone.
 //!
 //! ## N→N+1 ordering contract
 //!
@@ -25,17 +25,17 @@
 //! stage is only promoted by frame N's `advance_frame` and first becomes
 //! readable at frame N+1's `take_ready` — there is deliberately no same-frame
 //! path from capture to game-logic visibility, independent of how winit
-//! interleaves input events with the redraw. The intent vocabulary itself is a
-//! Goal F concern; Goal A carries an opaque marker so the ordering is provable
-//! without pinning the vocabulary.
+//! interleaves input events with the redraw. The intent vocabulary is a reserved
+//! seam concern; the current implementation carries an opaque marker so the
+//! ordering is provable without pinning the vocabulary.
 
 /// Whether the active UI layer captures input events or lets them pass through to
-/// gameplay. In Goal A this is a flag the App sets directly; Task 4 sources it
-/// from the active splash descriptor's capture/passthrough mode.
+/// gameplay. The active UI descriptor sets the mode via `set_mode`; the splash
+/// descriptor sources the value from `Renderer::splash_capture_mode`.
 ///
-/// `Capture` has no production setter yet — Goal A defaults to `Passthrough` so
-/// the seam is inert (gameplay forwarding is unchanged), and the capture path is
-/// exercised by the seam tests. Task 4 calls `set_mode` from the descriptor.
+/// The splash is non-interactive, so it installs `Passthrough` — the seam is
+/// inert against gameplay while the splash is shown. A capturing UI (future
+/// menu or modal) drives `Capture` to queue events for next-frame game logic.
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum UiCaptureMode {
@@ -67,14 +67,14 @@ impl UiDispatchOutcome {
     }
 }
 
-/// An opaque marker for a UI-captured event awaiting next-frame delivery. Goal F
-/// defines the real intent vocabulary; Goal A only needs to prove the captured
-/// result crosses the frame boundary, so the payload is a monotonically rising
-/// sequence number identifying which event was captured.
+/// An opaque marker for a UI-captured event awaiting next-frame delivery. The
+/// payload is a monotonically rising sequence number identifying which event was
+/// captured, sufficient to prove the ordering contract without pinning the full
+/// intent vocabulary.
 ///
-/// No production consumer reads `seq` in Goal A — the queued intents are drained
-/// and dropped at the game-logic seam (Goal F defines what to do with them); the
-/// stamp is asserted on by the ordering test.
+/// No production consumer reads `seq` today — queued intents are drained and
+/// dropped at the game-logic seam; the stamp is asserted on by the ordering
+/// test. A future menu/modal path will define and consume the real vocabulary.
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UiIntent {
@@ -98,8 +98,8 @@ pub struct UiIntent {
 /// frame N+1's `take_ready`.
 #[derive(Debug, Default)]
 pub struct UiDispatch {
-    /// Capture/passthrough mode for the active UI layer. App-set in Goal A;
-    /// descriptor-sourced from Task 4 onward.
+    /// Capture/passthrough mode for the active UI layer. Set by the active UI
+    /// descriptor via `set_mode`; sourced from `Renderer::splash_capture_mode`.
     mode: UiCaptureMode,
 
     /// Captures recorded during the current frame's Input stage. Promoted to
@@ -120,11 +120,10 @@ impl UiDispatch {
         Self::default()
     }
 
-    /// Set the active capture/passthrough mode. Task 4's `App::paint_splash`
-    /// calls this from the active splash descriptor's capture/passthrough mode
-    /// (`Renderer::splash_capture_mode`) — the splash is non-interactive, so it
-    /// stays `Passthrough` and the seam is inert against gameplay; the seam tests
-    /// drive the `Capture` path with synthetic events.
+    /// Set the active capture/passthrough mode. Called from `App::paint_splash`
+    /// with the value from `Renderer::splash_capture_mode` — the splash is
+    /// non-interactive, so it stays `Passthrough` and the seam is inert against
+    /// gameplay; the seam tests drive the `Capture` path with synthetic events.
     pub fn set_mode(&mut self, mode: UiCaptureMode) {
         self.mode = mode;
     }

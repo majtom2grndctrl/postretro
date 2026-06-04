@@ -657,7 +657,7 @@ impl ApplicationHandler for App {
                     // action system this frame. `InputFocus::Menu` is the
                     // intended structural home for this capture; Goal A makes
                     // no live focus change, so the decision is the mode flag.
-                    // See: context/lib/input.md §5
+                    // See: context/lib/input.md
                     if self.ui_dispatch.dispatch_event().forwards_to_gameplay()
                         && self.input_focus == InputFocus::Gameplay
                     {
@@ -776,7 +776,7 @@ impl ApplicationHandler for App {
                 // ordering because both calls run here at game-logic time. Goal A
                 // has no intent consumer yet (Goal F defines the vocabulary), so
                 // the drained intents are dropped; the drain marks the seam where
-                // game logic reads them. See: context/lib/input.md §5
+                // game logic reads them. See: context/lib/input.md
                 let _ui_intents = self.ui_dispatch.take_ready();
                 self.ui_dispatch.advance_frame();
 
@@ -1581,10 +1581,11 @@ impl App {
         }
     }
 
-    /// Paint a single splash-phase frame. Runs only the splash render pass:
-    /// clears to black and, if a splash texture is bound, draws the
-    /// fullscreen triangle. Used both for the first black frame (no splash
-    /// bound) and subsequent splash-visible frames.
+    /// Paint a single splash-phase frame via `UiPass::encode`. Always clears
+    /// to black. When a splash descriptor is installed, the pass also records
+    /// a fullscreen background fill, a framed 9-slice panel, the centered logo
+    /// image, and a shaped-text line as instanced quads plus glyphon text. The
+    /// first frame has no descriptor installed yet and renders only the clear.
     fn paint_splash(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(renderer) = self.renderer.as_mut() {
             if !renderer.is_ready() {

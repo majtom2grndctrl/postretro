@@ -3,7 +3,7 @@
 // This is the ONE named seam (`build_splash_descriptor`) that Goal B replaces
 // with a parsed descriptor model and G1 with script ingestion. Goal A ingests no
 // script — the content is fixed Rust behind this builder.
-// See: context/plans/in-progress/M13--ui-render-pass-slice
+// See: context/lib/boot_sequence.md §3a · context/plans/in-progress/M13--ui-render-pass-slice
 
 use crate::input::UiCaptureMode;
 

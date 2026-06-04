@@ -4,7 +4,7 @@
 // glyphon's own pipeline. Writes linear color into the sRGB surface (the surface
 // format encodes); a 1x1 white texel makes untextured panels and textured
 // images share one batch.
-// See: context/lib/rendering_pipeline.md
+// See: context/plans/in-progress/M13--ui-render-pass-slice
 
 // Device-pixel viewport. Drives the device-rect -> clip-space map; rebuilt per
 // frame from `surface_config`.

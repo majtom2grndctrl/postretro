@@ -16,13 +16,12 @@ pub use diagnostics::{DiagnosticAction, DiagnosticInputs, default_diagnostic_cho
 pub use focus::InputFocus;
 pub use look::LookInputs;
 pub use types::{Action, AxisSource, AxisValue, Binding, ButtonState, PhysicalInput};
-// `UiCaptureMode` is the descriptor-sourced mode flag (Task 4 wires it from the
-// splash descriptor through `Renderer::splash_capture_mode`).
+// `UiCaptureMode` is the capture/passthrough mode flag, driven by the active UI
+// descriptor via `Renderer::splash_capture_mode`.
 pub use ui_dispatch::{UiCaptureMode, UiDispatch};
-// `UiDispatchOutcome` is `dispatch_event`'s return type, named at the App seam
-// via method chaining (not by import); `UiIntent` (the queued capture marker)
-// has no production consumer in Goal A — Goal F consumes intents. Re-exported
-// now as reserved seam API so those call sites land without re-plumbing.
+// `UiDispatchOutcome` is `dispatch_event`'s per-event return type. `UiIntent`
+// is the queued capture marker — reserved seam API with no production consumer
+// yet; a future menu/modal path consumes intents.
 #[allow(unused_imports)]
 pub use ui_dispatch::{UiDispatchOutcome, UiIntent};
 

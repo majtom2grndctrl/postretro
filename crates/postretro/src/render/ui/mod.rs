@@ -2,7 +2,7 @@
 // images. One instance per panel/image carries (rect, UV rect, color, 9-slice
 // margin); the vertex stage expands each instance into 9 regions. All wgpu lives
 // here per renderer-owns-GPU. Text is glyphon's own pipeline (Task 3), not this.
-// See: context/lib/rendering_pipeline.md · context/plans/in-progress/M13--ui-render-pass-slice
+// See: context/plans/in-progress/M13--ui-render-pass-slice
 
 use bytemuck::{Pod, Zeroable};
 use glyphon::{
@@ -35,6 +35,12 @@ mod splash_layout_test;
 #[cfg(test)]
 mod splash_golden_test;
 
+/// Headless regression for the multi-batch instance-buffer clobber: encodes two
+/// non-empty batches into disjoint screen regions and asserts each region keeps
+/// its own batch's color. Self-skips when no GPU adapter is present.
+#[cfg(test)]
+mod multi_batch_test;
+
 const UI_QUAD_WGSL: &str = include_str!("../../shaders/ui_quad.wgsl");
 
 /// Engine default UI typeface: Inter (SIL Open Font License 1.1). Embedded at
@@ -54,8 +60,8 @@ const UI_FONT_FAMILY: &str = "Inter";
 const LINE_HEIGHT_FACTOR: f32 = 1.25;
 
 /// 9 regions * 2 triangles * 3 vertices. The vertex shader keys off
-/// `vertex_index` to expand one instance into the 9-slice geometry; keep in
-/// lockstep with `VERTS_PER_INSTANCE` in `ui_quad.wgsl`.
+/// `vertex_index` to expand one instance into the 9-slice geometry; total is
+/// 9 regions × `VERTS_PER_REGION` (= 6u) in `ui_quad.wgsl` = 54.
 const VERTS_PER_INSTANCE: u32 = 54;
 
 /// Per-instance draw record. Layout mirrors `UiInstance` in `ui_quad.wgsl`:
@@ -103,7 +109,7 @@ impl UiInstance {
     /// CPU-side derivation of the 9-slice corner rects (device pixels) for this
     /// instance — the four fixed-size corners as `[x, y, w, h]` in order
     /// top-left, top-right, bottom-left, bottom-right. Mirrors the shader's
-    /// `axis_bounds` margin clamp so layout assertions match what the GPU draws.
+    /// `axis` margin clamp so layout assertions match what the GPU draws.
     /// Used by tests (and future layout assertions); not consumed by the draw.
     #[cfg(test)]
     pub fn corner_rects(&self) -> [[f32; 4]; 4] {
@@ -115,7 +121,7 @@ impl UiInstance {
             self.margin[3],
         );
         // Clamp margins so opposing corners never overrun the rect — matches
-        // `axis_bounds` in ui_quad.wgsl.
+        // `axis` in ui_quad.wgsl.
         let clamp_axis = |full: f32, lo: f32, hi: f32| -> (f32, f32) {
             let avail = full.max(0.0);
             let lo_c = lo.clamp(0.0, avail);
@@ -255,11 +261,10 @@ pub(crate) struct UiBatch<'a> {
 }
 
 /// One shaped text line for glyphon to lay out and draw. Positions and font size
-/// are already in **device pixels** (the caller applies the logical→device
-/// `device_scale` so text tracks resolution the same way panels do), and the
-/// position is NOT integer-snapped — glyphon keeps sub-pixel AA. This is the
-/// input shape Task 4 fills from the read-handle string + a device-pixel anchor;
-/// Task 3 drives it from a literal/stub line so the path is exercised now.
+/// arrive already in **device pixels** (device-scaled by the caller, not in
+/// logical-reference units), so glyphon and the quad pipeline share one
+/// coordinate space and text tracks resolution the same way panels do. The
+/// position is NOT integer-snapped — glyphon keeps sub-pixel AA.
 #[derive(Debug, Clone)]
 pub(crate) struct UiText {
     /// The string to shape and render.
@@ -483,12 +488,9 @@ impl UiPass {
 
         // Color space: build the atlas with the sRGB *surface* format. glyphon's
         // default `ColorMode::Accurate` then stores colored glyphs in an sRGB
-        // atlas and blends coverage in the surface color space — physically
-        // accurate edges (neither over- nor under-darkened) against the
-        // sRGB-when-available swapchain. Confirmed: this is exactly the open
-        // question's resolution — pass the sRGB surface format, keep the default
-        // (Accurate) color mode. See the plan's "AA text into the sRGB
-        // swapchain" open question.
+        // atlas and blends coverage in the surface color space, keeping glyph
+        // coverage physically correct against the sRGB swapchain — edges neither
+        // over- nor under-darkened.
         let mut text_atlas = TextAtlas::new(device, queue, &glyph_cache, surface_format);
         let text_renderer = TextRenderer::new(
             &mut text_atlas,
@@ -560,8 +562,7 @@ impl UiPass {
     /// the pass opens (it needs `device`/`queue`, not the pass). With no quads
     /// and no text the pass still opens so the caller's `load` op lands.
     ///
-    /// `texts` is empty on the quad-only / no-text path, which keeps the legacy
-    /// behavior intact.
+    /// `texts` is empty on the quad-only / no-text path (no text work runs).
     // The wide signature mirrors a `begin_render_pass` call (target, viewport,
     // load op, draw lists, text) — splitting it into a builder would obscure the
     // single-pass contract the splash + gameplay paths both record through.
@@ -586,13 +587,17 @@ impl UiPass {
             }),
         );
 
-        // Grow the instance buffer once to the largest batch so each batch's
-        // upload fits at offset 0. (Batches are drawn sequentially with the
-        // buffer rewritten between them — fine because each draw is recorded
-        // before the next overwrite within the same pass.)
-        let max_instances = batches.iter().map(|b| b.list.len()).max().unwrap_or(0);
-        if max_instances > self.instance_capacity {
-            self.grow_instance_buffer(device, max_instances);
+        // Give each batch its OWN region of the instance buffer, sized to the
+        // SUM of all batch instance counts. `queue.write_buffer` is a
+        // queue-timeline op: every staged write lands (last-wins per region)
+        // BEFORE the single submitted command buffer executes. Writing each
+        // batch to offset 0 would therefore have every draw read the LAST
+        // batch's data — recording a draw between writes does not snapshot the
+        // buffer, since the writes resolve on the queue timeline, not the
+        // command-recording timeline. Disjoint per-batch regions sidestep this.
+        let total_instances: usize = batches.iter().map(|b| b.list.len()).sum();
+        if total_instances > self.instance_capacity {
+            self.grow_instance_buffer(device, total_instances);
         }
 
         // --- Shape + prepare text BEFORE the pass opens --------------------
@@ -620,17 +625,25 @@ impl UiPass {
             ..Default::default()
         });
 
-        // Quads first.
+        // Quads first. Each non-empty batch concatenates into its own region:
+        // batch K starts at `offset_k = (sum of prior batch lens) * INSTANCE_SIZE`.
+        // The draw binds the vertex buffer from `offset_k` and uses instance
+        // range `0..count_k`, so it reads its own region without relying on a
+        // non-zero `first_instance`. Per-batch byte offsets are multiples of the
+        // 64-byte instance stride, satisfying write_buffer/vertex-offset
+        // alignment. Empty batches are skipped without consuming a region.
         pass.set_pipeline(&self.pipeline);
+        let mut offset = 0u64;
         for batch in batches {
             if batch.list.is_empty() {
                 continue;
             }
             let bytes: &[u8] = bytemuck::cast_slice(&batch.list.instances);
-            queue.write_buffer(&self.instance_buffer, 0, bytes);
+            queue.write_buffer(&self.instance_buffer, offset, bytes);
             pass.set_bind_group(0, batch.bind_group, &[]);
-            pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
+            pass.set_vertex_buffer(0, self.instance_buffer.slice(offset..));
             pass.draw(0..VERTS_PER_INSTANCE, 0..batch.list.len() as u32);
+            offset += bytes.len() as u64;
         }
 
         // Then glyphon's text draw, into the same pass, after the quads. Skipped
@@ -845,7 +858,7 @@ mod tests {
     #[test]
     fn corner_rects_clamp_when_margins_exceed_rect() {
         // Margins larger than the rect must not produce overlapping/negative
-        // corners — they clamp to the available space (mirrors axis_bounds).
+        // corners — they clamp to the available space (mirrors axis).
         let inst = UiInstance::panel([0.0, 0.0, 10.0, 10.0], [1.0; 4], [8.0, 8.0, 8.0, 8.0]);
         let [tl, tr, _bl, _br] = inst.corner_rects();
         // Left corner gets 8, right corner gets the remaining 2.
@@ -926,10 +939,10 @@ mod tests {
 
     #[test]
     fn ui_text_carries_device_scaled_inputs() {
-        // The text-input shape Task 4 fills: device-pixel position + a
-        // device-scaled font size + color, no logical-reference coords. Font
-        // size scales by the same `device_scale` as panels, so text tracks
-        // resolution (e.g. a 24px logical line at 3x is a 72px device line).
+        // UiText carries device-pixel position + a device-scaled font size +
+        // color, no logical-reference coords. Font size scales by the same
+        // `device_scale` as panels, so text tracks resolution (e.g. a 24px
+        // logical line at 3x is a 72px device line).
         let logical_size = 24.0_f32;
         let scale = 3.0_f32;
         let t = UiText::new(

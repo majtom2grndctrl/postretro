@@ -3928,10 +3928,10 @@ impl Renderer {
         // UI pass: records into the surface `view` with `LoadOp::Load` after the
         // world/fog/wireframe/debug-line passes, before the timing resolve and
         // submit — beneath the egui overlay (which draws in the caller's separate
-        // submission). In Goal A the gameplay UI draw list is EMPTY (frame-order
-        // placement is locked now; content arrives with B/BIS). The pass still
-        // opens so the once-per-frame read snapshot is consumed each frame. Text
-        // is empty here — gameplay carries no shaped line in A.
+        // submission). The gameplay path encodes an empty draw here; the pass
+        // locks the UI draw's frame-order position so that when per-frame UI
+        // content arrives later it lands in the correct place. `ui_snapshot` is
+        // set by the App each frame but not read on this path.
         self.ui.encode(
             &self.device,
             &self.queue,

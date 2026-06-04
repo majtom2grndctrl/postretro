@@ -69,11 +69,17 @@ redesign of the vertex layout, bone palette, or CPU/GPU module split.
       64-char lowercase hex; the dev asset's primitive resolves to `581e80bb91c2d2e6fbed2aca5ba8fc0252aa7485579ea21376eeb294e972f0f1`
       (behavior-preserving) with no hardcoded table.
 - [ ] A glTF whose base-color PNG file is **missing** still loads geometry and returns a key (or the
-      zero sentinel) without an `Import` error — proving images are not decoded at load.
+      zero sentinel) without an error or panic — proving the material resolver degrades gracefully.
+      (The decode-free guarantee is backstopped by the workspace-build and manual-visual ACs, not this one.)
 - [ ] A multi-primitive model exposes one submesh range per primitive; index ranges partition the
       merged index buffer with no gaps or overlaps; every index stays in vertex range.
 - [ ] The renderer builds one material bind group per distinct submesh key and the mesh pass records
       one draw per submesh; a model with N materials renders all N (not just the first).
+- [ ] **CPU-side, N>1:** a unit test on a synthetic multi-primitive model asserts the renderer's
+      per-submesh draw list records one entry per submesh covering every submesh range — not just the
+      first — and that distinct keys produce distinct material-resolution requests (one bind-group build
+      per *distinct* key, dedup honored). Structural assertion on the draw/resolution bookkeeping, no
+      live GPU. (The single-primitive dev asset and manual-visual AC only ever exercise N=1.)
 - [ ] A glTF carrying `extras` `{ "tags": ["a","b"] }` spawns an entity whose `get_tags` returns
       those tags (verified via a Rust-side `registry.get_tags` assertion — `get_tags` is `pub(crate)`);
       absent/malformed `extras` spawns with no tags and no error.
@@ -101,10 +107,15 @@ it to the root `[workspace.dependencies]` and use `blake3.workspace = true` in
 *reproduces the recipe inline* (`*blake3::hash(png_bytes).as_bytes()` hex) — it cannot call
 `filename_key_for`, which is private and lives in the `level-compiler` crate; `parse_blake3_key` *is*
 reusable (it already lives in `render/mod.rs` beside `resolve_skinned_model_material`). In
-`load_mesh`, record a per-primitive submesh range (key + `Range<u32>` = `start..end` into the merged
-index buffer, as `draw_indexed` consumes) alongside the merged stream. Add a test asserting the
-per-primitive submesh ranges partition the merged index buffer with no gaps/overlaps and all indices in
-vertex range (matching the AC). Each submesh's `load_textures` call uses a generic diagnostic name
+`load_mesh`, record a per-primitive `Submesh { material_key: String, indices: Range<u32> }`, where
+`indices` is `start..end` into the merged index buffer (what `draw_indexed` consumes, not `[start, len)`),
+alongside the merged stream. Add a test asserting the per-primitive submesh ranges partition the merged
+index buffer with no gaps/overlaps and all indices in vertex range (matching the AC). Add a second,
+CPU-side test on a synthetic / hand-built multi-primitive model (or a small multi-material `.gltf`
+fixture the implementer creates) asserting the renderer's draw bookkeeping records one entry per
+submesh covering every submesh range — not just the first — and that distinct submesh keys produce
+distinct material-resolution requests with dedup honored. Assert on the produced
+`Vec<(BindGroup, Range<u32>)>` / submesh-draw list (or a GPU-free seam), never a live GPU. Each submesh's `load_textures` call uses a generic diagnostic name
 (the material-key hex or primitive index), retiring the renderer-side hardcoded `"decraniated_baseColor"`
 literal currently passed at the single-material call (note: that literal is renderer-side, not
 loader-side). Restructure `LoadedModel` to carry `submeshes: Vec<Submesh>` instead of a bare
@@ -112,9 +123,13 @@ loader-side). Restructure `LoadedModel` to carry `submeshes: Vec<Submesh>` inste
 `581e80bb…` key and per-primitive count (it reads `model.material_keys`), plus the `material_keys`
 producer/consumer sites in `load_mesh`/`load_model` and `resolve_skinned_model_material`. Update
 `resolve_skinned_model_material` → resolve every submesh key to a `LoadedTexture`/bind group,
-returning `Vec<(BindGroup, Range<u32>)>`; update `set_model` to accept that vec (replacing its single
-`material_bind_group` param). Update `mesh_pass` to store per-submesh `(bind_group, index_range)` and
-iterate them in `record_draw` (single instance, base index 0 — unchanged).
+returning `Vec<(BindGroup, Range<u32>)>`. Dedup by key: build one material bind group per *distinct*
+submesh key, not one per submesh (a model reusing a material across primitives builds it once). Update
+`set_model` to accept that vec (replacing its single `material_bind_group` param). Update `mesh_pass` to
+store per-submesh `(bind_group, index_range)` and iterate them in `record_draw` (single instance, base
+index 0 — unchanged). The per-submesh loop sets group 1 (material) *inside* the loop and draws that
+submesh's index range; the vertex/index buffers and the group-3 / instance binding stay set *outside*
+the loop — do not hoist the group-1 set, do not re-bind buffers per submesh.
 
 ### Task 3: `extras` → entity tags
 Enable `features = ["extras"]` on the workspace `gltf` dependency — this requires converting the
@@ -164,7 +179,7 @@ so coordinate the one struct's field additions.
   `Vec<(BindGroup, Range<u32>)>`; `set_model`'s signature changes from a single `material_bind_group`
   to `Vec<(BindGroup, Range<u32>)>`, which `resolve_skinned_model_material` produces and hands to it.
   `crates/postretro/src/render/mesh_pass.rs` `UploadedModel` holds `Vec<(BindGroup, Range<u32>)>`;
-  `record_draw` sets each submesh's group 1 + draws its index range.
+  `record_draw` loops submeshes (see Task 2 for the inside-loop group-1 / outside-loop buffer split).
 - Tags: existing `registry.rs` `try_spawn(transform, tags)` / `set_tags`. No new entity surface.
 - Coordinate basis stays identity (`mesh_pass.rs:19–30`, verified) — the manual-visual gate is the
   only outstanding confirmation.

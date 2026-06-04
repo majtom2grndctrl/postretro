@@ -17,6 +17,7 @@ pub mod sh_diagnostics;
 pub mod sh_volume;
 pub mod smoke;
 pub mod splash;
+pub mod ui;
 
 #[cfg(test)]
 mod curve_eval_test;
@@ -759,6 +760,12 @@ pub struct Renderer {
     /// bind group bound by `install_splash_from_loaded` and cleared by
     /// `clear_splash`. Encodes a black clear when no splash is bound.
     splash_pipeline: SplashPipeline,
+
+    /// Instanced UI quad / 9-slice pass for panels and images. Built alongside
+    /// `fog`; Task 2/4 record it into the frame. Idle (no draw) until a draw
+    /// list is supplied.
+    #[allow(dead_code)]
+    ui: ui::UiPass,
 
     /// Volumetric fog raymarch + composite. Active only when the level has
     /// at least one fog volume uploaded; otherwise the dispatch + composite
@@ -1942,6 +1949,10 @@ impl Renderer {
         // Bind group is None until `install_splash_from_loaded`.
         let splash_pipeline = SplashPipeline::new(&device, surface_format);
 
+        // UI quad / 9-slice pass — sibling to fog. Records nothing until a draw
+        // list is wired in (Task 2/4).
+        let ui = ui::UiPass::new(&device, &queue, surface_format);
+
         let mut fog = FogPass::new(
             &device,
             surface_config.width,
@@ -2052,6 +2063,7 @@ impl Renderer {
             debug_prev_visible: ("init", usize::MAX),
             smoke_pass,
             splash_pipeline,
+            ui,
             fog,
             fog_cell_masks: None,
             active_fog_aabbs: Vec::new(),

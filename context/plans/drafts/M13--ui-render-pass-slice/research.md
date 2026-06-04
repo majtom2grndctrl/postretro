@@ -151,6 +151,37 @@ Source-confirmed against the tree on branch `claude/eloquent-cerf-J4S5r`.
   question) — glyphon releases track wgpu versions and the compatible release is
   resolved at `cargo add` time, not asserted here.
 
+## glyphon rendering model (confirmed against the hello-world example)
+
+- glyphon ships its **own** pipeline. It is NOT fed through a hand-rolled quad
+  pipeline. The caller owns: `FontSystem`, `SwashCache`, `Cache`, `Viewport`,
+  `TextAtlas`, `TextRenderer`, and per-string `Buffer`/`TextArea`.
+- Two-phase per frame: `TextRenderer::prepare(device, queue, font_system, atlas,
+  viewport, [TextArea{ buffer, left, top, scale, bounds, default_color, .. }],
+  swash_cache)` does CPU layout + atlas upload; then
+  `text_renderer.render(&atlas, &viewport, &mut render_pass)` records glyphon's
+  draw **into a caller-provided `wgpu::RenderPass`** (middleware pattern). The
+  render call must run inside the same `begin_render_pass` the UI quad draws use,
+  so text composites into the same surface view.
+- `TextAtlas::new(device, queue, cache, swapchain_format)` is constructed with the
+  surface format — color-space correctness is handled by passing the sRGB surface
+  format (ties to the Open question, not a blocker).
+- Consequence for the spec: text is glyphon's own draw recorded after the quad
+  draws into the same pass; the hand-rolled instanced-quad pipeline never carries
+  glyph instances.
+
+## Read-handle delivery (decision basis)
+
+- `render_splash_frame(&mut self) -> Result<()>` takes **no** content parameters
+  today (`render/mod.rs:2506`); `App::paint_splash` calls it argument-free
+  (`main.rs:1465`). `render_frame_indirect` already takes a long param list
+  (`main.rs:1081`). The `Renderer` already owns `surface_config`.
+- Cleaner fit: **store the snapshot on the `Renderer`** via a setter the App calls
+  just before the render call, rather than threading a new param through the
+  argument-free `render_splash_frame` and the already-wide `render_frame_indirect`.
+  This keeps both render signatures stable and matches how the splash texture is
+  already installed onto the Renderer before paint.
+
 ## GPU-test precedent
 
 - Headless wgpu tests build a device via `pollster` and self-skip when no adapter

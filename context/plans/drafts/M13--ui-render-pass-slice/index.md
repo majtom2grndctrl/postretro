@@ -18,10 +18,14 @@ against a live screen with no gameplay state.
 
 - New `render/ui/` module — sibling pass to scene rendering (research §4), all
   wgpu inside it per renderer-owns-GPU.
-- Hand-rolled instanced-quad / 9-slice pipeline: one shader, per-instance data
-  (rect, UV rect, color, 9-slice margin), alpha-blended, depth disabled
-  (research §5, §13). `SplashPipeline` is the structural template and is retired
-  into this successor.
+- Hand-rolled instanced-quad / 9-slice pipeline for **panels and images**: one
+  shader, per-instance data (rect, UV rect, color, 9-slice margin), alpha-blended,
+  depth disabled (research §5, §13). One batch samples a single bound texture, so
+  the slice composes as a few draws: solid panels sample a 1×1 white texel in one
+  instanced batch; the logo is a separate draw with its texture bound. Text is
+  glyphon's own draw (below), not this pipeline. A general texture-array/atlas
+  batch that mixes many textures in one draw is **Goal B**. `SplashPipeline` is
+  the structural template and is retired into this successor.
 - **Native-res render, 1280×720 logical reference.** UI lays out in
   logical-reference coords, scaled by `native / reference` to the backbuffer,
   rendered at native res. Panel/image quads snap to integer **device** pixels;
@@ -29,20 +33,25 @@ against a live screen with no gameplay state.
   re-derives from `surface_config`.
 - **`glyphon`-shaped AA text as the default text path** from this slice onward.
   `glyphon` becomes a workspace dependency; the slice ships one committed TTF.
-  glyphon owns the glyph atlas.
+  glyphon ships its own pipeline and atlas: its `TextRenderer` records text into
+  the **same render pass / surface view** as the quad draws, after them. The
+  hand-rolled quad pipeline never carries glyphs.
 - Pass placement: records inside `render_frame_indirect` after the
   world/fog/wireframe passes, `LoadOp::Load` into the surface `view`, before the
   un-presented texture returns — beneath the egui overlay (research §13). Present
   stays caller-driven (research §4).
-- **Splash reimplementation as the slice.** Splash content — background panel,
-  centered logo image, one shaped-text line (version/tagline) — is a hardcoded
-  Rust descriptor drawn through the UI pass, behind one named seam so B
-  (descriptor model) + G1 (SDK) later make it script-authored. A has **no script
-  ingestion**. Runs pre-gameplay (before any level/game logic/state).
-- Once-per-frame published read handle: a narrow read-only snapshot handed to the
-  pass after game logic, before render (research §4). Carries the splash text; the
-  handle *shape* is the contract. Pre-gameplay it holds no gameplay state — which
-  stress-tests the once-per-frame contract in isolation.
+- **Splash reimplementation as the slice.** Splash content — fullscreen background
+  fill, a framed (non-fullscreen) 9-slice panel, centered logo image, one
+  shaped-text line (version/tagline) — is a hardcoded Rust descriptor drawn through
+  the UI pass, behind one named seam so B (descriptor model) + G1 (SDK) later make
+  it script-authored. A has **no script ingestion**. Runs pre-gameplay (before any
+  level/game logic/state). The splash has no text today; the shaped-text line is
+  **added here specifically to exercise the glyphon path**, not ported.
+- Once-per-frame published read handle: a narrow read-only snapshot **stored on
+  the `Renderer`** after game logic, before render (research §4) — not threaded as
+  a render-call parameter, keeping both render signatures stable. Carries the
+  splash text; the handle *shape* is the contract. Pre-gameplay it holds no
+  gameplay state — which stress-tests the once-per-frame contract in isolation.
 - Input-stage UI-dispatch seam + modal capture-vs-passthrough contract (research
   §4, §12): a tap point ahead of the gameplay input forward; the descriptor's
   mode decides consume-vs-passthrough; a UI-consumed event on frame N reaches game
@@ -74,9 +83,10 @@ against a live screen with no gameplay state.
 
 ## Acceptance criteria
 
-- [ ] The boot splash renders through the new `render/ui/` pass: a background
-  panel, the existing logo image, and a shaped-text line, anti-aliased and crisp
-  at 720p and at 4K with no re-layout artifacts between resolutions.
+- [ ] The boot splash renders through the new `render/ui/` pass: a fullscreen
+  background fill, a framed 9-slice panel, the existing logo image, and a
+  shaped-text line, anti-aliased and crisp at 720p and at 4K with no re-layout
+  artifacts between resolutions.
 - [ ] `SplashPipeline` (`render/splash.rs`) is removed from the tree; no second
   quad pipeline exists beside the UI pass. The renderer's splash entry points
   (`render_splash_frame` / `install_splash_from_loaded` / `clear_splash`) drive
@@ -113,31 +123,59 @@ alpha blend, depth disabled; the vertex shader expands a unit quad per instance
 (rect, UV rect, color, 9-slice margin). The pass exposes an `encode`-style entry
 recording into a target view. Declare `pub mod ui;` in `render/mod.rs`; the
 `Renderer` owns the pass and builds it in `Renderer::new` alongside `fog`.
-Text glyphs use a 1×1 (degenerate) slice through the same pipeline.
+This pipeline draws **panels and images only** — never text. Solid panels sample
+a 1×1 white texel (degenerate UV slice) so an untextured panel and a textured
+image share one instanced batch; the logo binds its own texture as a separate
+draw. Text is glyphon's own pipeline (Task 3), not this one.
 
 ### Task 2: Logical-reference scaling model + device-pixel snap
 Establish the 1280×720 logical reference and a scale factor derived from
 `surface_config.{width,height}` at encode time. A small layout/projection helper
-maps logical-reference rects to device-pixel rects: scale, then snap quad/panel
-rects to integer device pixels (glyph quads keep AA positions). No offscreen
-target; the pass uniform carries the device viewport so the shader maps snapped
-device rects to clip space. On resize the factor re-derives from the updated
-`surface_config` — wire through the existing `Renderer::resize` path.
+maps logical-reference rects to device-pixel rects: scale, then snap panel/image
+rects to integer device pixels (text keeps AA positions). **Architectural
+constraint:** layout/projection emits a pure CPU-side **draw list** — a `Vec` of
+quad-instance records (device-pixel rect, UV rect, color, 9-slice margin) — built
+with **no wgpu call**. The pass then uploads that list to its instance buffer.
+The layout step holds no GPU handles; this is what makes the Task 6a assertion
+GPU-independent. (Text positions resolve through glyphon's `prepare`, not this
+list.) No offscreen target; the pass uniform carries the device viewport so the
+shader maps snapped device rects to clip space. On resize the factor re-derives
+from the updated `surface_config` — wire through the existing `Renderer::resize`
+path.
 
 ### Task 3: glyphon shaped-text path
 Add `glyphon` as a workspace dep; commit one TTF under `content/base/`. The UI
-pass owns the `glyphon` text atlas/renderer and registers the font once. A text
-routine shapes a string at the device-scaled font size and produces AA glyph
-quads positioned in device pixels. This is the engine default text path. Confirm
-the atlas/text-render integrates with the pass's surface target and color space.
+pass owns glyphon's own state — `FontSystem`, `SwashCache`, `Cache`, `Viewport`,
+`TextAtlas` (built with the surface format), and `TextRenderer` — and registers
+the font once. glyphon ships its own pipeline; it is **not** routed through the
+Task 1 quad pipeline. Per frame the pass calls `TextRenderer::prepare` (CPU
+layout + atlas upload, given a `Buffer`/`TextArea` shaped at the device-scaled
+font size, positioned in device pixels) before recording draws, then records
+`TextRenderer::render(&atlas, &viewport, &mut pass)` **into the same render pass
+as the quad draws, after them**, so text composites into the same surface view.
+This is the engine default text path. The `Viewport`/`Resolution` is set from the
+device backbuffer size. Confirm glyph coverage blends in the correct color space
+against the sRGB surface (Open question).
 
 ### Task 4: Splash descriptor + read handle + retire SplashPipeline
 Define the splash content as a hardcoded Rust descriptor behind one named seam:
-a background panel, the logo image (reusing `UiTexture` upload), and a
-shaped-text line, anchored in logical-reference space with a capture/passthrough
-mode flag. Publish a narrow once-per-frame read handle carrying the text content,
-written just before the splash render call. Rewire the renderer's splash entry
-points (`render_splash_frame` / `install_splash_from_loaded` / `clear_splash`)
+a **framed (non-fullscreen) 9-slice panel** centered in logical-reference space,
+the logo image (reusing `UiTexture` upload) centered over it, and a shaped-text
+line below the logo — all anchored in logical-reference space with a
+capture/passthrough mode flag. A separate fullscreen background fill (the existing
+`SPLASH_BG_COLOR`) sits behind the framed panel; because the panel is framed, its
+9-slice corners are genuinely exercised on screen. The logo draws at a **fixed
+logical-reference size** (a constant W×H in 1280×720 space, preserving the PNG's
+aspect) so "without stretching" holds at every backbuffer size — only the
+uniform device scale applies, never an independent x/y stretch.
+**Read-handle delivery (plumbing):** the once-per-frame snapshot is **stored on
+the `Renderer`** via a setter the App calls just before each render call — not a
+render-call parameter, so both render signatures stay stable (`render_splash_frame`
+takes no content args today; `render_frame_indirect` is already wide). `App` calls
+the setter before `paint_splash`'s `render_splash_frame()` (splash phase) and
+before the `render_frame_indirect` call in the `RedrawRequested` arm (gameplay
+path); the pass reads the stored snapshot when it records. Rewire the renderer's
+splash entry points (`render_splash_frame` / `install_splash_from_loaded` / `clear_splash`)
 to drive the UI pass instead of `SplashPipeline`; **delete `SplashPipeline`** and
 its shaders (`splash_vert.wgsl` / `splash_frag.wgsl`), keeping `load_splash` /
 `upload_splash_texture` for the logo image. The App-side `run_splash_frame` /
@@ -163,7 +201,7 @@ tolerance; self-skip with no adapter. Wire both into `cargo test -p postretro`.
 
 **Phase 1 (sequential):** Task 1 — the pipeline + pass topology everything draws through.
 **Phase 2 (sequential):** Task 2 — consumes Task 1's pass; establishes the scaling model + snap that Tasks 3–4 lay out against.
-**Phase 3 (concurrent):** Task 3 (glyphon text) and Task 5 (input seam) — independent; Task 3 emits glyph quads through the Task 1 pipeline at the Task 2 scale, Task 5 touches only the Input stage.
+**Phase 3 (concurrent):** Task 3 (glyphon text) and Task 5 (input seam) — independent; Task 3 records glyphon's own text draw into the Task 1 pass at the Task 2 device scale, Task 5 touches only the Input stage.
 **Phase 4 (sequential):** Task 4 — consumes Tasks 1–3 (panel/image/text draws) and the read-handle plumbing, retires `SplashPipeline`, ties the descriptor to the live boot frame.
 **Phase 5 (sequential):** Task 6 — asserts Task 2/4 layout math and (optionally) the Task 1–4 rendered output.
 
@@ -172,17 +210,23 @@ tolerance; self-skip with no adapter. Wire both into `cargo test -p postretro`.
 Named types/files (behavior is in Tasks above):
 
 - `UiPass` struct in `render/ui/`, owned on `Renderer`, built in `Renderer::new`.
-  Holds the quad pipeline, BGL, sampler, instance + uniform buffers, the `glyphon`
-  atlas/text renderer, and the uploaded logo texture. Quad shader
-  `src/shaders/ui_quad.wgsl`; uniform carries the device viewport.
+  Holds the quad pipeline, BGL, sampler, instance + uniform buffers, glyphon's own
+  state (`FontSystem`, `SwashCache`, `Cache`, `Viewport`, `TextAtlas`,
+  `TextRenderer`), and the uploaded logo texture. Quad shader
+  `src/shaders/ui_quad.wgsl`; uniform carries the device viewport. The quad
+  pipeline draws panels + images; `TextRenderer::render` records glyphon's text
+  draw after them into the same pass.
 - `render_frame_indirect` records the pass into the surface `view`
   (`LoadOp::Load`) after fog/wireframe; the splash phase records the same pass via
-  `render_splash_frame` into its own surface frame.
-- Splash descriptor: a `pub(crate)` struct (panel + image + text line +
-  anchor/offset + capture flag) built behind one named builder — the seam B
+  `render_splash_frame` into its own surface frame. On the gameplay path
+  (`render_frame_indirect`) the pass draws an **empty draw list** in A — frame-order
+  placement is locked now, UI content arrives with B/BIS.
+- Splash descriptor: a `pub(crate)` struct (framed 9-slice panel + image + text
+  line + anchor/offset + capture flag) built behind one named builder — the seam B
   replaces with descriptor parsing, G1 with script ingestion.
-- Read handle: a narrow `pub(crate)` snapshot, owned by `App`, written just before
-  the render call.
+- Read handle: a narrow `pub(crate)` snapshot **stored on the `Renderer`** via a
+  setter the `App` calls just before each render call — not a render-call
+  parameter; both render signatures stay stable.
 - Input seam: a UI dispatch check in `App::window_event` paralleling
   `egui_consumed`, routed through `InputFocus::Menu`.
 - Byte packing via `bytemuck`. No `unsafe`.

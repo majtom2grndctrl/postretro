@@ -14,10 +14,18 @@ Audio will be a self-contained subsystem. It will not depend on the renderer or 
 
 | Direction | Data |
 |-----------|------|
-| **Receives** | Listener position and orientation, sound event requests, current BSP leaf index (for reverb lookup) |
+| **Receives** | Listener position and orientation, sound event requests, current BSP leaf index (for reverb lookup — later goal, not yet consumed) |
 | **Produces** | Audio output (mixed and delivered to the OS by kira internally) |
 
-Sound assets will load at level load time. No streaming from disk during gameplay.
+The boundary carries primitive types only. `ListenerState` (position + forward/up as `[f32; 3]`; world up is `[0, 1, 0]`) and `SoundRequest` (target bus, sound key, looping flag) cross the public API — no glam, no wgpu. Conversion from the glam-typed `Camera` happens at the frame-loop call site, not inside the module.
+
+Init is fault-tolerant: if the device or kira backend fails to start, the subsystem disables itself and the game runs silent — never a crash, never a panic. Asset load and decode failures degrade the same way (warn, skip, no sound).
+
+Sound assets will load at level load time from `content/<mod>/_sounds/`. The sound registry follows level lifetime — populated at level load, released at unload. No streaming from disk during gameplay beyond kira's own music streaming.
+
+### Mixer bus tree
+
+kira's main track serves as Master. SFX, Music, and UI hang off it as sub-tracks, each with a runtime volume control. In-world sound categories route to one of these buses. A per-bus active-voice cap bounds concurrency; the sum of per-bus caps stays within kira's global sound capacity so play commands never silently drop at the kira layer.
 
 ---
 

@@ -17,7 +17,7 @@ Build the Rust-owned UI descriptor model, retained widget tree, and `taffy`-driv
 - **Measure seam (`taffy` ↔ `glyphon`).** Size text nodes from real shaped-glyph metrics. Wire the existing `glyphon` shaping (`UiPass::shape_text`, now in `text.rs`) into `taffy`'s per-tree measure closure via a per-node text context. The slice proved the shaped-text path in A; this feeds its measured width/height back to layout.
 - **Dirty-tree relayout.** Recompute layout only when the tree structure changes or the viewport resizes, via `taffy`'s intrinsic `mark_dirty` + cached subtree layout.
 - **Splash on the tree (the A→B handoff).** Reimplement `build_splash_descriptor` (`render/ui/splash.rs` — the named seam A left) to emit a descriptor tree (panel + image + text nodes) instead of hand-built `UiElement`s. Splash visual output unchanged.
-- **Render integration.** Widen `UiReadSnapshot` to carry the laid-out draw output; populate `UiPass::encode`'s `batches`/`texts` on the gameplay path from a retained tree (empty today). Add the empty-tree encode early-out (A follow-up #3). Center splash version text from measured run width (A follow-up #4). Call `TextAtlas::trim()` once per frame (A follow-up #2). (Ownership: `trim` lands in Task 1; empty-tree early-out and version-centering land in Task 5; module split lands in Task 1.)
+- **Render integration.** Widen `UiReadSnapshot` to carry the laid-out draw output; populate `UiPass::encode`'s `batches`/`texts` on the gameplay path from a retained tree (empty today). Add the empty-tree encode early-out (A follow-up #3). Center splash version text from measured run width (A follow-up #4). Call `TextAtlas::trim()` once per frame (A follow-up #2). (Ownership: `trim` lands in Task 1; empty-tree early-out and version-centering land in Task 6; module split lands in Task 1.)
 - **CPU layout/draw-list test gate.** Extend A's pure-CPU assertion harness to cover the new vocab: flex distribution, grid placement, measured-text sizing, anchor-against-letterbox, integer pixel snapping.
 - **Boundary inventory artifact** pinning casing for all seven kinds and their cross-boundary fields.
 
@@ -55,23 +55,26 @@ Extract `glyphon` state and shaping out of `render/ui/mod.rs` into a new `render
 Define the serde descriptor types: an internally-tagged enum (`#[serde(tag = "kind", rename_all = "camelCase")]`) with struct variants for the seven widget kinds, plus their field structs (camelCase wire, snake-case Rust). Children are positional `Vec`s on container kinds (`vstack`/`hstack`/`grid`); leaf kinds (`text`/`image`/`spacer`) carry no `children` field. `children` uses no `skip_serializing_if`, so an empty container serializes `"children":[]` and round-trip identity holds. Round-trip + unknown-kind-error tests. Produce the Boundary inventory. Pure data; no rendering. Diverges deliberately from the manual key-presence discrimination used by `ReactionDescriptor` (`scripting/data_descriptors.rs`) — see *Rough sketch*.
 
 ### Task 3: Retained tree + `taffy` layout
-Build the Rust-owned node tree and the descriptor→`taffy` mapping: stack kind → flex direction, gap/padding/align/sizing → style, grid → CSS-grid columns/gap. Compute layout, read `taffy::Layout` rects back into `UiDrawList` through the existing projection path. Apply the `Anchor` + offset post-layout transform on the root rect. Wire `taffy` `mark_dirty` so relayout runs only on structural or viewport change. Text nodes get a placeholder intrinsic size here; real measurement lands in Task 4, fully replacing this path — the placeholder is not a lingering fallback.
+Build the Rust-owned node tree and the descriptor→`taffy` mapping: stack kind → flex direction, gap/padding/align/sizing → style, grid → CSS-grid columns/gap. Compute layout, read `taffy::Layout` rects back into `UiDrawList` through the existing projection path. Apply the `Anchor` + offset post-layout transform on the root rect. Layout runs unconditionally at this stage; dirty-tracking lands in Task 4. Text nodes get a placeholder intrinsic size here; real measurement lands in Task 5, fully replacing this path — the placeholder is not a lingering fallback.
 
-### Task 4: Measure seam (`taffy` ↔ `glyphon`)
-Replace the text-node placeholder size with real measurement: attach a per-node text context carrying the `glyphon` shaping handle, and supply `taffy`'s measure closure so it shapes through `text.rs` and returns the measured `Size`. Layout now sizes text from glyph metrics. Consumes Task 3's tree and Task 1's `text.rs`. Implementer note: `compute_layout_with_measure`'s closure needs `&mut FontSystem` to shape while it also borrows the tree, so the implementer picks the capture strategy — e.g. pass the shaper alongside the tree, keep the node context to `content` + `font_size`. The contract (text sized from real shaped-run metrics) is fixed; the borrow shape is the implementer's call.
+### Task 4: Dirty-tree relayout
+Gate layout recompute on change only: wire `taffy`'s `mark_dirty` so the tree recomputes solely on structural change (node add/remove/reshape) or viewport resize, reusing `taffy`'s cached subtree layout on unchanged frames. Add the recompute counter (or dirty flag) the test gate asserts against (AC: no `taffy` recompute on a no-change frame). Consumes Task 3's layout path; independent of the measure seam (Task 5) — the two can land in either order.
 
-### Task 5: Splash-on-tree + render integration + gate
+### Task 5: Measure seam (`taffy` ↔ `glyphon`)
+Replace the text-node placeholder size with real measurement: attach a per-node text context carrying the `glyphon` shaping handle, and supply `taffy`'s measure closure so it shapes through `text.rs` and returns the measured `Size`. Layout now sizes text from glyph metrics. Consumes Task 3's tree and Task 1's `text.rs`; independent of Task 4. Implementer note: `compute_layout_with_measure`'s closure needs `&mut FontSystem` to shape while it also borrows the tree, so the implementer picks the capture strategy — e.g. pass the shaper alongside the tree, keep the node context to `content` + `font_size`. The contract (text sized from real shaped-run metrics) is fixed; the borrow shape is the implementer's call.
+
+### Task 6: Splash-on-tree + render integration + gate
 Reimplement `build_splash_descriptor` to emit a descriptor tree (panel + image + text); the splash logo resolves as an `image` node through the existing UI-texture path. Widen `UiReadSnapshot` to carry the laid-out output; populate `UiPass::encode` `batches`/`texts` on the gameplay path from a retained tree; add the empty-tree early-out (A follow-up #3); center version text from measured width (A follow-up #4). Extend A's CPU assertion harness to the full vocab as the hard gate (flex, grid, measured text, anchor, snapping). Splash output stays visually unchanged.
 
 ## Sequencing
 
-This is a layered foundation — each task consumes the prior, so the chain is mostly sequential.
+This is a layered foundation — each task consumes the prior, so the chain is mostly sequential; Tasks 4 and 5 are the one concurrent pair.
 
 **Phase 1 (sequential):** Task 1 — module split + `taffy` dep. Blocks all; every later task edits `render/ui/`.
 **Phase 2 (sequential):** Task 2 — descriptor model. Consumes Task 1's module skeleton; defines the types Task 3 maps.
 **Phase 3 (sequential):** Task 3 — retained tree + layout. Consumes Task 2's descriptor types and Task 1's `taffy` dep.
-**Phase 4 (sequential):** Task 4 — measure seam. Consumes Task 3's `taffy` tree and Task 1's `text.rs`.
-**Phase 5 (sequential):** Task 5 — splash + render integration + test gate. Consumes Tasks 3 and 4.
+**Phase 4 (Tasks 4 and 5, concurrent):** Task 4 — dirty-tree relayout; Task 5 — measure seam. Both consume Task 3's layout path and are independent of each other.
+**Phase 5 (sequential):** Task 6 — splash + render integration + test gate. Consumes Tasks 3, 4, and 5.
 
 ## Rough sketch
 

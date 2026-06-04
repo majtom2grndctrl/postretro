@@ -23,6 +23,7 @@ use postretro_level_format::octahedral::{
 use postretro_level_format::sh_volume::{
     OctahedralAtlasTexel, OctahedralShProbe, OctahedralShVolumeSection,
 };
+use rayon::prelude::*;
 
 use crate::cache::{CacheKey, StageCache};
 use crate::map_data::{LightType, MapLight};
@@ -653,24 +654,27 @@ pub fn bake_sh_volume_grouped(
     let static_lights = static_light_refs(inputs);
     let geom_hash = geometry_content_hash(inputs.geometry);
     let groups = partition_groups(layout.dims);
-    // follow-up: bake groups serially while the monolithic `bake_sh_volume` uses
-    // `into_par_iter()`, so a cold-cache warm build #1 runs materially slower than
-    // a `--no-cache` build (measured: occlusion-test warm#1 677s vs cold 228s,
-    // ~3x). The deterministic fix is rayon-over-groups: each group's per-probe
-    // seed is its global probe index and there is no cross-group state, so a
-    // parallel group bake is byte-identical to this serial one. (Cache get/put is
-    // the only shared resource; partition it or collect bakes then write.)
-    for group in &groups {
-        let baked = bake_or_load_group(
-            inputs,
-            &layout,
-            group,
-            &static_lights,
-            config.probe_spacing,
-            &geom_hash,
-            cache,
-        );
-        place_group(&mut section, &baked);
+
+    // Groups bake in parallel; placement stays serial. The order-preserving
+    // `par_iter().map().collect()` keeps assembly byte-identical to a serial bake
+    // (see the determinism rationale in `bake_or_load_group` / `place_group`:
+    // index-derived seeds, global-index reaching set, global-index placement).
+    let baked_groups: Vec<BakedGroup> = groups
+        .par_iter()
+        .map(|group| {
+            bake_or_load_group(
+                inputs,
+                &layout,
+                group,
+                &static_lights,
+                config.probe_spacing,
+                &geom_hash,
+                cache,
+            )
+        })
+        .collect();
+    for baked in &baked_groups {
+        place_group(&mut section, baked);
     }
     section
 }

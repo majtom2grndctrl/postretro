@@ -14,7 +14,7 @@ use postretro_level_format::octahedral;
 use thiserror::Error;
 
 use super::mesh::{SkinnedMesh, SkinnedVertex};
-use super::skeleton::{AnimationClip, Joint, JointTracks, Skeleton, Track};
+use super::skeleton::{AnimationClip, Joint, JointTracks, RestLocal, Skeleton, Track};
 
 /// A model loaded from glTF: one skinned mesh, its skeleton, its animation
 /// clips, and the material cache keys its primitives reference.
@@ -220,6 +220,22 @@ fn build_skeleton(
         .map(|(skin_idx, &node)| (node, skin_idx))
         .collect();
 
+    // Rest-pose local TRS per skin joint, captured from the glTF node's default
+    // transform (decomposed to TRS so a matrix-form node still yields TRS). The
+    // sampler holds these for any channel the clip omits (the shipped clip has
+    // no scale channels). Indexed by skin-joint index.
+    let rest_locals: Vec<RestLocal> = skin
+        .joints()
+        .map(|node| {
+            let (t, r, s) = node.transform().decomposed();
+            RestLocal {
+                translation: Vec3::from(t),
+                rotation: Quat::from_array(r),
+                scale: Vec3::from(s),
+            }
+        })
+        .collect();
+
     // Parent map among joint nodes: walk every joint node's children; any child
     // that is itself a joint records this node as its parent. Joints with no
     // joint-parent are roots.
@@ -312,6 +328,7 @@ fn build_skeleton(
                     .get(skin_idx)
                     .copied()
                     .unwrap_or_else(|| Mat4::IDENTITY.to_cols_array_2d()),
+                rest_local: rest_locals.get(skin_idx).copied().unwrap_or_default(),
             }
         })
         .collect();

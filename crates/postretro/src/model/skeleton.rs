@@ -3,6 +3,31 @@
 
 use glam::{Quat, Vec3};
 
+/// A joint's rest-pose local transform: the glTF node's default TRS, captured at
+/// load time. The animation sampler holds this for any channel a clip omits —
+/// the shipped clip carries rotation + translation only (no scale), and some
+/// joints have no channel at all, so a missing channel MUST fall back to the
+/// rest value, NOT to identity (identity would collapse joint scale/offset).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RestLocal {
+    /// Rest-pose local translation (parent-relative).
+    pub translation: Vec3,
+    /// Rest-pose local rotation (parent-relative unit quaternion).
+    pub rotation: Quat,
+    /// Rest-pose local scale.
+    pub scale: Vec3,
+}
+
+impl Default for RestLocal {
+    fn default() -> Self {
+        Self {
+            translation: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+        }
+    }
+}
+
 /// One joint in a skeleton. `parent` is `None` for the root; all other joints
 /// reference their parent by index into [`Skeleton::joints`]. `inverse_bind`
 /// transforms a vertex from model space into this joint's local bind space —
@@ -18,6 +43,10 @@ pub struct Joint {
     pub parent: Option<usize>,
     /// glTF inverse-bind matrix, column-major to match glam's `Mat4`.
     pub inverse_bind: [[f32; 4]; 4],
+    /// The joint node's default local TRS, captured from the glTF node. The
+    /// sampler uses each component as the rest-pose fallback for an absent
+    /// channel (e.g. the shipped clip omits scale, so scale holds `rest_local`).
+    pub rest_local: RestLocal,
 }
 
 /// A skeleton: the ordered joint hierarchy a skinned mesh binds against.

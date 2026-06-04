@@ -575,6 +575,18 @@ pub struct LevelGeometry<'a> {
     pub texture_materials: &'a [crate::material::Material],
 }
 
+/// The skeleton + clip the per-frame palette is sampled from for the one temp
+/// skinned model. Holds the CPU-side animation data (no wgpu); `sample_clip`
+/// reads it each frame and the mesh pass uploads the result.
+///
+/// TEMP (Task 5): this moves behind the spawned entity / its `MeshComponent`
+/// (per-instance ownership). The slice keeps it on the renderer as the
+/// single-instance stand-in.
+struct MeshAnimationState {
+    skeleton: crate::model::skeleton::Skeleton,
+    clip: crate::model::skeleton::AnimationClip,
+}
+
 pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -789,6 +801,22 @@ pub struct Renderer {
     /// model load seeds one entry so the GPU path is exercised before Task 5
     /// lands; Task 5 relocates the seed behind the spawn seam.
     mesh_draws: Vec<Mat4>,
+
+    /// The temp skinned model's skeleton + first animation clip, retained so the
+    /// per-frame palette is sampled from the live clip (Task 4). `None` until
+    /// `load_temp_skinned_model` succeeds.
+    ///
+    /// TEMP (Task 5): per-instance ownership lives behind the entity then — the
+    /// clip/skeleton (and the animation time) move to the spawned entity / its
+    /// `MeshComponent`, and the collector samples per instance. This renderer
+    /// field is the single-instance stand-in until that wiring lands.
+    mesh_animation: Option<MeshAnimationState>,
+
+    /// Reusable bone-palette scratch for per-frame sampling. Cleared + refilled
+    /// each frame by `sample_clip`, so steady-state frames allocate nothing
+    /// (Task 6 measures this). Lives on the renderer (not in the GPU pass) — it
+    /// is CPU-side pose data the pass merely uploads.
+    bone_palette_scratch: Vec<crate::model::BonePaletteEntry>,
 
     /// Fullscreen splash render pass. Pipeline created at `Renderer::new`;
     /// bind group bound by `install_splash_from_loaded` and cleared by
@@ -2101,6 +2129,8 @@ impl Renderer {
             smoke_pass,
             mesh_pass,
             mesh_draws: Vec::new(),
+            mesh_animation: None,
+            bone_palette_scratch: Vec::new(),
             splash_pipeline,
             fog,
             fog_cell_masks: None,
@@ -2536,13 +2566,30 @@ impl Renderer {
         self.mesh_pass
             .set_model(&self.device, &model.mesh, material_bind_group);
 
+        // Retain the skeleton + first clip so the per-frame palette is sampled
+        // from the live animation (Task 4). No clip → leave `mesh_animation`
+        // None; the pass keeps the identity (bind-pose) palette it was seeded
+        // with. TEMP (Task 5): this state moves behind the spawned entity.
+        let crate::model::gltf_loader::LoadedModel {
+            skeleton, clips, ..
+        } = model;
+        let clip_count = clips.len();
+        self.mesh_animation = clips.into_iter().next().map(|clip| {
+            log::info!(
+                "[Renderer] TEMP skinned model animation: clip '{}' ({:.2}s), {} joints",
+                clip.name,
+                clip.duration,
+                skeleton.joints.len(),
+            );
+            MeshAnimationState { skeleton, clip }
+        });
+
         // Seed one draw at the world origin (identity transform). Task 5 replaces
         // this with the entity transform from the spawned `MeshComponent`.
         self.mesh_draws = vec![Mat4::IDENTITY];
         log::info!(
-            "[Renderer] TEMP skinned model uploaded: {} verts, {} indices",
-            model.mesh.vertices.len(),
-            model.mesh.indices.len(),
+            "[Renderer] TEMP skinned model uploaded: {} clip(s) parsed",
+            clip_count,
         );
     }
 
@@ -3733,6 +3780,27 @@ impl Renderer {
         // `main.rs`, which happens after this method returns — so the read is
         // safe). The renderer GPU pass intentionally needs no world reference.
         if self.mesh_pass.has_model() && !self.mesh_draws.is_empty() {
+            // Sample the clip into the shared palette for this frame's one
+            // instance (base 0) BEFORE recording the draw. `now_seconds` is the
+            // animation time — render-rate sampling is fine for the slice (no
+            // fixed timestep needed for visuals); `sample_clip` wraps it into the
+            // clip's [0, duration) so it loops. Reuses `bone_palette_scratch`, so
+            // a steady-state frame allocates nothing (Task 6 measures this).
+            //
+            // TEMP (Task 5): per-instance ownership moves behind the entity — the
+            // collector samples each instance's clip into its own palette run and
+            // the time source moves with it. The renderer-held single-instance
+            // sampling here is the stand-in until then.
+            if let Some(anim) = &self.mesh_animation {
+                crate::model::anim::sample_clip(
+                    &anim.clip,
+                    &anim.skeleton,
+                    now_seconds as f32,
+                    &mut self.bone_palette_scratch,
+                );
+                self.mesh_pass
+                    .update_palette(&self.queue, 0, &self.bone_palette_scratch);
+            }
             let mut mesh_enc = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Skinned Mesh Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {

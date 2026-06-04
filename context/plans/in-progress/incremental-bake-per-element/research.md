@@ -154,6 +154,233 @@ Settled during drafting/review, this supersedes §4d's "per-light for both" for 
 
 **Net:** a per-channel hybrid — per-light lightmap layers + per-group SH cache entries — dominates uniform per-light on correctness (bit-identical), cold-build cost (no regression), simplicity (no hit cache / compositor / directional fallback), and cache size, losing only flood-light SH edit latency, which the per-light direct channel masks. Per-face and uniform per-light SH are both demoted.
 
+## Task 1 — Spike results
+
+> Owner go/no-go gate for the SH half. The lightmap half is unconditional and not gated here.
+> Numbers labelled **(measured)** come from real `prl-build` bakes of the two fixtures and a
+> direct warm-vs-cold per-probe SH experiment; **(derived)** numbers are computed analytically
+> from measured atlas/probe counts and the committed wire layouts; **(estimated)** numbers are
+> reasoned bounds. Measured on a debug build, 2026-06-04, default `--probe-spacing 1.0`.
+
+### Fixtures profiled
+
+- **campaign-test** (heavily lit): 13 static lights (11 point + 2 spot) + dynamic/animated. **(measured)**
+- **occlusion-test** (second heavily-lit fixture): 6 static lights (point + spot after translation). **(measured)**
+
+Both required the `scripts-build` sidecar (campaign-test's worldspawn `data_script`); built it and
+placed it beside `prl-build` in `target/debug/` to bake. No bearing on the cache design.
+
+### 1. Storage
+
+**Measured section sizes (cold whole-map bake):**
+
+| Fixture | SH probes | SH section | Lightmap atlas | Lightmap section | Affinity grid (4³ cells) |
+|---|---|---|---|---|---|
+| campaign-test | 194,028 | 57,436,896 B (~57.4 MB) | 4096×4096 | 83,886,108 B (~80 MB) | 11×4×16 = 704 |
+| occlusion-test | 57,510 | 17,049,948 B (~17.0 MB) | 4096×4096 | 83,886,108 B (~80 MB) | 10×3×8 = 240 |
+
+Per-probe SH output is **296 B** (measured: 57,436,896 / 194,028 = 296): an 8-byte `OctahedralShProbe`
+record (`validity` + f16 `E[d]` + f16 `E[d²]`, `OCTAHEDRAL_PROBE_STRIDE = 8`) plus a 6×6 = 36-texel
+octahedral tile at 8 B/texel (`OctahedralAtlasTexel = [u16;4]`) = 288 B. The per-group cache payload
+(Task 6: f16 tile + f16 moments + validity byte per probe) is exactly this output, so **296 B/probe**
+is the SH-group storage unit. **(measured + derived)**
+
+**SH per-group entry counts and bytes (derived from probe counts):**
+
+| Group size | Probes/group | Bytes/group | campaign groups | campaign total | occlusion groups |
+|---|---|---|---|---|---|
+| 4³ probes | 64 | ~18.9 KB | ~3,032 | ~57.4 MB | ~900 |
+| 8³ probes | 512 | ~151 KB | ~380 | ~57.4 MB | ~115 |
+
+Group **count** is at most the affinity-cell count scale (hundreds to low thousands), not millions —
+the per-group SH cache total equals the SH section size (~57 MB worst fixture) plus the flat-file
+36-byte-per-entry header overhead, which is negligible (≤ ~110 KB across 3,032 entries). Peak
+intermediate memory is bounded by the existing whole-volume bake's working set (the `Vec<BakedProbe>`
+of 27 f32 coeffs + metadata per probe ≈ 116 B/probe ≈ 22 MB for campaign-test) — per-group baking only
+ever holds one group's probes plus the assembled output, so peak does **not** exceed the current
+monolithic bake. **(derived / estimated)**
+
+**Lightmap-layer storage (derived).** Atlas is 4096×4096 = 16,777,216 texels on both fixtures. Per
+Task 2 the per-light layer stores, per texel: irradiance (the bake's `irradiance[idx*4..]` rgba =
+4×f32 = 16 B), the unnormalized weighted direction (`Vec3` = 3×f32 = 12 B), and coverage (1 B) ≈
+**29 B/texel** dense. A **directional** (non-sparse) layer is therefore ~487 MB full-precision — large,
+but on-disk only and one such layer per directional light (typically one sun, often zero). **Point/spot
+layers are sparse**: only covered texels are stored. campaign-test packs to a full 4096² atlas with
+13 static lights, but each point/spot lights a bounded falloff sphere, so the union of covered texels
+per light is a small fraction of the atlas; a sparse encoding (explicit `(texel_index, payload)` list)
+keeps each point/spot layer in the single-digit-to-low-tens-of-MB range. Total lightmap-layer on-disk
+storage is dominated by any directional layers; with the typical 0–1 directional lights, total stays
+comfortably in the low-hundreds-of-MB worst case, hundreds of KB–tens of MB for the common
+point/spot-only case. Peak intermediate memory: one full-precision atlas (~487 MB at 29 B/texel for
+4096²) held during a single layer's bake + composite — the same order as the existing baker's atlas
+buffers. **(derived)**
+
+**Atlas overflow / density-halving:** neither fixture hit the retry path (no "Lightmap atlas overflow"
+warning fired). Both pack to 4096×4096 (the natural `MAX_ATLAS_DIMENSION`) without escalation. So the
+"repack invalidates all lightmap layers" hazard (Task 4) is latent but not exercised by these
+fixtures. **(measured)**
+
+**VERDICT — substrate: flat-file `StageCache` holds.** SH-group entry counts are hundreds to ~3,000
+(group-size dependent), each ~19–151 KB — exactly the "modest" regime the existing one-file-per-hex-key
+store handles (the §1/§4b "millions of blobs" failure mode was a per-face concern that per-group SH and
+per-light lightmap both avoid). Lightmap-layer count = static-light count (≤ ~13 here, tens in practice),
+sparse for point/spot. **No packed store needed; the plan's flat-file assumption is confirmed.** The
+only flat-file cost notes: per-entry `sync_all` (`cache.rs:150`) at a few thousand puts is a one-time
+cold-bake tax (not the warm hot path the plan optimizes), and a directional lightmap layer's ~487 MB
+exceeds nothing structurally but is the largest single entry — fine for flat-file.
+
+### 2. SH reach cutoff (the load-bearing choice)
+
+**Experiment (measured).** Temporary instrumentation (since removed) ran the real per-probe bake
+(`bake_probe_rgb_with_moments`, full geometry traced) on an adversarial 48 m corridor with 6 point
+lights (Linear falloff, range 8 m, spaced 8 m apart so adjacent falloff spheres only just touch and
+distant lights do not reach — a near-worst case for far-bounce loss). For every valid probe it compared
+the **cold** result (all 6 lights) against a **warm** result using only the group's bounded reaching-light
+set (lights whose `falloff_range + cutoff` sphere overlaps the group AABB), sweeping cutoff ∈ {0, 2, 4,
+8, 16, 32} m and group size ∈ {4³, 8³}.
+
+**Committed error metric:** `max per-probe per-channel relative irradiance error, post-f16-encode` —
+both warm and cold octahedral-tile irradiance values rounded through f16 first, then per RGB channel
+`|warm − cold| / max(cold, FLOOR)`, maxed over a 14-direction lobe sample and over all probes. This is
+the exact metric Task 8 gate (3) asserts.
+
+Measured (group_dim 4³, the recommended size):
+
+| cutoff | max rel err (raw) | abs err at that probe | cold irr there | **max-abs err** | max rel err where cold ≥ 0.02 | mean rel err | single-light invalidation |
+|---|---|---|---|---|---|---|---|
+| 0 m | 1.000 | 0.0047 | 0.0047 | 0.0442 | 0.411 | 0.210 | 13/52 = 0.25 |
+| 4 m | 0.895 | 0.0035 | 0.0039 | 0.0127 | 0.218 | 0.111 | 17/52 = 0.33 |
+| 8 m | 0.513 | 0.0025 | 0.0049 | 0.0065 | 0.120 | 0.070 | 21/52 = 0.40 |
+| **16 m** | **0.412** | 0.0020 | 0.0048 | **0.0038** | **0.074** | 0.025 | 29/52 = 0.56 |
+| 32 m | 0.070 | 0.0003 | 0.0050 | 0.0005 | 0.010 | 0.0001 | 45/52 = 0.87 |
+
+**Key reading of the data.** The *raw* max relative error is high (0.4–1.0) at every practical cutoff,
+but it is **dominated by near-black probes**: at cutoff 16 m the single worst offender has cold
+irradiance 0.0048 (effectively black) and an absolute error of 0.0020 — an invisible defect reported as
+41% relative. The honest signal is the **max absolute error** (0.0038 at 16 m, falling with cutoff) and
+the **relative error restricted to probes that actually carry visible indirect light** (cold ≥ 0.02,
+~2% of a unit-albedo bounce): **0.074 at cutoff 16 m, 0.12 at 8 m**. This corridor is adversarial; real
+rooms have far more light-sphere overlap, so visible-probe error at a given cutoff is strictly lower in
+practice.
+
+**Chosen cutoff: `falloff_range + 16 m` dilation** (i.e. a per-group reaching-light set = lights whose
+`falloff_range + 16.0` AABB overlaps the group). 16 m is ~1–2× a typical mood-light range (campaign-test
+brightnesses 150–500 translate to ranges on that order) and is where, even in the adversarial corridor,
+visible-probe relative error sits at ~0.07 and absolute error at ~0.004 — comfortably below perceptual
+threshold for a low-frequency bounce channel, while invalidation (~56% of groups for a flood light) is
+still meaningfully sub-whole-map.
+
+**Committed warm-SH tolerance constant (the Task 8 gate (3) assertion):**
+
+```
+WARM_SH_MAX_REL_IRRADIANCE_ERROR = 0.15   // max per-probe per-channel relative irradiance
+                                          // error, post-f16-encode, evaluated only at probes
+                                          // whose cold per-channel irradiance ≥ 0.02 (the
+                                          // visibility floor); probes below the floor are
+                                          // exempt (their absolute error is imperceptible).
+```
+
+The floored form is **load-bearing**: without the `cold ≥ 0.02` visibility floor the raw metric is
+0.4–1.0 at every usable cutoff (near-black probes), and no finite cutoff would pass — the gate would be
+meaningless. With the floor, cutoff `+16 m` clears 0.15 with margin (measured 0.074 worst-case
+adversarial; lower in real rooms). Task 8 must implement the metric with this floor and assert ≤ 0.15.
+
+**Realized single-light SH-group invalidation fraction (measured):** at cutoff `+16 m`, group_dim 4³,
+a single point/spot light invalidates **~56%** of groups in the adversarial corridor (29/52). In a real
+map a light only reaches groups near it, so this is an upper bound for a light whose dilated reach spans
+much of a small fixture; on a larger map the fraction falls (the dilated sphere covers a smaller share
+of total groups). A directional light invalidates **100%** of groups by design (world-AABB reach) — and
+that is correct and unavoidable.
+
+### 3. Group size
+
+**Chosen: 4³ probes per group** (64 probes, ~18.9 KB/entry). Rationale and sensitivity (measured):
+
+- **Entry count:** 4³ → ~3,032 groups (campaign), ~900 (occlusion) — well within flat-file range.
+  Doubling to 8³ cuts entry count ~8× (~380 / ~115 groups, ~151 KB each); halving to 2³ would multiply
+  it ~8× (~24,000 groups) — still flat-file-viable but approaching the regime where per-entry `sync_all`
+  and inode pressure start to matter, with diminishing locality gains.
+- **Invalidation granularity:** finer groups localize a light edit better. At cutoff `+16 m`, 4³ gave
+  29/52 = 0.56 invalidation vs 8³'s 4/7 = 0.57 — comparable *fraction*, but 4³ re-bakes 64-probe units
+  vs 8³'s 512-probe units, so the *absolute work* saved per edit is finer at 4³.
+- **Alignment bonus:** 4³ equals the existing `AFFINITY_FACTOR = 4` affinity-cell decomposition
+  (`affinity_grid.rs:35`), so the SH-group partition can reuse the affinity-grid machinery and probe-block
+  geometry the animated/delta path already computes — no new spatial-partition code, and the group AABBs
+  line up with structures the codebase already trusts.
+
+4³ is the balance point: small enough that a light edit re-bakes a tight set of probe blocks, large
+enough to keep entry count in the low thousands, and free-aligned to existing affinity cells.
+
+### Go/no-go RECOMMENDATION for the SH half: **GO (per-group SH)**
+
+The substrate holds (flat-file, ~3,000 modest entries — no re-plan trigger), and a defensible cutoff
+exists: `falloff_range + 16 m` dilation keeps warm-vs-cold error within the committed tolerance
+(`WARM_SH_MAX_REL_IRRADIANCE_ERROR = 0.15`, floored at cold irradiance 0.02) while a single point/spot
+light invalidates only a bounded sub-whole-map share of groups (~56% in an adversarial small corridor,
+less on real maps). The one honesty caveat the owner must accept: the *raw* unfloored max-relative metric
+is large at every usable cutoff because near-black probes dominate it, so the gate **must** use the
+visibility-floored form — without the floor there is no go. With the floor, the absolute error at the
+recommended cutoff is ~0.004 (adversarial worst case) on a low-frequency channel that the runtime samples
+trilinearly, which is below perceptual relevance; and the per-light *direct* lightmap channel — the
+dominant visual term — stays exact and instant regardless. The cold `--no-cache` build remains the exact
+ship source of truth. Recommend proceeding with Task 6 as specced, with cutoff dilation 16 m, group size
+4³, and the floored tolerance gate.
+
+### Gate 3 follow-up — the metric was wrong, not the cutoff (corrects the committed value above)
+
+When Task 8's `warm_sh_within_tolerance_on_fixtures` first ran the floored metric against **real** fixtures
+(not the spike's tiny synthetic corridor), the committed `max` form failed: campaign-test reported
+`max = 0.356` vs the 0.15 tolerance. Diagnosing the full distribution (1,234,998 floored samples) showed
+this is a **`max`-metric artifact, not a quality problem**:
+
+| stat | campaign-test | occlusion-test | small fixtures |
+|---|---|---|---|
+| mean | 0.0019 | 0.0007 | 0.000 |
+| p99 | 0.043 | 0.013 | 0.000 |
+| p99.9 | **0.090** | 0.029 | 0.000 |
+| p99.99 | 0.133 | 0.045 | — |
+| max | **0.356** | 0.065 | 0.000 |
+| samples > 0.15 | 80 (0.0065%) | 0 | 0 |
+| samples > 0.35 | 1 | 0 | 0 |
+
+The channel is overwhelmingly faithful (mean 0.19%, p99.9 = 9%) and strictly dimmer-or-equal; the 0.356
+was a **single floor-boundary probe** out of 1.23M (one barely above the 0.02 floor that lost most of its
+light to the cutoff, so a tiny absolute miss reads as a large relative one). The spike's `max` measured
+clean only because it ran over a handful of probes — `max` over millions catches the rare outlier.
+
+**Resolution (owner-approved "diagnose + fix metric"):** the gate metric is changed from `max` to the
+**99.9th percentile** of the floored relative error, and the constant renamed
+`WARM_SH_MAX_REL_IRRADIANCE_ERROR` → **`WARM_SH_P999_REL_IRRADIANCE_ERROR`**, value kept at **0.15**
+(~1.7× headroom over the observed p99.9 of 0.090). The **cutoff (16 m), group size (4³), and all bake
+behavior are unchanged** — only how the gate *judges* the (already-correct, benign-underestimate) warm
+output. p99.9 bounds the body of the distribution and is robust to the floor-boundary outlier the `max`
+form over-weighted. Gate now passes on every fixture (campaign 0.090, occlusion 0.029, small ≤ 0.000).
+
+### Follow-up — warm-build group bake is serial (parallelism regression)
+
+`bake_sh_volume_grouped` (`sh_group.rs`) bakes groups in a serial `for group in &groups` loop
+(`bake_group` itself uses `.iter().map()`), while the monolithic `bake_sh_volume` bakes probes with
+`into_par_iter()`. So a cold-cache warm build #1 (every group a miss) runs materially slower than a
+`--no-cache` build of the same map — measured on occlusion-test: warm#1 **677 s** vs cold **228 s**
+(~3×). The deterministic fix is **rayon-over-groups**: each group's per-probe soft-visibility seed is
+its global probe index and there is no cross-group state, so a parallel group bake is byte-identical to
+the serial one. The only shared resource is the `StageCache` get/put — partition it per group or
+collect bakes then write. Tracked as a `// follow-up:` comment at the group loop.
+
+### Gate 3 follow-up (2) — global-index soft-visibility seed restores strict dimmer-or-equal
+
+The §2 "ordered-light-set caveat" (the soft-visibility seed mixing the light's *bake-slice* position)
+had a sharper consequence than just byte-identity: because the warm grouped path passes the **bounded**
+reaching set, a kept light sitting after a *dropped* light got a different sample-lattice rotation than
+in the cold (full-set) bake — so warm could come out slightly **brighter** in spots, contradicting the
+plan's strict "dimmer-or-equal, never brighter" claim. **Resolved** by threading each light's **global
+`static_lights` index** into `soft_visibility_seed` (via `sample_radiance_rgb`'s `light_global_indices`,
+plumbed through `bake_probe`/`bake_group`): a kept light now gets the SAME lattice rotation whether the
+bake sees the full set or the bounded set. The monolithic/cold path passes `None` (slice position ==
+global index), so its bytes are unchanged — `full_light_set_grouped_equals_monolithic` and the cold
+byte-identity gate still pass. The warm-SH p99.9 agreement tightens, and the dimmer-or-equal contract is
+now literally true.
+
 ## Key files
 
 - Substrate: `crates/level-compiler/src/cache.rs`, `main.rs` (cache wiring ~`:254-446`)

@@ -23,48 +23,6 @@ use crate::map_data::{FalloffModel, LightType, MapLight};
 /// Default atlas texel density: 4 cm per texel.
 pub const DEFAULT_TEXEL_DENSITY_METERS: f32 = 0.04;
 
-/// Bump this when the lightmap baking algorithm changes. Invalidates all
-/// existing cache entries for this stage.
-///
-/// v2 bump: lightmap bake gained a shadowed/unshadowed mode flag whose section
-/// trailer the runtime now reads. Re-bakes existing maps so cached entries
-/// carry the explicit mode and so the unshadowed bake's visibility-skip branch
-/// is exercised on a fresh cache miss.
-///
-/// v3: per-light `_shadow_type` routing (sdf-per-light-shadows).
-/// v4 bump (sdf-per-light-shadows Task 3): the shadow-type exclusion moved to
-/// the direct lightmap consumer and keys on the renamed two-value `ShadowType`
-/// (`sdf` dropped here; dynamic-tier lights drop via the position-axis
-/// namespace). A stale cached lightmap could carry a direct shadow for an `sdf`
-/// light the runtime now resolves separately (double-count), so the bump forces
-/// a re-bake of the now-disjoint direct set.
-///
-/// v5 bump (baked-soft-lightmap-shadows Task 3): the per-texel static-light gate
-/// changed from a hard 1-texel `shadow_visible` step to an area-sampled
-/// `soft_visibility` fraction multiplied into irradiance and the
-/// dominant-direction accumulation. The per-texel output values shift, so a
-/// stale cached lightmap would serve the old hard-shadow output; the bump forces
-/// a re-bake into the soft-shadow values.
-///
-/// v6 bump (baked-soft-lightmap-shadows F1): `soft_visibility`'s probe set moved
-/// from the first `SOFT_PROBE_SAMPLES` contiguous lattice indices to an evenly
-/// **strided subset** so the cheap probes sample the whole emitter (not just its
-/// top cap). Penumbra tests the old clustered probes missed (occluders crossing
-/// the emitter's lower hemisphere) now escalate and bake a fraction instead of a
-/// hard 0/1. The per-texel output shifts with NO input change (maps using the
-/// default light size have identical inputs), so the cache would serve stale
-/// pre-F1 output unless the version advances.
-///
-/// v7 bump (lightmap-resolution Tasks 1 + 3): `MAX_ATLAS_DIMENSION` raised from
-/// 4096 to 8192 (Task 1) and default irradiance storage shifted from `Rgba16F`
-/// to `BC6H` (Task 3). The cap and the irradiance format are both constants, not
-/// inputs — neither is part of `input_hash`. Without this bump a map that
-/// previously overflowed at 4096 and coarsened would serve stale coarse cache
-/// against an unchanged input under the higher ceiling, and a pre-Task-3 cached
-/// `Rgba16F` entry could be served to a `BC6H`-expecting runtime. The single
-/// bump covers both changes and forces a re-bake so both take effect.
-pub const STAGE_VERSION: u32 = 7;
-
 /// Atlas width/height when no face would fit otherwise. Power-of-two for BC6H block alignment.
 /// The 4-alignment BC6H requires is satisfied for free since dimensions are always power-of-two
 /// ≥ 4 here, meaning `ceil(w/4)` is always exact (no partial trailing block).
@@ -126,18 +84,6 @@ pub struct LightmapBakeCtx<'a> {
     pub lights: &'a StaticBakedLights<'a>,
 }
 
-/// Owned, serializable snapshot of the data the lightmap bake reads. Used for
-/// cache key derivation: postcard-serialize this + LightmapConfig to get the
-/// input hash.
-#[derive(serde::Serialize)]
-pub struct LightmapInputs {
-    /// Static-baked lights (filter: !is_dynamic && animation.is_none()).
-    pub lights: Vec<crate::map_data::MapLight>,
-    /// Geometry at the point the bake runs. Pins vertex positions, UVs, and
-    /// index data — everything that affects chart shapes and shadow queries.
-    pub geometry: crate::geometry::GeometryResult,
-}
-
 /// CLI-driven configuration for the lightmap bake. Fields are included in the
 /// cache key so adding a field here automatically invalidates stale entries.
 #[derive(serde::Serialize)]
@@ -169,10 +115,97 @@ pub struct LightmapBakeOutput {
     pub atlas_height: u32,
 }
 
+/// The pre-encode (pre-BC6H) lightmap atlas: the full per-texel `(irradiance,
+/// direction, coverage)` buffers exactly as the per-texel bake leaves them after
+/// edge dilation, before any irradiance/direction byte encoding.
+///
+/// This is the **byte-identity comparison seam** for the incremental-bake cache:
+/// both the monolithic bake ([`bake_lightmap`]) and the per-light layer
+/// compositor ([`crate::lightmap_layer::composite_layers`]) yield a
+/// `CompositedAtlas`, and the cache's exactness gate asserts the two are equal
+/// here — before the lossy BC6H encode. Equality at this seam means the warm
+/// composite reproduces the cold bake bit-for-bit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompositedAtlas {
+    /// RGBA f32, 4 floats per texel (alpha is always 1.0 on covered texels).
+    pub irradiance: Vec<f32>,
+    /// One dominant-direction unit vector per texel.
+    pub direction: Vec<Vec3>,
+    /// Per-texel coverage flag (logical OR across contributing charts/layers).
+    pub coverage: Vec<bool>,
+    pub atlas_width: u32,
+    pub atlas_height: u32,
+}
+
+impl CompositedAtlas {
+    /// Allocate a zero-initialized atlas sized for `atlas_w * atlas_h` texels.
+    /// Matches the monolithic bake's initial state: irradiance `0.0`, direction
+    /// `Vec3::Y`, coverage `false`.
+    pub fn zeroed(atlas_w: u32, atlas_h: u32) -> Self {
+        let texels = (atlas_w * atlas_h) as usize;
+        Self {
+            irradiance: vec![0f32; texels * 4],
+            direction: vec![Vec3::Y; texels],
+            coverage: vec![false; texels],
+            atlas_width: atlas_w,
+            atlas_height: atlas_h,
+        }
+    }
+
+    /// Run edge dilation in place — the same neighbourhood fill the monolithic
+    /// bake applies after the per-chart pass. Composite and monolithic paths must
+    /// both call this so the seam compares post-dilation buffers.
+    pub fn dilate(&mut self) {
+        dilate_edges(
+            &mut self.irradiance,
+            &mut self.direction,
+            &mut self.coverage,
+            self.atlas_width,
+            self.atlas_height,
+        );
+    }
+
+    /// Encode this atlas into a [`LightmapSection`] via the shared BC6H (or
+    /// uncompressed-debug) irradiance path. The single section-22 encoder, so a
+    /// composited atlas and a monolithically-baked one emit byte-identical
+    /// sections when their buffers are equal.
+    pub fn encode_section(
+        &self,
+        texel_density: f32,
+        uncompressed_irradiance: bool,
+    ) -> LightmapSection {
+        let (irr_bytes, irradiance_format) = if uncompressed_irradiance {
+            (
+                encode_irradiance_rgba16f(&self.irradiance),
+                IRRADIANCE_FORMAT_RGBA16F,
+            )
+        } else {
+            (
+                bc6h::encode_bc6h_rgb_from_f32_rgba(
+                    &self.irradiance,
+                    self.atlas_width,
+                    self.atlas_height,
+                ),
+                IRRADIANCE_FORMAT_BC6H,
+            )
+        };
+        let dir_bytes = encode_direction_rgba8(&self.direction, &self.coverage);
+        LightmapSection {
+            width: self.atlas_width,
+            height: self.atlas_height,
+            texel_density,
+            irradiance: irr_bytes,
+            irradiance_format,
+            direction: dir_bytes,
+            mode: LightmapMode::Shadowed,
+        }
+    }
+}
+
 /// Cheap pre-bake setup: chart planning, shelf packing, and writing lightmap
-/// UVs back into the geometry. Returned by [`prepare_atlas`] and consumed both
-/// by a fresh bake (cache miss) and by the cache-hit path that rebuilds
-/// charts/placements without re-running the per-texel ray casting.
+/// UVs back into the geometry. Returned by [`prepare_atlas`] and consumed by
+/// both the warm per-light composite path and the cold whole-atlas bake —
+/// called once before either branch, so the atlas layout is shared.
 #[derive(Debug)]
 pub struct PreparedAtlas {
     pub charts: Vec<Chart>,
@@ -185,10 +218,10 @@ pub struct PreparedAtlas {
 /// `split_shared_vertices`, `plan_charts`, `shelf_pack`, and
 /// `assign_lightmap_uvs`. Does NOT run the per-texel ray casting.
 ///
-/// Called both before a fresh bake (cache miss) and on cache hit to
-/// reconstruct charts/placements and re-apply lightmap UVs. The mutations
-/// applied here — vertex splitting and lightmap UV writes — run on all
-/// non-empty geometry, regardless of whether a full per-texel bake is
+/// Called once before either bake branch — the warm per-light composite path
+/// and the cold whole-atlas bake — so the atlas layout is shared. The
+/// mutations applied here — vertex splitting and lightmap UV writes — run on
+/// all non-empty geometry, regardless of whether a full per-texel bake is
 /// needed. Empty geometry returns a placeholder immediately without running
 /// any mutations.
 pub fn prepare_atlas(
@@ -321,33 +354,16 @@ pub fn bake_lightmap(
     let atlas_w = prepared.atlas_width;
     let atlas_h = prepared.atlas_height;
 
-    let mut irradiance = vec![0f32; (atlas_w * atlas_h * 4) as usize];
-    let mut direction = vec![Vec3::Y; (atlas_w * atlas_h) as usize];
-    let mut coverage = vec![false; (atlas_w * atlas_h) as usize];
-
-    for (face_idx, placement) in placements.iter().enumerate() {
-        bake_face_chart(
-            inputs.bvh,
-            inputs.primitives,
-            inputs.geometry,
-            &static_lights,
-            face_idx,
-            &charts[face_idx],
-            placement,
-            atlas_w,
-            area_sample_count,
-            &mut irradiance,
-            &mut direction,
-            &mut coverage,
-        );
-    }
-
-    dilate_edges(
-        &mut irradiance,
-        &mut direction,
-        &mut coverage,
+    let atlas = bake_monolithic_atlas(
+        inputs.bvh,
+        inputs.primitives,
+        inputs.geometry,
+        &static_lights,
+        &charts,
+        &placements,
         atlas_w,
         atlas_h,
+        area_sample_count,
     );
 
     // Compress to BC6H by default — `Bc6hRgbUfloat` is ~8× smaller than RGBA16F
@@ -355,39 +371,61 @@ pub fn bake_lightmap(
     // cleanly under the in-tree single-mode encoder. The debug bypass leaves
     // output byte-identical to the pre-BC6H path so owner-side A/B compares
     // and round-trip determinism tests can run against a known-stable baseline.
-    let (irr_bytes, irradiance_format) = if config.uncompressed_irradiance {
-        (
-            encode_irradiance_rgba16f(&irradiance),
-            IRRADIANCE_FORMAT_RGBA16F,
-        )
-    } else {
-        (
-            bc6h::encode_bc6h_rgb_from_f32_rgba(&irradiance, atlas_w, atlas_h),
-            IRRADIANCE_FORMAT_BC6H,
-        )
-    };
-    let dir_bytes = encode_direction_rgba8(&direction, &coverage);
+    // `encode_section` is the shared section-22 encoder both this monolithic
+    // path and the per-light compositor route through.
+    let section = atlas.encode_section(texel_density, config.uncompressed_irradiance);
 
     Ok(LightmapBakeOutput {
-        section: LightmapSection {
-            width: atlas_w,
-            height: atlas_h,
-            texel_density,
-            irradiance: irr_bytes,
-            irradiance_format,
-            direction: dir_bytes,
-            // Lightmaps always bake shadowed: the `sdf` lights' direct term is
-            // resolved at runtime, so a `static_light_map` light's shadow can
-            // only come from this bake. `LightmapMode` is permanently
-            // `Shadowed` on the bake-emit side (the `Unshadowed` variant
-            // survives in `level-format`/runtime for legacy-PRL decode only).
-            mode: LightmapMode::Shadowed,
-        },
+        section,
         charts,
         placements,
         atlas_width: atlas_w,
         atlas_height: atlas_h,
     })
+}
+
+/// Bake the full static-light atlas and dilate — the monolithic side of the
+/// byte-identity comparison seam. Returns the pre-BC6H [`CompositedAtlas`] that
+/// the per-light compositor ([`crate::lightmap_layer::composite_layers`]) must
+/// reproduce bit-for-bit. `static_lights` must be in the same global order the
+/// layer compositor sums in, and the atlas/charts/placements must be the shared
+/// layout from a single [`prepare_atlas`] call.
+///
+/// `pub(crate)` so the layer-cache exactness test can build the monolithic atlas
+/// directly (rather than re-deriving it from the encoded section).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn bake_monolithic_atlas(
+    bvh: &Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+    static_lights: &[&MapLight],
+    charts: &[Chart],
+    placements: &[ChartPlacement],
+    atlas_w: u32,
+    atlas_h: u32,
+    area_sample_count: u32,
+) -> CompositedAtlas {
+    let mut atlas = CompositedAtlas::zeroed(atlas_w, atlas_h);
+
+    for (face_idx, placement) in placements.iter().enumerate() {
+        bake_face_chart(
+            bvh,
+            primitives,
+            geometry,
+            static_lights,
+            face_idx,
+            &charts[face_idx],
+            placement,
+            atlas_w,
+            area_sample_count,
+            &mut atlas.irradiance,
+            &mut atlas.direction,
+            &mut atlas.coverage,
+        );
+    }
+
+    atlas.dilate();
+    atlas
 }
 
 fn split_shared_vertices(geom: &mut GeometryResult) {
@@ -770,37 +808,16 @@ fn bake_face_chart(
             let mut irr = Vec3::ZERO;
             let mut weighted_dir = Vec3::ZERO;
             for light in static_lights {
-                let (contribution, to_light) =
-                    light_contribution_and_direction(light, world_p, surface_normal);
-                if contribution.length_squared() <= 1.0e-12 {
-                    continue;
-                }
-                // Lightmaps always bake shadowed: an occluded texel goes dark so a
-                // `static_light_map` light's static shadow lives in the atlas.
-                // `soft_visibility` returns the `[0,1]` unoccluded fraction over an
-                // area sample of the emitter — a multi-texel penumbra instead of a
-                // hard 1-texel step. `sdf` lights are already filtered out of
-                // `static_lights` (their direct shadow resolves at runtime), so no
-                // double-shadow.
-                let v = soft_visibility(
+                let (irr_contrib, dir_contrib) = light_texel_contribution(
+                    light,
                     world_p,
                     surface_normal,
-                    light,
                     seed,
                     area_sample_count,
                     |from, to| segment_clear(bvh, primitives, geometry, from, to),
                 );
-                if v <= 0.0 {
-                    continue;
-                }
-                irr += contribution * v;
-                // Weight the dominant-direction accumulation by `v` too: in a
-                // penumbra a partially-occluded light should bias the baked
-                // direction less than a fully-visible one, matching the softened
-                // irradiance it contributes. Direction encoding/format is
-                // unchanged; only the accumulated values shift.
-                let lum = (contribution.x + contribution.y + contribution.z) * v;
-                weighted_dir += to_light * lum;
+                irr += irr_contrib;
+                weighted_dir += dir_contrib;
             }
 
             irradiance[idx * 4] = irr.x;
@@ -884,6 +901,59 @@ pub(crate) fn light_contribution_and_direction(
     }
 }
 
+/// One light's contribution to a single atlas texel: the shadowed irradiance
+/// (RGB) and the unnormalized weighted direction (`to_light * luminance`),
+/// the exact two terms `bake_face_chart` accumulates per light before the
+/// per-texel `irr` sum and `weighted_dir.normalize()`.
+///
+/// Factored out so the monolithic bake (`bake_face_chart`, summing over all
+/// lights) and the per-light layer bake (`crate::lightmap_layer`, calling it
+/// once) share byte-identical math — the cache's bit-for-bit composite gate
+/// depends on both paths producing the same float terms in the same order.
+///
+/// `trace(from, to)` is the segment-clear closure the caller wraps around its
+/// own `segment_clear`; it returns `(Vec3::ZERO, Vec3::ZERO)` when the light
+/// contributes nothing (below the irradiance floor or fully occluded), so an
+/// out-of-range light adds exactly `0.0` — the property that makes per-light
+/// layers sum back to the monolithic result.
+pub(crate) fn light_texel_contribution(
+    light: &MapLight,
+    world_p: Vec3,
+    surface_normal: Vec3,
+    seed: u64,
+    area_sample_count: u32,
+    trace: impl Fn(Vec3, Vec3) -> bool,
+) -> (Vec3, Vec3) {
+    let (contribution, to_light) = light_contribution_and_direction(light, world_p, surface_normal);
+    if contribution.length_squared() <= 1.0e-12 {
+        return (Vec3::ZERO, Vec3::ZERO);
+    }
+    // Lightmaps always bake shadowed: an occluded texel goes dark so a
+    // `static_light_map` light's static shadow lives in the atlas.
+    // `soft_visibility` returns the `[0,1]` unoccluded fraction over an area
+    // sample of the emitter — a multi-texel penumbra instead of a hard 1-texel
+    // step. `sdf` lights are filtered out of the static set upstream (their
+    // direct shadow resolves at runtime), so no double-shadow.
+    let v = soft_visibility(
+        world_p,
+        surface_normal,
+        light,
+        seed,
+        area_sample_count,
+        trace,
+    );
+    if v <= 0.0 {
+        return (Vec3::ZERO, Vec3::ZERO);
+    }
+    let irr = contribution * v;
+    // Weight the dominant-direction accumulation by `v` too: in a penumbra a
+    // partially-occluded light should bias the baked direction less than a
+    // fully-visible one, matching the softened irradiance it contributes.
+    let lum = (contribution.x + contribution.y + contribution.z) * v;
+    let weighted_dir = to_light * lum;
+    (irr, weighted_dir)
+}
+
 fn falloff(light: &MapLight, distance: f32) -> f32 {
     let range = light.falloff_range.max(1.0e-4);
     match light.falloff_model {
@@ -932,7 +1002,7 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
 /// mixer (SplitMix64). The two need not match: they bake into INDEPENDENT atlases,
 /// so each only needs to be deterministic within its own stage — not byte-identical
 /// to the other.
-fn texel_seed(x: u32, y: u32) -> u64 {
+pub(crate) fn texel_seed(x: u32, y: u32) -> u64 {
     const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
     let mut h = FNV_OFFSET;
@@ -3184,33 +3254,6 @@ mod tests {
             a, b,
             "soft-shadow bake drifted between runs; the area-sample seed must be a fixed \
              (x, y) hash with no RNG or hash-order dependence",
-        );
-    }
-
-    /// The cache-bump contract: `STAGE_VERSION` must advance whenever bake outputs
-    /// change without a corresponding input change (cap raise, format switch, etc.)
-    /// so previously-cached entries are invalidated rather than served stale.
-    /// The `assert_eq!` pins the current value so a future agent who bumps the
-    /// constant is forced to update the v-N changelog comment above — do that
-    /// before changing the expected value here. The `assert_ne!` exercises the
-    /// real invalidation mechanism (the cache key differs across versions) and
-    /// follows future bumps automatically; keep both.
-    #[test]
-    fn stage_version_bump_changes_lightmap_cache_key() {
-        use crate::cache::CacheKey;
-        assert_eq!(
-            STAGE_VERSION, 7,
-            "intentional bump — update the v7 changelog comment above when bumping, \
-             then update this expected value",
-        );
-        let input_hash = [0x42u8; 32];
-        let prior = CacheKey::new("lightmap", STAGE_VERSION - 1, &input_hash);
-        let current = CacheKey::new("lightmap", STAGE_VERSION, &input_hash);
-        assert_ne!(
-            prior.as_filename(),
-            current.as_filename(),
-            "STAGE_VERSION must bump so the lightmap cache key differs from the prior \
-             version's and stale entries are invalidated",
         );
     }
 

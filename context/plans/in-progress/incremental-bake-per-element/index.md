@@ -148,3 +148,22 @@ This task adds the implementation specifics once the code exists: in §Build Cac
 - **SH reach cutoff & warm/cold divergence (resolved by Task 1).** Probe rays are unbounded, so the cutoff is a chosen approximation traded against warm fidelity; Task 1 picks it and quantifies the warm-vs-cold error and the realized invalidation fraction. The accepted risk: a designer judging indirect lighting on a warm build — mitigated by the approximation warning and the cold ship build. If no cutoff balances error and locality, the SH half falls back to whole-stage caching (the lightmap half still ships).
 - **Cold-build enforcement.** Production/CI must run `--no-cache` (or a release-bake flag) so an approximate warm `.prl` never ships. Whether to add an explicit `--release-bake` flag or rely on the `--no-cache` convention (plus the warm warning) is open — leaning on convention for v1.
 - **Group size.** The file-count vs. invalidation-granularity dial; Task 1 picks it. A future refinement could size groups adaptively to light density.
+
+## Addendum — Task 10: Dev/release build-mode ergonomics (one-off)
+
+Added post-implementation to resolve the "Cold-build enforcement" open question above. The warm/cold split currently rides the bare `--no-cache` mechanical flag plus a log warning — easy to forget, so an approximate warm `.prl` can ship by accident. This task makes the ship path a **first-class, discoverable mode** without forking the pipeline or touching the PRL format/runtime.
+
+### Why not a second pipeline
+There is exactly one pipeline with two modes that share the same bake functions (the Task 8 determinism gates prove cold == the legacy monolithic output bit-for-bit). "The way we baked before" is already preserved as the `--no-cache` exact path. A separate parallel "production pipeline" would be a second implementation that drifts from dev — the opposite of what the gates buy us. So this task adds ergonomics + a convention, not a code fork.
+
+### In scope
+- **A semantic `--release` flag** on `prl-build` (`crates/level-compiler/src/main.rs`, the `Args` / `parse_args_from` surface). It selects the exact ship path — the same effect as `--no-cache` (cache bypassed, exact monolithic lightmap + exact whole-volume `bake_sh_volume`) — but named for *intent* ("I am producing a shippable map") rather than cache mechanics. `--no-cache` stays as the low-level equivalent; `--release` implies it. If both are passed, the effect is identical (no conflict).
+- **A clear confirmation log line** on the release path (e.g. `[prl-build] release bake: exact lighting, cache bypassed`), and the existing warm-SH `WARM_SH_APPROX_WARNING` made prominent enough that a non-release build clearly states a `--release` (or `--no-cache`) bake is required before shipping, and names the flag.
+- **Help text + `build_pipeline.md` §Build Cache update** documenting the convention: the interactive default is the warm (fast, exact-direct / approximate-indirect) build; `--release` is the exact, shippable build and the only artifact a final map should ship from. Frame it as dev-default / release-on-purpose.
+- **Tests** for the new flag in the existing `parse_args_*` suite (set/unset, implies-no-cache, coexists with `--no-cache`).
+
+### Out of scope (deferred — its own plan)
+- **Artifact provenance stamping.** The robust, human-proof enforcement is a "baked-approximate" bit in the `.prl` header so a ship gate (or the engine in a release context) can mechanically reject an approximate artifact. That is a **PRL format change that ripples into the runtime/loader** — out of this plan's "format/runtime untouched" scope and subject to the breaking-change sign-off policy (`development_guide.md` §1.6). Record it as the recommended next step; do not implement it here.
+- **CI release-bake job.** The project has no CI/headless build today, so enforcement stays a documented convention (the `--release` flag + warning) for now.
+- **Flipping the default to exact.** Keeping warm as the interactive default preserves the iteration-speed goal; release is opt-in by intent. Revisit only if accidental shipping proves to be a real problem (the provenance stamp is the better lever).
+

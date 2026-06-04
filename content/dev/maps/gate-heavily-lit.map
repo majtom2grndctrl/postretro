@@ -1,0 +1,236 @@
+// Game: Generic
+// Format: Standard
+// Gate fixture: heavily-lit long narrow corridor for the SH/lightmap determinism
+// gates. Compact probe volume (small cross-section) keeps the SH probe grid far
+// below campaign-test's 194k. The corridor is >24 m so that with the 16 m SH reach
+// cutoff, a light near one end is DROPPED from probe groups at the far end — making
+// the warm-vs-cold SH approximation non-vacuous (gate 3). No script/data_script on
+// worldspawn, so load_fixture needs no scripts-build sidecar.
+// entity 0
+{
+"classname" "worldspawn"
+"initialGravity" "-9.81"
+"wad" ""
+{
+( 2416 -16 -16 ) ( 2416 296 0 ) ( 2416 296 -16 ) concrete_pavement_036 0 0 0 1 1
+( -16 296 -16 ) ( -16 -16 0 ) ( -16 -16 -16 ) concrete_pavement_036 0 0 0 1 1
+( 2416 296 -16 ) ( -16 296 0 ) ( -16 296 -16 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 -16 ) ( 2416 -16 0 ) ( 2416 -16 -16 ) concrete_pavement_036 0 0 0 1 1
+( -16 296 0 ) ( 2416 -16 0 ) ( -16 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 -16 ) ( 2416 296 -16 ) ( -16 296 -16 ) concrete_pavement_036 0 0 0 1 1
+}
+{
+( 2416 -16 240 ) ( 2416 296 256 ) ( 2416 296 240 ) concrete_pavement_036 0 0 0 1 1
+( -16 296 240 ) ( -16 -16 256 ) ( -16 -16 240 ) concrete_pavement_036 0 0 0 1 1
+( 2416 296 240 ) ( -16 296 256 ) ( -16 296 240 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 240 ) ( 2416 -16 256 ) ( 2416 -16 240 ) concrete_pavement_036 0 0 0 1 1
+( -16 296 256 ) ( 2416 -16 256 ) ( -16 -16 256 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 240 ) ( 2416 296 240 ) ( -16 296 240 ) concrete_pavement_036 0 0 0 1 1
+}
+{
+( 2416 -16 0 ) ( 2416 0 240 ) ( 2416 0 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 0 0 ) ( -16 -16 240 ) ( -16 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 2416 0 0 ) ( -16 0 240 ) ( -16 0 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 0 ) ( 2416 -16 240 ) ( 2416 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 0 240 ) ( 2416 -16 240 ) ( -16 -16 240 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 0 ) ( 2416 0 0 ) ( -16 0 0 ) concrete_pavement_036 0 0 0 1 1
+}
+{
+( 2416 280 0 ) ( 2416 296 240 ) ( 2416 296 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 296 0 ) ( -16 280 240 ) ( -16 280 0 ) concrete_pavement_036 0 0 0 1 1
+( 2416 296 0 ) ( -16 296 240 ) ( -16 296 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 280 0 ) ( 2416 280 240 ) ( 2416 280 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 296 240 ) ( 2416 280 240 ) ( -16 280 240 ) concrete_pavement_036 0 0 0 1 1
+( -16 280 0 ) ( 2416 296 0 ) ( -16 296 0 ) concrete_pavement_036 0 0 0 1 1
+}
+{
+( 0 0 0 ) ( 0 280 240 ) ( 0 280 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 280 0 ) ( -16 0 240 ) ( -16 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 280 0 ) ( -16 280 240 ) ( -16 280 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 0 0 ) ( 0 0 240 ) ( 0 0 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 280 240 ) ( 0 0 240 ) ( -16 0 240 ) concrete_pavement_036 0 0 0 1 1
+( -16 0 0 ) ( 0 280 0 ) ( -16 280 0 ) concrete_pavement_036 0 0 0 1 1
+}
+{
+( 2416 0 0 ) ( 2416 280 240 ) ( 2416 280 0 ) concrete_pavement_036 0 0 0 1 1
+( 2400 280 0 ) ( 2400 0 240 ) ( 2400 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 2416 280 0 ) ( 2400 280 240 ) ( 2400 280 0 ) concrete_pavement_036 0 0 0 1 1
+( 2400 0 0 ) ( 2416 0 240 ) ( 2416 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 2400 280 240 ) ( 2416 0 240 ) ( 2400 0 240 ) concrete_pavement_036 0 0 0 1 1
+( 2400 0 0 ) ( 2416 280 0 ) ( 2400 280 0 ) concrete_pavement_036 0 0 0 1 1
+}
+{
+( 820 40 0 ) ( 820 120 160 ) ( 820 120 0 ) concrete_pavement_036 0 0 0 1 1
+( 780 120 0 ) ( 780 40 160 ) ( 780 40 0 ) concrete_pavement_036 0 0 0 1 1
+( 820 120 0 ) ( 780 120 160 ) ( 780 120 0 ) concrete_pavement_036 0 0 0 1 1
+( 780 40 0 ) ( 820 40 160 ) ( 820 40 0 ) concrete_pavement_036 0 0 0 1 1
+( 780 120 160 ) ( 820 40 160 ) ( 780 40 160 ) concrete_pavement_036 0 0 0 1 1
+( 780 40 0 ) ( 820 120 0 ) ( 780 120 0 ) concrete_pavement_036 0 0 0 1 1
+}
+{
+( 1540 160 0 ) ( 1540 240 160 ) ( 1540 240 0 ) concrete_pavement_036 0 0 0 1 1
+( 1500 240 0 ) ( 1500 160 160 ) ( 1500 160 0 ) concrete_pavement_036 0 0 0 1 1
+( 1540 240 0 ) ( 1500 240 160 ) ( 1500 240 0 ) concrete_pavement_036 0 0 0 1 1
+( 1500 160 0 ) ( 1540 160 160 ) ( 1540 160 0 ) concrete_pavement_036 0 0 0 1 1
+( 1500 240 160 ) ( 1540 160 160 ) ( 1500 160 160 ) concrete_pavement_036 0 0 0 1 1
+( 1500 160 0 ) ( 1540 240 0 ) ( 1500 240 0 ) concrete_pavement_036 0 0 0 1 1
+}
+}
+{
+"classname" "player_spawn"
+"origin" "100 140 40"
+"angle" "0"
+}
+{
+"classname" "light"
+"_shadow_type" "static_light_map"
+"origin" "120 100 170"
+"light" "300"
+"_color" "255 220 180"
+"_falloff_range" "315"
+"_light_size" "10"
+}
+{
+"classname" "light"
+"_shadow_type" "static_light_map"
+"origin" "270 180 170"
+"light" "300"
+"_color" "180 220 255"
+"_falloff_range" "315"
+"_light_size" "10"
+}
+{
+"classname" "light"
+"_shadow_type" "static_light_map"
+"origin" "420 100 170"
+"light" "300"
+"_color" "255 200 200"
+"_falloff_range" "315"
+"_light_size" "10"
+}
+{
+"classname" "light"
+"_shadow_type" "static_light_map"
+"origin" "570 180 170"
+"light" "300"
+"_color" "200 255 200"
+"_falloff_range" "315"
+"_light_size" "10"
+}
+{
+"classname" "light"
+"_shadow_type" "static_light_map"
+"origin" "720 100 170"
+"light" "300"
+"_color" "220 200 255"
+"_falloff_range" "315"
+"_light_size" "10"
+}
+{
+"classname" "light"
+"_shadow_type" "static_light_map"
+"origin" "870 180 170"
+"light" "300"
+"_color" "255 240 200"
+"_falloff_range" "315"
+"_light_size" "10"
+}
+{
+"classname" "light"
+"_shadow_type" "static_light_map"
+"origin" "1020 100 170"
+"light" "300"
+"_color" "200 240 255"
+"_falloff_range" "315"
+"_light_size" "10"
+}
+{
+"classname" "light"
+"_shadow_type" "static_light_map"
+"origin" "1170 180 170"
+"light" "300"
+"_color" "255 210 230"
+"_falloff_range" "315"
+"_light_size" "10"
+}
+{
+"classname" "light"
+"_shadow_type" "static_light_map"
+"origin" "1320 100 170"
+"light" "300"
+"_color" "255 220 180"
+"_falloff_range" "315"
+"_light_size" "10"
+}
+{
+"classname" "light"
+"_shadow_type" "static_light_map"
+"origin" "1470 180 170"
+"light" "300"
+"_color" "180 220 255"
+"_falloff_range" "315"
+"_light_size" "10"
+}
+{
+"classname" "light"
+"_shadow_type" "static_light_map"
+"origin" "1620 100 170"
+"light" "300"
+"_color" "255 200 200"
+"_falloff_range" "315"
+"_light_size" "10"
+}
+{
+"classname" "light"
+"_shadow_type" "static_light_map"
+"origin" "1770 180 170"
+"light" "300"
+"_color" "200 255 200"
+"_falloff_range" "315"
+"_light_size" "10"
+}
+{
+"classname" "light"
+"_shadow_type" "static_light_map"
+"origin" "1920 100 170"
+"light" "300"
+"_color" "220 200 255"
+"_falloff_range" "315"
+"_light_size" "10"
+}
+{
+"classname" "light"
+"_shadow_type" "static_light_map"
+"origin" "2070 180 170"
+"light" "300"
+"_color" "255 240 200"
+"_falloff_range" "315"
+"_light_size" "10"
+}
+{
+"classname" "light"
+"_shadow_type" "static_light_map"
+"origin" "2220 100 170"
+"light" "300"
+"_color" "200 240 255"
+"_falloff_range" "315"
+"_light_size" "10"
+}
+{
+"classname" "light_spot"
+"_shadow_type" "static_light_map"
+"origin" "1200 140 200"
+"light" "350"
+"_color" "255 230 200"
+"_falloff_range" "400"
+"_cone" "20"
+"_cone2" "35"
+"angles" "-90 0 0"
+}
+{
+"classname" "light_sun"
+"origin" "1200 140 220"
+"_color" "180 190 210"
+"light" "120"
+"angles" "-30 45 0"
+}

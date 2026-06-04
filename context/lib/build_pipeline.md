@@ -173,16 +173,21 @@ Disk-backed content-hash cache that lets `prl-build` skip the two expensive bake
 
 **Location.** `.build-caches/prl-cache/` at the workspace root (the parent directory containing `Cargo.toml`). Created automatically on first build. Safe to delete at any time — the next build recreates it. The cache root `.build-caches/` also contains `prm-cache/` (texture mip sidecars; see §Baked texture mips).
 
-**Participating stages.** Lightmap bake and SH volume bake. Parse, BSP, portals, geometry, and BVH run uncached — they are fast enough that caching yields no measurable speedup.
+**Participating stages.** Lightmap bake and SH volume bake, plus the animated-light weight-map and SDF-atlas stages. Parse, BSP, portals, geometry, and BVH run uncached — they are fast enough that caching yields no measurable speedup.
 
-**Warm vs cold builds.** A shippable map is a cold build — `--no-cache`, every stage baked exact. Warm (cached) builds trade exactness for iteration speed; they are not shippable. The split is per channel. The direct lightmap is exact in both modes: a cached lightmap is byte-identical to a full bake (pre-compression). Indirect SH is exact only cold. A warm build may bake SH at a finer-than-whole-volume grain, bounding each region's light set — a benign approximation, dimmer-or-equal in far-bounce regions, never miscolored. Judge final indirect lighting on a cold build. Run production and release bakes with `--no-cache`.
+**Cache grain (lightmap + SH).** These two channels are cached *per element*, not per whole stage, so editing one light refreshes only the affected entries:
+
+- **Lightmap — per-light layers.** Each static light's contribution (linear irradiance + unnormalized weighted direction + coverage, full-precision) is a separate `"lightmap_layer"` entry, keyed on that light's params, its influence-bounded geometry slice, density/sample-count, and the atlas layout. The compositor sums the layers (in global light order) and normalizes once, reproducing the monolithic `bake_face_chart` byte-for-byte (pre-BC6H). Exact in both warm and cold builds.
+- **SH — per-probe-group entries.** The probe grid is partitioned into 4³-probe groups; each is a `"sh_group"` entry baked over its probe subset with a *bounded reaching-light set* (`falloff_range` dilated by a finite reach cutoff), then assembled (byte-copy placement) into the volume. Bounding the light set is what localizes a light edit; it also makes warm SH a benign approximation (out-of-reach lights drop — dimmer-or-equal, never miscolored). The soft-visibility sample-lattice seed mixes each light's **global** `static_lights` index (not its position in the bounded slice), so a kept light gets the same rotation whether the bake sees the full set (cold) or the bounded set (warm) — that is what makes "dimmer-or-equal, never brighter" hold strictly. The cold `--no-cache` path runs the exact whole-volume bake instead. SH rays trace full geometry, so any geometry edit re-bakes every group.
+
+**Warm vs cold builds (dev-default / release-on-purpose).** The interactive default is a *warm* (cached) build: fast iteration, exact direct lightmap, approximate indirect SH. The `--release` flag selects the *cold* exact build — every stage baked exact — and is the only artifact a final map should ship from. `--release` is the intent-named ship mode; mechanically it bypasses the cache exactly like `--no-cache` (it implies `--no-cache`; passing both is fine and identical). A warm build trades exactness for speed and is not shippable. The split is per channel. The direct lightmap is exact in both modes: a cached lightmap is byte-identical to a full bake (pre-compression). Indirect SH is exact only in a release/cold build. A warm build bakes SH at a finer-than-whole-volume grain, bounding each region's light set — a benign approximation, dimmer-or-equal in far-bounce regions, never miscolored. A warm build emits a one-line warning naming `--release` as the ship flag. Judge final indirect lighting on a release build. Run production and release bakes with `--release` (or `--no-cache`).
 
 **Key composition.** `blake3(stage_id || stage_version_le_bytes || input_hash)`.
 
 | Component | Form |
 |-----------|------|
-| `stage_id` | string literal — `"lightmap"` or `"sh_volume"` |
-| `stage_version` | `u32` constant (`STAGE_VERSION`) in each stage's module; bumped manually when the baking algorithm changes |
+| `stage_id` | string literal — `"lightmap_layer"` (per-light), `"sh_group"` (per-probe-group), `"animated_lm_weight_maps"`, or `"sdf_atlas"` |
+| `stage_version` | `u32` constant in each stage's module, bumped manually when that stage's algorithm or payload format changes. Each stage owns its own constant and version-bumps independently — the per-light-layer and per-group-SH formats version separately from each other and from the legacy whole-stage bakes |
 | `input_hash` | `blake3(postcard(StageInputs) || postcard(StageConfig))` — covers the serialized data the stage reads |
 
 **Stage version bump rule.** Bump a stage's `STAGE_VERSION` when its output computation changes (algorithm, sampling, formula, or atlas packing). The substrate invalidates every entry for that stage on the next build. Do not bump for unrelated changes. Each stage's current value lives as a `u32` constant in its own module — the source is authoritative; this doc does not pin the number.
@@ -195,6 +200,7 @@ Disk-backed content-hash cache that lets `prl-build` skip the two expensive bake
 |------|--------|
 | `--cache-dir <PATH>` | Use a custom cache directory instead of `.build-caches/prl-cache/` at the workspace root |
 | `--no-cache` | Disable the cache entirely — neither read nor write, no directory created |
+| `--release` | Produce a shippable map: the exact ship path (exact monolithic lightmap + exact whole-volume SH). Intent-named ship mode; implies `--no-cache` (passing both is fine and identical). The interactive default is a warm build — ship only `--release` artifacts. |
 | `--soft-shadow-samples <N>` | Soft-shadow penumbra escalated full-sample count (default 32). Folds into the lightmap stage's cache key (raising it invalidates the cache and re-bakes); the uncached animated weight-map stage recomputes from scratch. Run `prl-build --help` for the full flag list. |
 
 **Entry format.** One file per entry, named by the hex key. `get()` validates integrity before returning payload; mismatch is a soft failure (warning, cache miss).

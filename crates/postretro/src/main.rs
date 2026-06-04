@@ -44,7 +44,7 @@ use winit::window::{Window, WindowAttributes};
 
 use crate::camera::Camera;
 use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
-use crate::input::{Action, ButtonState, DiagnosticAction, InputFocus};
+use crate::input::{Action, ButtonState, DiagnosticAction, InputFocus, UiDispatchOutcome};
 use crate::render::Renderer;
 use crate::scripting::builtins::{
     ClassnameDispatch, PLAYER_START_CLASSNAME, apply_classname_dispatch,
@@ -173,6 +173,7 @@ fn main() -> Result<()> {
         input_system: input::InputSystem::new(input::default_bindings()),
         gameplay_input_latch: input::GameplayInputLatch::new(),
         input_focus: InputFocus::Gameplay,
+        ui_dispatch: input::UiDispatch::new(),
         gamepad_system: input::gamepad::GamepadSystem::new(),
         frame_timing: FrameTiming::new(initial_state),
         diagnostic_inputs: input::DiagnosticInputs::new(input::default_diagnostic_chords()),
@@ -254,6 +255,16 @@ struct App {
     /// Coarse owner of keyboard/mouse focus. Drives pointer-lock acquire/release
     /// via `set_input_focus`. See: context/lib/input.md
     input_focus: InputFocus,
+
+    /// Input-stage UI-dispatch seam: decides whether an event is consumed by the
+    /// UI layer (capture) or forwarded to gameplay (passthrough), ahead of the
+    /// gameplay input forward. Goal A leaves the mode at its inert `Passthrough`
+    /// default (no live UI descriptor yet), so the seam does not change gameplay
+    /// forwarding; Task 4 sources the mode from the active splash descriptor.
+    /// Captured events cross to game logic no earlier than the next frame
+    /// (N→N+1). `InputFocus::Menu` is the intended structural home for capture;
+    /// Goal A makes no live focus change. See: context/lib/input.md
+    ui_dispatch: input::UiDispatch,
     gamepad_system: Option<input::gamepad::GamepadSystem>,
     frame_timing: FrameTiming,
 
@@ -631,18 +642,33 @@ impl ApplicationHandler for App {
                         self.handle_diagnostic_action(action);
                     }
 
-                    // Only Gameplay forwards keys to the action system. When
-                    // the debug panel (or future menu) owns focus, WASD must
-                    // not drive the camera even though egui leaves
-                    // `consumed = false` for non-text widgets like sliders.
+                    // UI-dispatch seam, ahead of the gameplay forward and
+                    // mirroring the `egui_consumed` gate: when the active UI
+                    // layer is in Capture mode the event is consumed (queued
+                    // for next-frame game logic) and NOT forwarded to the
+                    // action system this frame. `InputFocus::Menu` is the
+                    // intended structural home for this capture; Goal A makes
+                    // no live focus change, so the decision is the mode flag.
                     // See: context/lib/input.md §5
-                    if self.input_focus == InputFocus::Gameplay {
+                    if self.ui_dispatch.dispatch_event().forwards_to_gameplay()
+                        && self.input_focus == InputFocus::Gameplay
+                    {
+                        // Only Gameplay forwards keys to the action system. When
+                        // the debug panel (or future menu) owns focus, WASD must
+                        // not drive the camera even though egui leaves
+                        // `consumed = false` for non-text widgets like sliders.
                         self.input_system.handle_keyboard_event(code, pressed);
                     }
                 }
             }
             WindowEvent::MouseInput { button, state, .. } => {
                 if egui_consumed {
+                    return;
+                }
+                // Same UI-dispatch seam as the keyboard path: a captured event
+                // is consumed by the UI layer and not forwarded to the action
+                // system this frame.
+                if !self.ui_dispatch.dispatch_event().forwards_to_gameplay() {
                     return;
                 }
                 // Same focus gate as the keyboard path: mouse-button actions
@@ -730,6 +756,21 @@ impl ApplicationHandler for App {
                         // Steady state — fall through to the normal frame loop.
                     }
                 }
+
+                // Game-logic phase begins here. Read the UI captures made
+                // available by the *previous* frame, THEN promote this frame's
+                // freshly captured events for the next frame. Taking before
+                // advancing is what enforces the N→N+1 contract: events captured
+                // during THIS frame's Input stage land in `pending` and are only
+                // promoted to `ready` by this `advance_frame` call — so they
+                // first become visible at the next frame's `take_ready`, never
+                // this frame. This holds regardless of winit's event/redraw
+                // ordering because both calls run here at game-logic time. Goal A
+                // has no intent consumer yet (Goal F defines the vocabulary), so
+                // the drained intents are dropped; the drain marks the seam where
+                // game logic reads them. See: context/lib/input.md §5
+                let _ui_intents = self.ui_dispatch.take_ready();
+                self.ui_dispatch.advance_frame();
 
                 if let Some(gp) = &mut self.gamepad_system {
                     gp.update(&mut self.input_system);
@@ -1267,6 +1308,12 @@ impl ApplicationHandler for App {
         _device_id: DeviceId,
         event: DeviceEvent,
     ) {
+        // UI-dispatch seam, ahead of the gameplay forward: a captured raw
+        // delta is consumed by the UI layer and must not reach the look path.
+        // Mirrors the `window_event` seam; the decision is the mode flag.
+        if !self.ui_dispatch.dispatch_event().forwards_to_gameplay() {
+            return;
+        }
         // Raw mouse deltas only rotate the camera while gameplay owns input.
         // When the debug panel (DevTools) or a menu is open, the cursor is
         // released and raw deltas must not leak into the look path.

@@ -93,20 +93,23 @@ against a live screen with no gameplay state.
   the UI pass.
 - [ ] The boot timing and frame schedule are unchanged: the engine still paints a
   black frame, then the splash, then polls the worker and transitions to the
-  level — observable as identical boot-timing log lines and an unchanged
-  black→splash→level progression.
+  level — observable as the same sequence of boot-timing log lines (frame-0
+  black, frame-1 splash, frame-2+ poll) and an unchanged black→splash→level
+  progression — not identical wall-clock values. glyphon's
+  `FontSystem`/`TextAtlas` build in `Renderer::new`, so frame 1 does not
+  absorb font-system construction.
 - [ ] Panel and image quads are device-pixel-snapped (no subpixel edge blur);
   glyphs are AA. On window resize the splash stays anchored and re-derives its
   scale from the backbuffer without stretching the logo or text.
 - [ ] The 9-slice panel preserves corner sizes when its rect grows — corners do
-  not stretch; edges/center tile or stretch per the 9-slice rule.
+  not stretch; edges/center stretch per the 9-slice rule (vertex-expanded; no tiling in A).
 - [ ] A descriptor marked capture consumes a pointer/key event so it does not
   reach the gameplay input system that frame; a passthrough descriptor lets the
   same event through. Verifiable by toggling the mode on the splash descriptor.
 - [ ] An event consumed by UI on a frame is observable to game logic no earlier
   than the following frame — never same-frame.
 - [ ] `cargo test -p postretro` runs a draw-list / layout assertion that fails if
-  the splash anchor or logical-reference→device scale math regresses (the produced
+  the splash anchor, 9-slice corner rects, or logical-reference→device scale math regresses (the produced
   quad rects move) — independent of any GPU adapter.
 - [ ] An optional headless golden test renders the UI pass and compares within a
   tolerance; it self-skips cleanly when no GPU adapter is present and is not the
@@ -120,11 +123,17 @@ Create `render/ui/` with a pass struct owning its pipeline, BGL, sampler,
 vertex/instance buffers, and uniform buffer — modeled on `SplashPipeline`. One
 `.wgsl` under `src/shaders/` for the quad/9-slice program: instanced draws,
 alpha blend, depth disabled; the vertex shader expands a unit quad per instance
-(rect, UV rect, color, 9-slice margin). The pass exposes an `encode`-style entry
+(rect, UV rect, color, 9-slice margin). The quad shader is self-contained — no
+shared WGSL helper; any color-space conversion the Open question resolves follows
+the existing string-concat helper convention. The pass's `begin_render_pass` attaches
+the surface view as the sole color target with no depth attachment; both this
+quad pipeline and glyphon's `TextAtlas`/`TextRenderer` (Task 3) are built for
+that single-color-target, no-depth configuration so they share one render pass.
+The pass exposes an `encode`-style entry
 recording into a target view. Declare `pub mod ui;` in `render/mod.rs`; the
 `Renderer` owns the pass and builds it in `Renderer::new` alongside `fog`.
 This pipeline draws **panels and images only** — never text. Solid panels sample
-a 1×1 white texel (degenerate UV slice) so an untextured panel and a textured
+a 1×1 white texel (degenerate UV slice), built as a `UiTexture` in `Renderer::new`, so an untextured panel and a textured
 image share one instanced batch; the logo binds its own texture as a separate
 draw. Text is glyphon's own pipeline (Task 3), not this one.
 
@@ -144,7 +153,7 @@ from the updated `surface_config` — wire through the existing `Renderer::resiz
 path.
 
 ### Task 3: glyphon shaped-text path
-Add `glyphon` as a workspace dep; commit one TTF under `content/base/`. The UI
+Add `glyphon` as a workspace dep; commit one TTF under `content/base/`, embedded at compile time via `include_bytes!` (no main-thread runtime file I/O) and registered once into `FontSystem` in `Renderer::new`. The UI
 pass owns glyphon's own state — `FontSystem`, `SwashCache`, `Cache`, `Viewport`,
 `TextAtlas` (built with the surface format), and `TextRenderer` — and registers
 the font once. glyphon ships its own pipeline; it is **not** routed through the
@@ -218,7 +227,9 @@ Named types/files (behavior is in Tasks above):
   draw after them into the same pass.
 - `render_frame_indirect` records the pass into the surface `view`
   (`LoadOp::Load`) after fog/wireframe; the splash phase records the same pass via
-  `render_splash_frame` into its own surface frame. On the gameplay path
+  `render_splash_frame` into its own surface frame — `LoadOp::Clear` to black,
+  the fullscreen background fill drawn as the first quad in the draw list
+  (frame 0, before any descriptor installs, draws no quads → a black frame). On the gameplay path
   (`render_frame_indirect`) the pass draws an **empty draw list** in A — frame-order
   placement is locked now, UI content arrives with B/BIS.
 - Splash descriptor: a `pub(crate)` struct (framed 9-slice panel + image + text

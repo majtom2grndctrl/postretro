@@ -67,6 +67,8 @@ struct InstanceUniforms {
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
+    // base_uv is stored u16-quantized; the vertex layout declares it Unorm16x2
+    // (render/mesh_pass.rs), so it arrives here hardware-decoded to 0..1 floats.
     @location(1) base_uv: vec2<f32>,
     @location(2) normal_oct: vec2<u32>,
     @location(3) tangent_packed: vec2<u32>,

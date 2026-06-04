@@ -36,7 +36,8 @@ load path ran.
 
 | Value | Result |
 |---|---|
-| `model_load` (parse + GPU upload), release | **TODO: fill from the run above — `model_load=Xms`** |
+| `model_load` (parse + GPU upload), **debug** | **≈20.4 ms** (measured on the user's macOS machine during panic-fix verification; `first_level_frame=14.3 ms`). Debug build — not the representative figure. |
+| `model_load` (parse + GPU upload), release | **TODO: fill from a `--release` run — `model_load=Xms`.** Expected lower than the 20.4 ms debug figure. |
 
 ### Asset shape (measured, frames the expectation)
 - `scene.gltf` 46 KB + `scene.bin` 2.16 MB; 26-joint skin; one clip (`mixamo.com`);
@@ -53,7 +54,9 @@ small relative to the existing level-load stages (PRL parse, texture decode,
 geometry upload) that already clear the northstar bar. **Confirm with the run.**
 
 ### Confirms or refutes "no offline mesh bake at this poly count"
-**Expected to CONFIRM the deferral** (pending the measured number). If `model_load`
+**CONFIRMED (debug data point; release pending).** The debug `model_load≈20.4 ms`
+already sits within a near-instant-boot budget for a one-shot level-load stage, and
+release is expected lower — so the deferral holds at this poly count. If `model_load`
 is a small fraction of total level load and within the boot budget, a per-mesh
 offline bake buys negligible load-time at this poly count and is not worth the
 pipeline complexity — matching the roadmap's stance (M10 asset-format note: "at

@@ -154,7 +154,7 @@ impl MeshPass {
                 // Vertex layout BUILT HERE from `SkinnedVertex`'s fields
                 // (model/ stays wgpu-free). Offsets:
                 //   position       Float32x3  @ 0
-                //   base_uv        Uint16x2   @ 12
+                //   base_uv        Unorm16x2  @ 12  → vec2<f32> (0..1, decoded)
                 //   normal_oct     Uint16x2   @ 16
                 //   tangent_packed Uint16x2   @ 20
                 //   joints (u8x4)  Uint8x4    @ 24  → vec4<u32>
@@ -174,7 +174,13 @@ impl MeshPass {
                         wgpu::VertexAttribute {
                             offset: 12,
                             shader_location: 1,
-                            format: wgpu::VertexFormat::Uint16x2,
+                            // base_uv is u16-quantized (gltf_loader::quantize_uv:
+                            // 0..1 → 0..65535). Unorm16x2 hardware-decodes it back
+                            // to vec2<f32> (0..1), matching the shader's
+                            // `@location(1) base_uv: vec2<f32>` and forward.wgsl's
+                            // UV convention. (Uint16x2 here surfaced as vec2<u32>
+                            // and failed pipeline validation against the float UV.)
+                            format: wgpu::VertexFormat::Unorm16x2,
                         },
                         wgpu::VertexAttribute {
                             offset: 16,

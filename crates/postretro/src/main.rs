@@ -44,7 +44,7 @@ use winit::window::{Window, WindowAttributes};
 
 use crate::camera::Camera;
 use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
-use crate::input::{Action, ButtonState, DiagnosticAction, InputFocus, UiDispatchOutcome};
+use crate::input::{Action, ButtonState, DiagnosticAction, InputFocus};
 use crate::render::Renderer;
 use crate::scripting::builtins::{
     ClassnameDispatch, PLAYER_START_CLASSNAME, apply_classname_dispatch,
@@ -94,6 +94,14 @@ fn content_root_from_map(map_path: &str) -> PathBuf {
 // path matched the active mod-init dependency set (classified by ScriptRuntime).
 fn reload_summary_requires_mod_init(summary: ReloadSummary) -> bool {
     summary.mod_init
+}
+
+/// Version/tagline line the boot splash's shaped-text element renders. Sourced
+/// from the build's `CARGO_PKG_VERSION` (the simpler of the two options the plan
+/// leaves open) so the read-handle snapshot carries a real value. Flows through
+/// the `UiReadSnapshot`; the descriptor seam stays intact for Goal B/G1.
+fn splash_version_line() -> String {
+    format!("postretro v{}", env!("CARGO_PKG_VERSION"))
 }
 
 fn main() -> Result<()> {
@@ -1179,6 +1187,13 @@ impl ApplicationHandler for App {
                             out
                         };
 
+                        // Publish the once-per-frame read snapshot just before
+                        // the gameplay render call, mirroring the splash path so
+                        // the once-per-frame contract holds on both. Plumbing-only
+                        // in Goal A: the gameplay UI draw list is empty and the
+                        // snapshot has no consumer until B/BIS.
+                        renderer.set_ui_snapshot(render::ui::UiReadSnapshot::default());
+
                         let surface_texture = match renderer.render_frame_indirect(
                             &visible_cells,
                             &light_reachable_leaf_mask,
@@ -1575,6 +1590,19 @@ impl App {
             if !renderer.is_ready() {
                 return;
             }
+            // Drive the input-dispatch seam from the active splash descriptor's
+            // capture mode (splash is non-interactive -> Passthrough). No-op when
+            // no splash is installed (frame 0). Locks the Task 5 seam wiring.
+            if let Some(mode) = renderer.splash_capture_mode() {
+                self.ui_dispatch.set_mode(mode);
+            }
+            // Publish the once-per-frame read snapshot just before the render
+            // call (the splash phase render path). The version/tagline line the
+            // shaped-text element renders rides through here, exercising the
+            // once-per-frame contract with a real value.
+            renderer.set_ui_snapshot(render::ui::UiReadSnapshot::with_version_line(
+                splash_version_line(),
+            ));
             if let Err(err) = renderer.render_splash_frame() {
                 self.exit_result = Err(err);
                 event_loop.exit();

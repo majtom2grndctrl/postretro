@@ -37,13 +37,15 @@
 /// the seam is inert (gameplay forwarding is unchanged), and the capture path is
 /// exercised by the seam tests. Task 4 calls `set_mode` from the descriptor.
 #[cfg_attr(not(test), allow(dead_code))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum UiCaptureMode {
     /// UI consumes events; they are queued for next-frame game logic and NOT
     /// forwarded to the gameplay input system this frame.
     Capture,
     /// UI ignores events; they flow through to the gameplay input system as if
-    /// the seam were absent.
+    /// the seam were absent. The inert default: with no UI layer active, gameplay
+    /// forwarding behaves exactly as before this seam existed.
+    #[default]
     Passthrough,
 }
 
@@ -113,24 +115,16 @@ pub struct UiDispatch {
     next_seq: u64,
 }
 
-impl Default for UiCaptureMode {
-    fn default() -> Self {
-        // Passthrough is the inert default: with no UI layer active, gameplay
-        // forwarding behaves exactly as before this seam existed.
-        UiCaptureMode::Passthrough
-    }
-}
-
 impl UiDispatch {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Set the active capture/passthrough mode. No production call site in
-    /// Goal A — the mode stays at its `Passthrough` default so the seam is inert
-    /// against gameplay; the seam tests drive it. Task 4 calls this from the
-    /// active splash descriptor's capture/passthrough mode.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Set the active capture/passthrough mode. Task 4's `App::paint_splash`
+    /// calls this from the active splash descriptor's capture/passthrough mode
+    /// (`Renderer::splash_capture_mode`) — the splash is non-interactive, so it
+    /// stays `Passthrough` and the seam is inert against gameplay; the seam tests
+    /// drive the `Capture` path with synthetic events.
     pub fn set_mode(&mut self, mode: UiCaptureMode) {
         self.mode = mode;
     }

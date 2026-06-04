@@ -18,6 +18,11 @@ use crate::ui_texture::UiTexture;
 /// no GPU handles — produces a `UiDrawList` the pass uploads at encode time.
 pub(crate) mod layout;
 
+/// Hardcoded splash content descriptor behind the one named builder seam
+/// (`splash::build_splash_descriptor`). Goal B/G1 replace its body; the renderer
+/// drives the UI pass from it.
+pub(crate) mod splash;
+
 const UI_QUAD_WGSL: &str = include_str!("../../shaders/ui_quad.wgsl");
 
 /// Engine default UI typeface: Inter (SIL Open Font License 1.1). Embedded at
@@ -60,7 +65,9 @@ pub(crate) struct UiInstance {
 
 impl UiInstance {
     /// Solid-color panel: full UV slice over the bound 1×1 white texel, with an
-    /// optional 9-slice margin. Color is linear RGBA.
+    /// optional 9-slice margin. Color is linear RGBA. Production paths build
+    /// instances via `layout::project`; this ctor backs the corner-rect tests.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn panel(rect: [f32; 4], color: [f32; 4], margin: [f32; 4]) -> Self {
         Self {
             rect,
@@ -71,6 +78,7 @@ impl UiInstance {
     }
 
     /// Textured image: samples the full bound texture, untinted (white).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn image(rect: [f32; 4]) -> Self {
         Self {
             rect,
@@ -131,6 +139,7 @@ impl UiDrawList {
         self.instances.push(instance);
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn clear(&mut self) {
         self.instances.clear();
     }
@@ -141,6 +150,30 @@ impl UiDrawList {
 
     pub fn len(&self) -> usize {
         self.instances.len()
+    }
+}
+
+/// Once-per-frame published read-only snapshot the UI pass reads when it records.
+/// Stored on the `Renderer` via a setter the `App` calls just before each render
+/// call — NOT threaded as a render parameter, so both render signatures stay
+/// stable. In Goal A it carries only the version/tagline line the splash's shaped
+/// text renders, exercising the once-per-frame contract with a real value; B/BIS
+/// widen it with gameplay UI state. Narrow by design — the *shape* is the
+/// contract.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct UiReadSnapshot {
+    /// Version/tagline string the splash shaped-text line renders. Empty on the
+    /// gameplay path in A (no consumer until B/BIS), which still locks the
+    /// once-per-frame setter contract.
+    pub version_line: String,
+}
+
+impl UiReadSnapshot {
+    /// Snapshot carrying the splash version/tagline line.
+    pub fn with_version_line(version_line: impl Into<String>) -> Self {
+        Self {
+            version_line: version_line.into(),
+        }
     }
 }
 
@@ -170,6 +203,8 @@ pub(crate) struct UiPass {
     instance_capacity: usize,
     /// 1×1 white texel bound for solid panels (degenerate UV slice). An
     /// untextured panel and a textured image then share one instanced batch.
+    /// Held to keep the view alive for `white_bind_group`, which references it.
+    #[allow(dead_code)]
     white_view: wgpu::TextureView,
     /// Bind group for the white-texel batch (panels). Rebuilt only if the
     /// uniform buffer changes, which it never does after construction.
@@ -187,6 +222,8 @@ pub(crate) struct UiPass {
     /// the first shaped frame via `prepare`, not pre-warmed here.
     swash_cache: SwashCache,
     /// glyphon's shared GPU bind-group/pipeline cache; backs `Viewport`/`Atlas`.
+    /// Held to keep the cache alive for the `Viewport`/`TextAtlas` built from it.
+    #[allow(dead_code)]
     glyph_cache: GlyphCache,
     /// Device-resolution uniform glyphon maps glyph positions against. Set from
     /// the backbuffer size each frame in `encode`.
@@ -513,6 +550,10 @@ impl UiPass {
     ///
     /// `texts` is empty on the quad-only / no-text path, which keeps the legacy
     /// behavior intact.
+    // The wide signature mirrors a `begin_render_pass` call (target, viewport,
+    // load op, draw lists, text) — splitting it into a builder would obscure the
+    // single-pass contract the splash + gameplay paths both record through.
+    #[allow(clippy::too_many_arguments)]
     pub fn encode(
         &mut self,
         device: &wgpu::Device,

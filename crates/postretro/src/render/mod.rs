@@ -44,7 +44,6 @@ use crate::lighting::{GPU_LIGHT_SIZE, pack_lights, pack_lights_with_slots_into};
 use crate::material::Material;
 use crate::prl::MapLight;
 use crate::render::loaded_texture::{LoadedTexture, load_textures, placeholder_loaded_texture};
-use crate::render::splash::SplashPipeline;
 use crate::visibility::VisibleCells;
 use postretro_level_format::alpha_lights::ALPHA_LIGHT_LEAF_UNASSIGNED;
 use postretro_level_format::fog_cell_masks::union_active_mask;
@@ -556,6 +555,14 @@ pub struct LevelGeometry<'a> {
     pub texture_materials: &'a [crate::material::Material],
 }
 
+/// Logo texture + its bind group for the active splash. The texture owns the view
+/// the bind group references, so both live together for the descriptor's lifetime.
+struct SplashLogo {
+    /// Kept alive so the bind group's texture view stays valid.
+    _texture: wgpu::Texture,
+    bind_group: wgpu::BindGroup,
+}
+
 pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -756,16 +763,26 @@ pub struct Renderer {
     /// Idle (no draw) on maps with no registered collections. See §7.4.
     smoke_pass: SmokePass,
 
-    /// Fullscreen splash render pass. Pipeline created at `Renderer::new`;
-    /// bind group bound by `install_splash_from_loaded` and cleared by
-    /// `clear_splash`. Encodes a black clear when no splash is bound.
-    splash_pipeline: SplashPipeline,
-
-    /// Instanced UI quad / 9-slice pass for panels and images. Built alongside
-    /// `fog`; Task 2/4 record it into the frame. Idle (no draw) until a draw
-    /// list is supplied.
-    #[allow(dead_code)]
+    /// Instanced UI quad / 9-slice pass for panels and images plus glyphon text.
+    /// Built alongside `fog`; records the splash (splash phase) and an empty draw
+    /// list on the gameplay path (`render_frame_indirect`). Owns all UI GPU state.
     ui: ui::UiPass,
+
+    /// Active splash content descriptor. `Some` between `install_splash_from_loaded`
+    /// and `clear_splash`; drives the UI pass during the splash phase. `None`
+    /// (frame 0 before install, and after level handoff) records no splash quads.
+    active_splash: Option<ui::splash::SplashDescriptor>,
+
+    /// Logo texture + bind group for the active splash, built in
+    /// `install_splash_from_loaded` from the uploaded PNG. `None` until installed;
+    /// cleared by `clear_splash`. Kept alive (texture owns the view the bind group
+    /// references) for the descriptor's lifetime.
+    splash_logo: Option<SplashLogo>,
+
+    /// Once-per-frame published read snapshot (version/tagline line). Set by the
+    /// App via `set_ui_snapshot` just before each render call; read when the UI
+    /// pass records. Stored here so both render signatures stay stable.
+    ui_snapshot: ui::UiReadSnapshot,
 
     /// Volumetric fog raymarch + composite. Active only when the level has
     /// at least one fog volume uploaded; otherwise the dispatch + composite
@@ -1946,11 +1963,9 @@ impl Renderer {
             &sh_volume_resources.bind_group_layout,
         );
 
-        // Bind group is None until `install_splash_from_loaded`.
-        let splash_pipeline = SplashPipeline::new(&device, surface_format);
-
-        // UI quad / 9-slice pass — sibling to fog. Records nothing until a draw
-        // list is wired in (Task 2/4).
+        // UI quad / 9-slice + text pass — sibling to fog. Owns all UI GPU state
+        // (quad pipeline, glyphon atlas/renderer, white texel). The splash phase
+        // and the gameplay path both record through it.
         let ui = ui::UiPass::new(&device, &queue, surface_format);
 
         let mut fog = FogPass::new(
@@ -2062,8 +2077,10 @@ impl Renderer {
             debug_prev_vp_hash: u32::MAX,
             debug_prev_visible: ("init", usize::MAX),
             smoke_pass,
-            splash_pipeline,
             ui,
+            active_splash: None,
+            splash_logo: None,
+            ui_snapshot: ui::UiReadSnapshot::default(),
             fog,
             fog_cell_masks: None,
             active_fog_aabbs: Vec::new(),
@@ -2498,16 +2515,37 @@ impl Renderer {
         }
     }
 
+    /// Install the active splash: upload the logo (reusing the splash texture
+    /// upload), build its UI bind group, and install the hardcoded splash
+    /// descriptor so `render_splash_frame` records it through the UI pass.
     /// May be called more than once (mod-override swap in splash frame 1).
     pub fn install_splash_from_loaded(
         &mut self,
         loaded: &crate::ui_texture::UiTexture,
     ) -> [u32; 2] {
         let (texture, dims) = splash::upload_splash_texture(&self.device, &self.queue, loaded);
-        let screen_size = [self.surface_config.width, self.surface_config.height];
-        self.splash_pipeline
-            .install(&self.device, &self.queue, &texture, dims, screen_size);
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = self.ui.make_texture_bind_group(&self.device, &view);
+        self.splash_logo = Some(SplashLogo {
+            _texture: texture,
+            bind_group,
+        });
+        self.active_splash = Some(ui::splash::build_splash_descriptor());
         dims
+    }
+
+    /// The active splash's capture/passthrough mode, for the App to drive the
+    /// input-dispatch seam (`UiDispatch::set_mode`). `None` when no splash is
+    /// installed. The splash is non-interactive, so this reports `Passthrough`.
+    pub fn splash_capture_mode(&self) -> Option<crate::input::UiCaptureMode> {
+        self.active_splash.as_ref().map(|d| d.capture_mode())
+    }
+
+    /// Store the once-per-frame read snapshot. The App calls this just before each
+    /// render call (splash phase and gameplay path); the UI pass reads it when it
+    /// records. Keeps both render signatures stable.
+    pub fn set_ui_snapshot(&mut self, snapshot: ui::UiReadSnapshot) {
+        self.ui_snapshot = snapshot;
     }
 
     /// Returns `Err` on swapchain failure; caller exits the event loop on error.
@@ -2543,16 +2581,84 @@ impl Renderer {
                 label: Some("Splash Frame Encoder"),
             });
 
-        self.splash_pipeline.encode(&mut encoder, &view);
+        let viewport = [self.surface_config.width, self.surface_config.height];
+        self.record_splash_ui(&mut encoder, &view, viewport);
 
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
         Ok(())
     }
 
-    /// Pipeline survives; `install_splash_from_loaded` can re-bind.
+    /// Record the splash through the UI pass into `view`, clearing to black first.
+    /// Quads (background fill → border frame → fill panel → logo) then the shaped
+    /// version/tagline line. With no descriptor installed (frame 0) the draw lists
+    /// are empty, so the pass only applies the black clear — preserving the boot
+    /// "frame-0 black" step.
+    fn record_splash_ui(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        viewport: [u32; 2],
+    ) {
+        let mut panel_list = ui::UiDrawList::new();
+        let mut logo_list = ui::UiDrawList::new();
+        let mut texts: Vec<ui::UiText> = Vec::new();
+
+        if let Some(desc) = self.active_splash.as_ref() {
+            let scale = ui::layout::device_scale(viewport);
+
+            // Background fill as the first quad, then the framed panel quads.
+            let bg = ui::splash::SplashDescriptor::background_element(splash::splash_bg_rgba());
+            let mut panel_elems = vec![bg];
+            panel_elems.extend_from_slice(&desc.panel_elements());
+            panel_list = ui::layout::project(&panel_elems, viewport);
+
+            // Logo: separate textured batch with its own bound texture.
+            logo_list = ui::layout::project(&[desc.logo_element()], viewport);
+
+            // Shaped text from the read-handle snapshot. Skipped if the snapshot
+            // carries no line (keeps the glyphon path off the empty case).
+            if !self.ui_snapshot.version_line.is_empty() {
+                texts.push(desc.text_line(&self.ui_snapshot.version_line, viewport, scale));
+            }
+        }
+
+        // The white panel bind group lives inside `self.ui`; clone it (Arc-backed)
+        // so the batch reference does not collide with `encode`'s `&mut self.ui`.
+        let white_bg = self.ui.white_bind_group().clone();
+        let mut batches: Vec<ui::UiBatch> = Vec::new();
+        if !panel_list.is_empty() {
+            batches.push(ui::UiBatch {
+                list: &panel_list,
+                bind_group: &white_bg,
+            });
+        }
+        if let Some(logo) = self.splash_logo.as_ref() {
+            if !logo_list.is_empty() {
+                batches.push(ui::UiBatch {
+                    list: &logo_list,
+                    bind_group: &logo.bind_group,
+                });
+            }
+        }
+
+        self.ui.encode(
+            &self.device,
+            &self.queue,
+            encoder,
+            view,
+            viewport,
+            wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+            &batches,
+            &texts,
+        );
+    }
+
+    /// Clear the active splash descriptor and logo binding so post-transition
+    /// frames record an empty UI draw list. The UI pass itself survives.
     pub fn clear_splash(&mut self) {
-        self.splash_pipeline.clear();
+        self.active_splash = None;
+        self.splash_logo = None;
     }
 
     /// `true` when the loaded map carries a baked SH volume. The diagnostic
@@ -2752,10 +2858,9 @@ impl Renderer {
             &self.sdf_shadow_pass.shadow_view,
             &self.depth_view,
         );
-        if self.splash_pipeline.has_splash() {
-            self.splash_pipeline
-                .update_screen_size(&self.queue, [width, height]);
-        }
+        // The UI pass derives its device scale from `surface_config` at encode
+        // time, so the splash needs no per-resize hook — it re-projects against
+        // the new backbuffer size on the next `render_splash_frame`.
         self.is_surface_configured = true;
     }
 
@@ -3819,6 +3924,24 @@ impl Renderer {
             // surface Timeout/Occluded/Outdated early-returns above without
             // leaking segments across frames.
         }
+
+        // UI pass: records into the surface `view` with `LoadOp::Load` after the
+        // world/fog/wireframe/debug-line passes, before the timing resolve and
+        // submit — beneath the egui overlay (which draws in the caller's separate
+        // submission). In Goal A the gameplay UI draw list is EMPTY (frame-order
+        // placement is locked now; content arrives with B/BIS). The pass still
+        // opens so the once-per-frame read snapshot is consumed each frame. Text
+        // is empty here — gameplay carries no shaped line in A.
+        self.ui.encode(
+            &self.device,
+            &self.queue,
+            &mut encoder,
+            &view,
+            [self.surface_config.width, self.surface_config.height],
+            wgpu::LoadOp::Load,
+            &[],
+            &[],
+        );
 
         if let Some(timing) = &self.frame_timing {
             timing.encode_resolve(&mut encoder);

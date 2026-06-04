@@ -17,6 +17,11 @@ pub const REFERENCE_HEIGHT: f32 = 720.0;
 /// zero offset land dead-center regardless of its size — the common splash case.
 /// The anchor/offset seam is intentionally thin: Task 4's splash descriptor and
 /// Task 6's assertions plug into this without growing the vocabulary.
+///
+/// The splash descriptor only places `Center`-anchored elements; the full 9-point
+/// vocabulary is the layout seam Goal B's descriptor model and widgets build on,
+/// and is exercised by the layout tests — hence the variants are retained.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Anchor {
     TopLeft,

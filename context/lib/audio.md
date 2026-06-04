@@ -4,13 +4,11 @@
 > **Key invariant:** audio subsystem never touches wgpu or renderer types. It receives listener state and sound event requests; it produces audio output internally via kira.
 > **Related:** [Architecture Index](./index.md) · [Development Guide](./development_guide.md) · [Build Pipeline](./build_pipeline.md)
 
-**Status: not yet implemented.** `kira` is declared in the workspace `Cargo.toml` but no audio module exists in engine source. This doc describes intended design.
-
 ---
 
 ## 1. Subsystem Boundary
 
-Audio will be a self-contained subsystem. It will not depend on the renderer or wgpu.
+Audio is a self-contained subsystem. It does not depend on the renderer or wgpu.
 
 | Direction | Data |
 |-----------|------|
@@ -19,38 +17,37 @@ Audio will be a self-contained subsystem. It will not depend on the renderer or 
 
 The boundary carries primitive types only. `ListenerState` (position + forward/up as `[f32; 3]`; world up is `[0, 1, 0]`) and `SoundRequest` (target bus, sound key, looping flag) cross the public API — no glam, no wgpu. Conversion from the glam-typed `Camera` happens at the frame-loop call site, not inside the module.
 
-Init is fault-tolerant: if the device or kira backend fails to start, the subsystem disables itself and the game runs silent — never a crash, never a panic. Asset load and decode failures degrade the same way (warn, skip, no sound).
+Init is fault-tolerant: if the device or kira backend fails to start, the subsystem holds `None` and the game runs silent — never a crash, never a panic. Asset load and decode failures degrade the same way (warn, skip, no sound).
 
-Sound assets will load at level load time from `content/<mod>/_sounds/`. The sound registry follows level lifetime — populated at level load, released at unload. No streaming from disk during gameplay beyond kira's own music streaming.
+Sound assets load at level install time from `content/<mod>/_sounds/<collection>/<name>.{ogg,wav}`. The sound registry follows level lifetime — populated at level install, released at unload. Static clips (all non-`music/` collections) are decoded into memory; music streams from disk via kira's streaming path.
 
 ### Mixer bus tree
 
-kira's main track serves as Master. SFX, Music, and UI hang off it as sub-tracks, each with a runtime volume control. In-world sound categories route to one of these buses. A per-bus active-voice cap bounds concurrency; the sum of per-bus caps stays within kira's global sound capacity so play commands never silently drop at the kira layer.
+kira's main track serves as Master. SFX, Music, and UI hang off it as sub-tracks, each with a runtime volume control (`set_bus_volume`). In-world sound categories route to one of these buses. A per-bus active-voice cap bounds concurrency; the sum of per-bus caps stays within kira's provisioned budget so play commands accepted by the voice counter always find a kira slot.
 
 ---
 
 ## 2. Playback Crate
 
-kira 0.12 will handle playback and mixing. Engine code will configure tracks, spatial parameters, and reverb effects through kira's API. kira pulls glam 0.32 transitively; its math types will not cross into engine code. The audio subsystem boundary will use primitive types (f32 arrays, tuples) — no glam types in the public API.
+kira 0.12 handles playback and mixing. Engine code configures tracks and spatial parameters through kira's API. kira pulls glam 0.32 transitively; its math types do not cross into engine code. The audio subsystem boundary uses primitive types (f32 arrays) — no glam types in the public API.
 
 ---
 
 ## 3. Frame Integration
 
-Audio will run third in frame order: Input → Game logic → **Audio** → Render → Present.
+Audio runs third in frame order: Input → Game logic → **Audio** → Render → Present.
 
-Each frame, audio will:
-1. Update listener position and orientation from camera/player state.
-2. Process sound event requests emitted by game logic.
-3. Update spatial parameters for active sounds.
+Each frame, the audio step:
+1. Updates listener position and orientation from camera/player state.
+2. Reclaims finished non-looping voices so bus capacity is not leaked.
 
-Audio must never block the frame. kira will manage its own audio thread; per-frame work is parameter updates and playback triggers.
+The step is control-plane only — it never decodes or touches disk. kira manages its own audio thread; per-frame work is listener updates and voice reclamation.
 
 ---
 
 ## 4. Sound Triggering
 
-Game logic will emit sound event requests. Audio will process them.
+Callers emit `SoundRequest` values targeting a named bus. `Audio::play` resolves the bus and sound key, routes to the bus's kira sub-track, and returns an opaque `SoundHandle`. `Audio::stop` stops the sound and releases its voice slot. Looping sounds repeat until stopped; one-shot sounds release their voice automatically once kira reports them finished.
 
 | Event | Example trigger |
 |-------|-----------------|
@@ -61,21 +58,19 @@ Game logic will emit sound event requests. Audio will process them.
 | Door | Door open/close |
 | Impact | Projectile hitting a surface |
 
-Each request will carry: sound category, world position, and (where relevant) surface material type.
-
-### Surface Material Sounds
-
-Texture name prefix will map to a material enum. Footstep and impact sounds will vary by material. The material lookup will be shared with the renderer's decal system — one prefix table, one enum. Which prefixes exist is a game content concern; see `resource_management.md` §3.
+Surface-material-aware routing (varying footstep/impact sounds by texture prefix) and the shared material enum with the renderer's decal system are later goals.
 
 ---
 
 ## 5. Spatial Positioning
 
+M12 establishes the listener anchor and orientation (position + forward/up updated each frame). Full spatialization is a later goal.
+
 All in-world sounds will be positioned in 3D relative to the listener.
 
 | Parameter | Behavior |
 |-----------|----------|
-| Distance attenuation | Sounds fall off with distance from listener |
+| Distance attenuation | Sounds will fall off with distance from listener |
 | Stereo panning | Left/right balance derived from sound direction relative to listener facing |
 | Position tracking | Active sounds will update position each frame if their source moves |
 

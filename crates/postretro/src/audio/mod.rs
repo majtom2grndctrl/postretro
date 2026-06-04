@@ -27,8 +27,8 @@ use voices::VoiceTable;
 /// plain f32 math so no glam/quaternion type crosses the module boundary.
 ///
 /// Degenerate inputs (zero-length forward, or forward parallel to up) fall back
-/// to identity rather than producing NaNs; spatialization is out of scope for
-/// M12 Task 4, so the listener just stays anchored and oriented best-effort.
+/// to identity rather than producing NaNs; full spatialization is not yet
+/// implemented, so the listener stays anchored and oriented best-effort.
 fn orientation_from_forward_up(forward: [f32; 3], up: [f32; 3]) -> [f32; 4] {
     // Camera basis: -Z = forward (look), +X = right, +Y = up.
     let f = normalize(forward);
@@ -135,9 +135,7 @@ pub enum AudioError {
 /// only — the glam-typed `Camera` is converted at the call site, not here.
 /// `up` is world up `[0.0, 1.0, 0.0]`; `Camera` has no up accessor and uses
 /// `Vec3::Y` internally.
-// Boundary type consumed by the per-frame audio step (Task 4); defined now to
-// pin the subsystem contract.
-#[allow(dead_code)]
+// Consumed by `update` each frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ListenerState {
     /// World-space listener position.
@@ -149,11 +147,8 @@ pub struct ListenerState {
 }
 
 /// A request to play a sound, crossing the boundary as primitives only.
-/// The target bus and sound are named keys resolved inside the subsystem; the
-/// bus tree and sound registry land in later tasks.
-// Boundary type consumed by the play API (Task 3); defined now to pin the
-// subsystem contract.
-#[allow(dead_code)]
+/// The target bus and sound are named keys resolved inside the subsystem.
+// Consumed by `play`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SoundRequest {
     /// Mixer bus to route this sound to (e.g. "sfx", "music", "ui").
@@ -167,21 +162,19 @@ pub struct SoundRequest {
 /// Owns the kira audio manager and the spatial listener anchor.
 ///
 /// Constructed once after the renderer is ready. If construction fails the
-/// caller keeps its `Option<Audio>` as `None` and the game runs silent. Later
-/// tasks extend this with bus handles, a sound registry, and a play API.
+/// caller keeps its `Option<Audio>` as `None` and the game runs silent.
 pub struct Audio<B: kira::backend::Backend = DefaultBackend> {
-    // Read by the sound registry and play API in later tasks.
+    // Drives the kira audio thread; bus, listener, and play operations route
+    // through it. Accessed directly by tests (via `backend_mut()`).
     #[allow(dead_code)]
     manager: AudioManager<B>,
-    /// Single listener created at init as the anchor for later spatial work.
+    /// Single listener created at init as the anchor for spatial work.
     /// Dropping it removes the listener from kira, so it lives as long as the
     /// manager does.
-    #[allow(dead_code)]
     listener: ListenerHandle,
     /// Per-level sound assets, keyed by content-relative name. Populated at
     /// level install and cleared at unload so it follows level lifetime, like
-    /// textures (`resource_management.md` §7.2). Consumed by the play API
-    /// (Task 4).
+    /// textures (`resource_management.md` §7.2). Consumed by `play`.
     registry: SoundRegistry,
     /// Master → SFX/Music/UI mixer tree plus the per-bus voice budget. The play
     /// API routes sounds to a bus and consults its voice counter.
@@ -194,10 +187,9 @@ pub struct Audio<B: kira::backend::Backend = DefaultBackend> {
 
 impl Audio {
     /// Conservative initial mixer capacity. Sub-tracks back the SFX/Music/UI
-    /// bus tree (Task 2); a handful of listeners covers the single anchor plus
-    /// headroom. Clock/modulator capacities stay at kira defaults — unused so
-    /// far. These bound kira's preallocation, not a hard runtime ceiling we
-    /// expect to hit.
+    /// bus tree; a handful of listeners covers the single anchor plus headroom.
+    /// Clock/modulator capacities stay at kira defaults — unused so far. These
+    /// bound kira's preallocation, not a hard runtime ceiling we expect to hit.
     const CAPACITIES: Capacities = Capacities {
         sub_track_capacity: 16,
         send_track_capacity: 16,
@@ -207,7 +199,7 @@ impl Audio {
     };
 
     /// Identity orientation `[x, y, z, w]`. The listener is re-oriented each
-    /// frame in a later task; init just needs a valid quaternion.
+    /// frame in `update`; init just needs a valid quaternion.
     const IDENTITY_ORIENTATION: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 
     /// Build the manager on the default (cpal) backend and create the listener
@@ -251,16 +243,16 @@ impl Audio {
 /// sound device.
 impl<B: kira::backend::Backend> Audio<B> {
     /// Set the runtime volume of a mixer bus, in decibels (0 dB = unity gain,
-    /// negative attenuates, positive boosts). Applied instantly. The public
-    /// volume control for SFX/Music/UI; delegates to the bus tree.
+    /// negative attenuates, positive boosts). The public volume control for
+    /// SFX/Music/UI; delegates to the bus tree.
     #[allow(dead_code)]
     pub fn set_bus_volume(&mut self, bus: BusId, decibels: f32) {
         self.buses.set_volume(bus, decibels);
     }
 
     /// Reserve a voice slot on `bus`, returning `true` on success (count
-    /// incremented) or `false` when the bus is at its cap. The play API (Task 4)
-    /// calls this before starting a sound and drops-and-logs on `false`.
+    /// incremented) or `false` when the bus is at its cap. `play` calls this
+    /// before starting a sound and drops-and-logs on `false`.
     #[allow(dead_code)]
     pub(crate) fn try_acquire_voice(&mut self, bus: BusId) -> bool {
         self.buses.try_acquire_voice(bus)
@@ -295,8 +287,8 @@ impl<B: kira::backend::Backend> Audio<B> {
         self.registry.clear();
     }
 
-    /// The per-level sound registry, for the play API (Task 4). Read-only so
-    /// callers resolve `SoundRequest::sound` keys to loaded entries.
+    /// The per-level sound registry. Read-only so callers resolve
+    /// `SoundRequest::sound` keys to loaded entries.
     #[allow(dead_code)]
     pub(crate) fn registry(&self) -> &SoundRegistry {
         &self.registry
@@ -316,7 +308,6 @@ impl<B: kira::backend::Backend> Audio<B> {
     /// A `looping` request applies a whole-clip loop region so the sound repeats
     /// until `stop`; it therefore holds its voice indefinitely (the finished-voice
     /// sweep never reclaims a looping sound, which never reaches `Stopped`).
-    #[allow(dead_code)]
     pub fn play(&mut self, req: SoundRequest) -> Option<SoundHandle> {
         let bus = match parse_bus(&req.bus) {
             Some(bus) => bus,
@@ -336,12 +327,11 @@ impl<B: kira::backend::Backend> Audio<B> {
         // of the immutable registry borrow.
         let playable = match self.registry.get(&req.sound) {
             Some(LoadedSound::Static(data)) => Playable::Static(data.as_ref().clone()),
-            Some(LoadedSound::Streaming { .. }) => {
-                match self
-                    .registry
-                    .get(&req.sound)
-                    .and_then(LoadedSound::open_streaming)
-                {
+            Some(entry @ LoadedSound::Streaming { .. }) => {
+                // `open_streaming` does blocking disk I/O on this thread.
+                // Acceptable for the current smoke-trigger use; revisit when
+                // gameplay events route through `play` at goal-4 scale.
+                match entry.open_streaming() {
                     Some(data) => Playable::Streaming(data),
                     // `open_streaming` already warned; nothing acquired yet.
                     None => return None,
@@ -408,9 +398,9 @@ impl<B: kira::backend::Backend> Audio<B> {
     }
 
     /// Stop a sound started via [`play`](Self::play) and release its voice slot.
-    /// Stops the kira handle immediately (zero-length default tween) and drops it
-    /// from the active table. A no-op if `handle` is unknown — already finished
-    /// and reclaimed, or never minted by this `Audio`.
+    /// The voice is removed from the active table immediately; kira applies its
+    /// default ~10 ms tween to fade the audio out. A no-op if `handle` is
+    /// unknown — already finished and reclaimed, or never minted by this `Audio`.
     #[allow(dead_code)]
     pub fn stop(&mut self, handle: SoundHandle) {
         if let Some(bus) = self.voices.remove_and_stop(handle, Tween::default()) {
@@ -432,7 +422,6 @@ impl<B: kira::backend::Backend> Audio<B> {
     /// `dt` is the frame delta in seconds. Spatialization is out of scope for now;
     /// the listener pose is updated instantly (no tween) and `dt` is currently
     /// unused beyond satisfying the per-frame contract.
-    #[allow(dead_code)]
     pub fn update(&mut self, listener: ListenerState, _dt: f32) {
         // Anchor the listener to the camera. Position as a primitive array;
         // orientation as a kira-convention quaternion built from forward/up.
@@ -448,8 +437,8 @@ impl<B: kira::backend::Backend> Audio<B> {
     }
 
     /// Drop the manager, stopping the audio thread and releasing the device.
-    /// Consumes `self`; equivalent to letting `Audio` fall out of scope.
-    /// Wired into the app shutdown path by a later task.
+    /// Production teardown happens via `Drop` when `App` exits — `shutdown` is
+    /// for deterministic cleanup (e.g. tests).
     #[allow(dead_code)]
     pub fn shutdown(self) {
         // Dropping `manager` (and `listener`) tears down the kira backend.

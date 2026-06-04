@@ -49,8 +49,9 @@ impl KiraVoice {
         }
     }
 
-    /// Stop playback with the given tween (immediate when `Tween::default()`
-    /// fade-out is zero-length — see `Audio::stop`).
+    /// Stop playback with the given tween. The voice is removed from the table
+    /// immediately; kira applies its default ~10 ms tween to the audio fade.
+    #[allow(dead_code)]
     fn stop(&mut self, tween: Tween) {
         match self {
             KiraVoice::Static(h) => h.stop(tween),
@@ -106,6 +107,7 @@ impl VoiceTable {
     /// Stop and remove the voice for `id`, returning the bus whose counter must
     /// be released. `None` if the id is unknown (already finished or never
     /// existed) — `stop` is a no-op in that case.
+    #[allow(dead_code)]
     pub(crate) fn remove_and_stop(&mut self, id: SoundHandle, tween: Tween) -> Option<BusId> {
         let mut active = self.voices.remove(&id)?;
         active.voice.stop(tween);

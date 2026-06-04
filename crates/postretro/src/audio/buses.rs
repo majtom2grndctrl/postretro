@@ -65,9 +65,9 @@ impl BusId {
     }
 }
 
-/// Per-bus active-voice tally with a fixed cap. The play path (Task 4) reserves
-/// a slot before starting a sound and releases it when the sound finishes;
-/// `stop`/cleanup decrements.
+/// Per-bus active-voice tally with a fixed cap. `play` reserves a slot before
+/// starting a sound and releases it when the sound finishes; `stop`/cleanup
+/// decrements.
 #[derive(Debug, Default)]
 struct VoiceCounter {
     active: usize,
@@ -143,14 +143,16 @@ impl BusTree {
     }
 
     /// Set a bus's runtime volume in decibels. 0 dB is unity, negative
-    /// attenuates, positive boosts. Applied instantly (no fade).
+    /// attenuates, positive boosts. The bus counter update is immediate; kira
+    /// applies its default ~10 ms tween to the audio fade.
+    #[allow(dead_code)]
     pub(crate) fn set_volume(&mut self, bus: BusId, decibels: f32) {
         self.tracks[bus.index()].set_volume(decibels, Tween::default());
     }
 
     /// Try to reserve a voice slot on `bus`. Returns `true` and increments the
     /// active count on success; returns `false` (count unchanged) when the bus
-    /// is at its cap. The play path (Task 4) drops-and-logs on `false`.
+    /// is at its cap. `play` drops-and-logs on `false`.
     pub(crate) fn try_acquire_voice(&mut self, bus: BusId) -> bool {
         let cap = bus.voice_cap();
         let counter = &mut self.counters[bus.index()];
@@ -174,6 +176,7 @@ impl BusTree {
     }
 
     /// Current active-voice count on `bus`.
+    #[allow(dead_code)]
     pub(crate) fn active_voices(&self, bus: BusId) -> usize {
         self.counters[bus.index()].active
     }
@@ -185,7 +188,9 @@ impl BusTree {
     /// drifting past the conservative total the subsystem was designed for, so
     /// a `play` accepted by the voice counter always finds a kira slot.
     fn caps_within_capacity() -> bool {
-        // Provisioned headroom for simultaneous voices across all buses.
+        // Advisory self-imposed sanity bound, NOT a kira-derived global limit —
+        // the real no-silent-drop guarantee is the per-track `sound_capacity >=
+        // voice_cap` invariant. Only checked via `debug_assert`.
         // Current caps sum to 32 + 4 + 8 = 44.
         const MAX_TOTAL_VOICES: usize = 64;
         let sum: usize = BusId::ALL.iter().map(|bus| bus.voice_cap()).sum();

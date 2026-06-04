@@ -1,8 +1,8 @@
 // Sound asset loading and the per-level sound registry. Resolves paths under
 // `content/<mod>/_sounds/`, decodes SFX in memory (static) and probes music for
 // streaming, and holds the result keyed by content-relative name. Consumed by
-// the play API (Task 4). Load and decode failures degrade gracefully: a missing
-// or undecodable file logs an `[Audio]` warning, is skipped, and never panics.
+// `play`. Load and decode failures degrade gracefully: a missing or undecodable
+// file logs an `[Audio]` warning, is skipped, and never panics.
 // See: context/lib/audio.md · context/lib/resource_management.md §7.2
 
 use std::collections::HashMap;
@@ -34,10 +34,9 @@ const SOUNDS_DIR: &str = "_sounds";
 ///   missing asset rather than failing the first time it is triggered.
 pub(crate) enum LoadedSound {
     /// Decode-in-memory clip; clone per playback (cheap Arc bump). The inner
-    /// data is read by the play API in Task 4 (and by tests via `matches!`).
-    /// Boxed because `StaticSoundData` (with its settings) is far larger than
-    /// the `Streaming` variant — keeps the enum small (clippy::large_enum_variant).
-    #[allow(dead_code)]
+    /// data is read by `play` (and by tests via `matches!`). Boxed because
+    /// `StaticSoundData` (with its settings) is far larger than the `Streaming`
+    /// variant — keeps the enum small (clippy::large_enum_variant).
     Static(Box<StaticSoundData>),
     /// Stream-from-disk track; re-opened from this path for each playback.
     Streaming { path: PathBuf },
@@ -47,8 +46,7 @@ impl LoadedSound {
     /// Re-open a streaming entry for playback. Returns `None` (with an `[Audio]`
     /// warning) if the file became unreadable since load. Static entries return
     /// `None` — callers play those by cloning the `StaticSoundData` directly.
-    /// Consumed by the play API in Task 4.
-    #[allow(dead_code)]
+    /// Consumed by `play`.
     pub(crate) fn open_streaming(&self) -> Option<StreamingSoundData<kira::sound::FromFileError>> {
         match self {
             LoadedSound::Static(_) => None,
@@ -97,8 +95,7 @@ impl SoundRegistry {
 
     /// Look up a loaded sound by its content-relative key. Returns `None` if no
     /// sound registered under that key (e.g. it failed to decode and was
-    /// skipped). Consumed by the play API in Task 4.
-    #[allow(dead_code)]
+    /// skipped). Consumed by `play`.
     pub(crate) fn get(&self, key: &str) -> Option<&LoadedSound> {
         self.sounds.get(key)
     }
@@ -161,9 +158,18 @@ impl SoundRegistry {
 
         if is_streaming(&key) {
             // Probe-decode so an undecodable music file degrades at load time;
-            // the playable entry re-opens the path per playback.
+            // the playable entry re-opens the path per playback. Re-opening does
+            // blocking disk I/O on the calling thread; acceptable at level-load
+            // time but revisit if streaming assets are loaded mid-frame.
             match StreamingSoundData::from_file(path) {
                 Ok(_probe) => {
+                    if self.sounds.contains_key(&key) {
+                        log::warn!(
+                            "[Audio] registry key '{}' already occupied — overwriting with '{}'",
+                            key,
+                            path.display(),
+                        );
+                    }
                     self.sounds.insert(
                         key,
                         LoadedSound::Streaming {
@@ -181,6 +187,13 @@ impl SoundRegistry {
         } else {
             match StaticSoundData::from_file(path) {
                 Ok(data) => {
+                    if self.sounds.contains_key(&key) {
+                        log::warn!(
+                            "[Audio] registry key '{}' already occupied — overwriting with '{}'",
+                            key,
+                            path.display(),
+                        );
+                    }
                     self.sounds.insert(key, LoadedSound::Static(Box::new(data)));
                 }
                 Err(err) => {

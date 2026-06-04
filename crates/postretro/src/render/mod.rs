@@ -237,19 +237,12 @@ pub enum SdfShadowMode {
     // is sane at edges/corners vs garbage. Diagnostic only — remove with the
     // rest of the `// TEMP DEBUG:` markers.
     VisualizeNormals = 4,
-    // TEMP DEBUG: dynamic spot shadow-map visualization. For the primary spot
-    // shadow slot (0), paints R = stored occluder depth, G = this fragment's own
-    // light-space depth (both remapped to spread the [0.95,1] range), magenta =
-    // outside slot 0's frustum. R≈G across a surface means the map holds only
-    // that surface (occluder missing / empty map); R clearly < G behind an
-    // occluder means the occluder IS in the map. Diagnostic only.
-    VisualizeSpotShadow = 5,
 }
 
 impl SdfShadowMode {
     /// All variants in display order. Used by the debug UI dropdown.
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
-    pub const ALL_VARIANTS: [SdfShadowMode; 6] = [
+    pub const ALL_VARIANTS: [SdfShadowMode; 5] = [
         SdfShadowMode::On,
         SdfShadowMode::Off,
         SdfShadowMode::Visualize,
@@ -257,8 +250,6 @@ impl SdfShadowMode {
         SdfShadowMode::VisualizeDebugPaths,
         // TEMP DEBUG: SDF shadow path visualization.
         SdfShadowMode::VisualizeNormals,
-        // TEMP DEBUG: dynamic spot shadow-map visualization.
-        SdfShadowMode::VisualizeSpotShadow,
     ];
 
     #[allow(dead_code)]
@@ -271,8 +262,6 @@ impl SdfShadowMode {
             SdfShadowMode::VisualizeDebugPaths => "Visualize: debug paths",
             // TEMP DEBUG: SDF shadow path visualization.
             SdfShadowMode::VisualizeNormals => "Visualize: normals",
-            // TEMP DEBUG: dynamic spot shadow-map visualization.
-            SdfShadowMode::VisualizeSpotShadow => "Visualize: spot shadow map",
         }
     }
 }
@@ -1860,23 +1849,6 @@ impl Renderer {
             label: Some("Spot Shadow Shader"),
             source: wgpu::ShaderSource::Wgsl(SPOT_SHADOW_SHADER_SOURCE.into()),
         });
-        // Shadow depth bias. These spots can graze surfaces at steep incidence,
-        // where the slope-scaled term dominates and over-biasing detaches the
-        // shadow (peter-panning to the point of vanishing). Tunable via env so
-        // the bias can be A/B'd against a live scene without a recompile; set
-        // both to 0 to see the un-biased shadow (expect acne).
-        let shadow_bias_constant = std::env::var("POSTRETRO_SHADOW_BIAS_CONST")
-            .ok()
-            .and_then(|v| v.trim().parse::<i32>().ok())
-            .unwrap_or(2);
-        let shadow_bias_slope = std::env::var("POSTRETRO_SHADOW_BIAS_SLOPE")
-            .ok()
-            .and_then(|v| v.trim().parse::<f32>().ok())
-            .unwrap_or(1.5);
-        log::info!(
-            "[ShadowBias] constant={shadow_bias_constant} slope_scale={shadow_bias_slope} \
-             (override with POSTRETRO_SHADOW_BIAS_CONST / POSTRETRO_SHADOW_BIAS_SLOPE)"
-        );
         let shadow_depth_pipeline =
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("Spot Shadow Depth Pipeline"),
@@ -1907,8 +1879,8 @@ impl Renderer {
                     depth_compare: Some(wgpu::CompareFunction::Less),
                     stencil: wgpu::StencilState::default(),
                     bias: wgpu::DepthBiasState {
-                        constant: shadow_bias_constant,
-                        slope_scale: shadow_bias_slope,
+                        constant: 2,
+                        slope_scale: 1.5,
                         clamp: 0.0,
                     },
                 }),
@@ -3133,41 +3105,6 @@ impl Renderer {
             &self.shadow_candidate_influences,
         );
 
-        // Diagnostic: per-spot eligibility breakdown. For each spot candidate,
-        // show the three gates (leaf-reachable, brightness, camera-proximity
-        // frustum) and the resulting slot (4294967295 = none). A spot that is
-        // bright and leaf-ok but unslotted tells us which gate dropped it.
-        if log::log_enabled!(log::Level::Debug) {
-            for (i, light) in self.shadow_candidate_lights.iter().enumerate() {
-                if light.light_type != crate::prl::LightType::Spot {
-                    continue;
-                }
-                let leaf_ok = light.leaf_index != ALPHA_LIGHT_LEAF_UNASSIGNED
-                    && (light_reachable_leaf_mask.is_empty()
-                        || ((light.leaf_index as usize) < light_reachable_leaf_mask.len()
-                            && light_reachable_leaf_mask[light.leaf_index as usize]));
-                let bright =
-                    level_brightness_for_candidate(&self.level_lights, light, effective_brightness)
-                        .unwrap_or(1.0);
-                let light_pos = Vec3::new(
-                    light.origin[0] as f32,
-                    light.origin[1] as f32,
-                    light.origin[2] as f32,
-                );
-                let dist = (light_pos - camera_position).length();
-                let frustum_ok = self
-                    .shadow_candidate_influences
-                    .get(i)
-                    .map(|inf| inf.is_in_frustum_approx(camera_position))
-                    .unwrap_or(true);
-                log::debug!(
-                    "[ShadowElig] spot {i} leaf_ok={leaf_ok} bright={bright:.3} dist={dist:.1} falloff={:.1} frustum_ok={frustum_ok} slot={}",
-                    light.falloff_range,
-                    slot_assignment[i],
-                );
-            }
-        }
-
         // The GPU lights buffer is keyed on `level_lights`. Translate slot
         // assignments from candidate-index space into `level_lights`-index
         // space by identity-matching (origin + light_type). Candidates not
@@ -3210,48 +3147,6 @@ impl Renderer {
             self.lights_pack_scratch = scratch;
         }
 
-        // Diagnostic: bisect the candidate→level→buffer slot pipeline. Logs the
-        // candidate-space slots (what `rank_lights` produced), the level-space
-        // slots (what `slot_assignment_for_level_lights` translated them to —
-        // the index space the forward shader's `lights_buffer` uses), and the
-        // actual slot bytes now sitting in the uploaded buffer mirror. If the
-        // level/buffer columns are empty while candidate is non-empty, the slot
-        // never reaches the shader (CPU bug); if all three agree, the break is
-        // GPU-side (matrix/depth/sample). Enable with `RUST_LOG=postretro=debug`.
-        if log::log_enabled!(log::Level::Debug) {
-            let cand: Vec<(usize, u32)> = slot_assignment
-                .iter()
-                .enumerate()
-                .filter(|&(_, &s)| s != crate::lighting::spot_shadow::NO_SHADOW_SLOT)
-                .map(|(i, &s)| (i, s))
-                .collect();
-            if !cand.is_empty() {
-                let lvl: Vec<(usize, u32)> = level_slots
-                    .iter()
-                    .enumerate()
-                    .filter(|&(_, &s)| s != crate::lighting::spot_shadow::NO_SHADOW_SLOT)
-                    .map(|(i, &s)| (i, s))
-                    .collect();
-                // Read back the slot field actually present in the uploaded mirror
-                // for each level light that should be shadowed.
-                let buf: Vec<(usize, u32)> = lvl
-                    .iter()
-                    .filter_map(|&(li, _)| {
-                        let off = li * crate::lighting::GPU_LIGHT_SIZE
-                            + crate::lighting::SHADOW_SLOT_BYTE_OFFSET;
-                        let bytes = self.last_lights_upload.get(off..off + 4)?;
-                        Some((li, u32::from_ne_bytes(bytes.try_into().ok()?)))
-                    })
-                    .collect();
-                log::debug!(
-                    "[ShadowDbg] cand_slots={cand:?} level_slots={lvl:?} buffer_slots={buf:?} mirror_len={} expected={expected_len} level_lights={} candidates={}",
-                    self.last_lights_upload.len(),
-                    self.level_lights.len(),
-                    self.shadow_candidate_lights.len(),
-                );
-            }
-        }
-
         // Upload slot matrices to both fragment-side storage (group 5 binding 2)
         // and vertex-side dynamic-offset uniform buffer. Matrices come from
         // the candidate list — that's the index space `slot_assignment` is
@@ -3269,44 +3164,6 @@ impl Renderer {
             let m = crate::lighting::spot_shadow::light_space_matrix(
                 &self.shadow_candidate_lights[light_idx],
             );
-            // Diagnostic: project the camera (a point standing in the lit room)
-            // and a point 5 m down the light's own axis through this slot's
-            // matrix. If `cam_uv` is far outside [0,1], or `cam_w <= 0`, or
-            // `cam_ndcz` is outside [0,1], the shadow frustum does not cover the
-            // room — the depth map is effectively empty and `sample_spot_shadow`
-            // returns 1.0 (lit) everywhere. The axis point should land near
-            // uv (0.5, 0.5) for any sane matrix.
-            if log::log_enabled!(log::Level::Debug) {
-                let light = &self.shadow_candidate_lights[light_idx];
-                let eye = Vec3::new(
-                    light.origin[0] as f32,
-                    light.origin[1] as f32,
-                    light.origin[2] as f32,
-                );
-                let mut dir = Vec3::new(
-                    light.cone_direction[0],
-                    light.cone_direction[1],
-                    light.cone_direction[2],
-                );
-                if dir.length_squared() > 1e-8 {
-                    dir = dir.normalize();
-                }
-                let project = |p: Vec3| {
-                    let clip = m * p.extend(1.0);
-                    let ndc = if clip.w.abs() > 1e-9 {
-                        clip.truncate() / clip.w
-                    } else {
-                        clip.truncate()
-                    };
-                    (clip.w, ndc.z, ndc.x * 0.5 + 0.5, ndc.y * -0.5 + 0.5)
-                };
-                let (cw, cz, cu, cv) = project(camera_position);
-                let (_aw, az, au, av) = project(eye + dir * 5.0);
-                log::debug!(
-                    "[ShadowMat] slot={slot} eye={eye:?} falloff={:.2} | cam_uv=({cu:.3},{cv:.3}) cam_w={cw:.3} cam_ndcz={cz:.4} | axis5_uv=({au:.3},{av:.3}) axis5_ndcz={az:.4}",
-                    light.falloff_range,
-                );
-            }
             let cols = m.to_cols_array();
             let mut bytes = [0u8; MAT_BYTES];
             for (i, v) in cols.iter().enumerate() {

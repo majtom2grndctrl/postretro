@@ -141,19 +141,33 @@ cite the roadmap language that settles them.
   (later) is the consumer. (Still requires enabling the `gltf` `extras` cargo feature — §3.5.)
 - **(3.6) Coordinate convention → verified identity** (see §3 table); only the visual gate remains.
 
-**The one genuine decision left for a human:**
+**(3.1) Model-PNG bake discovery → NOT this spec; rides with the next task. Resolved by zoom-out.**
 
-1. **(3.1) Model-PNG bake discovery trigger.** The roadmap settles the *architecture*: the `.prm`
-   pipeline bakes model PNGs "**unchanged**," "implicit during prl-build," and this task is "the
-   runtime-loader half … **without the bake stage**." So this task is runtime-only — compute the
-   `blake3(png_bytes)` key from the model's material PNG and load the existing `.prm`; the
-   content-addressed cache makes a model PNG indistinguishable from a map texture once baked (which
-   is exactly what the slice's hardcoded `STAGED_MATERIAL_KEYS` stands in for). The residual: **how
-   prl-build comes to bake a model's PNGs** — walk the glTF material URIs during the build vs. scan
-   a model-assets dir (like the texture-collection scan). Leans toward feeding model-referenced PNGs
-   into the existing scan (minimal, content-addressed, "unchanged"), but whether that small
-   prl-build extension rides *in* this task or just beside it is the call to make, since "without
-   the bake stage" can be read as deliberately excluding it.
+Reflecting at all three levels dissolves this rather than deciding it:
+- **Spec role:** this task is "the runtime-loader half … **without the bake stage**" — baking is
+  out by definition. Material resolution *here* = the runtime act: compute `blake3(png_bytes)` and
+  load the existing `.prm` (same recipe as `filename_key_for`; what `STAGED_MATERIAL_KEYS` stands in
+  for). That runtime content-hash path is the real, permanent deliverable.
+- **Milestone role:** prl-build only gains a *model to bake* when models become build-visible — i.e.
+  at **classname spawning**, which the roadmap files under the **next** task (*Mesh render pass +
+  `MeshComponent`*). At this task's stage the model sits behind the hardcoded seam; the build has no
+  map-side model reference to walk. The discovery trigger's natural anchor is the next task (where
+  map entities carry model paths prl-build can open and walk for material URIs).
+- **Project role:** "baked over computed" / "near-instant boot" forbids runtime image decode
+  (already the `import_buffers` contract item) and mandates pre-baked `.prm` — but does not force
+  bake-*discovery* into the loader.
+
+→ **This spec is runtime resolution only.** Ship the real content-hash path now; satisfy the model's
+`.prm` for bring-up exactly as the slice does (pre-staged / asset placed where the existing texture
+scan finds it), and let the next task's classname-spawn work automate discovery (walk glTF material
+URIs) and retire the crutch. Correctness-preserving, no throwaway code.
+
+> Honest caveat (bring-up detail, not architecture): if live content-hashing replaces
+> `STAGED_MATERIAL_KEYS` before the next task automates the bake, an un-baked model falls back to
+> placeholder textures. Keep the pre-staged/placed-asset bake satisfied during bring-up to avoid a
+> visible regression from the slice.
+
+**Net: this spec has zero blocking open questions** — all resolved from the roadmap + a code check.
 
 ---
 

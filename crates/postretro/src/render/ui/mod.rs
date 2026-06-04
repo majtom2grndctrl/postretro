@@ -9,6 +9,10 @@ use wgpu::util::DeviceExt;
 
 use crate::ui_texture::UiTexture;
 
+/// Logical-reference scaling model + device-pixel projection/snap. Pure CPU,
+/// no GPU handles — produces a `UiDrawList` the pass uploads at encode time.
+pub(crate) mod layout;
+
 const UI_QUAD_WGSL: &str = include_str!("../../shaders/ui_quad.wgsl");
 
 /// 9 regions * 2 triangles * 3 vertices. The vertex shader keys off
@@ -63,7 +67,12 @@ impl UiInstance {
     #[cfg(test)]
     pub fn corner_rects(&self) -> [[f32; 4]; 4] {
         let (x, y, w, h) = (self.rect[0], self.rect[1], self.rect[2], self.rect[3]);
-        let (ml, mt, mr, mb) = (self.margin[0], self.margin[1], self.margin[2], self.margin[3]);
+        let (ml, mt, mr, mb) = (
+            self.margin[0],
+            self.margin[1],
+            self.margin[2],
+            self.margin[3],
+        );
         // Clamp margins so opposing corners never overrun the rect — matches
         // `axis_bounds` in ui_quad.wgsl.
         let clamp_axis = |full: f32, lo: f32, hi: f32| -> (f32, f32) {
@@ -75,10 +84,10 @@ impl UiInstance {
         let (cl, cr) = clamp_axis(w, ml, mr);
         let (ct, cb) = clamp_axis(h, mt, mb);
         [
-            [x, y, cl, ct],                       // top-left
-            [x + w - cr, y, cr, ct],              // top-right
-            [x, y + h - cb, cl, cb],              // bottom-left
-            [x + w - cr, y + h - cb, cr, cb],     // bottom-right
+            [x, y, cl, ct],                   // top-left
+            [x + w - cr, y, cr, ct],          // top-right
+            [x, y + h - cb, cl, cb],          // bottom-left
+            [x + w - cr, y + h - cb, cr, cb], // bottom-right
         ]
     }
 }
@@ -305,8 +314,7 @@ impl UiPass {
             width: 1,
             height: 1,
         };
-        let white_view =
-            upload_ui_texture(device, queue, &white).create_view(&Default::default());
+        let white_view = upload_ui_texture(device, queue, &white).create_view(&Default::default());
 
         let white_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("UI White Panel Bind Group"),
@@ -402,11 +410,7 @@ impl UiPass {
         // upload fits at offset 0. (Batches are drawn sequentially with the
         // buffer rewritten between them — fine because each draw is recorded
         // before the next overwrite within the same pass.)
-        let max_instances = batches
-            .iter()
-            .map(|b| b.list.len())
-            .max()
-            .unwrap_or(0);
+        let max_instances = batches.iter().map(|b| b.list.len()).max().unwrap_or(0);
         if max_instances > self.instance_capacity {
             self.grow_instance_buffer(device, max_instances);
         }
@@ -460,11 +464,7 @@ impl UiPass {
 /// stays neutral). Mirrors `render::splash::upload_splash_texture` — kept local
 /// so the UI pass owns its own upload path. Used here for the 1×1 white texel;
 /// the logo image reuses `render::splash::upload_splash_texture` in Task 4.
-fn upload_ui_texture(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    tex: &UiTexture,
-) -> wgpu::Texture {
+fn upload_ui_texture(device: &wgpu::Device, queue: &wgpu::Queue, tex: &UiTexture) -> wgpu::Texture {
     let size = wgpu::Extent3d {
         width: tex.width,
         height: tex.height,
@@ -574,8 +574,8 @@ mod tests {
 
     #[test]
     fn ui_quad_wgsl_parses_and_validates() {
-        let module = naga::front::wgsl::parse_str(UI_QUAD_WGSL)
-            .expect("ui_quad.wgsl should parse as WGSL");
+        let module =
+            naga::front::wgsl::parse_str(UI_QUAD_WGSL).expect("ui_quad.wgsl should parse as WGSL");
         let has_vs = module
             .entry_points
             .iter()

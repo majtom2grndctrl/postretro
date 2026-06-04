@@ -869,7 +869,7 @@ pub struct Renderer {
     /// per-frame CPU cost of `sample_clip` (one skeleton → palette). Accumulated
     /// every frame and logged as a min/mean/max summary once per
     /// `POSE_SAMPLE_LOG_INTERVAL` samples, NEVER per frame (the hot path stays
-    /// quiet per development_guide §6). `context/plans/in-progress/M10--model-pipeline-slice/findings.md`
+    /// quiet per development_guide §6). `context/plans/done/M10--model-pipeline-slice/findings.md`
     /// projects the mean to wave scale; this is CPU-side ONLY (GPU skinning +
     /// palette upload at N instances is the many-instance task's measurement,
     /// unmeasured here).

@@ -26,7 +26,7 @@
 // therefore the entity transform applied directly. (A model authored facing a
 // particular axis may need a yaw baked into the entity transform — that is
 // gameplay-facing, not a basis bug; see
-// `context/plans/in-progress/M10--model-pipeline-slice/findings.md`
+// `context/plans/done/M10--model-pipeline-slice/findings.md`
 // (coordinate-system read).)
 
 use wgpu::util::DeviceExt;

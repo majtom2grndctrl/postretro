@@ -26,7 +26,6 @@ mod sdf_light_select_test;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
 
 use anyhow::{Context, Result};
 use glam::{Mat4, Vec3};
@@ -761,10 +760,6 @@ pub struct Renderer {
     debug_prev_bitmask: (u32, u32),
     debug_prev_vp_hash: u32,
     debug_prev_visible: (&'static str, usize),
-
-    /// `app_start.elapsed()` feeds the `time` uniform; shaders wrap it via
-    /// `fract(time / period + phase)` for SH animation curves.
-    app_start: Instant,
 
     /// Idle (no draw) on maps with no registered collections. See §7.4.
     smoke_pass: SmokePass,
@@ -2081,7 +2076,6 @@ impl Renderer {
             debug_prev_bitmask: (u32::MAX, u32::MAX),
             debug_prev_vp_hash: u32::MAX,
             debug_prev_visible: ("init", usize::MAX),
-            app_start: Instant::now(),
             smoke_pass,
             splash_pipeline,
             fog,
@@ -2779,16 +2773,28 @@ impl Renderer {
         self.is_surface_configured = true;
     }
 
-    pub fn update_per_frame_uniforms(&mut self, view_proj: Mat4, camera_position: Vec3) {
+    pub fn update_per_frame_uniforms(
+        &mut self,
+        view_proj: Mat4,
+        camera_position: Vec3,
+        script_time: f32,
+    ) {
+        // Animation clock is the level-relative `script_time` (the same clock
+        // the light bridge evaluates animation curves against on the CPU). The
+        // GPU scripted-light pulse, SH animation, and animated-lightmap compose
+        // all wrap this via `fract(time / period + phase)`. Using wall-clock
+        // here instead would desync the GPU-rendered brightness from the CPU
+        // `effective_brightness` that gates shadow-pool eligibility, so the pool
+        // would shadow lights other than the ones actually lit on screen.
         #[cfg(not(feature = "dev-tools"))]
-        let time = self.app_start.elapsed().as_secs_f32();
+        let time = script_time;
         // Dev-tools: hold `time` when frozen (debug aid), else track live time so
         // toggling the freeze on holds the current animation phase.
         #[cfg(feature = "dev-tools")]
         let time = if self.freeze_time {
             self.frozen_time
         } else {
-            self.frozen_time = self.app_start.elapsed().as_secs_f32();
+            self.frozen_time = script_time;
             self.frozen_time
         };
         // The per-light SDF visibility multiply is enabled whenever a baked SDF

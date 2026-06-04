@@ -996,7 +996,11 @@ impl ApplicationHandler for App {
                     let point_bytes = self.fog_volume_bridge.update_points(&all_lights);
                     renderer.upload_fog_points(point_bytes);
 
-                    renderer.update_per_frame_uniforms(view_proj, interp.position);
+                    renderer.update_per_frame_uniforms(
+                        view_proj,
+                        interp.position,
+                        self.script_time as f32,
+                    );
 
                     if renderer.is_ready() {
                         // Particle render — packs `SpriteInstance` bytes per

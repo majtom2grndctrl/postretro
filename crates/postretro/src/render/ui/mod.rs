@@ -1,0 +1,961 @@
+// UI render pass: hand-rolled instanced quad / 9-slice pipeline for panels and
+// images. One instance per panel/image carries (rect, UV rect, color, 9-slice
+// margin); the vertex stage expands each instance into 9 regions. All wgpu lives
+// here per renderer-owns-GPU. Text is glyphon's own pipeline (Task 3), not this.
+// See: context/plans/in-progress/M13--ui-render-pass-slice
+
+use bytemuck::{Pod, Zeroable};
+use glyphon::{
+    Attrs, Buffer as TextBuffer, Cache as GlyphCache, Color as GlyphColor, Family, FontSystem,
+    Metrics, Resolution, Shaping, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
+    Viewport,
+};
+use wgpu::util::DeviceExt;
+
+use crate::ui_texture::UiTexture;
+
+/// Logical-reference scaling model + device-pixel projection/snap. Pure CPU,
+/// no GPU handles — produces a `UiDrawList` the pass uploads at encode time.
+pub(crate) mod layout;
+
+/// Hardcoded splash content descriptor behind the one named builder seam
+/// (`splash::build_splash_descriptor`). Goal B/G1 replace its body; the renderer
+/// drives the UI pass from it.
+pub(crate) mod splash;
+
+/// Hard-gate CPU draw-list / layout assertion for the splash (Task 6a): pins the
+/// device-pixel quad rects (anchor, scale, snap, 9-slice corners) the splash
+/// projects to. Pure CPU — no GPU adapter.
+#[cfg(test)]
+mod splash_layout_test;
+
+/// Optional headless golden (Task 6b): renders the splash UI pass into an
+/// offscreen target and asserts tolerance-scoped structural properties of the
+/// readback. Self-skips when no GPU adapter is present — never the hard gate.
+#[cfg(test)]
+mod splash_golden_test;
+
+/// Headless regression for the multi-batch instance-buffer clobber: encodes two
+/// non-empty batches into disjoint screen regions and asserts each region keeps
+/// its own batch's color. Self-skips when no GPU adapter is present.
+#[cfg(test)]
+mod multi_batch_test;
+
+const UI_QUAD_WGSL: &str = include_str!("../../shaders/ui_quad.wgsl");
+
+/// Engine default UI typeface: Inter (SIL Open Font License 1.1). Embedded at
+/// compile time so the engine has no main-thread runtime font file I/O — the
+/// bytes are registered once into glyphon's `FontSystem` in `UiPass::new`. The
+/// license travels alongside the asset at `content/base/fonts/Inter-OFL.txt`.
+const UI_FONT_TTF: &[u8] = include_bytes!("../../../../../content/base/fonts/Inter-Regular.ttf");
+
+/// Font family name inside `UI_FONT_TTF` (the TTF `name` table family record).
+/// `TextArea`s select it by family so glyphon resolves to the embedded face
+/// rather than a system fallback.
+const UI_FONT_FAMILY: &str = "Inter";
+
+/// glyphon shapes against a `Metrics { font_size, line_height }`. UI text here is
+/// single-line, so line height tracks the font size with a small factor for the
+/// ascent/descent the face needs to render uncropped.
+const LINE_HEIGHT_FACTOR: f32 = 1.25;
+
+/// 9 regions * 2 triangles * 3 vertices. The vertex shader keys off
+/// `vertex_index` to expand one instance into the 9-slice geometry; total is
+/// 9 regions × `VERTS_PER_REGION` (= 6u) in `ui_quad.wgsl` = 54.
+const VERTS_PER_INSTANCE: u32 = 54;
+
+/// Per-instance draw record. Layout mirrors `UiInstance` in `ui_quad.wgsl`:
+/// four `vec4<f32>` attributes, tightly packed, no padding. Byte-for-byte
+/// stable so `bytemuck` can cast a slice straight into the instance buffer.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
+pub(crate) struct UiInstance {
+    /// Device-pixel rect: `[x, y, width, height]`, top-left origin.
+    pub rect: [f32; 4],
+    /// UV rect into the bound texture: `[u0, v0, u_width, v_height]`.
+    pub uv_rect: [f32; 4],
+    /// Linear RGBA tint multiplied into the sampled texel.
+    pub color: [f32; 4],
+    /// 9-slice margin in device pixels: `[left, top, right, bottom]`. All zero
+    /// renders a plain stretched quad (the degenerate case).
+    pub margin: [f32; 4],
+}
+
+impl UiInstance {
+    /// Solid-color panel: full UV slice over the bound 1×1 white texel, with an
+    /// optional 9-slice margin. Color is linear RGBA. Production paths build
+    /// instances via `layout::project`; this ctor backs the corner-rect tests.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn panel(rect: [f32; 4], color: [f32; 4], margin: [f32; 4]) -> Self {
+        Self {
+            rect,
+            uv_rect: [0.0, 0.0, 1.0, 1.0],
+            color,
+            margin,
+        }
+    }
+
+    /// Textured image: samples the full bound texture, untinted (white).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn image(rect: [f32; 4]) -> Self {
+        Self {
+            rect,
+            uv_rect: [0.0, 0.0, 1.0, 1.0],
+            color: [1.0, 1.0, 1.0, 1.0],
+            margin: [0.0; 4],
+        }
+    }
+
+    /// CPU-side derivation of the 9-slice corner rects (device pixels) for this
+    /// instance — the four fixed-size corners as `[x, y, w, h]` in order
+    /// top-left, top-right, bottom-left, bottom-right. Mirrors the shader's
+    /// `axis` margin clamp so layout assertions match what the GPU draws.
+    /// Used by tests (and future layout assertions); not consumed by the draw.
+    #[cfg(test)]
+    pub fn corner_rects(&self) -> [[f32; 4]; 4] {
+        let (x, y, w, h) = (self.rect[0], self.rect[1], self.rect[2], self.rect[3]);
+        let (ml, mt, mr, mb) = (
+            self.margin[0],
+            self.margin[1],
+            self.margin[2],
+            self.margin[3],
+        );
+        // Clamp margins so opposing corners never overrun the rect — matches
+        // `axis` in ui_quad.wgsl.
+        let clamp_axis = |full: f32, lo: f32, hi: f32| -> (f32, f32) {
+            let avail = full.max(0.0);
+            let lo_c = lo.clamp(0.0, avail);
+            let hi_c = hi.clamp(0.0, (avail - lo_c).max(0.0));
+            (lo_c, hi_c)
+        };
+        let (cl, cr) = clamp_axis(w, ml, mr);
+        let (ct, cb) = clamp_axis(h, mt, mb);
+        [
+            [x, y, cl, ct],                   // top-left
+            [x + w - cr, y, cr, ct],          // top-right
+            [x, y + h - cb, cl, cb],          // bottom-left
+            [x + w - cr, y + h - cb, cr, cb], // bottom-right
+        ]
+    }
+}
+
+/// Pure CPU draw list — a flat batch of instances sharing one bound texture.
+/// Built with no wgpu call so layout/scaling logic stays GPU-independent
+/// (Task 2 populates it; Task 6 asserts against it). The pass uploads it to the
+/// instance buffer at encode time.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct UiDrawList {
+    pub instances: Vec<UiInstance>,
+}
+
+impl UiDrawList {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push(&mut self, instance: UiInstance) {
+        self.instances.push(instance);
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn clear(&mut self) {
+        self.instances.clear();
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.instances.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.instances.len()
+    }
+}
+
+/// Once-per-frame published read-only snapshot the UI pass reads when it records.
+/// Stored on the `Renderer` via a setter the `App` calls just before each render
+/// call — NOT threaded as a render parameter, so both render signatures stay
+/// stable. In Goal A it carries only the version/tagline line the splash's shaped
+/// text renders, exercising the once-per-frame contract with a real value; B/BIS
+/// widen it with gameplay UI state. Narrow by design — the *shape* is the
+/// contract.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct UiReadSnapshot {
+    /// Version/tagline string the splash shaped-text line renders. Empty on the
+    /// gameplay path in A (no consumer until B/BIS), which still locks the
+    /// once-per-frame setter contract.
+    pub version_line: String,
+}
+
+impl UiReadSnapshot {
+    /// Snapshot carrying the splash version/tagline line.
+    pub fn with_version_line(version_line: impl Into<String>) -> Self {
+        Self {
+            version_line: version_line.into(),
+        }
+    }
+}
+
+/// UI uniform: device viewport in pixels. 16 bytes (vec2 + vec2 pad) to match
+/// `UiUniform` in `ui_quad.wgsl` and satisfy uniform alignment.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+struct UiUniform {
+    viewport: [f32; 2],
+    _pad: [f32; 2],
+}
+
+/// Initial instance-buffer capacity (records). Grows on demand in `encode`.
+const INITIAL_INSTANCE_CAPACITY: usize = 64;
+const INSTANCE_SIZE: usize = std::mem::size_of::<UiInstance>();
+
+/// Instanced quad / 9-slice pass for panels and images. Owns its pipeline, BGL,
+/// sampler, uniform buffer, instance buffer, and a 1×1 white texture so solid
+/// panels and textured images share one instanced batch. Designed for a single
+/// color target with no depth attachment so glyphon (Task 3) can share the pass.
+pub(crate) struct UiPass {
+    pipeline: wgpu::RenderPipeline,
+    bind_group_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    uniform_buffer: wgpu::Buffer,
+    instance_buffer: wgpu::Buffer,
+    instance_capacity: usize,
+    /// 1×1 white texel bound for solid panels (degenerate UV slice). An
+    /// untextured panel and a textured image then share one instanced batch.
+    /// Held to keep the view alive for `white_bind_group`, which references it.
+    #[allow(dead_code)]
+    white_view: wgpu::TextureView,
+    /// Bind group for the white-texel batch (panels). Rebuilt only if the
+    /// uniform buffer changes, which it never does after construction.
+    white_bind_group: wgpu::BindGroup,
+
+    // --- glyphon shaped-text state ---------------------------------------
+    // glyphon ships its OWN pipeline and atlas; none of this is routed through
+    // the quad pipeline above. `TextRenderer::render` records glyphon's draw
+    // INTO the same `begin_render_pass` as the quad draws, AFTER them, so text
+    // composites into the same surface view.
+    /// CPU font database + shaper. The embedded Inter face is registered into it
+    /// once in `new`. `&mut` is needed for shaping, hence stored owned.
+    font_system: FontSystem,
+    /// Per-glyph rasterization cache (CPU). First-glyph rasterization happens on
+    /// the first shaped frame via `prepare`, not pre-warmed here.
+    swash_cache: SwashCache,
+    /// glyphon's shared GPU bind-group/pipeline cache; backs `Viewport`/`Atlas`.
+    /// Held to keep the cache alive for the `Viewport`/`TextAtlas` built from it.
+    #[allow(dead_code)]
+    glyph_cache: GlyphCache,
+    /// Device-resolution uniform glyphon maps glyph positions against. Set from
+    /// the backbuffer size each frame in `encode`.
+    viewport: Viewport,
+    /// glyphon's glyph atlas, built with the sRGB surface format so coverage
+    /// blends correctly against the sRGB swapchain (see `new`).
+    text_atlas: TextAtlas,
+    /// glyphon's text pipeline/draw recorder.
+    text_renderer: TextRenderer,
+}
+
+/// One instanced draw: a draw list plus the bind group for its bound texture.
+/// Panels use the pass's white-texel bind group; images bind their own.
+pub(crate) struct UiBatch<'a> {
+    pub list: &'a UiDrawList,
+    pub bind_group: &'a wgpu::BindGroup,
+}
+
+/// One shaped text line for glyphon to lay out and draw. Positions and font size
+/// arrive already in **device pixels** (device-scaled by the caller, not in
+/// logical-reference units), so glyphon and the quad pipeline share one
+/// coordinate space and text tracks resolution the same way panels do. The
+/// position is NOT integer-snapped — glyphon keeps sub-pixel AA.
+#[derive(Debug, Clone)]
+pub(crate) struct UiText {
+    /// The string to shape and render.
+    pub content: String,
+    /// Top-left baseline-box position in device pixels (`[left, top]`). Not
+    /// snapped — glyphon positions glyphs with sub-pixel precision.
+    pub position: [f32; 2],
+    /// Font size in device pixels (already device-scaled by the caller).
+    pub font_size: f32,
+    /// Glyph color, linear-ish sRGB 0..=255 per channel + alpha. glyphon's
+    /// `TextAtlas` is built with the sRGB surface format so coverage blends in
+    /// the surface color space (see `UiPass::new`).
+    pub color: [u8; 4],
+}
+
+impl UiText {
+    /// Convenience constructor for a single device-positioned line.
+    pub fn new(
+        content: impl Into<String>,
+        position: [f32; 2],
+        font_size: f32,
+        color: [u8; 4],
+    ) -> Self {
+        Self {
+            content: content.into(),
+            position,
+            font_size,
+            color,
+        }
+    }
+}
+
+impl UiPass {
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        surface_format: wgpu::TextureFormat,
+    ) -> Self {
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("UI Quad BGL"),
+            entries: &[
+                // 0: UiUniform (device viewport), read in the vertex stage.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(
+                            std::mem::size_of::<UiUniform>() as u64
+                        ),
+                    },
+                    count: None,
+                },
+                // 1: bound texture (white texel for panels, image for logos).
+                // Float-filterable so the same BGL works for linear sampling.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                // 2: filtering sampler. Must be Filtering to pair with the
+                // Float { filterable: true } texture binding above.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("UI Quad Shader"),
+            source: wgpu::ShaderSource::Wgsl(UI_QUAD_WGSL.into()),
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("UI Quad Pipeline Layout"),
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
+        });
+
+        // Per-instance vertex buffer: the four vec4 attributes of `UiInstance`.
+        // No per-vertex buffer — geometry is generated from `vertex_index`.
+        let instance_layout = wgpu::VertexBufferLayout {
+            array_stride: INSTANCE_SIZE as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 0,
+                    shader_location: 0,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 16,
+                    shader_location: 1,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 32,
+                    shader_location: 2,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 48,
+                    shader_location: 3,
+                },
+            ],
+        };
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("UI Quad Pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[instance_layout],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            // Depth disabled: the UI pass attaches no depth target, so glyphon
+            // (Task 3) can share this single-color-target configuration.
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    // Standard alpha blend over the existing surface contents.
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("UI Quad Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+
+        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("UI Quad Uniform"),
+            contents: bytemuck::bytes_of(&UiUniform {
+                viewport: [1.0, 1.0],
+                _pad: [0.0, 0.0],
+            }),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("UI Quad Instance Buffer"),
+            size: (INITIAL_INSTANCE_CAPACITY * INSTANCE_SIZE) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // 1×1 white texel: solid panels sample this so they share the image
+        // batch's pipeline. White encodes to white under sRGB, so the tint color
+        // passes through untouched. Uploaded as a standard UI RGBA8 texture.
+        let white = UiTexture {
+            data: vec![255, 255, 255, 255],
+            width: 1,
+            height: 1,
+        };
+        let white_view = upload_ui_texture(device, queue, &white).create_view(&Default::default());
+
+        let white_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("UI White Panel Bind Group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&white_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+
+        // --- glyphon state -------------------------------------------------
+        // Build glyphon's own state here so `FontSystem`/`TextAtlas` construction
+        // happens in `Renderer::new` (not on the first shaped frame). Register
+        // the embedded Inter face once. We do NOT pre-rasterize glyphs — the
+        // first-glyph rasterization lands on the first `prepare` (first shaped
+        // frame), so frame 1 of the boot splash does not absorb font-system
+        // construction.
+        let mut font_system = FontSystem::new();
+        // `load_font_data` takes ownership of the bytes; the embedded slice is
+        // compile-time data with no runtime file I/O.
+        font_system.db_mut().load_font_data(UI_FONT_TTF.to_vec());
+
+        let swash_cache = SwashCache::new();
+        let glyph_cache = GlyphCache::new(device);
+        let viewport = Viewport::new(device, &glyph_cache);
+
+        // Color space: build the atlas with the sRGB *surface* format. glyphon's
+        // default `ColorMode::Accurate` then stores colored glyphs in an sRGB
+        // atlas and blends coverage in the surface color space, keeping glyph
+        // coverage physically correct against the sRGB swapchain — edges neither
+        // over- nor under-darkened.
+        let mut text_atlas = TextAtlas::new(device, queue, &glyph_cache, surface_format);
+        let text_renderer = TextRenderer::new(
+            &mut text_atlas,
+            device,
+            wgpu::MultisampleState::default(),
+            None,
+        );
+
+        Self {
+            pipeline,
+            bind_group_layout,
+            sampler,
+            uniform_buffer,
+            instance_buffer,
+            instance_capacity: INITIAL_INSTANCE_CAPACITY,
+            white_view,
+            white_bind_group,
+            font_system,
+            swash_cache,
+            glyph_cache,
+            viewport,
+            text_atlas,
+            text_renderer,
+        }
+    }
+
+    /// Bind group for solid-color panels — samples the 1×1 white texel. Pass
+    /// this as a `UiBatch::bind_group` for the panel batch.
+    pub fn white_bind_group(&self) -> &wgpu::BindGroup {
+        &self.white_bind_group
+    }
+
+    /// Build a bind group for a caller-bound image texture (e.g. the logo). One
+    /// batch per bound texture, so the image draws as a separate instanced draw.
+    pub fn make_texture_bind_group(
+        &self,
+        device: &wgpu::Device,
+        view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("UI Image Bind Group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        })
+    }
+
+    /// Record the UI batches and shaped-text lines into `view`. Single color
+    /// target, no depth, the caller's `load` op controls whether the surface is
+    /// cleared first (splash phase clears to black; the gameplay path loads).
+    ///
+    /// Order matters: quads first, then text. Quad instances upload to the
+    /// instance buffer and draw one instanced batch each; then glyphon's
+    /// `TextRenderer::render` records its own draw INTO THE SAME render pass,
+    /// AFTER the quads, so text composites over the panels/images into the same
+    /// surface view. glyphon's atlas upload + CPU layout (`prepare`) runs BEFORE
+    /// the pass opens (it needs `device`/`queue`, not the pass). With no quads
+    /// and no text the pass still opens so the caller's `load` op lands.
+    ///
+    /// `texts` is empty on the quad-only / no-text path (no text work runs).
+    // The wide signature mirrors a `begin_render_pass` call (target, viewport,
+    // load op, draw lists, text) — splitting it into a builder would obscure the
+    // single-pass contract the splash + gameplay paths both record through.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        viewport: [u32; 2],
+        load: wgpu::LoadOp<wgpu::Color>,
+        batches: &[UiBatch<'_>],
+        texts: &[UiText],
+    ) {
+        queue.write_buffer(
+            &self.uniform_buffer,
+            0,
+            bytemuck::bytes_of(&UiUniform {
+                viewport: [viewport[0] as f32, viewport[1] as f32],
+                _pad: [0.0, 0.0],
+            }),
+        );
+
+        // Give each batch its OWN region of the instance buffer, sized to the
+        // SUM of all batch instance counts. `queue.write_buffer` is a
+        // queue-timeline op: every staged write lands (last-wins per region)
+        // BEFORE the single submitted command buffer executes. Writing each
+        // batch to offset 0 would therefore have every draw read the LAST
+        // batch's data — recording a draw between writes does not snapshot the
+        // buffer, since the writes resolve on the queue timeline, not the
+        // command-recording timeline. Disjoint per-batch regions sidestep this.
+        let total_instances: usize = batches.iter().map(|b| b.list.len()).sum();
+        if total_instances > self.instance_capacity {
+            self.grow_instance_buffer(device, total_instances);
+        }
+
+        // --- Shape + prepare text BEFORE the pass opens --------------------
+        // glyphon shapes each line into a `Buffer`, then `prepare` does CPU
+        // layout + atlas upload. Both must complete before `begin_render_pass`;
+        // the `render` call below only records draw commands. The buffers must
+        // outlive `prepare` (the `TextArea`s borrow them), so they live in this
+        // `Vec` for the duration of `encode`. Empty `texts` => no text work.
+        let text_buffers = self.shape_text(texts, viewport);
+        let prepared = self.prepare_text(device, queue, viewport, texts, &text_buffers);
+
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("UI Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            ..Default::default()
+        });
+
+        // Quads first. Each non-empty batch concatenates into its own region:
+        // batch K starts at `offset_k = (sum of prior batch lens) * INSTANCE_SIZE`.
+        // The draw binds the vertex buffer from `offset_k` and uses instance
+        // range `0..count_k`, so it reads its own region without relying on a
+        // non-zero `first_instance`. Per-batch byte offsets are multiples of the
+        // 64-byte instance stride, satisfying write_buffer/vertex-offset
+        // alignment. Empty batches are skipped without consuming a region.
+        pass.set_pipeline(&self.pipeline);
+        let mut offset = 0u64;
+        for batch in batches {
+            if batch.list.is_empty() {
+                continue;
+            }
+            let bytes: &[u8] = bytemuck::cast_slice(&batch.list.instances);
+            queue.write_buffer(&self.instance_buffer, offset, bytes);
+            pass.set_bind_group(0, batch.bind_group, &[]);
+            pass.set_vertex_buffer(0, self.instance_buffer.slice(offset..));
+            pass.draw(0..VERTS_PER_INSTANCE, 0..batch.list.len() as u32);
+            offset += bytes.len() as u64;
+        }
+
+        // Then glyphon's text draw, into the same pass, after the quads. Skipped
+        // when `prepare` had nothing to record (no text this frame).
+        if prepared {
+            // `render` only fails if the atlas grew past `prepare` (it didn't,
+            // we just prepared into it) — propagating a panic here would crash
+            // the frame, so a failed text draw is logged and the rest of the
+            // pass still records.
+            if let Err(e) = self
+                .text_renderer
+                .render(&self.text_atlas, &self.viewport, &mut pass)
+            {
+                log::warn!("UI text render failed: {e}");
+            }
+        }
+    }
+
+    /// Shape each `UiText` into a glyphon `Buffer`, selecting the embedded Inter
+    /// family at the line's device-pixel font size. Returns the owned buffers so
+    /// they outlive `prepare`/`render`. Empty input yields an empty `Vec` and no
+    /// shaping work.
+    fn shape_text(&mut self, texts: &[UiText], viewport: [u32; 2]) -> Vec<TextBuffer> {
+        let mut buffers = Vec::with_capacity(texts.len());
+        for t in texts {
+            let metrics = Metrics::new(t.font_size, t.font_size * LINE_HEIGHT_FACTOR);
+            let mut buffer = TextBuffer::new(&mut self.font_system, metrics);
+            // Bound the layout box to the backbuffer; single-line UI text never
+            // needs to wrap within the splash, but a finite size lets glyphon
+            // resolve the run.
+            buffer.set_size(
+                &mut self.font_system,
+                Some(viewport[0] as f32),
+                Some(viewport[1] as f32),
+            );
+            buffer.set_text(
+                &mut self.font_system,
+                &t.content,
+                &Attrs::new().family(Family::Name(UI_FONT_FAMILY)),
+                Shaping::Advanced,
+                None,
+            );
+            buffer.shape_until_scroll(&mut self.font_system, false);
+            buffers.push(buffer);
+        }
+        buffers
+    }
+
+    /// Run glyphon's `prepare` (CPU layout + atlas upload) for the shaped lines.
+    /// Sets the `Viewport` resolution from the device backbuffer size first.
+    /// Returns `true` if any text was prepared (so `encode` knows whether to
+    /// record the text draw). First-glyph rasterization lands here, on the first
+    /// shaped frame.
+    fn prepare_text(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        viewport: [u32; 2],
+        texts: &[UiText],
+        buffers: &[TextBuffer],
+    ) -> bool {
+        if texts.is_empty() {
+            return false;
+        }
+
+        self.viewport.update(
+            queue,
+            Resolution {
+                width: viewport[0],
+                height: viewport[1],
+            },
+        );
+
+        let areas = texts.iter().zip(buffers).map(|(t, buffer)| TextArea {
+            buffer,
+            left: t.position[0],
+            top: t.position[1],
+            scale: 1.0,
+            bounds: TextBounds {
+                left: 0,
+                top: 0,
+                right: viewport[0] as i32,
+                bottom: viewport[1] as i32,
+            },
+            default_color: GlyphColor::rgba(t.color[0], t.color[1], t.color[2], t.color[3]),
+            custom_glyphs: &[],
+        });
+
+        match self.text_renderer.prepare(
+            device,
+            queue,
+            &mut self.font_system,
+            &mut self.text_atlas,
+            &self.viewport,
+            areas,
+            &mut self.swash_cache,
+        ) {
+            Ok(()) => true,
+            Err(e) => {
+                log::warn!("UI text prepare failed: {e}");
+                false
+            }
+        }
+    }
+
+    fn grow_instance_buffer(&mut self, device: &wgpu::Device, needed: usize) {
+        let mut capacity = self.instance_capacity.max(1);
+        while capacity < needed {
+            capacity *= 2;
+        }
+        self.instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("UI Quad Instance Buffer"),
+            size: (capacity * INSTANCE_SIZE) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.instance_capacity = capacity;
+    }
+}
+
+/// Upload a CPU RGBA8 `UiTexture` and return the GPU texture. sRGB format so
+/// image content decodes on sample (white encodes to white, so the panel texel
+/// stays neutral). Mirrors `render::splash::upload_splash_texture` — kept local
+/// so the UI pass owns its own upload path. Used here for the 1×1 white texel;
+/// the logo image reuses `render::splash::upload_splash_texture` in Task 4.
+fn upload_ui_texture(device: &wgpu::Device, queue: &wgpu::Queue, tex: &UiTexture) -> wgpu::Texture {
+    let size = wgpu::Extent3d {
+        width: tex.width,
+        height: tex.height,
+        depth_or_array_layers: 1,
+    };
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("UI Texture"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &tex.data,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4 * tex.width),
+            rows_per_image: Some(tex.height),
+        },
+        size,
+    );
+    texture
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ui_instance_byte_layout_is_64_bytes_no_padding() {
+        // The shader's instance vertex layout (four Float32x4 at offsets
+        // 0/16/32/48, stride 64) depends on this exact packing.
+        assert_eq!(std::mem::size_of::<UiInstance>(), 64);
+        assert_eq!(std::mem::align_of::<UiInstance>(), 4);
+        // Field offsets the VertexAttribute table hardcodes.
+        let probe = UiInstance {
+            rect: [1.0, 2.0, 3.0, 4.0],
+            uv_rect: [5.0, 6.0, 7.0, 8.0],
+            color: [9.0, 10.0, 11.0, 12.0],
+            margin: [13.0, 14.0, 15.0, 16.0],
+        };
+        let bytes: &[u8] = bytemuck::bytes_of(&probe);
+        assert_eq!(bytes.len(), 64);
+        // First field starts at offset 0, last vec4 at offset 48.
+        assert_eq!(&bytes[0..4], &1.0f32.to_le_bytes());
+        assert_eq!(&bytes[48..52], &13.0f32.to_le_bytes());
+    }
+
+    #[test]
+    fn uniform_is_16_bytes() {
+        assert_eq!(std::mem::size_of::<UiUniform>(), 16);
+    }
+
+    #[test]
+    fn zero_margin_corner_rects_collapse() {
+        // A plain quad (zero margin) has zero-size corners — the whole rect is
+        // the stretched center region.
+        let inst = UiInstance::panel([10.0, 20.0, 100.0, 60.0], [1.0; 4], [0.0; 4]);
+        for c in inst.corner_rects() {
+            assert_eq!(c[2], 0.0, "corner width collapses with zero margin");
+            assert_eq!(c[3], 0.0, "corner height collapses with zero margin");
+        }
+    }
+
+    #[test]
+    fn nine_slice_corner_rects_are_fixed_size_and_anchored() {
+        // 8px corners on a 100x60 rect at (10,20). Corners keep their 8px size
+        // and sit at the four rect corners regardless of center stretch.
+        let inst = UiInstance::panel([10.0, 20.0, 100.0, 60.0], [1.0; 4], [8.0, 8.0, 8.0, 8.0]);
+        let [tl, tr, bl, br] = inst.corner_rects();
+        assert_eq!(tl, [10.0, 20.0, 8.0, 8.0]);
+        assert_eq!(tr, [10.0 + 100.0 - 8.0, 20.0, 8.0, 8.0]);
+        assert_eq!(bl, [10.0, 20.0 + 60.0 - 8.0, 8.0, 8.0]);
+        assert_eq!(br, [10.0 + 100.0 - 8.0, 20.0 + 60.0 - 8.0, 8.0, 8.0]);
+    }
+
+    #[test]
+    fn corner_rects_clamp_when_margins_exceed_rect() {
+        // Margins larger than the rect must not produce overlapping/negative
+        // corners — they clamp to the available space (mirrors axis).
+        let inst = UiInstance::panel([0.0, 0.0, 10.0, 10.0], [1.0; 4], [8.0, 8.0, 8.0, 8.0]);
+        let [tl, tr, _bl, _br] = inst.corner_rects();
+        // Left corner gets 8, right corner gets the remaining 2.
+        assert_eq!(tl[2], 8.0);
+        assert_eq!(tr[2], 2.0);
+        assert!(tr[0] >= tl[0] + tl[2] - 1e-6, "corners do not overlap");
+    }
+
+    #[test]
+    fn draw_list_push_and_clear() {
+        let mut list = UiDrawList::new();
+        assert!(list.is_empty());
+        list.push(UiInstance::image([0.0, 0.0, 5.0, 5.0]));
+        assert_eq!(list.len(), 1);
+        list.clear();
+        assert!(list.is_empty());
+    }
+
+    #[test]
+    fn ui_quad_wgsl_parses_and_validates() {
+        let module =
+            naga::front::wgsl::parse_str(UI_QUAD_WGSL).expect("ui_quad.wgsl should parse as WGSL");
+        let has_vs = module
+            .entry_points
+            .iter()
+            .any(|ep| ep.name == "vs_main" && ep.stage == naga::ShaderStage::Vertex);
+        let has_fs = module
+            .entry_points
+            .iter()
+            .any(|ep| ep.name == "fs_main" && ep.stage == naga::ShaderStage::Fragment);
+        assert!(has_vs, "ui_quad.wgsl must export @vertex vs_main");
+        assert!(has_fs, "ui_quad.wgsl must export @fragment fs_main");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("ui_quad.wgsl must pass naga validation");
+    }
+
+    #[test]
+    fn embedded_font_bytes_are_present_and_a_truetype() {
+        // The font is embedded via `include_bytes!`; a missing/empty asset must
+        // fail the build-test, not just produce blank text at runtime. The
+        // sfnt/TrueType magic is `0x00010000` (or `OTTO`/`true`/`ttcf`).
+        assert!(
+            UI_FONT_TTF.len() > 1024,
+            "embedded TTF looks truncated ({} bytes)",
+            UI_FONT_TTF.len(),
+        );
+        let magic = &UI_FONT_TTF[0..4];
+        assert!(
+            magic == [0x00, 0x01, 0x00, 0x00]
+                || magic == *b"OTTO"
+                || magic == *b"true"
+                || magic == *b"ttcf",
+            "embedded font is not a recognized sfnt/TrueType (magic {magic:?})",
+        );
+    }
+
+    #[test]
+    fn embedded_font_registers_and_resolves_family() {
+        // CPU-only (no GPU): `FontSystem` is pure cosmic-text. Registering the
+        // embedded bytes must make the `Inter` family queryable, so the
+        // `Family::Name(UI_FONT_FAMILY)` selection in `shape_text` resolves to
+        // the embedded face rather than a system fallback.
+        let mut fs = FontSystem::new();
+        fs.db_mut().load_font_data(UI_FONT_TTF.to_vec());
+        let has_family = fs
+            .db()
+            .faces()
+            .any(|face| face.families.iter().any(|(name, _)| name == UI_FONT_FAMILY));
+        assert!(
+            has_family,
+            "embedded font did not register family {UI_FONT_FAMILY:?}",
+        );
+    }
+
+    #[test]
+    fn ui_text_carries_device_scaled_inputs() {
+        // UiText carries device-pixel position + a device-scaled font size +
+        // color, no logical-reference coords. Font size scales by the same
+        // `device_scale` as panels, so text tracks resolution (e.g. a 24px
+        // logical line at 3x is a 72px device line).
+        let logical_size = 24.0_f32;
+        let scale = 3.0_f32;
+        let t = UiText::new(
+            "v0.1.0",
+            [40.0, 600.0],
+            logical_size * scale,
+            [220, 230, 240, 255],
+        );
+        assert_eq!(t.font_size, 72.0);
+        assert_eq!(t.position, [40.0, 600.0]);
+        assert_eq!(t.color, [220, 230, 240, 255]);
+        // Line height tracks font size by the single-line factor.
+        let line_height = t.font_size * LINE_HEIGHT_FACTOR;
+        assert_eq!(line_height, 90.0);
+    }
+}

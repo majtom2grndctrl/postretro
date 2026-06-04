@@ -96,6 +96,14 @@ fn reload_summary_requires_mod_init(summary: ReloadSummary) -> bool {
     summary.mod_init
 }
 
+/// Version/tagline line the boot splash's shaped-text element renders. Sourced
+/// from the build's `CARGO_PKG_VERSION` (the simpler of the two options the plan
+/// leaves open) so the read-handle snapshot carries a real value. Flows through
+/// the `UiReadSnapshot`; the descriptor seam stays intact for Goal B/G1.
+fn splash_version_line() -> String {
+    format!("postretro v{}", env!("CARGO_PKG_VERSION"))
+}
+
 fn main() -> Result<()> {
     env_logger::init();
     log::info!("[Engine] Postretro starting");
@@ -173,6 +181,7 @@ fn main() -> Result<()> {
         input_system: input::InputSystem::new(input::default_bindings()),
         gameplay_input_latch: input::GameplayInputLatch::new(),
         input_focus: InputFocus::Gameplay,
+        ui_dispatch: input::UiDispatch::new(),
         gamepad_system: input::gamepad::GamepadSystem::new(),
         frame_timing: FrameTiming::new(initial_state),
         diagnostic_inputs: input::DiagnosticInputs::new(input::default_diagnostic_chords()),
@@ -254,6 +263,16 @@ struct App {
     /// Coarse owner of keyboard/mouse focus. Drives pointer-lock acquire/release
     /// via `set_input_focus`. See: context/lib/input.md
     input_focus: InputFocus,
+
+    /// Input-stage UI-dispatch seam: decides whether an event is consumed by the
+    /// UI layer (capture) or forwarded to gameplay (passthrough), ahead of the
+    /// gameplay input forward. Goal A leaves the mode at its inert `Passthrough`
+    /// default (no live UI descriptor yet), so the seam does not change gameplay
+    /// forwarding; Task 4 sources the mode from the active splash descriptor.
+    /// Captured events cross to game logic no earlier than the next frame
+    /// (N→N+1). `InputFocus::Menu` is the intended structural home for capture;
+    /// Goal A makes no live focus change. See: context/lib/input.md
+    ui_dispatch: input::UiDispatch,
     gamepad_system: Option<input::gamepad::GamepadSystem>,
     frame_timing: FrameTiming,
 
@@ -631,18 +650,33 @@ impl ApplicationHandler for App {
                         self.handle_diagnostic_action(action);
                     }
 
-                    // Only Gameplay forwards keys to the action system. When
-                    // the debug panel (or future menu) owns focus, WASD must
-                    // not drive the camera even though egui leaves
-                    // `consumed = false` for non-text widgets like sliders.
-                    // See: context/lib/input.md §5
-                    if self.input_focus == InputFocus::Gameplay {
+                    // UI-dispatch seam, ahead of the gameplay forward and
+                    // mirroring the `egui_consumed` gate: when the active UI
+                    // layer is in Capture mode the event is consumed (queued
+                    // for next-frame game logic) and NOT forwarded to the
+                    // action system this frame. `InputFocus::Menu` is the
+                    // intended structural home for this capture; Goal A makes
+                    // no live focus change, so the decision is the mode flag.
+                    // See: context/lib/input.md
+                    if self.ui_dispatch.dispatch_event().forwards_to_gameplay()
+                        && self.input_focus == InputFocus::Gameplay
+                    {
+                        // Only Gameplay forwards keys to the action system. When
+                        // the debug panel (or future menu) owns focus, WASD must
+                        // not drive the camera even though egui leaves
+                        // `consumed = false` for non-text widgets like sliders.
                         self.input_system.handle_keyboard_event(code, pressed);
                     }
                 }
             }
             WindowEvent::MouseInput { button, state, .. } => {
                 if egui_consumed {
+                    return;
+                }
+                // Same UI-dispatch seam as the keyboard path: a captured event
+                // is consumed by the UI layer and not forwarded to the action
+                // system this frame.
+                if !self.ui_dispatch.dispatch_event().forwards_to_gameplay() {
                     return;
                 }
                 // Same focus gate as the keyboard path: mouse-button actions
@@ -730,6 +764,21 @@ impl ApplicationHandler for App {
                         // Steady state — fall through to the normal frame loop.
                     }
                 }
+
+                // Game-logic phase begins here. Read the UI captures made
+                // available by the *previous* frame, THEN promote this frame's
+                // freshly captured events for the next frame. Taking before
+                // advancing is what enforces the N→N+1 contract: events captured
+                // during THIS frame's Input stage land in `pending` and are only
+                // promoted to `ready` by this `advance_frame` call — so they
+                // first become visible at the next frame's `take_ready`, never
+                // this frame. This holds regardless of winit's event/redraw
+                // ordering because both calls run here at game-logic time. Goal A
+                // has no intent consumer yet (Goal F defines the vocabulary), so
+                // the drained intents are dropped; the drain marks the seam where
+                // game logic reads them. See: context/lib/input.md
+                let _ui_intents = self.ui_dispatch.take_ready();
+                self.ui_dispatch.advance_frame();
 
                 if let Some(gp) = &mut self.gamepad_system {
                     gp.update(&mut self.input_system);
@@ -1138,6 +1187,13 @@ impl ApplicationHandler for App {
                             out
                         };
 
+                        // Publish the once-per-frame read snapshot just before
+                        // the gameplay render call, mirroring the splash path so
+                        // the once-per-frame contract holds on both. Plumbing-only
+                        // in Goal A: the gameplay UI draw list is empty and the
+                        // snapshot has no consumer until B/BIS.
+                        renderer.set_ui_snapshot(render::ui::UiReadSnapshot::default());
+
                         let surface_texture = match renderer.render_frame_indirect(
                             &visible_cells,
                             &light_reachable_leaf_mask,
@@ -1267,6 +1323,12 @@ impl ApplicationHandler for App {
         _device_id: DeviceId,
         event: DeviceEvent,
     ) {
+        // UI-dispatch seam, ahead of the gameplay forward: a captured raw
+        // delta is consumed by the UI layer and must not reach the look path.
+        // Mirrors the `window_event` seam; the decision is the mode flag.
+        if !self.ui_dispatch.dispatch_event().forwards_to_gameplay() {
+            return;
+        }
         // Raw mouse deltas only rotate the camera while gameplay owns input.
         // When the debug panel (DevTools) or a menu is open, the cursor is
         // released and raw deltas must not leak into the look path.
@@ -1519,15 +1581,29 @@ impl App {
         }
     }
 
-    /// Paint a single splash-phase frame. Runs only the splash render pass:
-    /// clears to black and, if a splash texture is bound, draws the
-    /// fullscreen triangle. Used both for the first black frame (no splash
-    /// bound) and subsequent splash-visible frames.
+    /// Paint a single splash-phase frame via `UiPass::encode`. Always clears
+    /// to black. When a splash descriptor is installed, the pass also records
+    /// a fullscreen background fill, a framed 9-slice panel, the centered logo
+    /// image, and a shaped-text line as instanced quads plus glyphon text. The
+    /// first frame has no descriptor installed yet and renders only the clear.
     fn paint_splash(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(renderer) = self.renderer.as_mut() {
             if !renderer.is_ready() {
                 return;
             }
+            // Drive the input-dispatch seam from the active splash descriptor's
+            // capture mode (splash is non-interactive -> Passthrough). No-op when
+            // no splash is installed (frame 0). Locks the Task 5 seam wiring.
+            if let Some(mode) = renderer.splash_capture_mode() {
+                self.ui_dispatch.set_mode(mode);
+            }
+            // Publish the once-per-frame read snapshot just before the render
+            // call (the splash phase render path). The version/tagline line the
+            // shaped-text element renders rides through here, exercising the
+            // once-per-frame contract with a real value.
+            renderer.set_ui_snapshot(render::ui::UiReadSnapshot::with_version_line(
+                splash_version_line(),
+            ));
             if let Err(err) = renderer.render_splash_frame() {
                 self.exit_result = Err(err);
                 event_loop.exit();

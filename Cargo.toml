@@ -19,6 +19,14 @@ winit = "0.30"
 wgpu = "29"
 pollster = "0.4"
 
+# Shaped, anti-aliased text rendering on wgpu (cosmic-text + its own atlas and
+# pipeline). Pinned to 0.11: that release depends on `wgpu ^29.0.0` (confirmed
+# via crates.io dependency metadata), matching the workspace `wgpu = "29"`. The
+# preceding line (0.10) targets `wgpu ^28`, so 0.11 is the compatible release.
+# glyphon ships its own pipeline/atlas — it is NOT routed through the UI quad
+# pipeline. See context/plans/in-progress/M13--ui-render-pass-slice.
+glyphon = "0.11"
+
 # Math
 glam = { version = "0.32", features = ["serde"] }
 

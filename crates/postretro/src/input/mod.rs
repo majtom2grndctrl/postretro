@@ -9,12 +9,21 @@ mod focus;
 pub mod gamepad;
 mod look;
 mod types;
+mod ui_dispatch;
 
 pub use defaults::default_bindings;
 pub use diagnostics::{DiagnosticAction, DiagnosticInputs, default_diagnostic_chords};
 pub use focus::InputFocus;
 pub use look::LookInputs;
 pub use types::{Action, AxisSource, AxisValue, Binding, ButtonState, PhysicalInput};
+// `UiCaptureMode` is the capture/passthrough mode flag, driven by the active UI
+// descriptor via `Renderer::splash_capture_mode`.
+pub use ui_dispatch::{UiCaptureMode, UiDispatch};
+// `UiDispatchOutcome` is `dispatch_event`'s per-event return type. `UiIntent`
+// is the queued capture marker — reserved seam API with no production consumer
+// yet; a future menu/modal path consumes intents.
+#[allow(unused_imports)]
+pub use ui_dispatch::{UiDispatchOutcome, UiIntent};
 
 /// Default sensitivity: radians per raw mouse unit. Tuned for 800 DPI mice.
 pub const DEFAULT_MOUSE_SENSITIVITY: f32 = 0.002;

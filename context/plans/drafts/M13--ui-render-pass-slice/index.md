@@ -37,9 +37,13 @@ against a live screen with no gameplay state.
   the **same render pass / surface view** as the quad draws, after them. The
   hand-rolled quad pipeline never carries glyphs.
 - Pass placement: records inside `render_frame_indirect` after the
-  world/fog/wireframe passes, `LoadOp::Load` into the surface `view`, before the
-  un-presented texture returns — beneath the egui overlay (research §13). Present
-  stays caller-driven (research §4).
+  world/fog/wireframe passes AND after the dev-only debug-line overlay,
+  `LoadOp::Load` into the surface `view`, before the timing resolve and
+  `queue.submit` (and before the un-presented texture returns) — beneath the egui
+  overlay (research §13).
+  Caller-driven present applies to the gameplay path (`render_frame_indirect`
+  returns the un-presented texture); `render_splash_frame` acquires, submits, and
+  presents its own surface texture internally.
 - **Splash reimplementation as the slice.** Splash content — fullscreen background
   fill, a framed (non-fullscreen) 9-slice panel, centered logo image, one
   shaped-text line (version/tagline) — is a hardcoded Rust descriptor drawn through
@@ -103,8 +107,9 @@ against a live screen with no gameplay state.
   level — observable as the same sequence of boot-timing log lines (frame-0
   black, frame-1 splash, frame-2+ poll) and an unchanged black→splash→level
   progression — not identical wall-clock values. glyphon's
-  `FontSystem`/`TextAtlas` build in `Renderer::new`, so frame 1 does not
-  absorb font-system construction.
+  `FontSystem`/`TextAtlas` *construction* builds in `Renderer::new`; first-glyph
+  rasterization via `TextRenderer::prepare` still lands on the first shaped frame
+  (not pre-warmed in A), so frame 1 does not absorb font-system construction.
 - [ ] Panel and image quads are device-pixel-snapped (no subpixel edge blur);
   glyphs are AA. On window resize the splash stays anchored and re-derives its
   scale from the backbuffer without stretching the logo or text.
@@ -139,7 +144,9 @@ the surface view as the sole color target with no depth attachment; both this
 quad pipeline and glyphon's `TextAtlas`/`TextRenderer` (Task 3) are built for
 that single-color-target, no-depth configuration so they share one render pass.
 The pass exposes an `encode`-style entry
-recording into a target view. Declare `pub mod ui;` in `render/mod.rs`; the
+recording into a target view. The UI pass binds its own bind groups within its
+own render pass/pipeline and does not consume the scene pipeline's group 0–6
+budget (glyphon manages its own). Declare `pub mod ui;` in `render/mod.rs`; the
 `Renderer` owns the pass and builds it in `Renderer::new` alongside `fog`.
 This pipeline draws **panels and images only** — never text. Solid panels sample
 a 1×1 white texel (degenerate UV slice), built as a `UiTexture` in `Renderer::new`, so an untextured panel and a textured
@@ -157,12 +164,13 @@ with **no wgpu call**. The pass then uploads that list to its instance buffer.
 The layout step holds no GPU handles; this is what makes the Task 6a assertion
 GPU-independent. (Text positions resolve through glyphon's `prepare`, not this
 list.) No offscreen target; the pass uniform carries the device viewport so the
-shader maps snapped device rects to clip space. On resize the factor re-derives
-from the updated `surface_config` — wire through the existing `Renderer::resize`
-path.
+shader maps snapped device rects to clip space. The quad scale derives at encode time from `surface_config`, so the quad pass
+needs no per-resize hook; deleting `splash_pipeline.update_screen_size` (Task 4)
+leaves no gap. glyphon's `Viewport` resolution is set from the device backbuffer
+size each frame.
 
 ### Task 3: glyphon shaped-text path
-Add `glyphon` as a workspace dep; commit one TTF under `content/base/`, embedded at compile time via `include_bytes!` (no main-thread runtime file I/O) and registered once into `FontSystem` in `Renderer::new`. The UI
+Add `glyphon` as a workspace dep; commit one redistribution-compatible (OFL or permissive) UI/text TTF under `content/base/` (exact face is an implementation pick), embedded at compile time via `include_bytes!` (no main-thread runtime file I/O) and registered once into `FontSystem` in `Renderer::new`. The UI
 pass owns glyphon's own state — `FontSystem`, `SwashCache`, `Cache`, `Viewport`,
 `TextAtlas` (built with the surface format), and `TextRenderer` — and registers
 the font once. glyphon ships its own pipeline; it is **not** routed through the
@@ -192,10 +200,15 @@ render-call parameter, so both render signatures stay stable (`render_splash_fra
 takes no content args today; `render_frame_indirect` is already wide). `App` calls
 the setter before `paint_splash`'s `render_splash_frame()` (splash phase) and
 before the `render_frame_indirect` call in the `RedrawRequested` arm (gameplay
-path); the pass reads the stored snapshot when it records. Rewire the renderer's
+path); the pass reads the stored snapshot when it records. The gameplay-path
+setter call is plumbing-only in A — the gameplay UI draw list is empty in A and
+the snapshot has no consumer until B/BIS — but it locks the once-per-frame
+contract shape. Rewire the renderer's
 splash entry points (`render_splash_frame` / `install_splash_from_loaded` / `clear_splash`)
-to drive the UI pass instead of `SplashPipeline`; **delete `SplashPipeline`** and
-its shaders (`splash_vert.wgsl` / `splash_frag.wgsl`), keeping `load_splash` /
+to drive the UI pass instead of `SplashPipeline`; `clear_splash` clears the
+active splash descriptor (and the logo texture binding) so post-transition frames
+record an empty UI draw list. **Delete `SplashPipeline`** and its shaders
+(`splash_vert.wgsl` / `splash_frag.wgsl`), keeping `load_splash` /
 `upload_splash_texture` for the logo image. The App-side `run_splash_frame` /
 `paint_splash` schedule and all boot timing/hooks stay byte-for-byte intact.
 
@@ -203,11 +216,11 @@ its shaders (`splash_vert.wgsl` / `splash_frag.wgsl`), keeping `load_splash` /
 Add a UI tap point in the Input stage (`App::window_event` / `device_event`)
 ahead of the gameplay input forward, mirroring the `egui_consumed` gate. The
 active descriptor's capture/passthrough mode decides whether the event is
-consumed by UI or forwarded to gameplay. The seam **reuses the reserved
-`InputFocus::Menu` gate as the structural home** for capture **without changing
-live focus in A** — the splash manages no cursor state pre-gameplay. The
-capture/passthrough decision and the N→N+1 ordering are **proven by a seam test
-injecting synthetic events**, not by splash interaction. Guarantee any
+consumed by UI or forwarded to gameplay. The seam does **not** set `input_focus` to `Menu`: the capture/passthrough
+decision in A is driven by the descriptor's mode flag at the seam, with
+`InputFocus::Menu` named only as the future structural home for capture — no live
+focus change and no Menu focus state entered in A. The N→N+1 ordering is **proven
+by a seam test injecting synthetic events**, not by splash interaction. Guarantee any
 UI-consumed result is queued for game logic no earlier than the next frame's tick
 — no same-frame path. This task touches only the Input stage; it does not alter
 the boot schedule, timing, or worker (the scope-guarded boot state machine stays
@@ -225,7 +238,7 @@ tolerance; self-skip with no adapter. Wire both into `cargo test -p postretro`.
 
 **Phase 1 (sequential):** Task 1 — the pipeline + pass topology everything draws through.
 **Phase 2 (sequential):** Task 2 — consumes Task 1's pass; establishes the scaling model + snap that Tasks 3–4 lay out against.
-**Phase 3 (concurrent):** Task 3 (glyphon text) and Task 5 (input seam) — independent; Task 3 records glyphon's own text draw into the Task 1 pass at the Task 2 device scale, Task 5 touches only the Input stage.
+**Phase 3 (concurrent):** Task 3 (glyphon text) and Task 5 (input seam) — independent; Task 3 records glyphon's own text draw into the Task 1 pass at the Task 2 device scale against a stub/literal string (Task 4 swaps in the read-handle-sourced string), Task 5 touches only the Input stage.
 **Phase 4 (sequential):** Task 4 — consumes Tasks 1–3 (panel/image/text draws) and the read-handle plumbing, retires `SplashPipeline`, ties the descriptor to the live boot frame.
 **Phase 5 (sequential):** Task 6 — asserts Task 2/4 layout math and (optionally) the Task 1–4 rendered output.
 
@@ -242,9 +255,14 @@ Named types/files (behavior is in Tasks above):
   draw after them into the same pass.
 - `render_frame_indirect` records the pass into the surface `view`
   (`LoadOp::Load`) after fog/wireframe; the splash phase records the same pass via
-  `render_splash_frame` into its own surface frame — `LoadOp::Clear` to black,
-  the fullscreen background fill drawn as the first quad in the draw list
-  (frame 0, before any descriptor installs, draws no quads → a black frame). On the gameplay path
+  `render_splash_frame` into its own surface frame (`render_splash_frame` presents
+  internally, not caller-driven) — `LoadOp::Clear` to black, the fullscreen
+  background fill drawn as the first quad in the draw list (today's
+  `SplashPipeline` clears to `SPLASH_BG_COLOR` — the in-tree "black" shorthand,
+  linear sRGB(21,27,35) — and the reframe moves that fill into the draw list; the
+  preserved "frame-0 black" sequence is the boot-timing progression, not a
+  pixel-identical claim; frame 0, before any descriptor installs, draws no quads →
+  a black frame). On the gameplay path
   (`render_frame_indirect`) the pass draws an **empty draw list** in A — frame-order
   placement is locked now, UI content arrives with B/BIS.
 - Splash descriptor: a `pub(crate)` struct (framed 9-slice panel + image + text
@@ -289,7 +307,10 @@ Goal C.
   implementation.
 - **Capture-result queueing.** The structure carrying a UI-consumed result to
   next-frame game logic (pending-intent queue vs. flag) is left to Task 5; the
-  contract is "not same-frame." Goal F defines the intent vocabulary.
+  contract is "not same-frame." Goal F defines the intent vocabulary. The N→N+1
+  seam test observes game logic's input snapshot (the UI-consumed event absent on
+  frame N, present on N+1) independent of the queue-vs-flag mechanism, so the
+  contract is testable without pinning the mechanism here.
 - **Splash text content source.** A's version/tagline string flows through the
   read-handle snapshot; only its *source* is open — whether the version string
   reads from an existing build constant or is a literal in A. Either keeps the

@@ -144,16 +144,29 @@ fn staged_material_key(material: &gltf::Material) -> String {
 /// malformed or unsupported input.
 pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
     let path_str = path.display().to_string();
-    let (document, buffers, _images) =
-        gltf::import(path).map_err(|source| ModelLoadError::Import {
+    // Open the document and resolve only geometry/skin/animation buffers — no
+    // image data. `gltf::import` would decode every referenced PNG (returning an
+    // `_images` we then discard); `Gltf::open` + `import_buffers` skips that
+    // decode entirely. The `.glb` binary-blob arg is `None` (external-`.gltf`
+    // only — embedded-image / `.glb` support is out of scope).
+    let parent_dir = path.parent().unwrap_or_else(|| Path::new(""));
+    let document = gltf::Gltf::open(path)
+        .map_err(|source| ModelLoadError::Import {
             path: path_str.clone(),
             source,
-        })?;
+        })?
+        .document;
+    let buffers = gltf::import_buffers(&document, Some(parent_dir), None).map_err(|source| {
+        ModelLoadError::Import {
+            path: path_str.clone(),
+            source,
+        }
+    })?;
 
     // The `utils` accessor readers each take a buffer-data closure that indexes
-    // the imported buffer blobs (the external `.bin` already resolved by
-    // `gltf::import`); each helper builds its own closure locally so the closure
-    // and the borrowed glTF entity share one lifetime.
+    // the imported buffer blobs (the external `.bin` resolved by
+    // `import_buffers`); each helper builds its own closure locally so the
+    // closure and the borrowed glTF entity share one lifetime.
 
     // --- Skeleton ---------------------------------------------------------
     // Take the first skin if present; a static model (no skin) loads through the

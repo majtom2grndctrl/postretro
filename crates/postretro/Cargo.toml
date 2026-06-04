@@ -13,6 +13,11 @@ winit.workspace = true
 wgpu.workspace = true
 pollster.workspace = true
 
+# Shaped, anti-aliased text — the engine default UI text path. glyphon owns its
+# own pipeline/atlas; the UI pass records its text draw into the shared UI render
+# pass. Version pinned at the workspace root (wgpu-29-compatible 0.11).
+glyphon.workspace = true
+
 # Math
 glam.workspace = true
 bytemuck.workspace = true

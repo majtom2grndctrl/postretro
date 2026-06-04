@@ -866,6 +866,23 @@ impl ApplicationHandler for App {
                     let _ = fire_named_event(event_name, &self.script_ctx.data_registry.borrow());
                 }
 
+                // Audio step — third in frame order (Input → Game logic →
+                // Audio → Render → Present, development_guide.md §4.3). Runs after
+                // game logic settles every entity and before render. Convert the
+                // glam-typed camera to the primitive `ListenerState` here at the
+                // call site (the boundary carries no glam); `forward` uses the
+                // aim ray's direction so it includes pitch, unlike yaw-only
+                // `forward()`, and `up` is world up per the `ListenerState`
+                // contract. Guarded for the silent (init-failed) case.
+                if let Some(audio) = &mut self.audio {
+                    let listener = audio::ListenerState {
+                        position: self.camera.position.to_array(),
+                        forward: self.camera.aim_ray().1.to_array(),
+                        up: [0.0, 1.0, 0.0],
+                    };
+                    audio.update(listener, frame_dt);
+                }
+
                 // Level-relative monotonic clock consumed by light_bridge.update,
                 // the emitter sim, and the map-light collector.
                 // Widen to f64 at the accumulation boundary so summing across

@@ -135,6 +135,13 @@ impl BusTree {
         Ok(handle)
     }
 
+    /// Mutable access to a bus's kira sub-track, for the play path to start
+    /// sounds on it. The caller is responsible for the voice budget; this only
+    /// hands back the track handle.
+    pub(crate) fn track_mut(&mut self, bus: BusId) -> &mut TrackHandle {
+        &mut self.tracks[bus.index()]
+    }
+
     /// Set a bus's runtime volume in decibels. 0 dB is unity, negative
     /// attenuates, positive boosts. Applied instantly (no fade).
     pub(crate) fn set_volume(&mut self, bus: BusId, decibels: f32) {

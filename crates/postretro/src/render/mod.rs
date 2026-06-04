@@ -575,13 +575,11 @@ pub struct LevelGeometry<'a> {
     pub texture_materials: &'a [crate::material::Material],
 }
 
-/// The skeleton + clip the per-frame palette is sampled from for the one temp
-/// skinned model. Holds the CPU-side animation data (no wgpu); `sample_clip`
-/// reads it each frame and the mesh pass uploads the result.
-///
-/// TEMP (Task 5): this moves behind the spawned entity / its `MeshComponent`
-/// (per-instance ownership). The slice keeps it on the renderer as the
-/// single-instance stand-in.
+/// The skeleton + clip the per-frame palette is sampled from for the slice's
+/// one skinned model. Holds the CPU-side animation data (no wgpu); `sample_clip`
+/// reads it each frame and the mesh pass uploads the result. Renderer-side
+/// because the pass consumes the sampled palette (renderer owns GPU); the
+/// broadening many-instance task moves per-instance ownership behind the entity.
 struct MeshAnimationState {
     skeleton: crate::model::skeleton::Skeleton,
     clip: crate::model::skeleton::AnimationClip,
@@ -790,26 +788,20 @@ pub struct Renderer {
     smoke_pass: SmokePass,
 
     /// Skinned-mesh forward pass. Idle (no draw) until a model is uploaded via
-    /// `load_temp_skinned_model` (this slice) / the entity spawn seam (Task 5).
+    /// `load_skinned_model` (driven by the entity spawn seam at level install).
     mesh_pass: mesh_pass::MeshPass,
 
     /// Per-frame skinned-mesh draw list: final per-instance world matrices to
-    /// draw this frame. EMPTY this slice — Task 5's render-frame mesh collector
-    /// populates it (it culls each entity via `mesh_pass::mesh_visible` against
-    /// the frame's `VisibleCells` + the `LevelWorld`, then pushes survivors).
-    /// Pre-emptive wiring: the per-frame draw loop reads it already. The TEMP
-    /// model load seeds one entry so the GPU path is exercised before Task 5
-    /// lands; Task 5 relocates the seed behind the spawn seam.
+    /// draw this frame. Refilled each frame via `set_mesh_draws` from the
+    /// render-frame mesh collector (which culls each entity via
+    /// `mesh_pass::mesh_visible` against the frame's `VisibleCells` + the
+    /// `LevelWorld`, then packs survivors). Empty when no mesh entity is visible.
     mesh_draws: Vec<Mat4>,
 
-    /// The temp skinned model's skeleton + first animation clip, retained so the
-    /// per-frame palette is sampled from the live clip (Task 4). `None` until
-    /// `load_temp_skinned_model` succeeds.
-    ///
-    /// TEMP (Task 5): per-instance ownership lives behind the entity then — the
-    /// clip/skeleton (and the animation time) move to the spawned entity / its
-    /// `MeshComponent`, and the collector samples per instance. This renderer
-    /// field is the single-instance stand-in until that wiring lands.
+    /// The skinned model's skeleton + first animation clip, retained so the
+    /// per-frame palette is sampled from the live clip. `None` until
+    /// `load_skinned_model` succeeds. Single-model this slice; the broadening
+    /// many-instance task moves per-instance ownership behind the entity.
     mesh_animation: Option<MeshAnimationState>,
 
     /// Reusable bone-palette scratch for per-frame sampling. Cleared + refilled
@@ -2530,53 +2522,50 @@ impl Renderer {
         log::info!("[Renderer] Textures installed: {}", self.gpu_textures.len());
     }
 
-    /// TEMP (Task 3 GPU-path exercise): load the one hardcoded skinned model,
-    /// resolve its material through the existing `.prm` → `LoadedTexture` path
-    /// (pre-baked key — no runtime hashing), upload it to the mesh pass, and
-    /// seed ONE draw matrix so the skinned GPU path runs before its consumers
-    /// land. Called from the level-install path because that is where
-    /// `prm_cache_root` is in hand.
+    /// Load the slice's one skinned model, resolve its material through the
+    /// existing `.prm` → `LoadedTexture` path (pre-baked key — no runtime
+    /// hashing) and upload it to the mesh pass.
+    /// Returns `true` on success so the caller (the entity spawn seam) decides
+    /// whether to spawn the mesh entity; on a load error this logs a `warn!`
+    /// naming the path, leaves the pass idle, and returns `false` (no spawn).
     ///
-    /// TEMP: Task 5 moves this behind the entity spawn seam — it relocates the
-    /// `load_model` call + material resolve into the spawn chokepoint and drives
-    /// `mesh_draws` from the render-frame mesh collector (with per-entity cull
-    /// via `mesh_pass::mesh_visible`) instead of this single seeded matrix. On a
-    /// load error the seam logs a `warn!` and skips (the degrade AC); here the
-    /// same: log and leave the pass idle.
-    pub fn load_temp_skinned_model(&mut self, prm_cache_root: &Path) {
-        // Hardcoded model path — the chokepoint a classname handler resolves later.
-        let model_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../content/dev/models/decraniated_low_poly_retro_pixel/scene.gltf");
-
-        let model = match crate::model::gltf_loader::load_model(&model_path) {
+    /// The renderer owns the GPU upload + the retained `MeshAnimationState`
+    /// (skeleton + clip) for the slice's one model; the per-frame draw list
+    /// (`mesh_draws`) is supplied each frame by the render-frame mesh collector
+    /// via [`set_mesh_draws`], not seeded here.
+    ///
+    /// [`set_mesh_draws`]: Self::set_mesh_draws
+    pub fn load_skinned_model(&mut self, model_path: &Path, prm_cache_root: &Path) -> bool {
+        let model = match crate::model::gltf_loader::load_model(model_path) {
             Ok(m) => m,
             Err(err) => {
                 log::warn!(
-                    "[Renderer] TEMP skinned model load failed for {} : {err} — mesh pass idle",
+                    "[Model] skinned model load failed for {} : {err} — mesh pass idle",
                     model_path.display(),
                 );
-                return;
+                return false;
             }
         };
 
         // Resolve the (single) material key through the SAME `.prm`-open path
         // `load_textures` uses: parse the pre-staged 64-char hex blake3 key into
         // a 32-byte key, wrap it in a one-entry cache-keys section, and load.
-        let material_bind_group = self.resolve_temp_model_material(&model, prm_cache_root);
+        let material_bind_group = self.resolve_skinned_model_material(&model, prm_cache_root);
         self.mesh_pass
             .set_model(&self.device, &model.mesh, material_bind_group);
 
         // Retain the skeleton + first clip so the per-frame palette is sampled
-        // from the live animation (Task 4). No clip → leave `mesh_animation`
-        // None; the pass keeps the identity (bind-pose) palette it was seeded
-        // with. TEMP (Task 5): this state moves behind the spawned entity.
+        // from the live animation. No clip → leave `mesh_animation` None; the
+        // pass keeps the identity (bind-pose) palette it was seeded with. This
+        // CPU pose data is renderer-side because the pass uploads it (renderer
+        // owns GPU); the slice carries one model, so a single field suffices.
         let crate::model::gltf_loader::LoadedModel {
             skeleton, clips, ..
         } = model;
         let clip_count = clips.len();
         self.mesh_animation = clips.into_iter().next().map(|clip| {
             log::info!(
-                "[Renderer] TEMP skinned model animation: clip '{}' ({:.2}s), {} joints",
+                "[Model] skinned model animation: clip '{}' ({:.2}s), {} joints",
                 clip.name,
                 clip.duration,
                 skeleton.joints.len(),
@@ -2584,20 +2573,28 @@ impl Renderer {
             MeshAnimationState { skeleton, clip }
         });
 
-        // Seed one draw at the world origin (identity transform). Task 5 replaces
-        // this with the entity transform from the spawned `MeshComponent`.
-        self.mesh_draws = vec![Mat4::IDENTITY];
         log::info!(
-            "[Renderer] TEMP skinned model uploaded: {} clip(s) parsed",
+            "[Model] skinned model uploaded: {} clip(s) parsed",
             clip_count,
         );
+        true
     }
 
-    /// Build the material bind group for the temp skinned model from its first
+    /// Replace this frame's skinned-mesh draw list with the matrices packed by
+    /// the render-frame mesh collector (already culled). Called once per frame in
+    /// the collection sub-stage, before `render_frame_indirect`. The renderer
+    /// records one direct draw per matrix; it needs no world reference because
+    /// the cull already happened game-side.
+    pub fn set_mesh_draws(&mut self, draws: &[Mat4]) {
+        self.mesh_draws.clear();
+        self.mesh_draws.extend_from_slice(draws);
+    }
+
+    /// Build the material bind group for the skinned model from its first
     /// material key (pre-baked blake3 hex → `.prm`). Degrades to a placeholder
     /// when the key is absent/malformed or the `.prm` is missing (load_textures
     /// already handles the latter two). No runtime PNG hashing.
-    fn resolve_temp_model_material(
+    fn resolve_skinned_model_material(
         &mut self,
         model: &crate::model::gltf_loader::LoadedModel,
         prm_cache_root: &Path,
@@ -3772,13 +3769,13 @@ impl Renderer {
         // depth attachment read-only). Loads the existing color + depth so the
         // mesh composites over the world and depth-tests (`Less`) against it.
         //
-        // `mesh_draws` is the per-frame draw list. EMPTY this slice unless the
-        // TEMP model seed (or Task 5's collector) populated it; each entry is a
-        // FINAL per-instance matrix already culled by the producer (Task 5's
-        // collector calls `mesh_pass::mesh_visible` against this frame's
-        // `VisibleCells` + the `LevelWorld` BEFORE the cells are reclaimed in
-        // `main.rs`, which happens after this method returns — so the read is
-        // safe). The renderer GPU pass intentionally needs no world reference.
+        // `mesh_draws` is the per-frame draw list, filled by `set_mesh_draws`
+        // from the render-frame mesh collector. Each entry is a FINAL
+        // per-instance matrix already culled by the collector (it calls
+        // `mesh_pass::mesh_visible` against this frame's `VisibleCells` + the
+        // `LevelWorld` BEFORE the cells are reclaimed in `main.rs`, which happens
+        // after this method returns — so the read is safe). The renderer GPU
+        // pass intentionally needs no world reference.
         if self.mesh_pass.has_model() && !self.mesh_draws.is_empty() {
             // Sample the clip into the shared palette for this frame's one
             // instance (base 0) BEFORE recording the draw. `now_seconds` is the
@@ -3786,11 +3783,8 @@ impl Renderer {
             // fixed timestep needed for visuals); `sample_clip` wraps it into the
             // clip's [0, duration) so it loops. Reuses `bone_palette_scratch`, so
             // a steady-state frame allocates nothing (Task 6 measures this).
-            //
-            // TEMP (Task 5): per-instance ownership moves behind the entity — the
-            // collector samples each instance's clip into its own palette run and
-            // the time source moves with it. The renderer-held single-instance
-            // sampling here is the stand-in until then.
+            // Single-model this slice; the broadening many-instance task samples
+            // each instance's clip into its own palette run.
             if let Some(anim) = &self.mesh_animation {
                 crate::model::anim::sample_clip(
                     &anim.clip,

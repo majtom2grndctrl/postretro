@@ -90,6 +90,43 @@ fn content_root_from_map(map_path: &str) -> PathBuf {
         .to_path_buf()
 }
 
+/// GPU-free half of the hardcoded mesh spawn seam: spawn exactly one
+/// `MeshComponent` entity iff the model load succeeded.
+///
+/// `loaded` is the renderer's `load_skinned_model` result (the renderer owns the
+/// GPU upload + already `warn!`d on failure). On `false` this skips the spawn —
+/// no entity, no panic, slice continues (the degrade AC). On `true` it spawns
+/// one entity at `position` carrying `MeshComponent { model }`. Factored out so
+/// the spawn decision is unit-testable without a GPU context.
+fn spawn_mesh_entity_if_loaded(
+    registry: &mut crate::scripting::registry::EntityRegistry,
+    loaded: bool,
+    model: &str,
+    position: glam::Vec3,
+) -> Option<crate::scripting::registry::EntityId> {
+    use crate::scripting::components::mesh::MeshComponent;
+    use crate::scripting::registry::Transform;
+
+    if !loaded {
+        return None;
+    }
+    let id = registry.spawn(Transform {
+        position,
+        ..Transform::default()
+    });
+    if let Err(err) = registry.set_component(
+        id,
+        MeshComponent {
+            model: model.to_string(),
+        },
+    ) {
+        log::warn!("[Model] failed to attach MeshComponent for {model}: {err}");
+        return None;
+    }
+    log::info!("[Model] spawned mesh entity for {model} at {position:?}");
+    Some(id)
+}
+
 // Policy chokepoint: the frame loop queues a staged build only when a changed
 // path matched the active mod-init dependency set (classified by ScriptRuntime).
 fn reload_summary_requires_mod_init(summary: ReloadSummary) -> bool {
@@ -191,6 +228,7 @@ fn main() -> Result<()> {
         emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),
         collision_world: collision::CollisionWorld::new(),
         particle_render: scripting_systems::particle_render::ParticleRenderCollector::new(),
+        mesh_render: scripting_systems::mesh_render::MeshRenderCollector::new(),
         active_wieldable: None,
         active_wieldable_descriptor: None,
         builtin_handled: None,
@@ -317,6 +355,11 @@ struct App {
     /// Packs `SpriteInstance` bytes per collection in the Render stage;
     /// never touches wgpu directly. See: context/lib/scripting.md
     particle_render: scripting_systems::particle_render::ParticleRenderCollector,
+
+    /// Packs per-instance skinned-mesh world matrices in the Render stage
+    /// (cull applied via `mesh_pass::mesh_visible`); never touches wgpu.
+    /// See: context/lib/scripting.md
+    mesh_render: scripting_systems::mesh_render::MeshRenderCollector,
 
     /// Active wieldable instance equipped by the player. The companion
     /// descriptor name lets mod-init hot reload refresh authored weapon stats
@@ -1009,6 +1052,19 @@ impl ApplicationHandler for App {
                         let particle_collections: Vec<(&str, &[u8])> =
                             self.particle_render.iter_collections().collect();
 
+                        // Mesh render — packs per-instance world matrices for
+                        // skinned-mesh entities, culling each against this
+                        // frame's visible set via `mesh_pass::mesh_visible`. Like
+                        // the particle collector it never touches wgpu; the
+                        // renderer consumes the matrices via `set_mesh_draws`.
+                        // Runs before `render_frame_indirect`, while `visible_cells`
+                        // is still live (it is reclaimed into scratch after).
+                        if let Some(world) = self.level.as_ref() {
+                            let registry = self.script_ctx.registry.borrow();
+                            self.mesh_render.collect(&registry, world, &visible_cells);
+                            renderer.set_mesh_draws(self.mesh_render.draws());
+                        }
+
                         // Build the egui UI before `render_frame_indirect` so
                         // the SH diagnostic overlay can push debug lines that
                         // the frame's debug-line pass will pick up. Tessellated
@@ -1538,11 +1594,38 @@ impl App {
         renderer.install_level_geometry(&geometry);
         self.level_timings.record("geometry_upload");
 
-        // TEMP (Task 3): exercise the skinned-mesh GPU path by loading the one
-        // hardcoded model here, where `prm_cache_root` is in hand. Task 5
-        // relocates this behind the entity spawn seam and drives the draw list
-        // from the render-frame mesh collector.
-        renderer.load_temp_skinned_model(&prm_cache_root);
+        // === Hardcoded mesh spawn seam ===
+        // The ONE place model identity + spawn transform are decided this slice
+        // — the chokepoint a future classname handler resolves. It orchestrates:
+        // ask the renderer to load + upload the model (renderer owns GPU), and
+        // ONLY on success spawn exactly one `MeshComponent` entity. On a load
+        // error the renderer already `warn!`s naming the path; the seam then
+        // skips the spawn (no entity, no panic) and the slice continues.
+        {
+            // Hardcoded model path — a classname handler resolves this later.
+            let model_path = self
+                .content_root
+                .join("models/decraniated_low_poly_retro_pixel/scene.gltf");
+
+            // PROVISIONAL spawn position (manual-visual knob — Task 6 tweaks
+            // this if the model isn't visible). Anchored to the level geometry
+            // center (`spawn_position`, the same fallback the camera uses with
+            // no `player_spawn`), nudged up so the model's feet sit near the
+            // floor center where the camera is looking. Engine world is Y-up
+            // metric; `MESH_SPAWN_Y_OFFSET` lifts the origin off the center.
+            const MESH_SPAWN_Y_OFFSET: f32 = -1.0;
+            let mut spawn_pos = world.spawn_position();
+            spawn_pos.y += MESH_SPAWN_Y_OFFSET;
+
+            let loaded = renderer.load_skinned_model(&model_path, &prm_cache_root);
+            let mut registry = self.script_ctx.registry.borrow_mut();
+            spawn_mesh_entity_if_loaded(
+                &mut registry,
+                loaded,
+                &model_path.to_string_lossy(),
+                spawn_pos,
+            );
+        }
 
         // Reseed the SH diagnostic per-light visibility bitmap to match the
         // freshly-installed level's animated-light count. Reset `seeded` so the
@@ -2206,6 +2289,65 @@ mod tests {
             "camera.yaw should equal single-application delta {} (not 3x), got {}",
             expected_yaw,
             camera.yaw,
+        );
+    }
+
+    // --- Hardcoded mesh spawn seam (degrade AC) ---
+    //
+    // The malformed/missing-glTF degrade path: loader returns `Err` →
+    // `load_skinned_model` `warn!`s + returns `false` → the seam skips the
+    // spawn → no Mesh entity → no panic → slice continues. The GPU half is
+    // unit-untestable (no GPU in tests, per testing_guide), so the seam's
+    // decision is factored into `spawn_mesh_entity_if_loaded`, and we drive its
+    // `false` branch directly to pin the warn-and-skip behavior.
+
+    #[test]
+    fn spawn_seam_skips_entity_when_model_load_fails() {
+        use crate::scripting::registry::{ComponentKind, EntityRegistry};
+
+        let mut registry = EntityRegistry::new();
+        // `loaded = false` mirrors a malformed/missing glTF that the renderer's
+        // `load_skinned_model` already warned about and rejected.
+        let result = spawn_mesh_entity_if_loaded(&mut registry, false, "bad/path.gltf", Vec3::ZERO);
+        assert!(result.is_none(), "no entity id when the load failed");
+        assert_eq!(
+            registry.iter_with_kind(ComponentKind::Mesh).count(),
+            0,
+            "no Mesh entity may be spawned when the model load failed",
+        );
+    }
+
+    #[test]
+    fn spawn_seam_spawns_one_mesh_entity_when_model_loads() {
+        use crate::scripting::components::mesh::MeshComponent;
+        use crate::scripting::registry::{Component, ComponentKind, EntityRegistry};
+
+        let mut registry = EntityRegistry::new();
+        let id = spawn_mesh_entity_if_loaded(
+            &mut registry,
+            true,
+            "models/decraniated/scene.gltf",
+            Vec3::new(1.0, 2.0, 3.0),
+        )
+        .expect("a successful load must spawn exactly one entity");
+
+        assert_eq!(
+            registry.iter_with_kind(ComponentKind::Mesh).count(),
+            1,
+            "exactly one Mesh entity spawns on success",
+        );
+        let mesh: &MeshComponent = registry.get_component(id).expect("MeshComponent attached");
+        assert_eq!(mesh.model, "models/decraniated/scene.gltf");
+    }
+
+    #[test]
+    fn malformed_gltf_load_returns_err() {
+        // The loader contract the degrade AC rides on: a bad path is `Err`, not a
+        // panic. Pairs with the seam's `false`-branch skip above.
+        let bad = std::path::Path::new("definitely/not/a/real/model.gltf");
+        assert!(
+            crate::model::gltf_loader::load_model(bad).is_err(),
+            "loading a missing glTF must return Err, never panic",
         );
     }
 }

@@ -379,27 +379,26 @@ impl MeshPass {
 /// of the visible cell set. Mirrors the world path's membership test
 /// (`cells.contains(&(find_leaf(pos) as u32))`).
 ///
-/// Task 5's collector calls this (it holds the `LevelWorld` + the frame's
-/// `VisibleCells`) before pushing an instance into the draw list, so the
-/// renderer's GPU pass never needs a world reference. The `find_leaf` lookup and
-/// the membership decision are split so the decision is unit-testable without
-/// constructing a full `LevelWorld` (the GPU-free seam — see
-/// [`mesh_visible_in_leaf`]).
-// Pre-emptive wiring: Task 5's render-frame mesh collector is the consumer (it
-// holds the world + the frame's `VisibleCells`). The trigger is planned, so this
-// is not dead code — keep it. Covered by the cull unit tests below.
-#[allow(dead_code)]
+/// The render-frame mesh collector (`scripting/systems/mesh_render.rs`) calls
+/// this (it holds the `LevelWorld` + the frame's `VisibleCells`) before pushing
+/// an instance into the draw list, so the renderer's GPU pass never needs a
+/// world reference. The `find_leaf` lookup and the membership decision are split
+/// so the decision is unit-testable without constructing a full `LevelWorld`
+/// (the GPU-free seam — see [`mesh_visible_in_leaf`]).
 pub fn mesh_visible(world: &LevelWorld, visible: &VisibleCells, pos: glam::Vec3) -> bool {
+    // `DrawAll` short-circuits before the leaf lookup: every instance draws, so
+    // the (non-trivial) `find_leaf` BSP descent is pure waste on that path.
+    let VisibleCells::Culled(_) = visible else {
+        return true;
+    };
     let leaf = world.find_leaf(pos) as u32;
     mesh_visible_in_leaf(visible, leaf)
 }
 
 /// Membership half of the cull decision: does `leaf_id` draw given `visible`?
 /// `DrawAll` always draws; otherwise the leaf must be in the visible cell set
-/// (cell id == leaf index). Pure data logic — no world, no GPU.
-// Pre-emptive wiring: consumed by `mesh_visible` (Task 5's collector path) and
-// the cull unit tests. Trigger planned — keep.
-#[allow(dead_code)]
+/// (cell id == leaf index). Pure data logic — no world, no GPU. Consumed by
+/// `mesh_visible` (the collector path) and the cull unit tests.
 pub fn mesh_visible_in_leaf(visible: &VisibleCells, leaf_id: u32) -> bool {
     match visible {
         VisibleCells::DrawAll => true,

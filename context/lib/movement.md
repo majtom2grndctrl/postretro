@@ -63,6 +63,10 @@ The movement tick splits into two halves with a clean seam between them.
 - **Shared physics substrate.** Collide-and-slide: sweep-and-slide, step-up, floor-push, ground-stick, contact/landing resolution. Runs regardless of state. Takes a desired velocity, returns the resolved position plus contact results. Behavior is fixed — states change *intent*, not collision.
 - **Per-state velocity intent.** Each state authors the desired velocity for the tick (gravity, acceleration, friction, bursts). The current state is an explicit value on the movement component. A dispatch point runs the active state's intent, calls the substrate, then applies any returned transition.
 
+**Contact flows forward, not sideways.** The substrate is the sole collision-query path. A state intent that needs surface contact (wall normal, floor normal) reads it from the substrate's contact result carried forward from the prior tick — never by querying collision itself. This holds the split: intents author velocity, the substrate owns collision.
+
+**Per-state data ownership.** Each state's live data (timers, boosts) is owned through one uniform convention; the dispatch resolves the component-vs-active-state borrow once. A new state adds its data without widening the dispatch.
+
 Today's walk/run/jump/air-control is the baseline `Normal` state; later states (crouch, slide, wall-run, vault) plug in behind the same seam. Ability budgets (air-jump, air-dash) refresh through one landing-refresh point so they reset uniformly.
 
 ## 5. Design north-stars
@@ -77,8 +81,8 @@ Today's walk/run/jump/air-control is the baseline `Normal` state; later states (
 
 Two policies cut across every state and define the modern feel. Both are foundations, not per-state details — settle each before the specs that need it, not by emerging from one state and refactoring the rest. Settle the policy and seam, not the full breadth; breadth grows with the states.
 
-- **Momentum conservation.** The biggest modern-feel differentiator — slide→jump keeps slide speed, wall-run→jump launches off the wall vector — and the transition seam's spine; four later states depend on it. Set the velocity-carry policy at the transition layer before `movement--slide`. Deciding it inside slide bakes in slide-shaped logic that wall-run and vault then refactor.
-- **Input forgiveness.** Coyote time (jump grace after leaving a ledge), jump buffering (jump pressed just before landing fires on contact). Foundation-level — shapes edge-input derivation, which every state reads. Settle the edge-input model up front, not after five states consume those edges.
+- **Momentum conservation.** The biggest modern-feel differentiator — slide→jump keeps slide speed, wall-run→jump launches off the wall vector — and the transition seam's spine; four later states depend on it. Set the velocity-carry policy at the transition layer before `movement--slide`. Deciding it inside slide bakes in slide-shaped logic that wall-run and vault then refactor. **Decided** (`movement--cross-cutting-policies`): velocity carry is owned by the dispatch point that applies the transition, never inside a state intent. A transition's `carry` composes a horizontal-rule and a boost-rule (the base+boost velocity model) over §2's closed vocabulary; wall-relative rules (`projectOntoWallPlane`, `reflect`) land with `movement--wall-run`.
+- **Input forgiveness.** Coyote time (jump grace after leaving a ledge), jump buffering (jump pressed just before landing fires on contact). Foundation-level — shapes edge-input derivation, which every state reads. Settle the edge-input model up front, not after five states consume those edges. **Decided** (`movement--cross-cutting-policies`): coyote and jump-buffer windows are descriptor-tuned, derived once per tick into edges that intents consume in place of raw button bits.
 
 ## 7. Non-goals
 

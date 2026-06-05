@@ -4983,6 +4983,112 @@ mod tests {
         assert_eq!(lines, vec![0, 1, 1, 2, 2, 0]);
     }
 
+    fn scripted_light_intensity_scalar_reference(
+        premultiplied_color: [f32; 3],
+        base_color: [f32; 3],
+    ) -> f32 {
+        let (premultiplied_channel, color_channel) =
+            if base_color[0] >= base_color[1] && base_color[0] >= base_color[2] {
+                (premultiplied_color[0], base_color[0])
+            } else if base_color[1] >= base_color[2] {
+                (premultiplied_color[1], base_color[1])
+            } else {
+                (premultiplied_color[2], base_color[2])
+            };
+        if color_channel <= 1.0e-6 {
+            return 0.0;
+        }
+        premultiplied_channel / color_channel
+    }
+
+    fn scripted_color_curve_effective_color(
+        premultiplied_color: [f32; 3],
+        base_color: [f32; 3],
+        color_sample: [f32; 3],
+        brightness: f32,
+    ) -> [f32; 3] {
+        let intensity = scripted_light_intensity_scalar_reference(premultiplied_color, base_color);
+        [
+            color_sample[0].max(0.0) * intensity * brightness.max(0.0),
+            color_sample[1].max(0.0) * intensity * brightness.max(0.0),
+            color_sample[2].max(0.0) * intensity * brightness.max(0.0),
+        ]
+    }
+
+    fn assert_vec3_near(actual: [f32; 3], expected: [f32; 3]) {
+        for i in 0..3 {
+            assert!(
+                (actual[i] - expected[i]).abs() < 1.0e-6,
+                "channel {i}: expected {}, got {}",
+                expected[i],
+                actual[i],
+            );
+        }
+    }
+
+    #[test]
+    fn forward_shader_color_curve_branch_reapplies_static_intensity() {
+        let src = include_str!("../shaders/forward.wgsl");
+        let color_branch_start = src
+            .find("if scripted_desc.color_count > 0u")
+            .expect("forward shader should have a scripted color-curve branch");
+        let brightness_branch_start = src[color_branch_start..]
+            .find("} else if scripted_desc.brightness_count > 0u")
+            .map(|offset| color_branch_start + offset)
+            .expect("forward shader should keep a brightness-only branch");
+        let color_branch = &src[color_branch_start..brightness_branch_start];
+
+        assert!(
+            color_branch.contains("let unit_sample = max("),
+            "color branch should bind the clamped unit-RGB sample before applying intensity",
+        );
+        assert!(
+            color_branch.contains("scripted_light_intensity_scalar("),
+            "color branch should recover the static intensity scalar",
+        );
+        assert!(
+            color_branch.contains("effective_color = unit_sample * intensity * brightness;"),
+            "color branch should apply unit sample, static intensity, and optional brightness multiplicatively",
+        );
+        assert!(
+            !color_branch.contains("effective_color = max("),
+            "color branch must not assign the raw clamped unit-RGB sample as final effective_color",
+        );
+    }
+
+    #[test]
+    fn scripted_color_curve_white_sample_keeps_static_intensity() {
+        let actual = scripted_color_curve_effective_color(
+            [10.0, 10.0, 10.0],
+            [1.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0],
+            1.0,
+        );
+        assert_vec3_near(actual, [10.0, 10.0, 10.0]);
+    }
+
+    #[test]
+    fn scripted_color_curve_hue_sample_uses_static_intensity_as_magnitude() {
+        let actual = scripted_color_curve_effective_color(
+            [10.0, 10.0, 10.0],
+            [1.0, 1.0, 1.0],
+            [0.5, 0.0, 0.0],
+            1.0,
+        );
+        assert_vec3_near(actual, [5.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn scripted_color_curve_multiplies_optional_brightness_curve() {
+        let actual = scripted_color_curve_effective_color(
+            [10.0, 10.0, 10.0],
+            [1.0, 1.0, 1.0],
+            [1.0, 0.0, 0.0],
+            0.5,
+        );
+        assert_vec3_near(actual, [5.0, 0.0, 0.0]);
+    }
+
     /// Regression: both the CPU-side `build_uniform_data` packer and the
     /// CPU-side `pack_light` packer must match the WGSL struct layouts
     /// that the fragment shader compiles against. Parsing the live

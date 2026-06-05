@@ -367,6 +367,22 @@ fn sample_animated_direction(desc: AnimationDescriptor, cycle_t: f32, static_aim
     return sample_color_catmull_rom(desc.direction_offset, desc.direction_count, cycle_t, zero_base);
 }
 
+fn scripted_light_intensity_scalar(premultiplied_color: vec3<f32>, base_color: vec3<f32>) -> f32 {
+    var color_channel = base_color.z;
+    var premultiplied_channel = premultiplied_color.z;
+    if base_color.x >= base_color.y && base_color.x >= base_color.z {
+        color_channel = base_color.x;
+        premultiplied_channel = premultiplied_color.x;
+    } else if base_color.y >= base_color.z {
+        color_channel = base_color.y;
+        premultiplied_channel = premultiplied_color.y;
+    }
+    if color_channel <= 1.0e-6 {
+        return 0.0;
+    }
+    return premultiplied_channel / color_channel;
+}
+
 // Sample the shadow map for a dynamic spot light. Returns 0.0 (fully shadowed)
 // to 1.0 (fully lit). Fragments outside the shadow map's projection are treated
 // as unshadowed (1.0).
@@ -874,12 +890,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         var effective_aim = light.direction_and_range.xyz;
         if scripted_desc.is_active != 0u {
             let cycle_t = fract(uniforms.time / max(scripted_desc.period, 0.0001) + scripted_desc.phase);
-            // Color channel wins when present; otherwise apply brightness to base_color.
+            // Color curves set hue; the static light slot carries intensity.
+            // Brightness curves multiply whichever color path is active.
             // Clamp non-negative: Catmull-Rom overshoot between keyframes can go
             // below zero, which would make an animated light emit negative,
             // sign-flipped (wrong-colored) light.
             if scripted_desc.color_count > 0u {
-                effective_color = max(
+                let unit_sample = max(
                     sample_color_catmull_rom(
                         scripted_desc.color_offset,
                         scripted_desc.color_count,
@@ -888,6 +905,19 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                     ),
                     vec3<f32>(0.0),
                 );
+                let intensity = scripted_light_intensity_scalar(
+                    light.color_and_falloff_model.xyz,
+                    scripted_desc.base_color,
+                );
+                let brightness = max(
+                    sample_curve_catmull_rom(
+                        scripted_desc.brightness_offset,
+                        scripted_desc.brightness_count,
+                        cycle_t,
+                    ),
+                    0.0,
+                );
+                effective_color = unit_sample * intensity * brightness;
             } else if scripted_desc.brightness_count > 0u {
                 let brightness = max(
                     sample_curve_catmull_rom(

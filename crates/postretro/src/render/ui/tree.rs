@@ -5,8 +5,8 @@
 // See: context/plans/in-progress/M13--descriptor-tree-layout
 
 use taffy::prelude::{
-    AlignItems, AvailableSpace, Dimension, Display, FlexDirection, Layout, NodeId, Size, Style,
-    TaffyTree, evenly_sized_tracks, length,
+    AlignItems, AvailableSpace, Display, FlexDirection, Layout, NodeId, Size, Style, TaffyTree,
+    evenly_sized_tracks, length,
 };
 
 use super::descriptor::{
@@ -14,7 +14,9 @@ use super::descriptor::{
     Widget,
 };
 use super::layout::{Anchor, REFERENCE_HEIGHT, REFERENCE_WIDTH};
-use super::text::UiText;
+use glyphon::FontSystem;
+
+use super::text::{UiText, measure_run};
 use super::{UiDrawList, UiInstance};
 
 /// Per-node draw payload carried alongside each taffy node. Pure layout nodes
@@ -40,25 +42,6 @@ enum NodeContext {
     /// rect comes from layout. Image batching/binding lands with the renderer
     /// wiring — the tree records the key so the draw step can group by it.
     Image { asset: String },
-}
-
-/// Rough per-glyph advance as a fraction of font size, used ONLY by the
-/// placeholder text intrinsic size below. Task 5 replaces the whole placeholder
-/// with real glyphon measurement; this constant goes with it.
-const PLACEHOLDER_GLYPH_ADVANCE: f32 = 0.5;
-
-/// Placeholder intrinsic size for a text run, in logical-reference px. A crude
-/// `chars * font_size * advance` wide by `font_size` tall box.
-///
-/// THIS IS A PLACEHOLDER. Task 5 wires glyphon's real glyph measurement and
-/// FULLY REPLACES this function — it is not a lingering fallback. Kept isolated
-/// (one named function, one named constant) so the replacement is a clean swap.
-fn placeholder_text_size(content: &str, font_size: f32) -> Size<Dimension> {
-    let width = content.chars().count() as f32 * font_size * PLACEHOLDER_GLYPH_ADVANCE;
-    Size {
-        width: Dimension::length(width),
-        height: Dimension::length(font_size),
-    }
 }
 
 /// Map descriptor cross-axis `Align` to taffy `AlignItems`.
@@ -125,17 +108,39 @@ impl UiTree {
     /// `layout` projection path. Quads land in `UiDrawList`; text runs in the
     /// returned `Vec<UiText>` (device-positioned, device-scaled font size).
     ///
+    /// Text nodes are sized through `font_system`: the measure closure shapes
+    /// each text node's `content` at its `font_size` and returns the real
+    /// shaped-run extent (logical-reference px), so layout reflects actual glyph
+    /// metrics. Only the CPU `FontSystem` is threaded in (via
+    /// `UiTextRenderer::font_system_mut`) — glyphon's GPU atlas/renderer stay in
+    /// the renderer, and the tree holds no GPU/font state of its own.
+    ///
     /// Layout runs unconditionally here — dirty-tracking is a later task.
-    pub(crate) fn build_draw_data(&mut self, device_size: [u32; 2]) -> UiDrawData {
+    pub(crate) fn build_draw_data(
+        &mut self,
+        device_size: [u32; 2],
+        font_system: &mut FontSystem,
+    ) -> UiDrawData {
         // Lay the tree out with the reference canvas as the available space, so
         // percentage/stretch resolve against 1280x720. taffy positions the root
         // at its own origin; the anchor/offset transform re-places it after.
+        //
+        // `compute_layout_with_measure` gives each leaf a measure callback.
+        // Text nodes shape through `font_system` and return their real glyph
+        // extent; every other node returns its known/taffy-resolved size
+        // unchanged. The closure borrows `font_system` mutably (cosmic-text
+        // shaping needs `&mut FontSystem`); taffy hands it each node's `&mut
+        // NodeContext`, so the closure never has to borrow `self.taffy` while it
+        // runs.
         self.taffy
-            .compute_layout(
+            .compute_layout_with_measure(
                 self.root,
                 Size {
                     width: AvailableSpace::Definite(REFERENCE_WIDTH),
                     height: AvailableSpace::Definite(REFERENCE_HEIGHT),
+                },
+                |known_dimensions, _available_space, _node_id, node_context, _style| {
+                    measure_node(known_dimensions, node_context, font_system)
                 },
             )
             .expect("taffy layout must succeed for a well-formed UI tree");
@@ -224,6 +229,35 @@ impl UiTree {
     }
 }
 
+/// taffy measure callback: resolve a leaf's intrinsic size. Text nodes shape
+/// their `content` at `font_size` through `font_system` and report the real
+/// shaped-run extent (logical-reference px); every other node has no intrinsic
+/// content to measure, so it reports the size taffy already knows
+/// (`known_dimensions`, defaulting each unset axis to zero — the node sizes from
+/// its style/flex slot).
+fn measure_node(
+    known_dimensions: Size<Option<f32>>,
+    node_context: Option<&mut NodeContext>,
+    font_system: &mut FontSystem,
+) -> Size<f32> {
+    if let Some(NodeContext::Text {
+        content, font_size, ..
+    }) = node_context
+    {
+        let (width, height) = measure_run(font_system, content, *font_size);
+        // Honor any axis taffy has already pinned (e.g. an explicit/stretched
+        // size); measure only the unconstrained axes.
+        return Size {
+            width: known_dimensions.width.unwrap_or(width),
+            height: known_dimensions.height.unwrap_or(height),
+        };
+    }
+    Size {
+        width: known_dimensions.width.unwrap_or(0.0),
+        height: known_dimensions.height.unwrap_or(0.0),
+    }
+}
+
 /// Recursively build a taffy node (and its children) for one descriptor widget.
 fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget) -> NodeId {
     match widget {
@@ -232,13 +266,13 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget) -> NodeId {
             font_size,
             color,
         }) => {
-            let style = Style {
-                size: placeholder_text_size(content, *font_size),
-                ..Default::default()
-            };
+            // No explicit size: text nodes are sized by the measure closure in
+            // `build_draw_data`, which shapes `content` at `font_size` through
+            // glyphon and returns the real shaped-run extent. The `NodeContext`
+            // carries the content/font_size the closure reads back.
             taffy
                 .new_leaf_with_context(
-                    style,
+                    Style::default(),
                     NodeContext::Text {
                         content: content.clone(),
                         font_size: *font_size,
@@ -441,15 +475,11 @@ mod tests {
         (a - b).abs() <= EPS
     }
 
-    fn assert_rect_approx(got: [f32; 4], want: [f32; 4]) {
-        for i in 0..4 {
-            assert!(
-                approx(got[i], want[i]),
-                "rect[{i}] = {} != {} (rect {got:?} vs {want:?})",
-                got[i],
-                want[i],
-            );
-        }
+    /// A headless `FontSystem` (embedded Inter face registered, no GPU). Text
+    /// nodes measure through this in `build_draw_data`, so every layout test
+    /// supplies one — cosmic-text shaping runs fully on the CPU.
+    fn font_system() -> glyphon::FontSystem {
+        super::super::text::build_font_system()
     }
 
     /// A fixed-size panel leaf: panels have no intrinsic size, so give the tree
@@ -483,8 +513,9 @@ mod tests {
 
     use super::super::descriptor::SpacerWidget;
 
-    /// A sized text leaf, for flex/grid distribution tests. Placeholder intrinsic
-    /// size is `chars * font_size * 0.5` wide by `font_size` tall.
+    /// A text leaf, for flex/grid distribution tests. Sized by the measure seam:
+    /// `content` is shaped at `font_size` through glyphon, so the leaf's intrinsic
+    /// size comes from real glyph metrics.
     fn text(content: &str, font_size: f32) -> Widget {
         Widget::Text(TextWidget {
             content: content.into(),
@@ -504,7 +535,9 @@ mod tests {
         let tree = AnchoredTree {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
-            // 40px font => 40px-tall leaves. "AB"=2 chars => 40px wide.
+            // Two single-line text leaves; each is shaped to its real glyph
+            // extent by the measure seam. Exact dimensions come from Inter; the
+            // test asserts only the relative column layout (gap, stacking).
             root: vstack(
                 gap,
                 pad,
@@ -513,7 +546,8 @@ mod tests {
             ),
         };
         let mut ui = UiTree::from_descriptor(&tree);
-        let data = ui.build_draw_data([1280, 720]);
+        let mut fs = font_system();
+        let data = ui.build_draw_data([1280, 720], &mut fs);
 
         let children: Vec<_> = ui.taffy.children(ui.root).unwrap();
         let c0 = *ui.taffy.layout(children[0]).unwrap();
@@ -564,7 +598,8 @@ mod tests {
             ),
         };
         let mut ui = UiTree::from_descriptor(&tree);
-        ui.build_draw_data([1280, 720]);
+        let mut fs = font_system();
+        ui.build_draw_data([1280, 720], &mut fs);
 
         let row = ui.taffy.children(ui.root).unwrap()[0];
         let cells: Vec<_> = ui.taffy.children(row).unwrap();
@@ -605,7 +640,8 @@ mod tests {
             ),
         };
         let mut ui = UiTree::from_descriptor(&tree);
-        let data = ui.build_draw_data([1280, 720]);
+        let mut fs = font_system();
+        let data = ui.build_draw_data([1280, 720], &mut fs);
 
         let cells: Vec<_> = ui.taffy.children(ui.root).unwrap();
         let x = *ui.taffy.layout(cells[0]).unwrap();
@@ -642,10 +678,11 @@ mod tests {
                 vec![text("AAAA", 20.0), text("BBBB", 20.0)],
             ),
         };
+        let mut fs = font_system();
         let mut ui_ref = UiTree::from_descriptor(&tree);
-        let data_ref = ui_ref.build_draw_data([1280, 720]);
+        let data_ref = ui_ref.build_draw_data([1280, 720], &mut fs);
         let mut ui_4k = UiTree::from_descriptor(&tree);
-        let data_4k = ui_4k.build_draw_data([3840, 2160]);
+        let data_4k = ui_4k.build_draw_data([3840, 2160], &mut fs);
 
         assert_eq!(data_ref.texts.len(), 2);
         assert_eq!(data_4k.texts.len(), 2);
@@ -691,7 +728,8 @@ mod tests {
             }),
         };
         let mut ui = UiTree::from_descriptor(&tree);
-        ui.build_draw_data([1280, 720]);
+        let mut fs = font_system();
+        ui.build_draw_data([1280, 720], &mut fs);
         let cells: Vec<_> = ui.taffy.children(ui.root).unwrap();
         assert_eq!(cells.len(), 4);
         let l = |n: NodeId| {
@@ -726,9 +764,9 @@ mod tests {
         let tree = AnchoredTree {
             anchor: Anchor::Center,
             offset: [0.0, 0.0],
-            // A vstack sized by a single text leaf so the root has a finite size
-            // to center. The text placeholder size is 8 chars * 40 * 0.5 = 160 wide,
-            // 40 tall.
+            // A single text leaf so the root has a finite measured size to center.
+            // Its size is the real shaped extent — the test derives the expected
+            // centered position from that measured size, not a fixed number.
             root: Widget::Text(TextWidget {
                 content: "ABCDEFGH".into(),
                 font_size: 40.0,
@@ -736,20 +774,27 @@ mod tests {
             }),
         };
         let mut ui = UiTree::from_descriptor(&tree);
-        let data = ui.build_draw_data([1280, 1440]);
-        // Placeholder text size: 8 * 40 * 0.5 = 160 wide, 40 tall.
-        // Centered in 1280x720: left = (1280-160)/2 = 560, top = (720-40)/2 = 340.
-        // Letterbox shifts y by +360 (canvas origin), x by 0.
+        let mut fs = font_system();
+        let data = ui.build_draw_data([1280, 1440], &mut fs);
+        // Read back the root's measured size and recompute the centered top-left
+        // in the 1280x720 canvas, then apply the +360 vertical letterbox offset.
+        // Scale is 1.0 here, so device px == reference px. `project_rect` snaps
+        // the device top-left to a whole pixel, so round to match.
+        let root_size = ui.taffy.layout(ui.root).unwrap().size;
+        let expected_x = ((REFERENCE_WIDTH - root_size.width) / 2.0).round();
+        let expected_y = ((REFERENCE_HEIGHT - root_size.height) / 2.0 + 360.0).round();
         let t = &data.texts[0];
         assert!(
-            approx(t.position[0], 560.0),
-            "centered x in canvas (got {})",
+            approx(t.position[0], expected_x),
+            "centered x in canvas: {} != {}",
             t.position[0],
+            expected_x,
         );
         assert!(
-            approx(t.position[1], 340.0 + 360.0),
-            "centered y plus vertical letterbox offset (got {})",
+            approx(t.position[1], expected_y),
+            "centered y plus vertical letterbox offset: {} != {}",
             t.position[1],
+            expected_y,
         );
     }
 
@@ -774,8 +819,9 @@ mod tests {
             ),
         };
         let mut ui = UiTree::from_descriptor(&tree);
+        let mut fs = font_system();
         // Fractional scale: 1281x721 -> scale ~1.00078.
-        let data = ui.build_draw_data([1281, 721]);
+        let data = ui.build_draw_data([1281, 721], &mut fs);
         assert!(!data.quads.is_empty(), "panel produced a quad");
         for q in &data.quads.instances {
             for v in q.rect {
@@ -802,5 +848,86 @@ mod tests {
             mid[0],
         );
         assert_eq!(mid[3], 128, "alpha stays linear (0.5 -> 128)");
+    }
+
+    /// Lay out a single text leaf and return its taffy-computed size — the size
+    /// the measure seam produced from shaped glyph metrics.
+    fn measured_text_size(content: &str, font_size: f32) -> taffy::geometry::Size<f32> {
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: text(content, font_size),
+        };
+        let mut ui = UiTree::from_descriptor(&tree);
+        let mut fs = font_system();
+        ui.build_draw_data([1280, 720], &mut fs);
+        ui.taffy.layout(ui.root).unwrap().size
+    }
+
+    #[test]
+    fn text_node_width_differs_with_content_via_shaped_measurement() {
+        // Construct two trees whose text leaves differ only in content (same font
+        // size). Real shaping gives them different advances, so the measure seam
+        // must report different widths. Content is immutable in Goal B — this is a
+        // two-tree comparison, not runtime mutation.
+        let narrow = measured_text_size("i", 40.0);
+        let wide = measured_text_size("WWWWWWWW", 40.0);
+
+        assert!(
+            wide.width > narrow.width + EPS,
+            "eight wide glyphs must shape wider than a single narrow one ({} vs {})",
+            wide.width,
+            narrow.width,
+        );
+        // Both single-line runs report a positive line-box height.
+        assert!(
+            narrow.height > 0.0 && wide.height > 0.0,
+            "shaped text reports a positive line height",
+        );
+    }
+
+    #[test]
+    fn text_node_width_tracks_proportional_glyph_advances() {
+        // The glyph-count placeholder this replaced sized every glyph identically
+        // (`chars * font_size * 0.5`). Real shaping is proportional: a string of
+        // narrow glyphs ("ll") shapes narrower than the same count of wide glyphs
+        // ("WW"). Equal width here would mean we were still counting chars.
+        let narrow = measured_text_size("llll", 40.0);
+        let wide = measured_text_size("WWWW", 40.0);
+
+        assert!(
+            wide.width > narrow.width + EPS,
+            "four wide glyphs must shape wider than four narrow glyphs ({} vs {}) \
+             — proportional advances, not a glyph count",
+            wide.width,
+            narrow.width,
+        );
+    }
+
+    #[test]
+    fn text_node_size_is_not_the_glyph_count_estimate() {
+        // The replaced placeholder was exactly `chars * font_size * 0.5` wide by
+        // `font_size` tall. Assert the shaped size does NOT coincide with that
+        // formula, proving the size comes from glyph metrics. Inter's "MMMM" is
+        // wide and the line box is `font_size * 1.25` tall, so neither axis lands
+        // on the old estimate.
+        let content = "MMMM";
+        let font_size = 40.0;
+        let size = measured_text_size(content, font_size);
+
+        let placeholder_w = content.chars().count() as f32 * font_size * 0.5;
+        let placeholder_h = font_size;
+        assert!(
+            (size.width - placeholder_w).abs() > 1.0,
+            "shaped width {} must not match the old glyph-count estimate {}",
+            size.width,
+            placeholder_w,
+        );
+        assert!(
+            (size.height - placeholder_h).abs() > 1.0,
+            "shaped line-box height {} must not match the old font-size estimate {}",
+            size.height,
+            placeholder_h,
+        );
     }
 }

@@ -95,15 +95,11 @@ impl UiTextRenderer {
         surface_format: wgpu::TextureFormat,
     ) -> Self {
         // Build glyphon's own state here so `FontSystem`/`TextAtlas` construction
-        // happens in `Renderer::new` (not on the first shaped frame). Register
-        // the embedded Inter face once. We do NOT pre-rasterize glyphs — the
-        // first-glyph rasterization lands on the first `prepare` (first shaped
-        // frame), so frame 1 of the boot splash does not absorb font-system
-        // construction.
-        let mut font_system = FontSystem::new();
-        // `load_font_data` takes ownership of the bytes; the embedded slice is
-        // compile-time data with no runtime file I/O.
-        font_system.db_mut().load_font_data(UI_FONT_TTF.to_vec());
+        // happens in `Renderer::new` (not on the first shaped frame). We do NOT
+        // pre-rasterize glyphs — the first-glyph rasterization lands on the first
+        // `prepare` (first shaped frame), so frame 1 of the boot splash does not
+        // absorb font-system construction.
+        let font_system = build_font_system();
 
         let swash_cache = SwashCache::new();
         let glyph_cache = GlyphCache::new(device);
@@ -160,6 +156,20 @@ impl UiTextRenderer {
             buffers.push(buffer);
         }
         buffers
+    }
+
+    /// Borrow the CPU `FontSystem` for measurement. The taffy layout pass
+    /// (`tree::UiTree::build_draw_data`) threads this into its measure closure so
+    /// text nodes size from real shaped metrics. Only the `FontSystem` crosses —
+    /// glyphon's GPU atlas/renderer never leave this type, keeping the renderer
+    /// the sole GPU owner while text measurement stays a pure-CPU seam.
+    ///
+    /// Unused until the renderer wires `UiTree` to this renderer (a later task);
+    /// it is the GPU-free bridge that wiring will call, and the tree's layout
+    /// docs name it as the production source of the `&mut FontSystem`.
+    #[allow(dead_code)]
+    pub fn font_system_mut(&mut self) -> &mut FontSystem {
+        &mut self.font_system
     }
 
     /// Run glyphon's `prepare` (CPU layout + atlas upload) for the shaped lines.
@@ -240,6 +250,62 @@ impl UiTextRenderer {
     pub fn trim(&mut self) {
         self.text_atlas.trim();
     }
+}
+
+/// Build a `FontSystem` with the embedded Inter face registered. Pure CPU — no
+/// GPU device needed, so the layout-measure path can be exercised headless. The
+/// embedded slice is compile-time data (`load_font_data` takes ownership of the
+/// bytes) with no runtime file I/O.
+pub(crate) fn build_font_system() -> FontSystem {
+    let mut font_system = FontSystem::new();
+    font_system.db_mut().load_font_data(UI_FONT_TTF.to_vec());
+    font_system
+}
+
+/// Measure a single text run's intrinsic size from real shaped-glyph metrics, in
+/// the SAME units as `font_size` (logical-reference px at layout time — the
+/// caller passes the un-device-scaled size). Shapes `content` at `font_size`
+/// through cosmic-text with no width constraint, then takes the widest laid-out
+/// run for width and the summed line heights for height. This is the taffy
+/// measure seam: the layout tree sizes text nodes from this, not from a
+/// glyph-count estimate. Empty content measures to a zero-width box one line
+/// tall, so an empty label still reserves its line.
+///
+/// Takes `&mut FontSystem` (not `&mut UiTextRenderer`) so measurement carries no
+/// GPU state: shaping is pure cosmic-text and runs without a device.
+pub(crate) fn measure_run(
+    font_system: &mut FontSystem,
+    content: &str,
+    font_size: f32,
+) -> (f32, f32) {
+    let line_height = font_size * LINE_HEIGHT_FACTOR;
+    let metrics = Metrics::new(font_size, line_height);
+    let mut buffer = TextBuffer::new(font_system, metrics);
+    // No width bound: intrinsic measurement wants the run's natural width, not a
+    // wrapped-to-viewport width. `None` width lets cosmic-text lay the whole run
+    // on one line so `line_w` is the true shaped advance.
+    buffer.set_size(font_system, None, None);
+    buffer.set_text(
+        font_system,
+        content,
+        &Attrs::new().family(Family::Name(UI_FONT_FAMILY)),
+        Shaping::Advanced,
+        None,
+    );
+    buffer.shape_until_scroll(font_system, false);
+
+    let mut width = 0.0_f32;
+    let mut height = 0.0_f32;
+    for run in buffer.layout_runs() {
+        width = width.max(run.line_w);
+        height += run.line_height;
+    }
+    // No runs (empty string) => zero width, one line tall so the node still
+    // claims a line box rather than collapsing to nothing.
+    if height == 0.0 {
+        height = line_height;
+    }
+    (width, height)
 }
 
 #[cfg(test)]

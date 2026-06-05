@@ -1083,16 +1083,20 @@ impl Renderer {
             );
         }
 
-        // Forward pass exceeds the WebGPU spec floor for per-stage sampled
-        // texture bindings. Desktop backends report far higher (Metal/AMD =
-        // 128), so we request the count the pipelines need.
+        // The forward pass binds more sampled textures per stage than wgpu's
+        // *default* request (4 bind groups) would carry, so we request the exact
+        // count the pipelines need. This stays under the WebGPU spec floor of 16
+        // (`wgpu::Limits::defaults().max_sampled_textures_per_shader_stage`), and
+        // every targeted backend reports far higher (Metal/AMD = 128) — the
+        // adapter pre-check below confirms the granted maximum still covers it.
         //
-        // Sampled texture inventory (11 total across the forward shader stage):
+        // Sampled texture inventory (12 total across the forward shader stage):
         //   Group 1 — material (3): diffuse, specular, normal
         //   Group 3 — SH volume (2): octahedral atlas + depth-moments
-        //   Group 4 — lightmap (3): static irradiance, static dominant-direction, animated-contribution atlas
+        //   Group 4 — lightmap (4): static irradiance, static dominant-direction,
+        //                           animated-contribution atlas, animated dominant-direction
         //   Group 5 — shadow (3): spot-shadow depth array (binding 0), SDF shadow factor (binding 3), scene depth (binding 4)
-        const REQUIRED_SAMPLED_TEXTURES: u32 = 11;
+        const REQUIRED_SAMPLED_TEXTURES: u32 = 12;
         const REQUIRED_STORAGE_TEXTURES: u32 = 4;
         // Stopgap: SH compose's flat delta-probe storage buffer outgrows the
         // WebGPU spec floor (128 MiB) on maps with many animated lights because

@@ -1,7 +1,7 @@
 // UI layout/projection: maps 1280x720 logical-reference rects to device-pixel
 // quad instances. Pure CPU-side — no wgpu call, holds no GPU handle — so the
-// produced draw list is GPU-independent (Task 6's hard-gate assertion).
-// See: context/plans/in-progress/M13--ui-render-pass-slice
+// produced draw list is GPU-independent and asserted by the CPU draw-list tests.
+// See: context/plans/in-progress/M13--descriptor-tree-layout
 
 use super::{UiDrawList, UiInstance};
 
@@ -15,14 +15,13 @@ pub const REFERENCE_HEIGHT: f32 = 720.0;
 /// is measured from, and that the element's own pivot aligns to. Keeping the
 /// pivot and reference point the same makes a `Center`-anchored element with a
 /// zero offset land dead-center regardless of its size — the common splash case.
-/// The anchor/offset seam is intentionally thin: Task 4's splash descriptor and
-/// Task 6's assertions plug into this without growing the vocabulary.
 ///
-/// The splash descriptor only places `Center`-anchored elements; the full 9-point
-/// vocabulary is the layout seam Goal B's descriptor model and widgets build on,
-/// and is exercised by the layout tests — hence the variants are retained.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// All nine variants are live: they serialize to/from the descriptor wire as the
+/// placement envelope's `anchor` field, drive the whole-tree placement transform
+/// (`tree::anchor_fractions`), and are exercised by the layout tests. The splash
+/// itself only uses `Center`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Anchor {
     TopLeft,
     Top,
@@ -86,7 +85,10 @@ impl UiElement {
         }
     }
 
-    /// Solid-color panel with a 9-slice margin (logical-reference px).
+    /// Solid-color panel with a 9-slice margin (logical-reference px). Now only
+    /// the layout tests exercise this directly — the splash builds 9-slice panels
+    /// through the descriptor tree's `Border`.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn panel_9slice(
         anchor: Anchor,
         offset: [f32; 2],
@@ -100,7 +102,10 @@ impl UiElement {
         }
     }
 
-    /// Textured image: full texture, untinted (white).
+    /// Textured image: full texture, untinted (white). Splash images now flow
+    /// through the descriptor tree's `image` nodes; the layout tests still use
+    /// this for the projection-path assertions.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn image(anchor: Anchor, offset: [f32; 2], size: [f32; 2]) -> Self {
         Self {
             anchor,
@@ -148,7 +153,7 @@ fn canvas_origin(device_size: [u32; 2], scale: f32) -> [f32; 2] {
 /// as `snapped_right - snapped_left`) avoids subpixel edge blur on panels and
 /// images. Margins scale and snap the same way so the shader's corner regions
 /// stay on pixel boundaries. Text is NOT routed through here — glyphon keeps AA
-/// sub-pixel positions (Task 3).
+/// sub-pixel positions.
 fn project_element(elem: &UiElement, device_size: [u32; 2], scale: f32) -> UiInstance {
     let origin = canvas_origin(device_size, scale);
     let (afx, afy) = elem.anchor.fractions();
@@ -317,7 +322,7 @@ mod tests {
     fn nine_slice_corner_rects_preserve_size_under_scale() {
         // Corners derive from the scaled rect + scaled margin; at 3x a 8px
         // corner becomes 24px and stays anchored to the rect corners. Exercises
-        // the Task 1 corner_rects derivation against scaled instances.
+        // the `corner_rects` derivation against scaled instances.
         let elem = UiElement::panel_9slice(
             Anchor::Center,
             [0.0, 0.0],

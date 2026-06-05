@@ -1,39 +1,63 @@
 // UI render pass: hand-rolled instanced quad / 9-slice pipeline for panels and
 // images. One instance per panel/image carries (rect, UV rect, color, 9-slice
 // margin); the vertex stage expands each instance into 9 regions. All wgpu lives
-// here per renderer-owns-GPU. Text is glyphon's own pipeline (Task 3), not this.
-// See: context/plans/in-progress/M13--ui-render-pass-slice
+// here per renderer-owns-GPU. Shaped text is glyphon's own pipeline, owned by
+// the `text` submodule and recorded into this same pass after the quads.
+// See: context/plans/in-progress/M13--descriptor-tree-layout
 
 use bytemuck::{Pod, Zeroable};
-use glyphon::{
-    Attrs, Buffer as TextBuffer, Cache as GlyphCache, Color as GlyphColor, Family, FontSystem,
-    Metrics, Resolution, Shaping, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
-    Viewport,
-};
 use wgpu::util::DeviceExt;
 
 use crate::ui_texture::UiTexture;
+
+use self::text::UiTextRenderer;
 
 /// Logical-reference scaling model + device-pixel projection/snap. Pure CPU,
 /// no GPU handles — produces a `UiDrawList` the pass uploads at encode time.
 pub(crate) mod layout;
 
+/// Serde descriptor model for the UI widget tree: the `Widget` enum, its field
+/// structs, and the `AnchoredTree` placement envelope. Pure data — the retained
+/// tree (`tree`) maps it onto taffy and the renderer lays it out.
+pub(crate) mod descriptor;
+
+/// glyphon shaped-text half of the pass: embedded font, glyph atlas/renderer,
+/// and the shape→prepare→render→trim cycle. glyphon owns its own pipeline; the
+/// text draw records into this same render pass, after the quads.
+pub(crate) mod text;
+
+/// Retained widget tree: maps the `descriptor` model into a `taffy::TaffyTree`,
+/// computes flex/grid layout, and reads laid-out rects back into the device-pixel
+/// draw list + shaped-text entries through the `layout` projection path. taffy
+/// lives entirely here (renderer-owns-GPU). The renderer lays out the splash and
+/// gameplay descriptor trees through it.
+pub(crate) mod tree;
+
+pub(crate) use self::text::UiText;
+
 /// Hardcoded splash content descriptor behind the one named builder seam
-/// (`splash::build_splash_descriptor`). Goal B/G1 replace its body; the renderer
-/// drives the UI pass from it.
+/// (`splash::build_splash_descriptor`). The builder returns an `AnchoredTree` the
+/// renderer lays out via `UiTree`; G1 later swaps the body for script ingestion.
 pub(crate) mod splash;
 
-/// Hard-gate CPU draw-list / layout assertion for the splash (Task 6a): pins the
+/// Hard-gate CPU draw-list / layout assertion for the splash: pins the
 /// device-pixel quad rects (anchor, scale, snap, 9-slice corners) the splash
 /// projects to. Pure CPU — no GPU adapter.
 #[cfg(test)]
 mod splash_layout_test;
 
-/// Optional headless golden (Task 6b): renders the splash UI pass into an
-/// offscreen target and asserts tolerance-scoped structural properties of the
-/// readback. Self-skips when no GPU adapter is present — never the hard gate.
+/// Optional headless golden: renders the splash UI pass into an offscreen target
+/// and asserts tolerance-scoped structural properties of the readback. Self-skips
+/// when no GPU adapter is present — never the hard gate.
 #[cfg(test)]
 mod splash_golden_test;
+
+/// Hard-gate CPU assertion for the gameplay UI path: the renderer builds a
+/// non-empty draw list from a fixture descriptor tree, and an empty tree
+/// early-outs the UI pass (no `begin_render_pass`). Pure CPU — asserts the
+/// layout + early-out decision the renderer's gameplay path makes, without a GPU.
+#[cfg(test)]
+mod gameplay_ui_gate_test;
 
 /// Headless regression for the multi-batch instance-buffer clobber: encodes two
 /// non-empty batches into disjoint screen regions and asserts each region keeps
@@ -42,22 +66,6 @@ mod splash_golden_test;
 mod multi_batch_test;
 
 const UI_QUAD_WGSL: &str = include_str!("../../shaders/ui_quad.wgsl");
-
-/// Engine default UI typeface: Inter (SIL Open Font License 1.1). Embedded at
-/// compile time so the engine has no main-thread runtime font file I/O — the
-/// bytes are registered once into glyphon's `FontSystem` in `UiPass::new`. The
-/// license travels alongside the asset at `content/base/fonts/Inter-OFL.txt`.
-const UI_FONT_TTF: &[u8] = include_bytes!("../../../../../content/base/fonts/Inter-Regular.ttf");
-
-/// Font family name inside `UI_FONT_TTF` (the TTF `name` table family record).
-/// `TextArea`s select it by family so glyphon resolves to the embedded face
-/// rather than a system fallback.
-const UI_FONT_FAMILY: &str = "Inter";
-
-/// glyphon shapes against a `Metrics { font_size, line_height }`. UI text here is
-/// single-line, so line height tracks the font size with a small factor for the
-/// ascent/descent the face needs to render uncropped.
-const LINE_HEIGHT_FACTOR: f32 = 1.25;
 
 /// 9 regions * 2 triangles * 3 vertices. The vertex shader keys off
 /// `vertex_index` to expand one instance into the 9-slice geometry; total is
@@ -140,9 +148,9 @@ impl UiInstance {
 }
 
 /// Pure CPU draw list — a flat batch of instances sharing one bound texture.
-/// Built with no wgpu call so layout/scaling logic stays GPU-independent
-/// (Task 2 populates it; Task 6 asserts against it). The pass uploads it to the
-/// instance buffer at encode time.
+/// Built with no wgpu call so layout/scaling logic stays GPU-independent: the
+/// `layout` projection path populates it and the CPU layout tests assert against
+/// it. The pass uploads it to the instance buffer at encode time.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct UiDrawList {
     pub instances: Vec<UiInstance>,
@@ -174,24 +182,96 @@ impl UiDrawList {
 /// Once-per-frame published read-only snapshot the UI pass reads when it records.
 /// Stored on the `Renderer` via a setter the `App` calls just before each render
 /// call — NOT threaded as a render parameter, so both render signatures stay
-/// stable. In Goal A it carries only the version/tagline line the splash's shaped
-/// text renders, exercising the once-per-frame contract with a real value; B/BIS
-/// widen it with gameplay UI state. Narrow by design — the *shape* is the
-/// contract.
+/// stable.
+///
+/// Goal B widens this from a bare `version_line` to carry the frame's descriptor
+/// tree (`gameplay_tree`) — the content side of the game-logic→render contract.
+/// The renderer lays the tree out (taffy/glyphon live in the renderer per
+/// renderer-owns-GPU); the snapshot carries the descriptor, never laid-out rects.
+/// `version_line` stays for the splash path, whose tree the renderer assembles
+/// from this line plus the renderer-owned logo binding (see `record_splash_ui`).
 #[derive(Debug, Clone, Default)]
 pub(crate) struct UiReadSnapshot {
-    /// Version/tagline string the splash shaped-text line renders. Empty on the
-    /// gameplay path in A (no consumer until B/BIS), which still locks the
-    /// once-per-frame setter contract.
+    /// Version/tagline string the splash's shaped-text line renders. Read only on
+    /// the splash path; empty on the gameplay path.
     pub version_line: String,
+    /// The gameplay-path descriptor tree to lay out and draw this frame. `None`
+    /// (the default) on the splash path and whenever gameplay publishes no UI —
+    /// the renderer's UI pass then early-outs with no `begin_render_pass`. Goal B
+    /// has no gameplay UI producer yet; the field locks the content contract and
+    /// the test gate feeds it a fixture tree.
+    pub gameplay_tree: Option<descriptor::AnchoredTree>,
 }
 
 impl UiReadSnapshot {
-    /// Snapshot carrying the splash version/tagline line.
+    /// Snapshot carrying the splash version/tagline line (splash path).
     pub fn with_version_line(version_line: impl Into<String>) -> Self {
         Self {
             version_line: version_line.into(),
+            gameplay_tree: None,
         }
+    }
+
+    /// Snapshot carrying a gameplay-path descriptor tree (the content side). The
+    /// renderer lays it out into the UI draw list.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn with_gameplay_tree(tree: descriptor::AnchoredTree) -> Self {
+        Self {
+            version_line: String::new(),
+            gameplay_tree: Some(tree),
+        }
+    }
+}
+
+/// Small key→bind-group registry for `image` widget assets. The descriptor's
+/// `image` nodes reference a texture by string key; the renderer pre-registers
+/// the known keys (Goal B: only the splash logo) and resolves each image batch's
+/// key through this map to the bind group the draw binds.
+///
+/// Scope is deliberately tiny (Goal B out-of-scope: dynamic asset streaming):
+/// only pre-registered keys resolve. An unknown key is skipped-with-warn at draw
+/// time — the image batch simply does not draw, and a single warning names the
+/// missing key (logged once per resolve, not per frame, since gameplay has no
+/// image producer yet). Each entry owns its texture so the bind group's view
+/// stays valid for the registry's lifetime.
+#[derive(Default)]
+pub(crate) struct UiImageRegistry {
+    entries: std::collections::HashMap<String, UiImageEntry>,
+}
+
+struct UiImageEntry {
+    /// Kept alive so the bind group's texture view stays valid.
+    _texture: wgpu::Texture,
+    bind_group: wgpu::BindGroup,
+}
+
+impl UiImageRegistry {
+    /// Register (or replace) the bind group + owning texture for `key`. The
+    /// texture is held so its view outlives every draw that binds the group.
+    pub fn register(
+        &mut self,
+        key: impl Into<String>,
+        texture: wgpu::Texture,
+        bind_group: wgpu::BindGroup,
+    ) {
+        let key = key.into();
+        self.entries.insert(
+            key,
+            UiImageEntry {
+                _texture: texture,
+                bind_group,
+            },
+        );
+    }
+
+    /// Resolve `key` to its bind group, or `None` if no such key is registered.
+    pub fn resolve(&self, key: &str) -> Option<&wgpu::BindGroup> {
+        self.entries.get(key).map(|e| &e.bind_group)
+    }
+
+    /// Drop all registered images (splash teardown).
+    pub fn clear(&mut self) {
+        self.entries.clear();
     }
 }
 
@@ -211,7 +291,7 @@ const INSTANCE_SIZE: usize = std::mem::size_of::<UiInstance>();
 /// Instanced quad / 9-slice pass for panels and images. Owns its pipeline, BGL,
 /// sampler, uniform buffer, instance buffer, and a 1×1 white texture so solid
 /// panels and textured images share one instanced batch. Designed for a single
-/// color target with no depth attachment so glyphon (Task 3) can share the pass.
+/// color target with no depth attachment so glyphon's text draw can share the pass.
 pub(crate) struct UiPass {
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
@@ -228,29 +308,9 @@ pub(crate) struct UiPass {
     /// uniform buffer changes, which it never does after construction.
     white_bind_group: wgpu::BindGroup,
 
-    // --- glyphon shaped-text state ---------------------------------------
-    // glyphon ships its OWN pipeline and atlas; none of this is routed through
-    // the quad pipeline above. `TextRenderer::render` records glyphon's draw
-    // INTO the same `begin_render_pass` as the quad draws, AFTER them, so text
-    // composites into the same surface view.
-    /// CPU font database + shaper. The embedded Inter face is registered into it
-    /// once in `new`. `&mut` is needed for shaping, hence stored owned.
-    font_system: FontSystem,
-    /// Per-glyph rasterization cache (CPU). First-glyph rasterization happens on
-    /// the first shaped frame via `prepare`, not pre-warmed here.
-    swash_cache: SwashCache,
-    /// glyphon's shared GPU bind-group/pipeline cache; backs `Viewport`/`Atlas`.
-    /// Held to keep the cache alive for the `Viewport`/`TextAtlas` built from it.
-    #[allow(dead_code)]
-    glyph_cache: GlyphCache,
-    /// Device-resolution uniform glyphon maps glyph positions against. Set from
-    /// the backbuffer size each frame in `encode`.
-    viewport: Viewport,
-    /// glyphon's glyph atlas, built with the sRGB surface format so coverage
-    /// blends correctly against the sRGB swapchain (see `new`).
-    text_atlas: TextAtlas,
-    /// glyphon's text pipeline/draw recorder.
-    text_renderer: TextRenderer,
+    /// glyphon shaped-text half of the pass. Owns its own pipeline/atlas; its
+    /// draw records into this same render pass, after the quads. See `text`.
+    text: UiTextRenderer,
 }
 
 /// One instanced draw: a draw list plus the bind group for its bound texture.
@@ -258,43 +318,6 @@ pub(crate) struct UiPass {
 pub(crate) struct UiBatch<'a> {
     pub list: &'a UiDrawList,
     pub bind_group: &'a wgpu::BindGroup,
-}
-
-/// One shaped text line for glyphon to lay out and draw. Positions and font size
-/// arrive already in **device pixels** (device-scaled by the caller, not in
-/// logical-reference units), so glyphon and the quad pipeline share one
-/// coordinate space and text tracks resolution the same way panels do. The
-/// position is NOT integer-snapped — glyphon keeps sub-pixel AA.
-#[derive(Debug, Clone)]
-pub(crate) struct UiText {
-    /// The string to shape and render.
-    pub content: String,
-    /// Top-left baseline-box position in device pixels (`[left, top]`). Not
-    /// snapped — glyphon positions glyphs with sub-pixel precision.
-    pub position: [f32; 2],
-    /// Font size in device pixels (already device-scaled by the caller).
-    pub font_size: f32,
-    /// Glyph color, linear-ish sRGB 0..=255 per channel + alpha. glyphon's
-    /// `TextAtlas` is built with the sRGB surface format so coverage blends in
-    /// the surface color space (see `UiPass::new`).
-    pub color: [u8; 4],
-}
-
-impl UiText {
-    /// Convenience constructor for a single device-positioned line.
-    pub fn new(
-        content: impl Into<String>,
-        position: [f32; 2],
-        font_size: f32,
-        color: [u8; 4],
-    ) -> Self {
-        Self {
-            content: content.into(),
-            position,
-            font_size,
-            color,
-        }
-    }
 }
 
 impl UiPass {
@@ -395,8 +418,8 @@ impl UiPass {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 ..Default::default()
             },
-            // Depth disabled: the UI pass attaches no depth target, so glyphon
-            // (Task 3) can share this single-color-target configuration.
+            // Depth disabled: the UI pass attaches no depth target, so glyphon's
+            // text draw can share this single-color-target configuration.
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
@@ -470,34 +493,10 @@ impl UiPass {
             ],
         });
 
-        // --- glyphon state -------------------------------------------------
-        // Build glyphon's own state here so `FontSystem`/`TextAtlas` construction
-        // happens in `Renderer::new` (not on the first shaped frame). Register
-        // the embedded Inter face once. We do NOT pre-rasterize glyphs — the
-        // first-glyph rasterization lands on the first `prepare` (first shaped
-        // frame), so frame 1 of the boot splash does not absorb font-system
-        // construction.
-        let mut font_system = FontSystem::new();
-        // `load_font_data` takes ownership of the bytes; the embedded slice is
-        // compile-time data with no runtime file I/O.
-        font_system.db_mut().load_font_data(UI_FONT_TTF.to_vec());
-
-        let swash_cache = SwashCache::new();
-        let glyph_cache = GlyphCache::new(device);
-        let viewport = Viewport::new(device, &glyph_cache);
-
-        // Color space: build the atlas with the sRGB *surface* format. glyphon's
-        // default `ColorMode::Accurate` then stores colored glyphs in an sRGB
-        // atlas and blends coverage in the surface color space, keeping glyph
-        // coverage physically correct against the sRGB swapchain — edges neither
-        // over- nor under-darkened.
-        let mut text_atlas = TextAtlas::new(device, queue, &glyph_cache, surface_format);
-        let text_renderer = TextRenderer::new(
-            &mut text_atlas,
-            device,
-            wgpu::MultisampleState::default(),
-            None,
-        );
+        // glyphon shaped-text state — its own pipeline/atlas, constructed here
+        // so `FontSystem`/`TextAtlas` build in `Renderer::new` rather than on the
+        // first shaped frame. See `text::UiTextRenderer::new`.
+        let text = UiTextRenderer::new(device, queue, surface_format);
 
         Self {
             pipeline,
@@ -508,12 +507,7 @@ impl UiPass {
             instance_capacity: INITIAL_INSTANCE_CAPACITY,
             white_view,
             white_bind_group,
-            font_system,
-            swash_cache,
-            glyph_cache,
-            viewport,
-            text_atlas,
-            text_renderer,
+            text,
         }
     }
 
@@ -548,6 +542,34 @@ impl UiPass {
                 },
             ],
         })
+    }
+
+    /// Lay a descriptor tree out into device-pixel draw data, threading the
+    /// pass's glyphon `FontSystem` so text nodes size from real shaped-run
+    /// metrics (the taffy↔glyphon measure seam). The renderer calls this for both
+    /// the splash and gameplay descriptor trees, then turns the draw data into
+    /// `UiBatch`es. Layout (taffy) runs on the CPU here — no `wgpu` call — so the
+    /// GPU stays untouched until `encode`.
+    ///
+    /// This builds a FRESH `UiTree` every call, so today the tree is rebuilt per
+    /// frame: the gameplay tree arrives in the per-frame snapshot, and the splash
+    /// re-derives its descriptor each frame. A fresh tree is always dirty, so
+    /// `UiTree`'s dirty-gating never short-circuits in production right now — it is
+    /// verified at the tree level by `tree.rs`'s recompute-counter tests and
+    /// becomes a real runtime optimization only once a persistent (retained-across-
+    /// frames) `UiTree` lands. See the plan's Follow-ups note.
+    /// `image_sizes` maps each referenced `image` asset key to its natural
+    /// reference size; the measure seam sizes image nodes from it (content-driven,
+    /// like text). Callers pass the sizes for the keys their tree references (the
+    /// splash logo; gameplay has no image producer yet).
+    pub fn layout_tree(
+        &mut self,
+        tree: &descriptor::AnchoredTree,
+        viewport: [u32; 2],
+        image_sizes: &tree::ImageSizes,
+    ) -> tree::UiDrawData {
+        let mut ui_tree = tree::UiTree::from_descriptor(tree);
+        ui_tree.build_draw_data(viewport, self.text.font_system_mut(), image_sizes)
     }
 
     /// Record the UI batches and shaped-text lines into `view`. Single color
@@ -606,8 +628,10 @@ impl UiPass {
         // the `render` call below only records draw commands. The buffers must
         // outlive `prepare` (the `TextArea`s borrow them), so they live in this
         // `Vec` for the duration of `encode`. Empty `texts` => no text work.
-        let text_buffers = self.shape_text(texts, viewport);
-        let prepared = self.prepare_text(device, queue, viewport, texts, &text_buffers);
+        let text_buffers = self.text.shape_text(texts, viewport);
+        let prepared = self
+            .text
+            .prepare_text(device, queue, viewport, texts, &text_buffers);
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("UI Pass"),
@@ -649,104 +673,16 @@ impl UiPass {
         // Then glyphon's text draw, into the same pass, after the quads. Skipped
         // when `prepare` had nothing to record (no text this frame).
         if prepared {
-            // `render` only fails if the atlas grew past `prepare` (it didn't,
-            // we just prepared into it) — propagating a panic here would crash
-            // the frame, so a failed text draw is logged and the rest of the
-            // pass still records.
-            if let Err(e) = self
-                .text_renderer
-                .render(&self.text_atlas, &self.viewport, &mut pass)
-            {
-                log::warn!("UI text render failed: {e}");
-            }
-        }
-    }
-
-    /// Shape each `UiText` into a glyphon `Buffer`, selecting the embedded Inter
-    /// family at the line's device-pixel font size. Returns the owned buffers so
-    /// they outlive `prepare`/`render`. Empty input yields an empty `Vec` and no
-    /// shaping work.
-    fn shape_text(&mut self, texts: &[UiText], viewport: [u32; 2]) -> Vec<TextBuffer> {
-        let mut buffers = Vec::with_capacity(texts.len());
-        for t in texts {
-            let metrics = Metrics::new(t.font_size, t.font_size * LINE_HEIGHT_FACTOR);
-            let mut buffer = TextBuffer::new(&mut self.font_system, metrics);
-            // Bound the layout box to the backbuffer; single-line UI text never
-            // needs to wrap within the splash, but a finite size lets glyphon
-            // resolve the run.
-            buffer.set_size(
-                &mut self.font_system,
-                Some(viewport[0] as f32),
-                Some(viewport[1] as f32),
-            );
-            buffer.set_text(
-                &mut self.font_system,
-                &t.content,
-                &Attrs::new().family(Family::Name(UI_FONT_FAMILY)),
-                Shaping::Advanced,
-                None,
-            );
-            buffer.shape_until_scroll(&mut self.font_system, false);
-            buffers.push(buffer);
-        }
-        buffers
-    }
-
-    /// Run glyphon's `prepare` (CPU layout + atlas upload) for the shaped lines.
-    /// Sets the `Viewport` resolution from the device backbuffer size first.
-    /// Returns `true` if any text was prepared (so `encode` knows whether to
-    /// record the text draw). First-glyph rasterization lands here, on the first
-    /// shaped frame.
-    fn prepare_text(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        viewport: [u32; 2],
-        texts: &[UiText],
-        buffers: &[TextBuffer],
-    ) -> bool {
-        if texts.is_empty() {
-            return false;
+            self.text.render(&mut pass);
         }
 
-        self.viewport.update(
-            queue,
-            Resolution {
-                width: viewport[0],
-                height: viewport[1],
-            },
-        );
+        // Drop the pass (ends its borrow of `self.text`) before trimming, since
+        // `trim` needs `&mut self.text`.
+        drop(pass);
 
-        let areas = texts.iter().zip(buffers).map(|(t, buffer)| TextArea {
-            buffer,
-            left: t.position[0],
-            top: t.position[1],
-            scale: 1.0,
-            bounds: TextBounds {
-                left: 0,
-                top: 0,
-                right: viewport[0] as i32,
-                bottom: viewport[1] as i32,
-            },
-            default_color: GlyphColor::rgba(t.color[0], t.color[1], t.color[2], t.color[3]),
-            custom_glyphs: &[],
-        });
-
-        match self.text_renderer.prepare(
-            device,
-            queue,
-            &mut self.font_system,
-            &mut self.text_atlas,
-            &self.viewport,
-            areas,
-            &mut self.swash_cache,
-        ) {
-            Ok(()) => true,
-            Err(e) => {
-                log::warn!("UI text prepare failed: {e}");
-                false
-            }
-        }
+        // Reclaim atlas space for glyphs the last `prepare` did not touch — one
+        // trim per frame, after the draw is recorded, per glyphon's guidance.
+        self.text.trim();
     }
 
     fn grow_instance_buffer(&mut self, device: &wgpu::Device, needed: usize) {
@@ -768,7 +704,7 @@ impl UiPass {
 /// image content decodes on sample (white encodes to white, so the panel texel
 /// stays neutral). Mirrors `render::splash::upload_splash_texture` — kept local
 /// so the UI pass owns its own upload path. Used here for the 1×1 white texel;
-/// the logo image reuses `render::splash::upload_splash_texture` in Task 4.
+/// the splash logo image goes through `render::splash::upload_splash_texture`.
 fn upload_ui_texture(device: &wgpu::Device, queue: &wgpu::Queue, tex: &UiTexture) -> wgpu::Texture {
     let size = wgpu::Extent3d {
         width: tex.width,
@@ -897,65 +833,5 @@ mod tests {
         )
         .validate(&module)
         .expect("ui_quad.wgsl must pass naga validation");
-    }
-
-    #[test]
-    fn embedded_font_bytes_are_present_and_a_truetype() {
-        // The font is embedded via `include_bytes!`; a missing/empty asset must
-        // fail the build-test, not just produce blank text at runtime. The
-        // sfnt/TrueType magic is `0x00010000` (or `OTTO`/`true`/`ttcf`).
-        assert!(
-            UI_FONT_TTF.len() > 1024,
-            "embedded TTF looks truncated ({} bytes)",
-            UI_FONT_TTF.len(),
-        );
-        let magic = &UI_FONT_TTF[0..4];
-        assert!(
-            magic == [0x00, 0x01, 0x00, 0x00]
-                || magic == *b"OTTO"
-                || magic == *b"true"
-                || magic == *b"ttcf",
-            "embedded font is not a recognized sfnt/TrueType (magic {magic:?})",
-        );
-    }
-
-    #[test]
-    fn embedded_font_registers_and_resolves_family() {
-        // CPU-only (no GPU): `FontSystem` is pure cosmic-text. Registering the
-        // embedded bytes must make the `Inter` family queryable, so the
-        // `Family::Name(UI_FONT_FAMILY)` selection in `shape_text` resolves to
-        // the embedded face rather than a system fallback.
-        let mut fs = FontSystem::new();
-        fs.db_mut().load_font_data(UI_FONT_TTF.to_vec());
-        let has_family = fs
-            .db()
-            .faces()
-            .any(|face| face.families.iter().any(|(name, _)| name == UI_FONT_FAMILY));
-        assert!(
-            has_family,
-            "embedded font did not register family {UI_FONT_FAMILY:?}",
-        );
-    }
-
-    #[test]
-    fn ui_text_carries_device_scaled_inputs() {
-        // UiText carries device-pixel position + a device-scaled font size +
-        // color, no logical-reference coords. Font size scales by the same
-        // `device_scale` as panels, so text tracks resolution (e.g. a 24px
-        // logical line at 3x is a 72px device line).
-        let logical_size = 24.0_f32;
-        let scale = 3.0_f32;
-        let t = UiText::new(
-            "v0.1.0",
-            [40.0, 600.0],
-            logical_size * scale,
-            [220, 230, 240, 255],
-        );
-        assert_eq!(t.font_size, 72.0);
-        assert_eq!(t.position, [40.0, 600.0]);
-        assert_eq!(t.color, [220, 230, 240, 255]);
-        // Line height tracks font size by the single-line factor.
-        let line_height = t.font_size * LINE_HEIGHT_FACTOR;
-        assert_eq!(line_height, 90.0);
     }
 }

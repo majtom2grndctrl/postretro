@@ -35,16 +35,16 @@ Build the Rust-owned UI descriptor model, retained widget tree, and `taffy`-driv
 
 ## Acceptance criteria
 
-- [ ] A descriptor tree of all seven kinds round-trips through serde JSON: a top-level placement envelope (`{ anchor, offset, root }`) wrapping a `vstack` root — `{"kind":"vstack", ...}` — deserializes and re-serializes to identical JSON; an unknown `kind` deserializes to an error, not a panic.
-- [ ] `taffy` lays out a nested `vstack`/`hstack`/`grid` tree; child rects match expected flex/grid distribution at the 1280×720 reference and scale uniformly at 4K (mirrors A's resolution tests).
-- [ ] A `text` node's computed size comes from `glyphon` shaped-run metrics, not a glyph-count estimate; two trees with different `content` values produce different measured widths (content is immutable after tree construction in B — this is a construct-two-trees comparison, not runtime mutation).
-- [ ] A top-level anchored tree centers against the letterbox on a non-16:9 viewport (reuses A's anchor assertion).
-- [ ] The boot splash renders through the retained descriptor tree — `build_splash_descriptor` returns a node tree — with panel, logo, and version text visually unchanged; version text centers via measured width. Verification reuses A's approach: pure-CPU draw-list assertions plus a manual run per the project build/run commands — no new golden image required.
-- [ ] Layout recomputes only on tree-structure change or viewport resize; a no-change frame performs no `taffy` recompute (verifiable via a recompute counter or dirty flag in a test).
-- [ ] The renderer builds a non-empty UI draw list from a descriptor tree on the gameplay path (in B the test feeds a fixture tree, not a real screen); an empty tree early-outs the UI pass (no `begin_render_pass`). The early-out is at the pass-orchestration level and applies to the gameplay path only; it must not regress the splash's frame-0 black clear, which currently relies on `encode` opening the pass with empty draw lists.
-- [ ] Computed quad/panel rects snap to integer device pixels; text glyphs remain exempt (reuses A).
-- [ ] `taffy` is a workspace dependency; no QuickJS/Luau ingestion or `StateValue`/slot code is added.
-- [ ] The Boundary inventory table pins Rust/wire/JS/Luau casing for every kind and its fields.
+- [x] A descriptor tree of all seven kinds round-trips through serde JSON: a top-level placement envelope (`{ anchor, offset, root }`) wrapping a `vstack` root — `{"kind":"vstack", ...}` — deserializes and re-serializes to identical JSON; an unknown `kind` deserializes to an error, not a panic.
+- [x] `taffy` lays out a nested `vstack`/`hstack`/`grid` tree; child rects match expected flex/grid distribution at the 1280×720 reference and scale uniformly at 4K (mirrors A's resolution tests).
+- [x] A `text` node's computed size comes from `glyphon` shaped-run metrics, not a glyph-count estimate; two trees with different `content` values produce different measured widths (content is immutable after tree construction in B — this is a construct-two-trees comparison, not runtime mutation).
+- [x] A top-level anchored tree centers against the letterbox on a non-16:9 viewport (reuses A's anchor assertion).
+- [x] The boot splash renders through the retained descriptor tree — `build_splash_descriptor` returns a node tree — with panel, logo, and version text visually unchanged; version text centers via measured width. Verification reuses A's approach: pure-CPU draw-list assertions plus a manual run per the project build/run commands — no new golden image required.
+- [x] Layout recomputes only on tree-structure change or viewport resize; a no-change frame performs no `taffy` recompute (verifiable via a recompute counter or dirty flag in a test).
+- [x] The renderer builds a non-empty UI draw list from a descriptor tree on the gameplay path (in B the test feeds a fixture tree, not a real screen); an empty tree early-outs the UI pass (no `begin_render_pass`). The early-out is at the pass-orchestration level and applies to the gameplay path only; it must not regress the splash's frame-0 black clear, which currently relies on `encode` opening the pass with empty draw lists.
+- [x] Computed quad/panel rects snap to integer device pixels; text glyphs remain exempt (reuses A).
+- [x] `taffy` is a workspace dependency; no QuickJS/Luau ingestion or `StateValue`/slot code is added.
+- [x] The Boundary inventory table pins Rust/wire/JS/Luau casing for every kind and its fields.
 
 ## Tasks
 
@@ -106,6 +106,8 @@ UI descriptors cross Rust ↔ wire (JSON) ↔ JS/TS ↔ Luau (script ingestion l
 | container gap | `gap: f32` | `gap` | `gap` | `gap` |
 | container padding | `padding: f32` | `padding` | `padding` | `padding` |
 | container align | `align: Align` | `align` (e.g. `"start"`, `"center"`, `"end"`, `"stretch"`) via `#[serde(rename_all = "camelCase")]` on `Align` | `align` | `align` |
+| container fill | `fill: Option<[f32; 4]>` (optional backdrop, linear RGBA) | `fill` (`skip_serializing_if = Option::is_none`) | `fill` | `fill` |
+| container border | `border: Option<Border>` (optional backdrop 9-slice) | `border` (`skip_serializing_if = Option::is_none`) | `border` | `border` |
 | grid columns | `cols: u32` | `cols` | `cols` | `cols` |
 | spacer grow | `flex_grow: f32` | `flexGrow` | `flexGrow` | `flexGrow` |
 | children | `children: Vec<Widget>` | `children` (positional array) | positional args | positional args |
@@ -116,6 +118,15 @@ UI descriptors cross Rust ↔ wire (JSON) ↔ JS/TS ↔ Luau (script ingestion l
 
 Exact field set per kind is the implementer's call within these casing rules and the *Rough sketch* constraints; the table pins every cross-boundary name and its encoding.
 
+### Design change: container background replaces absolute placement (owner-approved)
+
+The initial Goal-B splash used an absolute-positioning `Place { size, inset, center_x }` escape hatch (a review flag) to reproduce its **layered/overlapping** composition — pure flex/grid cannot overlap siblings. The owner chose **container background** instead: `vstack`/`hstack` carry an optional `fill` + 9-slice `border`, so a container draws its own backdrop quad **beneath** its flowed children (painter's order in `tree::collect_node`). `Place` is removed entirely (struct, per-widget `place`, `Position::Absolute`/`center_x` mapping).
+
+Consequences:
+- The splash is an **outer** container (`fill = PANEL_BORDER_COLOR`, `padding = 4`) wrapping an **inner** container (`fill = PANEL_COLOR`, content padding) that flows the logo `image` above the version `text`. The 4px rim is the outer border-colored backdrop showing through the outer padding; centering is the inner container's `align: center` over the measured run width. No absolute overlap.
+- Panel sizing is **content-driven**: the panel sizes to logo + paddings + gap + text, not a hardcoded 740×360. Pinned splash rects (`splash_layout_test`) were re-derived to the content-driven layout (border `[300,206,680,308]` at 1280×720, scale 1.0).
+- `image` nodes have **no wire-level size**: they size from the asset's **natural pixel dimensions** (content-driven, like text measurement). The renderer threads an `asset → natural reference size` map (`tree::ImageSizes`) into the measure seam; `build_splash_descriptor` no longer takes `logo_aspect`.
+
 Note: the descriptor wire `color` stays `[f32; 4]` RGBA. For `text` nodes it converts to `UiText`'s `[u8; 4]` sRGB at draw-list build time (the existing text path stores `UiText.color` as `[u8; 4]`; panel fills are `[f32; 4]` linear RGBA and require no conversion).
 
 ## Open questions
@@ -124,3 +135,7 @@ Note: the descriptor wire `color` stays `[f32; 4]` RGBA. For `text` nodes it con
 - **`UiReadSnapshot` shape.** Decided: carries the descriptor tree; the renderer lays it out (renderer-owns-GPU). Residual: whether to pre-bake a typed screen/slot handle to de-risk C. Recommendation: defer — C is next and sequential, so the handle is best shaped against C's content contract.
 - **`padding` scalar vs. per-edge.** Research shows a single `padding` value; `taffy` supports per-edge `Rect`. Recommendation: scalar in B, widen later if a screen needs asymmetric padding — low-cost additive change. Confirm.
 - **`image` missing-key behavior.** B builds a small key→bind-group registry but only pre-registers known keys; decide whether an unknown `asset` key falls back to a placeholder bind group or errors. Confirm at review.
+
+## Follow-ups
+
+- **Retain `UiTree` across frames so dirty-gating fires in production.** Task 4's dirty-gating is real and tested at the tree level (`tree.rs` recompute-counter tests), but `UiPass::layout_tree` rebuilds a fresh `UiTree` every frame, so a fresh-always-dirty tree never short-circuits the recompute in production today. When persistent gameplay screens land (the goal introducing retained-across-frames UI — C/F), hold the `UiTree` on the `Renderer` and rebuild it only on descriptor change, so the no-recompute path runs for real. Deferred deliberately in B (owner decision): B has no persistent screen to retain, and the splash re-derives its descriptor each frame.

@@ -22,6 +22,10 @@ glyphon.workspace = true
 glam.workspace = true
 bytemuck.workspace = true
 
+# Flexbox layout solver for the retained UI widget tree (M13 Goal B). Consumed
+# by the UI layout path; pure CPU, no GPU coupling.
+taffy.workspace = true
+
 # Collision (parry3d trimesh + ray queries). nalgebra types are confined to
 # the `collision` module per the entity_model.md §7 invariant.
 parry3d = { workspace = true }

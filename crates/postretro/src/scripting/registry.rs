@@ -768,8 +768,8 @@ impl EntityRegistry {
     /// the dot is negative, so it never takes the long arc).
     ///
     /// `alpha` is supplied by the caller — the render-frame collector passes
-    /// the same frame alpha the player camera reads from `frame_timing`
-    /// (`current_alpha`). Returns `GenerationMismatch`/`EntityNotFound` for
+    /// the same frame alpha the player camera reads from `crate::frame_timing`
+    /// (`FrameTickResult::alpha`). Returns `GenerationMismatch`/`EntityNotFound` for
     /// stale or unknown ids, and `ComponentNotFound` if the entity carries no
     /// `Transform`. See: context/lib/entity_model.md §5.
     pub(crate) fn interpolated_transform(

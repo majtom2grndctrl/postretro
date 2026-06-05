@@ -22,6 +22,18 @@ use crate::model::ModelHandle;
 /// [`plan_mesh_frame`]); the cap is a soft visual limit, never a panic.
 pub(crate) const MAX_PALETTE_ENTRIES: usize = 4096;
 
+/// Fixed per-frame instance budget — the cap on how many instances the per-frame
+/// instance SSBO can hold. The renderer sizes that SSBO (`mesh_pass::MAX_INSTANCES`)
+/// to exactly this value, so the planner MUST drop instances past it or the GPU
+/// layer's `write_buffer` runs off the end of the buffer and wgpu validation
+/// panics. This is a SEPARATE cap from the palette budget: a zero-joint (rigid /
+/// static-prop) model consumes no palette slots, so the palette cap never fires
+/// for it — without this instance cap, a flood of rigid props would grow the
+/// instance count unbounded. Equal to `MAX_PALETTE_ENTRIES` because each instance
+/// consumes at least one palette slot in the skinned case, so one cap value
+/// covers both buffers.
+pub(crate) const MAX_INSTANCES: usize = MAX_PALETTE_ENTRIES;
+
 /// One skinned-mesh instance to consider for this frame: which model it draws,
 /// its final interpolated world transform, and a deterministic phase seed (the
 /// raw `EntityId`) used to de-sync animation across a wave. Produced by the
@@ -88,11 +100,17 @@ pub(crate) trait JointCounts {
 /// Instances are bucketed by model handle in first-seen order (stable, cheap to
 /// reason about — not sorted, since wave counts are small). Each instance gets a
 /// run of `joint_count(model)` palette slots; runs are laid out back-to-back
-/// across all instances of all groups. An instance whose run would push the
-/// running palette cursor past [`MAX_PALETTE_ENTRIES`] is DROPPED (counted in
-/// `dropped`) rather than truncated — a partial run would corrupt skinning. An
-/// instance whose model is absent from `joints` (never uploaded) is silently
-/// skipped and not counted as a budget drop.
+/// across all instances of all groups. An instance is DROPPED (counted in
+/// `dropped`) rather than truncated when EITHER budget would overflow:
+/// - its palette run would push the cursor past [`MAX_PALETTE_ENTRIES`] (a
+///   partial run would corrupt skinning), or
+/// - the running instance count would reach [`MAX_INSTANCES`] (the per-frame
+///   instance SSBO is sized to that bound — a write past it panics wgpu).
+///
+/// The instance cap is the only one that fires for zero-joint (rigid / static
+/// `prop_mesh`) models, since they consume no palette slots. An instance whose
+/// model is absent from `joints` (never uploaded) is silently skipped and not
+/// counted as a budget drop.
 ///
 /// The returned plan's groups carry dense instance offsets so the GPU layer can
 /// write one flat instance SSBO and issue one instanced draw per group.
@@ -102,6 +120,7 @@ pub(crate) fn plan_mesh_frame(
 ) -> MeshFramePlan {
     let mut groups: Vec<ModelDrawGroup> = Vec::new();
     let mut palette_cursor: usize = 0;
+    let mut instance_count: usize = 0;
     let mut dropped: u32 = 0;
 
     for inst in instances {
@@ -111,14 +130,18 @@ pub(crate) fn plan_mesh_frame(
         };
         let run = joint_count as usize;
 
-        // Drop the instance if its run does not fit the remaining budget. A
-        // zero-joint model (degenerate) consumes no budget and always fits.
-        if palette_cursor + run > MAX_PALETTE_ENTRIES {
+        // Drop the instance if it would overflow EITHER budget. The instance cap
+        // is what catches rigid / zero-joint props: their `run == 0` never trips
+        // the palette cap, so without this check the instance count — and the
+        // GPU layer's per-instance SSBO writes — would run unbounded past the
+        // buffer the renderer sized to `MAX_INSTANCES` and panic wgpu.
+        if instance_count >= MAX_INSTANCES || palette_cursor + run > MAX_PALETTE_ENTRIES {
             dropped += 1;
             continue;
         }
         let palette_base = palette_cursor as u32;
         palette_cursor += run;
+        instance_count += 1;
 
         let planned = PlannedInstance {
             transform: inst.transform,
@@ -284,6 +307,33 @@ mod tests {
         for r in runs {
             assert!((r.palette_base + per) as usize <= MAX_PALETTE_ENTRIES);
         }
+    }
+
+    #[test]
+    fn plan_caps_zero_joint_instances_at_instance_budget() {
+        // Regression: rigid / static props have ZERO joints, so the palette cap
+        // never fires for them. Without the separate instance cap, the instance
+        // count grows unbounded past the GPU instance SSBO (sized to
+        // MAX_INSTANCES) and the renderer's per-instance write_buffer panics.
+        let joints = joints(&[("prop", 0)]);
+        let overflow = MAX_INSTANCES + 100;
+        let instances: Vec<MeshInstanceInput> = (0..overflow)
+            .map(|i| instance("prop", i as f32, i as u32))
+            .collect();
+        let plan = plan_mesh_frame(&instances, &joints);
+
+        assert_eq!(
+            plan.instance_count as usize, MAX_INSTANCES,
+            "instance count is capped at the per-frame instance budget",
+        );
+        assert_eq!(
+            plan.dropped as usize,
+            overflow - MAX_INSTANCES,
+            "every instance past the cap is counted as dropped",
+        );
+        // Zero-joint runs consume no palette slots, so every survivor shares base 0.
+        let total: usize = plan.groups.iter().map(|g| g.instances.len()).sum();
+        assert_eq!(total, MAX_INSTANCES, "surviving instances match the count");
     }
 
     #[test]

@@ -1,4 +1,4 @@
-// Skinned-mesh forward pass — GPU vertex skinning + flat-lit base-color output.
+// Skinned-mesh forward pass — GPU vertex skinning + SH-lit indirect base-color output.
 // See: context/lib/rendering_pipeline.md §9
 //
 // Vertex skinning: each vertex carries 4 joint indices + 4 normalized weights.
@@ -12,8 +12,8 @@
 // `forward.wgsl` so the skinned stream and world stream share one encoding;
 // `gltf_loader.rs` encodes these with the same shared
 // `postretro_level_format::octahedral` helper. `oct_decode` is copied verbatim
-// from forward.wgsl. `tangent_packed` (location 3) is carried but unused this
-// slice (flat-lit); its decode lands with the lighting / normal-mapping work.
+// from forward.wgsl. `tangent_packed` (location 3) is carried but unused by the SH-lit fragment
+// (no normal map yet); its decode lands with the normal-mapping work.
 //
 // Lighting: SH-lit indirect baseline. The fragment samples the material
 // base-color texture (group 1) and multiplies it by the baked spherical-harmonic
@@ -25,9 +25,9 @@
 //
 // Entities follow the BILLBOARD precedent, not forward's static-surface variant:
 // `reject_backface = false` (a moving skinned entity is not a static world
-// surface) with Chebyshev probe-occlusion on. The dynamic-DIRECT lighting
-// interface gets its own ADDITIVE bind group later (group 2, left UNALLOCATED
-// here); no direct lighting is computed in this slice.
+// surface) with Chebyshev probe-occlusion on. No direct lighting is computed
+// here); group 2 is reserved for the dynamic-direct additive term when that
+// work lands.
 //
 // Design note (non-binding): the skinning vertex stage is kept separable so a
 // future position-only depth-only skinned variant (the shadow task) can reuse
@@ -44,17 +44,17 @@ struct CameraUniforms {
 
 // --- Group 1: material -------------------------------------------------------
 // Same layout `build_material_bind_group` produces (bindings 0,2,3,4,5). The
-// flat-lit fragment only samples the diffuse (binding 0) through the aniso
-// sampler (binding 5); the other bindings are declared so the bind group the
-// renderer already builds is layout-compatible with this pipeline.
+// SH-lit fragment samples only diffuse (binding 0) through the aniso sampler
+// (binding 5); SH irradiance comes from group 4. The other bindings are
+// declared for layout compatibility with the renderer's existing bind group.
 @group(1) @binding(0) var base_texture: texture_2d<f32>;
 @group(1) @binding(5) var aniso_sampler: sampler;
 
 // --- Group 3: skinned instance data ------------------------------------------
-// Group 2 is intentionally left UNALLOCATED — it is the provisional lighting
-// slot the broadening lighting task fills (SH ambient + dynamic direct). The
-// pipeline layout passes `None` for group 2 so the future task adds a slot
-// rather than renumbering existing groups.
+// Group 2 is intentionally left UNALLOCATED — the provisional slot the
+// dynamic-direct lighting task adds later (SH indirect already ships at
+// group 4). The pipeline layout passes `None` for group 2 so that task adds
+// a slot rather than renumbering existing groups.
 //
 // `bone_palette` is the SHARED palette storage buffer; every instance's run of
 // `BonePaletteEntry` (one mat4 per joint) is appended into it. Each instance's

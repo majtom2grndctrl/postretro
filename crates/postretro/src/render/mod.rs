@@ -564,6 +564,24 @@ fn parse_blake3_key(hex: &str) -> [u8; 32] {
     key
 }
 
+/// Derive the glTF open path and the renderer cache handle for one skinned model
+/// from its content-relative handle. These are DELIBERATELY decoupled: the file
+/// opens from `content_root.join(model_rel)` (every other asset joins the content
+/// root), but the cache key is the VERBATIM `model_rel` string — the
+/// `MeshComponent.model` handle the spawn attaches and the per-frame planner
+/// groups by, so a joined key would miss `models.get(&group.model)` and silently
+/// drop every draw. Split out as a pure helper so the key/path contract is
+/// unit-testable without a GPU device (`load_skinned_model` needs one).
+fn resolve_model_open_path_and_handle(
+    model_rel: &str,
+    content_root: &Path,
+) -> (std::path::PathBuf, crate::model::ModelHandle) {
+    (
+        content_root.join(model_rel),
+        crate::model::ModelHandle::from(model_rel.to_string()),
+    )
+}
+
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// Extent for the full-res depth pre-pass attachment. Recreated at the surface
@@ -836,7 +854,8 @@ pub struct Renderer {
     smoke_pass: SmokePass,
 
     /// Skinned-mesh forward pass. Idle (no draw) until a model is uploaded via
-    /// `load_skinned_model` (driven by the entity spawn seam at level install).
+    /// `load_skinned_model` (driven by the level-load model sweep at level
+    /// install, once per distinct `prop_mesh` model).
     mesh_pass: mesh_pass::MeshPass,
 
     /// Per-frame skinned-mesh instance list: surviving (model handle,
@@ -2598,34 +2617,44 @@ impl Renderer {
         log::info!("[Renderer] Textures installed: {}", self.gpu_textures.len());
     }
 
-    /// Load the slice's one skinned model, resolve each submesh's material key
-    /// (blake3 content-hash of the base-color PNG, the same recipe the level
-    /// compiler uses to name `.prm` sidecars) to a `LoadedTexture`, build one
-    /// bind group per distinct key, and upload to the mesh pass.
-    /// Returns `Some(tags)` on success — `tags` being the model's top-level
-    /// `extras` entity tags (`LoadedModel.tags`, possibly empty) — so the caller
-    /// (the entity spawn seam) spawns the mesh entity carrying them; a successful
-    /// load with no `extras` is `Some(vec![])`, not `None`. On a load error this
-    /// logs a `warn!` naming the path, leaves the pass idle, and returns `None`
-    /// (no spawn).
+    /// Load one skinned model into the renderer's model cache: parse the glTF,
+    /// resolve each submesh's material key (blake3 content-hash of the base-color
+    /// PNG, the same recipe the level compiler uses to name `.prm` sidecars) to a
+    /// `LoadedTexture`, build one bind group per distinct key, and upload to the
+    /// mesh pass.
+    ///
+    /// Called once per distinct `prop_mesh` model by the level-load model sweep
+    /// (after classname dispatch); spawning itself happens earlier in
+    /// `prop_mesh::handle`, so callers are free to discard the return. Returns
+    /// `Some(tags)` on success — `tags` being the model's top-level `extras`
+    /// entity tags (`LoadedModel.tags`, possibly empty); a successful load with
+    /// no `extras` is `Some(vec![])`, not `None`. On a load error this logs a
+    /// `warn!` naming the path, leaves the entry uncached (that model renders
+    /// nothing), and returns `None`.
     ///
     /// The renderer owns the GPU upload + the cached skeleton + first clip
     /// (inside the mesh pass's model cache); the per-frame draw list
     /// (`mesh_draws`) is supplied each frame by the render-frame mesh collector
     /// via [`set_mesh_draws`], not seeded here.
     ///
-    /// The model is cached under `model_path.to_string_lossy()` so the cache key
-    /// matches the `MeshComponent.model` string the spawn seam attaches; the
-    /// per-frame planner groups instances by that same handle. Re-loading the
-    /// same path replaces the cache entry (idempotent upload).
+    /// Open path vs. cache key are deliberately decoupled. The glTF file is
+    /// opened from `content_root.join(model_rel)` (every other asset joins the
+    /// content root), but the model is cached under the VERBATIM `model_rel`
+    /// string — that is the `MeshComponent.model` handle the spawn attaches and
+    /// the per-frame planner groups by, so the key must match it exactly (a
+    /// joined key would miss the planner's `models.get(&group.model)` lookup and
+    /// silently drop every draw). Re-loading the same handle replaces the cache
+    /// entry (idempotent upload).
     ///
     /// [`set_mesh_draws`]: Self::set_mesh_draws
     pub fn load_skinned_model(
         &mut self,
-        model_path: &Path,
+        model_rel: &str,
+        content_root: &Path,
         prm_cache_root: &Path,
     ) -> Option<Vec<String>> {
-        let model = match crate::model::gltf_loader::load_model(model_path) {
+        let (model_path, handle) = resolve_model_open_path_and_handle(model_rel, content_root);
+        let model = match crate::model::gltf_loader::load_model(&model_path) {
             Ok(m) => m,
             Err(err) => {
                 log::warn!(
@@ -2663,7 +2692,8 @@ impl Renderer {
             );
         }
 
-        let handle = crate::model::ModelHandle::from(model_path.to_string_lossy().into_owned());
+        // `handle` (the verbatim cache key) was derived alongside the open path
+        // by `resolve_model_open_path_and_handle` — see this method's doc.
         self.mesh_pass.insert_model(
             &self.device,
             handle,
@@ -4078,14 +4108,18 @@ impl Renderer {
 
             // Overflow drops excess instances rather than corrupting the palette
             // or panicking — rate-limited warning (mirrors `EmitterBridge`).
+            // Covers BOTH budgets: the palette-slot cap and the instance-count
+            // cap (the latter is what fires for rigid / zero-joint props, which
+            // consume no palette slots).
             if plan.dropped > 0 {
                 let now = now_seconds as f32;
                 if now - self.mesh_overflow_last_warn >= 1.0 {
                     log::warn!(
-                        "[Renderer] skinned-mesh palette budget exceeded: dropped {} instance(s) \
-                         (budget {} palette slots); excess not drawn",
+                        "[Renderer] skinned-mesh budget exceeded: dropped {} instance(s) \
+                         (budget {} palette slots / {} instances); excess not drawn",
                         plan.dropped,
                         mesh_instances::MAX_PALETTE_ENTRIES,
+                        mesh_instances::MAX_INSTANCES,
                     );
                     self.mesh_overflow_last_warn = now;
                 }
@@ -5757,6 +5791,31 @@ mod tests {
     #[test]
     fn parse_blake3_key_maps_zero_sentinel_to_zero_key() {
         assert_eq!(parse_blake3_key(&"0".repeat(64)), [0u8; 32]);
+    }
+
+    // --- Model open-path vs. cache-key split (finding: content_root join) ---
+    //
+    // `load_skinned_model` needs a live `wgpu::Device`, so the path/key
+    // derivation is factored into the pure `resolve_model_open_path_and_handle`.
+    // These pin the contract: the glTF opens content-root-JOINED while the cache
+    // key stays the VERBATIM handle, so it equals what `mesh_render.rs` produces
+    // from `mesh.model` (`ModelHandle::from(mesh.model.clone())`) and the
+    // planner's `models.get(&group.model)` lookup hits.
+
+    #[test]
+    fn model_cache_key_is_the_verbatim_handle_while_open_path_is_joined() {
+        let content_root = Path::new("/content/root");
+        let model_rel = "models/x/scene.gltf";
+        let (open_path, handle) = resolve_model_open_path_and_handle(model_rel, content_root);
+
+        // Open path is joined under the content root.
+        assert_eq!(open_path, content_root.join(model_rel));
+        // Cache key is the raw handle, NOT the joined path — must match the
+        // per-frame collector's `ModelHandle::from(mesh.model.clone())`.
+        assert_eq!(handle, crate::model::ModelHandle::from(model_rel));
+        assert_eq!(handle.as_str(), model_rel);
+        // And the key is explicitly not the joined string.
+        assert_ne!(handle.as_str(), open_path.to_string_lossy());
     }
 
     // --- Submesh material plan (GPU-free dedup + draw bookkeeping) ---------

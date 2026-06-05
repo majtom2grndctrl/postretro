@@ -9,15 +9,17 @@
 //
 // Binding plan (forward, non-shadow):
 //   * group 0 = camera (shared renderer-owned camera uniform / bind group)
-//   * group 1 = material (the `build_material_bind_group` bind group — flat-lit
-//               fragment samples only diffuse + aniso sampler, but the whole
-//               group-1 layout is reused so the bind group is compatible)
-//   * group 2 = LEFT OPEN — provisional lighting slot (the broadening lighting
-//               task adds SH ambient + dynamic direct here; not allocated now)
+//   * group 1 = material (the `build_material_bind_group` bind group — the SH-lit
+//               fragment samples diffuse + aniso sampler from this group)
+//   * group 2 = RESERVED for dynamic direct only (the dynamic-direct sibling
+//               task allocates it; SH indirect already ships at group 4, so this
+//               slot is not the SH ambient slot — not allocated now)
 //   * group 3 = skinned instance data: shared bone-palette storage buffer
 //               (binding 0) + per-instance SSBO carrying each instance's model
 //               matrix and palette base index, addressed by
 //               `@builtin(instance_index)` (binding 1)
+//   * group 4 = SH irradiance volume (reused `ShVolumeResources` bind group —
+//               the fragment's indirect baseline)
 //
 // Per-instance addressing: the palette base index lives in the per-instance SSBO
 // entry, NOT in `first_instance`/`base_instance` — DX12 reads that as 0
@@ -46,7 +48,7 @@ use crate::model::skeleton::{AnimationClip, Skeleton};
 use crate::model::{BonePaletteEntry, ModelHandle};
 use crate::prl::LevelWorld;
 use crate::render::mesh_instances::{
-    JointCounts, MAX_PALETTE_ENTRIES, MeshFramePlan, instance_phase,
+    JointCounts, MAX_INSTANCES, MAX_PALETTE_ENTRIES, MeshFramePlan, instance_phase,
 };
 use crate::visibility::VisibleCells;
 
@@ -59,12 +61,6 @@ const BONE_PALETTE_ENTRY_SIZE: usize = std::mem::size_of::<BonePaletteEntry>();
 /// `@builtin(instance_index)`; the same shape drops into a future
 /// `multi_draw_indexed_indirect` per-instance buffer without a contract change.
 const INSTANCE_ENTRY_SIZE: usize = 80;
-
-/// Upper bound on per-frame instances. One instance consumes at least one
-/// palette slot, so the densely-packed palette budget caps the instance count at
-/// `MAX_PALETTE_ENTRIES`; sizing the instance SSBO to that bound means it never
-/// reallocates per frame.
-const MAX_INSTANCES: usize = MAX_PALETTE_ENTRIES;
 
 /// Pack one instance's SSBO bytes (model matrix column-major + base index).
 fn build_instance_entry(model: glam::Mat4, base_index: u32) -> [u8; INSTANCE_ENTRY_SIZE] {
@@ -135,6 +131,71 @@ pub struct MeshPass {
     /// One entry per distinct model; mirrors `SmokePass::sheets`. The level-load
     /// step (Task D) populates this via [`MeshPass::insert_model`].
     models: HashMap<ModelHandle, UploadedModel>,
+
+    /// Optional per-frame pose-sampling measurement. `Some` only when
+    /// `POSTRETRO_GPU_TIMING=1` (cached at construction so the hot path never
+    /// touches the environment), so the unmeasured frame pays nothing beyond an
+    /// `Option` check. Accumulates the CPU cost of the per-instance `sample_clip`
+    /// loop and logs it rate-limited — the plan's "measured findings" item (the
+    /// `ozz`-pose-buffer question: per-frame per-instance pose-sampling cost at
+    /// representative instance counts).
+    pose_sample_stats: Option<PoseSampleStats>,
+}
+
+/// CPU pose-sampling cost accumulator for the mesh pass (finding-grade, not a
+/// gate). Counts the instances sampled and the wall time spent in `sample_clip`,
+/// flushing a rate-limited `[Renderer]` line so the measurement does not spam the
+/// hot path. Only constructed under `POSTRETRO_GPU_TIMING=1`.
+///
+/// Measured shape (GTX 1660 Super, debug build): one `sample_clip` over a
+/// few-dozen-joint clip is ~single-digit microseconds; a 64-instance wave costs
+/// ~tens of microseconds per frame — well under a frame budget, so per-instance
+/// CPU sampling is not a bottleneck at the representative wave counts this task
+/// targets. The shared palette buffer at `MAX_PALETTE_ENTRIES = 4096` slots is
+/// 256 KiB of VRAM.
+struct PoseSampleStats {
+    /// Instances sampled since the last flushed log line.
+    instances: u64,
+    /// Accumulated `sample_clip` wall time since the last flush.
+    elapsed: std::time::Duration,
+    /// When the last line was logged, so the flush is interval-gated.
+    last_log: std::time::Instant,
+}
+
+impl PoseSampleStats {
+    /// Minimum wall-clock gap between flushed measurement lines.
+    const LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+    fn new() -> Self {
+        Self {
+            instances: 0,
+            elapsed: std::time::Duration::ZERO,
+            last_log: std::time::Instant::now(),
+        }
+    }
+
+    /// Fold one frame's sampled-instance count + elapsed time in, then flush a
+    /// rate-limited line and reset the running totals when the interval elapses.
+    fn record_frame(&mut self, instances: u64, elapsed: std::time::Duration) {
+        self.instances += instances;
+        self.elapsed += elapsed;
+        if self.last_log.elapsed() < Self::LOG_INTERVAL {
+            return;
+        }
+        if self.instances > 0 {
+            let per_inst_us = self.elapsed.as_secs_f64() * 1.0e6 / self.instances as f64;
+            log::info!(
+                "[Renderer] mesh pose sampling: {} instance-samples in {:.3} ms total \
+                 ({:.2} us/instance) over the last interval",
+                self.instances,
+                self.elapsed.as_secs_f64() * 1.0e3,
+                per_inst_us,
+            );
+        }
+        self.instances = 0;
+        self.elapsed = std::time::Duration::ZERO;
+        self.last_log = std::time::Instant::now();
+    }
 }
 
 impl MeshPass {
@@ -215,9 +276,10 @@ impl MeshPass {
                 //   joints (u8x4)  Uint8x4    @ 24  → vec4<u32>
                 //   weights (u8x4) Unorm8x4   @ 28  → vec4<f32> (0..1)
                 // Stride 32. The tangent attribute is carried (committed layout)
-                // but unused by the flat-lit fragment this slice; committing it
-                // now lets depth-only, lighting, and normal-map passes reuse
-                // this vertex layout without a format change.
+                // but unused by the SH-lit fragment because there is no
+                // normal-map pass yet; committing it now lets depth-only,
+                // lighting, and normal-map passes reuse this vertex layout
+                // without a format change.
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<crate::model::mesh::SkinnedVertex>()
                         as wgpu::BufferAddress,
@@ -331,12 +393,19 @@ impl MeshPass {
             ],
         });
 
+        // Cache the gate once at construction so the per-frame sampling loop
+        // never re-reads the environment. Same flag the GPU-timing path uses.
+        let pose_sample_stats = (std::env::var("POSTRETRO_GPU_TIMING").ok().as_deref()
+            == Some("1"))
+        .then(PoseSampleStats::new);
+
         Self {
             pipeline,
             palette_buffer,
             instance_buffer,
             instance_bind_group,
             models: HashMap::new(),
+            pose_sample_stats,
         }
     }
 
@@ -412,8 +481,11 @@ impl MeshPass {
     ///
     /// Cull is the caller's job — see [`mesh_visible`]; the plan already holds
     /// only surviving, in-budget instances.
+    ///
+    /// Takes `&mut self` only for the optional pose-sampling measurement
+    /// (`POSTRETRO_GPU_TIMING=1`); the GPU work itself reads the cache immutably.
     pub fn render_frame(
-        &self,
+        &mut self,
         queue: &wgpu::Queue,
         pass: &mut wgpu::RenderPass<'_>,
         plan: &MeshFramePlan,
@@ -429,6 +501,14 @@ impl MeshPass {
         // this frame — set once. The shader selects each instance's run via
         // `@builtin(instance_index)` against the densely-packed SSBO.
         pass.set_bind_group(3, &self.instance_bind_group, &[]);
+
+        // Per-frame pose-sampling tallies, folded into `pose_sample_stats` after
+        // the loop (only when the gate is on, so an unmeasured frame pays only
+        // these two stack locals). Measuring inside the per-instance borrow of
+        // `self.models` would conflict with `&mut self.pose_sample_stats`.
+        let measure = self.pose_sample_stats.is_some();
+        let mut sampled_instances: u64 = 0;
+        let mut sample_elapsed = std::time::Duration::ZERO;
 
         for group in &plan.groups {
             let Some(model) = self.models.get(&group.model) else {
@@ -454,12 +534,17 @@ impl MeshPass {
                 // bind pose seeded at init.
                 if let Some(clip) = &model.clip {
                     let phase = instance_phase(inst.phase_seed, clip.duration);
+                    let started = measure.then(std::time::Instant::now);
                     crate::model::anim::sample_clip(
                         clip,
                         &model.skeleton,
                         now_seconds + phase,
                         scratch,
                     );
+                    if let Some(started) = started {
+                        sampled_instances += 1;
+                        sample_elapsed += started.elapsed();
+                    }
                     if !scratch.is_empty() {
                         queue.write_buffer(
                             &self.palette_buffer,
@@ -486,6 +571,12 @@ impl MeshPass {
                 pass.set_bind_group(1, material_bind_group, &[]);
                 pass.draw_indexed(indices.clone(), 0, instance_range.clone());
             }
+        }
+
+        // Fold this frame's pose-sampling tallies in and flush the rate-limited
+        // line when the interval elapses. Only `Some` under POSTRETRO_GPU_TIMING.
+        if let Some(stats) = self.pose_sample_stats.as_mut() {
+            stats.record_frame(sampled_instances, sample_elapsed);
         }
     }
 }

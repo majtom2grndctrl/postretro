@@ -99,8 +99,11 @@ fn content_root_from_map(map_path: &str) -> PathBuf {
 ///
 /// Empty handles are skipped: a `prop_mesh` with an absent/empty `model` logs a
 /// warning at spawn time and renders nothing; there is nothing to upload for it.
-/// The returned strings are the renderer cache keys (matching the per-frame draw
-/// planner's `ModelHandle`), so they are passed verbatim to `load_skinned_model`.
+/// Each returned string is the VERBATIM renderer cache key — it matches the
+/// per-frame draw planner's `ModelHandle` (built from the same `mesh.model`).
+/// `load_skinned_model` caches under this string but opens the glTF from
+/// `content_root.join(handle)`, so the caller passes both the handle and the
+/// content root (open path and cache key are deliberately decoupled).
 fn distinct_mesh_models(registry: &crate::scripting::registry::EntityRegistry) -> Vec<String> {
     use crate::scripting::registry::{ComponentKind, ComponentValue};
 
@@ -1891,18 +1894,20 @@ impl App {
         // exactly once into the renderer's model cache (renderer owns GPU). This
         // runs at level-load time, never mid-frame, so there is no in-frame
         // hitch. The model handle is the renderer cache key the per-frame draw
-        // planner groups by, so it is passed verbatim to `load_skinned_model`;
-        // the glTF file is resolved from it (paths are content-root canonical).
-        // A failed/invalid load is non-fatal: `load_skinned_model` already
-        // `warn!`s naming the path and returns `None`, the entity then renders
-        // nothing, and the load continues — no abort.
+        // planner groups by, so it is passed VERBATIM as the cache key; the glTF
+        // file itself is opened from `content_root.join(handle)` inside
+        // `load_skinned_model` (open path and cache key are decoupled — every
+        // other asset joins the content root, but the key must stay the raw
+        // handle the planner looks up). A failed/invalid load is non-fatal:
+        // `load_skinned_model` already `warn!`s naming the path and returns
+        // `None`, the entity then renders nothing, and the load continues.
         {
             let models = {
                 let registry = self.script_ctx.registry.borrow();
                 distinct_mesh_models(&registry)
             };
             for model in &models {
-                renderer.load_skinned_model(Path::new(model), &prm_cache_root);
+                renderer.load_skinned_model(model, &self.content_root, &prm_cache_root);
             }
             if !models.is_empty() {
                 log::info!(

@@ -1,6 +1,6 @@
 // Mesh render collector: walks MeshComponent entities and gathers per-instance
 // skinned-draw inputs (model handle + interpolated transform) for the renderer.
-// See: context/lib/scripting.md
+// See: context/lib/entity_model.md §5 · context/lib/rendering_pipeline.md §9
 
 use crate::model::ModelHandle;
 use crate::prl::LevelWorld;

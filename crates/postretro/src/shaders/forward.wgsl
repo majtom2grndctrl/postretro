@@ -732,7 +732,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // remultiply with N_bump NdotL to make the static term respond to normal-map
         // detail. lm_anim gets the same correction below via its own fused animated
         // dominant direction, so style-animated lights respond to normal-map detail
-        // identically to static ones. See normal-maps/ Task 4.
+        // identically to static ones.
         let dom = decode_lightmap_direction(textureSample(lightmap_direction, lightmap_sampler, in.lightmap_uv));
         let n_dot_l_mesh = max(dot(mesh_n, dom), 0.0);
         let n_dot_l_bump = max(dot(N_bump, dom), 0.0);
@@ -753,6 +753,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // direction atlas stores a raw normalized vec3 (not octahedral), so read
         // .xyz and re-normalize rather than decoding. Direction-only differs from
         // the static path; the NDOTL_EPS floor and 4.0 cap are shared.
+        // The compose pass stores vec3(0) for uncovered/canceling texels, so this
+        // normalize() can yield NaN — the use_correction_anim gate below catches it
+        // (NaN > NDOTL_EPS is false), so scale_anim falls back to 1.0 and no NaN
+        // reaches static_direct.
         let dom_anim = normalize(textureSample(animated_lm_direction, lightmap_sampler, in.lightmap_uv).xyz);
         let n_dot_l_mesh_anim = max(dot(mesh_n, dom_anim), 0.0);
         let n_dot_l_bump_anim = max(dot(N_bump, dom_anim), 0.0);

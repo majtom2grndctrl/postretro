@@ -105,9 +105,10 @@ struct DebugConfig {
 @group(1) @binding(8) var animated_lm_direction_atlas: texture_storage_2d<rgba16float, write>;
 
 // Decode the baked octahedral direction packed into a `TexelLight`'s
-// `direction_oct_packed` u32 (low 16 bits = x, high 16 bits = y). Mirrors
-// `decode_lightmap_direction` in forward.wgsl; only the channel-source step
-// differs (a packed u32 here vs an Rgba8Unorm sample there).
+// `direction_oct_packed` u32 (low 16 bits = x, high 16 bits = y). Mirrors the
+// octahedral reconstruction in `decode_lightmap_direction` (forward.wgsl); the
+// channel-source step differs (a packed u32 here vs an Rgba8Unorm sample there),
+// and this returns the result normalized.
 fn decode_packed_direction(packed: u32) -> vec3<f32> {
     let ox = f32(packed & 0xFFFFu) / 65535.0 * 2.0 - 1.0;
     let oy = f32(packed >> 16u) / 65535.0 * 2.0 - 1.0;
@@ -144,7 +145,9 @@ fn compose_main(
     let oc = offset_counts[texel_idx];
 
     // Debug mode 1: per-texel light-count heatmap (red channel). Emit
-    // before the accumulation loop and return — nothing else matters.
+    // before the accumulation loop and return — nothing else matters. The
+    // direction atlas is intentionally left untouched on this diagnostic path;
+    // the forward `lm_anim`-magnitude gate makes any stale direction a no-op.
     if (debug_config.mode == 1u) {
         let denom = max(f32(debug_config.max_lights_per_chunk), 1.0);
         let heat = f32(oc.count) / denom;

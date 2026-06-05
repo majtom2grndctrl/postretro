@@ -28,7 +28,9 @@ pub const BIND_FILTERING_SAMPLER: u32 = 4;
 /// atlas; the forward pass samples it to apply the same bumped-Lambert normal-map
 /// correction to the animated term that the static term already receives. Sampled
 /// through the nearest sampler at binding 2 — like the static direction atlas,
-/// directions must not be linearly interpolated.
+/// directions must not be linearly interpolated. This group-4 binding (5) and the
+/// compose shader's storage binding (8) are independent numbering spaces for the
+/// same atlas.
 pub const BIND_ANIMATED_DIRECTION: u32 = 5;
 
 /// GPU-side lightmap atlas: irradiance texture, direction texture, sampler,

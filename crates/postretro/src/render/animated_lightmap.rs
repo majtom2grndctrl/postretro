@@ -295,8 +295,9 @@ impl AnimatedLightmapResources {
         });
 
         // Second atlas: per-texel fused dominant direction. Same size and usage
-        // as the irradiance atlas; Task 2 binds `direction_forward_view` into
-        // group-4 of the forward pass.
+        // as the irradiance atlas. `direction_forward_view` is bound at group-4
+        // binding 5 in the forward pass — independent numbering from the
+        // compose-side storage binding 8 that writes this same atlas.
         let direction_atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Animated LM Direction Atlas"),
             size: wgpu::Extent3d {

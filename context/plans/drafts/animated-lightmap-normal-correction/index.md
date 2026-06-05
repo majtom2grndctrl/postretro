@@ -43,24 +43,40 @@ SDF trace and left unread. This plan re-consumes it. See `research.md`.
 
 ## Acceptance criteria
 
+Verification split: the BGL-contract and `cargo build`/`cargo test` criteria are
+machine-checked. **The visual criteria — bump response, direction-sense, A/B
+parity, grazing/cap behavior, and the no-op regression — are manual
+run-the-engine checks** (this project verifies rendered pixels by running the
+engine, not in CI). Exercise them on a test map with a single `style=2` animated
+light over a normal-mapped surface, A/B'd against an equivalent no-style static
+light. A green `cargo test` alone does not satisfy the visual criteria.
+
 - [ ] On a normal-mapped surface lit by a single `style=2` animated light, the
       animated direct term varies with normal-map detail (bump-corrected),
       visibly matching how the same surface responds under an equivalent no-style
       static light.
+- [ ] **Direction-sense:** a single off-axis `style=2` light produces a bump
+      highlight biased toward the light — as the light moves around the surface,
+      the brightened normal-map facets track its direction. This proves the fused
+      direction is correct, not merely non-zero (a directionally-wrong fusion can
+      still pass the brightness ACs below).
 - [ ] A/B parity: a `style=2` light and a no-style light of equal color and
       intensity on the same normal-mapped surface produce comparable peak
-      brightness (the styled light no longer reads as multiples dimmer). The
-      animated light still pulses on its curve.
+      brightness — peak within ~15% at the curve's maximum (the styled light no
+      longer reads as multiples dimmer). The animated light still pulses on its
+      curve.
 - [ ] The animated correction uses the same grazing-angle floor and maximum
       brightness cap as the static term; neither term can spike unbounded on
-      near-backfacing geometry.
+      near-backfacing geometry. (Verifiable by inspection: the shared `NDOTL_EPS`
+      and 4.0 cap constants.)
 - [ ] Existing v2 PRLs load and render with no re-bake. No new section, no
       version change.
-- [ ] A map with no animated weight maps renders identically to before: the new
-      atlas binds the zero-fallback view. A map that has animated weight maps but
-      where `lm_anim` is zero this frame hits the Task 3 forward gate (the
-      `lm_anim`-magnitude gate makes the correction a no-op regardless of the
-      atlas direction content). Both render identically to before.
+- [ ] A map with no animated weight maps renders identically to before (capture
+      a before/after frame of the same view): the new atlas binds the
+      zero-fallback view. A map that has animated weight maps but where `lm_anim`
+      is zero this frame hits the Task 3 forward gate (the `lm_anim`-magnitude
+      gate makes the correction a no-op regardless of the atlas direction
+      content). Both render identically to before.
 - [ ] The group-4 bind-group-layout contract test covers the new binding.
 - [ ] `cargo build -p postretro` and `cargo test` pass.
 
@@ -70,7 +86,8 @@ SDF trace and left unread. This plan re-consumes it. See `research.md`.
 
 In the compose pass (`animated_lightmap_compose.wgsl` +
 `crates/postretro/src/render/animated_lightmap.rs`): create a second
-`Rgba16Float` storage atlas the same size as the irradiance atlas, add its
+`Rgba16Float` storage atlas (name it `animated_lm_direction_atlas`) the same
+size as the irradiance atlas, add its
 compose-side storage binding at binding 8, and expose a forward view plus a new 1×1
 zero `dummy_view` for the empty-map path, modeled on the irradiance atlas's
 `dummy_view` (Task 2 binds it). Adding binding 8 requires: growing `compute_bgl_entries` from
@@ -80,14 +97,19 @@ bind-group entry (animated_lightmap.rs:348-381); deleting/rewriting the
 (animated_lightmap.rs:1089-1105) and the "intentionally absent" comment
 (animated_lightmap_compose.wgsl:101-104) that currently assert the slot stays
 empty; and creating the second storage view + atlas texture with a second
-`forward_view`. In `compose_main`, for each contributing
+`forward_view`. (That test asserts the absence of `@group(1) @binding(8)`,
+`encode_oct_to_rg`, and `animated_lm_direction_atlas`. The first and third now
+must exist; the compose writes a **raw normalized vec3** — there is no oct
+*encode* on the compose side — so drop the `encode_oct_to_rg` assertion rather
+than inverting it.) In `compose_main`, for each contributing
 texel light, decode that light's `entry.direction_oct_packed` (the same
 per-texel-light `entry` already read for the irradiance accum) to a unit vector and accumulate it
 weighted by that light's current radiance contribution (the luminance of the
 same `c * b * entry.weight` that drives the irradiance accum; see Rough sketch).
-Normalize the sum and store
-it; if the fused length is below `1e-4` (opposing lights cancel, or no
-coverage) store zero. Uncovered texels stay zero (atlas zero-init).
+Compute the sum's
+length; if it is below `1e-4` (opposing lights cancel, or no coverage) store
+zero, else store `sum / length` (test length **before** normalizing to avoid a
+divide-by-zero). Uncovered texels stay zero (atlas zero-init).
 
 ### Task 2: Wire the atlas through the group-4 BGL
 
@@ -110,10 +132,13 @@ Sample it at `lightmap_uv` using the same sample call/intrinsic as the static
 direction atlas — the animated direction atlas stores a raw normalized vec3, so
 read `.xyz` and re-normalize; do NOT pass the sample through
 `decode_lightmap_direction` (that oct decode is only for the static atlas).
-Derive the bumped/mesh NdotL ratio against the fused animated direction, and
-build a `scale_anim` with the same epsilon guard and 4.0 cap as the static
-`scale`, gated off when `lm_anim` is negligible (its direction is then
-unreliable). Combine as `static_direct = lm_irr * scale + lm_anim *
+Derive the bumped/mesh NdotL ratio against the fused animated direction,
+reusing the same `mesh_n` and `N_bump` already in scope (only the direction
+vector differs), and build a `scale_anim` with the same `NDOTL_EPS` guard and
+4.0 cap as the static `scale`. Mirror the static `use_correction` gate exactly
+(forward.wgsl:721-722): `dot(lm_anim, lm_anim) >= LM_ANIM_EPS * LM_ANIM_EPS &&
+n_dot_l_mesh_anim > NDOTL_EPS` with `LM_ANIM_EPS = 1e-4` (matching `LM_IRR_EPS`);
+when ungated, `lm_anim`'s direction is unreliable so `scale_anim = 1.0`. Combine as `static_direct = lm_irr * scale + lm_anim *
 scale_anim`, replacing the assignment at forward.wgsl:732. Update the now-stale
 "lm_anim is not corrected" comment at forward.wgsl:707-710.
 

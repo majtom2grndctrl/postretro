@@ -19,8 +19,8 @@
 // See: context/plans/in-progress/M13--descriptor-tree-layout (Task 6 gate).
 
 use super::layout::{self, device_scale};
-use super::splash::{SPLASH_LOGO_ASSET, build_splash_descriptor};
-use super::tree::{UiDrawData, UiTree};
+use super::splash::{SPLASH_LOGO_ASSET, build_splash_descriptor, splash_logo_reference_size};
+use super::tree::{ImageSizes, UiDrawData, UiTree};
 use super::{UiDrawList, UiInstance};
 use crate::render::splash::splash_bg_rgba;
 
@@ -41,14 +41,25 @@ fn assert_rect(label: &str, got: [f32; 4], want: [f32; 4]) {
 }
 
 /// The real committed logo asset is 2028x582 (a wide banner, aspect ~3.485). The
-/// descriptor derives the logo's height from this decoded aspect, so the fixture
-/// builds the descriptor with the real value and pins rects shaped to the asset.
-const ASSET_LOGO_ASPECT: f32 = 2028.0 / 582.0;
+/// logo `image` node sizes content-driven from these natural dims via the measure
+/// seam, so the fixture threads the same reference size the renderer would.
+const ASSET_LOGO_DIMS: [u32; 2] = [2028, 582];
 
 /// A headless `FontSystem` (embedded Inter face registered, no GPU). Text nodes
 /// measure through this in `build_draw_data`.
 fn font_system() -> glyphon::FontSystem {
     super::text::build_font_system()
+}
+
+/// The `ImageSizes` map the renderer threads into the splash layout: the logo
+/// asset's natural reference size keyed by `SPLASH_LOGO_ASSET`.
+fn logo_image_sizes() -> ImageSizes {
+    let mut sizes = ImageSizes::new();
+    sizes.insert(
+        SPLASH_LOGO_ASSET.to_string(),
+        splash_logo_reference_size(ASSET_LOGO_DIMS),
+    );
+    sizes
 }
 
 /// Reproduce the renderer's splash draw-list assembly (`record_splash_ui`): the
@@ -59,10 +70,10 @@ fn lay_out_splash(version: &str, device_size: [u32; 2]) -> (UiDrawList, UiDrawDa
     let bg = super::splash::SplashDescriptor::background_element(splash_bg_rgba());
     let mut panels = layout::project(&[bg], device_size);
 
-    let desc = build_splash_descriptor(ASSET_LOGO_ASPECT, version);
+    let desc = build_splash_descriptor(version);
     let mut ui = UiTree::from_descriptor(desc.tree());
     let mut fs = font_system();
-    let draw = ui.build_draw_data(device_size, &mut fs);
+    let draw = ui.build_draw_data(device_size, &mut fs, &logo_image_sizes());
 
     panels.instances.extend_from_slice(&draw.quads.instances);
     (panels, draw)
@@ -89,27 +100,36 @@ fn splash_panel_quads_anchor_centered_at_reference_resolution() {
         "background must cover the full backbuffer, got {bg:?}",
     );
 
-    // Border: 740x360 centered -> ((1280-740)/2, (720-360)/2) = (270, 180).
+    // Content-driven panel size (no hardcoded 740x360 now). The outer (border)
+    // container content-sizes to: inner panel + 2*4px rim. The inner panel sizes
+    // to: 600px logo (the widest child) + 2*36px content padding = 672 wide, and
+    // 36 + 172 logo + 28 gap + ~28 text line + 36 = 300 tall. So outer = 680x308,
+    // centered -> ((1280-680)/2, (720-308)/2) = (300, 206). These are re-derived
+    // from the content-driven layout (logo natural size + paddings), not the old
+    // absolute-placement pixels — content-driven sizing is the point of M13's
+    // container-background approach.
     assert_rect(
         "border",
         panels.instances[BORDER].rect,
-        [270.0, 180.0, 740.0, 360.0],
+        [300.0, 206.0, 680.0, 308.0],
     );
-    // Fill: 732x352 (inset by 4px each edge) -> (274, 184).
+    // Inner fill: inset by the 4px rim on every edge -> (304, 210), 672x300.
     assert_rect(
         "fill",
         panels.instances[FILL].rect,
-        [274.0, 184.0, 732.0, 352.0],
+        [304.0, 210.0, 672.0, 300.0],
     );
 
-    // Logo: its own image batch keyed to the logo asset. 600 wide, height
-    // 600/3.485 ~ 172, centered with the -40 nudge -> (340, 234).
+    // Logo: its own image batch keyed to the logo asset. 600 wide (the content
+    // width that drives the panel), height 600/3.485 ~ 172. It is the first
+    // (top) flowed child, inset by the rim (4) + inner padding (36) = 40 from the
+    // panel top -> (340, 246); centered horizontally within the inner content.
     assert_eq!(draw.images.len(), 1, "one image batch (the logo)");
     assert_eq!(draw.images[0].0, SPLASH_LOGO_ASSET);
     assert_rect(
         "logo",
         draw.images[0].1.instances[0].rect,
-        [340.0, 234.0, 600.0, 172.0],
+        [340.0, 246.0, 600.0, 172.0],
     );
 }
 
@@ -120,23 +140,23 @@ fn splash_panel_quads_scale_uniformly_at_4k() {
     assert!((device_scale([3840, 2160]) - 3.0).abs() <= EPS);
     let (panels, draw) = lay_out_splash("postretro v0.1.0", [3840, 2160]);
 
-    // Border (270,180,740,360) * 3 -> (810,540,2220,1080).
+    // Border (300,206,680,308) * 3 -> (900,618,2040,924).
     assert_rect(
         "border@4k",
         panels.instances[BORDER].rect,
-        [810.0, 540.0, 2220.0, 1080.0],
+        [900.0, 618.0, 2040.0, 924.0],
     );
-    // Fill (274,184,732,352) * 3 -> (822,552,2196,1056).
+    // Fill (304,210,672,300) * 3 -> (912,630,2016,900).
     assert_rect(
         "fill@4k",
         panels.instances[FILL].rect,
-        [822.0, 552.0, 2196.0, 1056.0],
+        [912.0, 630.0, 2016.0, 900.0],
     );
-    // Logo (340,234,600,172) * 3 -> (1020,702,1800,516).
+    // Logo (340,246,600,172) * 3 -> (1020,738,1800,516).
     assert_rect(
         "logo@4k",
         draw.images[0].1.instances[0].rect,
-        [1020.0, 702.0, 1800.0, 516.0],
+        [1020.0, 738.0, 1800.0, 516.0],
     );
 
     // 9-slice margin scales: 12px logical -> 36px device.
@@ -156,12 +176,12 @@ fn splash_panel_anchor_centers_against_letterbox_on_non_16_9() {
     assert!((device_scale([1920, 720]) - 1.0).abs() <= EPS);
     let (panels, _draw) = lay_out_splash("postretro v0.1.0", [1920, 720]);
 
-    // Border centered in the letterboxed canvas: reference (270,180) + (320,0)
-    // origin -> (590,180); size unchanged at scale 1.0.
+    // Border centered in the letterboxed canvas: reference (300,206) + (320,0)
+    // origin -> (620,206); size unchanged at scale 1.0.
     assert_rect(
         "border letterbox",
         panels.instances[BORDER].rect,
-        [590.0, 180.0, 740.0, 360.0],
+        [620.0, 206.0, 680.0, 308.0],
     );
 }
 
@@ -229,10 +249,11 @@ fn splash_logo_preserves_aspect_across_resolutions() {
     }
     // Each projected rect aspect matches the source banner aspect (the integer
     // device-pixel snap perturbs it slightly, so the epsilon is looser).
+    let source_aspect = ASSET_LOGO_DIMS[0] as f32 / ASSET_LOGO_DIMS[1] as f32;
     for a in &aspects {
         assert!(
-            (a - ASSET_LOGO_ASPECT).abs() <= 1e-2,
-            "logo rect aspect {a} must match source aspect {ASSET_LOGO_ASPECT}: {aspects:?}",
+            (a - source_aspect).abs() <= 1e-2,
+            "logo rect aspect {a} must match source aspect {source_aspect}: {aspects:?}",
         );
     }
     for a in &aspects[1..] {

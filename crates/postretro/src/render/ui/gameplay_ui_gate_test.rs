@@ -22,16 +22,24 @@
 
 use super::UiReadSnapshot;
 use super::descriptor::{
-    Align, AnchoredTree, ContainerWidget, GridWidget, ImageWidget, PanelWidget, Place, TextWidget,
-    Widget,
+    Align, AnchoredTree, ContainerWidget, GridWidget, ImageWidget, TextWidget, Widget,
 };
 use super::layout::Anchor;
-use super::tree::{UiDrawData, UiTree};
+use super::tree::{ImageSizes, UiDrawData, UiTree};
 
 const EPS: f32 = 1e-3;
 
 fn font_system() -> glyphon::FontSystem {
     super::text::build_font_system()
+}
+
+/// Natural reference sizes for the fixture's image assets, threaded into the
+/// measure seam so the grid's icon images size content-driven (32x32 each).
+fn icon_sizes() -> ImageSizes {
+    let mut sizes = ImageSizes::new();
+    sizes.insert("ui/icon_a".to_string(), [32.0, 32.0]);
+    sizes.insert("ui/icon_b".to_string(), [32.0, 32.0]);
+    sizes
 }
 
 /// Reproduce the renderer's gameplay decision: lay `tree` out (when present) and
@@ -42,7 +50,7 @@ fn gameplay_draw(tree: Option<&AnchoredTree>, device_size: [u32; 2]) -> Option<U
     let tree = tree?;
     let mut ui = UiTree::from_descriptor(tree);
     let mut fs = font_system();
-    let draw = ui.build_draw_data(device_size, &mut fs);
+    let draw = ui.build_draw_data(device_size, &mut fs, &icon_sizes());
     if draw.is_empty() { None } else { Some(draw) }
 }
 
@@ -51,21 +59,13 @@ fn text(content: &str, font_size: f32) -> Widget {
         content: content.into(),
         font_size,
         color: [1.0, 1.0, 1.0, 1.0],
-        place: None,
-    })
-}
-
-fn panel(fill: [f32; 4]) -> Widget {
-    Widget::Panel(PanelWidget {
-        fill,
-        border: None,
-        place: Some(Place::sized([120.0, 40.0])),
     })
 }
 
 /// A representative gameplay fixture exercising the full new vocab: an outer
-/// vstack (flex column) holding a sized panel, an hstack row (flex row) of two
-/// measured text leaves, and a 2-column grid of images.
+/// vstack (flex column) with a backdrop `fill` (so it emits a panel quad sized to
+/// its content), holding an hstack row (flex row) of two measured text leaves and
+/// a 2-column grid of content-sized images.
 fn composite_fixture() -> AnchoredTree {
     AnchoredTree {
         anchor: Anchor::Center,
@@ -74,14 +74,18 @@ fn composite_fixture() -> AnchoredTree {
             gap: 8.0,
             padding: 6.0,
             align: Align::Start,
-            place: None,
+            // Backdrop fill makes the outer container emit a panel quad sized to
+            // its content (the canonical quad-producing path now that bare panels
+            // have no intrinsic size).
+            fill: Some([0.2, 0.3, 0.4, 1.0]),
+            border: None,
             children: vec![
-                panel([0.2, 0.3, 0.4, 1.0]),
                 Widget::HStack(ContainerWidget {
                     gap: 10.0,
                     padding: 0.0,
                     align: Align::Start,
-                    place: None,
+                    fill: None,
+                    border: None,
                     children: vec![text("HP 100", 24.0), text("ARMOR 50", 24.0)],
                 }),
                 Widget::Grid(GridWidget {
@@ -92,11 +96,9 @@ fn composite_fixture() -> AnchoredTree {
                     children: vec![
                         Widget::Image(ImageWidget {
                             asset: "ui/icon_a".into(),
-                            place: Some(Place::sized([32.0, 32.0])),
                         }),
                         Widget::Image(ImageWidget {
                             asset: "ui/icon_b".into(),
-                            place: Some(Place::sized([32.0, 32.0])),
                         }),
                     ],
                 }),
@@ -181,14 +183,15 @@ fn empty_gameplay_tree_early_outs_the_ui_pass() {
             gap: 0.0,
             padding: 0.0,
             align: Align::Start,
-            place: None,
+            fill: None,
+            border: None,
             children: vec![],
         }),
     };
     let draw_empty = {
         let mut ui = UiTree::from_descriptor(&empty);
         let mut fs = font_system();
-        ui.build_draw_data([1280, 720], &mut fs)
+        ui.build_draw_data([1280, 720], &mut fs, &icon_sizes())
     };
     assert!(
         draw_empty.is_empty(),

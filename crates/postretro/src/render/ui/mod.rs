@@ -553,13 +553,18 @@ impl UiPass {
     /// B's content is rebuilt each frame (the gameplay tree arrives in the
     /// per-frame snapshot), and the retained tree's dirty-gating is exercised by
     /// its own tests.
+    /// `image_sizes` maps each referenced `image` asset key to its natural
+    /// reference size; the measure seam sizes image nodes from it (content-driven,
+    /// like text). Callers pass the sizes for the keys their tree references (the
+    /// splash logo; gameplay has no image producer yet).
     pub fn layout_tree(
         &mut self,
         tree: &descriptor::AnchoredTree,
         viewport: [u32; 2],
+        image_sizes: &tree::ImageSizes,
     ) -> tree::UiDrawData {
         let mut ui_tree = tree::UiTree::from_descriptor(tree);
-        ui_tree.build_draw_data(viewport, self.text.font_system_mut())
+        ui_tree.build_draw_data(viewport, self.text.font_system_mut(), image_sizes)
     }
 
     /// Record the UI batches and shaped-text lines into `view`. Single color

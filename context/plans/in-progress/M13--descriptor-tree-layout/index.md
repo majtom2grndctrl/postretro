@@ -106,6 +106,8 @@ UI descriptors cross Rust ↔ wire (JSON) ↔ JS/TS ↔ Luau (script ingestion l
 | container gap | `gap: f32` | `gap` | `gap` | `gap` |
 | container padding | `padding: f32` | `padding` | `padding` | `padding` |
 | container align | `align: Align` | `align` (e.g. `"start"`, `"center"`, `"end"`, `"stretch"`) via `#[serde(rename_all = "camelCase")]` on `Align` | `align` | `align` |
+| container fill | `fill: Option<[f32; 4]>` (optional backdrop, linear RGBA) | `fill` (`skip_serializing_if = Option::is_none`) | `fill` | `fill` |
+| container border | `border: Option<Border>` (optional backdrop 9-slice) | `border` (`skip_serializing_if = Option::is_none`) | `border` | `border` |
 | grid columns | `cols: u32` | `cols` | `cols` | `cols` |
 | spacer grow | `flex_grow: f32` | `flexGrow` | `flexGrow` | `flexGrow` |
 | children | `children: Vec<Widget>` | `children` (positional array) | positional args | positional args |
@@ -115,6 +117,15 @@ UI descriptors cross Rust ↔ wire (JSON) ↔ JS/TS ↔ Luau (script ingestion l
 `anchor` and `offset` are fields on the top-level placement envelope (`{ anchor, offset, root: Widget }`), not on every widget variant — see *Rough sketch*.
 
 Exact field set per kind is the implementer's call within these casing rules and the *Rough sketch* constraints; the table pins every cross-boundary name and its encoding.
+
+### Design change: container background replaces absolute placement (owner-approved)
+
+The initial Goal-B splash used an absolute-positioning `Place { size, inset, center_x }` escape hatch (a review flag) to reproduce its **layered/overlapping** composition — pure flex/grid cannot overlap siblings. The owner chose **container background** instead: `vstack`/`hstack` carry an optional `fill` + 9-slice `border`, so a container draws its own backdrop quad **beneath** its flowed children (painter's order in `tree::collect_node`). `Place` is removed entirely (struct, per-widget `place`, `Position::Absolute`/`center_x` mapping).
+
+Consequences:
+- The splash is an **outer** container (`fill = PANEL_BORDER_COLOR`, `padding = 4`) wrapping an **inner** container (`fill = PANEL_COLOR`, content padding) that flows the logo `image` above the version `text`. The 4px rim is the outer border-colored backdrop showing through the outer padding; centering is the inner container's `align: center` over the measured run width. No absolute overlap.
+- Panel sizing is **content-driven**: the panel sizes to logo + paddings + gap + text, not a hardcoded 740×360. Pinned splash rects (`splash_layout_test`) were re-derived to the content-driven layout (border `[300,206,680,308]` at 1280×720, scale 1.0).
+- `image` nodes have **no wire-level size**: they size from the asset's **natural pixel dimensions** (content-driven, like text measurement). The renderer threads an `asset → natural reference size` map (`tree::ImageSizes`) into the measure seam; `build_splash_descriptor` no longer takes `logo_aspect`.
 
 Note: the descriptor wire `color` stays `[f32; 4]` RGBA. For `text` nodes it converts to `UiText`'s `[u8; 4]` sRGB at draw-list build time (the existing text path stores `UiText.color` as `[u8; 4]`; panel fills are `[f32; 4]` linear RGBA and require no conversion).
 

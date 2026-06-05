@@ -4,20 +4,28 @@
 // `layout` projection path. taffy/layout lives entirely here (renderer-owns-GPU).
 // See: context/plans/in-progress/M13--descriptor-tree-layout
 
+use std::collections::HashMap;
+
 use taffy::prelude::{
-    AlignItems, AvailableSpace, Display, FlexDirection, Layout, NodeId, Position, Size, Style,
-    TaffyTree, evenly_sized_tracks, length,
+    AlignItems, AvailableSpace, Display, FlexDirection, Layout, NodeId, Size, Style, TaffyTree,
+    evenly_sized_tracks, length,
 };
 
 use super::descriptor::{
-    Align, AnchoredTree, Border, ContainerWidget, GridWidget, ImageWidget, PanelWidget, Place,
-    TextWidget, Widget,
+    Align, AnchoredTree, Border, ContainerWidget, GridWidget, ImageWidget, PanelWidget, TextWidget,
+    Widget,
 };
 use super::layout::{Anchor, REFERENCE_HEIGHT, REFERENCE_WIDTH};
 use glyphon::FontSystem;
 
 use super::text::{UiText, measure_run};
 use super::{UiDrawList, UiInstance};
+
+/// Asset key → natural reference size (logical-reference px, `[width, height]`)
+/// for `image` nodes. Threaded into the measure seam so an image sizes from its
+/// real asset dimensions (content-driven, like text) rather than a wire-level
+/// fixed size. The renderer builds this from the uploaded texture's pixel dims.
+pub(crate) type ImageSizes = HashMap<String, [f32; 2]>;
 
 /// Per-node draw payload carried alongside each taffy node. Pure layout nodes
 /// (stacks, grids, spacers) carry `None`; only nodes that emit a draw entry hold
@@ -26,25 +34,26 @@ use super::{UiDrawList, UiInstance};
 enum NodeContext {
     /// Shaped-text run. `color` is linear RGBA from the descriptor; the draw-list
     /// build converts it to glyphon's `[u8; 4]` sRGB. Carries its own `font_size`
-    /// (device-scaled at draw time) since taffy does not retain it. `center_x`
-    /// mirrors the descriptor's `Place::center_x`: when set, the node's
-    /// reference origin x names a center line and the run is shifted left by half
-    /// its measured width at draw-list build, centering it on that line.
+    /// (device-scaled at draw time) since taffy does not retain it.
     Text {
         content: String,
         font_size: f32,
         color: [f32; 4],
-        center_x: bool,
     },
     /// Solid-fill panel quad, optionally framed by a 9-slice `border`. `fill`
-    /// stays linear `[f32; 4]` — no sRGB conversion on the quad path.
+    /// stays linear `[f32; 4]` — no sRGB conversion on the quad path. Carried by
+    /// `panel` leaf nodes AND by container nodes that declare a backdrop (the
+    /// container's `fill`/`border`); a container draws its backdrop quad beneath
+    /// its children in painter's order (see `collect_node`).
     Panel {
         fill: [f32; 4],
         border: Option<Border>,
     },
     /// Textured image quad. `asset` is the texture key the renderer binds; the
-    /// rect comes from layout. Image batching/binding lands with the renderer
-    /// wiring — the tree records the key so the draw step can group by it.
+    /// rect comes from layout. The image sizes from the asset's natural reference
+    /// dimensions via the measure seam (see `measure_node`) — content-driven, so
+    /// `asset` doubles as the size key. Image batching/binding lands in the
+    /// renderer; the tree records the key so the draw step can group by it.
     Image { asset: String },
 }
 
@@ -98,8 +107,9 @@ pub(crate) struct UiTree {
 
 impl UiTree {
     /// Build the retained tree from a descriptor envelope. Recursively maps each
-    /// `Widget` to a taffy node with the mapped `Style` + (for leaves/panels) a
-    /// `NodeContext` draw payload.
+    /// `Widget` to a taffy node with the mapped `Style`, plus a `NodeContext` draw
+    /// payload on drawing nodes (text/panel/image leaves, and containers carrying
+    /// a backdrop `fill`/`border`).
     pub(crate) fn from_descriptor(tree: &AnchoredTree) -> Self {
         let mut taffy = TaffyTree::new();
         let root = build_node(&mut taffy, &tree.root);
@@ -143,6 +153,12 @@ impl UiTree {
     /// `UiTextRenderer::font_system_mut`) — glyphon's GPU atlas/renderer stay in
     /// the renderer, and the tree holds no GPU/font state of its own.
     ///
+    /// Image nodes are sized through `image_sizes`: the measure closure looks up
+    /// each image's `asset` key and returns its natural reference size — the same
+    /// content-driven path as text (size from the real asset, not a wire-level
+    /// number). An unknown key measures to zero (the image collapses), so the
+    /// renderer must pre-register every key the descriptor references.
+    ///
     /// Layout recompute is gated on change: it runs only when taffy reports the
     /// root dirty (the tree was rebuilt from a new descriptor — a structural
     /// change leaves the cache empty) or when `device_size` differs from the
@@ -154,6 +170,7 @@ impl UiTree {
         &mut self,
         device_size: [u32; 2],
         font_system: &mut FontSystem,
+        image_sizes: &ImageSizes,
     ) -> UiDrawData {
         // Gate: recompute only on a structural change (taffy's root cache is
         // empty after a rebuild) or a viewport change. taffy caches computed
@@ -185,7 +202,7 @@ impl UiTree {
                         height: AvailableSpace::Definite(REFERENCE_HEIGHT),
                     },
                     |known_dimensions, _available_space, _node_id, node_context, _style| {
-                        measure_node(known_dimensions, node_context, font_system)
+                        measure_node(known_dimensions, node_context, font_system, image_sizes)
                     },
                 )
                 .expect("taffy layout must succeed for a well-formed UI tree");
@@ -252,23 +269,15 @@ impl UiTree {
                 content,
                 font_size,
                 color,
-                center_x,
             }) => {
                 // Device-pixel top-left + device-scaled font size; color converts
-                // linear RGBA -> sRGB [u8; 4] at draw-list build time.
+                // linear RGBA -> sRGB [u8; 4] at draw-list build time. The run is
+                // laid out in flow (its container's `align` centers it on the
+                // measured run width), so no per-node centering shift is applied.
                 let rect = project_rect(ref_origin, layout, scale, canvas_origin);
-                // `center_x` treats rect-left as a center line: back off half the
-                // measured (now laid-out) run width so the line centers on it.
-                // The width comes from the glyphon measure seam, so this is the
-                // measured-width centering the splash version text needs.
-                let left = if *center_x {
-                    rect[0] - rect[2] * 0.5
-                } else {
-                    rect[0]
-                };
                 data.texts.push(UiText::new(
                     content.clone(),
-                    [left, rect[1]],
+                    [rect[0], rect[1]],
                     font_size * scale,
                     linear_rgba_to_srgb_u8(*color),
                 ));
@@ -289,32 +298,45 @@ impl UiTree {
     }
 }
 
-/// taffy measure callback: resolve a leaf's intrinsic size. Text nodes shape
-/// their `content` at `font_size` through `font_system` and report the real
-/// shaped-run extent (logical-reference px); every other node has no intrinsic
-/// content to measure, so it reports the size taffy already knows
-/// (`known_dimensions`, defaulting each unset axis to zero — the node sizes from
-/// its style/flex slot).
+/// taffy measure callback: resolve a leaf's intrinsic size from its content.
+/// Text nodes shape their `content` at `font_size` through `font_system` and
+/// report the real shaped-run extent; image nodes report their asset's natural
+/// reference size from `image_sizes` (both content-driven — size from the real
+/// asset/glyphs, not a wire-level number). Every other node has no intrinsic
+/// content, so it reports the size taffy already knows (`known_dimensions`,
+/// defaulting each unset axis to zero — the node sizes from its style/flex slot).
 fn measure_node(
     known_dimensions: Size<Option<f32>>,
     node_context: Option<&mut NodeContext>,
     font_system: &mut FontSystem,
+    image_sizes: &ImageSizes,
 ) -> Size<f32> {
-    if let Some(NodeContext::Text {
-        content, font_size, ..
-    }) = node_context
-    {
-        let (width, height) = measure_run(font_system, content, *font_size);
-        // Honor any axis taffy has already pinned (e.g. an explicit/stretched
-        // size); measure only the unconstrained axes.
-        return Size {
-            width: known_dimensions.width.unwrap_or(width),
-            height: known_dimensions.height.unwrap_or(height),
-        };
-    }
-    Size {
-        width: known_dimensions.width.unwrap_or(0.0),
-        height: known_dimensions.height.unwrap_or(0.0),
+    match node_context {
+        Some(NodeContext::Text {
+            content, font_size, ..
+        }) => {
+            let (width, height) = measure_run(font_system, content, *font_size);
+            // Honor any axis taffy has already pinned (e.g. an explicit/stretched
+            // size); measure only the unconstrained axes.
+            Size {
+                width: known_dimensions.width.unwrap_or(width),
+                height: known_dimensions.height.unwrap_or(height),
+            }
+        }
+        Some(NodeContext::Image { asset }) => {
+            // Natural reference size keyed by asset. An unregistered key collapses
+            // the image to zero (it simply does not contribute size/draw) — the
+            // renderer pre-registers every key it references.
+            let [w, h] = image_sizes.get(asset).copied().unwrap_or([0.0, 0.0]);
+            Size {
+                width: known_dimensions.width.unwrap_or(w),
+                height: known_dimensions.height.unwrap_or(h),
+            }
+        }
+        _ => Size {
+            width: known_dimensions.width.unwrap_or(0.0),
+            height: known_dimensions.height.unwrap_or(0.0),
+        },
     }
 }
 
@@ -325,35 +347,27 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget) -> NodeId {
             content,
             font_size,
             color,
-            place,
         }) => {
-            // No explicit size by default: text nodes are sized by the measure
-            // closure in `build_draw_data`, which shapes `content` at `font_size`
-            // through glyphon and returns the real shaped-run extent. A `place`
-            // can pin/size the run (the splash version line centers via it).
+            // Text nodes are sized by the measure closure in `build_draw_data`,
+            // which shapes `content` at `font_size` through glyphon and returns
+            // the real shaped-run extent. The node carries no explicit style size.
             taffy
                 .new_leaf_with_context(
-                    place_style(place.as_ref()),
+                    Style::default(),
                     NodeContext::Text {
                         content: content.clone(),
                         font_size: *font_size,
                         color: *color,
-                        center_x: place.as_ref().is_some_and(|p| p.center_x),
                     },
                 )
                 .expect("taffy leaf creation must succeed")
         }
-        Widget::Panel(PanelWidget {
-            fill,
-            border,
-            place,
-        }) => {
-            // A panel sizes to fill its slot (parent stretch / explicit parent
-            // size) unless `place` pins a fixed size / absolute inset — the
-            // splash's backing panels and fill use the latter.
+        Widget::Panel(PanelWidget { fill, border }) => {
+            // A panel leaf sizes to fill its flex/grid slot (it has no intrinsic
+            // size). Container backdrops are expressed on the container instead.
             taffy
                 .new_leaf_with_context(
-                    place_style(place.as_ref()),
+                    Style::default(),
                     NodeContext::Panel {
                         fill: *fill,
                         border: border.clone(),
@@ -361,9 +375,9 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget) -> NodeId {
                 )
                 .expect("taffy leaf creation must succeed")
         }
-        Widget::Image(ImageWidget { asset, place }) => taffy
+        Widget::Image(ImageWidget { asset }) => taffy
             .new_leaf_with_context(
-                place_style(place.as_ref()),
+                Style::default(),
                 NodeContext::Image {
                     asset: asset.clone(),
                 },
@@ -386,46 +400,27 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget) -> NodeId {
     }
 }
 
-/// Map a leaf's optional `Place` to a taffy `Style`. Absent → default (flex/
-/// measured sizing). A `size` pins both axes; an `inset` switches the node to
-/// `Position::Absolute` and pins its left/top within the parent's content box.
-/// `center_x` is NOT applied here — it shifts the run at draw-list build (the
-/// width it centers on is only known after measurement), so the absolute inset
-/// is left at the center line and the shift happens in `collect_node`.
-fn place_style(place: Option<&Place>) -> Style {
-    let mut style = Style::default();
-    apply_place(&mut style, place);
-    style
-}
-
-/// Overlay an optional `Place` onto an existing `Style` (container or leaf): a
-/// `size` pins both axes; an `inset` switches the node to `Position::Absolute`
-/// and pins its left/top. `center_x` is NOT applied here — it shifts the run at
-/// draw-list build (the width it centers on is only known after measurement).
-fn apply_place(style: &mut Style, place: Option<&Place>) {
-    let Some(place) = place else {
-        return;
-    };
-    if let Some([w, h]) = place.size {
-        style.size = Size {
-            width: length(w),
-            height: length(h),
-        };
-    }
-    if let Some([left, top]) = place.inset {
-        style.position = Position::Absolute;
-        // Pin left/top; leave right/bottom auto so the node keeps its own size
-        // (from `size` or the measure seam) rather than stretching to the parent.
-        style.inset = taffy::geometry::Rect {
-            left: length(left),
-            top: length(top),
-            right: taffy::style_helpers::auto(),
-            bottom: taffy::style_helpers::auto(),
-        };
+/// Optional backdrop `NodeContext` for a container declaring a `fill`/`border`.
+/// `None` when the container draws no backdrop. The backdrop quad is sized to the
+/// container's full laid-out rect and drawn beneath its children (painter's order
+/// in `collect_node`), so a `fill`-bearing container reads as a backing panel
+/// wrapping its content.
+fn container_backdrop(fill: Option<[f32; 4]>, border: Option<&Border>) -> Option<NodeContext> {
+    match (fill, border) {
+        (None, None) => None,
+        // A border with no fill still needs a fill color for the quad path; use
+        // a transparent fill so only the 9-slice rim shows. (The splash always
+        // pairs a fill with its border, so this is the defensive branch.)
+        (fill, border) => Some(NodeContext::Panel {
+            fill: fill.unwrap_or([0.0; 4]),
+            border: border.cloned(),
+        }),
     }
 }
 
-/// Build a flex stack node (`vstack` → column, `hstack` → row).
+/// Build a flex stack node (`vstack` → column, `hstack` → row). A container with
+/// a `fill`/`border` carries a `NodeContext::Panel` backdrop drawn beneath its
+/// children; otherwise it is a pure layout node with no draw payload.
 fn build_stack(
     taffy: &mut TaffyTree<NodeContext>,
     container: &ContainerWidget,
@@ -436,15 +431,20 @@ fn build_stack(
         .iter()
         .map(|child| build_node(taffy, child))
         .collect();
-    let mut style = Style {
+    let style = Style {
         display: Display::Flex,
         flex_direction: direction,
         ..container_base_style(container.gap, container.padding, container.align)
     };
-    apply_place(&mut style, container.place.as_ref());
-    taffy
+    let node = taffy
         .new_with_children(style, &children)
-        .expect("taffy container creation must succeed")
+        .expect("taffy container creation must succeed");
+    if let Some(ctx) = container_backdrop(container.fill, container.border.as_ref()) {
+        taffy
+            .set_node_context(node, Some(ctx))
+            .expect("setting a fresh container's backdrop context must succeed");
+    }
+    node
 }
 
 /// Build a CSS-grid node: `cols` equal flexible tracks, `gap` both axes.
@@ -622,15 +622,10 @@ mod tests {
         super::super::text::build_font_system()
     }
 
-    /// A fixed-size panel leaf: panels have no intrinsic size, so give the tree
-    /// an explicit size via a single-child stack with a sized panel is awkward —
-    /// instead test fixtures build sized leaves directly through descriptors.
-    fn panel(fill: [f32; 4]) -> Widget {
-        Widget::Panel(PanelWidget {
-            fill,
-            border: None,
-            place: None,
-        })
+    /// An empty `ImageSizes` map — most layout tests carry no `image` nodes, so
+    /// the measure seam never looks anything up.
+    fn no_images() -> ImageSizes {
+        ImageSizes::new()
     }
 
     fn spacer(flex_grow: f32) -> Widget {
@@ -642,8 +637,9 @@ mod tests {
             gap,
             padding,
             align,
+            fill: None,
+            border: None,
             children,
-            place: None,
         })
     }
 
@@ -652,8 +648,9 @@ mod tests {
             gap,
             padding,
             align,
+            fill: None,
+            border: None,
             children,
-            place: None,
         })
     }
 
@@ -667,7 +664,6 @@ mod tests {
             content: content.into(),
             font_size,
             color: [1.0, 1.0, 1.0, 1.0],
-            place: None,
         })
     }
 
@@ -694,7 +690,7 @@ mod tests {
         };
         let mut ui = UiTree::from_descriptor(&tree);
         let mut fs = font_system();
-        let data = ui.build_draw_data([1280, 720], &mut fs);
+        let data = ui.build_draw_data([1280, 720], &mut fs, &no_images());
 
         let children: Vec<_> = ui.taffy.children(ui.root).unwrap();
         let c0 = *ui.taffy.layout(children[0]).unwrap();
@@ -746,7 +742,7 @@ mod tests {
         };
         let mut ui = UiTree::from_descriptor(&tree);
         let mut fs = font_system();
-        ui.build_draw_data([1280, 720], &mut fs);
+        ui.build_draw_data([1280, 720], &mut fs, &no_images());
 
         let row = ui.taffy.children(ui.root).unwrap()[0];
         let cells: Vec<_> = ui.taffy.children(row).unwrap();
@@ -788,7 +784,7 @@ mod tests {
         };
         let mut ui = UiTree::from_descriptor(&tree);
         let mut fs = font_system();
-        let data = ui.build_draw_data([1280, 720], &mut fs);
+        let data = ui.build_draw_data([1280, 720], &mut fs, &no_images());
 
         let cells: Vec<_> = ui.taffy.children(ui.root).unwrap();
         let x = *ui.taffy.layout(cells[0]).unwrap();
@@ -827,9 +823,9 @@ mod tests {
         };
         let mut fs = font_system();
         let mut ui_ref = UiTree::from_descriptor(&tree);
-        let data_ref = ui_ref.build_draw_data([1280, 720], &mut fs);
+        let data_ref = ui_ref.build_draw_data([1280, 720], &mut fs, &no_images());
         let mut ui_4k = UiTree::from_descriptor(&tree);
-        let data_4k = ui_4k.build_draw_data([3840, 2160], &mut fs);
+        let data_4k = ui_4k.build_draw_data([3840, 2160], &mut fs, &no_images());
 
         assert_eq!(data_ref.texts.len(), 2);
         assert_eq!(data_4k.texts.len(), 2);
@@ -861,7 +857,6 @@ mod tests {
                 content: "XX".into(),
                 font_size: 10.0,
                 color: [1.0; 4],
-                place: None,
             })
         };
         let tree = AnchoredTree {
@@ -877,7 +872,7 @@ mod tests {
         };
         let mut ui = UiTree::from_descriptor(&tree);
         let mut fs = font_system();
-        ui.build_draw_data([1280, 720], &mut fs);
+        ui.build_draw_data([1280, 720], &mut fs, &no_images());
         let cells: Vec<_> = ui.taffy.children(ui.root).unwrap();
         assert_eq!(cells.len(), 4);
         let l = |n: NodeId| {
@@ -919,12 +914,11 @@ mod tests {
                 content: "ABCDEFGH".into(),
                 font_size: 40.0,
                 color: [1.0, 1.0, 1.0, 1.0],
-                place: None,
             }),
         };
         let mut ui = UiTree::from_descriptor(&tree);
         let mut fs = font_system();
-        let data = ui.build_draw_data([1280, 1440], &mut fs);
+        let data = ui.build_draw_data([1280, 1440], &mut fs, &no_images());
         // Read back the root's measured size and recompute the centered top-left
         // in the 1280x720 canvas, then apply the +360 vertical letterbox offset.
         // Scale is 1.0 here, so device px == reference px. `project_rect` snaps
@@ -948,31 +942,29 @@ mod tests {
     }
 
     #[test]
-    fn panel_quad_rects_snap_to_integer_device_pixels() {
-        // A grid of panels at a fractional scale must produce whole-pixel rects.
-        let cell = || {
-            Widget::Text(TextWidget {
-                content: "x".into(),
-                font_size: 13.0,
-                color: [0.5, 0.5, 0.5, 1.0],
-                place: None,
-            })
-        };
+    fn container_backdrop_quad_rects_snap_to_integer_device_pixels() {
+        // A container with a backdrop `fill` content-sizes to its text children
+        // and emits a backdrop quad; at a fractional scale that quad's rect must
+        // still snap to whole device pixels. (Bare panel leaves have no intrinsic
+        // size now, so the backdrop is the canonical quad-producing path.)
+        let filled = Widget::VStack(ContainerWidget {
+            gap: 7.0,
+            padding: 5.0,
+            align: Align::Start,
+            fill: Some([0.2, 0.4, 0.6, 1.0]),
+            border: None,
+            children: vec![text("x", 13.0), text("y", 13.0)],
+        });
         let tree = AnchoredTree {
             anchor: Anchor::TopLeft,
             offset: [3.5, 7.25],
-            root: vstack(
-                7.0,
-                5.0,
-                Align::Start,
-                vec![panel([0.2, 0.4, 0.6, 1.0]), cell()],
-            ),
+            root: filled,
         };
         let mut ui = UiTree::from_descriptor(&tree);
         let mut fs = font_system();
         // Fractional scale: 1281x721 -> scale ~1.00078.
-        let data = ui.build_draw_data([1281, 721], &mut fs);
-        assert!(!data.quads.is_empty(), "panel produced a quad");
+        let data = ui.build_draw_data([1281, 721], &mut fs, &no_images());
+        assert!(!data.quads.is_empty(), "container backdrop produced a quad");
         for q in &data.quads.instances {
             for v in q.rect {
                 assert!(
@@ -981,6 +973,43 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn container_backdrop_draws_beneath_children_sized_to_full_rect() {
+        // A filled container emits ONE backdrop quad sized to its own full laid-out
+        // rect, and its children draw on top (painter's order). The backdrop is the
+        // first draw entry; the text children produce runs over it.
+        let filled = Widget::VStack(ContainerWidget {
+            gap: 0.0,
+            padding: 10.0,
+            align: Align::Start,
+            fill: Some([0.1, 0.2, 0.3, 1.0]),
+            border: None,
+            children: vec![text("AB", 40.0)],
+        });
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: filled,
+        };
+        let mut ui = UiTree::from_descriptor(&tree);
+        let mut fs = font_system();
+        let data = ui.build_draw_data([1280, 720], &mut fs, &no_images());
+
+        // Exactly one backdrop quad (the container), one text run on top.
+        assert_eq!(data.quads.len(), 1, "one container backdrop quad");
+        assert_eq!(data.texts.len(), 1, "one child text run drawn over it");
+
+        // The backdrop spans the container's full rect: it covers the child run
+        // (which is inset by the padding), so the quad is wider+taller than the run.
+        let quad = data.quads.instances[0].rect;
+        let run_top = data.texts[0].position[1];
+        assert!(
+            quad[1] < run_top,
+            "backdrop top {} sits above the padded child run top {run_top}",
+            quad[1],
+        );
     }
 
     #[test]
@@ -1010,7 +1039,7 @@ mod tests {
         };
         let mut ui = UiTree::from_descriptor(&tree);
         let mut fs = font_system();
-        ui.build_draw_data([1280, 720], &mut fs);
+        ui.build_draw_data([1280, 720], &mut fs, &no_images());
         ui.taffy.layout(ui.root).unwrap().size
     }
 
@@ -1104,10 +1133,10 @@ mod tests {
         let mut ui = UiTree::from_descriptor(&gating_tree());
         let mut fs = font_system();
 
-        ui.build_draw_data([1280, 720], &mut fs);
+        ui.build_draw_data([1280, 720], &mut fs, &no_images());
         assert_eq!(ui.recompute_count(), 1, "first layout computes once");
 
-        ui.build_draw_data([1280, 720], &mut fs);
+        ui.build_draw_data([1280, 720], &mut fs, &no_images());
         assert_eq!(
             ui.recompute_count(),
             1,
@@ -1122,10 +1151,10 @@ mod tests {
         let mut ui = UiTree::from_descriptor(&gating_tree());
         let mut fs = font_system();
 
-        ui.build_draw_data([1280, 720], &mut fs);
+        ui.build_draw_data([1280, 720], &mut fs, &no_images());
         assert_eq!(ui.recompute_count(), 1);
 
-        ui.build_draw_data([3840, 2160], &mut fs);
+        ui.build_draw_data([3840, 2160], &mut fs, &no_images());
         assert_eq!(
             ui.recompute_count(),
             2,
@@ -1141,8 +1170,8 @@ mod tests {
         let mut fs = font_system();
 
         let mut first = UiTree::from_descriptor(&gating_tree());
-        first.build_draw_data([1280, 720], &mut fs);
-        first.build_draw_data([1280, 720], &mut fs);
+        first.build_draw_data([1280, 720], &mut fs, &no_images());
+        first.build_draw_data([1280, 720], &mut fs, &no_images());
         assert_eq!(first.recompute_count(), 1, "cached after the first layout");
 
         // Reshape: a structurally different descriptor yields a new tree, which
@@ -1158,7 +1187,7 @@ mod tests {
             ),
         };
         let mut second = UiTree::from_descriptor(&reshaped);
-        second.build_draw_data([1280, 720], &mut fs);
+        second.build_draw_data([1280, 720], &mut fs, &no_images());
         assert_eq!(
             second.recompute_count(),
             1,
@@ -1174,8 +1203,8 @@ mod tests {
         let mut ui = UiTree::from_descriptor(&gating_tree());
         let mut fs = font_system();
 
-        let computed = ui.build_draw_data([1280, 720], &mut fs);
-        let cached = ui.build_draw_data([1280, 720], &mut fs);
+        let computed = ui.build_draw_data([1280, 720], &mut fs, &no_images());
+        let cached = ui.build_draw_data([1280, 720], &mut fs, &no_images());
         // Confirm the second call really took the cached path.
         assert_eq!(ui.recompute_count(), 1, "second frame did not recompute");
 

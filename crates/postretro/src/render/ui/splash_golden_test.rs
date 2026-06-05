@@ -122,20 +122,25 @@ fn render_splash_offscreen(ctx: &GpuCtx) -> Readback {
     // oversized background fill first (outside the tree), then the descriptor
     // tree's panel quads + version text laid out through the pass's font system.
     let viewport = [TARGET_W, TARGET_H];
-    // The real banner asset is 2028x582; the structural golden only needs the
-    // panel-vs-background contrast, so any plausible logo aspect serves — pass the
-    // real source aspect so the descriptor is shaped exactly as the engine builds it.
-    let desc: SplashDescriptor = build_splash_descriptor(2028.0 / 582.0, "postretro v0.1.0");
+    // The structural golden only needs the panel-vs-background contrast, so the
+    // logo's exact size does not matter; thread the real banner asset's natural
+    // dims (2028x582) so the descriptor is shaped exactly as the engine builds it.
+    let desc: SplashDescriptor = build_splash_descriptor("postretro v0.1.0");
 
     let bg = SplashDescriptor::background_element(splash_bg_rgba());
     let mut panel_list: UiDrawList = layout::project(&[bg], viewport);
-    // The tree's panel quads (border + fill) concatenate into the white-texel
-    // batch behind the logo/text. The logo's own texture binding is not needed
-    // for the structural assertion (background-vs-panel contrast), so its image
-    // batch is omitted — the golden does not depend on the committed PNG. The
-    // version text is encoded through the pass so the full path runs on-device;
-    // its pixels are not asserted.
-    let draw = pass.layout_tree(desc.tree(), viewport);
+    // The container backdrop quads (outer border + inner fill) concatenate into
+    // the white-texel batch behind the logo/text. The logo's own texture binding
+    // is not needed for the structural assertion (background-vs-panel contrast),
+    // so its image batch is omitted — the golden does not depend on the committed
+    // PNG. The version text is encoded through the pass so the full path runs
+    // on-device; its pixels are not asserted.
+    let mut image_sizes = super::tree::ImageSizes::new();
+    image_sizes.insert(
+        super::splash::SPLASH_LOGO_ASSET.to_string(),
+        super::splash::splash_logo_reference_size([2028, 582]),
+    );
+    let draw = pass.layout_tree(desc.tree(), viewport, &image_sizes);
     panel_list
         .instances
         .extend_from_slice(&draw.quads.instances);
@@ -253,9 +258,9 @@ fn splash_background_fill_covers_target_with_bg_color() {
 
     let rb = render_splash_offscreen(&ctx);
 
-    // A corner pixel — well outside the centered 740x360 panel — is pure
-    // background fill. SPLASH_BG_COLOR is "linear-space sRGB(21,27,35)", so the
-    // sRGB texture encodes it back to ~ (21,27,35).
+    // A corner pixel — well outside the centered, content-sized framed panel — is
+    // pure background fill. SPLASH_BG_COLOR is "linear-space sRGB(21,27,35)", so
+    // the sRGB texture encodes it back to ~ (21,27,35).
     let corner = rb.at(2, 2);
     // Not the black clear — the background quad drew.
     assert!(

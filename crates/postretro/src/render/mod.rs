@@ -877,12 +877,14 @@ pub struct Renderer {
     /// list on the gameplay path (`render_frame_indirect`). Owns all UI GPU state.
     ui: ui::UiPass,
 
-    /// Decoded logo aspect (width/height) of the active splash. `Some` between
-    /// `install_splash_from_loaded` and `clear_splash`; the splash descriptor
-    /// tree is rebuilt each frame from this aspect plus the snapshot's version
-    /// line (the logo binding lives in `ui_images`). `None` (frame 0 before
+    /// The active splash logo's natural reference size (logical-reference px,
+    /// `[width, height]`), derived from the uploaded texture's decoded pixel dims.
+    /// `Some` between `install_splash_from_loaded` and `clear_splash`; the splash
+    /// descriptor tree is rebuilt each frame and this size threads into the
+    /// measure seam (keyed by `splash::SPLASH_LOGO_ASSET`) so the logo `image`
+    /// node sizes content-driven from the real asset. `None` (frame 0 before
     /// install, and after level handoff) records no splash quads.
-    splash_logo_aspect: Option<f32>,
+    splash_logo_size: Option<[f32; 2]>,
 
     /// Key→bind-group registry for `image` widget assets (Goal B: only the
     /// pre-registered splash logo key). `install_splash_from_loaded` registers
@@ -2207,7 +2209,7 @@ impl Renderer {
             bone_palette_scratch: Vec::new(),
             pose_sample_stats: PoseSampleStats::default(),
             ui,
-            splash_logo_aspect: None,
+            splash_logo_size: None,
             ui_images: ui::UiImageRegistry::default(),
             ui_snapshot: ui::UiReadSnapshot::default(),
             fog,
@@ -2767,9 +2769,10 @@ impl Renderer {
         // registry (Goal B pre-registers only known keys).
         self.ui_images
             .register(ui::splash::SPLASH_LOGO_ASSET, texture, bind_group);
-        // Shape the logo to the decoded image so it never stretches: the aspect
-        // flows from the real pixel dims, not a hardcoded constant.
-        self.splash_logo_aspect = Some(dims[0] as f32 / dims[1] as f32);
+        // Shape the logo to the decoded image so it never stretches: its natural
+        // reference size flows from the real pixel dims (content-driven via the
+        // measure seam), not a hardcoded constant.
+        self.splash_logo_size = Some(ui::splash::splash_logo_reference_size(dims));
         dims
     }
 
@@ -2777,7 +2780,7 @@ impl Renderer {
     /// input-dispatch seam (`UiDispatch::set_mode`). `None` when no splash is
     /// installed. The splash is non-interactive, so this reports `Passthrough`.
     pub fn splash_capture_mode(&self) -> Option<crate::input::UiCaptureMode> {
-        self.splash_logo_aspect
+        self.splash_logo_size
             .map(|_| ui::splash::splash_capture_mode())
     }
 
@@ -2850,9 +2853,13 @@ impl Renderer {
         // + version text), rebuilt each frame from the stored logo aspect and the
         // snapshot's version line. Empty when no splash is installed (frame 0).
         let mut draw = ui::tree::UiDrawData::default();
-        if let Some(aspect) = self.splash_logo_aspect {
-            let desc = ui::splash::build_splash_descriptor(aspect, &self.ui_snapshot.version_line);
-            draw = self.ui.layout_tree(desc.tree(), viewport);
+        if let Some(logo_size) = self.splash_logo_size {
+            let desc = ui::splash::build_splash_descriptor(&self.ui_snapshot.version_line);
+            // The logo `image` node sizes from the asset's natural reference size
+            // via the measure seam — thread it in keyed by the splash logo asset.
+            let mut image_sizes = ui::tree::ImageSizes::new();
+            image_sizes.insert(ui::splash::SPLASH_LOGO_ASSET.to_string(), logo_size);
+            draw = self.ui.layout_tree(desc.tree(), viewport, &image_sizes);
         }
 
         // The tree's panel quads (border + fill) draw behind the logo/text, in
@@ -2903,7 +2910,7 @@ impl Renderer {
     /// Clear the active splash + its logo registration so post-transition frames
     /// record no splash. The UI pass itself survives.
     pub fn clear_splash(&mut self) {
-        self.splash_logo_aspect = None;
+        self.splash_logo_size = None;
         self.ui_images.clear();
     }
 
@@ -4270,7 +4277,12 @@ impl Renderer {
         // unconditionally for its frame-0 black clear (see `record_splash_ui`).
         let ui_viewport = [self.surface_config.width, self.surface_config.height];
         if let Some(tree) = self.ui_snapshot.gameplay_tree.clone() {
-            let draw = self.ui.layout_tree(&tree, ui_viewport);
+            // Gameplay has no image producer yet (Goal B), so no image sizes are
+            // threaded; any `image` node would measure to zero. The splash path
+            // supplies the logo size in `record_splash_ui`.
+            let draw = self
+                .ui
+                .layout_tree(&tree, ui_viewport, &ui::tree::ImageSizes::new());
             if !draw.is_empty() {
                 let white_bg = self.ui.white_bind_group().clone();
                 let mut batches: Vec<ui::UiBatch> = Vec::new();

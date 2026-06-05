@@ -30,6 +30,11 @@ glyphon = "0.11"
 # Math
 glam = { version = "0.32", features = ["serde"] }
 
+# Flexbox/grid layout solver for the UI descriptor tree. Pure CPU — no wgpu
+# dependency, so the wgpu version-pinning rationale (see `glyphon` above) does
+# not apply. Drives device-pixel layout of the retained UI widget tree.
+taffy = "0.10"
+
 # Collision (world-space trimesh queries; nalgebra types stay inside the
 # `collision` module). See context/lib/entity_model.md §7.
 parry3d = "0.17"

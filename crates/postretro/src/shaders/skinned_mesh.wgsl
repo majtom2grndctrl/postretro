@@ -4,9 +4,9 @@
 // Vertex skinning: each vertex carries 4 joint indices + 4 normalized weights.
 // Each joint's matrix is fetched from a SHARED bone-palette storage buffer at
 // `base_index + joint`, where `base_index` is this instance's contiguous run
-// offset (one instance this slice → base 0). The blended skin matrix is applied
-// to the bind-pose position, then the per-instance model matrix, then the
-// camera view-projection.
+// offset, read from the per-instance SSBO via `@builtin(instance_index)`. The
+// blended skin matrix is applied to the bind-pose position, then the
+// per-instance model matrix, then the camera view-projection.
 //
 // Vertex attribute decode (base_uv / normal_oct / tangent_packed) mirrors
 // `forward.wgsl` so the skinned stream and world stream share one encoding;
@@ -48,22 +48,29 @@ struct CameraUniforms {
 // rather than renumbering existing groups.
 //
 // `bone_palette` is the SHARED palette storage buffer; every instance's run of
-// `BonePaletteEntry` (one mat4 per joint) is appended into it. `instance.base`
-// selects this instance's run. `instance.model` is the per-instance world
-// transform (the entity transform; basis/scale conversion folded in Rust-side —
-// see render/mesh_pass.rs — which for glTF Y-up/RH/meters → engine Y-up/RH/meters
-// is the identity).
+// `BonePaletteEntry` (one mat4 per joint) is appended into it. Each instance's
+// `Instance.base_index` selects its run; `Instance.model` is its per-instance
+// world transform (the entity transform; basis/scale conversion folded in
+// Rust-side — see render/mesh_pass.rs — which for glTF Y-up/RH/meters → engine
+// Y-up/RH/meters is the identity).
 struct BonePaletteEntry {
     matrix: mat4x4<f32>,
 };
 @group(3) @binding(0) var<storage, read> bone_palette: array<BonePaletteEntry>;
 
-struct InstanceUniforms {
+// Per-instance data, one entry per batched instance, read by
+// `@builtin(instance_index)`. std430 layout: `model` (mat4x4, 64 B) then a
+// trailing `vec4<u32>` whose x is the palette base index (yzw padding) — total
+// 80 B, base at byte 64. The base index NEVER travels through `first_instance`
+// (DX12 reads it as 0, gfx-rs/wgpu#2471); it lives here, addressed by the
+// instance index. This SSBO is shaped to drop into `multi_draw_indexed_indirect`
+// later without a contract change; this pass draws with instanced `draw_indexed`.
+struct Instance {
     model: mat4x4<f32>,
-    // x = base index into `bone_palette` (bitcast u32). yzw padding.
+    // x = base index into `bone_palette`. yzw padding (16-byte std430 align).
     base_and_pad: vec4<u32>,
 };
-@group(3) @binding(1) var<uniform> instance: InstanceUniforms;
+@group(3) @binding(1) var<storage, read> instances: array<Instance>;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -120,9 +127,10 @@ fn skin_matrix(joints: vec4<u32>, weights: vec4<f32>, base: u32) -> mat4x4<f32> 
 }
 
 @vertex
-fn vs_main(in: VertexInput) -> VertexOutput {
+fn vs_main(in: VertexInput, @builtin(instance_index) instance_index: u32) -> VertexOutput {
     var out: VertexOutput;
 
+    let instance = instances[instance_index];
     let base = instance.base_and_pad.x;
     let skin = skin_matrix(in.joints, in.weights, base);
 

@@ -12,6 +12,38 @@ pub(crate) mod skeleton;
 
 use bytemuck::{Pod, Zeroable};
 
+/// A model identity: the raw `MeshComponent.model` string a mesh entity renders.
+///
+/// Map-authored paths are assumed already canonical, so this is the verbatim
+/// string with no normalization or interning — it is the cache key the renderer
+/// uses to dedup uploaded models (one `UploadedModel` per distinct handle) and
+/// the grouping key the per-frame draw planner buckets instances by. CPU-only:
+/// the collector (game side) produces it from the component; the renderer
+/// consumes it. Cloning is a `String` clone — cheap at the handful-of-models
+/// scale a frame carries.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct ModelHandle(pub(crate) String);
+
+impl ModelHandle {
+    /// The underlying handle string (the raw `MeshComponent.model` path).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for ModelHandle {
+    fn from(s: &str) -> Self {
+        ModelHandle(s.to_string())
+    }
+}
+
+impl From<String> for ModelHandle {
+    fn from(s: String) -> Self {
+        ModelHandle(s)
+    }
+}
+
 /// One bone-palette entry: a joint's skinning matrix (column-major, matching
 /// glam's `Mat4` memory order).
 ///

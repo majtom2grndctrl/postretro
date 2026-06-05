@@ -1254,8 +1254,16 @@ impl ApplicationHandler for App {
                         // is still live (it is reclaimed into scratch after).
                         if let Some(world) = self.level.as_ref() {
                             let registry = self.script_ctx.registry.borrow();
-                            self.mesh_render.collect(&registry, world, &visible_cells);
-                            renderer.set_mesh_draws(self.mesh_render.draws());
+                            // Same frame alpha the player camera reads from
+                            // `frame_timing` — interpolate each mesh between its
+                            // previous- and current-tick transforms.
+                            self.mesh_render.collect(
+                                &registry,
+                                world,
+                                &visible_cells,
+                                frame_result.alpha,
+                            );
+                            renderer.set_mesh_draws(self.mesh_render.instances());
                         }
 
                         // Build the egui UI before `render_frame_indirect` so
@@ -1882,7 +1890,7 @@ impl App {
             // Tripwire 1 (measure-and-report, not gated): runtime glTF
             // parse + GPU upload time, recorded as a level-load timing stage
             // alongside the world stages above. `load_skinned_model` wraps
-            // `load_model` (parse) + `set_model` (GPU upload); this stage isolates
+            // `load_model` (parse) + `insert_model` (GPU upload); this stage isolates
             // their combined cost so the `[Startup] ... model_load=Xms` log line
             // reports it against the near-instant-boot northstar. See
             // `context/plans/done/M10--model-pipeline-slice/findings.md`.

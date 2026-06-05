@@ -1,10 +1,10 @@
 // Mesh render collector: walks MeshComponent entities and gathers per-instance
-// skinned-draw matrices for the renderer.
+// skinned-draw inputs (model handle + interpolated transform) for the renderer.
 // See: context/lib/scripting.md
 
-use glam::Mat4;
-
+use crate::model::ModelHandle;
 use crate::prl::LevelWorld;
+use crate::render::mesh_instances::MeshInstanceInput;
 use crate::render::mesh_pass::mesh_visible;
 use crate::scripting::registry::{ComponentKind, ComponentValue, EntityRegistry, Transform};
 use crate::visibility::VisibleCells;
@@ -15,66 +15,83 @@ use crate::visibility::VisibleCells;
 ///
 /// Runs in the render-frame collection sub-stage (NOT the game-logic tick): it
 /// reads the registry + the world + this frame's visible-cell set, applies the
-/// pure `mesh_pass::mesh_visible` cull, and packs the surviving per-instance
-/// world matrices. It never touches wgpu — the renderer consumes [`draws`] and
-/// owns the GPU upload + record_draw.
+/// pure `mesh_pass::mesh_visible` cull, and emits per-instance draw inputs
+/// (model handle + interpolated world transform). It never touches wgpu — the
+/// renderer consumes [`instances`] and owns the GPU upload + draw recording.
 ///
-/// [`draws`]: MeshRenderCollector::draws
+/// [`instances`]: MeshRenderCollector::instances
 pub(crate) struct MeshRenderCollector {
-    /// Per-frame draw list: final per-instance world matrices that survived the
-    /// cull. Cleared + refilled each `collect` so capacity carries across frames.
-    draws: Vec<Mat4>,
+    /// Per-frame instance list: surviving (model handle, interpolated transform,
+    /// phase seed) tuples. Cleared + refilled each `collect` so capacity carries
+    /// across frames.
+    instances: Vec<MeshInstanceInput>,
 }
 
 impl MeshRenderCollector {
     pub(crate) fn new() -> Self {
-        Self { draws: Vec::new() }
+        Self {
+            instances: Vec::new(),
+        }
     }
 
     /// Walk `ComponentKind::Mesh` entities, cull each against the frame's
-    /// visible set, and pack the survivors' world matrices.
+    /// visible set, and emit the survivors' (handle, interpolated transform).
     ///
-    /// Clears the draw list first (reusing capacity), then for each mesh entity:
-    /// read-only-borrows its `Transform`, culls via the pure
-    /// `mesh_pass::mesh_visible` (point→leaf membership in `visible`), and pushes
-    /// the composed world matrix for survivors. The renderer reads [`draws`]
-    /// and records one direct draw per matrix — it needs no world reference
-    /// because the cull already happened here.
+    /// Clears the instance list first (reusing capacity), then for each mesh
+    /// entity: read-borrows its `MeshComponent` (the model handle) and its
+    /// `Transform`. The cull tests the entity's **current-tick** transform
+    /// translation (stable per-tick visibility) via the pure
+    /// `mesh_pass::mesh_visible`; survivors emit their **interpolated** transform
+    /// (Task A's accessor at the frame `alpha`, the same alpha the player camera
+    /// reads from `frame_timing`) so the model renders smoothly between ticks.
     ///
-    /// [`draws`]: MeshRenderCollector::draws
+    /// The per-instance phase seed is the raw `EntityId`, which the renderer
+    /// folds into a deterministic animation-phase offset so a spawned wave does
+    /// not animate lock-step.
+    ///
+    /// [`instances`]: MeshRenderCollector::instances
     pub(crate) fn collect(
         &mut self,
         registry: &EntityRegistry,
         world: &LevelWorld,
         visible: &VisibleCells,
+        alpha: f32,
     ) {
-        self.draws.clear();
+        self.instances.clear();
 
         for (id, value) in registry.iter_with_kind(ComponentKind::Mesh) {
-            // The model handle (`MeshComponent.model`) is resolved at the spawn
-            // seam this slice (one model, uploaded renderer-side); the collector
-            // only needs the transform + cull decision. Future multi-model work
-            // keys the draw by this handle.
-            let ComponentValue::Mesh(_mesh) = value else {
+            let ComponentValue::Mesh(mesh) = value else {
                 continue;
             };
-            let Ok(transform) = registry.get_component::<Transform>(id) else {
+            // Cull on the CURRENT-TICK translation (stable per-tick visibility),
+            // not the sub-tick interpolated position.
+            let Ok(current) = registry.get_component::<Transform>(id) else {
                 continue;
             };
-            if !mesh_visible(world, visible, transform.position) {
+            if !mesh_visible(world, visible, current.position) {
                 continue;
             }
-            self.draws.push(Mat4::from_scale_rotation_translation(
-                transform.scale,
-                transform.rotation,
-                transform.position,
-            ));
+            // Draw at the interpolated transform (smooth between ticks). Fall
+            // back to the current transform if the interpolated read fails (a
+            // stale id is not expected mid-iteration, but never fail the frame).
+            let transform = registry
+                .interpolated_transform(id, alpha)
+                .unwrap_or(*current);
+            self.instances.push(MeshInstanceInput {
+                model: ModelHandle::from(mesh.model.clone()),
+                transform: glam::Mat4::from_scale_rotation_translation(
+                    transform.scale,
+                    transform.rotation,
+                    transform.position,
+                ),
+                phase_seed: id.to_raw(),
+            });
         }
     }
 
-    /// The per-instance world matrices to draw this frame (cull already applied).
-    pub(crate) fn draws(&self) -> &[Mat4] {
-        &self.draws
+    /// The per-instance draw inputs to plan this frame (cull already applied).
+    pub(crate) fn instances(&self) -> &[MeshInstanceInput] {
+        &self.instances
     }
 }
 
@@ -93,7 +110,7 @@ mod tests {
     use glam::Vec3;
     use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 
-    fn spawn_mesh(registry: &mut EntityRegistry, position: Vec3) {
+    fn spawn_mesh(registry: &mut EntityRegistry, model: &str, position: Vec3) {
         let id = registry.spawn(Transform {
             position,
             ..Transform::default()
@@ -102,7 +119,7 @@ mod tests {
             .set_component(
                 id,
                 MeshComponent {
-                    model: "decraniated".into(),
+                    model: model.into(),
                 },
             )
             .unwrap();
@@ -111,7 +128,7 @@ mod tests {
     // The collector reuses the SAME pure cull the renderer pass documents
     // (`mesh_pass::mesh_visible`); membership behavior is covered by `mesh_pass`'s
     // own cull tests against a synthetic visible-set. Here we verify the
-    // collector's packing + transform composition against a minimal single-leaf
+    // collector's emit + transform composition against a minimal single-leaf
     // world (leaf 0 spans all space, so any position lands in leaf 0).
 
     fn single_leaf_world() -> LevelWorld {
@@ -158,18 +175,54 @@ mod tests {
     }
 
     #[test]
-    fn collect_packs_one_visible_mesh_world_matrix() {
+    fn collect_emits_one_visible_mesh_instance() {
         let mut registry = EntityRegistry::new();
         let mut collector = MeshRenderCollector::new();
         let world = single_leaf_world();
-        spawn_mesh(&mut registry, Vec3::new(1.0, 2.0, 3.0));
+        spawn_mesh(&mut registry, "decraniated", Vec3::new(1.0, 2.0, 3.0));
 
         // Leaf 0 is the only visible cell; the mesh lands in it → draws.
-        collector.collect(&registry, &world, &VisibleCells::Culled(vec![0]));
-        assert_eq!(collector.draws().len(), 1);
-        // Translation column carries the entity position.
-        let t = collector.draws()[0].w_axis;
+        collector.collect(&registry, &world, &VisibleCells::Culled(vec![0]), 1.0);
+        assert_eq!(collector.instances().len(), 1);
+        // Translation column carries the entity position; handle preserved.
+        let inst = &collector.instances()[0];
+        assert_eq!(inst.model.as_str(), "decraniated");
+        let t = inst.transform.w_axis;
         assert_eq!([t.x, t.y, t.z], [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn collect_emits_two_instances_of_same_model_at_distinct_transforms() {
+        let mut registry = EntityRegistry::new();
+        let mut collector = MeshRenderCollector::new();
+        let world = single_leaf_world();
+        spawn_mesh(&mut registry, "decraniated", Vec3::new(1.0, 0.0, 0.0));
+        spawn_mesh(&mut registry, "decraniated", Vec3::new(5.0, 0.0, 0.0));
+
+        collector.collect(&registry, &world, &VisibleCells::DrawAll, 1.0);
+        assert_eq!(collector.instances().len(), 2);
+        let xs: Vec<f32> = collector
+            .instances()
+            .iter()
+            .map(|i| i.transform.w_axis.x)
+            .collect();
+        assert!(xs.contains(&1.0) && xs.contains(&5.0), "distinct transforms: {xs:?}");
+        // Same model handle on both.
+        assert!(collector.instances().iter().all(|i| i.model.as_str() == "decraniated"));
+    }
+
+    #[test]
+    fn collect_emits_distinct_models_with_their_handles() {
+        let mut registry = EntityRegistry::new();
+        let mut collector = MeshRenderCollector::new();
+        let world = single_leaf_world();
+        spawn_mesh(&mut registry, "grunt", Vec3::new(1.0, 0.0, 0.0));
+        spawn_mesh(&mut registry, "drone", Vec3::new(2.0, 0.0, 0.0));
+
+        collector.collect(&registry, &world, &VisibleCells::DrawAll, 1.0);
+        assert_eq!(collector.instances().len(), 2);
+        let handles: Vec<&str> = collector.instances().iter().map(|i| i.model.as_str()).collect();
+        assert!(handles.contains(&"grunt") && handles.contains(&"drone"));
     }
 
     #[test]
@@ -177,11 +230,42 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut collector = MeshRenderCollector::new();
         let world = single_leaf_world();
-        spawn_mesh(&mut registry, Vec3::new(1.0, 2.0, 3.0));
+        spawn_mesh(&mut registry, "decraniated", Vec3::new(1.0, 2.0, 3.0));
 
         // The mesh lands in leaf 0, but only leaf 1 is visible → culled out.
-        collector.collect(&registry, &world, &VisibleCells::Culled(vec![1]));
-        assert!(collector.draws().is_empty());
+        collector.collect(&registry, &world, &VisibleCells::Culled(vec![1]), 1.0);
+        assert!(collector.instances().is_empty());
+    }
+
+    #[test]
+    fn collect_uses_interpolated_transform_at_alpha() {
+        // The mesh's current position is (10,0,0); previous-tick is (0,0,0) (the
+        // spawn seed). At alpha 0.5 the collector must emit the midpoint (5,0,0)
+        // — proving it reads the interpolated transform, not current or spawn.
+        let mut registry = EntityRegistry::new();
+        let mut collector = MeshRenderCollector::new();
+        let world = single_leaf_world();
+        let id = registry.spawn(Transform::default());
+        registry
+            .set_component(id, MeshComponent { model: "m".into() })
+            .unwrap();
+        // Snapshot freezes the spawn (origin) as previous-tick, then move
+        // current to (10,0,0).
+        registry.snapshot_transforms();
+        registry
+            .set_component(
+                id,
+                Transform {
+                    position: Vec3::new(10.0, 0.0, 0.0),
+                    ..Transform::default()
+                },
+            )
+            .unwrap();
+
+        collector.collect(&registry, &world, &VisibleCells::DrawAll, 0.5);
+        assert_eq!(collector.instances().len(), 1);
+        let t = collector.instances()[0].transform.w_axis;
+        assert!((t.x - 5.0).abs() < 1.0e-4, "interpolated x at alpha 0.5 is 5.0, got {}", t.x);
     }
 
     #[test]
@@ -189,9 +273,9 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut collector = MeshRenderCollector::new();
         let world = single_leaf_world();
-        spawn_mesh(&mut registry, Vec3::ZERO);
-        collector.collect(&registry, &world, &VisibleCells::DrawAll);
-        let cap_after_first = collector.draws.capacity();
+        spawn_mesh(&mut registry, "decraniated", Vec3::ZERO);
+        collector.collect(&registry, &world, &VisibleCells::DrawAll, 1.0);
+        let cap_after_first = collector.instances.capacity();
         assert!(cap_after_first >= 1);
 
         let ids: Vec<_> = registry
@@ -201,8 +285,8 @@ mod tests {
         for id in ids {
             registry.despawn(id).unwrap();
         }
-        collector.collect(&registry, &world, &VisibleCells::DrawAll);
-        assert!(collector.draws().is_empty());
-        assert_eq!(collector.draws.capacity(), cap_after_first);
+        collector.collect(&registry, &world, &VisibleCells::DrawAll, 1.0);
+        assert!(collector.instances().is_empty());
+        assert_eq!(collector.instances.capacity(), cap_after_first);
     }
 }

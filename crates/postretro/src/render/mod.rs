@@ -892,9 +892,10 @@ pub struct Renderer {
     /// resolves image batches' asset keys through it. Cleared by `clear_splash`.
     ui_images: ui::UiImageRegistry,
 
-    /// Once-per-frame published read snapshot (version/tagline line). Set by the
-    /// App via `set_ui_snapshot` just before each render call; read when the UI
-    /// pass records. Stored here so both render signatures stay stable.
+    /// Once-per-frame published read snapshot: the splash version/tagline line
+    /// and the gameplay-path descriptor tree. Set by the App via `set_ui_snapshot`
+    /// just before each render call; read when the UI pass records. Stored here so
+    /// both render signatures stay stable.
     ui_snapshot: ui::UiReadSnapshot,
 
     /// Volumetric fog raymarch + composite. Active only when the level has
@@ -2833,10 +2834,18 @@ impl Renderer {
     }
 
     /// Record the splash through the UI pass into `view`, clearing to black first.
-    /// Quads (background fill → border frame → fill panel → logo) then the shaped
-    /// version/tagline line. With no descriptor installed (frame 0) the draw lists
-    /// are empty, so the pass only applies the black clear — preserving the boot
-    /// "frame-0 black" step.
+    /// Builds the splash descriptor (`build_splash_descriptor`) and lays it out
+    /// through `UiTree` (`UiPass::layout_tree`): the tree is nested fill-containers
+    /// (outer border-colored backdrop + inner panel-colored backdrop) above a logo
+    /// `image` node and the version `text`. The oversized background letterbox fill
+    /// is the one quad built outside the tree, drawn first behind everything.
+    ///
+    /// The container backdrops concatenate with the background into the white-texel
+    /// batch; the logo draws as its own image batch resolved through the registry;
+    /// the version line draws as shaped text. `encode` is called unconditionally
+    /// with `LoadOp::Clear(BLACK)`, so on frame 0 (no descriptor installed yet) the
+    /// draw lists are empty and the pass only applies the black clear — preserving
+    /// the boot "frame-0 black" step.
     fn record_splash_ui(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -2850,7 +2859,7 @@ impl Renderer {
         let mut panel_list = ui::layout::project(&[bg], viewport);
 
         // Lay the splash descriptor tree out (panel/fill quads + logo image batch
-        // + version text), rebuilt each frame from the stored logo aspect and the
+        // + version text), rebuilt each frame from the stored logo size and the
         // snapshot's version line. Empty when no splash is installed (frame 0).
         let mut draw = ui::tree::UiDrawData::default();
         if let Some(logo_size) = self.splash_logo_size {
@@ -2878,14 +2887,16 @@ impl Renderer {
             });
         }
         // Each image batch (the logo) binds the texture its asset key resolves to
-        // through the registry. Unknown keys are skipped-with-warn.
+        // through the registry. An unknown key degrades by skipping just that
+        // batch. Logged at debug, not warn: this runs every frame with no dedup,
+        // so a persistently-missing key would spam the log at warn level (§6.1).
         for (asset, list) in &draw.images {
             if list.is_empty() {
                 continue;
             }
             match self.ui_images.resolve(asset) {
                 Some(bind_group) => batches.push(ui::UiBatch { list, bind_group }),
-                None => log::warn!(
+                None => log::debug!(
                     "[Renderer] UI image asset key '{asset}' is not registered — skipping its draw"
                 ),
             }
@@ -4292,13 +4303,16 @@ impl Renderer {
                         bind_group: &white_bg,
                     });
                 }
+                // Unknown key degrades by skipping just that batch. Logged at
+                // debug, not warn: this gameplay path runs every frame with no
+                // dedup, so a persistently-missing key would spam at warn (§6.1).
                 for (asset, list) in &draw.images {
                     if list.is_empty() {
                         continue;
                     }
                     match self.ui_images.resolve(asset) {
                         Some(bind_group) => batches.push(ui::UiBatch { list, bind_group }),
-                        None => log::warn!(
+                        None => log::debug!(
                             "[Renderer] UI image asset key '{asset}' is not registered — skipping its draw"
                         ),
                     }

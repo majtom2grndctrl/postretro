@@ -135,3 +135,7 @@ Note: the descriptor wire `color` stays `[f32; 4]` RGBA. For `text` nodes it con
 - **`UiReadSnapshot` shape.** Decided: carries the descriptor tree; the renderer lays it out (renderer-owns-GPU). Residual: whether to pre-bake a typed screen/slot handle to de-risk C. Recommendation: defer — C is next and sequential, so the handle is best shaped against C's content contract.
 - **`padding` scalar vs. per-edge.** Research shows a single `padding` value; `taffy` supports per-edge `Rect`. Recommendation: scalar in B, widen later if a screen needs asymmetric padding — low-cost additive change. Confirm.
 - **`image` missing-key behavior.** B builds a small key→bind-group registry but only pre-registers known keys; decide whether an unknown `asset` key falls back to a placeholder bind group or errors. Confirm at review.
+
+## Follow-ups
+
+- **Retain `UiTree` across frames so dirty-gating fires in production.** Task 4's dirty-gating is real and tested at the tree level (`tree.rs` recompute-counter tests), but `UiPass::layout_tree` rebuilds a fresh `UiTree` every frame, so a fresh-always-dirty tree never short-circuits the recompute in production today. When persistent gameplay screens land (the goal introducing retained-across-frames UI — C/F), hold the `UiTree` on the `Renderer` and rebuild it only on descriptor change, so the no-recompute path runs for real. Deferred deliberately in B (owner decision): B has no persistent screen to retain, and the splash re-derives its descriptor each frame.

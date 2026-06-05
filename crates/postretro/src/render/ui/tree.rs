@@ -87,8 +87,9 @@ fn container_base_style(gap: f32, padding: f32, align: Align) -> Style {
 }
 
 /// One retained UI tree: the taffy tree, its root node, and the placement
-/// envelope's `anchor`/`offset`. One per top-level `AnchoredTree` — F's modal
-/// stack wants independent trees, so the tree is owned per-descriptor.
+/// envelope's `anchor`/`offset`. One per top-level `AnchoredTree` — a future
+/// modal-stack goal will want independent trees per layer, so the tree is owned
+/// per-descriptor rather than shared.
 pub(crate) struct UiTree {
     taffy: TaffyTree<NodeContext>,
     root: NodeId,
@@ -166,6 +167,13 @@ impl UiTree {
     /// same tree, same viewport — no `compute_layout_with_measure` call is made;
     /// the cached `taffy::Layout` rects are read back unchanged. The draw-list
     /// production below always runs, so the cached path still yields draw data.
+    ///
+    /// The gate only pays off when the same `UiTree` survives across frames. The
+    /// renderer rebuilds a fresh `UiTree` every frame today (see
+    /// `UiPass::layout_tree`), so a fresh tree is always dirty and the gate never
+    /// short-circuits in production yet — the no-recompute path is exercised by the
+    /// recompute-counter tests below, and fires for real once a retained tree
+    /// lands. See the plan's Follow-ups note.
     pub(crate) fn build_draw_data(
         &mut self,
         device_size: [u32; 2],

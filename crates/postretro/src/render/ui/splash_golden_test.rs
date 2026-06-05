@@ -1,4 +1,4 @@
-// Optional headless golden for the splash UI pass (Task 6b).
+// Optional headless golden for the splash UI pass.
 //
 // Builds a wgpu device via `pollster` (the `curve_eval_test` /
 // `sdf_light_select_test` precedent), constructs a `UiPass`, encodes the splash
@@ -13,9 +13,8 @@
 // thing that fails CI.
 //
 // Golden approach: STRUCTURAL readback, not a committed PNG. AA glyph coverage
-// rasterizes subtly differently per backend/driver (the plan's
-// "Golden-image portability" open question), so a committed reference image would
-// be backend-fragile and over-engineered for Goal A. Instead we assert:
+// rasterizes subtly differently per backend/driver, so a committed reference image
+// would be backend-fragile and over-engineered here. Instead we assert:
 //   1. the background-fill quad drew (a corner pixel is no longer the black clear
 //      and reads back ~ the documented sRGB(21,27,35) background, within a
 //      generous tolerance), and
@@ -24,8 +23,7 @@
 // Text is encoded through the pass (so the full path runs on the device) but its
 // pixels are NOT asserted — only that `encode` composites without error.
 //
-// See: context/plans/in-progress/M13--ui-render-pass-slice (Task 6b; "optional
-// headless golden ... self-skips ... not the hard gate").
+// See: context/plans/in-progress/M13--descriptor-tree-layout
 
 use super::layout;
 use super::splash::{SplashDescriptor, build_splash_descriptor};

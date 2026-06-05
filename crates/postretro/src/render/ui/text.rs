@@ -137,9 +137,9 @@ impl UiTextRenderer {
         for t in texts {
             let metrics = Metrics::new(t.font_size, t.font_size * LINE_HEIGHT_FACTOR);
             let mut buffer = TextBuffer::new(&mut self.font_system, metrics);
-            // Bound the layout box to the backbuffer; single-line UI text never
-            // needs to wrap within the splash, but a finite size lets glyphon
-            // resolve the run.
+            // Bound the layout box to the backbuffer: glyphon needs a finite
+            // layout size to resolve the run (an unbounded box has nothing to lay
+            // glyphs against).
             buffer.set_size(
                 &mut self.font_system,
                 Some(viewport[0] as f32),
@@ -158,16 +158,13 @@ impl UiTextRenderer {
         buffers
     }
 
-    /// Borrow the CPU `FontSystem` for measurement. The taffy layout pass
-    /// (`tree::UiTree::build_draw_data`) threads this into its measure closure so
-    /// text nodes size from real shaped metrics. Only the `FontSystem` crosses —
+    /// Borrow the CPU `FontSystem` for measurement — the GPU-free bridge into the
+    /// taffy measure closure. `UiPass::layout_tree` threads this into
+    /// `tree::UiTree::build_draw_data`, which hands it to taffy's
+    /// `compute_layout_with_measure` so text nodes shape through cosmic-text
+    /// CPU-side and size from real shaped metrics. Only the `FontSystem` crosses —
     /// glyphon's GPU atlas/renderer never leave this type, keeping the renderer
     /// the sole GPU owner while text measurement stays a pure-CPU seam.
-    ///
-    /// Unused until the renderer wires `UiTree` to this renderer (a later task);
-    /// it is the GPU-free bridge that wiring will call, and the tree's layout
-    /// docs name it as the production source of the `&mut FontSystem`.
-    #[allow(dead_code)]
     pub fn font_system_mut(&mut self) -> &mut FontSystem {
         &mut self.font_system
     }

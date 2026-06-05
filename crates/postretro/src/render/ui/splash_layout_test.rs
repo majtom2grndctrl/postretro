@@ -1,4 +1,4 @@
-// Hard-gate CPU draw-list / layout assertion for the boot splash (Task 6 gate).
+// Hard-gate CPU draw-list / layout assertion for the boot splash.
 //
 // Lays the splash descriptor `AnchoredTree` out through `UiTree` (the retained
 // tree + taffy layout + glyphon measure seam) at known backbuffer sizes and pins
@@ -16,7 +16,7 @@
 // its own image batch, then the version text. If that assembly changes, this
 // fixture changes with it — that coupling is the point.
 //
-// See: context/plans/in-progress/M13--descriptor-tree-layout (Task 6 gate).
+// See: context/plans/in-progress/M13--descriptor-tree-layout
 
 use super::layout::{self, device_scale};
 use super::splash::{SPLASH_LOGO_ASSET, build_splash_descriptor, splash_logo_reference_size};

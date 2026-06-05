@@ -1,4 +1,4 @@
-// Hard-gate CPU assertion for the gameplay UI path (Task 6).
+// Hard-gate CPU assertion for the gameplay UI path.
 //
 // The renderer's gameplay path (`render_frame_indirect` in `render/mod.rs`) lays
 // the snapshot's descriptor tree out and decides whether to open the UI pass:
@@ -17,8 +17,7 @@
 // unconditionally for its frame-0 black clear (`record_splash_ui`), so this gate
 // asserts ONLY the gameplay predicate — it does not touch the splash clear.
 //
-// See: context/plans/in-progress/M13--descriptor-tree-layout (Task 6 gate; AC:
-// "an empty tree early-outs the UI pass (no begin_render_pass)").
+// See: context/plans/in-progress/M13--descriptor-tree-layout
 
 use super::UiReadSnapshot;
 use super::descriptor::{

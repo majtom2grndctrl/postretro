@@ -36,24 +36,24 @@ pub(crate) mod tree;
 pub(crate) use self::text::UiText;
 
 /// Hardcoded splash content descriptor behind the one named builder seam
-/// (`splash::build_splash_descriptor`). Goal B/G1 replace its body; the renderer
-/// drives the UI pass from it.
+/// (`splash::build_splash_descriptor`). The builder returns an `AnchoredTree` the
+/// renderer lays out via `UiTree`; G1 later swaps the body for script ingestion.
 pub(crate) mod splash;
 
-/// Hard-gate CPU draw-list / layout assertion for the splash (Task 6a): pins the
+/// Hard-gate CPU draw-list / layout assertion for the splash: pins the
 /// device-pixel quad rects (anchor, scale, snap, 9-slice corners) the splash
 /// projects to. Pure CPU — no GPU adapter.
 #[cfg(test)]
 mod splash_layout_test;
 
-/// Optional headless golden (Task 6b): renders the splash UI pass into an
-/// offscreen target and asserts tolerance-scoped structural properties of the
-/// readback. Self-skips when no GPU adapter is present — never the hard gate.
+/// Optional headless golden: renders the splash UI pass into an offscreen target
+/// and asserts tolerance-scoped structural properties of the readback. Self-skips
+/// when no GPU adapter is present — never the hard gate.
 #[cfg(test)]
 mod splash_golden_test;
 
-/// Hard-gate CPU assertion for the gameplay UI path (Task 6): the renderer builds
-/// a non-empty draw list from a fixture descriptor tree, and an empty tree
+/// Hard-gate CPU assertion for the gameplay UI path: the renderer builds a
+/// non-empty draw list from a fixture descriptor tree, and an empty tree
 /// early-outs the UI pass (no `begin_render_pass`). Pure CPU — asserts the
 /// layout + early-out decision the renderer's gameplay path makes, without a GPU.
 #[cfg(test)]
@@ -148,9 +148,9 @@ impl UiInstance {
 }
 
 /// Pure CPU draw list — a flat batch of instances sharing one bound texture.
-/// Built with no wgpu call so layout/scaling logic stays GPU-independent
-/// (Task 2 populates it; Task 6 asserts against it). The pass uploads it to the
-/// instance buffer at encode time.
+/// Built with no wgpu call so layout/scaling logic stays GPU-independent: the
+/// `layout` projection path populates it and the CPU layout tests assert against
+/// it. The pass uploads it to the instance buffer at encode time.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct UiDrawList {
     pub instances: Vec<UiInstance>,
@@ -291,7 +291,7 @@ const INSTANCE_SIZE: usize = std::mem::size_of::<UiInstance>();
 /// Instanced quad / 9-slice pass for panels and images. Owns its pipeline, BGL,
 /// sampler, uniform buffer, instance buffer, and a 1×1 white texture so solid
 /// panels and textured images share one instanced batch. Designed for a single
-/// color target with no depth attachment so glyphon (Task 3) can share the pass.
+/// color target with no depth attachment so glyphon's text draw can share the pass.
 pub(crate) struct UiPass {
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
@@ -418,8 +418,8 @@ impl UiPass {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 ..Default::default()
             },
-            // Depth disabled: the UI pass attaches no depth target, so glyphon
-            // (Task 3) can share this single-color-target configuration.
+            // Depth disabled: the UI pass attaches no depth target, so glyphon's
+            // text draw can share this single-color-target configuration.
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
@@ -549,10 +549,15 @@ impl UiPass {
     /// metrics (the taffy↔glyphon measure seam). The renderer calls this for both
     /// the splash and gameplay descriptor trees, then turns the draw data into
     /// `UiBatch`es. Layout (taffy) runs on the CPU here — no `wgpu` call — so the
-    /// GPU stays untouched until `encode`. Builds a fresh `UiTree` per call: Goal
-    /// B's content is rebuilt each frame (the gameplay tree arrives in the
-    /// per-frame snapshot), and the retained tree's dirty-gating is exercised by
-    /// its own tests.
+    /// GPU stays untouched until `encode`.
+    ///
+    /// This builds a FRESH `UiTree` every call, so today the tree is rebuilt per
+    /// frame: the gameplay tree arrives in the per-frame snapshot, and the splash
+    /// re-derives its descriptor each frame. A fresh tree is always dirty, so
+    /// `UiTree`'s dirty-gating never short-circuits in production right now — it is
+    /// verified at the tree level by `tree.rs`'s recompute-counter tests and
+    /// becomes a real runtime optimization only once a persistent (retained-across-
+    /// frames) `UiTree` lands. See the plan's Follow-ups note.
     /// `image_sizes` maps each referenced `image` asset key to its natural
     /// reference size; the measure seam sizes image nodes from it (content-driven,
     /// like text). Callers pass the sizes for the keys their tree references (the
@@ -699,7 +704,7 @@ impl UiPass {
 /// image content decodes on sample (white encodes to white, so the panel texel
 /// stays neutral). Mirrors `render::splash::upload_splash_texture` — kept local
 /// so the UI pass owns its own upload path. Used here for the 1×1 white texel;
-/// the logo image reuses `render::splash::upload_splash_texture` in Task 4.
+/// the splash logo image goes through `render::splash::upload_splash_texture`.
 fn upload_ui_texture(device: &wgpu::Device, queue: &wgpu::Queue, tex: &UiTexture) -> wgpu::Texture {
     let size = wgpu::Extent3d {
         width: tex.width,

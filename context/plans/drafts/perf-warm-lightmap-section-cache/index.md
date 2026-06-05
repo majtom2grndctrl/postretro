@@ -24,8 +24,12 @@ Memoize the composited `Lightmap` section so an unchanged map skips that work.
 The lightmap layer is **dense by design**: each light's layer enumerates every
 covered atlas texel (`LayerTexel` = 40 bytes) so the compositor can reproduce
 coverage and the dark-texel fallback normal exactly (the byte-identity gate). At
-a 4096² atlas that is ~478 MB per light, nine lights, postcard-encoded. A warm
-build pays the full decode + composite + encode even though every layer hit.
+a 4096² atlas that is ~478 MB per light, nine lights, postcard-encoded. ~478 MB
+is both the in-memory dense size and roughly the on-disk postcard size (40-byte
+POD records compress to near-nothing), so postcard's cost is decode CPU, not
+blob size — which is why Task 2 (zero-copy) targets decode time, not footprint.
+A warm build pays the full decode + composite + encode even though every layer
+hit.
 Sub-stage timing on a 100%-warm `campaign-test` build:
 
 | Sub-stage | Warm cost |
@@ -62,9 +66,12 @@ a win (c) gets more cheaply. See Out of scope.
 - **Composited-section cache (b).** A new `"lightmap_section"` stage id on the
   existing `StageCache`. Payload is the encoded `LightmapSection` (post-BC6H,
   ~83 MB) via its existing `to_bytes`/`from_bytes`. Key folds the ordered
-  per-light layer keys (so any light/geometry/atlas change invalidates it),
-  `texel_density`, the `uncompressed_irradiance` flag, and a section-cache
-  version constant.
+  `layer_input_hash` values for the `layer_lights` set in its exact filtered
+  order (global static order, `ShadowType::Sdf` dropped) plus
+  `LAYER_FORMAT_VERSION` explicitly (the per-light `CacheKey` digest is
+  private), `texel_density`, `uncompressed_irradiance`, and a section-cache
+  version constant. Any light/geometry/atlas change or layer-format bump
+  invalidates the section.
 - **Warm-path short-circuit.** On a section-cache hit, skip the per-light layer
   loop, composite, dilate, and encode entirely; decode the cached section and
   use it. The shared atlas prep still runs (it is ~0s and downstream
@@ -75,6 +82,9 @@ a win (c) gets more cheaply. See Out of scope.
 - Corruption handling for the section entry mirrors `StageCache::get` and the
   layer codec: a length/hash failure or a `from_bytes` decode failure is a miss
   (warn, recompose), so the build always succeeds.
+- **`--cache-dir` / `--no-cache` by construction.** The section entry uses the
+  same `stage_cache` instance as the layers, so both flags apply to it without
+  separate path handling.
 
 ### Out of scope
 
@@ -84,8 +94,11 @@ a win (c) gets more cheaply. See Out of scope.
   Revisit only if disk footprint — not warm time — becomes the pain.
 - **Cold / `--release` / `--no-cache` path.** Untouched. The exact monolithic
   bake neither reads nor writes any cache, including the section cache.
-- **PRL format and runtime.** No new shipped section. The section cache reuses
-  the existing `Lightmap` (id 22) `to_bytes` format as an opaque cache blob.
+- **PRL format and runtime.** No new shipped section. `LightmapSection` is the
+  in-memory type whose `to_bytes` IS the shipped `Lightmap` (id 22) section
+  serialization. The cache stores that same bytes as an opaque blob — no new
+  format, no second serializer; `LightmapSection::to_bytes` is called once on
+  the miss path and the result is stored verbatim.
 - **SH, animated weight-map, SDF stages.** Unchanged.
 - **Atlas repacking or layer-grain changes.** The per-light grain and atlas
   layout stay as the shipped plan left them.
@@ -95,12 +108,17 @@ a win (c) gets more cheaply. See Out of scope.
 - [ ] Building `campaign-test` twice with no change: the second build logs a
       `lightmap_section` cache hit, reads no per-light layer blob, runs no
       composite/dilate/encode, and emits a `.prl` byte-identical to the first.
-- [ ] The warm lightmap stage on that second build completes in ≲2s (down from
-      ~20s); wall-clock for both builds is recorded.
+- [ ] The warm lightmap stage on that second build completes in ≲2s. The ~20s
+      baseline is measured against a warm build with the section cache disabled
+      (the old path), not against build #1 of the no-change pair (which writes
+      the new section blob). Record three wall-clock numbers: cache-disabled
+      warm, first no-change build (miss + put), second no-change build (hit).
 - [ ] Editing one light: the `lightmap_section` entry misses and recomposes; the
       unchanged lights' layers still hit (only the edited light's layer re-bakes);
       the resulting `.prl` is byte-identical to a cold `--no-cache` build of the
-      same edited map (the byte-identity gate still holds end to end).
+      same edited map (the byte-identity gate still holds end to end); and
+      rebuilding again with no further change is a warm section-cache hit (the
+      recomposed section was `put` and is immediately reusable).
 - [ ] A corrupt or missing `lightmap_section` entry is detected, discarded with a
       warning, and recomposed from the layers; the build succeeds.
 - [ ] `--no-cache` / `--release` neither read nor write the `lightmap_section`
@@ -119,18 +137,26 @@ Add a `"lightmap_section"` stage id with its own `u32` version constant
 (alongside `LAYER_FORMAT_VERSION` in `lightmap_layer.rs`). In the warm branch of
 `main.rs` (the `if let Some(ref cache) = stage_cache` lightmap block, ~`:340`):
 after preparing the shared atlas and computing each light's `layer_input_hash`,
-assemble the section key, then `cache.get` it. On hit, decode the cached
-`LightmapSection` and build `LightmapBakeOutput` from it plus the already-prepared
-`charts`/`placements`/dims. On miss, run the existing per-light get/bake/put loop,
-composite, dilate, encode, then `cache.put` the encoded section's `to_bytes`.
+assemble the section key, then `cache.get` it. Both branches produce the same
+`LightmapBakeOutput { section, charts, placements, atlas_width, atlas_height }`
+(confirmed at `main.rs:432`): `charts`, `placements`, `atlas_width`, and
+`atlas_height` always come from the already-prepared `prepared` atlas regardless
+of branch; only `section` differs. On hit, decode the cached `LightmapSection`
+as `section`. On miss, run the existing per-light get/bake/put loop, composite,
+dilate, encode to produce `section`, then `cache.put` the encoded section's
+`to_bytes`.
 
 The section key must change whenever any input that determines the section bytes
-changes. Fold, under a fixed layout: the ordered per-light layer keys (each
-already covers that light's params, influence-bounded geometry slice, density,
-sample count, and atlas layout — and includes `LAYER_FORMAT_VERSION`), the
-`texel_density` passed to `encode_section`, and the `uncompressed_irradiance`
-flag (it selects BC6H vs RGBA16F output). Exact byte layout is the implementer's
-choice; the constraint is total coverage of section-determining inputs.
+changes. Fold, under a fixed layout: the ordered `layer_input_hash` `[u8;32]`
+values for the `layer_lights` set in its exact filtered order (global static
+order, `ShadowType::Sdf` dropped — matching the warm branch's `layer_lights`
+construction at `main.rs:380`); `LAYER_FORMAT_VERSION` folded explicitly (the
+per-light `CacheKey.digest` is private and cannot be read — folding the input
+hashes plus the version constant gives the same invalidation coupling the full
+keys would give); `texel_density` passed to `encode_section`; and
+`uncompressed_irradiance` (it selects BC6H vs RGBA16F output). Exact byte
+layout is the implementer's choice; the constraint is total coverage of
+section-determining inputs.
 
 ### Task 2: Zero-copy layer codec (approach c)
 
@@ -144,6 +170,12 @@ far cheaper than postcard's 12M-struct decode). Bump `LAYER_FORMAT_VERSION` (the
 format change invalidates all cached layers — one cold rebuild). The codec must
 still round-trip exactly so the composite stays byte-identical to the monolithic
 bake.
+
+Prerequisites (confirmed against source): `bytemuck` is not currently a
+dependency of `crates/level-compiler` — add it. `LayerTexel` has no `#[repr(C)]`
+today — add it before deriving `Pod`. The `serde::Serialize/Deserialize` derives
+on `LayerTexel` can be dropped once postcard is removed (nothing else serializes
+`LayerTexel` — `layer_input_hash` postcards `MapLight`, not `LayerTexel`).
 
 ### Task 3: Tests + timing
 
@@ -173,7 +205,8 @@ layer-loop → composite → encode):
 prepare shared atlas (cheap, always)            // charts/placements/dims for downstream
 compute layer_input_hash per light              // cheap; no blob reads
 section_key = CacheKey::new("lightmap_section", LIGHTMAP_SECTION_VERSION,
-                           fold(ordered layer keys, density, uncompressed_flag))
+                           fold(ordered layer_input_hash values + LAYER_FORMAT_VERSION,
+                                texel_density, uncompressed_irradiance))
 match cache.get(section_key).and_then(LightmapSection::from_bytes ok):
   Some(section) -> HIT:  use section directly        // skip layer reads + composite + dilate + encode
   None          -> MISS: existing per-light get/bake/put loop
@@ -183,24 +216,26 @@ match cache.get(section_key).and_then(LightmapSection::from_bytes ok):
 
 Key types/fns (grounded): `LightmapSection::{to_bytes -> Vec<u8>, from_bytes ->
 crate::Result<Self>}` (`level-format/src/lightmap.rs:172,201`);
-`CompositedAtlas::encode_section(density, uncompressed) -> LightmapSection`
+`CompositedAtlas::encode_section(texel_density, uncompressed_irradiance) -> LightmapSection`
 (`lightmap_bake.rs:172`); `cache::CacheKey::new` / `StageCache::{get,put}`
 (`cache.rs:27,62,114`); `LAYER_FORMAT_VERSION` and the layer loop
 (`lightmap_layer.rs:23`, `main.rs:383-431`).
 
 **Layer cache blob (Task 2)** is compiler-internal, not a PRL section: fixed
-little-endian header (`atlas_width: u32`, `atlas_height: u32`, `count: u32`)
-followed by `count` × `LayerTexel` POD records. Not versioned in-blob — the
-`"lightmap_layer"` stage version gates it, as today.
+native-endian header (`atlas_width: u32`, `atlas_height: u32`, `count: u32`)
+followed by `count` × `LayerTexel` POD records — native-endian throughout
+(header + POD records); the cache is dev-local and makes no cross-arch
+portability guarantee, matching the existing layer cache. Not versioned in-blob
+— the `"lightmap_layer"` stage version gates it, as today.
 
 ## Open questions
 
-- **Section version vs. layer version coupling.** Folding the per-light layer
-  keys into the section key already chains in `LAYER_FORMAT_VERSION`, so a layer
-  bump auto-invalidates sections. The separate `LIGHTMAP_SECTION_VERSION` then
-  only needs bumping when the section *encode* or `to_bytes` format changes.
-  Confirm this is the intended split during Task 1, or fold both versions
-  explicitly for belt-and-suspenders.
+- **Section version vs. layer version coupling.** Resolved. The section key
+  folds the `layer_input_hash` values plus `LAYER_FORMAT_VERSION` explicitly
+  (the per-light `CacheKey` digest is private). A layer-format bump therefore
+  auto-invalidates all section entries. `LIGHTMAP_SECTION_VERSION` bumps only
+  when the section encode or `LightmapSection::to_bytes` format changes — the
+  two version constants cover disjoint concerns.
 - **Section blob size on bigger atlases.** ~83 MB at 4096² with BC6H; an
   uncompressed (`--debug`/RGBA16F) section is larger. The flat-file `StageCache`
   handles it (it already stores 478 MB layer blobs), but note peak memory on the

@@ -2673,9 +2673,12 @@ impl Renderer {
     /// Load the slice's one skinned model, resolve its material through the
     /// existing `.prm` → `LoadedTexture` path (pre-baked key — no runtime
     /// hashing) and upload it to the mesh pass.
-    /// Returns `true` on success so the caller (the entity spawn seam) decides
-    /// whether to spawn the mesh entity; on a load error this logs a `warn!`
-    /// naming the path, leaves the pass idle, and returns `false` (no spawn).
+    /// Returns `Some(tags)` on success — `tags` being the model's top-level
+    /// `extras` entity tags (`LoadedModel.tags`, possibly empty) — so the caller
+    /// (the entity spawn seam) spawns the mesh entity carrying them; a successful
+    /// load with no `extras` is `Some(vec![])`, not `None`. On a load error this
+    /// logs a `warn!` naming the path, leaves the pass idle, and returns `None`
+    /// (no spawn).
     ///
     /// The renderer owns the GPU upload + the retained `MeshAnimationState`
     /// (skeleton + clip) for the slice's one model; the per-frame draw list
@@ -2683,7 +2686,11 @@ impl Renderer {
     /// via [`set_mesh_draws`], not seeded here.
     ///
     /// [`set_mesh_draws`]: Self::set_mesh_draws
-    pub fn load_skinned_model(&mut self, model_path: &Path, prm_cache_root: &Path) -> bool {
+    pub fn load_skinned_model(
+        &mut self,
+        model_path: &Path,
+        prm_cache_root: &Path,
+    ) -> Option<Vec<String>> {
         let model = match crate::model::gltf_loader::load_model(model_path) {
             Ok(m) => m,
             Err(err) => {
@@ -2691,7 +2698,7 @@ impl Renderer {
                     "[Model] skinned model load failed for {} : {err} — mesh pass idle",
                     model_path.display(),
                 );
-                return false;
+                return None;
             }
         };
 
@@ -2709,7 +2716,10 @@ impl Renderer {
         // CPU pose data is renderer-side because the pass uploads it (renderer
         // owns GPU); the slice carries one model, so a single field suffices.
         let crate::model::gltf_loader::LoadedModel {
-            skeleton, clips, ..
+            skeleton,
+            clips,
+            tags,
+            ..
         } = model;
         let clip_count = clips.len();
         self.mesh_animation = clips.into_iter().next().map(|clip| {
@@ -2723,10 +2733,11 @@ impl Renderer {
         });
 
         log::info!(
-            "[Model] skinned model uploaded: {} clip(s) parsed",
+            "[Model] skinned model uploaded: {} clip(s) parsed, {} tag(s)",
             clip_count,
+            tags.len(),
         );
-        true
+        Some(tags)
     }
 
     /// Replace this frame's skinned-mesh draw list with the matrices packed by

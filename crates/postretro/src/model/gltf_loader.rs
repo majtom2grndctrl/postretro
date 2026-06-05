@@ -11,6 +11,7 @@ use std::path::Path;
 
 use glam::{Mat4, Quat, Vec3};
 use postretro_level_format::octahedral;
+use serde::Deserialize;
 use thiserror::Error;
 
 use super::mesh::{SkinnedMesh, SkinnedVertex};
@@ -36,7 +37,8 @@ pub struct Submesh {
 }
 
 /// A model loaded from glTF: one skinned mesh, its skeleton, its animation
-/// clips, and the per-primitive submeshes (material key + index range).
+/// clips, the per-primitive submeshes (material key + index range), and the
+/// author-supplied entity tags read from the document's top-level `extras`.
 #[derive(Debug, Clone, Default)]
 pub struct LoadedModel {
     /// The skinned geometry. A model with multiple primitives merges them into
@@ -53,6 +55,11 @@ pub struct LoadedModel {
     /// resolves each key against the shared material/texture cache and draws each
     /// range against its (possibly shared) material.
     pub submeshes: Vec<Submesh>,
+    /// Entity tags read from the document's top-level `extras` (`{ "tags": [..] }`).
+    /// The spawn seam attaches these to the spawned entity. Empty when the glTF
+    /// carries no `extras`, no `tags` key, or a malformed `extras` shape — a
+    /// missing/garbled `extras` yields no tags rather than a load error.
+    pub tags: Vec<String>,
 }
 
 /// Errors surfaced while loading a glTF model. Every malformed/unsupported input
@@ -159,6 +166,32 @@ fn hex_encode(bytes: &[u8; 32]) -> String {
     s
 }
 
+/// The shape of the document's top-level `extras` this loader cares about.
+/// Unknown keys are ignored (no `deny_unknown_fields`) so authors can stash
+/// arbitrary metadata alongside `tags`; `tags` defaults to empty when absent.
+#[derive(Debug, Deserialize)]
+struct ModelExtras {
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+/// Read the entity tags off the document's top-level `extras`.
+///
+/// The `extras` feature surfaces the raw JSON as `&Option<Box<RawValue>>`. Absent
+/// `extras` → no tags. Present `extras` deserializes into [`ModelExtras`]; any
+/// deserialize failure (wrong shape, non-array `tags`, etc.) also yields no tags.
+/// Tags are author metadata, not load-critical data — a garbled `extras` must not
+/// fail the load, so every error arm collapses to an empty list.
+fn read_model_tags(extras: &gltf::json::Extras) -> Vec<String> {
+    let Some(raw) = extras.as_ref() else {
+        return Vec::new();
+    };
+    match serde_json::from_str::<ModelExtras>(raw.get()) {
+        Ok(parsed) => parsed.tags,
+        Err(_) => Vec::new(),
+    }
+}
+
 /// Load a skinned model from a glTF file at `path`.
 ///
 /// Parses one mesh (all primitives merged into a single interleaved stream), its
@@ -222,11 +255,18 @@ pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
         .map(|anim| load_clip(&anim, &buffers, &node_to_topo, skeleton.joints.len()))
         .collect();
 
+    // --- Entity tags (top-level extras) -----------------------------------
+    // Author metadata; a missing/garbled `extras` yields no tags, not an error.
+    // Top-level `extras` lives on the underlying `json::Root`, surfaced as a
+    // `serde_json` `RawValue` by the `extras` feature.
+    let tags = read_model_tags(&document.as_json().extras);
+
     Ok(LoadedModel {
         mesh: skinned_mesh,
         skeleton,
         clips,
         submeshes,
+        tags,
     })
 }
 
@@ -843,5 +883,67 @@ mod tests {
     fn multi_primitive_fixture_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/multi_primitive/multi_primitive.gltf")
+    }
+
+    // --- Top-level extras → entity tags ------------------------------------
+
+    fn extras_tags_fixture_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/extras_tags/extras_tags.gltf")
+    }
+
+    #[test]
+    fn extras_tags_populate_loaded_model_tags() {
+        // A glTF whose top-level `extras` carries `{ "tags": ["a","b"], .. }`
+        // (plus an unknown key the loader ignores) loads its tags onto the model.
+        let model = load_model(&extras_tags_fixture_path())
+            .expect("extras-tags fixture loads (extras is metadata, never a load error)");
+        assert_eq!(
+            model.tags,
+            vec!["a".to_string(), "b".to_string()],
+            "top-level extras tags populate LoadedModel.tags",
+        );
+    }
+
+    #[test]
+    fn absent_extras_yields_empty_tags_without_error() {
+        // The multi-primitive fixture carries no top-level `extras`; that is not
+        // a load error — the model simply loads with no tags.
+        let model = load_model(&multi_primitive_fixture_path())
+            .expect("a glTF with no extras loads without error");
+        assert!(
+            model.tags.is_empty(),
+            "absent extras yields no tags, got {:?}",
+            model.tags,
+        );
+    }
+
+    #[test]
+    fn malformed_extras_yields_empty_tags_without_error() {
+        // `extras` of the wrong shape (a non-array `tags`, an unrelated object)
+        // must NOT fail the load — author metadata degrades to no tags. Drive
+        // `read_model_tags` directly with several malformed raw-JSON shapes.
+        for raw in [
+            r#"{ "tags": "not-an-array" }"#,
+            r#"{ "tags": [1, 2, 3] }"#,
+            r#"{ "unrelated": true }"#,
+            r#"[1, 2, 3]"#,
+            r#""a bare string""#,
+        ] {
+            let boxed: Box<serde_json::value::RawValue> =
+                serde_json::from_str(raw).expect("test raw JSON parses");
+            let extras: gltf::json::Extras = Some(boxed);
+            assert!(
+                read_model_tags(&extras).is_empty(),
+                "malformed extras {raw} must yield no tags",
+            );
+        }
+    }
+
+    #[test]
+    fn absent_extras_helper_yields_empty_tags() {
+        // The `None` arm (no `extras` block at all) yields no tags.
+        let extras: gltf::json::Extras = None;
+        assert!(read_model_tags(&extras).is_empty());
     }
 }

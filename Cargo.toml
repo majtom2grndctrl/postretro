@@ -80,10 +80,13 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # glTF parsing (CPU-side skinned-model loader in `postretro::model`). Default
 # features: `import` (resolves the external `scene.bin` + URIs and decodes any
 # images), `utils` (typed accessor readers for positions/UVs/joints/weights),
-# `names` (clip names). External PNG textures only this slice — the loader
-# resolves the material to a pre-baked `.prm` key and ignores the decoded
-# images. `image` (pulled by `import`) is already a workspace dep.
-gltf = "1.4"
+# `names` (clip names). The non-default `extras` feature surfaces top-level
+# `extras` as a `serde_json` `RawValue` so the loader can read author-supplied
+# entity tags off the document. Default features are retained (not disabled).
+# External PNG textures only this slice — the loader resolves the material to a
+# pre-baked `.prm` key and ignores the decoded images. `image` (pulled by
+# `import`) is already a workspace dep.
+gltf = { version = "1.4", features = ["extras"] }
 # Lower-level PNG decoder — used by prl-build to inspect color-space chunks
 # (sRGB, gAMA, iCCP) that the `image` crate does not surface in its public API.
 png = "0.18"

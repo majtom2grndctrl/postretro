@@ -58,8 +58,9 @@ SDF trace and left unread. This plan re-consumes it. See `research.md`.
       version change.
 - [ ] A map with no animated weight maps renders identically to before: the new
       atlas binds the zero-fallback view. A map that has animated weight maps but
-      where `lm_anim` is zero this frame hits the gated no-op. Both render
-      identically to before.
+      where `lm_anim` is zero this frame hits the Task 3 forward gate (the
+      `lm_anim`-magnitude gate makes the correction a no-op regardless of the
+      atlas direction content). Both render identically to before.
 - [ ] The group-4 bind-group-layout contract test covers the new binding.
 - [ ] `cargo build -p postretro` and `cargo test` pass.
 
@@ -70,17 +71,18 @@ SDF trace and left unread. This plan re-consumes it. See `research.md`.
 In the compose pass (`animated_lightmap_compose.wgsl` +
 `crates/postretro/src/render/animated_lightmap.rs`): create a second
 `Rgba16Float` storage atlas the same size as the irradiance atlas, add its
-compose-side storage binding at binding 8, and expose a forward view plus a zero
-fallback for the empty-map path, mirroring the existing irradiance atlas and its
-`dummy_view`. Adding binding 8 requires: growing `compute_bgl_entries` from
+compose-side storage binding at binding 8, and expose a forward view plus a new 1×1
+zero `dummy_view` for the empty-map path, modeled on the irradiance atlas's
+`dummy_view` (Task 2 binds it). Adding binding 8 requires: growing `compute_bgl_entries` from
 `[...; 8]` to `[...; 9]` (animated_lightmap.rs:519) and adding the 9th compose
 bind-group entry (animated_lightmap.rs:348-381); deleting/rewriting the
 `compose_shader_has_no_dominant_direction_atlas` regression test
 (animated_lightmap.rs:1089-1105) and the "intentionally absent" comment
-(compose.wgsl:101-104) that currently assert the slot stays empty; and creating
-the second storage view + atlas texture with a second `forward_view`. In
-`compose_main`, for each contributing
-texel light, decode `direction_oct_packed` to a unit vector and accumulate it
+(animated_lightmap_compose.wgsl:101-104) that currently assert the slot stays
+empty; and creating the second storage view + atlas texture with a second
+`forward_view`. In `compose_main`, for each contributing
+texel light, decode that light's `entry.direction_oct_packed` (the same
+per-texel-light `entry` already read for the irradiance accum) to a unit vector and accumulate it
 weighted by that light's current radiance contribution (the luminance of the
 same `c * b * entry.weight` that drives the irradiance accum; see Rough sketch).
 Normalize the sum and store
@@ -97,8 +99,9 @@ are: 0 irradiance, 1 direction, 2 nearest sampler, 3 animated atlas, 4 linear
 sampler; the new animated-direction is slot 5. Note that this group-4 binding
 (5) and the compose-side storage binding (8) are independent numbering spaces
 for the same atlas — not a contradiction. Bind the compose output view, and bind
-a 1×1 zero texture in the no-animated-weight-maps path (same fallback the
-animated irradiance atlas uses). Grow and update the BGL contract test.
+the Task 1 direction-atlas `dummy_view` in the no-animated-weight-maps path (the
+same role the animated irradiance atlas's dummy view plays). Grow and update the
+BGL contract test.
 
 ### Task 3: Correct `lm_anim` in the forward pass
 
@@ -132,14 +135,17 @@ forward; cleanest as one coherent change even though split for review.)
   atlas (oct in `Rgba8Unorm` rg) — acceptable because the animated atlas is
   compute-generated, not baked.
 - **Oct decode in WGSL.** `direction_oct_packed` unpacks as `& 0xFFFFu` (x) and
-  `>> 16u` (y), each `u16` → `/ 65535.0` → `[0,1]` → `* 2 - 1` → the same
-  octahedral decode as `decode_lightmap_direction` (forward.wgsl:304-320). Add
-  the decode helper to the compose shader.
+  `>> 16u` (y), each `u16` → `/ 65535.0` → `[0,1]` → `* 2 - 1` gives the oct
+  `[-1,1]²`; then apply the same octahedral z-reconstruction + normalize as
+  `decode_lightmap_direction` (forward.wgsl:304-320) — only the channel-remap
+  step differs (a packed `u32` here vs an `Rgba8Unorm` texture sample there).
+  Add the decode helper to the compose shader.
 - **Radiance weighting.** Reuse the per-light `c * b * entry.weight` already
   computed for `accum`; weight the decoded direction by the luminance of that
   `c * b * entry.weight` contribution (a scalar is required since `c` is a color
-  vec3) so the brightest-this-frame light dominates the fused direction,
-  consistent with the irradiance.
+  vec3 — use the same luminance the renderer uses elsewhere, Rec.709
+  `dot(x, vec3(0.2126, 0.7152, 0.0722))`) so the brightest-this-frame light
+  dominates the fused direction, consistent with the irradiance.
 - **Sampler.** Bind the new direction texture to the nearest sampler (group-4
   binding 2), as the static direction is, to avoid interpolating directions.
 - **Correction reuse.** `n_dot_l_mesh`/`n_dot_l_bump`, `NDOTL_EPS = 1e-2`, the

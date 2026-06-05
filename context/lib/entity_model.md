@@ -36,6 +36,7 @@ Capabilities attach via component columns in the registry. Current engine compon
 | SpriteVisual | Billboard visual parameters |
 | FogVolume | Runtime fog-volume parameters |
 | Weapon | Runtime weapon params and per-instance cooldown state |
+| MeshComponent | Skinned model handle (`model: String`) for mesh-bearing entities spawned via `prop_mesh` |
 
 Type-specific data lives in the component. An entity is "a player" by virtue of carrying `PlayerMovement`, not by belonging to a typed collection. Future entity types (enemies, doors, projectiles, pickups) follow the same pattern — illustrative, not current scope.
 
@@ -97,12 +98,17 @@ Game logic runs at a fixed tick rate, decoupled from render framerate. Renderer 
 
 | Order | Stage | Rationale |
 |-------|-------|-----------|
+| 0 | Transform snapshot | Copies current→previous transform for every already-live entity before any movement system runs. Entities spawned this tick skip the snapshot and initialize previous == current at construction (no pop on spawn). |
 | 1 | Player movement tick | Input-driven; resolves capsule physics and position before anything reads player state |
 | 2 | Camera follow | Camera position follows the resolved player pawn before aim-dependent systems run |
 | 3 | Weapon fire tick | Reads input and active wieldable state after movement/camera settle; may spawn impact effects |
 | 4 | Scripting bridges | Emitter, particle sim, light, and fog-volume bridges each walk their component columns and may spawn or despawn entities |
 
 The camera follows the player pawn after movement resolves. When no player pawn exists (no `PlayerMovement` entity), a fly-camera moves directly from input.
+
+### Per-Entity Transform Interpolation
+
+The renderer interpolates each entity's visual transform between the previous- and current-tick positions for sub-tick smoothness. The render-stage accessor `interpolated_transform(id, alpha) -> Transform` takes the frame alpha (0..1, from `frame_timing`'s `current_alpha`) and returns a blended transform: position and scale component-lerped, rotation shortest-path slerped. The stage-0 snapshot (previous = current) ensures entities spawned on the current tick render without popping. The mesh render collector (`mesh_render.rs`) is the first consumer; the accessor is general for future per-entity visual passes.
 
 ### Events
 

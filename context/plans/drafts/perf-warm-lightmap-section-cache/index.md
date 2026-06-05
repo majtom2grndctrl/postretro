@@ -106,17 +106,22 @@ a win (c) gets more cheaply. See Out of scope.
 ## Acceptance criteria
 
 - [ ] Building `campaign-test` twice with no change: the second build logs a
-      `lightmap_section` cache hit, reads no per-light layer blob, runs no
-      composite/dilate/encode, and emits a `.prl` byte-identical to the first.
-- [ ] The warm lightmap stage on that second build completes in ≲2s. The ~20s
-      baseline is measured against a warm build with the section cache disabled
-      (the old path), not against build #1 of the no-change pair (which writes
-      the new section blob). Record three wall-clock numbers: cache-disabled
-      warm, first no-change build (miss + put), second no-change build (hit).
-- [ ] Editing one light: the `lightmap_section` entry misses and recomposes; the
-      unchanged lights' layers still hit (only the edited light's layer re-bakes);
-      the resulting `.prl` is byte-identical to a cold `--no-cache` build of the
-      same edited map (the byte-identity gate still holds end to end); and
+      `lightmap_section` cache hit, reads no per-light layer blob, and runs no
+      composite/dilate/encode. Smoke-test: the emitted `.prl` is byte-identical to
+      the first (expected — the second build replays the bytes the first wrote; the
+      real correctness gate is AC#3 below).
+- [ ] The warm lightmap stage on that second build completes in ≲1s. The hit path
+      is an ~83 MB read + blake3 + memcpy with no BC6H decode, so a stray
+      re-encode (~1.2s) must not be able to hide under the budget. Record three
+      wall-clock numbers: cache-disabled warm baseline (old path), first no-change
+      build (miss + put), second no-change build (hit). If the hit-stage time is
+      not dominated by the section read, suspect a path that still composites or
+      encodes.
+- [ ] **Primary correctness criterion.** Editing one light: the `lightmap_section`
+      entry misses and recomposes; the unchanged lights' layers still hit (only the
+      edited light's layer re-bakes); the resulting `.prl` is byte-identical to a
+      cold `--no-cache` build of the same edited map (composite path vs. monolithic
+      path — genuinely different code, so this is the real byte-identity gate); and
       rebuilding again with no further change is a warm section-cache hit (the
       recomposed section was `put` and is immediately reusable).
 - [ ] A corrupt or missing `lightmap_section` entry is detected, discarded with a
@@ -124,10 +129,18 @@ a win (c) gets more cheaply. See Out of scope.
 - [ ] `--no-cache` / `--release` neither read nor write the `lightmap_section`
       entry and produce output identical to the monolithic bake.
 - [ ] `--cache-dir <PATH>` places the `lightmap_section` entry under the override.
-- [ ] After the codec change (c), all `lightmap_layer` entries from a prior
-      `LAYER_FORMAT_VERSION` are treated as misses (one cold rebuild), and the
-      existing `composite_matches_monolithic_atlas_bit_for_bit` and layer
-      round-trip tests pass against the new codec.
+- [ ] After the codec change (c), a warm rebuild logs all `lightmap_layer` entries
+      as misses; the cache dir gains new-keyed files while the old-keyed files
+      remain untouched (orphaned, never read). The existing
+      `composite_matches_monolithic_atlas_bit_for_bit` and layer round-trip tests
+      pass against the new codec.
+- [ ] Adding a light, removing a light, or reordering the light set each forces a
+      `lightmap_section` miss on the next build. Verifiable: make each change, rebuild,
+      confirm `RUST_LOG=info` logs a `lightmap_section` miss (not a hit).
+- [ ] Changing `--soft-shadow-samples` forces a `lightmap_section` miss. The
+      sample count folds into every `layer_input_hash` (as `area_sample_count`),
+      hence into the section key. Verifiable: rebuild with a different value,
+      observe a `lightmap_section` miss in `RUST_LOG=info` output.
 
 ## Tasks
 
@@ -154,9 +167,11 @@ construction at `main.rs:380`); `LAYER_FORMAT_VERSION` folded explicitly (the
 per-light `CacheKey.digest` is private and cannot be read — folding the input
 hashes plus the version constant gives the same invalidation coupling the full
 keys would give); `texel_density` passed to `encode_section`; and
-`uncompressed_irradiance` (it selects BC6H vs RGBA16F output). Exact byte
-layout is the implementer's choice; the constraint is total coverage of
-section-determining inputs.
+`uncompressed_irradiance` (it selects BC6H vs RGBA16F output). The fold must
+be unambiguous about light-set boundaries: fixed-width 32-byte `layer_input_hash`
+records make a plain ordered concatenation injective, but fold the light count
+too so add/remove cannot alias a reorder. Exact byte layout is the implementer's
+choice; the constraint is total coverage of section-determining inputs.
 
 ### Task 2: Zero-copy layer codec (approach c)
 
@@ -176,17 +191,21 @@ dependency of `crates/level-compiler` — add it. `LayerTexel` has no `#[repr(C)
 today — add it before deriving `Pod`. The `serde::Serialize/Deserialize` derives
 on `LayerTexel` can be dropped once postcard is removed (nothing else serializes
 `LayerTexel` — `layer_input_hash` postcards `MapLight`, not `LayerTexel`).
+`LightmapLayer`'s own `serde::Serialize/Deserialize` derives also become dead at
+that point and should be dropped alongside `LayerTexel`'s.
 
 ### Task 3: Tests + timing
 
 Section-cache tests mirroring the layer suite in `lightmap_layer.rs`: round-trip
 skip (build twice → section hit, no layer read), single-light edit (section miss +
 recompose, unchanged layers hit), corruption recovery (garbage section entry →
-miss → recompose), `--no-cache` bypass, `--cache-dir` redirect. Keep the existing
-`composite_matches_monolithic_atlas_bit_for_bit` and layer round-trip tests green
-against the new codec. Record warm-vs-warm wall-clock on `campaign-test` (the
-~20s → ≲2s evidence) and confirm a single-light-edit warm rebuild is byte-identical
-to a cold `--no-cache` build of the same edited map.
+miss → recompose), `--no-cache` bypass, `--cache-dir` redirect, add/remove/reorder-light
+invalidation (each forces a section miss), and a `--soft-shadow-samples` change
+forcing a section miss. Keep the existing `composite_matches_monolithic_atlas_bit_for_bit`
+and layer round-trip tests green against the new codec. Record warm-vs-warm
+wall-clock on `campaign-test` (the ~20s → ≲1s evidence) and confirm a
+single-light-edit warm rebuild is byte-identical to a cold `--no-cache` build of
+the same edited map.
 
 ## Sequencing
 

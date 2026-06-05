@@ -2808,9 +2808,9 @@ impl Renderer {
             })
             .collect();
 
-        // A bind group is bound per submesh; `set_bind_group` borrows it, so each
-        // submesh needs its own handle. Clone the shared handle (cheap Arc clone
-        // inside wgpu) for submeshes that reuse a distinct material.
+        // The resulting Vec is moved into the mesh pass (ownership transfer), so
+        // each slot must hold its own handle. Clone the shared handle (cheap Arc
+        // clone inside wgpu) for submeshes that reuse a distinct material.
         plan.draws
             .into_iter()
             .map(|draw| (distinct_bind_groups[draw.distinct].clone(), draw.indices))
@@ -5654,6 +5654,14 @@ mod tests {
         // 64 chars but contains 'zz' at the start — not valid hex.
         let bad = format!("zz{}", "00".repeat(31));
         assert_eq!(parse_blake3_key(&bad), [0u8; 32]);
+    }
+
+    /// The all-zero 64-char sentinel string maps to the zero key. This is the
+    /// same string `zero_material_key()` in the loader produces ("0".repeat(64)),
+    /// pinning the cross-module contract without importing that function here.
+    #[test]
+    fn parse_blake3_key_maps_zero_sentinel_to_zero_key() {
+        assert_eq!(parse_blake3_key(&"0".repeat(64)), [0u8; 32]);
     }
 
     // --- Submesh material plan (GPU-free dedup + draw bookkeeping) ---------

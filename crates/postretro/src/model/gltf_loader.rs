@@ -128,12 +128,14 @@ fn zero_material_key() -> String {
 /// path, percent-decoding the URI first.
 ///
 /// The glTF spec allows image URIs to be percent-encoded (e.g. `base%20color.png`
-/// for a file named `base color.png`). `gltf::import_buffers` decodes the
-/// external `.bin` URI the same way, so the material path must too — a raw
-/// `join` would miss the file and wrongly degrade to the zero sentinel. Decoding
-/// an already-unencoded URI is a no-op, so a normal path passes through unchanged.
-/// On invalid UTF-8 in the decoded bytes we fall back to the raw URI rather than
-/// lossily mangling it.
+/// for a file named `base color.png`); without decoding, a raw `join` would miss
+/// the file and wrongly degrade to the zero sentinel. Decoding an already-unencoded
+/// URI is a no-op, so normal paths pass through unchanged. On invalid UTF-8 in the
+/// decoded bytes we fall back to the raw URI rather than lossily mangling it.
+///
+/// A `../`-containing URI can join past `parent_dir`; acceptable here because the
+/// path is only ever read to content-hash (never surfaced), and the glTF is
+/// already trusted user-chosen content.
 fn resolve_image_path(parent_dir: &Path, uri: &str) -> PathBuf {
     let decoded = percent_encoding::percent_decode_str(uri)
         .decode_utf8()
@@ -179,7 +181,9 @@ fn content_hash_material_key(material: &gltf::Material, parent_dir: &Path) -> St
 }
 
 /// Lowercase-hex encode a 32-byte cache key into the 64-char string
-/// `load_textures` / `cache_filename_for_key` consume.
+/// `load_textures` / `cache_filename_for_key` consume. `blake3::Hash::to_hex()`
+/// returns a fixed-size `HexString`, not an owned `String`; this produces the
+/// owned `String` the rest of the key pipeline expects.
 fn hex_encode(bytes: &[u8; 32]) -> String {
     use std::fmt::Write;
     let mut s = String::with_capacity(64);

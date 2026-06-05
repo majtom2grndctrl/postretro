@@ -153,11 +153,19 @@ pub struct AnimatedLightmapResources {
     /// `None` when no weight-map section is present; the dummy view is bound instead.
     #[allow(dead_code)]
     atlas_texture: Option<wgpu::Texture>,
+    /// Per-texel fused dominant-direction atlas. `None` on the no-weight-maps
+    /// path; the direction dummy view is bound instead.
+    #[allow(dead_code)]
+    direction_atlas_texture: Option<wgpu::Texture>,
     #[allow(dead_code)]
     dummy_texture: wgpu::Texture,
     /// Bound to the forward-pass lightmap bind group. Points at `atlas_texture`
     /// when present, otherwise at `dummy_texture` — keeps the bind-group layout constant.
     pub forward_view: wgpu::TextureView,
+    /// Bound to the forward-pass lightmap bind group alongside `forward_view`.
+    /// Points at `direction_atlas_texture` when present, otherwise at the
+    /// direction dummy view — keeps the bind-group layout constant.
+    pub direction_forward_view: wgpu::TextureView,
 
     /// `None` on maps with no weight maps; `dispatch` is a no-op in that case.
     dispatch_state: Option<DispatchState>,
@@ -210,12 +218,18 @@ impl AnimatedLightmapResources {
     ) -> Result<Self, String> {
         let dummy_texture = create_zero_texture(device, 1, 1, "Animated LM Dummy");
         let dummy_view = dummy_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // Separate 1×1 zero view for the direction atlas slot so the forward
+        // bind group stays valid on the empty-map path. Modeled on `dummy_view`.
+        let dummy_direction_view =
+            dummy_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let Some(section) = weight_maps else {
             return Ok(Self {
                 atlas_texture: None,
+                direction_atlas_texture: None,
                 dummy_texture,
                 forward_view: dummy_view,
+                direction_forward_view: dummy_direction_view,
                 dispatch_state: None,
             });
         };
@@ -231,8 +245,10 @@ impl AnimatedLightmapResources {
             // term. Takes the same no-atlas path as a map with no weight maps.
             return Ok(Self {
                 atlas_texture: None,
+                direction_atlas_texture: None,
                 dummy_texture,
                 forward_view: dummy_view,
+                direction_forward_view: dummy_direction_view,
                 dispatch_state: None,
             });
         }
@@ -277,6 +293,35 @@ impl AnimatedLightmapResources {
             label: Some("Animated LM Storage View"),
             ..Default::default()
         });
+
+        // Second atlas: per-texel fused dominant direction. Same size and usage
+        // as the irradiance atlas; Task 2 binds `direction_forward_view` into
+        // group-4 of the forward pass.
+        let direction_atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Animated LM Direction Atlas"),
+            size: wgpu::Extent3d {
+                width: ANIMATED_ATLAS_SIZE,
+                height: ANIMATED_ATLAS_SIZE,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+
+        let direction_forward_view =
+            direction_atlas_texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("Animated LM Direction Forward View"),
+                ..Default::default()
+            });
+        let direction_storage_view =
+            direction_atlas_texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("Animated LM Direction Storage View"),
+                ..Default::default()
+            });
 
         let chunk_rects_bytes = pack_chunk_rects(&section.chunk_rects);
         let offset_counts_bytes = pack_offset_counts(section);
@@ -378,6 +423,10 @@ impl AnimatedLightmapResources {
                     binding: 7,
                     resource: debug_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::TextureView(&direction_storage_view),
+                },
             ],
         });
 
@@ -392,8 +441,10 @@ impl AnimatedLightmapResources {
         let total_tiles = compose_workgroup_count;
         Ok(Self {
             atlas_texture: Some(atlas_texture),
+            direction_atlas_texture: Some(direction_atlas_texture),
             dummy_texture,
             forward_view,
+            direction_forward_view,
             dispatch_state: Some(DispatchState {
                 compose_pipeline,
                 compute_bind_group,
@@ -516,7 +567,7 @@ fn build_chunk_cell_ids(bvh_leaves: &[BvhLeaf], chunk_count: usize) -> Vec<u32> 
     chunk_cell_ids
 }
 
-fn compute_bgl_entries() -> [wgpu::BindGroupLayoutEntry; 8] {
+fn compute_bgl_entries() -> [wgpu::BindGroupLayoutEntry; 9] {
     let storage_read = wgpu::BindingType::Buffer {
         ty: wgpu::BufferBindingType::Storage { read_only: true },
         has_dynamic_offset: false,
@@ -576,6 +627,16 @@ fn compute_bgl_entries() -> [wgpu::BindGroupLayoutEntry; 8] {
                 ty: wgpu::BufferBindingType::Uniform,
                 has_dynamic_offset: false,
                 min_binding_size: None,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 8,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::StorageTexture {
+                access: wgpu::StorageTextureAccess::WriteOnly,
+                format: wgpu::TextureFormat::Rgba16Float,
+                view_dimension: wgpu::TextureViewDimension::D2,
             },
             count: None,
         },
@@ -1082,26 +1143,30 @@ mod tests {
         assert_eq!(ids, vec![5, 5, 5]);
     }
 
-    /// sdf-per-light-shadows Task 1: the animated dominant-direction atlas and
-    /// its compose-pass write were removed (the per-light SDF trace keys on
-    /// light position, not a per-texel mean direction). Guard against the atlas
-    /// or its encode helper creeping back into the compose shader.
+    /// The compose pass fuses each texel's per-light incoming directions into a
+    /// dominant-direction atlas so style-animated lights receive the same
+    /// bumped-Lambert normal-map correction the static lightmap gets. Guard the
+    /// binding and store against silent removal. The atlas stores a raw
+    /// normalized vec3 — there is no oct encode on the compose side.
     #[test]
-    fn compose_shader_has_no_dominant_direction_atlas() {
+    fn compose_shader_emits_dominant_direction_atlas() {
         let src = include_str!("../shaders/animated_lightmap_compose.wgsl");
         assert!(
-            !src.contains("@group(1) @binding(8)"),
-            "the direction atlas binding (binding 8) must be removed",
+            src.contains("@group(1) @binding(8)"),
+            "the direction atlas binding (binding 8) must be declared",
         );
         assert!(
-            !src.contains("encode_oct_to_rg"),
-            "the octahedral encode helper for the direction atlas must be removed",
+            src.contains("animated_lm_direction_atlas"),
+            "the direction atlas must be referenced by the compose shader",
         );
-        // Exactly one textureStore now — the irradiance atlas write (the
-        // direction-atlas store is gone). The debug heatmap path has its own
-        // early-return store, so count the main-path stores by the atlas name.
+        // One main-path store into the direction atlas. The store writes a raw
+        // normalized vec3 (no oct encode), so assert the binding + write exist
+        // rather than an encode helper.
         let dir_stores = src.matches("animated_lm_direction_atlas").count();
-        assert_eq!(dir_stores, 0, "no reference to the removed direction atlas");
+        assert!(
+            dir_stores >= 2,
+            "expected the direction atlas declaration plus at least one store, found {dir_stores}",
+        );
     }
 
     #[test]

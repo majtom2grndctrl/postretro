@@ -61,9 +61,10 @@ struct TexelLight {
     light_index: u32,
     weight: f32,
     // Octahedral-encoded incoming direction from the texel toward the light,
-    // baked at compile time. Retained for wire-format stability but no longer
-    // read at runtime — the animated dominant-direction SDF trace that consumed
-    // it was removed (sdf-per-light-shadows Task 1).
+    // baked at compile time. Two u16 components packed low/high into one u32.
+    // Decoded and fused per texel into the dominant-direction atlas so
+    // style-animated lights receive the same bumped-Lambert normal-map
+    // correction the static lightmap already gets.
     direction_oct_packed: u32,
 };
 
@@ -98,10 +99,30 @@ struct DebugConfig {
 @group(1) @binding(5) var<storage, read> anim_samples: array<f32>;
 @group(1) @binding(6) var animated_lm_atlas: texture_storage_2d<rgba16float, write>;
 @group(1) @binding(7) var<uniform> debug_config: DebugConfig;
-// Binding 8 (the per-texel dominant-direction atlas) is intentionally absent —
-// the per-light SDF trace keys on light position, not a per-texel mean direction.
-// `TexelLight.direction_oct_packed` is retained for wire-format stability but is
-// not read.
+// Per-texel fused dominant-direction atlas. Stores a raw normalized vec3 in
+// `.rgb` (full precision; this atlas is compute-generated, so no oct round-trip
+// is needed unlike the baked static atlas). `.a = 1.0`, unused.
+@group(1) @binding(8) var animated_lm_direction_atlas: texture_storage_2d<rgba16float, write>;
+
+// Decode the baked octahedral direction packed into a `TexelLight`'s
+// `direction_oct_packed` u32 (low 16 bits = x, high 16 bits = y). Mirrors
+// `decode_lightmap_direction` in forward.wgsl; only the channel-source step
+// differs (a packed u32 here vs an Rgba8Unorm sample there).
+fn decode_packed_direction(packed: u32) -> vec3<f32> {
+    let ox = f32(packed & 0xFFFFu) / 65535.0 * 2.0 - 1.0;
+    let oy = f32(packed >> 16u) / 65535.0 * 2.0 - 1.0;
+    let z = 1.0 - abs(ox) - abs(oy);
+    var x: f32;
+    var y: f32;
+    if z < 0.0 {
+        x = (1.0 - abs(oy)) * select(-1.0, 1.0, ox >= 0.0);
+        y = (1.0 - abs(ox)) * select(-1.0, 1.0, oy >= 0.0);
+    } else {
+        x = ox;
+        y = oy;
+    }
+    return normalize(vec3<f32>(x, y, z));
+}
 
 @compute @workgroup_size(8, 8, 1)
 fn compose_main(
@@ -136,6 +157,10 @@ fn compose_main(
     }
 
     var accum = vec3<f32>(0.0);
+    // Luminance-weighted sum of per-light incoming directions, fused into one
+    // dominant direction so the brightest-this-frame light dominates —
+    // consistent with the irradiance accum that drives `animated_lm_atlas`.
+    var dir_accum = vec3<f32>(0.0);
     for (var i: u32 = 0u; i < oc.count; i = i + 1u) {
         let entry = texel_lights[oc.offset + i];
         // Debug mode 2: isolate a single descriptor slot.
@@ -154,11 +179,26 @@ fn compose_main(
             sample_color_catmull_rom(desc.color_offset, desc.color_count, t, desc.base_color),
             vec3<f32>(0.0),
         );
-        accum = accum + c * b * entry.weight;
+        let contribution = c * b * entry.weight;
+        accum = accum + contribution;
+        let luminance = dot(contribution, vec3<f32>(0.2126, 0.7152, 0.0722));
+        dir_accum = dir_accum + decode_packed_direction(entry.direction_oct_packed) * luminance;
     }
     textureStore(
         animated_lm_atlas,
         vec2<i32>(i32(rect.atlas_x + rect_x), i32(rect.atlas_y + rect_y)),
         vec4<f32>(accum, 1.0),
+    );
+    // Test length before normalizing to avoid divide-by-zero. Opposing lights
+    // can cancel, or a texel may have no coverage — store zero in that case.
+    let dir_len = length(dir_accum);
+    var dominant_dir = vec3<f32>(0.0);
+    if (dir_len > 1.0e-4) {
+        dominant_dir = dir_accum / dir_len;
+    }
+    textureStore(
+        animated_lm_direction_atlas,
+        vec2<i32>(i32(rect.atlas_x + rect_x), i32(rect.atlas_y + rect_y)),
+        vec4<f32>(dominant_dir, 1.0),
     );
 }

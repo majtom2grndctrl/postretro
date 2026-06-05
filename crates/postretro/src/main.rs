@@ -13,6 +13,7 @@ mod lighting;
 mod material;
 mod model;
 mod movement;
+mod options;
 mod weapon;
 
 mod portal_vis;
@@ -95,10 +96,16 @@ fn content_root_from_map(map_path: &str) -> PathBuf {
 /// `MeshComponent` entity iff the model load succeeded.
 ///
 /// `loaded` is the renderer's `load_skinned_model` result (the renderer owns the
-/// GPU upload + already `warn!`d on failure). On `false` this skips the spawn —
-/// no entity, no panic, slice continues (the degrade AC). On `true` it spawns
-/// one entity at `position` carrying `MeshComponent { model }`. Factored out so
-/// the spawn decision is unit-testable without a GPU context.
+/// GPU upload + already `warn!`d on failure). `None` is a load failure: this
+/// skips the spawn — no entity, no panic, slice continues (the degrade AC).
+/// `Some(tags)` is a successful load (a model with no `extras` is `Some(vec![])`,
+/// not `None`): this spawns one entity at `position` via `try_spawn`, carrying
+/// the author-supplied `tags`, and attaches `MeshComponent { model }`. Factored
+/// out so the spawn decision is unit-testable without a GPU context.
+///
+/// `try_spawn` may itself return `None` when the entity slots are exhausted; that
+/// `None` threads through (no entity), but a successful spawn always also gets
+/// its `MeshComponent` — the attachment is never dropped.
 ///
 /// `yaw` is a Y-axis rotation (radians) baked into the entity `Transform` so the
 /// mesh-render collector orients the model via
@@ -106,7 +113,7 @@ fn content_root_from_map(map_path: &str) -> PathBuf {
 /// toward the player start.
 fn spawn_mesh_entity_if_loaded(
     registry: &mut crate::scripting::registry::EntityRegistry,
-    loaded: bool,
+    loaded: Option<Vec<String>>,
     model: &str,
     position: glam::Vec3,
     yaw: f32,
@@ -114,14 +121,15 @@ fn spawn_mesh_entity_if_loaded(
     use crate::scripting::components::mesh::MeshComponent;
     use crate::scripting::registry::Transform;
 
-    if !loaded {
-        return None;
-    }
-    let id = registry.spawn(Transform {
-        position,
-        rotation: glam::Quat::from_rotation_y(yaw),
-        ..Transform::default()
-    });
+    let tags = loaded?;
+    let id = registry.try_spawn(
+        Transform {
+            position,
+            rotation: glam::Quat::from_rotation_y(yaw),
+            ..Transform::default()
+        },
+        &tags,
+    )?;
     if let Err(err) = registry.set_component(
         id,
         MeshComponent {
@@ -131,7 +139,10 @@ fn spawn_mesh_entity_if_loaded(
         log::warn!("[Model] failed to attach MeshComponent for {model}: {err}");
         return None;
     }
-    log::info!("[Model] spawned mesh entity for {model} at {position:?} (yaw={yaw:.3} rad)");
+    log::info!(
+        "[Model] spawned mesh entity for {model} at {position:?} (yaw={yaw:.3} rad, {} tag(s))",
+        tags.len(),
+    );
     Some(id)
 }
 
@@ -208,11 +219,53 @@ fn main() -> Result<()> {
     let mut classname_dispatch = ClassnameDispatch::new();
     register_builtin_classnames(&mut classname_dispatch);
 
+    // Player options load before `InputSystem` is constructed so the loaded
+    // look preferences seed input at startup. On first boot (no file present),
+    // write defaults so the human gets an editable starting file — the only
+    // `save` call until the M13 settings menu lands. Missing config dir or a
+    // save failure is logged, not fatal: boot proceeds on in-memory defaults.
+    // See: context/lib/player_options.md §3
+    let settings_path = options::settings_path();
+    let player_options = match &settings_path {
+        Some(path) => {
+            // `load` returns defaults for both missing and malformed files, so
+            // detect first-run by probing existence before loading. A malformed
+            // file exists, so it is never overwritten here.
+            let existed = path.exists();
+            let options = options::PlayerOptions::load(path);
+            if !existed {
+                match options.save(path) {
+                    Ok(()) => log::info!(
+                        "[Options] no settings file found; wrote defaults to {}",
+                        path.display()
+                    ),
+                    Err(err) => log::warn!(
+                        "[Options] failed to write default settings to {}: {err}; \
+                         running on in-memory defaults",
+                        path.display()
+                    ),
+                }
+            }
+            options
+        }
+        None => {
+            log::warn!(
+                "[Options] no platform config directory; running on in-memory \
+                 defaults without persistence"
+            );
+            options::PlayerOptions::default()
+        }
+    };
+
     // Mod init, hot-reload watcher start, and the level-load worker spawn
     // are all deferred to the splash frame loop so the first splash frame
     // paints before any of those run — the user sees pixels before any
     // mod-supplied work executes.
     // See: context/lib/boot_sequence.md §8
+
+    let mut input_system = input::InputSystem::new(input::default_bindings());
+    input_system.set_mouse_sensitivity(player_options.mouse_sensitivity);
+    input_system.set_invert_y(player_options.invert_y);
 
     let mut app = App {
         renderer: None,
@@ -223,8 +276,10 @@ fn main() -> Result<()> {
         content_root,
         exit_result: Ok(()),
         camera: Camera::new(initial_camera_pos, 0.0, 0.0),
-        input_system: input::InputSystem::new(input::default_bindings()),
+        input_system,
         gameplay_input_latch: input::GameplayInputLatch::new(),
+        player_options,
+        settings_path,
         input_focus: InputFocus::Gameplay,
         ui_dispatch: input::UiDispatch::new(),
         gamepad_system: input::gamepad::GamepadSystem::new(),
@@ -305,6 +360,19 @@ struct App {
     camera: Camera,
     input_system: input::InputSystem,
     gameplay_input_latch: input::GameplayInputLatch,
+
+    /// Per-human runtime preferences loaded at boot. Seeds input look
+    /// preferences during init; held for the M13 settings menu, which has no
+    /// reader yet. See: context/lib/player_options.md
+    #[allow(dead_code)]
+    player_options: options::PlayerOptions,
+
+    /// Resolved `settings.toml` path, or `None` when the platform exposes no
+    /// config directory (the engine then runs on in-memory defaults). Held for
+    /// the future M13 settings menu's save path; no reader yet.
+    /// See: context/lib/player_options.md
+    #[allow(dead_code)]
+    settings_path: Option<PathBuf>,
 
     /// Coarse owner of keyboard/mouse focus. Drives pointer-lock acquire/release
     /// via `set_input_focus`. See: context/lib/input.md
@@ -2511,21 +2579,23 @@ mod tests {
     // --- Hardcoded mesh spawn seam (degrade AC) ---
     //
     // The malformed/missing-glTF degrade path: loader returns `Err` →
-    // `load_skinned_model` `warn!`s + returns `false` → the seam skips the
+    // `load_skinned_model` `warn!`s + returns `None` → the seam skips the
     // spawn → no Mesh entity → no panic → slice continues. The GPU half is
     // unit-untestable (no GPU in tests, per testing_guide), so the seam's
     // decision is factored into `spawn_mesh_entity_if_loaded`, and we drive its
-    // `false` branch directly to pin the warn-and-skip behavior.
+    // `None` branch directly to pin the warn-and-skip behavior. A successful load
+    // is `Some(tags)` — the model's top-level `extras` entity tags, which the
+    // seam attaches to the spawned entity (a no-`extras` load is `Some(vec![])`).
 
     #[test]
     fn spawn_seam_skips_entity_when_model_load_fails() {
         use crate::scripting::registry::{ComponentKind, EntityRegistry};
 
         let mut registry = EntityRegistry::new();
-        // `loaded = false` mirrors a malformed/missing glTF that the renderer's
+        // `loaded = None` mirrors a malformed/missing glTF that the renderer's
         // `load_skinned_model` already warned about and rejected.
         let result =
-            spawn_mesh_entity_if_loaded(&mut registry, false, "bad/path.gltf", Vec3::ZERO, 0.0);
+            spawn_mesh_entity_if_loaded(&mut registry, None, "bad/path.gltf", Vec3::ZERO, 0.0);
         assert!(result.is_none(), "no entity id when the load failed");
         assert_eq!(
             registry.iter_with_kind(ComponentKind::Mesh).count(),
@@ -2540,9 +2610,10 @@ mod tests {
         use crate::scripting::registry::{ComponentKind, EntityRegistry};
 
         let mut registry = EntityRegistry::new();
+        // `Some(vec![])` is a successful load with no `extras` tags.
         let id = spawn_mesh_entity_if_loaded(
             &mut registry,
-            true,
+            Some(Vec::new()),
             "models/decraniated/scene.gltf",
             Vec3::new(1.0, 2.0, 3.0),
             std::f32::consts::FRAC_PI_2,
@@ -2557,6 +2628,12 @@ mod tests {
         let mesh: &MeshComponent = registry.get_component(id).expect("MeshComponent attached");
         assert_eq!(mesh.model, "models/decraniated/scene.gltf");
 
+        // No `extras` → the entity carries no tags.
+        assert!(
+            registry.get_tags(id).expect("tags present").is_empty(),
+            "a no-extras load spawns an entity with no tags",
+        );
+
         // The yaw arg is baked into the Transform rotation so the render
         // collector can orient the model toward the player.
         let transform: &crate::scripting::registry::Transform =
@@ -2565,6 +2642,29 @@ mod tests {
         assert!(
             transform.rotation.abs_diff_eq(expected, 1e-6),
             "spawn yaw must be baked into the Transform rotation",
+        );
+    }
+
+    #[test]
+    fn spawn_seam_attaches_extras_tags_to_spawned_entity() {
+        use crate::scripting::registry::EntityRegistry;
+
+        let mut registry = EntityRegistry::new();
+        // A `Some(vec!["a","b"])` load (the loader read these off the glTF's
+        // top-level `extras`) spawns an entity carrying exactly those tags.
+        let id = spawn_mesh_entity_if_loaded(
+            &mut registry,
+            Some(vec!["a".to_string(), "b".to_string()]),
+            "models/decraniated/scene.gltf",
+            Vec3::ZERO,
+            0.0,
+        )
+        .expect("a successful load must spawn exactly one entity");
+
+        assert_eq!(
+            registry.get_tags(id).expect("tags present"),
+            ["a".to_string(), "b".to_string()],
+            "the model's extras tags must reach the spawned entity",
         );
     }
 

@@ -176,7 +176,6 @@ impl InputSystem {
     }
 
     /// Set mouse sensitivity (radians per raw mouse unit).
-    #[allow(dead_code)]
     pub fn set_mouse_sensitivity(&mut self, sensitivity: f32) {
         self.mouse_sensitivity = sensitivity;
     }
@@ -188,7 +187,6 @@ impl InputSystem {
     }
 
     /// Enable or disable invert-Y for mouse look.
-    #[allow(dead_code)]
     pub fn set_invert_y(&mut self, invert: bool) {
         self.invert_y = invert;
     }
@@ -755,6 +753,35 @@ mod tests {
         );
         assert!(look.yaw_velocity.abs() < f32::EPSILON);
         assert!(look.pitch_velocity.abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn seeded_sensitivity_and_invert_y_apply_to_look_output() {
+        // Boot seam: main.rs reads PlayerOptions and calls these setters on
+        // InputSystem at startup. This test does not exercise that wiring —
+        // it pins that the setters themselves have the expected effect on look
+        // output: doubled sensitivity scales the magnitude; invert_y flips the
+        // pitch sign.
+        let mut sys = InputSystem::new(test_bindings());
+        sys.set_mouse_sensitivity(DEFAULT_MOUSE_SENSITIVITY * 2.0);
+        sys.set_invert_y(true);
+
+        sys.handle_mouse_delta(10.0, -5.0);
+        let look = sys.drain_look_inputs();
+
+        // Yaw is unaffected by invert_y; magnitude doubles vs. the default-
+        // sensitivity case (-0.02 → -0.04). Pitch doubles and flips:
+        // default-sensitivity non-inverted is 0.01, so here -0.02.
+        assert!(
+            (look.yaw_displacement - (-0.04)).abs() < 1e-6,
+            "expected -0.04, got {}",
+            look.yaw_displacement
+        );
+        assert!(
+            (look.pitch_displacement - (-0.02)).abs() < 1e-6,
+            "expected -0.02, got {}",
+            look.pitch_displacement
+        );
     }
 
     #[test]

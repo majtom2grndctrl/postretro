@@ -30,6 +30,11 @@ glyphon = "0.11"
 # Math
 glam = { version = "0.32", features = ["serde"] }
 
+# Flexbox/grid layout solver for the UI descriptor tree. Pure CPU — no wgpu
+# dependency, so the wgpu version-pinning rationale (see `glyphon` above) does
+# not apply. Drives device-pixel layout of the retained UI widget tree.
+taffy = "0.10"
+
 # Collision (world-space trimesh queries; nalgebra types stay inside the
 # `collision` module). See context/lib/entity_model.md §7.
 parry3d = "0.17"
@@ -67,6 +72,11 @@ anyhow = "1"
 # Typed bit flags (e.g. .prm slot mask)
 bitflags = "2"
 
+# Content hashing. The level compiler keys baked `.prm` filenames by
+# `blake3(baseColor PNG bytes)`; the runtime glTF loader reproduces that recipe
+# to resolve material textures to their baked handle (no hardcoded key table).
+blake3 = "1"
+
 # Parallelism
 rayon = "1"
 
@@ -75,17 +85,33 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # glTF parsing (CPU-side skinned-model loader in `postretro::model`). Default
 # features: `import` (resolves the external `scene.bin` + URIs and decodes any
 # images), `utils` (typed accessor readers for positions/UVs/joints/weights),
-# `names` (clip names). External PNG textures only this slice — the loader
-# resolves the material to a pre-baked `.prm` key and ignores the decoded
-# images. `image` (pulled by `import`) is already a workspace dep.
-gltf = "1.4"
+# `names` (clip names). The non-default `extras` feature surfaces top-level
+# `extras` as a `serde_json` `RawValue` so the loader can read author-supplied
+# entity tags off the document. Default features are retained (not disabled).
+# External PNG textures only this slice — the loader resolves the material to a
+# pre-baked `.prm` key and ignores the decoded images. `image` (pulled by
+# `import`) is already a workspace dep.
+gltf = { version = "1.4", features = ["extras"] }
 # Lower-level PNG decoder — used by prl-build to inspect color-space chunks
 # (sRGB, gAMA, iCCP) that the `image` crate does not surface in its public API.
 png = "0.18"
 
+# URI percent-decoding. The glTF spec permits percent-encoded image URIs (e.g.
+# `base%20color.png` for a file named `base color.png`); decoding them lets an
+# encoded base-color path resolve to the real file instead of falling through to
+# the zero material sentinel. Already in the tree transitively (winit); naming it
+# directly reuses that resolved version.
+percent-encoding = "2"
+
 # Serialization (scripting FFI transit)
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# Player options persistence: human-editable `settings.toml`. `toml` for the
+# wire format, `directories` to resolve the platform config dir. Neither touches
+# wgpu/the renderer — the options module is pure data + fs.
+toml = "1"
+directories = "6"
 
 # Scripting runtimes (embedded). Default features; `parallel` OFF — scripting
 # is single-threaded, `Runtime: Send` is not required. See

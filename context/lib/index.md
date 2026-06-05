@@ -17,6 +17,7 @@
 - **Entity model / game objects / sprites** → `entity_model.md`
 - **Build pipeline / FGD / TrenchBroom** → `build_pipeline.md`
 - **Input handling / gamepad** → `input.md`
+- **Player options / settings persistence / mouse sensitivity / invert-Y / view_feel_scale** → `player_options.md`
 - **Resource management / textures / materials** → `resource_management.md`
 - **Scripting / primitives / SDK types** → `scripting.md`
 - **Game / mod author docs (human-facing, not agent context)** → `docs/`

@@ -757,9 +757,11 @@ mod tests {
 
     #[test]
     fn seeded_sensitivity_and_invert_y_apply_to_look_output() {
-        // Documents the boot seam: an InputSystem seeded from PlayerOptions via
-        // the set_* setters resolves look output using those values. Doubling
-        // sensitivity scales the magnitude; invert_y flips the pitch sign.
+        // Boot seam: main.rs reads PlayerOptions and calls these setters on
+        // InputSystem at startup. This test does not exercise that wiring —
+        // it pins that the setters themselves have the expected effect on look
+        // output: doubled sensitivity scales the magnitude; invert_y flips the
+        // pitch sign.
         let mut sys = InputSystem::new(test_bindings());
         sys.set_mouse_sensitivity(DEFAULT_MOUSE_SENSITIVITY * 2.0);
         sys.set_invert_y(true);

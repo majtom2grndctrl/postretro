@@ -2,11 +2,6 @@
 // `settings.toml`. Pure data + filesystem — no wgpu, renderer, or UI coupling.
 // See: context/lib/player_options.md
 
-// The store ships ahead of its boot wiring (Task 2): `load`/`save`/
-// `settings_path` have no caller yet. Allow at the module level until the boot
-// sequence consumes them.
-#![allow(dead_code)]
-
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -80,17 +75,24 @@ impl PlayerOptions {
 
     /// Load options from `path`.
     ///
-    /// - Missing file (read error): returns defaults. The caller is expected to
-    ///   write them back so the human gets an editable starting file.
+    /// - File not found: returns defaults silently (normal first-run path).
+    /// - Other read error (permission denied, I/O): logs a `[Options]` warning
+    ///   and returns defaults.
     /// - Parse error: logs a warning and returns defaults *without* touching the
     ///   file, so a malformed hand edit is preserved for the human to fix.
     /// - Success: deserializes, then sanitizes ranges.
     pub fn load(path: &Path) -> Self {
         let contents = match fs::read_to_string(path) {
             Ok(contents) => contents,
-            // Missing/unreadable file is the normal first-run path; the caller
-            // writes defaults. Not a warning.
-            Err(_) => return Self::default(),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Self::default(),
+            Err(err) => {
+                // Unexpected read failure (permission denied, I/O error, etc.).
+                log::warn!(
+                    "[Options] failed to read {}: {err}; using defaults",
+                    path.display()
+                );
+                return Self::default();
+            }
         };
 
         match toml::from_str::<PlayerOptions>(&contents) {

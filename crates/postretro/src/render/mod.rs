@@ -485,6 +485,66 @@ fn build_material_uniform(shininess: f32) -> [u8; MATERIAL_UNIFORM_SIZE] {
     bytes
 }
 
+/// Per-submesh draw assignment: the index of the *distinct* material this
+/// submesh draws with (into [`SubmeshMaterialPlan::distinct_keys`]) and the
+/// `start..end` index range it occupies in the merged buffer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SubmeshDraw {
+    /// Index into `distinct_keys` — which deduped material bind group to bind.
+    distinct: usize,
+    /// `start..end` into the merged index buffer (what `draw_indexed` consumes).
+    indices: std::ops::Range<u32>,
+}
+
+/// The GPU-free plan for drawing a multi-submesh model: the distinct material
+/// keys to build a bind group for (first-seen order, deduped) and the per-submesh
+/// assignment of (distinct material, index range), in submesh order.
+///
+/// First-seen dedup order keeps submesh 0's material at `distinct[0]`, so a
+/// single-material model is the trivial special case of the multi-material path
+/// (one-submesh ≡ one-distinct ≡ the whole model).
+///
+/// Factored out of the GPU resolve so the dedup + range bookkeeping is unit
+/// testable without a `wgpu::Device`: a model reusing one material across N
+/// primitives yields one distinct key and N draws; N distinct materials yield N
+/// of each. The GPU layer ([`Renderer::resolve_skinned_model_material`]) builds
+/// one bind group per distinct key, then pairs each submesh's range with its
+/// (possibly shared) bind group in order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SubmeshMaterialPlan {
+    /// The distinct material keys, in first-seen submesh order. One GPU material
+    /// bind group is built per entry.
+    distinct_keys: Vec<String>,
+    /// One entry per submesh, in submesh order: which distinct key it uses and
+    /// the index range it draws.
+    draws: Vec<SubmeshDraw>,
+}
+
+/// Build the [`SubmeshMaterialPlan`] for a model's submeshes: dedup the material
+/// keys (first-seen order) and assign each submesh to its distinct key + range.
+/// Pure data logic — no GPU — so the dedup/range bookkeeping is unit-testable.
+fn plan_submesh_materials(submeshes: &[crate::model::gltf_loader::Submesh]) -> SubmeshMaterialPlan {
+    let mut distinct_keys: Vec<String> = Vec::new();
+    let mut draws: Vec<SubmeshDraw> = Vec::with_capacity(submeshes.len());
+    for sub in submeshes {
+        let distinct = match distinct_keys.iter().position(|k| k == &sub.material_key) {
+            Some(idx) => idx,
+            None => {
+                distinct_keys.push(sub.material_key.clone());
+                distinct_keys.len() - 1
+            }
+        };
+        draws.push(SubmeshDraw {
+            distinct,
+            indices: sub.indices.clone(),
+        });
+    }
+    SubmeshMaterialPlan {
+        distinct_keys,
+        draws,
+    }
+}
+
 /// Parse a 64-char hex blake3 cache key into 32 bytes. Returns the all-zero key
 /// (the `load_textures` "no source PNG" → silent placeholder sentinel) on any
 /// malformed input, so an absent/garbled key degrades to a placeholder rather
@@ -2611,12 +2671,16 @@ impl Renderer {
         log::info!("[Renderer] Textures installed: {}", self.gpu_textures.len());
     }
 
-    /// Load the slice's one skinned model, resolve its material through the
-    /// existing `.prm` → `LoadedTexture` path (pre-baked key — no runtime
-    /// hashing) and upload it to the mesh pass.
-    /// Returns `true` on success so the caller (the entity spawn seam) decides
-    /// whether to spawn the mesh entity; on a load error this logs a `warn!`
-    /// naming the path, leaves the pass idle, and returns `false` (no spawn).
+    /// Load the slice's one skinned model, resolve each submesh's material key
+    /// (blake3 content-hash of the base-color PNG, the same recipe the level
+    /// compiler uses to name `.prm` sidecars) to a `LoadedTexture`, build one
+    /// bind group per distinct key, and upload to the mesh pass.
+    /// Returns `Some(tags)` on success — `tags` being the model's top-level
+    /// `extras` entity tags (`LoadedModel.tags`, possibly empty) — so the caller
+    /// (the entity spawn seam) spawns the mesh entity carrying them; a successful
+    /// load with no `extras` is `Some(vec![])`, not `None`. On a load error this
+    /// logs a `warn!` naming the path, leaves the pass idle, and returns `None`
+    /// (no spawn).
     ///
     /// The renderer owns the GPU upload + the retained `MeshAnimationState`
     /// (skeleton + clip) for the slice's one model; the per-frame draw list
@@ -2624,7 +2688,11 @@ impl Renderer {
     /// via [`set_mesh_draws`], not seeded here.
     ///
     /// [`set_mesh_draws`]: Self::set_mesh_draws
-    pub fn load_skinned_model(&mut self, model_path: &Path, prm_cache_root: &Path) -> bool {
+    pub fn load_skinned_model(
+        &mut self,
+        model_path: &Path,
+        prm_cache_root: &Path,
+    ) -> Option<Vec<String>> {
         let model = match crate::model::gltf_loader::load_model(model_path) {
             Ok(m) => m,
             Err(err) => {
@@ -2632,16 +2700,17 @@ impl Renderer {
                     "[Model] skinned model load failed for {} : {err} — mesh pass idle",
                     model_path.display(),
                 );
-                return false;
+                return None;
             }
         };
 
-        // Resolve the (single) material key through the SAME `.prm`-open path
-        // `load_textures` uses: parse the pre-staged 64-char hex blake3 key into
-        // a 32-byte key, wrap it in a one-entry cache-keys section, and load.
-        let material_bind_group = self.resolve_skinned_model_material(&model, prm_cache_root);
+        // Resolve every submesh's material key through the SAME `.prm`-open path
+        // `load_textures` uses (content-hash hex → 32-byte key → `.prm`). One
+        // bind group per *distinct* key (deduped), paired with each submesh's
+        // index range in submesh order.
+        let submesh_materials = self.resolve_skinned_model_material(&model, prm_cache_root);
         self.mesh_pass
-            .set_model(&self.device, &model.mesh, material_bind_group);
+            .set_model(&self.device, &model.mesh, submesh_materials);
 
         // Retain the skeleton + first clip so the per-frame palette is sampled
         // from the live animation. No clip → leave `mesh_animation` None; the
@@ -2649,7 +2718,10 @@ impl Renderer {
         // CPU pose data is renderer-side because the pass uploads it (renderer
         // owns GPU); the slice carries one model, so a single field suffices.
         let crate::model::gltf_loader::LoadedModel {
-            skeleton, clips, ..
+            skeleton,
+            clips,
+            tags,
+            ..
         } = model;
         let clip_count = clips.len();
         self.mesh_animation = clips.into_iter().next().map(|clip| {
@@ -2663,10 +2735,11 @@ impl Renderer {
         });
 
         log::info!(
-            "[Model] skinned model uploaded: {} clip(s) parsed",
+            "[Model] skinned model uploaded: {} clip(s) parsed, {} tag(s)",
             clip_count,
+            tags.len(),
         );
-        true
+        Some(tags)
     }
 
     /// Replace this frame's skinned-mesh draw list with the matrices packed by
@@ -2679,43 +2752,66 @@ impl Renderer {
         self.mesh_draws.extend_from_slice(draws);
     }
 
-    /// Build the material bind group for the skinned model from its first
-    /// material key (pre-baked blake3 hex → `.prm`). Degrades to a placeholder
-    /// when the key is absent/malformed or the `.prm` is missing (load_textures
-    /// already handles the latter two). No runtime PNG hashing.
+    /// Resolve each submesh's material key (content-hash hex → `.prm`) to a
+    /// material bind group, returning one `(bind group, index range)` per
+    /// submesh in submesh order for the mesh pass to draw.
+    ///
+    /// Dedup: one GPU material bind group is built per *distinct* key — a model
+    /// reusing a material across primitives builds it once and shares it. Each
+    /// submesh range is then paired with its (possibly shared) bind group. The
+    /// dedup + range bookkeeping is the GPU-free [`plan_submesh_materials`];
+    /// this method is the thin GPU layer that builds the bind groups.
+    ///
+    /// Degrades to a placeholder per distinct key when its key is absent/garbled
+    /// or its `.prm` is missing (`load_textures` already handles those). The
+    /// diagnostic texture name is generic (the key hex), naming no asset.
     fn resolve_skinned_model_material(
         &mut self,
         model: &crate::model::gltf_loader::LoadedModel,
         prm_cache_root: &Path,
-    ) -> wgpu::BindGroup {
-        // Single-primitive model this slice; the broadening glTF task maps all primitive material keys. Name is a diagnostic wgpu label only.
-        let key_hex = model
-            .material_keys
-            .first()
-            .map(String::as_str)
-            .unwrap_or("");
-        let key = parse_blake3_key(key_hex);
-        let keys = TextureCacheKeysSection { keys: vec![key] };
-        let names = vec!["decraniated_baseColor".to_string()];
+    ) -> Vec<(wgpu::BindGroup, std::ops::Range<u32>)> {
+        let plan = plan_submesh_materials(&model.submeshes);
 
-        let loaded = load_textures(&self.device, &self.queue, &names, &keys, prm_cache_root);
-        let tex = loaded
+        // Build one material bind group per distinct key (deduped). Indexed
+        // parallel to `plan.distinct_keys` so each submesh draw indexes into it.
+        let distinct_bind_groups: Vec<wgpu::BindGroup> = plan
+            .distinct_keys
+            .iter()
+            .map(|key_hex| {
+                let key = parse_blake3_key(key_hex);
+                let keys = TextureCacheKeysSection { keys: vec![key] };
+                // Generic diagnostic name — the material-key hex, naming no asset.
+                let names = vec![key_hex.clone()];
+
+                let loaded =
+                    load_textures(&self.device, &self.queue, &names, &keys, prm_cache_root);
+                let tex = loaded
+                    .into_iter()
+                    .next()
+                    .unwrap_or_else(|| placeholder_loaded_texture(&self.device, &self.queue));
+
+                let aniso_sampler = self
+                    .mip_count_aniso_samplers
+                    .entry(tex.mip_count)
+                    .or_insert_with(|| create_mip_aniso_sampler(&self.device, tex.mip_count));
+                build_material_bind_group(
+                    &self.device,
+                    &self.texture_bind_group_layout,
+                    &tex,
+                    aniso_sampler,
+                    Material::Default,
+                    &format!("Skinned Model Material {key_hex}"),
+                )
+            })
+            .collect();
+
+        // The resulting Vec is moved into the mesh pass (ownership transfer), so
+        // each slot must hold its own handle. Clone the shared handle (cheap Arc
+        // clone inside wgpu) for submeshes that reuse a distinct material.
+        plan.draws
             .into_iter()
-            .next()
-            .unwrap_or_else(|| placeholder_loaded_texture(&self.device, &self.queue));
-
-        let aniso_sampler = self
-            .mip_count_aniso_samplers
-            .entry(tex.mip_count)
-            .or_insert_with(|| create_mip_aniso_sampler(&self.device, tex.mip_count));
-        build_material_bind_group(
-            &self.device,
-            &self.texture_bind_group_layout,
-            &tex,
-            aniso_sampler,
-            Material::Default,
-            "Skinned Model Material",
-        )
+            .map(|draw| (distinct_bind_groups[draw.distinct].clone(), draw.indices))
+            .collect()
     }
 
     /// Normalize texel-space UVs on every BVH-leaf-bound vertex to `[0,1]`
@@ -4943,6 +5039,112 @@ mod tests {
         assert_eq!(lines, vec![0, 1, 1, 2, 2, 0]);
     }
 
+    fn scripted_light_intensity_scalar_reference(
+        premultiplied_color: [f32; 3],
+        base_color: [f32; 3],
+    ) -> f32 {
+        let (premultiplied_channel, color_channel) =
+            if base_color[0] >= base_color[1] && base_color[0] >= base_color[2] {
+                (premultiplied_color[0], base_color[0])
+            } else if base_color[1] >= base_color[2] {
+                (premultiplied_color[1], base_color[1])
+            } else {
+                (premultiplied_color[2], base_color[2])
+            };
+        if color_channel <= 1.0e-6 {
+            return 0.0;
+        }
+        premultiplied_channel / color_channel
+    }
+
+    fn scripted_color_curve_effective_color(
+        premultiplied_color: [f32; 3],
+        base_color: [f32; 3],
+        color_sample: [f32; 3],
+        brightness: f32,
+    ) -> [f32; 3] {
+        let intensity = scripted_light_intensity_scalar_reference(premultiplied_color, base_color);
+        [
+            color_sample[0].max(0.0) * intensity * brightness.max(0.0),
+            color_sample[1].max(0.0) * intensity * brightness.max(0.0),
+            color_sample[2].max(0.0) * intensity * brightness.max(0.0),
+        ]
+    }
+
+    fn assert_vec3_near(actual: [f32; 3], expected: [f32; 3]) {
+        for i in 0..3 {
+            assert!(
+                (actual[i] - expected[i]).abs() < 1.0e-6,
+                "channel {i}: expected {}, got {}",
+                expected[i],
+                actual[i],
+            );
+        }
+    }
+
+    #[test]
+    fn forward_shader_color_curve_branch_reapplies_static_intensity() {
+        let src = include_str!("../shaders/forward.wgsl");
+        let color_branch_start = src
+            .find("if scripted_desc.color_count > 0u")
+            .expect("forward shader should have a scripted color-curve branch");
+        let brightness_branch_start = src[color_branch_start..]
+            .find("} else if scripted_desc.brightness_count > 0u")
+            .map(|offset| color_branch_start + offset)
+            .expect("forward shader should keep a brightness-only branch");
+        let color_branch = &src[color_branch_start..brightness_branch_start];
+
+        assert!(
+            color_branch.contains("let unit_sample = max("),
+            "color branch should bind the clamped unit-RGB sample before applying intensity",
+        );
+        assert!(
+            color_branch.contains("scripted_light_intensity_scalar("),
+            "color branch should recover the static intensity scalar",
+        );
+        assert!(
+            color_branch.contains("effective_color = unit_sample * intensity * brightness;"),
+            "color branch should apply unit sample, static intensity, and optional brightness multiplicatively",
+        );
+        assert!(
+            !color_branch.contains("effective_color = max("),
+            "color branch must not assign the raw clamped unit-RGB sample as final effective_color",
+        );
+    }
+
+    #[test]
+    fn scripted_color_curve_white_sample_keeps_static_intensity() {
+        let actual = scripted_color_curve_effective_color(
+            [10.0, 10.0, 10.0],
+            [1.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0],
+            1.0,
+        );
+        assert_vec3_near(actual, [10.0, 10.0, 10.0]);
+    }
+
+    #[test]
+    fn scripted_color_curve_hue_sample_uses_static_intensity_as_magnitude() {
+        let actual = scripted_color_curve_effective_color(
+            [10.0, 10.0, 10.0],
+            [1.0, 1.0, 1.0],
+            [0.5, 0.0, 0.0],
+            1.0,
+        );
+        assert_vec3_near(actual, [5.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn scripted_color_curve_multiplies_optional_brightness_curve() {
+        let actual = scripted_color_curve_effective_color(
+            [10.0, 10.0, 10.0],
+            [1.0, 1.0, 1.0],
+            [1.0, 0.0, 0.0],
+            0.5,
+        );
+        assert_vec3_near(actual, [5.0, 0.0, 0.0]);
+    }
+
     /// Regression: both the CPU-side `build_uniform_data` packer and the
     /// CPU-side `pack_light` packer must match the WGSL struct layouts
     /// that the fragment shader compiles against. Parsing the live
@@ -5614,5 +5816,121 @@ mod tests {
         // 64 chars but contains 'zz' at the start — not valid hex.
         let bad = format!("zz{}", "00".repeat(31));
         assert_eq!(parse_blake3_key(&bad), [0u8; 32]);
+    }
+
+    /// The all-zero 64-char sentinel string maps to the zero key. This is the
+    /// same string `zero_material_key()` in the loader produces ("0".repeat(64)),
+    /// pinning the cross-module contract without importing that function here.
+    #[test]
+    fn parse_blake3_key_maps_zero_sentinel_to_zero_key() {
+        assert_eq!(parse_blake3_key(&"0".repeat(64)), [0u8; 32]);
+    }
+
+    // --- Submesh material plan (GPU-free dedup + draw bookkeeping) ---------
+    //
+    // `resolve_skinned_model_material` needs a live `wgpu::Device` to build bind
+    // groups, so the dedup + range bookkeeping is factored into the pure
+    // `plan_submesh_materials`. These tests pin the contract the GPU layer
+    // builds on: one distinct key per distinct material (deduped), one draw per
+    // submesh covering its range, in submesh order.
+
+    use crate::model::gltf_loader::Submesh;
+
+    fn submesh(key: &str, start: u32, end: u32) -> Submesh {
+        Submesh {
+            material_key: key.to_string(),
+            indices: start..end,
+        }
+    }
+
+    #[test]
+    fn plan_records_one_draw_per_submesh_covering_every_range() {
+        // Three distinct materials → three submeshes; every range must be
+        // recorded (not just the first), in submesh order, each pointing at its
+        // own distinct key.
+        let a = "a".repeat(64);
+        let b = "b".repeat(64);
+        let c = "c".repeat(64);
+        let submeshes = vec![submesh(&a, 0, 6), submesh(&b, 6, 12), submesh(&c, 12, 15)];
+
+        let plan = plan_submesh_materials(&submeshes);
+
+        // Three distinct keys, in first-seen order.
+        assert_eq!(plan.distinct_keys, vec![a, b, c]);
+        // One draw per submesh, ranges preserved in submesh order, each to its
+        // own distinct material (0, 1, 2) — every range covered, not just #0.
+        assert_eq!(plan.draws.len(), 3, "one draw entry per submesh");
+        assert_eq!(plan.draws[0].indices, 0..6);
+        assert_eq!(plan.draws[1].indices, 6..12);
+        assert_eq!(plan.draws[2].indices, 12..15);
+        assert_eq!(
+            plan.draws.iter().map(|d| d.distinct).collect::<Vec<_>>(),
+            vec![0, 1, 2],
+            "distinct materials map to distinct plan entries",
+        );
+    }
+
+    #[test]
+    fn plan_dedups_repeated_material_key_to_one_build() {
+        // A model reusing one material across three primitives must build that
+        // material ONCE (one distinct key) while still recording three draws —
+        // each submesh range paired with the shared (deduped) material.
+        let shared = "f".repeat(64);
+        let submeshes = vec![
+            submesh(&shared, 0, 3),
+            submesh(&shared, 3, 6),
+            submesh(&shared, 6, 9),
+        ];
+
+        let plan = plan_submesh_materials(&submeshes);
+
+        assert_eq!(
+            plan.distinct_keys.len(),
+            1,
+            "reused material key dedups to a single bind-group build",
+        );
+        assert_eq!(plan.distinct_keys[0], shared);
+        assert_eq!(plan.draws.len(), 3, "still one draw per submesh");
+        assert!(
+            plan.draws.iter().all(|d| d.distinct == 0),
+            "every submesh shares the one distinct material",
+        );
+        // Ranges still cover each submesh independently.
+        assert_eq!(
+            plan.draws
+                .iter()
+                .map(|d| d.indices.clone())
+                .collect::<Vec<_>>(),
+            vec![0..3, 3..6, 6..9],
+        );
+    }
+
+    #[test]
+    fn plan_mixes_shared_and_distinct_keys_with_first_seen_order() {
+        // Interleaved reuse: keys [x, y, x, z]. Distinct keys are first-seen
+        // [x, y, z] (3 builds, not 4), and the third submesh reuses x's entry.
+        let x = "1".repeat(64);
+        let y = "2".repeat(64);
+        let z = "3".repeat(64);
+        let submeshes = vec![
+            submesh(&x, 0, 3),
+            submesh(&y, 3, 6),
+            submesh(&x, 6, 9),
+            submesh(&z, 9, 12),
+        ];
+
+        let plan = plan_submesh_materials(&submeshes);
+
+        assert_eq!(
+            plan.distinct_keys,
+            vec![x, y, z],
+            "distinct keys in first-seen order, deduped",
+        );
+        assert_eq!(
+            plan.draws.iter().map(|d| d.distinct).collect::<Vec<_>>(),
+            vec![0, 1, 0, 2],
+            "third submesh reuses the first distinct material",
+        );
+        assert_eq!(plan.draws.len(), 4, "one draw per submesh, none dropped");
     }
 }

@@ -1,32 +1,48 @@
 // glTF → engine skinned-model loader (CPU-only; no wgpu).
 // See: context/lib/rendering_pipeline.md §9 · context/lib/build_pipeline.md §Baked texture mips
 //
-// Narrow by design (M10 model-pipeline slice): one model, external-PNG textures,
-// a single animation clip. The loop is general enough to survive the real
-// asset's structure (multi-primitive merge, TRS-or-matrix joint nodes) without
-// claiming multi-mesh / multi-clip generality — that is the broadening task.
+// One model, external-PNG textures, a single animation clip. Multi-primitive
+// meshes merge into one interleaved stream; the per-primitive material split is
+// preserved as submesh index ranges so the renderer can draw each material's
+// triangles separately. Multi-mesh / multi-clip generality is out of scope.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use glam::{Mat4, Quat, Vec3};
 use postretro_level_format::octahedral;
+use serde::Deserialize;
 use thiserror::Error;
 
 use super::mesh::{SkinnedMesh, SkinnedVertex};
 use super::skeleton::{AnimationClip, Joint, JointTracks, RestLocal, Skeleton, Track};
 
-/// A model loaded from glTF: one skinned mesh, its skeleton, its animation
-/// clips, and the material cache keys its primitives reference.
+/// One drawable run of the merged mesh: the triangles of a single primitive,
+/// paired with the material that draws them.
 ///
-/// The material is referenced by a **cache key** (the same string-keyed scheme
-/// the texture/material cache uses elsewhere) rather than an owned `Material`,
-/// so the renderer resolves and de-duplicates textures through the shared cache
-/// at upload time. One key per mesh primitive, in primitive order.
+/// The material is referenced by a **content-hash cache key** (`blake3` of the
+/// base-color PNG, hex-encoded — the same recipe the level compiler bakes `.prm`
+/// filenames with) rather than an owned `Material`, so the renderer resolves and
+/// de-duplicates textures through the shared cache at upload time. `indices` is a
+/// `start..end` range into the **merged** index buffer (what `draw_indexed`
+/// consumes directly), so the renderer draws this submesh by slicing that range.
+#[derive(Debug, Clone)]
+pub struct Submesh {
+    /// 64-char hex `blake3` of the base-color PNG (the baked `.prm` cache key),
+    /// or the all-zero sentinel when the material has no resolvable PNG.
+    pub material_key: String,
+    /// `start..end` into the merged index buffer — the half-open range of indices
+    /// this primitive contributed, as `draw_indexed` expects.
+    pub indices: std::ops::Range<u32>,
+}
+
+/// A model loaded from glTF: one skinned mesh, its skeleton, its animation
+/// clips, the per-primitive submeshes (material key + index range), and the
+/// author-supplied entity tags read from the document's top-level `extras`.
 #[derive(Debug, Clone, Default)]
 pub struct LoadedModel {
     /// The skinned geometry. A model with multiple primitives merges them into
-    /// one interleaved stream; `material_keys` carries the per-primitive split.
+    /// one interleaved stream; `submeshes` carries the per-primitive split.
     pub mesh: SkinnedMesh,
     /// The joint hierarchy the mesh binds against, stored parent-before-child
     /// (topological) so the sampler composes world matrices in one forward
@@ -34,9 +50,16 @@ pub struct LoadedModel {
     pub skeleton: Skeleton,
     /// Animation clips parsed from the glTF. The hardcoded slice ships one clip.
     pub clips: Vec<AnimationClip>,
-    /// Material cache keys, one per mesh primitive in primitive order. The
-    /// renderer resolves each key against the shared material/texture cache.
-    pub material_keys: Vec<String>,
+    /// One submesh per mesh primitive, in primitive order: the material cache
+    /// key and the index range it occupies in the merged buffer. The renderer
+    /// resolves each key against the shared material/texture cache and draws each
+    /// range against its (possibly shared) material.
+    pub submeshes: Vec<Submesh>,
+    /// Entity tags read from the document's top-level `extras` (`{ "tags": [..] }`).
+    /// The spawn seam attaches these to the spawned entity. Empty when the glTF
+    /// carries no `extras`, no `tags` key, or a malformed `extras` shape — a
+    /// missing/garbled `extras` yields no tags rather than a load error.
+    pub tags: Vec<String>,
 }
 
 /// Errors surfaced while loading a glTF model. Every malformed/unsupported input
@@ -90,48 +113,109 @@ fn pack_tangent(tangent: [f32; 4]) -> [u16; 2] {
     [oct[0], v_15bit | sign_bit]
 }
 
-/// Pre-staged material cache keys, keyed by the glTF image URI of the material's
-/// base-color texture.
+/// The all-zero cache key, hex-encoded (64 chars). `load_textures` reads this as
+/// the "no source PNG" sentinel and binds a silent placeholder.
 ///
-/// **The deliberate offline-baked-key seam (baked-over-computed invariant).**
-/// The runtime never hashes a PNG. The `.prm` for this model's baseColor was
-/// baked **once, offline**, by the production baker (`prl-build`'s
-/// `bake_texture_mips`), and its 32-byte blake3 key is the constant below. The
-/// loader looks the staged key up by image URI; it does not compute it. A future
-/// build-time-bake / runtime-hash path (the *glTF mesh loading* broadening task)
-/// replaces this lookup behind the same chokepoint.
-///
-/// Key recipe (per `build_pipeline.md` §Baked texture mips): for a
-/// diffuse-present texture the `.prm` filename key is `blake3(baseColor PNG
-/// bytes)`. The `.prm` lives at
-/// `<workspace>/.build-caches/prm-cache/<hex>.prm`; `load_textures` opens it via
-/// `cache_filename_for_key`. Only baseColor is baked — normal /
-/// metallicRoughness are not needed for the flat-lit slice (the broadening
-/// lighting pass bakes and binds them).
-const STAGED_MATERIAL_KEYS: &[(&str, &str)] = &[(
-    "textures/Scene_-_Root_baseColor.png",
-    "581e80bb91c2d2e6fbed2aca5ba8fc0252aa7485579ea21376eeb294e972f0f1",
-)];
+/// The all-zero key is a convention shared with the level compiler, not a local
+/// choice — `build_pipeline.md` §"Baked texture mips" defines it as the key that
+/// "substitutes per-slot placeholders silently". Both producers emit it for a
+/// material with no resolvable base-color PNG.
+fn zero_material_key() -> String {
+    "0".repeat(64)
+}
 
-/// Resolve a material's base-color image URI to its pre-staged `.prm` cache key.
-/// Returns the all-zero key (the `load_textures` "no source PNG" sentinel → a
-/// silent placeholder) when the material has no staged base-color texture, so an
-/// unrecognized material degrades to a placeholder rather than failing the load.
-fn staged_material_key(material: &gltf::Material) -> String {
-    let uri = material
+/// Resolve a base-color image URI (relative to the glTF's directory) to a file
+/// path, percent-decoding the URI first.
+///
+/// The glTF spec allows image URIs to be percent-encoded (e.g. `base%20color.png`
+/// for a file named `base color.png`); without decoding, a raw `join` would miss
+/// the file and wrongly degrade to the zero sentinel. Decoding an already-unencoded
+/// URI is a no-op, so normal paths pass through unchanged. On invalid UTF-8 in the
+/// decoded bytes we fall back to the raw URI rather than lossily mangling it.
+///
+/// A `../`-containing URI can join past `parent_dir`; acceptable here because the
+/// path is only ever read to content-hash (never surfaced), and the glTF is
+/// already trusted user-chosen content.
+fn resolve_image_path(parent_dir: &Path, uri: &str) -> PathBuf {
+    let decoded = percent_encoding::percent_decode_str(uri)
+        .decode_utf8()
+        .map(|s| s.into_owned())
+        .unwrap_or_else(|_| uri.to_string());
+    parent_dir.join(decoded)
+}
+
+/// Resolve a material's base-color texture to its baked `.prm` cache key by
+/// content-hashing the source PNG.
+///
+/// Recipe (mirrors the level compiler's `filename_key_for` for a
+/// diffuse-present texture, per `build_pipeline.md` §Baked texture mips):
+/// `blake3(baseColor PNG bytes)`, hex-encoded — the same key the offline baker
+/// names the `.prm` with, so `load_textures` opens `<key>.prm` directly. We
+/// reproduce the recipe inline because `filename_key_for` is private to the
+/// level-compiler crate.
+///
+/// Degrades to the zero sentinel (never errors/panics) when the base-color image
+/// has no URI, is embedded in a buffer view (`Source::View`), or its file is
+/// missing/unreadable — an unresolvable material renders a placeholder rather
+/// than failing the whole load.
+fn content_hash_material_key(material: &gltf::Material, parent_dir: &Path) -> String {
+    let Some(uri) = material
         .pbr_metallic_roughness()
         .base_color_texture()
         .and_then(|info| match info.texture().source().source() {
             gltf::image::Source::Uri { uri, .. } => Some(uri.to_string()),
             gltf::image::Source::View { .. } => None,
-        });
-    match uri.as_deref() {
-        Some(u) => STAGED_MATERIAL_KEYS
-            .iter()
-            .find(|(image_uri, _)| *image_uri == u)
-            .map(|(_, key)| (*key).to_string())
-            .unwrap_or_else(|| "0".repeat(64)),
-        None => "0".repeat(64),
+        })
+    else {
+        return zero_material_key();
+    };
+
+    let png_path = resolve_image_path(parent_dir, &uri);
+    match std::fs::read(&png_path) {
+        Ok(png_bytes) => {
+            let key = *blake3::hash(&png_bytes).as_bytes();
+            hex_encode(&key)
+        }
+        Err(_) => zero_material_key(),
+    }
+}
+
+/// Lowercase-hex encode a 32-byte cache key into the 64-char string
+/// `load_textures` / `cache_filename_for_key` consume. `blake3::Hash::to_hex()`
+/// returns a fixed-size `HexString`, not an owned `String`; this produces the
+/// owned `String` the rest of the key pipeline expects.
+fn hex_encode(bytes: &[u8; 32]) -> String {
+    use std::fmt::Write;
+    let mut s = String::with_capacity(64);
+    for b in bytes {
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
+/// The shape of the document's top-level `extras` this loader cares about.
+/// Unknown keys are ignored (no `deny_unknown_fields`) so authors can stash
+/// arbitrary metadata alongside `tags`; `tags` defaults to empty when absent.
+#[derive(Debug, Deserialize)]
+struct ModelExtras {
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+/// Read the entity tags off the document's top-level `extras`.
+///
+/// The `extras` feature surfaces the raw JSON as `&Option<Box<RawValue>>`. Absent
+/// `extras` → no tags. Present `extras` deserializes into [`ModelExtras`]; any
+/// deserialize failure (wrong shape, non-array `tags`, etc.) also yields no tags.
+/// Tags are author metadata, not load-critical data — a garbled `extras` must not
+/// fail the load, so every error arm collapses to an empty list.
+fn read_model_tags(extras: &gltf::json::Extras) -> Vec<String> {
+    let Some(raw) = extras.as_ref() else {
+        return Vec::new();
+    };
+    match serde_json::from_str::<ModelExtras>(raw.get()) {
+        Ok(parsed) => parsed.tags,
+        Err(_) => Vec::new(),
     }
 }
 
@@ -139,21 +223,34 @@ fn staged_material_key(material: &gltf::Material) -> String {
 ///
 /// Parses one mesh (all primitives merged into a single interleaved stream), its
 /// skeleton (joints stored parent-before-child with inverse-bind matrices), and
-/// its animation clips. Material textures resolve through pre-staged offline
-/// cache keys — no runtime PNG hashing. Returns an error (never panics) on
-/// malformed or unsupported input.
+/// its animation clips. Material textures resolve to their baked `.prm` cache key
+/// by content-hashing the source PNG at runtime. Returns an error (never panics)
+/// on malformed or unsupported input.
 pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
     let path_str = path.display().to_string();
-    let (document, buffers, _images) =
-        gltf::import(path).map_err(|source| ModelLoadError::Import {
+    // Open the document and resolve only geometry/skin/animation buffers — no
+    // image data. `gltf::import` would decode every referenced PNG (returning an
+    // `_images` we then discard); `Gltf::open` + `import_buffers` skips that
+    // decode entirely. The `.glb` binary-blob arg is `None` (external-`.gltf`
+    // only — embedded-image / `.glb` support is out of scope).
+    let parent_dir = path.parent().unwrap_or_else(|| Path::new(""));
+    let document = gltf::Gltf::open(path)
+        .map_err(|source| ModelLoadError::Import {
             path: path_str.clone(),
             source,
-        })?;
+        })?
+        .document;
+    let buffers = gltf::import_buffers(&document, Some(parent_dir), None).map_err(|source| {
+        ModelLoadError::Import {
+            path: path_str.clone(),
+            source,
+        }
+    })?;
 
     // The `utils` accessor readers each take a buffer-data closure that indexes
-    // the imported buffer blobs (the external `.bin` already resolved by
-    // `gltf::import`); each helper builds its own closure locally so the closure
-    // and the borrowed glTF entity share one lifetime.
+    // the imported buffer blobs (the external `.bin` resolved by
+    // `import_buffers`); each helper builds its own closure locally so the
+    // closure and the borrowed glTF entity share one lifetime.
 
     // --- Skeleton ---------------------------------------------------------
     // Take the first skin if present; a static model (no skin) loads through the
@@ -176,7 +273,8 @@ pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
         .next()
         .ok_or_else(|| ModelLoadError::NoMesh(path_str.clone()))?;
 
-    let (skinned_mesh, material_keys) = load_mesh(&mesh, &buffers, &skin_joint_to_topo, &path_str)?;
+    let (skinned_mesh, submeshes) =
+        load_mesh(&mesh, &buffers, &skin_joint_to_topo, parent_dir, &path_str)?;
 
     // --- Animation clips --------------------------------------------------
     let clips = document
@@ -184,11 +282,18 @@ pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
         .map(|anim| load_clip(&anim, &buffers, &node_to_topo, skeleton.joints.len()))
         .collect();
 
+    // --- Entity tags (top-level extras) -----------------------------------
+    // Author metadata; a missing/garbled `extras` yields no tags, not an error.
+    // Top-level `extras` lives on the underlying `json::Root`, surfaced as a
+    // `serde_json` `RawValue` by the `extras` feature.
+    let tags = read_model_tags(&document.as_json().extras);
+
     Ok(LoadedModel {
         mesh: skinned_mesh,
         skeleton,
         clips,
-        material_keys,
+        submeshes,
+        tags,
     })
 }
 
@@ -337,18 +442,20 @@ fn build_skeleton(
 }
 
 /// Load every primitive of `mesh` into one merged interleaved stream, remapping
-/// skin-joint indices to topo order. Returns the mesh and one material key per
-/// primitive (in primitive order — the per-primitive split the merged stream
-/// otherwise loses).
+/// skin-joint indices to topo order. Returns the mesh and one [`Submesh`] per
+/// primitive (in primitive order): each carries its material content-hash key
+/// and the `start..end` range it occupies in the merged index buffer — the
+/// per-primitive split the merged stream otherwise loses.
 fn load_mesh(
     mesh: &gltf::Mesh,
     buffers: &[gltf::buffer::Data],
     skin_joint_to_topo: &HashMap<usize, usize>,
+    parent_dir: &Path,
     path_str: &str,
-) -> Result<(SkinnedMesh, Vec<String>), ModelLoadError> {
+) -> Result<(SkinnedMesh, Vec<Submesh>), ModelLoadError> {
     let buffer_data = |buffer: gltf::Buffer| buffers.get(buffer.index()).map(|d| &d.0[..]);
     let mut out = SkinnedMesh::default();
-    let mut material_keys: Vec<String> = Vec::new();
+    let mut submeshes: Vec<Submesh> = Vec::new();
 
     for primitive in mesh.primitives() {
         if primitive.mode() != gltf::mesh::Mode::Triangles {
@@ -416,7 +523,10 @@ fn load_mesh(
         }
 
         // Indices, offset into the merged stream. A primitive without an index
-        // buffer is a sequential triangle list.
+        // buffer is a sequential triangle list. `start..end` bracket this
+        // primitive's run in the merged index buffer — exactly the range
+        // `draw_indexed` consumes for this submesh.
+        let start = out.indices.len() as u32;
         match reader.read_indices() {
             Some(idx) => {
                 for i in idx.into_u32() {
@@ -429,11 +539,15 @@ fn load_mesh(
                 }
             }
         }
+        let end = out.indices.len() as u32;
 
-        material_keys.push(staged_material_key(&primitive.material()));
+        submeshes.push(Submesh {
+            material_key: content_hash_material_key(&primitive.material(), parent_dir),
+            indices: start..end,
+        });
     }
 
-    Ok((out, material_keys))
+    Ok((out, submeshes))
 }
 
 /// Remap one `[u16; 4]` joint quad (skin-joint indices) to topo-order `[u8; 4]`.
@@ -624,6 +738,39 @@ mod tests {
         assert_eq!(out, [2, 0, 0, 2]);
     }
 
+    #[test]
+    fn image_uri_is_percent_decoded_before_resolving_path() {
+        // The glTF spec allows percent-encoded image URIs; `import_buffers`
+        // decodes the `.bin` URI the same way, so the material path must match.
+        // A `%20`-encoded URI must resolve to the real `base color.png` file
+        // (with a literal space) and content-hash it — not degrade to the zero
+        // sentinel. An unencoded URI passes through unchanged (decode is a no-op).
+        let dir = std::env::temp_dir().join("postretro_percent_decode_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let png_bytes = b"not a real png, just bytes to hash";
+        let file_path = dir.join("base color.png");
+        std::fs::write(&file_path, png_bytes).unwrap();
+
+        // Encoded URI resolves to the space-bearing filename.
+        let resolved = resolve_image_path(&dir, "base%20color.png");
+        assert_eq!(resolved, file_path, "%20 must decode to a literal space");
+        // Unencoded URI is a no-op pass-through.
+        assert_eq!(
+            resolve_image_path(&dir, "plain.png"),
+            dir.join("plain.png"),
+            "an unencoded URI must not be mangled",
+        );
+
+        // End-to-end: reading the decoded path yields the file's content hash,
+        // matching what `content_hash_material_key` would produce — proving the
+        // encoded URI does NOT fall back to the zero sentinel.
+        let bytes = std::fs::read(&resolved).expect("decoded path resolves to the file");
+        let expected_key = hex_encode(blake3::hash(&bytes).as_bytes());
+        assert_ne!(expected_key, zero_material_key(), "key is not the sentinel");
+
+        let _ = std::fs::remove_file(&file_path);
+    }
+
     // --- Error handling (automated AC: malformed input returns Err, no panic) ---
 
     #[test]
@@ -725,17 +872,162 @@ mod tests {
             "clip animates at least one joint's rotation"
         );
 
-        // Material: one key per primitive; the single primitive resolves to the
-        // pre-staged baseColor key (not the zero placeholder).
+        // Material: one submesh per primitive; the single primitive resolves to
+        // the baseColor key by content-hashing the dev PNG beside the glTF (not
+        // a hardcoded table, not the zero placeholder).
+        assert_eq!(model.submeshes.len(), 1, "one submesh per primitive");
         assert_eq!(
-            model.material_keys.len(),
-            1,
-            "one material key per primitive"
-        );
-        assert_eq!(
-            model.material_keys[0],
+            model.submeshes[0].material_key,
             "581e80bb91c2d2e6fbed2aca5ba8fc0252aa7485579ea21376eeb294e972f0f1",
-            "primitive resolves to the staged baseColor cache key"
+            "primitive resolves to the content-hashed baseColor cache key"
         );
+        // The single submesh covers the whole merged index buffer.
+        assert_eq!(
+            model.submeshes[0].indices,
+            0..model.mesh.indices.len() as u32,
+            "single submesh spans the entire merged index buffer"
+        );
+    }
+
+    // --- Submesh range partition (multi-primitive split bookkeeping) -------
+
+    #[test]
+    fn submesh_ranges_partition_merged_index_buffer() {
+        // A synthetic multi-material glTF fixture (two primitives, two
+        // materials) exercises the per-primitive submesh split without a GPU.
+        // The submesh ranges must tile the merged index buffer end-to-end with
+        // no gap or overlap, and every index must address a real merged vertex.
+        //
+        // Both primitives' base-color PNGs are absent at runtime, so both
+        // submesh keys collapse to the SAME zero sentinel. This test only proves
+        // range partitioning; distinct-key dedup is proven separately by the
+        // `plan_*` tests in `render/mod.rs`.
+        let fixture = multi_primitive_fixture_path();
+        let model = load_model(&fixture).expect("synthetic multi-primitive fixture loads");
+
+        assert!(
+            model.submeshes.len() >= 2,
+            "fixture has multiple primitives → multiple submeshes, got {}",
+            model.submeshes.len()
+        );
+
+        // Ranges partition [0, indices.len()): each starts where the previous
+        // ended, the first at 0, the last at the buffer end. No gaps, no overlap.
+        let total = model.mesh.indices.len() as u32;
+        let mut cursor = 0u32;
+        for (i, sub) in model.submeshes.iter().enumerate() {
+            assert_eq!(
+                sub.indices.start, cursor,
+                "submesh {i} starts at {} but previous ended at {cursor} (gap/overlap)",
+                sub.indices.start
+            );
+            assert!(
+                sub.indices.end >= sub.indices.start,
+                "submesh {i} range is not well-formed: {:?}",
+                sub.indices
+            );
+            cursor = sub.indices.end;
+        }
+        assert_eq!(
+            cursor, total,
+            "submesh ranges must cover the whole merged index buffer (end {cursor} vs {total})"
+        );
+
+        // Every index any submesh draws addresses a real merged vertex.
+        let vcount = model.mesh.vertices.len() as u32;
+        for sub in &model.submeshes {
+            for &idx in &model.mesh.indices[sub.indices.start as usize..sub.indices.end as usize] {
+                assert!(
+                    idx < vcount,
+                    "submesh index {idx} out of vertex range (0..{vcount})"
+                );
+            }
+        }
+    }
+
+    fn multi_primitive_fixture_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/multi_primitive/multi_primitive.gltf")
+    }
+
+    // --- Top-level extras → entity tags ------------------------------------
+
+    fn extras_tags_fixture_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/extras_tags/extras_tags.gltf")
+    }
+
+    #[test]
+    fn extras_tags_populate_loaded_model_tags() {
+        // A glTF whose top-level `extras` carries `{ "tags": ["a","b"], .. }`
+        // (plus an unknown key the loader ignores) loads its tags onto the model.
+        let model = load_model(&extras_tags_fixture_path())
+            .expect("extras-tags fixture loads (extras is metadata, never a load error)");
+        assert_eq!(
+            model.tags,
+            vec!["a".to_string(), "b".to_string()],
+            "top-level extras tags populate LoadedModel.tags",
+        );
+    }
+
+    #[test]
+    fn absent_extras_yields_empty_tags_without_error() {
+        // The multi-primitive fixture carries no top-level `extras`; that is not
+        // a load error — the model simply loads with no tags.
+        let model = load_model(&multi_primitive_fixture_path())
+            .expect("a glTF with no extras loads without error");
+        assert!(
+            model.tags.is_empty(),
+            "absent extras yields no tags, got {:?}",
+            model.tags,
+        );
+    }
+
+    fn malformed_extras_fixture_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/malformed_extras/malformed_extras.gltf")
+    }
+
+    #[test]
+    fn malformed_extras_loads_model_with_empty_tags() {
+        // End-to-end: a glTF whose top-level `extras` carries a malformed `tags`
+        // (a string, not an array) must still load — author metadata degrades to
+        // no tags rather than failing the whole load.
+        let model = load_model(&malformed_extras_fixture_path())
+            .expect("malformed extras is metadata, never a load error");
+        assert!(
+            model.tags.is_empty(),
+            "malformed extras yields no tags, got {:?}",
+            model.tags,
+        );
+    }
+
+    #[test]
+    fn malformed_extras_yields_empty_tags_without_error() {
+        // `extras` of the wrong shape (a non-array `tags`, an unrelated object)
+        // must NOT fail the load — author metadata degrades to no tags. Drive
+        // `read_model_tags` directly with several malformed raw-JSON shapes.
+        for raw in [
+            r#"{ "tags": "not-an-array" }"#,
+            r#"{ "tags": [1, 2, 3] }"#,
+            r#"{ "unrelated": true }"#,
+            r#"[1, 2, 3]"#,
+            r#""a bare string""#,
+        ] {
+            let boxed: Box<serde_json::value::RawValue> =
+                serde_json::from_str(raw).expect("test raw JSON parses");
+            let extras: gltf::json::Extras = Some(boxed);
+            assert!(
+                read_model_tags(&extras).is_empty(),
+                "malformed extras {raw} must yield no tags",
+            );
+        }
+    }
+
+    #[test]
+    fn absent_extras_helper_yields_empty_tags() {
+        // The `None` arm (no `extras` block at all) yields no tags.
+        let extras: gltf::json::Extras = None;
+        assert!(read_model_tags(&extras).is_empty());
     }
 }

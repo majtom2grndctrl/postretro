@@ -3419,6 +3419,7 @@ name = "postretro"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "bytemuck",
  "egui",
  "egui-wgpu",
@@ -3436,6 +3437,7 @@ dependencies = [
  "notify",
  "notify-debouncer-full",
  "parry3d",
+ "percent-encoding",
  "pollster",
  "postretro-level-format",
  "postretro-script-compiler",

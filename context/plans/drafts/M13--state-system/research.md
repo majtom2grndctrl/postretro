@@ -468,13 +468,13 @@ today does not do generics. Flag for the spec.
   a migration framework, slot-history, or multi-profile save slots in C.
 - **The `bind` field on descriptors.** B's `descriptor.rs` has no `bind`. C adds it —
   but that addition is *content binding*, not a new widget. Keep it minimal: a string
-  slot-name reference on `text` (and the future `bar`, but `bar` is C/F per B's
-  out-of-scope). Confirm whether C adds `bar` (research §6 lists `bar` as needing
-  slots → C) — likely yes, since the HUD health bar is C's whole point. **This is a
-  real scope question: does C add the `bar` widget?** B deferred `bar` to "C / F"
-  (`done/M13--descriptor-tree-layout/index.md` Out-of-scope). Flag prominently.
+  slot-name reference on `text` (and a `panel` `fill` for the color-flash demo).
+  **DECIDED (owner, 2026-06): C does *not* add the `bar` widget** — it stays deferred
+  to F, and the eased health-bar built-in lands in BIS once F's `bar` + value-tweening
+  (roadmap goal **TW**) exist. See §11.8. No slot-bound widget beyond `text`/`panel` is
+  needed for C's demo.
 
-**Needs owner input:** items 1, 3, 4, 7, and the `bar`-widget question.
+**Needs owner input:** items 1, 3, 4, 7. (The `bar`-widget question is resolved — §11.8.)
 
 ---
 
@@ -487,7 +487,7 @@ today does not do generics. Flag for the spec.
 | `render/mod.rs:2945` `record_splash_ui`, `:4386` gameplay path | Where the snapshot is read and the tree laid out. C feeds slot-driven content here. |
 | `render/ui/tree.rs:93` `UiTree`, `:177` `build_draw_data`, `:187-192` gate, `:106` `recompute_count` | B's retained tree + dirty gate. C plugs value-diffing into this and must **retain the tree across frames** (B follow-up). |
 | `render/ui/tree.rs:170-176` | Explicit note: gate never fires in production until the tree is retained — C's job. |
-| `render/ui/descriptor.rs` `Widget`, `AnchoredTree` | B's literal descriptor model. C adds `bind` (content binding), possibly the `bar` kind. |
+| `render/ui/descriptor.rs` `Widget`, `AnchoredTree` | B's literal descriptor model. C adds `bind` (content binding) on `text`/`panel`; **no new widget** — `bar` stays deferred to F (owner, 2026-06, §11.8). |
 | `scripting/primitives/mod.rs:307` `register_all`, `:17` `register_shared_types` | Where a new `defineState` domain module registers; where `StateValue`/schema types register for typedefs. |
 | `scripting/primitives/world.rs:249` `register_world_primitives`, `:292` `gravity.get/set` | Template for a domain primitive module + an engine-owned mutable value (proxy precedent). |
 | `scripting/data_descriptors.rs:88` `LightDescriptor::validate`, `:164` `WeaponDescriptor::validate` | Rust-side range validation precedent (serde can't bound numbers). |
@@ -535,6 +535,158 @@ today does not do generics. Flag for the spec.
 
 ---
 
+## 11. Owner ideation — accumulated design decisions (2026-06-05)
+
+A working session with the owner refined several C decisions and surfaced new ones.
+Captured here so the spec author inherits the reasoning instead of re-deriving it.
+Tags: **DECIDED** (owner-settled), **RECOMMEND** (a lean, owner to confirm),
+**OPEN** (genuinely unresolved).
+
+### 11.1 Pull is the substrate; push is a projection — a fit, not a constraint
+
+Frame-over-frame diffing is the *pull-model equivalent* of fine-grained invalidation,
+not a workaround we hit a wall into. The engine is already a once-per-frame pull model
+with no live VM (frame order Input → … → Render; the read handle is published after
+game logic). Push/signals need a live subscription graph *between* frames, which
+contradicts the no-live-VM + pooled-context + hot-reload lifecycle and would let UI
+read torn mid-frame state. Push semantics already have a home — M6 events + E's
+`onStateCrossing`/reactions — derived *on top of* the sampled slot (push-on-pull).
+Asymmetry that settles the substrate choice: push derives cleanly from pull
+(edge-detect a sampled level → crossings); pull does **not** derive from pure push
+without rebuilding the level into state anyway.
+
+- **OPEN / future hook:** a `notify: true` slot flag could have the engine emit a
+  changed/crossing event for that slot — additive, no second mechanism, no torn reads.
+  **RECOMMEND:** keep the door open, land it in **E** alongside `onStateCrossing`, not C.
+
+### 11.2 Scale — diff the displayed projection, not the simulation
+
+The slot table holds the *displayed projection* — tens of values a player reads — not
+the entity firehose. Hundreds of bullets / dozens of enemies live in the entity store
+(`EntityRegistry`, `registry.rs:424`) and the M6 event system, and never diff through
+UI state. A boss bar is **one** projected slot, not 50 enemy slots. The diff itself is
+trivially cheap (a scalar compare; well under 1% of frame even at 10k slots); the real
+cost is relayout/re-measure, and that cost is identical under push or pull (see §11.7).
+
+- **RECOMMEND (scale insurance):** make diffing **subscriber-aware** — only diff slots
+  a widget actually binds. O(bound slots), keeps the once-per-frame snapshot coherent,
+  needs no subscription graph. Cheap insurance even if the slot count grows past
+  expectation. Frame "is per-frame diffing sustainable at scale?" as a non-question by
+  construction.
+
+### 11.3 Naming — name the primitive after the value it returns
+
+`defineState()` returns a `StateValue<T>`: the verb claims the whole *category*, the
+return type is *one value*. The verb overclaims relative to its own noun. "State" is
+the broadest word in the domain; spending it on the first narrow mechanism risks
+cornering a future state *store* / *machine* / derived-state graph, and cuts against
+PostRetro's narrow-primitive, additive-growth ethos.
+
+- **RECOMMEND:** name it for the unit — `defineValue` / `trackValue`, or a
+  `state(initial, opts)` factory — returning `StateValue<T>`. **Keep the type name**
+  `StateValue<T>` (it is correct, specific, and is the published contract M10/SDK build
+  against). Reserve "state" as an umbrella. Keep value-shape (scalar now; structured /
+  list later) and derived / computed values as *additive* options or siblings so the
+  name stays accurate as it grows.
+- Counterweight: if modder familiarity (React/Svelte "declare state") is the priority
+  *and* you commit to "exactly one kind of state, forever," `defineState` is
+  defensible. **OPEN** — owner picks the verb. Cheap pre-ship; the contract-bearing
+  name (`StateValue<T>`) is unaffected either way.
+
+### 11.4 Value vs. store — the slot is a projection, not the source of truth
+
+Two stores: the **entity store** (`EntityRegistry`, authoritative game state) and the
+**UI slot table** (displayed projection). `player.health` the slot is a *read
+projection* of the authoritative entity `HealthComponent`; **never make the UI slot the
+source of truth.** Engine-owned readonly slots are projections; modders `defineValue`
+their own; UI-local/settings are the third population (§11.6).
+
+### 11.5 The producer is absent — the proxy is load-bearing; keep M10 out of C
+
+There is **no health anywhere today.** `EntityRegistry` has no `Health` component
+(kinds: `BillboardEmitter` / `FogVolume` / `Light` / `Mesh` / `Particle` /
+`PlayerMovement` / `SpriteVisual` / `Weapon`, `registry.rs:78-85`). Damage exists only
+as a transient `DamagePayload` / `ActivationOutcome::Hit` the weapon emits
+(`weapon/mod.rs:20,27,142`) with **no consumer** — the loop is open; closing it is M10
+"Entity health + damage surface" (`[ ]`, unbuilt). So C's static proxy is *load-bearing*
+(it stands in for a producer that genuinely does not exist), and the spec must resist
+letting "show health" pull entity-health into C's scope.
+
+- "Static proxy" = stand-in for real game logic, **not** "constant." A time-driven
+  proxy (oscillation, decrement, intro flash) is what exercises diffing — preferred.
+
+### 11.6 Slot taxonomy — what belongs in UI state
+
+Three populations: **(1) engine-owned readonly projections** (`player.health` /
+`player.ammo` — the M10 contract); **(2) modder-declared gameplay values** (a mod
+resource, objective progress, score / combo / timer); **(3) UI-local / settings**
+(menu-open, focus index; `persist:true` config like volume / sensitivity).
+
+- **Belongs:** scalar / small-cardinality, bounded, a summary a player reads off the
+  HUD, sampled not streamed.
+- **Does NOT belong:** authoritative state (source of truth lives in the entity store),
+  high-cardinality collections / per-entity data, high-frequency sim data nothing
+  displays, structured / nested objects (v1 is scalar `SlotValue`), transient events
+  (those are M6 / E).
+- **Litmus:** "would a player read this off the HUD / would a designer bind a widget to
+  it?" → candidate slot. "is it the source of truth, a firehose, or a collection?" →
+  not a slot.
+
+### 11.7 Redraw vs. relayout — the key C implementation split
+
+Separate **layout invalidation** (gated, expensive; fires on structural / size change —
+text content, image size) from **draw-data refresh** (cheap; reads live slot values
+every frame from the *cached* layout — color, fill). B fuses these (its draw list is
+derived from layout); **C must split them.**
+
+- **Put in C scope explicitly:** the draw list re-reads the current slot value even when
+  taffy layout is cached. This is the path the color-flash demo (§11.8) proves and the
+  one most likely to be missed.
+- Conservative default (§3.5): any bound change dirties the node; refine later to skip
+  relayout when measured size is unchanged.
+
+### 11.8 C's demonstration (DECIDED with owner)
+
+- **Color / fill flash on a `panel`** — appearance-only (size + content unchanged),
+  subtle via same-hue RGBA endpoints (no HSL in the wire format; `[f32; 4]` linear RGBA
+  per B's Boundary Inventory). The proxy computes the flash color each frame from a
+  spawn timer, flashes for ~3 s, then settles to solid. Proves `bind` + value-diffing +
+  **draw-data refresh under cached layout** (§11.7); the settle-to-solid tail also
+  proves the no-recompute dirty-gate — C's signature, and the B follow-up C must make
+  fire in production.
+- **`player.health` / `player.ammo` as `text`** ("HP 100") — the M10 contract proof;
+  `text` needs no deferred widget.
+- **Eased "boot-up" health bar — DEFERRED (owner, 2026-06).** The cosmetic
+  display-value-eases-to-authoritative flourish is the seam's best motivating story —
+  keep it in the spec's intro — but the literal bar needs F's `bar` widget **and** value
+  tweening (new roadmap goal **TW**). It lands as a BIS built-in once those exist. When
+  it lands, model it as: authoritative `player.health` is the target; a separate
+  UI-owned display value eases to it; the bar binds the *display* value, never the
+  authoritative slot.
+- **Flash modeling note:** do not push a game-logic-computed color into a slot (that
+  couples gameplay to presentation). The slot carries a *semantic* value; styling is
+  renderer-local. In C, with `styleRanges` (E) absent, bind a field directly to the slot
+  as a plumbing demo — the production restyle path is E.
+
+### 11.9 Sequencing — C does not wait on health
+
+The roadmap intends concurrency: M13's prerequisite line says C "does not require the
+entity health/damage surface; the static proxy stands in… neither blocks the other." UI
+is **not** gated on health. The real residual risk is that the slot *schema* is a
+**guessed contract** until a producer exists.
+
+- **(a)** Design `player.health` against M10's likely `HealthComponent` (bounded `f32`,
+  current + max, 0 = dead) and mark it the published contract M10 must honor.
+- **(b)** Pull the small, dependency-free M10 "Entity health + damage surface" task
+  forward so C binds *real* health (that task is "Pure Milestone 6 — no render / nav /
+  AI dependency").
+- **RECOMMEND (a):** write the schema *as if M10 exists*, mark it the published
+  contract; keeps the seam pure. (b) is viable if schema-correctness anxiety dominates.
+
+---
+
 *End of research. The spec author should resolve the §8 open questions (especially
-slot-table ownership, the `bar`-widget scope question, `defineState` scope, and the
-generic-brand typedef gap) before drafting tasks.*
+slot-table ownership, `defineState` scope, the generic-brand typedef gap, and the
+slot-write / `setState` scope) before drafting tasks. The `bar`-widget question is
+resolved: C does **not** add `bar` (owner, 2026-06) — see §11.8. New roadmap goal **TW**
+(UI value tweening) was added this session to home animated/eased display values.*

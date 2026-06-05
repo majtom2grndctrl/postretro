@@ -1706,6 +1706,14 @@ impl Renderer {
         );
 
         let animated_lm_debug = animated_lightmap::AnimatedLmDebugConfig::from_env();
+        // Source the animated atlas size from the same resolver the static
+        // lightmap texture uses, so the two atlases are guaranteed to match (the
+        // compose pass writes at absolute static-atlas coordinates; the forward
+        // pass samples both with one normalized lightmap_uv).
+        let lightmap_atlas_dimensions = crate::lighting::lightmap::usable_atlas_dimensions(
+            geometry.and_then(|g| g.lightmap),
+            device.limits().max_texture_dimension_2d,
+        );
         let animated_lightmap = animated_lightmap::AnimatedLightmapResources::new(
             &device,
             geometry.and_then(|g| g.animated_light_weight_maps),
@@ -1713,6 +1721,7 @@ impl Renderer {
             &bvh_leaves,
             &sh_volume_resources.animation,
             &uniform_bind_group_layout,
+            lightmap_atlas_dimensions,
             animated_lm_debug,
         )
         .map_err(|msg| anyhow::anyhow!("[Renderer] animated lightmap init failed: {msg}"))?;
@@ -2518,6 +2527,13 @@ impl Renderer {
         let lightmap_bgl = crate::lighting::lightmap::bind_group_layout(&self.device);
         let animated_lm_debug = animated_lightmap::AnimatedLmDebugConfig::from_env();
         let bvh_leaves: Vec<crate::geometry::BvhLeaf> = geometry.bvh.leaves.clone();
+        // Match the animated atlas to the static lightmap atlas the same way the
+        // constructor does — one resolver, one device limit, guaranteed-equal
+        // dimensions (see `usable_atlas_dimensions`).
+        let lightmap_atlas_dimensions = crate::lighting::lightmap::usable_atlas_dimensions(
+            geometry.lightmap,
+            self.device.limits().max_texture_dimension_2d,
+        );
 
         let animated_lightmap_result = animated_lightmap::AnimatedLightmapResources::new(
             &self.device,
@@ -2526,6 +2542,7 @@ impl Renderer {
             &bvh_leaves,
             &self.sh_volume_resources.animation,
             &self.uniform_bind_group_layout,
+            lightmap_atlas_dimensions,
             animated_lm_debug,
         );
         match animated_lightmap_result {

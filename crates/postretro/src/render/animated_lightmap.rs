@@ -23,11 +23,6 @@ use crate::visibility::VisibleCells;
 
 use super::sh_volume::AnimatedLightBuffers;
 
-/// Animated-lightmap atlas resolution. Matches the static lightmap atlas so
-/// both atlases share one UV in the forward pass. Changing this also changes
-/// the compose dispatch shape.
-pub const ANIMATED_ATLAS_SIZE: u32 = 1024;
-
 /// wgpu default `max_compute_workgroups_per_dimension`.
 const MAX_WORKGROUPS_PER_DIM: u32 = 65535;
 
@@ -205,8 +200,19 @@ impl AnimatedLightmapResources {
     /// opaque so this cannot be runtime-checked — it must be preserved at the
     /// call site.
     ///
+    /// `atlas_dimensions` is the `(width, height)` the static lightmap atlas was
+    /// created at this level (see `lightmap::usable_atlas_dimensions`). The
+    /// animated irradiance and direction atlases are created at exactly these
+    /// dimensions: the compose pass writes them at absolute static-atlas
+    /// coordinates and the forward pass samples all three atlases with one
+    /// normalized `lightmap_uv`, so the sizes must match or the writes drop /
+    /// misalign. `None` means the static atlas degraded to the 1×1 placeholder
+    /// (absent / zero-area / oversize section); the animated path then has no
+    /// valid coordinate space to write into and takes the dummy-atlas early-out.
+    ///
     /// Returns `Err` on cross-section validation failure; caller should log and
     /// refuse to load the map.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &wgpu::Device,
         weight_maps: Option<&AnimatedLightWeightMapsSection>,
@@ -214,6 +220,7 @@ impl AnimatedLightmapResources {
         bvh_leaves: &[BvhLeaf],
         animation: &AnimatedLightBuffers,
         uniform_bind_group_layout: &wgpu::BindGroupLayout,
+        atlas_dimensions: Option<(u32, u32)>,
         debug_config: AnimatedLmDebugConfig,
     ) -> Result<Self, String> {
         let dummy_texture = create_zero_texture(device, 1, 1, "Animated LM Dummy");
@@ -253,6 +260,27 @@ impl AnimatedLightmapResources {
             });
         }
 
+        let Some((atlas_width, atlas_height)) = atlas_dimensions else {
+            // The static lightmap atlas degraded to the 1×1 placeholder (absent,
+            // zero-area, or oversize section), so the absolute coordinates the
+            // baked weight maps reference have no valid target. Compose would
+            // write off-atlas and the forward pass would sample the placeholder.
+            // Take the dummy-atlas path: the animated term contributes nothing,
+            // which matches the static term already being neutral.
+            log::warn!(
+                "[Renderer] Animated lightmap present but the static lightmap atlas \
+                 is unavailable; skipping animated-light compose for this level."
+            );
+            return Ok(Self {
+                atlas_texture: None,
+                direction_atlas_texture: None,
+                dummy_texture,
+                forward_view: dummy_view,
+                direction_forward_view: dummy_direction_view,
+                dispatch_state: None,
+            });
+        };
+
         validate_cross_section(section, animated_chunks, animation.animated_light_count())?;
 
         let dispatch_tiles = expand_dispatch_tiles(&section.chunk_rects);
@@ -272,9 +300,12 @@ impl AnimatedLightmapResources {
         // overwrites every texel the forward pass will sample.
         let atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Animated LM Atlas"),
+            // Sized to match the static lightmap atlas (see `atlas_dimensions`
+            // doc on `new`); width and height are independent — the static atlas
+            // is shelf-packed and need not be square.
             size: wgpu::Extent3d {
-                width: ANIMATED_ATLAS_SIZE,
-                height: ANIMATED_ATLAS_SIZE,
+                width: atlas_width,
+                height: atlas_height,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -301,8 +332,8 @@ impl AnimatedLightmapResources {
         let direction_atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Animated LM Direction Atlas"),
             size: wgpu::Extent3d {
-                width: ANIMATED_ATLAS_SIZE,
-                height: ANIMATED_ATLAS_SIZE,
+                width: atlas_width,
+                height: atlas_height,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -1170,11 +1201,43 @@ mod tests {
         );
     }
 
+    /// The animated irradiance/direction atlases must be created at the same
+    /// dimensions the static lightmap atlas is created at: compose writes at
+    /// absolute static-atlas coordinates and the forward pass samples all three
+    /// atlases with one normalized `lightmap_uv`. The static atlas is
+    /// dynamically sized (shelf-packed, up to 8192 per dimension, width may
+    /// differ from height — it is not the fixed 1024² this code once assumed),
+    /// so the size is sourced from the loaded `LightmapSection` via
+    /// `lightmap::usable_atlas_dimensions` — the same resolver the static
+    /// texture creation uses. This guards that both paths read from one source.
     #[test]
-    fn compose_atlas_dimensions_match_static_lightmap() {
+    fn animated_atlas_dimensions_track_static_lightmap() {
+        use crate::lighting::lightmap::usable_atlas_dimensions;
+        use postretro_level_format::lightmap::{
+            IRRADIANCE_FORMAT_RGBA16F, LightmapMode, LightmapSection,
+        };
+
+        // A non-square, non-1024 section — what a real shelf-packed atlas looks
+        // like — resolves to the section's own width/height under a generous
+        // device limit.
+        let section = LightmapSection {
+            width: 4096,
+            height: 2048,
+            texel_density: 1.0,
+            irradiance: vec![0u8; 4096 * 2048 * 8],
+            irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
+            direction: vec![0u8; 4096 * 2048 * 4],
+            mode: LightmapMode::Shadowed,
+        };
         assert_eq!(
-            ANIMATED_ATLAS_SIZE, 1024,
-            "animated lightmap atlas must match the 1024² static lightmap atlas"
+            usable_atlas_dimensions(Some(&section), 8192),
+            Some((4096, 2048)),
+            "animated atlas size must equal the loaded lightmap dimensions",
         );
+
+        // Absent / oversize sections resolve to `None`, which drives the
+        // animated path to its dummy-atlas early-out (no valid coordinate space).
+        assert_eq!(usable_atlas_dimensions(None, 8192), None);
+        assert_eq!(usable_atlas_dimensions(Some(&section), 1024), None);
     }
 }

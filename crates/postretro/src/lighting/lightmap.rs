@@ -247,6 +247,24 @@ fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
     ]
 }
 
+/// Resolve the dimensions the static irradiance/direction atlases are actually
+/// created at, applying the same usability filter `new()` uses. Returns `None`
+/// when the section is absent, zero-area, or oversize — i.e. exactly when the
+/// static path falls back to the 1×1 placeholder.
+///
+/// The animated-lightmap atlases must be created at these same dimensions: the
+/// compose pass writes them at absolute static-atlas coordinates (baked
+/// `ChunkAtlasRect`s) and the forward pass samples all three atlases with one
+/// normalized `lightmap_uv`, so a size mismatch drops out-of-range writes and
+/// misaligns the in-range ones. Routing both through this one function keeps the
+/// animated atlas size locked to the static atlas size.
+pub(crate) fn usable_atlas_dimensions(
+    section: Option<&LightmapSection>,
+    max_texture_dimension_2d: u32,
+) -> Option<(u32, u32)> {
+    filter_usable_section(section, max_texture_dimension_2d).map(|s| (s.width, s.height))
+}
+
 /// Filter out an absent (`None`), zero-dimension, or oversize `LightmapSection`,
 /// returning `None` so the caller falls through to the neutral placeholder. Pure
 /// dimension-vs-limit comparison — unit-testable without a real wgpu device.

@@ -81,6 +81,15 @@ pub(crate) struct UiTree {
     root: NodeId,
     anchor: Anchor,
     offset: [f32; 2],
+    /// Device size the cached layout was computed against. `None` until the
+    /// first `build_draw_data`. A change here forces a recompute even when the
+    /// tree is otherwise unchanged (resize re-resolves the letterbox/scale and
+    /// any device-space sizing), since taffy's dirty state only tracks the tree.
+    last_viewport: Option<[u32; 2]>,
+    /// Number of times `compute_layout_with_measure` actually ran. The gate
+    /// skips the compute on an unchanged frame, so this stops incrementing when
+    /// nothing dirtied — tests assert against it to prove the cached path.
+    recompute_count: u32,
 }
 
 impl UiTree {
@@ -95,7 +104,22 @@ impl UiTree {
             root,
             anchor: tree.anchor,
             offset: tree.offset,
+            // A freshly built tree has no cached layout — taffy reports the root
+            // dirty, so the first `build_draw_data` recomputes. No viewport seen
+            // yet, so any first device size also counts as a change.
+            last_viewport: None,
+            recompute_count: 0,
         }
+    }
+
+    /// How many times this tree has actually recomputed layout. The gate in
+    /// `build_draw_data` only bumps this when a structural change (the tree was
+    /// rebuilt, leaving taffy's root dirty) or a viewport change forces a
+    /// recompute; an unchanged frame reuses the cached layout and leaves this
+    /// flat. Tests read it to prove the no-change frame skipped the compute.
+    #[cfg(test)]
+    pub(crate) fn recompute_count(&self) -> u32 {
+        self.recompute_count
     }
 
     /// Compute layout against the 1280x720 logical-reference canvas, then read
@@ -115,35 +139,55 @@ impl UiTree {
     /// `UiTextRenderer::font_system_mut`) — glyphon's GPU atlas/renderer stay in
     /// the renderer, and the tree holds no GPU/font state of its own.
     ///
-    /// Layout runs unconditionally here — dirty-tracking is a later task.
+    /// Layout recompute is gated on change: it runs only when taffy reports the
+    /// root dirty (the tree was rebuilt from a new descriptor — a structural
+    /// change leaves the cache empty) or when `device_size` differs from the
+    /// viewport the cached layout was computed against. On an unchanged frame —
+    /// same tree, same viewport — no `compute_layout_with_measure` call is made;
+    /// the cached `taffy::Layout` rects are read back unchanged. The draw-list
+    /// production below always runs, so the cached path still yields draw data.
     pub(crate) fn build_draw_data(
         &mut self,
         device_size: [u32; 2],
         font_system: &mut FontSystem,
     ) -> UiDrawData {
-        // Lay the tree out with the reference canvas as the available space, so
-        // percentage/stretch resolve against 1280x720. taffy positions the root
-        // at its own origin; the anchor/offset transform re-places it after.
-        //
-        // `compute_layout_with_measure` gives each leaf a measure callback.
-        // Text nodes shape through `font_system` and return their real glyph
-        // extent; every other node returns its known/taffy-resolved size
-        // unchanged. The closure borrows `font_system` mutably (cosmic-text
-        // shaping needs `&mut FontSystem`); taffy hands it each node's `&mut
-        // NodeContext`, so the closure never has to borrow `self.taffy` while it
-        // runs.
-        self.taffy
-            .compute_layout_with_measure(
-                self.root,
-                Size {
-                    width: AvailableSpace::Definite(REFERENCE_WIDTH),
-                    height: AvailableSpace::Definite(REFERENCE_HEIGHT),
-                },
-                |known_dimensions, _available_space, _node_id, node_context, _style| {
-                    measure_node(known_dimensions, node_context, font_system)
-                },
-            )
-            .expect("taffy layout must succeed for a well-formed UI tree");
+        // Gate: recompute only on a structural change (taffy's root cache is
+        // empty after a rebuild) or a viewport change. taffy caches computed
+        // layout internally and only recomputes dirtied subtrees; this gate
+        // decides whether to call compute *at all* for the no-change frame.
+        let viewport_changed = self.last_viewport != Some(device_size);
+        let structural_change = self
+            .taffy
+            .dirty(self.root)
+            .expect("root node exists in its own tree");
+        if viewport_changed || structural_change {
+            // Lay the tree out with the reference canvas as the available space,
+            // so percentage/stretch resolve against 1280x720. taffy positions
+            // the root at its own origin; the anchor/offset transform re-places
+            // it after.
+            //
+            // `compute_layout_with_measure` gives each leaf a measure callback.
+            // Text nodes shape through `font_system` and return their real glyph
+            // extent; every other node returns its known/taffy-resolved size
+            // unchanged. The closure borrows `font_system` mutably (cosmic-text
+            // shaping needs `&mut FontSystem`); taffy hands it each node's `&mut
+            // NodeContext`, so the closure never has to borrow `self.taffy` while
+            // it runs.
+            self.taffy
+                .compute_layout_with_measure(
+                    self.root,
+                    Size {
+                        width: AvailableSpace::Definite(REFERENCE_WIDTH),
+                        height: AvailableSpace::Definite(REFERENCE_HEIGHT),
+                    },
+                    |known_dimensions, _available_space, _node_id, node_context, _style| {
+                        measure_node(known_dimensions, node_context, font_system)
+                    },
+                )
+                .expect("taffy layout must succeed for a well-formed UI tree");
+            self.last_viewport = Some(device_size);
+            self.recompute_count += 1;
+        }
 
         // Place the root in reference space: anchor it on the canvas, then back
         // the root's top-left out by the anchor fraction of the root's size (the
@@ -929,5 +973,122 @@ mod tests {
             size.height,
             placeholder_h,
         );
+    }
+
+    /// A two-leaf column tree, reused by the dirty-gating tests so they all lay
+    /// out the same shape.
+    fn gating_tree() -> AnchoredTree {
+        AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: vstack(
+                10.0,
+                4.0,
+                Align::Start,
+                vec![text("AB", 30.0), text("CD", 30.0)],
+            ),
+        }
+    }
+
+    #[test]
+    fn unchanged_frame_reuses_cached_layout_without_recompute() {
+        // First layout populates taffy's cache (count 1); a second call with the
+        // same tree and same viewport hits the gate's no-change path and reuses
+        // the cached subtree layout — the compute counter must stay flat.
+        let mut ui = UiTree::from_descriptor(&gating_tree());
+        let mut fs = font_system();
+
+        ui.build_draw_data([1280, 720], &mut fs);
+        assert_eq!(ui.recompute_count(), 1, "first layout computes once");
+
+        ui.build_draw_data([1280, 720], &mut fs);
+        assert_eq!(
+            ui.recompute_count(),
+            1,
+            "same tree + same viewport must not recompute",
+        );
+    }
+
+    #[test]
+    fn viewport_change_forces_layout_recompute() {
+        // A different device size re-resolves the letterbox/scale, so the gate
+        // must recompute even though the tree is byte-for-byte identical.
+        let mut ui = UiTree::from_descriptor(&gating_tree());
+        let mut fs = font_system();
+
+        ui.build_draw_data([1280, 720], &mut fs);
+        assert_eq!(ui.recompute_count(), 1);
+
+        ui.build_draw_data([3840, 2160], &mut fs);
+        assert_eq!(
+            ui.recompute_count(),
+            2,
+            "a changed viewport must trigger a recompute",
+        );
+    }
+
+    #[test]
+    fn rebuilt_tree_recomputes_from_empty_cache() {
+        // Structural change = a new tree built from a (possibly new) descriptor.
+        // The fresh tree's root cache is empty, so its first layout computes even
+        // at the same viewport the previous tree was laid out against.
+        let mut fs = font_system();
+
+        let mut first = UiTree::from_descriptor(&gating_tree());
+        first.build_draw_data([1280, 720], &mut fs);
+        first.build_draw_data([1280, 720], &mut fs);
+        assert_eq!(first.recompute_count(), 1, "cached after the first layout");
+
+        // Reshape: a structurally different descriptor yields a new tree, which
+        // must recompute on its first layout regardless of viewport.
+        let reshaped = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: vstack(
+                10.0,
+                4.0,
+                Align::Start,
+                vec![text("AB", 30.0), text("CD", 30.0), text("EF", 30.0)],
+            ),
+        };
+        let mut second = UiTree::from_descriptor(&reshaped);
+        second.build_draw_data([1280, 720], &mut fs);
+        assert_eq!(
+            second.recompute_count(),
+            1,
+            "a rebuilt/reshaped tree recomputes on its first layout",
+        );
+    }
+
+    #[test]
+    fn cached_frame_draw_data_matches_recomputed_frame() {
+        // The gate skips the *compute*, not the draw-list production. The cached
+        // frame reads back the same taffy::Layout rects, so its draw data must be
+        // identical to the freshly-computed frame's.
+        let mut ui = UiTree::from_descriptor(&gating_tree());
+        let mut fs = font_system();
+
+        let computed = ui.build_draw_data([1280, 720], &mut fs);
+        let cached = ui.build_draw_data([1280, 720], &mut fs);
+        // Confirm the second call really took the cached path.
+        assert_eq!(ui.recompute_count(), 1, "second frame did not recompute");
+
+        assert_eq!(computed.quads.instances.len(), cached.quads.instances.len());
+        assert_eq!(computed.texts.len(), cached.texts.len());
+        for (a, b) in computed.texts.iter().zip(cached.texts.iter()) {
+            assert!(
+                approx(a.position[0], b.position[0]) && approx(a.position[1], b.position[1]),
+                "cached text position {:?} differs from computed {:?}",
+                b.position,
+                a.position,
+            );
+            assert!(
+                approx(a.font_size, b.font_size),
+                "cached font size {} differs from computed {}",
+                b.font_size,
+                a.font_size,
+            );
+            assert_eq!(a.content, b.content, "cached text content differs");
+        }
     }
 }

@@ -4,9 +4,10 @@
 use serde::{Deserialize, Serialize};
 
 /// Marks an entity as rendering a skinned model. `model` is the model handle
-/// the hardcoded spawn seam resolves (currently a path / cache key passed to
-/// `crate::model::gltf_loader::load_model`). A future data-driven version
-/// resolves it through a model cache behind this same field.
+/// the `prop_mesh` classname handler reads from a map entity's `model` key — the
+/// content-canonical path passed to `crate::model::gltf_loader::load_model`. It
+/// doubles as the renderer cache key: the level-load model sweep uploads each
+/// distinct handle once, and the per-frame draw planner groups instances by it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct MeshComponent {
     pub(crate) model: String,

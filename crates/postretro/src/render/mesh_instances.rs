@@ -227,7 +227,10 @@ mod tests {
 
         let runs = &plan.groups[0].instances;
         assert_eq!(runs[0].palette_base, 0);
-        assert_eq!(runs[1].palette_base, 10, "second run starts after the first");
+        assert_eq!(
+            runs[1].palette_base, 10,
+            "second run starts after the first"
+        );
     }
 
     #[test]
@@ -307,8 +310,14 @@ mod tests {
             assert!((0.0..duration).contains(&p), "phase {p} in [0, {duration})");
         }
         // Adjacent seeds do not collapse to the same phase (de-sync the wave).
-        assert!((p0 - p1).abs() > 1.0e-4, "seeds 0 and 1 produce distinct phases");
-        assert!((p1 - p2).abs() > 1.0e-4, "seeds 1 and 2 produce distinct phases");
+        assert!(
+            (p0 - p1).abs() > 1.0e-4,
+            "seeds 0 and 1 produce distinct phases"
+        );
+        assert!(
+            (p1 - p2).abs() > 1.0e-4,
+            "seeds 1 and 2 produce distinct phases"
+        );
     }
 
     #[test]

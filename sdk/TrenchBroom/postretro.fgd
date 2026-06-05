@@ -232,6 +232,20 @@
     spin_rate(float) : "Spin rate (radians/sec)" : "0.0"
 ]
 
+// Static skinned-model prop. At level load the engine spawns one entity per
+// placement carrying a `MeshComponent { model }`; the distinct `model` paths
+// are loaded + uploaded once each into the renderer's model cache. An absent or
+// empty `model` logs a warning and the prop renders nothing (load continues).
+@PointClass
+    color(220 180 120)
+    size(-8 -8 -8, 8 8 8)
+    = prop_mesh : "Static Mesh Prop"
+[
+    origin(origin)
+    angles(angles) : "Orientation (pitch yaw roll, degrees)" : "0 0 0"
+    model(string) : "Model path (relative to content root, e.g. models/x/scene.gltf)" : ""
+]
+
 // Player spawn point. At level load the engine spawns one entity per
 // `player_spawn` placement, using `entity_class` to pick the registered
 // classname (defaults to `"player"`).

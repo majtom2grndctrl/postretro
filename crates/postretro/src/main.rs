@@ -92,58 +92,32 @@ fn content_root_from_map(map_path: &str) -> PathBuf {
         .to_path_buf()
 }
 
-/// GPU-free half of the hardcoded mesh spawn seam: spawn exactly one
-/// `MeshComponent` entity iff the model load succeeded.
+/// Collect the distinct, non-empty `MeshComponent.model` handles currently in
+/// the registry, preserving first-seen order. GPU-free: this is the pure half of
+/// the level-load model sweep — the renderer's GPU upload happens in the caller,
+/// once per returned handle, so each distinct model is uploaded exactly once.
 ///
-/// `loaded` is the renderer's `load_skinned_model` result (the renderer owns the
-/// GPU upload + already `warn!`d on failure). `None` is a load failure: this
-/// skips the spawn — no entity, no panic, slice continues (the degrade AC).
-/// `Some(tags)` is a successful load (a model with no `extras` is `Some(vec![])`,
-/// not `None`): this spawns one entity at `position` via `try_spawn`, carrying
-/// the author-supplied `tags`, and attaches `MeshComponent { model }`. Factored
-/// out so the spawn decision is unit-testable without a GPU context.
-///
-/// `try_spawn` may itself return `None` when the entity slots are exhausted; that
-/// `None` threads through (no entity), but a successful spawn always also gets
-/// its `MeshComponent` — the attachment is never dropped.
-///
-/// `yaw` is a Y-axis rotation (radians) baked into the entity `Transform` so the
-/// mesh-render collector orients the model via
-/// `Mat4::from_scale_rotation_translation`. The seam uses this to face the model
-/// toward the player start.
-fn spawn_mesh_entity_if_loaded(
-    registry: &mut crate::scripting::registry::EntityRegistry,
-    loaded: Option<Vec<String>>,
-    model: &str,
-    position: glam::Vec3,
-    yaw: f32,
-) -> Option<crate::scripting::registry::EntityId> {
-    use crate::scripting::components::mesh::MeshComponent;
-    use crate::scripting::registry::Transform;
+/// Empty handles are skipped: a `prop_mesh` with an absent/empty `model` logs a
+/// warning at spawn time and renders nothing; there is nothing to upload for it.
+/// The returned strings are the renderer cache keys (matching the per-frame draw
+/// planner's `ModelHandle`), so they are passed verbatim to `load_skinned_model`.
+fn distinct_mesh_models(registry: &crate::scripting::registry::EntityRegistry) -> Vec<String> {
+    use crate::scripting::registry::{ComponentKind, ComponentValue};
 
-    let tags = loaded?;
-    let id = registry.try_spawn(
-        Transform {
-            position,
-            rotation: glam::Quat::from_rotation_y(yaw),
-            ..Transform::default()
-        },
-        &tags,
-    )?;
-    if let Err(err) = registry.set_component(
-        id,
-        MeshComponent {
-            model: model.to_string(),
-        },
-    ) {
-        log::warn!("[Model] failed to attach MeshComponent for {model}: {err}");
-        return None;
+    let mut seen = std::collections::HashSet::new();
+    let mut ordered = Vec::new();
+    for (_id, value) in registry.iter_with_kind(ComponentKind::Mesh) {
+        let ComponentValue::Mesh(mesh) = value else {
+            continue;
+        };
+        if mesh.model.is_empty() {
+            continue;
+        }
+        if seen.insert(mesh.model.clone()) {
+            ordered.push(mesh.model.clone());
+        }
     }
-    log::info!(
-        "[Model] spawned mesh entity for {model} at {position:?} (yaw={yaw:.3} rad, {} tag(s))",
-        tags.len(),
-    );
-    Some(id)
+    ordered
 }
 
 // Policy chokepoint: the frame loop queues a staged build only when a changed
@@ -1828,83 +1802,6 @@ impl App {
         renderer.install_level_geometry(&geometry);
         self.level_timings.record("geometry_upload");
 
-        // === Hardcoded mesh spawn seam ===
-        // The ONE place model identity + spawn transform are decided this slice
-        // — the chokepoint a future classname handler resolves. It orchestrates:
-        // ask the renderer to load + upload the model (renderer owns GPU), and
-        // ONLY on success spawn exactly one `MeshComponent` entity. On a load
-        // error the renderer already `warn!`s naming the path; the seam then
-        // skips the spawn (no entity, no panic) and the slice continues.
-        {
-            // Hardcoded model path — a classname handler resolves this later.
-            let model_path = self
-                .content_root
-                .join("models/decraniated_low_poly_retro_pixel/scene.gltf");
-
-            // PROVISIONAL spawn placement (manual-visual knob) — the chokepoint a
-            // future classname handler replaces. When the map has a `player_spawn`
-            // we plant the model a few meters straight ahead of the player start,
-            // facing back toward the camera, so it sits in the initial view. With
-            // no `player_spawn` we fall back to the level geometry center (the same
-            // fallback the camera uses), nudged so the model's feet sit near the
-            // floor. Engine world is Y-up metric.
-            //
-            // `MESH_SPAWN_DISTANCE` is how far ahead of the player start to plant
-            // the model; `MESH_SPAWN_Y_OFFSET` lowers the origin toward the feet.
-            const MESH_SPAWN_DISTANCE: f32 = 3.0;
-            const MESH_SPAWN_Y_OFFSET: f32 = -1.0;
-
-            // Peek the first `player_spawn` straight from the world records (the
-            // `pending_spawn_points` partition runs later in this function). Engine
-            // convention angles: x=pitch, y=yaw, z=roll (radians).
-            let player_start = world
-                .map_entities
-                .iter()
-                .find(|e| e.classname == PLAYER_START_CLASSNAME)
-                .map(|e| (glam::Vec3::from(e.origin), e.angles[1]));
-
-            let (mut spawn_pos, model_yaw) = match player_start {
-                Some((player_origin, player_yaw)) => {
-                    // Reuse the camera's yaw→forward convention
-                    // (`Camera::forward`: `(-sin(yaw), 0, -cos(yaw))`) so "ahead of
-                    // the player" matches where the camera actually looks. Face the
-                    // model back at the player (yaw + PI) so its front is visible.
-                    let forward = glam::Vec3::new(-player_yaw.sin(), 0.0, -player_yaw.cos());
-                    let pos = player_origin + forward * MESH_SPAWN_DISTANCE;
-                    log::info!(
-                        "[Model] placing ahead of player_start: player at {player_origin:?} (yaw={player_yaw:.3}), model at {pos:?}",
-                    );
-                    (pos, player_yaw + std::f32::consts::PI)
-                }
-                None => {
-                    log::info!(
-                        "[Model] no player_spawn; falling back to geometry center {:?}",
-                        world.spawn_position(),
-                    );
-                    (world.spawn_position(), 0.0)
-                }
-            };
-            spawn_pos.y += MESH_SPAWN_Y_OFFSET;
-
-            let loaded = renderer.load_skinned_model(&model_path, &prm_cache_root);
-            // Tripwire 1 (measure-and-report, not gated): runtime glTF
-            // parse + GPU upload time, recorded as a level-load timing stage
-            // alongside the world stages above. `load_skinned_model` wraps
-            // `load_model` (parse) + `insert_model` (GPU upload); this stage isolates
-            // their combined cost so the `[Startup] ... model_load=Xms` log line
-            // reports it against the near-instant-boot northstar. See
-            // `context/plans/done/M10--model-pipeline-slice/findings.md`.
-            self.level_timings.record("model_load");
-            let mut registry = self.script_ctx.registry.borrow_mut();
-            spawn_mesh_entity_if_loaded(
-                &mut registry,
-                loaded,
-                &model_path.to_string_lossy(),
-                spawn_pos,
-                model_yaw,
-            );
-        }
-
         // Reseed the SH diagnostic per-light visibility bitmap to match the
         // freshly-installed level's animated-light count. Reset `seeded` so the
         // panel re-pulls defaults on the next open.
@@ -1987,6 +1884,34 @@ impl App {
             self.pending_map_entities = Some(map_entities);
         }
         self.level_timings.record("classname_dispatch");
+
+        // Level-load model sweep. Classname dispatch above spawned a
+        // `MeshComponent` entity per `prop_mesh` placement; now collect the
+        // distinct `model` handles off those entities and load + upload each
+        // exactly once into the renderer's model cache (renderer owns GPU). This
+        // runs at level-load time, never mid-frame, so there is no in-frame
+        // hitch. The model handle is the renderer cache key the per-frame draw
+        // planner groups by, so it is passed verbatim to `load_skinned_model`;
+        // the glTF file is resolved from it (paths are content-root canonical).
+        // A failed/invalid load is non-fatal: `load_skinned_model` already
+        // `warn!`s naming the path and returns `None`, the entity then renders
+        // nothing, and the load continues — no abort.
+        {
+            let models = {
+                let registry = self.script_ctx.registry.borrow();
+                distinct_mesh_models(&registry)
+            };
+            for model in &models {
+                renderer.load_skinned_model(Path::new(model), &prm_cache_root);
+            }
+            if !models.is_empty() {
+                log::info!(
+                    "[Model] uploaded {} distinct mesh model(s) for this level",
+                    models.len(),
+                );
+            }
+        }
+        self.level_timings.record("model_load");
 
         // Register sprite collections for every distinct `sprite` name in
         // the registry. Covers map-spawned emitters; descriptor-spawned
@@ -2593,102 +2518,74 @@ mod tests {
         );
     }
 
-    // --- Hardcoded mesh spawn seam (degrade AC) ---
+    // --- Level-load model sweep (distinct-model dedup) ---
     //
-    // The malformed/missing-glTF degrade path: loader returns `Err` →
-    // `load_skinned_model` `warn!`s + returns `None` → the seam skips the
-    // spawn → no Mesh entity → no panic → slice continues. The GPU half is
-    // unit-untestable (no GPU in tests, per testing_guide), so the seam's
-    // decision is factored into `spawn_mesh_entity_if_loaded`, and we drive its
-    // `None` branch directly to pin the warn-and-skip behavior. A successful load
-    // is `Some(tags)` — the model's top-level `extras` entity tags, which the
-    // seam attaches to the spawned entity (a no-`extras` load is `Some(vec![])`).
+    // After classname dispatch spawns one `MeshComponent` entity per `prop_mesh`
+    // placement, the sweep collects the distinct `model` handles and uploads each
+    // exactly once. `distinct_mesh_models` is the GPU-free collection half — the
+    // upload itself needs a GPU (untestable per testing_guide), so we pin the
+    // dedup/collection as pure logic here. Empty handles (absent/empty `model`)
+    // have nothing to upload and are skipped.
 
-    #[test]
-    fn spawn_seam_skips_entity_when_model_load_fails() {
-        use crate::scripting::registry::{ComponentKind, EntityRegistry};
-
-        let mut registry = EntityRegistry::new();
-        // `loaded = None` mirrors a malformed/missing glTF that the renderer's
-        // `load_skinned_model` already warned about and rejected.
-        let result =
-            spawn_mesh_entity_if_loaded(&mut registry, None, "bad/path.gltf", Vec3::ZERO, 0.0);
-        assert!(result.is_none(), "no entity id when the load failed");
-        assert_eq!(
-            registry.iter_with_kind(ComponentKind::Mesh).count(),
-            0,
-            "no Mesh entity may be spawned when the model load failed",
-        );
-    }
-
-    #[test]
-    fn spawn_seam_spawns_one_mesh_entity_when_model_loads() {
+    fn spawn_mesh_entity(registry: &mut crate::scripting::registry::EntityRegistry, model: &str) {
         use crate::scripting::components::mesh::MeshComponent;
-        use crate::scripting::registry::{ComponentKind, EntityRegistry};
+        use crate::scripting::registry::Transform;
 
-        let mut registry = EntityRegistry::new();
-        // `Some(vec![])` is a successful load with no `extras` tags.
-        let id = spawn_mesh_entity_if_loaded(
-            &mut registry,
-            Some(Vec::new()),
-            "models/decraniated/scene.gltf",
-            Vec3::new(1.0, 2.0, 3.0),
-            std::f32::consts::FRAC_PI_2,
-        )
-        .expect("a successful load must spawn exactly one entity");
-
-        assert_eq!(
-            registry.iter_with_kind(ComponentKind::Mesh).count(),
-            1,
-            "exactly one Mesh entity spawns on success",
-        );
-        let mesh: &MeshComponent = registry.get_component(id).expect("MeshComponent attached");
-        assert_eq!(mesh.model, "models/decraniated/scene.gltf");
-
-        // No `extras` → the entity carries no tags.
-        assert!(
-            registry.get_tags(id).expect("tags present").is_empty(),
-            "a no-extras load spawns an entity with no tags",
-        );
-
-        // The yaw arg is baked into the Transform rotation so the render
-        // collector can orient the model toward the player.
-        let transform: &crate::scripting::registry::Transform =
-            registry.get_component(id).expect("Transform present");
-        let expected = glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
-        assert!(
-            transform.rotation.abs_diff_eq(expected, 1e-6),
-            "spawn yaw must be baked into the Transform rotation",
-        );
+        let id = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                id,
+                MeshComponent {
+                    model: model.to_string(),
+                },
+            )
+            .expect("freshly spawned id is live");
     }
 
     #[test]
-    fn spawn_seam_attaches_extras_tags_to_spawned_entity() {
+    fn distinct_mesh_models_dedups_repeated_handles() {
         use crate::scripting::registry::EntityRegistry;
 
         let mut registry = EntityRegistry::new();
-        // A `Some(vec!["a","b"])` load (the loader read these off the glTF's
-        // top-level `extras`) spawns an entity carrying exactly those tags.
-        let id = spawn_mesh_entity_if_loaded(
-            &mut registry,
-            Some(vec!["a".to_string(), "b".to_string()]),
-            "models/decraniated/scene.gltf",
-            Vec3::ZERO,
-            0.0,
-        )
-        .expect("a successful load must spawn exactly one entity");
+        spawn_mesh_entity(&mut registry, "models/a/scene.gltf");
+        spawn_mesh_entity(&mut registry, "models/b/scene.gltf");
+        spawn_mesh_entity(&mut registry, "models/a/scene.gltf");
 
-        assert_eq!(
-            registry.get_tags(id).expect("tags present"),
-            ["a".to_string(), "b".to_string()],
-            "the model's extras tags must reach the spawned entity",
-        );
+        let models = distinct_mesh_models(&registry);
+        // Two distinct paths despite three entities — each path uploads once.
+        assert_eq!(models.len(), 2);
+        assert!(models.contains(&"models/a/scene.gltf".to_string()));
+        assert!(models.contains(&"models/b/scene.gltf".to_string()));
+    }
+
+    #[test]
+    fn distinct_mesh_models_skips_empty_handles() {
+        use crate::scripting::registry::EntityRegistry;
+
+        // A `prop_mesh` with an absent/empty `model` spawns with an empty handle
+        // (logged at spawn); there is nothing to upload, so the sweep skips it.
+        let mut registry = EntityRegistry::new();
+        spawn_mesh_entity(&mut registry, "");
+        spawn_mesh_entity(&mut registry, "models/a/scene.gltf");
+
+        let models = distinct_mesh_models(&registry);
+        assert_eq!(models, vec!["models/a/scene.gltf".to_string()]);
+    }
+
+    #[test]
+    fn distinct_mesh_models_empty_when_no_mesh_entities() {
+        use crate::scripting::registry::EntityRegistry;
+
+        let registry = EntityRegistry::new();
+        assert!(distinct_mesh_models(&registry).is_empty());
     }
 
     #[test]
     fn malformed_gltf_load_returns_err() {
-        // The loader contract the degrade AC rides on: a bad path is `Err`, not a
-        // panic. Pairs with the seam's `false`-branch skip above.
+        // The loader contract the degrade AC rides on: a bad/missing model path
+        // is `Err`, not a panic — `load_skinned_model` turns that `Err` into a
+        // `warn!` + `None`, so the level-load model sweep continues and the
+        // `prop_mesh` entity simply renders nothing.
         let bad = std::path::Path::new("definitely/not/a/real/model.gltf");
         assert!(
             crate::model::gltf_loader::load_model(bad).is_err(),

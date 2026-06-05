@@ -633,6 +633,10 @@ mod tests {
         assert_eq!(base, 7, "base_index must be packed at byte offset 64");
 
         // Padding bytes 68..80 must be zero.
-        assert_eq!(&bytes[68..80], &[0u8; 12], "padding bytes 68..80 must be zero");
+        assert_eq!(
+            &bytes[68..80],
+            &[0u8; 12],
+            "padding bytes 68..80 must be zero"
+        );
     }
 }

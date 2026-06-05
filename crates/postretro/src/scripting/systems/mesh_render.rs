@@ -206,9 +206,17 @@ mod tests {
             .iter()
             .map(|i| i.transform.w_axis.x)
             .collect();
-        assert!(xs.contains(&1.0) && xs.contains(&5.0), "distinct transforms: {xs:?}");
+        assert!(
+            xs.contains(&1.0) && xs.contains(&5.0),
+            "distinct transforms: {xs:?}"
+        );
         // Same model handle on both.
-        assert!(collector.instances().iter().all(|i| i.model.as_str() == "decraniated"));
+        assert!(
+            collector
+                .instances()
+                .iter()
+                .all(|i| i.model.as_str() == "decraniated")
+        );
     }
 
     #[test]
@@ -221,7 +229,11 @@ mod tests {
 
         collector.collect(&registry, &world, &VisibleCells::DrawAll, 1.0);
         assert_eq!(collector.instances().len(), 2);
-        let handles: Vec<&str> = collector.instances().iter().map(|i| i.model.as_str()).collect();
+        let handles: Vec<&str> = collector
+            .instances()
+            .iter()
+            .map(|i| i.model.as_str())
+            .collect();
         assert!(handles.contains(&"grunt") && handles.contains(&"drone"));
     }
 
@@ -265,7 +277,11 @@ mod tests {
         collector.collect(&registry, &world, &VisibleCells::DrawAll, 0.5);
         assert_eq!(collector.instances().len(), 1);
         let t = collector.instances()[0].transform.w_axis;
-        assert!((t.x - 5.0).abs() < 1.0e-4, "interpolated x at alpha 0.5 is 5.0, got {}", t.x);
+        assert!(
+            (t.x - 5.0).abs() < 1.0e-4,
+            "interpolated x at alpha 0.5 is 5.0, got {}",
+            t.x
+        );
     }
 
     #[test]

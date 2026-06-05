@@ -13,6 +13,7 @@ mod lighting;
 mod material;
 mod model;
 mod movement;
+mod options;
 mod weapon;
 
 mod portal_vis;

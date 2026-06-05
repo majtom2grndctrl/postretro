@@ -107,6 +107,12 @@ percent-encoding = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Player options persistence: human-editable `settings.toml`. `toml` for the
+# wire format, `directories` to resolve the platform config dir. Neither touches
+# wgpu/the renderer — the options module is pure data + fs.
+toml = "1"
+directories = "6"
+
 # Scripting runtimes (embedded). Default features; `parallel` OFF — scripting
 # is single-threaded, `Runtime: Send` is not required. See
 # context/plans/in-progress/scripting-foundation/plan-1-runtime-foundation.md §Sub-plan 2.

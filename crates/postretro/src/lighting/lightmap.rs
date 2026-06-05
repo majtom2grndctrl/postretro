@@ -23,6 +23,13 @@ pub const BIND_ANIMATED_ATLAS: u32 = 3;
 /// linear-filterability is a hard runtime requirement checked at init
 /// (see `atlas_format_filterable`; see also `rendering_pipeline.md §4`).
 pub const BIND_FILTERING_SAMPLER: u32 = 4;
+/// Animated dominant-direction atlas (Rgba16Float, raw normalized vec3). Composed
+/// each frame by `render::animated_lightmap` alongside the animated irradiance
+/// atlas; the forward pass samples it to apply the same bumped-Lambert normal-map
+/// correction to the animated term that the static term already receives. Sampled
+/// through the nearest sampler at binding 2 — like the static direction atlas,
+/// directions must not be linearly interpolated.
+pub const BIND_ANIMATED_DIRECTION: u32 = 5;
 
 /// GPU-side lightmap atlas: irradiance texture, direction texture, sampler,
 /// and the bind group that exposes them to the forward shader.
@@ -68,6 +75,7 @@ impl LightmapResources {
         section: Option<&LightmapSection>,
         bind_group_layout: &wgpu::BindGroupLayout,
         animated_atlas_view: &wgpu::TextureView,
+        animated_direction_view: &wgpu::TextureView,
     ) -> Self {
         // Nearest sampler for the octahedral direction texture (binding 1):
         // linear interpolation of octahedral-encoded unit vectors does not
@@ -147,6 +155,10 @@ impl LightmapResources {
                     binding: BIND_FILTERING_SAMPLER,
                     resource: wgpu::BindingResource::Sampler(&filtering_sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: BIND_ANIMATED_DIRECTION,
+                    resource: wgpu::BindingResource::TextureView(animated_direction_view),
+                },
             ],
         });
 
@@ -158,7 +170,7 @@ impl LightmapResources {
     }
 }
 
-fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 5] {
+fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
     // Two samplers (binding 2 nearest, binding 4 linear), split by what each
     // texture needs:
     //   - Irradiance (0) and animated atlas (3) are `Rgba16Float`, which is
@@ -166,9 +178,10 @@ fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 5] {
     //     `float32-filterable` feature). Marked `filterable: true` and always
     //     sampled through the linear sampler so baked penumbra ramps read as
     //     continuous gradients instead of stair-stepping at texel boundaries.
-    //   - Direction (1) stays `filterable: false` on the nearest sampler:
-    //     linear interpolation of octahedral-encoded unit vectors does not
-    //     commute with slerp.
+    //   - Direction (1) and animated direction (5) stay `filterable: false` on
+    //     the nearest sampler: linear interpolation of direction vectors does
+    //     not commute with slerp (the static atlas is octahedral-encoded; the
+    //     animated atlas stores a raw normalized vec3 — both must read nearest).
     // There is one pipeline variant; the BGL is fixed. No fallback path.
     [
         wgpu::BindGroupLayoutEntry {
@@ -213,6 +226,20 @@ fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 5] {
             binding: BIND_FILTERING_SAMPLER,
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        },
+        // Animated dominant-direction atlas (Rgba16Float, raw normalized vec3) —
+        // `filterable: false` and sampled through the nearest sampler at binding
+        // 2, mirroring the static direction atlas (1). Linear interpolation of
+        // direction vectors does not commute with slerp.
+        wgpu::BindGroupLayoutEntry {
+            binding: BIND_ANIMATED_DIRECTION,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
             count: None,
         },
     ]
@@ -488,7 +515,7 @@ mod tests {
     #[test]
     fn bgl_entries_pin_sampler_split() {
         let entries = bind_group_layout_entries();
-        assert_eq!(entries.len(), 5, "group-4 BGL grew to 5 entries");
+        assert_eq!(entries.len(), 6, "group-4 BGL grew to 6 entries");
 
         let tex_sample = |b: u32| {
             entries
@@ -518,9 +545,15 @@ mod tests {
             tex_sample(BIND_ANIMATED_ATLAS),
             Some(wgpu::TextureSampleType::Float { filterable: true })
         );
-        // Direction stays nearest (octahedral lerp ≠ slerp).
+        // Both direction atlases stay nearest (direction lerp ≠ slerp): the
+        // static atlas (1) is octahedral-encoded, the animated atlas (5) stores
+        // a raw normalized vec3.
         assert_eq!(
             tex_sample(BIND_DIRECTION),
+            Some(wgpu::TextureSampleType::Float { filterable: false })
+        );
+        assert_eq!(
+            tex_sample(BIND_ANIMATED_DIRECTION),
             Some(wgpu::TextureSampleType::Float { filterable: false })
         );
         // Two samplers: nearest at binding 2, linear at binding 4.

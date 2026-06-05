@@ -1664,6 +1664,7 @@ impl Renderer {
             geometry.and_then(|g| g.lightmap),
             &lightmap_bind_group_layout,
             &animated_lightmap.forward_view,
+            &animated_lightmap.direction_forward_view,
         );
 
         // SDF half-res shadow pass (Task 4). Always allocated — dispatch is
@@ -2474,6 +2475,7 @@ impl Renderer {
                     geometry.lightmap,
                     &lightmap_bgl,
                     &al.forward_view,
+                    &al.direction_forward_view,
                 );
                 self.animated_lightmap = al;
             }

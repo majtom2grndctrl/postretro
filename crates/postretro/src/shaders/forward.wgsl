@@ -203,6 +203,13 @@ struct AnimationDescriptor {
 // `Rgba16Float` linear-filterability is a hard runtime requirement, checked at
 // init (see context/lib/rendering_pipeline.md §4).
 @group(4) @binding(4) var lightmap_filtering_sampler: sampler;
+// Animated dominant-direction atlas (Rgba16Float, raw normalized vec3 in .xyz).
+// Composed each frame by the compute pre-pass alongside the animated irradiance
+// atlas. Read through the nearest sampler at binding 2 — like the static
+// direction atlas, directions must not be linearly interpolated. Unlike the
+// static atlas this is NOT octahedral-encoded: sample .xyz and re-normalize, do
+// not route through `decode_lightmap_direction`.
+@group(4) @binding(5) var animated_lm_direction: texture_2d<f32>;
 
 // Sample the irradiance atlas with hardware bilinear filtering through the
 // linear sampler at binding 4.
@@ -723,7 +730,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // Bumped-Lambert correction: the baker pre-multiplied by mesh-normal NdotL
         // using the dominant incident direction. Divide out mesh NdotL and
         // remultiply with N_bump NdotL to make the static term respond to normal-map
-        // detail. lm_anim is not corrected. See normal-maps/ Task 4.
+        // detail. lm_anim gets the same correction below via its own fused animated
+        // dominant direction, so style-animated lights respond to normal-map detail
+        // identically to static ones. See normal-maps/ Task 4.
         let dom = decode_lightmap_direction(textureSample(lightmap_direction, lightmap_sampler, in.lightmap_uv));
         let n_dot_l_mesh = max(dot(mesh_n, dom), 0.0);
         let n_dot_l_bump = max(dot(N_bump, dom), 0.0);
@@ -739,13 +748,26 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // Cap at 4.0: prevents unbounded spike when N_bump tilts toward the light
         // on a near-backfacing mesh surface.
         let scale = select(1.0, min(n_dot_l_bump / max(n_dot_l_mesh, NDOTL_EPS), 4.0), use_correction);
+
+        // Same bumped-Lambert correction for the animated term. The animated
+        // direction atlas stores a raw normalized vec3 (not octahedral), so read
+        // .xyz and re-normalize rather than decoding. Direction-only differs from
+        // the static path; the NDOTL_EPS floor and 4.0 cap are shared.
+        let dom_anim = normalize(textureSample(animated_lm_direction, lightmap_sampler, in.lightmap_uv).xyz);
+        let n_dot_l_mesh_anim = max(dot(mesh_n, dom_anim), 0.0);
+        let n_dot_l_bump_anim = max(dot(N_bump, dom_anim), 0.0);
+        // Mirror the static gate: when lm_anim is ~zero (no animated weight maps or
+        // dark this frame) the fused direction is unreliable, so leave the term as-is.
+        const LM_ANIM_EPS: f32 = 1.0e-4;
+        let use_correction_anim = dot(lm_anim, lm_anim) >= LM_ANIM_EPS * LM_ANIM_EPS && n_dot_l_mesh_anim > NDOTL_EPS;
+        let scale_anim = select(1.0, min(n_dot_l_bump_anim / max(n_dot_l_mesh_anim, NDOTL_EPS), 4.0), use_correction_anim);
         // Both `lm_irr` (baked-tag lights) and `lm_anim` (animated-baked lights)
         // carry their shadow baked in — neither is SDF-multiplied. The animated
         // shadow is occlusion-tested into the weight-map bake (`lm_anim`); the
         // retired runtime SDF factor was double-shadowing it. Shadow-map (enemy)
         // results never run through these factors — they carry their own
         // dynamic-occluder shadow in the dynamic-light loop below.
-        static_direct = lm_irr * scale + lm_anim;
+        static_direct = lm_irr * scale + lm_anim * scale_anim;
     }
 
     // K-selection of `sdf`-tagged lights for this fragment, computed ONCE and

@@ -225,7 +225,7 @@ The model module is CPU-only by contract — it never imports wgpu. It produces 
 
 ### GPU pass
 
-The skinned-mesh render pass owns all wgpu for skinned models. It uploads a mesh's vertex/index buffers, builds the pipeline (deriving the wgpu vertex layout from the skinned-vertex field widths — the model module stays wgpu-free), and records a **direct** `draw_indexed` for one instance. Skinning runs on the GPU in the vertex shader: each vertex blends its four joint matrices, fetched from the palette, and applies skin → model → view-projection.
+The skinned-mesh render pass owns all wgpu for skinned models. It uploads a mesh's vertex/index buffers, builds the pipeline (deriving the wgpu vertex layout from the skinned-vertex field widths — the model module stays wgpu-free), and records one instanced `draw_indexed` per model over its CPU-culled visible instances. Skinning runs on the GPU in the vertex shader: each vertex blends its four joint matrices, fetched from the palette, and applies skin → model → view-projection.
 
 **Shared bone-palette storage buffer.** All skinned instances' palettes live in one shared storage buffer. Each instance occupies a contiguous run; a per-instance **base index** selects its run, and the vertex shader addresses a joint as `base_index + joint`. One buffer for the whole frame, one small per-draw scalar — not a buffer or bind group per instance.
 
@@ -238,18 +238,19 @@ The skinned pass owns its **own pipeline layout**, so its group mapping is indep
 | Group | Contents |
 |-------|---------|
 | 0 | Camera uniforms (shared with the forward pass) |
-| 1 | Material (the shared material bind group; the flat-lit fragment samples only base color, but the full layout is reused so the bind group stays compatible) |
-| 2 | **Reserved (provisional)** — the dynamic-entity lighting bind group goes here when the broadening lighting work settles its interface. Left unallocated now; the pipeline layout passes through an empty slot so that work *adds* a group rather than renumbering. |
-| 3 | Per-instance data: the shared bone-palette storage buffer + a per-instance uniform (model matrix + palette base index) |
+| 1 | Material (the shared material bind group; the full layout is reused so the bind group stays compatible) |
+| 2 | **Reserved** — the dynamic-direct lighting bind group goes here when that work settles. Left unallocated; the pipeline layout passes an empty slot so that work *adds* a group rather than renumbering. |
+| 3 | Per-instance data: the shared bone-palette storage buffer + a per-instance SSBO (model matrix + palette base index), addressed by `@builtin(instance_index)` — never `first_instance`, which is unreliable on DX12 (gfx-rs/wgpu#2471) |
+| 4 | SH atlas (indirect lighting baseline): reused `ShVolumeResources` — octahedral irradiance atlas, grid uniform, per-probe depth moments |
 
-This differs from §10's world mapping (where group 2 is dynamic lights / influence volumes / per-chunk light lists and group 3 is the octahedral irradiance atlas). The two layouts coexist because each pipeline declares its own; the shared groups (0 camera, 1 material) carry compatible bind groups.
+This differs from §10's world mapping (where group 2 is dynamic lights / influence volumes / per-chunk light lists and groups 3–4 are the irradiance and lightmap atlases). The two layouts coexist because each pipeline declares its own; the shared groups (0 camera, 1 material) carry compatible bind groups.
 
 ### Committed vs. provisional
 
 The **vertex attribute set** (the encoding above) and the **shared-palette + base-index scheme** are committed — consumers build against them. What is flat-lit or held open now is a deliberate, consumer-bound choice, not missing work:
 
-- **Lighting.** The fragment is flat-lit (base color × constant ambient). Group 2 is reserved for a settled dynamic-entity lighting interface (SH ambient + dynamic direct) that adds additively. The vertex stage already carries the skinned world-space normal for it.
-- **Instancing.** One direct draw per instance. The many-instance path is expected to carry per-instance data (base index included) through an indirect instance buffer; the palette scheme already supports many contiguous runs.
+- **Lighting.** The fragment samples the SH indirect baseline (group 4, reused `ShVolumeResources` — depth-aware Chebyshev octahedral irradiance, `reject_backface = false`, Chebyshev probe-occlusion enabled, matching the billboard precedent). Group 2 is reserved for the dynamic-direct additive term. The vertex stage already carries the skinned world-space normal for it.
+- **Instancing.** Instances of the same model are batched into a single instanced `draw_indexed`; per-instance data (model matrix + palette base index) lives in a per-instance SSBO addressed by `@builtin(instance_index)`. The per-instance SSBO and argument layout are shaped to drop into `multi_draw_indexed_indirect` without a contract change; this task draws with instanced `draw_indexed` + CPU cull.
 - **Depth variant.** A depth-only skinned pipeline (for shadows) would reuse the same palette + base-index scheme with position/joints/weights only. Not built here; the skinning vertex stage is kept separable for it.
 
 ---

@@ -200,15 +200,13 @@ impl AnimatedLightmapResources {
     /// opaque so this cannot be runtime-checked — it must be preserved at the
     /// call site.
     ///
-    /// `atlas_dimensions` is the `(width, height)` the static lightmap atlas was
-    /// created at this level (see `lightmap::usable_atlas_dimensions`). The
-    /// animated irradiance and direction atlases are created at exactly these
-    /// dimensions: the compose pass writes them at absolute static-atlas
-    /// coordinates and the forward pass samples all three atlases with one
-    /// normalized `lightmap_uv`, so the sizes must match or the writes drop /
-    /// misalign. `None` means the static atlas degraded to the 1×1 placeholder
-    /// (absent / zero-area / oversize section); the animated path then has no
-    /// valid coordinate space to write into and takes the dummy-atlas early-out.
+    /// `atlas_dimensions` — `(width, height)` from `lightmap::usable_atlas_dimensions`.
+    /// The animated irradiance and direction atlases are created at exactly these
+    /// dimensions: compose writes at absolute static-atlas coordinates, and the
+    /// forward pass samples all three atlases with one normalized `lightmap_uv`.
+    /// `None` means the static atlas degraded to a 1×1 placeholder (absent,
+    /// zero-area, or oversize section); the animated path takes the dummy-atlas
+    /// early-out — no valid coordinate space to write into.
     ///
     /// Returns `Err` on cross-section validation failure; caller should log and
     /// refuse to load the map.
@@ -226,7 +224,7 @@ impl AnimatedLightmapResources {
         let dummy_texture = create_zero_texture(device, 1, 1, "Animated LM Dummy");
         let dummy_view = dummy_texture.create_view(&wgpu::TextureViewDescriptor::default());
         // Separate 1×1 zero view for the direction atlas slot so the forward
-        // bind group stays valid on the empty-map path. Modeled on `dummy_view`.
+        // bind group stays valid on the empty-map path.
         let dummy_direction_view =
             dummy_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -325,10 +323,9 @@ impl AnimatedLightmapResources {
             ..Default::default()
         });
 
-        // Second atlas: per-texel fused dominant direction. Same size and usage
-        // as the irradiance atlas. `direction_forward_view` is bound at group-4
-        // binding 5 in the forward pass — independent numbering from the
-        // compose-side storage binding 8 that writes this same atlas.
+        // Per-texel fused dominant-direction atlas. `direction_forward_view` is
+        // bound at group-4 binding 5 (forward pass); the compose-side storage
+        // binding 8 writes this same atlas — independent numbering spaces.
         let direction_atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Animated LM Direction Atlas"),
             size: wgpu::Extent3d {

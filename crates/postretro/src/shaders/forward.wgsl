@@ -204,11 +204,11 @@ struct AnimationDescriptor {
 // init (see context/lib/rendering_pipeline.md §4).
 @group(4) @binding(4) var lightmap_filtering_sampler: sampler;
 // Animated dominant-direction atlas (Rgba16Float, raw normalized vec3 in .xyz).
-// Composed each frame by the compute pre-pass alongside the animated irradiance
-// atlas. Read through the nearest sampler at binding 2 — like the static
-// direction atlas, directions must not be linearly interpolated. Unlike the
-// static atlas this is NOT octahedral-encoded: sample .xyz and re-normalize, do
-// not route through `decode_lightmap_direction`.
+// Composed each frame alongside the animated irradiance atlas. Read through the
+// nearest sampler at binding 2 — like the static direction atlas, directions
+// must not be linearly interpolated. Unlike the static atlas this is NOT
+// octahedral-encoded: sample .xyz and re-normalize, do not route through
+// `decode_lightmap_direction`.
 @group(4) @binding(5) var animated_lm_direction: texture_2d<f32>;
 
 // Sample the irradiance atlas with hardware bilinear filtering through the
@@ -751,8 +751,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
         // Same bumped-Lambert correction for the animated term. The animated
         // direction atlas stores a raw normalized vec3 (not octahedral), so read
-        // .xyz and re-normalize rather than decoding. Direction-only differs from
-        // the static path; the NDOTL_EPS floor and 4.0 cap are shared.
+        // .xyz and re-normalize rather than decoding — only the direction decode
+        // differs from the static path; NDOTL_EPS floor and 4.0 cap are shared.
         // The compose pass stores vec3(0) for uncovered/canceling texels, so this
         // normalize() can yield NaN — the use_correction_anim gate below catches it
         // (NaN > NDOTL_EPS is false), so scale_anim falls back to 1.0 and no NaN

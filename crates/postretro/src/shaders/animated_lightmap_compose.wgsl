@@ -106,9 +106,9 @@ struct DebugConfig {
 
 // Decode the baked octahedral direction packed into a `TexelLight`'s
 // `direction_oct_packed` u32 (low 16 bits = x, high 16 bits = y). Mirrors the
-// octahedral reconstruction in `decode_lightmap_direction` (forward.wgsl); the
-// channel-source step differs (a packed u32 here vs an Rgba8Unorm sample there),
-// and this returns the result normalized.
+// octahedral reconstruction in `decode_lightmap_direction` (forward.wgsl), but
+// reads from a packed u32 rather than an Rgba8Unorm sample, and returns
+// the result normalized.
 fn decode_packed_direction(packed: u32) -> vec3<f32> {
     let ox = f32(packed & 0xFFFFu) / 65535.0 * 2.0 - 1.0;
     let oy = f32(packed >> 16u) / 65535.0 * 2.0 - 1.0;
@@ -192,8 +192,8 @@ fn compose_main(
         vec2<i32>(i32(rect.atlas_x + rect_x), i32(rect.atlas_y + rect_y)),
         vec4<f32>(accum, 1.0),
     );
-    // Test length before normalizing to avoid divide-by-zero. Opposing lights
-    // can cancel, or a texel may have no coverage — store zero in that case.
+    // Opposing lights can cancel and uncovered texels are zero — guard before
+    // normalizing and store zero in either case.
     let dir_len = length(dir_accum);
     var dominant_dir = vec3<f32>(0.0);
     if (dir_len > 1.0e-4) {

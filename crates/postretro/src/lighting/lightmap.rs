@@ -24,13 +24,11 @@ pub const BIND_ANIMATED_ATLAS: u32 = 3;
 /// (see `atlas_format_filterable`; see also `rendering_pipeline.md §4`).
 pub const BIND_FILTERING_SAMPLER: u32 = 4;
 /// Animated dominant-direction atlas (Rgba16Float, raw normalized vec3). Composed
-/// each frame by `render::animated_lightmap` alongside the animated irradiance
-/// atlas; the forward pass samples it to apply the same bumped-Lambert normal-map
-/// correction to the animated term that the static term already receives. Sampled
-/// through the nearest sampler at binding 2 — like the static direction atlas,
-/// directions must not be linearly interpolated. This group-4 binding (5) and the
-/// compose shader's storage binding (8) are independent numbering spaces for the
-/// same atlas.
+/// each frame alongside the animated irradiance atlas; the forward pass samples it
+/// to apply bumped-Lambert normal-map correction to the animated term. Sampled
+/// through the nearest sampler at binding 2 — directions must not be linearly
+/// interpolated. Binding 5 here (group 4, forward pass) and binding 8 in the
+/// compose shader are independent numbering spaces for the same atlas.
 pub const BIND_ANIMATED_DIRECTION: u32 = 5;
 
 /// GPU-side lightmap atlas: irradiance texture, direction texture, sampler,
@@ -231,9 +229,8 @@ fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
             count: None,
         },
         // Animated dominant-direction atlas (Rgba16Float, raw normalized vec3) —
-        // `filterable: false` and sampled through the nearest sampler at binding
-        // 2, mirroring the static direction atlas (1). Linear interpolation of
-        // direction vectors does not commute with slerp.
+        // `filterable: false`, nearest sampler at binding 2, mirroring the static
+        // direction atlas (1).
         wgpu::BindGroupLayoutEntry {
             binding: BIND_ANIMATED_DIRECTION,
             visibility: wgpu::ShaderStages::FRAGMENT,
@@ -247,17 +244,12 @@ fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
     ]
 }
 
-/// Resolve the dimensions the static irradiance/direction atlases are actually
-/// created at, applying the same usability filter `new()` uses. Returns `None`
-/// when the section is absent, zero-area, or oversize — i.e. exactly when the
-/// static path falls back to the 1×1 placeholder.
-///
-/// The animated-lightmap atlases must be created at these same dimensions: the
-/// compose pass writes them at absolute static-atlas coordinates (baked
-/// `ChunkAtlasRect`s) and the forward pass samples all three atlases with one
-/// normalized `lightmap_uv`, so a size mismatch drops out-of-range writes and
-/// misaligns the in-range ones. Routing both through this one function keeps the
-/// animated atlas size locked to the static atlas size.
+/// Dimensions the static irradiance/direction atlases are created at, using the
+/// same usability filter as `new()`. Returns `None` when the section is absent,
+/// zero-area, or oversize — exactly when the static path falls back to the 1×1
+/// placeholder. Routing both the static and animated atlas creation through this
+/// function keeps their sizes in lock-step (compose writes at absolute atlas
+/// coordinates; forward samples all three atlases with one normalized `lightmap_uv`).
 pub(crate) fn usable_atlas_dimensions(
     section: Option<&LightmapSection>,
     max_texture_dimension_2d: u32,

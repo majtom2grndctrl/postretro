@@ -1222,13 +1222,14 @@ impl ApplicationHandler for App {
                         let particle_collections: Vec<(&str, &[u8])> =
                             self.particle_render.iter_collections().collect();
 
-                        // Mesh render — packs per-instance world matrices for
-                        // skinned-mesh entities, culling each against this
-                        // frame's visible set via `mesh_pass::mesh_visible`. Like
-                        // the particle collector it never touches wgpu; the
-                        // renderer consumes the matrices via `set_mesh_draws`.
-                        // Runs before `render_frame_indirect`, while `visible_cells`
-                        // is still live (it is reclaimed into scratch after).
+                        // Mesh render — emits per-instance inputs (model handle +
+                        // interpolated transform + phase seed) for skinned-mesh
+                        // entities, culling each against this frame's visible set
+                        // via `mesh_pass::mesh_visible`. Like the particle collector
+                        // it never touches wgpu; the renderer consumes the inputs
+                        // via `set_mesh_draws`. Runs before `render_frame_indirect`,
+                        // while `visible_cells` is still live (it is reclaimed into
+                        // scratch after).
                         if let Some(world) = self.level.as_ref() {
                             let registry = self.script_ctx.registry.borrow();
                             // Same frame alpha the player camera reads from

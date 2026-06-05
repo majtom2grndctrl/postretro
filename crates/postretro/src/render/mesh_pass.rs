@@ -136,9 +136,9 @@ pub struct MeshPass {
     /// `POSTRETRO_GPU_TIMING=1` (cached at construction so the hot path never
     /// touches the environment), so the unmeasured frame pays nothing beyond an
     /// `Option` check. Accumulates the CPU cost of the per-instance `sample_clip`
-    /// loop and logs it rate-limited — the plan's "measured findings" item (the
-    /// `ozz`-pose-buffer question: per-frame per-instance pose-sampling cost at
-    /// representative instance counts).
+    /// loop and logs it rate-limited — a profiling gate to measure per-instance
+    /// pose-sampling cost at representative wave counts and decide whether a baked
+    /// pose buffer is worth the complexity over per-frame CPU sampling.
     pose_sample_stats: Option<PoseSampleStats>,
 }
 

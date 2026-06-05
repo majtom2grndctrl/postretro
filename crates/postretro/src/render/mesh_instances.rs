@@ -1,5 +1,6 @@
 // Skinned-mesh per-frame draw planning: group instances by model, assign each a
-// contiguous bone-palette run, and drop overflow past the fixed palette budget.
+// contiguous bone-palette run, and drop overflow past either fixed budget
+// (palette slots or the per-frame instance count).
 // See: context/lib/rendering_pipeline.md §9
 //
 // GPU-free by contract — this is the data-logic half of the renderer's mesh
@@ -23,8 +24,9 @@ use crate::model::ModelHandle;
 pub(crate) const MAX_PALETTE_ENTRIES: usize = 4096;
 
 /// Fixed per-frame instance budget — the cap on how many instances the per-frame
-/// instance SSBO can hold. The renderer sizes that SSBO (`mesh_pass::MAX_INSTANCES`)
-/// to exactly this value, so the planner MUST drop instances past it or the GPU
+/// instance SSBO can hold. Defined here (the GPU-free planning half); the renderer
+/// (`mesh_pass.rs`) imports this const and sizes that SSBO to exactly this value,
+/// so the planner MUST drop instances past it or the GPU
 /// layer's `write_buffer` runs off the end of the buffer and wgpu validation
 /// panics. This is a SEPARATE cap from the palette budget: a zero-joint (rigid /
 /// static-prop) model consumes no palette slots, so the palette cap never fires
@@ -73,7 +75,8 @@ pub(crate) struct ModelDrawGroup {
 
 /// The per-frame skinned-mesh draw plan: one group per distinct model (in
 /// first-seen order), the flat instance count, and how many instances were
-/// dropped because the palette budget was exhausted.
+/// dropped because either budget was exhausted (palette slots or the per-frame
+/// instance cap).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct MeshFramePlan {
     pub(crate) groups: Vec<ModelDrawGroup>,
@@ -81,8 +84,10 @@ pub(crate) struct MeshFramePlan {
     /// instance SSBO is filled densely in group order, so a group's instances
     /// occupy `instance_offset..instance_offset + len`.
     pub(crate) instance_count: u32,
-    /// Instances dropped because their palette run would exceed the budget. The
-    /// caller rate-limits a warning when this is non-zero.
+    /// Instances dropped because EITHER their palette run would exceed
+    /// `MAX_PALETTE_ENTRIES` OR the instance count would reach `MAX_INSTANCES`
+    /// (the per-frame instance SSBO size — the only cap that fires for zero-joint
+    /// rigid props). The caller rate-limits a warning when this is non-zero.
     pub(crate) dropped: u32,
 }
 

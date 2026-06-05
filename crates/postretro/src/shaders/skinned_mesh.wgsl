@@ -30,8 +30,9 @@
 // work lands.
 //
 // Design note (non-binding): the skinning vertex stage is kept separable so a
-// future position-only depth-only skinned variant (the shadow task) can reuse
-// `skin_position` without the color attributes. Nothing depth-only is built here.
+// future position-only depth-only skinned variant (the shadow task) can share
+// `skin_matrix` and drop the color attributes (normal, UVs). Nothing depth-only
+// is built here.
 
 // --- Group 0: camera ---------------------------------------------------------
 // Reuses the renderer's camera uniform (the full forward `Uniforms` buffer).

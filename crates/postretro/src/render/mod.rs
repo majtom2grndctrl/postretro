@@ -2625,12 +2625,10 @@ impl Renderer {
     ///
     /// Called once per distinct `prop_mesh` model by the level-load model sweep
     /// (after classname dispatch); spawning itself happens earlier in
-    /// `prop_mesh::handle`, so callers are free to discard the return. Returns
-    /// `Some(tags)` on success — `tags` being the model's top-level `extras`
-    /// entity tags (`LoadedModel.tags`, possibly empty); a successful load with
-    /// no `extras` is `Some(vec![])`, not `None`. On a load error this logs a
-    /// `warn!` naming the path, leaves the entry uncached (that model renders
-    /// nothing), and returns `None`.
+    /// `prop_mesh::handle`. Returns `Some(tags)` on success (the model's glTF
+    /// `extras` tags — currently unused by callers, a residual of the old spawn
+    /// seam) or `None` on a load error, which also logs a `warn!` naming the path
+    /// and leaves the entry uncached (that model renders nothing).
     ///
     /// The renderer owns the GPU upload + the cached skeleton + first clip
     /// (inside the mesh pass's model cache); the per-frame draw list

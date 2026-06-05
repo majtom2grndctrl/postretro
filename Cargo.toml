@@ -91,6 +91,13 @@ gltf = { version = "1.4", features = ["extras"] }
 # (sRGB, gAMA, iCCP) that the `image` crate does not surface in its public API.
 png = "0.18"
 
+# URI percent-decoding. The glTF loader decodes image URIs the same way the
+# `gltf` crate's `import_buffers` decodes the external `.bin` URI, so a
+# percent-encoded base-color path (e.g. `base%20color.png`) resolves to the real
+# file rather than degrading to the zero material sentinel. Already in the tree
+# transitively (winit); naming it directly reuses that resolved version.
+percent-encoding = "2"
+
 # Serialization (scripting FFI transit)
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -500,6 +500,10 @@ struct SubmeshDraw {
 /// keys to build a bind group for (first-seen order, deduped) and the per-submesh
 /// assignment of (distinct material, index range), in submesh order.
 ///
+/// First-seen dedup order keeps submesh 0's material at `distinct[0]`, so a
+/// single-material model is the trivial special case of the multi-material path
+/// (one-submesh ≡ one-distinct ≡ the whole model).
+///
 /// Factored out of the GPU resolve so the dedup + range bookkeeping is unit
 /// testable without a `wgpu::Device`: a model reusing one material across N
 /// primitives yields one distinct key and N draws; N distinct materials yield N
@@ -2670,9 +2674,10 @@ impl Renderer {
         log::info!("[Renderer] Textures installed: {}", self.gpu_textures.len());
     }
 
-    /// Load the slice's one skinned model, resolve its material through the
-    /// existing `.prm` → `LoadedTexture` path (pre-baked key — no runtime
-    /// hashing) and upload it to the mesh pass.
+    /// Load the slice's one skinned model, resolve each submesh's material key
+    /// (blake3 content-hash of the base-color PNG, the same recipe the level
+    /// compiler uses to name `.prm` sidecars) to a `LoadedTexture`, build one
+    /// bind group per distinct key, and upload to the mesh pass.
     /// Returns `Some(tags)` on success — `tags` being the model's top-level
     /// `extras` entity tags (`LoadedModel.tags`, possibly empty) — so the caller
     /// (the entity spawn seam) spawns the mesh entity carrying them; a successful

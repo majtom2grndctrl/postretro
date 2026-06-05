@@ -7,7 +7,7 @@
 // triangles separately. Multi-mesh / multi-clip generality is out of scope.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use glam::{Mat4, Quat, Vec3};
 use postretro_level_format::octahedral;
@@ -115,8 +115,31 @@ fn pack_tangent(tangent: [f32; 4]) -> [u16; 2] {
 
 /// The all-zero cache key, hex-encoded (64 chars). `load_textures` reads this as
 /// the "no source PNG" sentinel and binds a silent placeholder.
+///
+/// The all-zero key is a convention shared with the level compiler, not a local
+/// choice — `build_pipeline.md` §"Baked texture mips" defines it as the key that
+/// "substitutes per-slot placeholders silently". Both producers emit it for a
+/// material with no resolvable base-color PNG.
 fn zero_material_key() -> String {
     "0".repeat(64)
+}
+
+/// Resolve a base-color image URI (relative to the glTF's directory) to a file
+/// path, percent-decoding the URI first.
+///
+/// The glTF spec allows image URIs to be percent-encoded (e.g. `base%20color.png`
+/// for a file named `base color.png`). `gltf::import_buffers` decodes the
+/// external `.bin` URI the same way, so the material path must too — a raw
+/// `join` would miss the file and wrongly degrade to the zero sentinel. Decoding
+/// an already-unencoded URI is a no-op, so a normal path passes through unchanged.
+/// On invalid UTF-8 in the decoded bytes we fall back to the raw URI rather than
+/// lossily mangling it.
+fn resolve_image_path(parent_dir: &Path, uri: &str) -> PathBuf {
+    let decoded = percent_encoding::percent_decode_str(uri)
+        .decode_utf8()
+        .map(|s| s.into_owned())
+        .unwrap_or_else(|_| uri.to_string());
+    parent_dir.join(decoded)
 }
 
 /// Resolve a material's base-color texture to its baked `.prm` cache key by
@@ -145,7 +168,7 @@ fn content_hash_material_key(material: &gltf::Material, parent_dir: &Path) -> St
         return zero_material_key();
     };
 
-    let png_path = parent_dir.join(uri);
+    let png_path = resolve_image_path(parent_dir, &uri);
     match std::fs::read(&png_path) {
         Ok(png_bytes) => {
             let key = *blake3::hash(&png_bytes).as_bytes();
@@ -158,9 +181,9 @@ fn content_hash_material_key(material: &gltf::Material, parent_dir: &Path) -> St
 /// Lowercase-hex encode a 32-byte cache key into the 64-char string
 /// `load_textures` / `cache_filename_for_key` consume.
 fn hex_encode(bytes: &[u8; 32]) -> String {
+    use std::fmt::Write;
     let mut s = String::with_capacity(64);
     for b in bytes {
-        use std::fmt::Write;
         let _ = write!(s, "{b:02x}");
     }
     s
@@ -711,6 +734,39 @@ mod tests {
         assert_eq!(out, [2, 0, 0, 2]);
     }
 
+    #[test]
+    fn image_uri_is_percent_decoded_before_resolving_path() {
+        // The glTF spec allows percent-encoded image URIs; `import_buffers`
+        // decodes the `.bin` URI the same way, so the material path must match.
+        // A `%20`-encoded URI must resolve to the real `base color.png` file
+        // (with a literal space) and content-hash it — not degrade to the zero
+        // sentinel. An unencoded URI passes through unchanged (decode is a no-op).
+        let dir = std::env::temp_dir().join("postretro_percent_decode_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let png_bytes = b"not a real png, just bytes to hash";
+        let file_path = dir.join("base color.png");
+        std::fs::write(&file_path, png_bytes).unwrap();
+
+        // Encoded URI resolves to the space-bearing filename.
+        let resolved = resolve_image_path(&dir, "base%20color.png");
+        assert_eq!(resolved, file_path, "%20 must decode to a literal space");
+        // Unencoded URI is a no-op pass-through.
+        assert_eq!(
+            resolve_image_path(&dir, "plain.png"),
+            dir.join("plain.png"),
+            "an unencoded URI must not be mangled",
+        );
+
+        // End-to-end: reading the decoded path yields the file's content hash,
+        // matching what `content_hash_material_key` would produce — proving the
+        // encoded URI does NOT fall back to the zero sentinel.
+        let bytes = std::fs::read(&resolved).expect("decoded path resolves to the file");
+        let expected_key = hex_encode(blake3::hash(&bytes).as_bytes());
+        assert_ne!(expected_key, zero_material_key(), "key is not the sentinel");
+
+        let _ = std::fs::remove_file(&file_path);
+    }
+
     // --- Error handling (automated AC: malformed input returns Err, no panic) ---
 
     #[test]
@@ -837,6 +893,11 @@ mod tests {
         // materials) exercises the per-primitive submesh split without a GPU.
         // The submesh ranges must tile the merged index buffer end-to-end with
         // no gap or overlap, and every index must address a real merged vertex.
+        //
+        // Both primitives' base-color PNGs are absent at runtime, so both
+        // submesh keys collapse to the SAME zero sentinel. This test only proves
+        // range partitioning; distinct-key dedup is proven separately by the
+        // `plan_*` tests in `render/mod.rs`.
         let fixture = multi_primitive_fixture_path();
         let model = load_model(&fixture).expect("synthetic multi-primitive fixture loads");
 
@@ -914,6 +975,25 @@ mod tests {
         assert!(
             model.tags.is_empty(),
             "absent extras yields no tags, got {:?}",
+            model.tags,
+        );
+    }
+
+    fn malformed_extras_fixture_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/malformed_extras/malformed_extras.gltf")
+    }
+
+    #[test]
+    fn malformed_extras_loads_model_with_empty_tags() {
+        // End-to-end: a glTF whose top-level `extras` carries a malformed `tags`
+        // (a string, not an array) must still load — author metadata degrades to
+        // no tags rather than failing the whole load.
+        let model = load_model(&malformed_extras_fixture_path())
+            .expect("malformed extras is metadata, never a load error");
+        assert!(
+            model.tags.is_empty(),
+            "malformed extras yields no tags, got {:?}",
             model.tags,
         );
     }

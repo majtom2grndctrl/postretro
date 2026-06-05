@@ -16,6 +16,12 @@ use self::text::UiTextRenderer;
 /// no GPU handles — produces a `UiDrawList` the pass uploads at encode time.
 pub(crate) mod layout;
 
+/// Serde descriptor model for the UI widget tree: the `Widget` enum, its field
+/// structs, and the `AnchoredTree` placement envelope. Pure data — layout
+/// (taffy) and the retained tree land in later Goal B tasks.
+#[allow(dead_code)]
+pub(crate) mod descriptor;
+
 /// glyphon shaped-text half of the pass: embedded font, glyph atlas/renderer,
 /// and the shape→prepare→render→trim cycle. glyphon owns its own pipeline; the
 /// text draw records into this same render pass, after the quads.

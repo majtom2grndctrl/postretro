@@ -22,7 +22,8 @@ pub const REFERENCE_HEIGHT: f32 = 720.0;
 /// vocabulary is the layout seam Goal B's descriptor model and widgets build on,
 /// and is exercised by the layout tests — hence the variants are retained.
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Anchor {
     TopLeft,
     Top,

@@ -639,14 +639,6 @@ impl PoseSampleStats {
     }
 }
 
-/// Logo texture + its bind group for the active splash. The texture owns the view
-/// the bind group references, so both live together for the descriptor's lifetime.
-struct SplashLogo {
-    /// Kept alive so the bind group's texture view stays valid.
-    _texture: wgpu::Texture,
-    bind_group: wgpu::BindGroup,
-}
-
 pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -885,16 +877,18 @@ pub struct Renderer {
     /// list on the gameplay path (`render_frame_indirect`). Owns all UI GPU state.
     ui: ui::UiPass,
 
-    /// Active splash content descriptor. `Some` between `install_splash_from_loaded`
-    /// and `clear_splash`; drives the UI pass during the splash phase. `None`
-    /// (frame 0 before install, and after level handoff) records no splash quads.
-    active_splash: Option<ui::splash::SplashDescriptor>,
+    /// Decoded logo aspect (width/height) of the active splash. `Some` between
+    /// `install_splash_from_loaded` and `clear_splash`; the splash descriptor
+    /// tree is rebuilt each frame from this aspect plus the snapshot's version
+    /// line (the logo binding lives in `ui_images`). `None` (frame 0 before
+    /// install, and after level handoff) records no splash quads.
+    splash_logo_aspect: Option<f32>,
 
-    /// Logo texture + bind group for the active splash, built in
-    /// `install_splash_from_loaded` from the uploaded PNG. `None` until installed;
-    /// cleared by `clear_splash`. Kept alive (texture owns the view the bind group
-    /// references) for the descriptor's lifetime.
-    splash_logo: Option<SplashLogo>,
+    /// Key→bind-group registry for `image` widget assets (Goal B: only the
+    /// pre-registered splash logo key). `install_splash_from_loaded` registers
+    /// the uploaded logo PNG under `splash::SPLASH_LOGO_ASSET`; the UI pass
+    /// resolves image batches' asset keys through it. Cleared by `clear_splash`.
+    ui_images: ui::UiImageRegistry,
 
     /// Once-per-frame published read snapshot (version/tagline line). Set by the
     /// App via `set_ui_snapshot` just before each render call; read when the UI
@@ -2213,8 +2207,8 @@ impl Renderer {
             bone_palette_scratch: Vec::new(),
             pose_sample_stats: PoseSampleStats::default(),
             ui,
-            active_splash: None,
-            splash_logo: None,
+            splash_logo_aspect: None,
+            ui_images: ui::UiImageRegistry::default(),
             ui_snapshot: ui::UiReadSnapshot::default(),
             fog,
             fog_cell_masks: None,
@@ -2768,14 +2762,14 @@ impl Renderer {
         let (texture, dims) = splash::upload_splash_texture(&self.device, &self.queue, loaded);
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let bind_group = self.ui.make_texture_bind_group(&self.device, &view);
-        self.splash_logo = Some(SplashLogo {
-            _texture: texture,
-            bind_group,
-        });
+        // Register the logo under the splash's known asset key, so the splash
+        // descriptor's `image` node resolves to this bind group through the
+        // registry (Goal B pre-registers only known keys).
+        self.ui_images
+            .register(ui::splash::SPLASH_LOGO_ASSET, texture, bind_group);
         // Shape the logo to the decoded image so it never stretches: the aspect
         // flows from the real pixel dims, not a hardcoded constant.
-        let logo_aspect = dims[0] as f32 / dims[1] as f32;
-        self.active_splash = Some(ui::splash::build_splash_descriptor(logo_aspect));
+        self.splash_logo_aspect = Some(dims[0] as f32 / dims[1] as f32);
         dims
     }
 
@@ -2783,7 +2777,8 @@ impl Renderer {
     /// input-dispatch seam (`UiDispatch::set_mode`). `None` when no splash is
     /// installed. The splash is non-interactive, so this reports `Passthrough`.
     pub fn splash_capture_mode(&self) -> Option<crate::input::UiCaptureMode> {
-        self.active_splash.as_ref().map(|d| d.capture_mode())
+        self.splash_logo_aspect
+            .map(|_| ui::splash::splash_capture_mode())
     }
 
     /// Store the once-per-frame read snapshot. The App calls this just before each
@@ -2845,31 +2840,28 @@ impl Renderer {
         view: &wgpu::TextureView,
         viewport: [u32; 2],
     ) {
-        let mut panel_list = ui::UiDrawList::new();
-        let mut logo_list = ui::UiDrawList::new();
-        let mut texts: Vec<ui::UiText> = Vec::new();
+        // Background fill quad (drawn first, behind the panel) stays outside the
+        // tree — it is a plain oversized letterbox fill, not part of the panel
+        // composition. Projected through the `layout` path like before.
+        let bg = ui::splash::SplashDescriptor::background_element(splash::splash_bg_rgba());
+        let mut panel_list = ui::layout::project(&[bg], viewport);
 
-        if let Some(desc) = self.active_splash.as_ref() {
-            let scale = ui::layout::device_scale(viewport);
-
-            // Background fill as the first quad, then the framed panel quads.
-            let bg = ui::splash::SplashDescriptor::background_element(splash::splash_bg_rgba());
-            let mut panel_elems = vec![bg];
-            panel_elems.extend_from_slice(&desc.panel_elements());
-            panel_list = ui::layout::project(&panel_elems, viewport);
-
-            // Logo: separate textured batch with its own bound texture.
-            logo_list = ui::layout::project(&[desc.logo_element()], viewport);
-
-            // Shaped text from the read-handle snapshot. Skipped if the snapshot
-            // carries no line (keeps the glyphon path off the empty case).
-            if !self.ui_snapshot.version_line.is_empty() {
-                texts.push(desc.text_line(&self.ui_snapshot.version_line, viewport, scale));
-            }
+        // Lay the splash descriptor tree out (panel/fill quads + logo image batch
+        // + version text), rebuilt each frame from the stored logo aspect and the
+        // snapshot's version line. Empty when no splash is installed (frame 0).
+        let mut draw = ui::tree::UiDrawData::default();
+        if let Some(aspect) = self.splash_logo_aspect {
+            let desc = ui::splash::build_splash_descriptor(aspect, &self.ui_snapshot.version_line);
+            draw = self.ui.layout_tree(desc.tree(), viewport);
         }
 
-        // The white panel bind group lives inside `self.ui`; clone it (Arc-backed)
-        // so the batch reference does not collide with `encode`'s `&mut self.ui`.
+        // The tree's panel quads (border + fill) draw behind the logo/text, in
+        // the white-texel batch with the background fill — panels + bg share the
+        // 1×1 white texel, so they concatenate into one batch.
+        panel_list
+            .instances
+            .extend_from_slice(&draw.quads.instances);
+
         let white_bg = self.ui.white_bind_group().clone();
         let mut batches: Vec<ui::UiBatch> = Vec::new();
         if !panel_list.is_empty() {
@@ -2878,15 +2870,24 @@ impl Renderer {
                 bind_group: &white_bg,
             });
         }
-        if let Some(logo) = self.splash_logo.as_ref() {
-            if !logo_list.is_empty() {
-                batches.push(ui::UiBatch {
-                    list: &logo_list,
-                    bind_group: &logo.bind_group,
-                });
+        // Each image batch (the logo) binds the texture its asset key resolves to
+        // through the registry. Unknown keys are skipped-with-warn.
+        for (asset, list) in &draw.images {
+            if list.is_empty() {
+                continue;
+            }
+            match self.ui_images.resolve(asset) {
+                Some(bind_group) => batches.push(ui::UiBatch { list, bind_group }),
+                None => log::warn!(
+                    "[Renderer] UI image asset key '{asset}' is not registered — skipping its draw"
+                ),
             }
         }
 
+        // The splash path ALWAYS opens the pass with the black clear, even when
+        // the draw lists are empty (frame 0 before install) — the boot "frame-0
+        // black" step depends on this. The gameplay-path empty-tree early-out is
+        // separate (see `render_frame_indirect`).
         self.ui.encode(
             &self.device,
             &self.queue,
@@ -2895,15 +2896,15 @@ impl Renderer {
             viewport,
             wgpu::LoadOp::Clear(wgpu::Color::BLACK),
             &batches,
-            &texts,
+            &draw.texts,
         );
     }
 
-    /// Clear the active splash descriptor and logo binding so post-transition
-    /// frames record an empty UI draw list. The UI pass itself survives.
+    /// Clear the active splash + its logo registration so post-transition frames
+    /// record no splash. The UI pass itself survives.
     pub fn clear_splash(&mut self) {
-        self.active_splash = None;
-        self.splash_logo = None;
+        self.splash_logo_aspect = None;
+        self.ui_images.clear();
     }
 
     /// `true` when the loaded map carries a baked SH volume. The diagnostic
@@ -4259,20 +4260,49 @@ impl Renderer {
         // UI pass: records into the surface `view` with `LoadOp::Load` after the
         // world/fog/wireframe/debug-line passes, before the timing resolve and
         // submit — beneath the egui overlay (which draws in the caller's separate
-        // submission). The gameplay path encodes an empty draw here; the pass
-        // locks the UI draw's frame-order position so that when per-frame UI
-        // content arrives later it lands in the correct place. `ui_snapshot` is
-        // set by the App each frame but not read on this path.
-        self.ui.encode(
-            &self.device,
-            &self.queue,
-            &mut encoder,
-            &view,
-            [self.surface_config.width, self.surface_config.height],
-            wgpu::LoadOp::Load,
-            &[],
-            &[],
-        );
+        // submission).
+        //
+        // The gameplay path lays out the snapshot's descriptor tree (renderer
+        // owns layout) and records its draw data. EMPTY-TREE EARLY-OUT: when the
+        // snapshot carries no tree, or the tree lays out empty, the pass is
+        // skipped entirely — no `begin_render_pass`. This is the gameplay-path-
+        // only early-out (A follow-up #3); the splash path opens the pass
+        // unconditionally for its frame-0 black clear (see `record_splash_ui`).
+        let ui_viewport = [self.surface_config.width, self.surface_config.height];
+        if let Some(tree) = self.ui_snapshot.gameplay_tree.clone() {
+            let draw = self.ui.layout_tree(&tree, ui_viewport);
+            if !draw.is_empty() {
+                let white_bg = self.ui.white_bind_group().clone();
+                let mut batches: Vec<ui::UiBatch> = Vec::new();
+                if !draw.quads.is_empty() {
+                    batches.push(ui::UiBatch {
+                        list: &draw.quads,
+                        bind_group: &white_bg,
+                    });
+                }
+                for (asset, list) in &draw.images {
+                    if list.is_empty() {
+                        continue;
+                    }
+                    match self.ui_images.resolve(asset) {
+                        Some(bind_group) => batches.push(ui::UiBatch { list, bind_group }),
+                        None => log::warn!(
+                            "[Renderer] UI image asset key '{asset}' is not registered — skipping its draw"
+                        ),
+                    }
+                }
+                self.ui.encode(
+                    &self.device,
+                    &self.queue,
+                    &mut encoder,
+                    &view,
+                    ui_viewport,
+                    wgpu::LoadOp::Load,
+                    &batches,
+                    &draw.texts,
+                );
+            }
+        }
 
         if let Some(timing) = &self.frame_timing {
             timing.encode_resolve(&mut encoder);

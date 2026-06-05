@@ -17,9 +17,8 @@ use self::text::UiTextRenderer;
 pub(crate) mod layout;
 
 /// Serde descriptor model for the UI widget tree: the `Widget` enum, its field
-/// structs, and the `AnchoredTree` placement envelope. Pure data — layout
-/// (taffy) and the retained tree land in later Goal B tasks.
-#[allow(dead_code)]
+/// structs, and the `AnchoredTree` placement envelope. Pure data — the retained
+/// tree (`tree`) maps it onto taffy and the renderer lays it out.
 pub(crate) mod descriptor;
 
 /// glyphon shaped-text half of the pass: embedded font, glyph atlas/renderer,
@@ -30,8 +29,8 @@ pub(crate) mod text;
 /// Retained widget tree: maps the `descriptor` model into a `taffy::TaffyTree`,
 /// computes flex/grid layout, and reads laid-out rects back into the device-pixel
 /// draw list + shaped-text entries through the `layout` projection path. taffy
-/// lives entirely here (renderer-owns-GPU). Wired into the renderer in a later task.
-#[allow(dead_code)]
+/// lives entirely here (renderer-owns-GPU). The renderer lays out the splash and
+/// gameplay descriptor trees through it.
 pub(crate) mod tree;
 
 pub(crate) use self::text::UiText;
@@ -52,6 +51,13 @@ mod splash_layout_test;
 /// readback. Self-skips when no GPU adapter is present — never the hard gate.
 #[cfg(test)]
 mod splash_golden_test;
+
+/// Hard-gate CPU assertion for the gameplay UI path (Task 6): the renderer builds
+/// a non-empty draw list from a fixture descriptor tree, and an empty tree
+/// early-outs the UI pass (no `begin_render_pass`). Pure CPU — asserts the
+/// layout + early-out decision the renderer's gameplay path makes, without a GPU.
+#[cfg(test)]
+mod gameplay_ui_gate_test;
 
 /// Headless regression for the multi-batch instance-buffer clobber: encodes two
 /// non-empty batches into disjoint screen regions and asserts each region keeps
@@ -176,24 +182,96 @@ impl UiDrawList {
 /// Once-per-frame published read-only snapshot the UI pass reads when it records.
 /// Stored on the `Renderer` via a setter the `App` calls just before each render
 /// call — NOT threaded as a render parameter, so both render signatures stay
-/// stable. In Goal A it carries only the version/tagline line the splash's shaped
-/// text renders, exercising the once-per-frame contract with a real value; B/BIS
-/// widen it with gameplay UI state. Narrow by design — the *shape* is the
-/// contract.
+/// stable.
+///
+/// Goal B widens this from a bare `version_line` to carry the frame's descriptor
+/// tree (`gameplay_tree`) — the content side of the game-logic→render contract.
+/// The renderer lays the tree out (taffy/glyphon live in the renderer per
+/// renderer-owns-GPU); the snapshot carries the descriptor, never laid-out rects.
+/// `version_line` stays for the splash path, whose tree the renderer assembles
+/// from this line plus the renderer-owned logo binding (see `record_splash_ui`).
 #[derive(Debug, Clone, Default)]
 pub(crate) struct UiReadSnapshot {
-    /// Version/tagline string the splash shaped-text line renders. Empty on the
-    /// gameplay path in A (no consumer until B/BIS), which still locks the
-    /// once-per-frame setter contract.
+    /// Version/tagline string the splash's shaped-text line renders. Read only on
+    /// the splash path; empty on the gameplay path.
     pub version_line: String,
+    /// The gameplay-path descriptor tree to lay out and draw this frame. `None`
+    /// (the default) on the splash path and whenever gameplay publishes no UI —
+    /// the renderer's UI pass then early-outs with no `begin_render_pass`. Goal B
+    /// has no gameplay UI producer yet; the field locks the content contract and
+    /// the test gate feeds it a fixture tree.
+    pub gameplay_tree: Option<descriptor::AnchoredTree>,
 }
 
 impl UiReadSnapshot {
-    /// Snapshot carrying the splash version/tagline line.
+    /// Snapshot carrying the splash version/tagline line (splash path).
     pub fn with_version_line(version_line: impl Into<String>) -> Self {
         Self {
             version_line: version_line.into(),
+            gameplay_tree: None,
         }
+    }
+
+    /// Snapshot carrying a gameplay-path descriptor tree (the content side). The
+    /// renderer lays it out into the UI draw list.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn with_gameplay_tree(tree: descriptor::AnchoredTree) -> Self {
+        Self {
+            version_line: String::new(),
+            gameplay_tree: Some(tree),
+        }
+    }
+}
+
+/// Small key→bind-group registry for `image` widget assets. The descriptor's
+/// `image` nodes reference a texture by string key; the renderer pre-registers
+/// the known keys (Goal B: only the splash logo) and resolves each image batch's
+/// key through this map to the bind group the draw binds.
+///
+/// Scope is deliberately tiny (Goal B out-of-scope: dynamic asset streaming):
+/// only pre-registered keys resolve. An unknown key is skipped-with-warn at draw
+/// time — the image batch simply does not draw, and a single warning names the
+/// missing key (logged once per resolve, not per frame, since gameplay has no
+/// image producer yet). Each entry owns its texture so the bind group's view
+/// stays valid for the registry's lifetime.
+#[derive(Default)]
+pub(crate) struct UiImageRegistry {
+    entries: std::collections::HashMap<String, UiImageEntry>,
+}
+
+struct UiImageEntry {
+    /// Kept alive so the bind group's texture view stays valid.
+    _texture: wgpu::Texture,
+    bind_group: wgpu::BindGroup,
+}
+
+impl UiImageRegistry {
+    /// Register (or replace) the bind group + owning texture for `key`. The
+    /// texture is held so its view outlives every draw that binds the group.
+    pub fn register(
+        &mut self,
+        key: impl Into<String>,
+        texture: wgpu::Texture,
+        bind_group: wgpu::BindGroup,
+    ) {
+        let key = key.into();
+        self.entries.insert(
+            key,
+            UiImageEntry {
+                _texture: texture,
+                bind_group,
+            },
+        );
+    }
+
+    /// Resolve `key` to its bind group, or `None` if no such key is registered.
+    pub fn resolve(&self, key: &str) -> Option<&wgpu::BindGroup> {
+        self.entries.get(key).map(|e| &e.bind_group)
+    }
+
+    /// Drop all registered images (splash teardown).
+    pub fn clear(&mut self) {
+        self.entries.clear();
     }
 }
 
@@ -464,6 +542,24 @@ impl UiPass {
                 },
             ],
         })
+    }
+
+    /// Lay a descriptor tree out into device-pixel draw data, threading the
+    /// pass's glyphon `FontSystem` so text nodes size from real shaped-run
+    /// metrics (the taffy↔glyphon measure seam). The renderer calls this for both
+    /// the splash and gameplay descriptor trees, then turns the draw data into
+    /// `UiBatch`es. Layout (taffy) runs on the CPU here — no `wgpu` call — so the
+    /// GPU stays untouched until `encode`. Builds a fresh `UiTree` per call: Goal
+    /// B's content is rebuilt each frame (the gameplay tree arrives in the
+    /// per-frame snapshot), and the retained tree's dirty-gating is exercised by
+    /// its own tests.
+    pub fn layout_tree(
+        &mut self,
+        tree: &descriptor::AnchoredTree,
+        viewport: [u32; 2],
+    ) -> tree::UiDrawData {
+        let mut ui_tree = tree::UiTree::from_descriptor(tree);
+        ui_tree.build_draw_data(viewport, self.text.font_system_mut())
     }
 
     /// Record the UI batches and shaped-text lines into `view`. Single color

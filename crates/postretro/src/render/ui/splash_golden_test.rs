@@ -27,9 +27,9 @@
 // See: context/plans/in-progress/M13--ui-render-pass-slice (Task 6b; "optional
 // headless golden ... self-skips ... not the hard gate").
 
-use super::layout::{self, device_scale};
+use super::layout;
 use super::splash::{SplashDescriptor, build_splash_descriptor};
-use super::{UiBatch, UiDrawList, UiPass, UiText};
+use super::{UiBatch, UiDrawList, UiPass};
 use crate::render::splash::splash_bg_rgba;
 
 /// Offscreen render-target size. The exact 1280x720 reference (device scale 1.0,
@@ -118,33 +118,35 @@ fn render_splash_offscreen(ctx: &GpuCtx) -> Readback {
     });
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
 
-    // Assemble the splash draw list exactly as `Renderer::record_splash_ui`:
-    // oversized background fill first, then the framed panel quads (border, fill).
+    // Assemble the splash draw data exactly as `Renderer::record_splash_ui`:
+    // oversized background fill first (outside the tree), then the descriptor
+    // tree's panel quads + version text laid out through the pass's font system.
     let viewport = [TARGET_W, TARGET_H];
     // The real banner asset is 2028x582; the structural golden only needs the
     // panel-vs-background contrast, so any plausible logo aspect serves — pass the
     // real source aspect so the descriptor is shaped exactly as the engine builds it.
-    let desc: SplashDescriptor = build_splash_descriptor(2028.0 / 582.0);
-    let scale = device_scale(viewport);
+    let desc: SplashDescriptor = build_splash_descriptor(2028.0 / 582.0, "postretro v0.1.0");
 
     let bg = SplashDescriptor::background_element(splash_bg_rgba());
-    let mut panel_elems = vec![bg];
-    panel_elems.extend_from_slice(&desc.panel_elements());
-    let panel_list: UiDrawList = layout::project(&panel_elems, viewport);
+    let mut panel_list: UiDrawList = layout::project(&[bg], viewport);
+    // The tree's panel quads (border + fill) concatenate into the white-texel
+    // batch behind the logo/text. The logo's own texture binding is not needed
+    // for the structural assertion (background-vs-panel contrast), so its image
+    // batch is omitted — the golden does not depend on the committed PNG. The
+    // version text is encoded through the pass so the full path runs on-device;
+    // its pixels are not asserted.
+    let draw = pass.layout_tree(desc.tree(), viewport);
+    panel_list
+        .instances
+        .extend_from_slice(&draw.quads.instances);
 
-    // Drive the shaped-text path through the pass (the read-handle line) so the
-    // full encode runs on the device. Its pixels are not asserted.
-    let text = desc.text_line("postretro v0.1.0", viewport, scale);
-    let texts: [UiText; 1] = [text];
-
-    // Panels sample the pass's 1x1 white texel. The logo's own texture binding is
-    // not needed for the structural assertion (background-vs-panel contrast), so it
-    // is omitted — the golden does not depend on the committed PNG.
+    // Panels sample the pass's 1x1 white texel.
     let white_bg = pass.white_bind_group().clone();
     let batches = [UiBatch {
         list: &panel_list,
         bind_group: &white_bg,
     }];
+    let texts = draw.texts;
 
     let mut encoder = ctx
         .device

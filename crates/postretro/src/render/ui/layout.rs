@@ -87,7 +87,10 @@ impl UiElement {
         }
     }
 
-    /// Solid-color panel with a 9-slice margin (logical-reference px).
+    /// Solid-color panel with a 9-slice margin (logical-reference px). Now only
+    /// the layout tests exercise this directly — the splash builds 9-slice panels
+    /// through the descriptor tree's `Border`.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn panel_9slice(
         anchor: Anchor,
         offset: [f32; 2],
@@ -101,7 +104,10 @@ impl UiElement {
         }
     }
 
-    /// Textured image: full texture, untinted (white).
+    /// Textured image: full texture, untinted (white). Splash images now flow
+    /// through the descriptor tree's `image` nodes; the layout tests still use
+    /// this for the projection-path assertions.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn image(anchor: Anchor, offset: [f32; 2], size: [f32; 2]) -> Self {
         Self {
             anchor,

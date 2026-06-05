@@ -5,13 +5,13 @@
 // See: context/plans/in-progress/M13--descriptor-tree-layout
 
 use taffy::prelude::{
-    AlignItems, AvailableSpace, Display, FlexDirection, Layout, NodeId, Size, Style, TaffyTree,
-    evenly_sized_tracks, length,
+    AlignItems, AvailableSpace, Display, FlexDirection, Layout, NodeId, Position, Size, Style,
+    TaffyTree, evenly_sized_tracks, length,
 };
 
 use super::descriptor::{
-    Align, AnchoredTree, Border, ContainerWidget, GridWidget, ImageWidget, PanelWidget, TextWidget,
-    Widget,
+    Align, AnchoredTree, Border, ContainerWidget, GridWidget, ImageWidget, PanelWidget, Place,
+    TextWidget, Widget,
 };
 use super::layout::{Anchor, REFERENCE_HEIGHT, REFERENCE_WIDTH};
 use glyphon::FontSystem;
@@ -26,11 +26,15 @@ use super::{UiDrawList, UiInstance};
 enum NodeContext {
     /// Shaped-text run. `color` is linear RGBA from the descriptor; the draw-list
     /// build converts it to glyphon's `[u8; 4]` sRGB. Carries its own `font_size`
-    /// (device-scaled at draw time) since taffy does not retain it.
+    /// (device-scaled at draw time) since taffy does not retain it. `center_x`
+    /// mirrors the descriptor's `Place::center_x`: when set, the node's
+    /// reference origin x names a center line and the run is shifted left by half
+    /// its measured width at draw-list build, centering it on that line.
     Text {
         content: String,
         font_size: f32,
         color: [f32; 4],
+        center_x: bool,
     },
     /// Solid-fill panel quad, optionally framed by a 9-slice `border`. `fill`
     /// stays linear `[f32; 4]` — no sRGB conversion on the quad path.
@@ -236,23 +240,35 @@ impl UiTree {
                     border.as_ref(),
                 ));
             }
-            Some(NodeContext::Image { asset: _ }) => {
-                // White-tinted image quad; the asset key drives texture binding in
-                // the renderer wiring step. UV/full-texture defaults apply.
+            Some(NodeContext::Image { asset }) => {
+                // White-tinted image quad grouped by its `asset` key so the
+                // renderer can bind the matching texture for that group. UV/full-
+                // texture defaults apply. Quads for the same key concatenate into
+                // one batch; the renderer resolves the key→bind-group at encode.
                 let rect = project_rect(ref_origin, layout, scale, canvas_origin);
-                data.quads.push(UiInstance::image(rect));
+                data.image_quad_for(asset).push(UiInstance::image(rect));
             }
             Some(NodeContext::Text {
                 content,
                 font_size,
                 color,
+                center_x,
             }) => {
                 // Device-pixel top-left + device-scaled font size; color converts
                 // linear RGBA -> sRGB [u8; 4] at draw-list build time.
                 let rect = project_rect(ref_origin, layout, scale, canvas_origin);
+                // `center_x` treats rect-left as a center line: back off half the
+                // measured (now laid-out) run width so the line centers on it.
+                // The width comes from the glyphon measure seam, so this is the
+                // measured-width centering the splash version text needs.
+                let left = if *center_x {
+                    rect[0] - rect[2] * 0.5
+                } else {
+                    rect[0]
+                };
                 data.texts.push(UiText::new(
                     content.clone(),
-                    [rect[0], rect[1]],
+                    [left, rect[1]],
                     font_size * scale,
                     linear_rgba_to_srgb_u8(*color),
                 ));
@@ -309,28 +325,35 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget) -> NodeId {
             content,
             font_size,
             color,
+            place,
         }) => {
-            // No explicit size: text nodes are sized by the measure closure in
-            // `build_draw_data`, which shapes `content` at `font_size` through
-            // glyphon and returns the real shaped-run extent. The `NodeContext`
-            // carries the content/font_size the closure reads back.
+            // No explicit size by default: text nodes are sized by the measure
+            // closure in `build_draw_data`, which shapes `content` at `font_size`
+            // through glyphon and returns the real shaped-run extent. A `place`
+            // can pin/size the run (the splash version line centers via it).
             taffy
                 .new_leaf_with_context(
-                    Style::default(),
+                    place_style(place.as_ref()),
                     NodeContext::Text {
                         content: content.clone(),
                         font_size: *font_size,
                         color: *color,
+                        center_x: place.as_ref().is_some_and(|p| p.center_x),
                     },
                 )
                 .expect("taffy leaf creation must succeed")
         }
-        Widget::Panel(PanelWidget { fill, border }) => {
+        Widget::Panel(PanelWidget {
+            fill,
+            border,
+            place,
+        }) => {
             // A panel sizes to fill its slot (parent stretch / explicit parent
-            // size). No intrinsic size of its own — it is a backing fill.
+            // size) unless `place` pins a fixed size / absolute inset — the
+            // splash's backing panels and fill use the latter.
             taffy
                 .new_leaf_with_context(
-                    Style::default(),
+                    place_style(place.as_ref()),
                     NodeContext::Panel {
                         fill: *fill,
                         border: border.clone(),
@@ -338,9 +361,9 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget) -> NodeId {
                 )
                 .expect("taffy leaf creation must succeed")
         }
-        Widget::Image(ImageWidget { asset }) => taffy
+        Widget::Image(ImageWidget { asset, place }) => taffy
             .new_leaf_with_context(
-                Style::default(),
+                place_style(place.as_ref()),
                 NodeContext::Image {
                     asset: asset.clone(),
                 },
@@ -363,6 +386,45 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget) -> NodeId {
     }
 }
 
+/// Map a leaf's optional `Place` to a taffy `Style`. Absent → default (flex/
+/// measured sizing). A `size` pins both axes; an `inset` switches the node to
+/// `Position::Absolute` and pins its left/top within the parent's content box.
+/// `center_x` is NOT applied here — it shifts the run at draw-list build (the
+/// width it centers on is only known after measurement), so the absolute inset
+/// is left at the center line and the shift happens in `collect_node`.
+fn place_style(place: Option<&Place>) -> Style {
+    let mut style = Style::default();
+    apply_place(&mut style, place);
+    style
+}
+
+/// Overlay an optional `Place` onto an existing `Style` (container or leaf): a
+/// `size` pins both axes; an `inset` switches the node to `Position::Absolute`
+/// and pins its left/top. `center_x` is NOT applied here — it shifts the run at
+/// draw-list build (the width it centers on is only known after measurement).
+fn apply_place(style: &mut Style, place: Option<&Place>) {
+    let Some(place) = place else {
+        return;
+    };
+    if let Some([w, h]) = place.size {
+        style.size = Size {
+            width: length(w),
+            height: length(h),
+        };
+    }
+    if let Some([left, top]) = place.inset {
+        style.position = Position::Absolute;
+        // Pin left/top; leave right/bottom auto so the node keeps its own size
+        // (from `size` or the measure seam) rather than stretching to the parent.
+        style.inset = taffy::geometry::Rect {
+            left: length(left),
+            top: length(top),
+            right: taffy::style_helpers::auto(),
+            bottom: taffy::style_helpers::auto(),
+        };
+    }
+}
+
 /// Build a flex stack node (`vstack` → column, `hstack` → row).
 fn build_stack(
     taffy: &mut TaffyTree<NodeContext>,
@@ -374,11 +436,12 @@ fn build_stack(
         .iter()
         .map(|child| build_node(taffy, child))
         .collect();
-    let style = Style {
+    let mut style = Style {
         display: Display::Flex,
         flex_direction: direction,
         ..container_base_style(container.gap, container.padding, container.align)
     };
+    apply_place(&mut style, container.place.as_ref());
     taffy
         .new_with_children(style, &children)
         .expect("taffy container creation must succeed")
@@ -404,13 +467,46 @@ fn build_grid(taffy: &mut TaffyTree<NodeContext>, grid: &GridWidget) -> NodeId {
         .expect("taffy grid creation must succeed")
 }
 
-/// Computed draw entries from one tree: a device-pixel quad `UiDrawList`
-/// (panels/images) and device-positioned shaped-text lines. Quads draw first,
-/// text composites over them — the order the UI pass records in.
+/// Computed draw entries from one tree: a device-pixel panel quad `UiDrawList`,
+/// per-asset image quad lists, and device-positioned shaped-text lines. Panels
+/// draw first (one batch, the pass's white texel), then each image group (one
+/// batch per `asset`, its own bound texture), then text composites over them —
+/// the order the UI pass records in.
+///
+/// Image quads are split out from panels because each `asset` key binds a
+/// distinct texture: the renderer resolves the key through its image registry to
+/// a bind group, so the tree groups image quads by key rather than folding them
+/// into the panel list. `images` preserves first-seen key order so draw order is
+/// deterministic.
 #[derive(Debug, Default)]
 pub(crate) struct UiDrawData {
     pub quads: UiDrawList,
+    /// Image quad batches keyed by `asset`, in first-seen order. Each entry is
+    /// `(asset_key, quads)`; the renderer binds the key's texture for its quads.
+    pub images: Vec<(String, UiDrawList)>,
     pub texts: Vec<UiText>,
+}
+
+impl UiDrawData {
+    /// `true` when this tree produced no drawable output: no panel quads, no
+    /// image quads, and no text. The renderer's gameplay path early-outs the UI
+    /// pass (no `begin_render_pass`) on an empty tree.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.quads.is_empty()
+            && self.texts.is_empty()
+            && self.images.iter().all(|(_, list)| list.is_empty())
+    }
+
+    /// Mutable handle to the quad list for `asset`, creating an empty list in
+    /// first-seen order if the key is new. Keeps all quads sharing a texture in
+    /// one batch so the renderer issues one draw per bound image.
+    fn image_quad_for(&mut self, asset: &str) -> &mut UiDrawList {
+        if let Some(idx) = self.images.iter().position(|(k, _)| k == asset) {
+            return &mut self.images[idx].1;
+        }
+        self.images.push((asset.to_string(), UiDrawList::new()));
+        &mut self.images.last_mut().expect("just pushed").1
+    }
 }
 
 /// Project a node's reference-space rect (origin + taffy size) to a device-pixel
@@ -530,7 +626,11 @@ mod tests {
     /// an explicit size via a single-child stack with a sized panel is awkward —
     /// instead test fixtures build sized leaves directly through descriptors.
     fn panel(fill: [f32; 4]) -> Widget {
-        Widget::Panel(PanelWidget { fill, border: None })
+        Widget::Panel(PanelWidget {
+            fill,
+            border: None,
+            place: None,
+        })
     }
 
     fn spacer(flex_grow: f32) -> Widget {
@@ -543,6 +643,7 @@ mod tests {
             padding,
             align,
             children,
+            place: None,
         })
     }
 
@@ -552,6 +653,7 @@ mod tests {
             padding,
             align,
             children,
+            place: None,
         })
     }
 
@@ -565,6 +667,7 @@ mod tests {
             content: content.into(),
             font_size,
             color: [1.0, 1.0, 1.0, 1.0],
+            place: None,
         })
     }
 
@@ -758,6 +861,7 @@ mod tests {
                 content: "XX".into(),
                 font_size: 10.0,
                 color: [1.0; 4],
+                place: None,
             })
         };
         let tree = AnchoredTree {
@@ -815,6 +919,7 @@ mod tests {
                 content: "ABCDEFGH".into(),
                 font_size: 40.0,
                 color: [1.0, 1.0, 1.0, 1.0],
+                place: None,
             }),
         };
         let mut ui = UiTree::from_descriptor(&tree);
@@ -850,6 +955,7 @@ mod tests {
                 content: "x".into(),
                 font_size: 13.0,
                 color: [0.5, 0.5, 0.5, 1.0],
+                place: None,
             })
         };
         let tree = AnchoredTree {

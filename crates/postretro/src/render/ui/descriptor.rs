@@ -46,29 +46,106 @@ pub enum Widget {
     Spacer(SpacerWidget),
 }
 
+/// Optional explicit placement for a leaf widget: a fixed logical-reference
+/// `size` and, when `absolute` is set, an absolute `inset` from the parent's
+/// top-left (taffy `Position::Absolute`). Leaves without a `Place` size from
+/// their flex/grid slot or measured content, as before — this is the escape
+/// hatch the boot splash uses to reproduce its fixed-size, overlaid composition
+/// (a backing panel with the logo and version text placed over it). Without it,
+/// the size-less widget vocab cannot express the splash's exact pixel layout.
+///
+/// All fields skip-serialize when absent, so a leaf carrying no `place` keeps
+/// the same wire form it had before this field existed (round-trip identity
+/// holds for descriptors that never set it).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Place {
+    /// Fixed size in logical-reference px, `[width, height]`. `None` keeps the
+    /// node's flex/measured sizing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<[f32; 2]>,
+    /// Absolute inset from the parent's content box top-left, logical-reference
+    /// px `[left, top]`. When set, the node is taken out of flow
+    /// (`Position::Absolute`) and pinned at this offset — the splash overlays
+    /// its fill/logo/text over the backing panel this way. `None` leaves the
+    /// node in normal flow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inset: Option<[f32; 2]>,
+    /// When set, the node's `inset[0]` names a horizontal CENTER line (in the
+    /// parent's content box) rather than the node's left edge: the layout
+    /// shifts the node left by half its measured/laid-out width so it centers
+    /// on that line. Lets the splash version text center on the panel center
+    /// from its real shaped-run width (the measured-width centering Goal B owes
+    /// A). Only meaningful with an absolute `inset`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub center_x: bool,
+}
+
+impl Place {
+    /// An absolutely-positioned, fixed-size placement at `inset` of `size`.
+    pub fn at(inset: [f32; 2], size: [f32; 2]) -> Self {
+        Self {
+            size: Some(size),
+            inset: Some(inset),
+            center_x: false,
+        }
+    }
+
+    /// A fixed-size placement that stays in normal flow (no absolute inset). The
+    /// splash root container uses this to pin the panel box.
+    pub fn sized(size: [f32; 2]) -> Self {
+        Self {
+            size: Some(size),
+            inset: None,
+            center_x: false,
+        }
+    }
+
+    /// An absolutely-positioned placement whose `inset[0]` is a horizontal
+    /// center line: the node centers on it from its own measured width. Size is
+    /// left to the measure seam (text), so no `size` is set.
+    pub fn centered_x(inset: [f32; 2]) -> Self {
+        Self {
+            size: None,
+            inset: Some(inset),
+            center_x: true,
+        }
+    }
+}
+
 /// Leaf text run. `content` is the literal string; `font_size` is logical px;
-/// `color` is linear RGBA.
+/// `color` is linear RGBA. `place` optionally pins the run (see `Place`); when
+/// absent the run is sized by the glyphon measure seam and laid out in flow.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TextWidget {
     pub content: String,
     pub font_size: f32,
     pub color: [f32; 4],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place: Option<Place>,
 }
 
 /// Solid-fill panel with an optional 9-slice border. `fill` is linear RGBA.
+/// `place` optionally gives the panel a fixed size / absolute inset (see
+/// `Place`); when absent the panel fills its slot, as before.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PanelWidget {
     pub fill: [f32; 4],
     pub border: Option<Border>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place: Option<Place>,
 }
 
-/// Leaf image referencing a texture asset by key.
+/// Leaf image referencing a texture asset by key. `place` optionally gives the
+/// image a fixed size / absolute inset (see `Place`); the splash logo uses it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImageWidget {
     pub asset: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place: Option<Place>,
 }
 
 /// Stack container (`vstack`/`hstack`). Lays its `children` out along one axis
@@ -82,6 +159,12 @@ pub struct ContainerWidget {
     pub padding: f32,
     pub align: Align,
     pub children: Vec<Widget>,
+    /// Optional fixed/absolute placement (see `Place`). Containers normally
+    /// content-size from their children; a `place` pins a fixed box. The splash
+    /// uses it to give its root container the panel box, so the anchored root
+    /// size is fixed regardless of the (absolutely-placed) children.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place: Option<Place>,
 }
 
 /// Grid container. Like a stack but flows `children` across a fixed number of

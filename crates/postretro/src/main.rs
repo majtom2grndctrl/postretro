@@ -933,6 +933,15 @@ impl ApplicationHandler for App {
 
                 if let Some(snapshot) = gameplay_snapshot.as_ref() {
                     for _ in 0..ticks {
+                        // Order 0: transform snapshot. Copy current→previous for
+                        // every already-live entity before any movement/behavior
+                        // system mutates transforms this tick, so the renderer can
+                        // interpolate each entity between its start-of-tick and
+                        // post-tick pose. Entities spawned later this tick seed
+                        // previous == current at construction and are skipped here
+                        // (no pop on spawn). See: context/lib/entity_model.md §5.
+                        self.script_ctx.registry.borrow_mut().snapshot_transforms();
+
                         let forward_axis = snapshot.axis_value(Action::MoveForward);
                         let right_axis = snapshot.axis_value(Action::MoveRight);
                         let up_axis = snapshot.axis_value(Action::MoveUp);

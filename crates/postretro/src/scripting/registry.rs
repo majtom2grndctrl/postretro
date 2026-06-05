@@ -426,6 +426,14 @@ pub(crate) struct EntityRegistry {
     free_list: Vec<u16>,
     /// One component column per `ComponentKind`, indexed by slot index.
     components: [Vec<Option<ComponentValue>>; ComponentKind::COUNT],
+    /// Per-entity previous-tick transform, indexed by slot index. Holds the
+    /// `Transform` as of the *start* of the current fixed tick — the snapshot
+    /// the renderer interpolates from toward the live `Transform` column.
+    /// Kept parallel to `components` (not folded into a component) so the
+    /// snapshot pass and the render accessor read it without disturbing the
+    /// scripting component surface. `None` mirrors a dead/uninitialized slot.
+    /// See: context/lib/entity_model.md §5.
+    previous_transforms: Vec<Option<Transform>>,
     /// Parallel column of per-entity tag lists. Space-delimited in the PRL
     /// wire format; stored here as pre-split `Vec<String>` per slot. An entity
     /// matches `world.query({ tag: "t" })` when any of its tags equals `"t"`.
@@ -445,6 +453,7 @@ impl EntityRegistry {
             slots: Vec::new(),
             free_list: Vec::new(),
             components: std::array::from_fn(|_| Vec::new()),
+            previous_transforms: Vec::new(),
             tags: Vec::new(),
             kvp_table: HashMap::new(),
         }
@@ -587,6 +596,7 @@ impl EntityRegistry {
             for column in &mut self.components {
                 column.push(None);
             }
+            self.previous_transforms.push(None);
             self.tags.push(vec![]);
             i
         };
@@ -599,6 +609,10 @@ impl EntityRegistry {
         let id = EntityId::new(index, slot.generation);
         self.components[ComponentKind::Transform as usize][index as usize] =
             Some(ComponentValue::Transform(transform));
+        // Seed previous == current at construction so an entity spawned
+        // mid-tick (after the tick's snapshot pass already ran) never pops:
+        // its first interpolated transform blends from its own spawn pose.
+        self.previous_transforms[index as usize] = Some(transform);
         id
     }
 
@@ -616,6 +630,7 @@ impl EntityRegistry {
         for column in &mut self.components {
             column[index] = None;
         }
+        self.previous_transforms[index] = None;
         self.tags[index].clear();
         self.kvp_table.remove(&id);
         slot.live = false;
@@ -718,6 +733,61 @@ impl EntityRegistry {
         }
         *cell = None;
         Ok(())
+    }
+
+    /// Order-0 fixed-tick step: copy every live entity's current `Transform`
+    /// into its previous-tick slot. Runs once at the *start* of each tick,
+    /// before any movement/behavior system mutates transforms, so the renderer
+    /// can interpolate between the start-of-tick pose and the post-tick pose.
+    ///
+    /// Entities spawned later in the same tick are unaffected: `spawn` already
+    /// seeds previous == current, so they interpolate against themselves until
+    /// the next tick's snapshot runs (no pop on spawn). See:
+    /// context/lib/entity_model.md §5.
+    pub(crate) fn snapshot_transforms(&mut self) {
+        let transform_column = &self.components[ComponentKind::Transform as usize];
+        for (index, slot) in self.slots.iter().enumerate() {
+            if !slot.live || slot.retired {
+                continue;
+            }
+            // A live entity always carries a Transform (seeded at spawn), but
+            // guard rather than unwrap: a future code path could remove it, and
+            // a stale previous transform is less surprising than a panic.
+            if let Some(ComponentValue::Transform(current)) =
+                transform_column.get(index).and_then(|c| c.as_ref())
+            {
+                self.previous_transforms[index] = Some(*current);
+            }
+        }
+    }
+
+    /// Render-stage accessor: the entity's visual transform blended between its
+    /// previous-tick and current transforms by `alpha` (0 = previous, 1 =
+    /// current). Position and scale are component-lerped; rotation is
+    /// shortest-path slerped (glam's `Quat::slerp` negates one endpoint when
+    /// the dot is negative, so it never takes the long arc).
+    ///
+    /// `alpha` is supplied by the caller — the render-frame collector passes
+    /// the same frame alpha the player camera reads from `frame_timing`
+    /// (`current_alpha`). Returns `GenerationMismatch`/`EntityNotFound` for
+    /// stale or unknown ids, and `ComponentNotFound` if the entity carries no
+    /// `Transform`. See: context/lib/entity_model.md §5.
+    pub(crate) fn interpolated_transform(
+        &self,
+        id: EntityId,
+        alpha: f32,
+    ) -> Result<Transform, RegistryError> {
+        let index = self.validate(id)?;
+        let current = self.get_component::<Transform>(id)?;
+        // Previous is seeded at spawn and refreshed by the snapshot pass, so a
+        // live entity with a Transform always has one. Fall back to current if
+        // it is somehow absent rather than failing the render read.
+        let previous = self.previous_transforms[index].as_ref().unwrap_or(current);
+        Ok(Transform {
+            position: previous.position.lerp(current.position, alpha),
+            rotation: previous.rotation.slerp(current.rotation, alpha),
+            scale: previous.scale.lerp(current.scale, alpha),
+        })
     }
 }
 
@@ -988,6 +1058,204 @@ mod tests {
         reg.set_component(id, value.clone()).unwrap();
         let back = reg.get_component::<SpriteVisual>(id).unwrap();
         assert_eq!(*back, value);
+    }
+
+    // -- Per-entity transform interpolation (entity_model.md §5) --
+
+    // Approximate-equality epsilon for interpolated float comparisons. Slerp
+    // and lerp accumulate small rounding error; 1e-4 is loose enough to absorb
+    // it while still catching a wrong-half-path or off-by-alpha result.
+    const INTERP_EPSILON: f32 = 1e-4;
+
+    fn vec3_approx_eq(a: Vec3, b: Vec3) -> bool {
+        (a - b).length() < INTERP_EPSILON
+    }
+
+    #[test]
+    fn spawn_seeds_previous_transform_equal_to_current() {
+        // No-pop-on-spawn invariant: before any snapshot pass runs, a fresh
+        // entity must interpolate against itself, so any alpha returns its
+        // spawn pose unchanged.
+        let mut reg = EntityRegistry::new();
+        let spawn = sample_transform();
+        let id = reg.spawn(spawn);
+
+        for alpha in [0.0, 0.5, 1.0] {
+            let interp = reg.interpolated_transform(id, alpha).unwrap();
+            assert!(
+                vec3_approx_eq(interp.position, spawn.position),
+                "alpha={alpha}: position should equal spawn pose, got {:?}",
+                interp.position
+            );
+            assert!(
+                vec3_approx_eq(interp.scale, spawn.scale),
+                "alpha={alpha}: scale should equal spawn pose"
+            );
+            // angle_between is 0 when the rotations match (slerp of equal quats).
+            assert!(
+                interp.rotation.angle_between(spawn.rotation) < INTERP_EPSILON,
+                "alpha={alpha}: rotation should equal spawn pose"
+            );
+        }
+    }
+
+    #[test]
+    fn interpolated_transform_returns_midpoint_at_alpha_half() {
+        // Snapshot captures the start pose, then the live transform is moved.
+        // At alpha 0.5 the accessor must return the component-wise midpoint of
+        // position and scale.
+        let mut reg = EntityRegistry::new();
+        let start = Transform {
+            position: Vec3::new(0.0, 0.0, 0.0),
+            rotation: Quat::IDENTITY,
+            scale: Vec3::splat(1.0),
+        };
+        let id = reg.spawn(start);
+
+        // Order-0 snapshot freezes `start` as previous, then a movement system
+        // would write the new current transform.
+        reg.snapshot_transforms();
+        let end = Transform {
+            position: Vec3::new(10.0, 20.0, 30.0),
+            rotation: Quat::IDENTITY,
+            scale: Vec3::splat(3.0),
+        };
+        reg.set_component(id, end).unwrap();
+
+        let interp = reg.interpolated_transform(id, 0.5).unwrap();
+        assert!(
+            vec3_approx_eq(interp.position, Vec3::new(5.0, 10.0, 15.0)),
+            "position midpoint, got {:?}",
+            interp.position
+        );
+        assert!(
+            vec3_approx_eq(interp.scale, Vec3::splat(2.0)),
+            "scale midpoint, got {:?}",
+            interp.scale
+        );
+    }
+
+    #[test]
+    fn interpolated_transform_returns_endpoints_at_alpha_zero_and_one() {
+        let mut reg = EntityRegistry::new();
+        let start = Transform {
+            position: Vec3::new(1.0, 1.0, 1.0),
+            rotation: Quat::from_rotation_y(0.2),
+            scale: Vec3::splat(1.0),
+        };
+        let id = reg.spawn(start);
+        reg.snapshot_transforms();
+        let end = Transform {
+            position: Vec3::new(5.0, 5.0, 5.0),
+            rotation: Quat::from_rotation_y(1.2),
+            scale: Vec3::splat(4.0),
+        };
+        reg.set_component(id, end).unwrap();
+
+        let at_zero = reg.interpolated_transform(id, 0.0).unwrap();
+        assert!(
+            vec3_approx_eq(at_zero.position, start.position),
+            "alpha=0 yields previous-tick (start) position"
+        );
+
+        let at_one = reg.interpolated_transform(id, 1.0).unwrap();
+        assert!(
+            vec3_approx_eq(at_one.position, end.position),
+            "alpha=1 yields current (end) position"
+        );
+    }
+
+    #[test]
+    fn interpolated_transform_rotation_takes_shortest_path() {
+        // Shortest-path slerp: previous at -170° and current at +170° about Y
+        // are 340° apart the long way but only 20° apart the short way. The
+        // halfway blend must land near ±180° (the short arc's midpoint), not
+        // near 0° (the long arc's midpoint).
+        let mut reg = EntityRegistry::new();
+        let prev_angle = (-170.0f32).to_radians();
+        let curr_angle = 170.0f32.to_radians();
+
+        let start = Transform {
+            position: Vec3::ZERO,
+            rotation: Quat::from_rotation_y(prev_angle),
+            scale: Vec3::ONE,
+        };
+        let id = reg.spawn(start);
+        reg.snapshot_transforms();
+        reg.set_component(
+            id,
+            Transform {
+                position: Vec3::ZERO,
+                rotation: Quat::from_rotation_y(curr_angle),
+                scale: Vec3::ONE,
+            },
+        )
+        .unwrap();
+
+        let interp = reg.interpolated_transform(id, 0.5).unwrap();
+        // The short-arc midpoint is rotation by 180° about Y. Compare against
+        // that target; the long-arc midpoint (identity) would be ~180° away and
+        // fail this assertion.
+        let short_midpoint = Quat::from_rotation_y(180.0f32.to_radians());
+        assert!(
+            interp.rotation.angle_between(short_midpoint) < 1e-3,
+            "slerp should follow the 20-degree short arc, not the 340-degree long arc"
+        );
+    }
+
+    #[test]
+    fn snapshot_only_freezes_entities_live_at_snapshot_time() {
+        // An entity spawned after the snapshot pass must still read previous ==
+        // current (seeded at spawn), so it renders at its spawn pose with no
+        // pop, independent of when the snapshot ran.
+        let mut reg = EntityRegistry::new();
+        let early = reg.spawn(Transform {
+            position: Vec3::new(0.0, 0.0, 0.0),
+            ..Transform::default()
+        });
+
+        // Snapshot freezes `early`'s start pose, then `early` moves.
+        reg.snapshot_transforms();
+        reg.set_component(
+            early,
+            Transform {
+                position: Vec3::new(8.0, 0.0, 0.0),
+                ..Transform::default()
+            },
+        )
+        .unwrap();
+
+        // A mid-tick spawn lands AFTER the snapshot already ran.
+        let late_pose = Transform {
+            position: Vec3::new(100.0, 0.0, 0.0),
+            ..Transform::default()
+        };
+        let late = reg.spawn(late_pose);
+
+        // `early` interpolates across its moved range.
+        let early_interp = reg.interpolated_transform(early, 0.5).unwrap();
+        assert!(
+            vec3_approx_eq(early_interp.position, Vec3::new(4.0, 0.0, 0.0)),
+            "pre-snapshot entity interpolates across its tick movement"
+        );
+
+        // `late` does not pop: any alpha returns its spawn pose.
+        let late_interp = reg.interpolated_transform(late, 0.5).unwrap();
+        assert!(
+            vec3_approx_eq(late_interp.position, late_pose.position),
+            "post-snapshot spawn renders at spawn pose (no pop)"
+        );
+    }
+
+    #[test]
+    fn interpolated_transform_rejects_stale_id() {
+        let mut reg = EntityRegistry::new();
+        let id = reg.spawn(Transform::default());
+        reg.despawn(id).unwrap();
+        assert_eq!(
+            reg.interpolated_transform(id, 0.5),
+            Err(RegistryError::GenerationMismatch(id))
+        );
     }
 
     #[test]

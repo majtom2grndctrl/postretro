@@ -181,8 +181,8 @@ fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
     //     continuous gradients instead of stair-stepping at texel boundaries.
     //   - Direction (1) and animated direction (5) stay `filterable: false` on
     //     the nearest sampler: linear interpolation of direction vectors does
-    //     not commute with slerp (the static atlas is octahedral-encoded; the
-    //     animated atlas stores a raw normalized vec3 — both must read nearest).
+    //     not commute with slerp (both atlases are octahedral-encoded, so
+    //     both must read nearest).
     // There is one pipeline variant; the BGL is fixed. No fallback path.
     [
         wgpu::BindGroupLayoutEntry {

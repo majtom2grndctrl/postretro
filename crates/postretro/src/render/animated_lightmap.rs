@@ -1188,8 +1188,9 @@ mod tests {
     /// The compose pass fuses each texel's per-light incoming directions into a
     /// dominant-direction atlas so style-animated lights receive the same
     /// bumped-Lambert normal-map correction the static lightmap gets. Guard the
-    /// binding and store against silent removal. The atlas stores a raw
-    /// normalized vec3 — there is no oct encode on the compose side.
+    /// binding and store against silent removal. The atlas stores an octahedral
+    /// direction in `.rg` (via `encode_direction_oct`, the inverse of forward's
+    /// `decode_lightmap_direction`) plus a coverage flag in `.a`.
     #[test]
     fn compose_shader_emits_dominant_direction_atlas() {
         let src = include_str!("../shaders/animated_lightmap_compose.wgsl");
@@ -1201,9 +1202,9 @@ mod tests {
             src.contains("animated_lm_direction_atlas"),
             "the direction atlas must be referenced by the compose shader",
         );
-        // One main-path store into the direction atlas. The store writes a raw
-        // normalized vec3 (no oct encode), so assert the binding + write exist
-        // rather than an encode helper.
+        // One main-path store into the direction atlas. Assert the binding +
+        // write exist rather than pinning the exact encoding, so the test
+        // survives octahedral-encoding tweaks.
         let dir_stores = src.matches("animated_lm_direction_atlas").count();
         assert!(
             dir_stores >= 2,

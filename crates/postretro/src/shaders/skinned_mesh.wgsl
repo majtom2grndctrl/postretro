@@ -15,10 +15,19 @@
 // from forward.wgsl. `tangent_packed` (location 3) is carried but unused this
 // slice (flat-lit); its decode lands with the lighting / normal-mapping work.
 //
-// Lighting: flat-lit this slice — the fragment samples the material base-color
-// texture (group 1) and outputs it with a trivial constant ambient term. The
-// settled dynamic-entity lighting interface gets its own ADDITIVE bind group
-// later (the broadening lighting task); no lighting group is allocated here.
+// Lighting: SH-lit indirect baseline. The fragment samples the material
+// base-color texture (group 1) and multiplies it by the baked spherical-harmonic
+// irradiance read from the SH volume at NEW group 4 (the same `ShVolumeResources`
+// bind group the forward/billboard/fog passes hold — bound here at slot 4, no
+// new resource). The depth-aware octahedral helper from `sh_sample.wgsl` is
+// appended to this source at pipeline creation (render/mesh_pass.rs), mirroring
+// how forward.wgsl is assembled (render/mod.rs `SHADER_SOURCE`).
+//
+// Entities follow the BILLBOARD precedent, not forward's static-surface variant:
+// `reject_backface = false` (a moving skinned entity is not a static world
+// surface) with Chebyshev probe-occlusion on. The dynamic-DIRECT lighting
+// interface gets its own ADDITIVE bind group later (group 2, left UNALLOCATED
+// here); no direct lighting is computed in this slice.
 //
 // Design note (non-binding): the skinning vertex stage is kept separable so a
 // future position-only depth-only skinned variant (the shadow task) can reuse
@@ -72,6 +81,44 @@ struct Instance {
 };
 @group(3) @binding(1) var<storage, read> instances: array<Instance>;
 
+// --- Group 4: SH irradiance volume (baked indirect) --------------------------
+// The SAME `ShVolumeResources` bind group the forward/billboard/fog passes use,
+// bound here at group 4 (group 3 is locked to instance data; group 2 stays
+// UNALLOCATED). Binding indices mirror forward.wgsl exactly (b1/b2/b10/b14); the
+// renderer puts the shared `bind_group_layout` at slot 4 in the mesh pipeline
+// layout and binds the shared `bind_group` there (bind groups are
+// group-index-agnostic at `set_bind_group` time). The appended `sh_sample.wgsl`
+// helper reads these four bindings by lexical name. The animated-layer storage
+// buffers (b11/b12/b13) live in the same bind group layout but are not declared
+// here — the mesh indirect path never evaluates animated layers, mirroring
+// billboard.wgsl, which only needs the four indirect-sampling bindings... except
+// the bind group layout still carries them, and WGSL binds by declared name, so
+// omitting the unused bindings is legal and layout-compatible.
+struct ShGridInfo {
+    grid_origin: vec3<f32>,
+    has_sh_volume: u32,
+    cell_size: vec3<f32>,
+    _pad0: u32,
+    grid_dimensions: vec3<u32>,
+    _pad1: u32,
+    atlas_dimensions: vec2<u32>,
+    tile_dimension: u32,
+    tile_border: u32,
+    atlas_tiles_per_row: u32,
+    atlas_tile_rows: u32, // computed Rust-side but not read by this shader — tile placement derives from atlas_tiles_per_row
+    tile_interior: u32,
+    _pad2: u32,
+    probe_occlusion: u32,
+    _pad3: u32,
+    _pad4: u32,
+    _pad5: u32,
+};
+
+@group(4) @binding(1) var sh_total_atlas: texture_2d<f32>;
+@group(4) @binding(2) var sh_atlas_sampler: sampler;
+@group(4) @binding(10) var<uniform> sh_grid: ShGridInfo;
+@group(4) @binding(14) var sh_depth_moments: texture_3d<f32>;
+
 struct VertexInput {
     @location(0) position: vec3<f32>,
     // base_uv is stored u16-quantized; the vertex layout declares it Unorm16x2
@@ -90,6 +137,10 @@ struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) world_normal: vec3<f32>,
+    // Skinned world-space position (`model * skin * bind_pos`), used by the
+    // fragment to key the SH irradiance lookup. The clip position above is this
+    // same point projected; the SH sampler needs the un-projected world point.
+    @location(2) world_position: vec3<f32>,
 };
 
 // Octahedral unit-vector decode — copied verbatim from forward.wgsl so the
@@ -140,12 +191,14 @@ fn vs_main(in: VertexInput, @builtin(instance_index) instance_index: u32) -> Ver
     let skinned_pos = skin * vec4<f32>(in.position, 1.0);
     let world_pos = instance.model * skinned_pos;
     out.clip_position = camera.view_proj * world_pos;
+    out.world_position = world_pos.xyz;
 
     out.uv = in.base_uv;
 
-    // Decoded bind-pose normal, transformed by the skin + model upper-3x3.
-    // Flat-lit fragment ignores it this slice, but carrying it keeps the
-    // skinning vertex stage shaped for the lighting/shadow broadening tasks.
+    // Decoded bind-pose normal, transformed by the skin + model upper-3x3. The
+    // SH-lit fragment uses it as both the shading normal (octahedral irradiance
+    // direction lookup) and the geometric normal (the backface test, which the
+    // entity path disables — see `sample_sh_indirect`).
     let n_bind = oct_decode(in.normal_oct);
     let skin3 = mat3x3<f32>(skin[0].xyz, skin[1].xyz, skin[2].xyz);
     let model3 = mat3x3<f32>(instance.model[0].xyz, instance.model[1].xyz, instance.model[2].xyz);
@@ -158,13 +211,54 @@ fn vs_main(in: VertexInput, @builtin(instance_index) instance_index: u32) -> Ver
     return out;
 }
 
+// The depth-aware octahedral irradiance sampler lives in `sh_sample.wgsl`,
+// concatenated after this source at pipeline-build time (render/mesh_pass.rs).
+// It reads `sh_total_atlas`, `sh_atlas_sampler`, `sh_grid`, and
+// `sh_depth_moments` (declared at group 4 above) by lexical name. The helper
+// drops invalid (in-wall) probes via atlas alpha, applies moment visibility, and
+// renormalizes survivors.
+
+// Normal-offset wrapper, mirrored from forward.wgsl's `sample_sh_indirect` but
+// with backface rejection OFF (entities are not static surfaces — matches the
+// billboard precedent). Biases the lookup toward the lit side by a fraction of a
+// cell along the surface normal, derives the grid index / sub-cell fraction
+// (clamped to the grid), then defers the corrected 8-corner blend to the shared
+// helper with Chebyshev probe-occlusion gated by `sh_grid.probe_occlusion`.
+fn sample_sh_indirect(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_normal: vec3<f32>) -> vec3<f32> {
+    if sh_grid.has_sh_volume == 0u {
+        return vec3<f32>(0.0);
+    }
+
+    const SH_NORMAL_OFFSET_M: f32 = 0.1;
+    let offset_world = world_pos + shading_normal * SH_NORMAL_OFFSET_M * sh_grid.cell_size;
+    let gdims_u = sh_grid.grid_dimensions;
+    let gdims_f = max(vec3<f32>(gdims_u) - vec3<f32>(1.0), vec3<f32>(0.0));
+    let cell_coord = (offset_world - sh_grid.grid_origin) /
+        max(sh_grid.cell_size, vec3<f32>(1.0e-6));
+    let gf = clamp(cell_coord, vec3<f32>(0.0), gdims_f);
+    let gi = vec3<u32>(floor(gf));
+    let gfrac = fract(gf);
+
+    return sample_sh_indirect_corners_depth_aware(
+        gi,
+        gfrac,
+        offset_world,
+        shading_normal,
+        geo_normal,
+        false,
+        sh_grid.probe_occlusion != 0u,
+    );
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // Flat-lit: sample base color, apply a trivial constant ambient so the model
-    // reads at full albedo. No light loop, no SH — that is the broadening
-    // lighting task's additive group. A future lighting group multiplies
-    // `in.world_normal` against the settled dynamic-entity interface here.
+    // SH-lit: sample base color, then multiply by the local baked indirect
+    // irradiance read from the SH volume at the skinned world position. No direct
+    // light loop yet — that is the dynamic-direct task's additive group (group 2,
+    // unallocated). The skinned world normal drives both the octahedral direction
+    // lookup and (unused, backface rejection off) the geometric backface test.
     let base_color = textureSample(base_texture, aniso_sampler, in.uv);
-    const FLAT_AMBIENT: f32 = 1.0;
-    return vec4<f32>(base_color.rgb * FLAT_AMBIENT, base_color.a);
+    let n = normalize(in.world_normal);
+    let indirect = sample_sh_indirect(in.world_position, n, n);
+    return vec4<f32>(base_color.rgb * indirect, base_color.a);
 }

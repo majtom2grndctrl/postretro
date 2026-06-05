@@ -2074,6 +2074,7 @@ impl Renderer {
             DEPTH_FORMAT,
             &uniform_bind_group_layout,
             &texture_bind_group_layout,
+            &sh_volume_resources.bind_group_layout,
         );
         mesh_pass.upload_identity_palette(&queue);
 
@@ -4114,6 +4115,11 @@ impl Renderer {
                     ..Default::default()
                 });
                 mesh_enc.set_bind_group(0, &self.uniform_bind_group, &[]);
+                // Group 4 = SH irradiance volume (baked indirect). The SAME
+                // `ShVolumeResources` bind group the forward/billboard/fog passes
+                // hold, bound here so the SH-lit mesh fragment samples the local
+                // baked irradiance (group 3 = instance data; group 2 unallocated).
+                mesh_enc.set_bind_group(4, &self.sh_volume_resources.bind_group, &[]);
                 // The mesh pass writes each instance's SSBO entry + samples its
                 // palette run (per-instance phase from the seed), then records one
                 // instanced draw per model per submesh. `now_seconds` is the

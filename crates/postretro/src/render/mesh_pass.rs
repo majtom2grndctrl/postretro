@@ -79,7 +79,18 @@ fn build_instance_entry(model: glam::Mat4, base_index: u32) -> [u8; INSTANCE_ENT
     bytes
 }
 
-const SKINNED_MESH_SHADER_SOURCE: &str = include_str!("../shaders/skinned_mesh.wgsl");
+// `skinned_mesh.wgsl` declares the four SH bindings at group 4 (b1/b2/b10/b14);
+// `sh_sample.wgsl` is the binding-agnostic depth-aware octahedral helper it
+// calls (`sample_sh_indirect_corners_depth_aware`). WGSL resolves module-scope
+// names regardless of textual order, so appending the helper after is safe —
+// the same string-concat mechanism `render/mod.rs::SHADER_SOURCE` uses to
+// assemble forward.wgsl. The mesh path never evaluates animated layers, so
+// `curve_eval.wgsl` is NOT appended (unlike the forward composition).
+const SKINNED_MESH_SHADER_SOURCE: &str = concat!(
+    include_str!("../shaders/skinned_mesh.wgsl"),
+    "\n",
+    include_str!("../shaders/sh_sample.wgsl"),
+);
 
 /// One uploaded skinned model: GPU vertex + index buffers, its per-submesh
 /// material bind groups, and the CPU-side animation data (skeleton + first clip)
@@ -136,6 +147,7 @@ impl MeshPass {
         depth_format: wgpu::TextureFormat,
         camera_bgl: &wgpu::BindGroupLayout,
         material_bgl: &wgpu::BindGroupLayout,
+        sh_volume_bgl: &wgpu::BindGroupLayout,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Skinned Mesh Shader"),
@@ -171,9 +183,11 @@ impl MeshPass {
             });
 
         // Pipeline layout: group 0 (camera), 1 (material), 2 LEFT OPEN
-        // (provisional lighting — `None`, like SmokePass leaves unused slots),
-        // 3 (skinned instance data). The future lighting task adds group 2
-        // rather than renumbering.
+        // (provisional dynamic-DIRECT lighting slot — `None`, like SmokePass
+        // leaves unused slots; the dynamic-direct task adds group 2 rather than
+        // renumbering), 3 (skinned instance data), 4 (SH irradiance volume —
+        // the SAME `ShVolumeResources.bind_group_layout` the forward/billboard/
+        // fog passes use, reused verbatim so the shared bind group binds here).
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Skinned Mesh Pipeline Layout"),
             bind_group_layouts: &[
@@ -181,6 +195,7 @@ impl MeshPass {
                 Some(material_bgl),
                 None,
                 Some(&instance_bind_group_layout),
+                Some(sh_volume_bgl),
             ],
             immediate_size: 0,
         });
@@ -391,8 +406,9 @@ impl MeshPass {
     /// per-instance phase derived from the instance's seed (so a wave is not
     /// lock-step). `now_seconds` is the render clock; `scratch` is the renderer's
     /// reusable pose buffer (kept off the GPU pass so a steady-state frame
-    /// allocates nothing). Group 0 (camera) must be set by the caller before
-    /// recording — it owns the camera bind group.
+    /// allocates nothing). Group 0 (camera) and group 4 (SH irradiance volume)
+    /// must be set by the caller before recording — the renderer owns the camera
+    /// and `ShVolumeResources` bind groups (both shared across passes).
     ///
     /// Cull is the caller's job — see [`mesh_visible`]; the plan already holds
     /// only surviving, in-budget instances.

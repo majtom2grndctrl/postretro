@@ -27,6 +27,13 @@ pub(crate) mod descriptor;
 /// text draw records into this same render pass, after the quads.
 pub(crate) mod text;
 
+/// Retained widget tree: maps the `descriptor` model into a `taffy::TaffyTree`,
+/// computes flex/grid layout, and reads laid-out rects back into the device-pixel
+/// draw list + shaped-text entries through the `layout` projection path. taffy
+/// lives entirely here (renderer-owns-GPU). Wired into the renderer in a later task.
+#[allow(dead_code)]
+pub(crate) mod tree;
+
 pub(crate) use self::text::UiText;
 
 /// Hardcoded splash content descriptor behind the one named builder seam

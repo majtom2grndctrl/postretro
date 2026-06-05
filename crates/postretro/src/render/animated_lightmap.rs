@@ -323,9 +323,12 @@ impl AnimatedLightmapResources {
             ..Default::default()
         });
 
-        // Per-texel fused dominant-direction atlas. `direction_forward_view` is
-        // bound at group-4 binding 5 (forward pass); the compose-side storage
-        // binding 8 writes this same atlas — independent numbering spaces.
+        // Per-texel fused dominant-direction atlas: octahedral direction in `.rg`
+        // (matching the static direction atlas) + coverage flag in `.a`, so
+        // `Rgba8Unorm` (4 B/texel) suffices — half the VRAM of the irradiance
+        // atlas. `direction_forward_view` is bound at group-4 binding 5 (forward
+        // pass); the compose-side storage binding 8 writes this same atlas —
+        // independent numbering spaces.
         let direction_atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Animated LM Direction Atlas"),
             size: wgpu::Extent3d {
@@ -336,10 +339,18 @@ impl AnimatedLightmapResources {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba16Float,
+            format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
+
+        // VRAM footprint of the two compose-target atlases (irradiance 8 B/texel
+        // + direction 4 B/texel).
+        let atlas_bytes = (atlas_width as u64) * (atlas_height as u64) * (8 + 4);
+        log::info!(
+            "[Renderer] Animated lightmap atlases {atlas_width}x{atlas_height}, ~{} MiB VRAM (Rgba16Float irradiance + Rgba8Unorm direction)",
+            atlas_bytes / (1024 * 1024),
+        );
 
         let direction_forward_view =
             direction_atlas_texture.create_view(&wgpu::TextureViewDescriptor {
@@ -664,7 +675,9 @@ fn compute_bgl_entries() -> [wgpu::BindGroupLayoutEntry; 9] {
             visibility: wgpu::ShaderStages::COMPUTE,
             ty: wgpu::BindingType::StorageTexture {
                 access: wgpu::StorageTextureAccess::WriteOnly,
-                format: wgpu::TextureFormat::Rgba16Float,
+                // Direction atlas: octahedral in `.rg` + coverage in `.a`, so 8-bit
+                // unorm suffices (half the irradiance atlas's footprint).
+                format: wgpu::TextureFormat::Rgba8Unorm,
                 view_dimension: wgpu::TextureViewDimension::D2,
             },
             count: None,

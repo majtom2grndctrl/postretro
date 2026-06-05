@@ -23,12 +23,13 @@ pub const BIND_ANIMATED_ATLAS: u32 = 3;
 /// linear-filterability is a hard runtime requirement checked at init
 /// (see `atlas_format_filterable`; see also `rendering_pipeline.md §4`).
 pub const BIND_FILTERING_SAMPLER: u32 = 4;
-/// Animated dominant-direction atlas (Rgba16Float, raw normalized vec3). Composed
-/// each frame alongside the animated irradiance atlas; the forward pass samples it
-/// to apply bumped-Lambert normal-map correction to the animated term. Sampled
-/// through the nearest sampler at binding 2 — directions must not be linearly
-/// interpolated. Binding 5 here (group 4, forward pass) and binding 8 in the
-/// compose shader are independent numbering spaces for the same atlas.
+/// Animated dominant-direction atlas (Rgba8Unorm: octahedral direction in `.rg`,
+/// coverage flag in `.a`). Composed each frame alongside the animated irradiance
+/// atlas; the forward pass samples it to apply bumped-Lambert normal-map correction
+/// to the animated term. Sampled through the nearest sampler at binding 2 — oct
+/// directions must not be linearly interpolated. Binding 5 here (group 4, forward
+/// pass) and binding 8 in the compose shader are independent numbering spaces for
+/// the same atlas.
 pub const BIND_ANIMATED_DIRECTION: u32 = 5;
 
 /// GPU-side lightmap atlas: irradiance texture, direction texture, sampler,
@@ -228,9 +229,9 @@ fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
             count: None,
         },
-        // Animated dominant-direction atlas (Rgba16Float, raw normalized vec3) —
-        // `filterable: false`, nearest sampler at binding 2, mirroring the static
-        // direction atlas (1).
+        // Animated dominant-direction atlas (Rgba8Unorm: octahedral in `.rg`,
+        // coverage in `.a`) — `filterable: false`, nearest sampler at binding 2,
+        // mirroring the static direction atlas (1).
         wgpu::BindGroupLayoutEntry {
             binding: BIND_ANIMATED_DIRECTION,
             visibility: wgpu::ShaderStages::FRAGMENT,
@@ -557,9 +558,9 @@ mod tests {
             tex_sample(BIND_ANIMATED_ATLAS),
             Some(wgpu::TextureSampleType::Float { filterable: true })
         );
-        // Both direction atlases stay nearest (direction lerp ≠ slerp): the
-        // static atlas (1) is octahedral-encoded, the animated atlas (5) stores
-        // a raw normalized vec3.
+        // Both direction atlases stay nearest (direction lerp ≠ slerp): both are
+        // octahedral-encoded (static atlas 1, animated atlas 5), and oct vectors
+        // must not be linearly interpolated.
         assert_eq!(
             tex_sample(BIND_DIRECTION),
             Some(wgpu::TextureSampleType::Float { filterable: false })

@@ -99,10 +99,13 @@ struct DebugConfig {
 @group(1) @binding(5) var<storage, read> anim_samples: array<f32>;
 @group(1) @binding(6) var animated_lm_atlas: texture_storage_2d<rgba16float, write>;
 @group(1) @binding(7) var<uniform> debug_config: DebugConfig;
-// Per-texel fused dominant-direction atlas. Stores a raw normalized vec3 in
-// `.rgb` (full precision; this atlas is compute-generated, so no oct round-trip
-// is needed unlike the baked static atlas). `.a = 1.0`, unused.
-@group(1) @binding(8) var animated_lm_direction_atlas: texture_storage_2d<rgba16float, write>;
+// Per-texel fused dominant-direction atlas. Octahedral-encoded direction in
+// `.rg` (matching the static direction atlas, so the forward pass decodes both
+// with the shared `decode_lightmap_direction`). `.a` is a coverage flag: 1.0
+// where a dominant direction exists, 0.0 where animated lights cancel or no
+// light covers — lets the forward pass skip the bump correction without a NaN
+// sentinel. `.b` unused.
+@group(1) @binding(8) var animated_lm_direction_atlas: texture_storage_2d<rgba8unorm, write>;
 
 // Decode the baked octahedral direction packed into a `TexelLight`'s
 // `direction_oct_packed` u32 (low 16 bits = x, high 16 bits = y). Mirrors the
@@ -123,6 +126,21 @@ fn decode_packed_direction(packed: u32) -> vec3<f32> {
         y = oy;
     }
     return normalize(vec3<f32>(x, y, z));
+}
+
+// Octahedral-encode a unit vector into [0,1]² for the dominant-direction
+// atlas's `.rg`. Exact inverse of `decode_lightmap_direction` (forward.wgsl):
+// project onto the octahedron, fold the lower hemisphere, bias [-1,1]→[0,1].
+// Keep the two in lockstep.
+fn encode_direction_oct(dir: vec3<f32>) -> vec2<f32> {
+    let d = dir / (abs(dir.x) + abs(dir.y) + abs(dir.z));
+    var oxy = d.xy;
+    if (d.z < 0.0) {
+        let sx = select(-1.0, 1.0, d.x >= 0.0);
+        let sy = select(-1.0, 1.0, d.y >= 0.0);
+        oxy = vec2<f32>((1.0 - abs(d.y)) * sx, (1.0 - abs(d.x)) * sy);
+    }
+    return oxy * 0.5 + 0.5;
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -192,16 +210,19 @@ fn compose_main(
         vec2<i32>(i32(rect.atlas_x + rect_x), i32(rect.atlas_y + rect_y)),
         vec4<f32>(accum, 1.0),
     );
-    // Opposing lights can cancel and uncovered texels are zero — guard before
-    // normalizing and store zero in either case.
+    // Opposing lights can cancel and uncovered texels stay zero; encode a
+    // dominant direction only when one exists and flag coverage in `.a` so the
+    // forward pass skips the bump correction otherwise (no NaN sentinel).
     let dir_len = length(dir_accum);
-    var dominant_dir = vec3<f32>(0.0);
+    var dir_oct = vec2<f32>(0.5, 0.5);
+    var coverage = 0.0;
     if (dir_len > 1.0e-4) {
-        dominant_dir = dir_accum / dir_len;
+        dir_oct = encode_direction_oct(dir_accum / dir_len);
+        coverage = 1.0;
     }
     textureStore(
         animated_lm_direction_atlas,
         vec2<i32>(i32(rect.atlas_x + rect_x), i32(rect.atlas_y + rect_y)),
-        vec4<f32>(dominant_dir, 1.0),
+        vec4<f32>(dir_oct, 0.0, coverage),
     );
 }

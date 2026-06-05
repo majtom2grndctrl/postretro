@@ -203,12 +203,11 @@ struct AnimationDescriptor {
 // `Rgba16Float` linear-filterability is a hard runtime requirement, checked at
 // init (see context/lib/rendering_pipeline.md §4).
 @group(4) @binding(4) var lightmap_filtering_sampler: sampler;
-// Animated dominant-direction atlas (Rgba16Float, raw normalized vec3 in .xyz).
-// Composed each frame alongside the animated irradiance atlas. Read through the
-// nearest sampler at binding 2 — like the static direction atlas, directions
-// must not be linearly interpolated. Unlike the static atlas this is NOT
-// octahedral-encoded: sample .xyz and re-normalize, do not route through
-// `decode_lightmap_direction`.
+// Animated dominant-direction atlas (Rgba8Unorm, octahedral in .rg — decoded by
+// `decode_lightmap_direction`, shared with the static direction atlas — and a
+// coverage flag in .a). Composed each frame alongside the animated irradiance
+// atlas. Read through the nearest sampler at binding 2 — like the static
+// direction atlas, oct directions must not be linearly interpolated.
 @group(4) @binding(5) var animated_lm_direction: texture_2d<f32>;
 
 // Sample the irradiance atlas with hardware bilinear filtering through the
@@ -750,20 +749,21 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let scale = select(1.0, min(n_dot_l_bump / max(n_dot_l_mesh, NDOTL_EPS), 4.0), use_correction);
 
         // Same bumped-Lambert correction for the animated term. The animated
-        // direction atlas stores a raw normalized vec3 (not octahedral), so read
-        // .xyz and re-normalize rather than decoding — only the direction decode
-        // differs from the static path; NDOTL_EPS floor and 4.0 cap are shared.
-        // The compose pass stores vec3(0) for uncovered/canceling texels, so this
-        // normalize() can yield NaN — the use_correction_anim gate below catches it
-        // (NaN > NDOTL_EPS is false), so scale_anim falls back to 1.0 and no NaN
-        // reaches static_direct.
-        let dom_anim = normalize(textureSample(animated_lm_direction, lightmap_sampler, in.lightmap_uv).xyz);
+        // direction atlas is octahedral in .rg (decoded by the shared
+        // `decode_lightmap_direction`) with a coverage flag in .a; NDOTL_EPS floor
+        // and 4.0 cap are shared with the static path. The compose pass clears
+        // coverage to 0.0 for uncovered/canceling texels (oct decode of those
+        // yields a valid-but-meaningless direction, so a NaN sentinel no longer
+        // works) — the use_correction_anim gate reads .a to skip them.
+        let anim_dir_sample = textureSample(animated_lm_direction, lightmap_sampler, in.lightmap_uv);
+        let dom_anim = decode_lightmap_direction(anim_dir_sample);
         let n_dot_l_mesh_anim = max(dot(mesh_n, dom_anim), 0.0);
         let n_dot_l_bump_anim = max(dot(N_bump, dom_anim), 0.0);
         // Mirror the static gate: when lm_anim is ~zero (no animated weight maps or
         // dark this frame) the fused direction is unreliable, so leave the term as-is.
         const LM_ANIM_EPS: f32 = 1.0e-4;
-        let use_correction_anim = dot(lm_anim, lm_anim) >= LM_ANIM_EPS * LM_ANIM_EPS && n_dot_l_mesh_anim > NDOTL_EPS;
+        let anim_covered = anim_dir_sample.a > 0.5;
+        let use_correction_anim = anim_covered && dot(lm_anim, lm_anim) >= LM_ANIM_EPS * LM_ANIM_EPS && n_dot_l_mesh_anim > NDOTL_EPS;
         let scale_anim = select(1.0, min(n_dot_l_bump_anim / max(n_dot_l_mesh_anim, NDOTL_EPS), 4.0), use_correction_anim);
         // Both `lm_irr` (baked-tag lights) and `lm_anim` (animated-baked lights)
         // carry their shadow baked in — neither is SDF-multiplied. The animated

@@ -35,16 +35,16 @@ Build the Rust-owned UI descriptor model, retained widget tree, and `taffy`-driv
 
 ## Acceptance criteria
 
-- [ ] A descriptor tree of all seven kinds round-trips through serde JSON: a top-level placement envelope (`{ anchor, offset, root }`) wrapping a `vstack` root — `{"kind":"vstack", ...}` — deserializes and re-serializes to identical JSON; an unknown `kind` deserializes to an error, not a panic.
-- [ ] `taffy` lays out a nested `vstack`/`hstack`/`grid` tree; child rects match expected flex/grid distribution at the 1280×720 reference and scale uniformly at 4K (mirrors A's resolution tests).
-- [ ] A `text` node's computed size comes from `glyphon` shaped-run metrics, not a glyph-count estimate; two trees with different `content` values produce different measured widths (content is immutable after tree construction in B — this is a construct-two-trees comparison, not runtime mutation).
-- [ ] A top-level anchored tree centers against the letterbox on a non-16:9 viewport (reuses A's anchor assertion).
-- [ ] The boot splash renders through the retained descriptor tree — `build_splash_descriptor` returns a node tree — with panel, logo, and version text visually unchanged; version text centers via measured width. Verification reuses A's approach: pure-CPU draw-list assertions plus a manual run per the project build/run commands — no new golden image required.
-- [ ] Layout recomputes only on tree-structure change or viewport resize; a no-change frame performs no `taffy` recompute (verifiable via a recompute counter or dirty flag in a test).
-- [ ] The renderer builds a non-empty UI draw list from a descriptor tree on the gameplay path (in B the test feeds a fixture tree, not a real screen); an empty tree early-outs the UI pass (no `begin_render_pass`). The early-out is at the pass-orchestration level and applies to the gameplay path only; it must not regress the splash's frame-0 black clear, which currently relies on `encode` opening the pass with empty draw lists.
-- [ ] Computed quad/panel rects snap to integer device pixels; text glyphs remain exempt (reuses A).
-- [ ] `taffy` is a workspace dependency; no QuickJS/Luau ingestion or `StateValue`/slot code is added.
-- [ ] The Boundary inventory table pins Rust/wire/JS/Luau casing for every kind and its fields.
+- [x] A descriptor tree of all seven kinds round-trips through serde JSON: a top-level placement envelope (`{ anchor, offset, root }`) wrapping a `vstack` root — `{"kind":"vstack", ...}` — deserializes and re-serializes to identical JSON; an unknown `kind` deserializes to an error, not a panic.
+- [x] `taffy` lays out a nested `vstack`/`hstack`/`grid` tree; child rects match expected flex/grid distribution at the 1280×720 reference and scale uniformly at 4K (mirrors A's resolution tests).
+- [x] A `text` node's computed size comes from `glyphon` shaped-run metrics, not a glyph-count estimate; two trees with different `content` values produce different measured widths (content is immutable after tree construction in B — this is a construct-two-trees comparison, not runtime mutation).
+- [x] A top-level anchored tree centers against the letterbox on a non-16:9 viewport (reuses A's anchor assertion).
+- [x] The boot splash renders through the retained descriptor tree — `build_splash_descriptor` returns a node tree — with panel, logo, and version text visually unchanged; version text centers via measured width. Verification reuses A's approach: pure-CPU draw-list assertions plus a manual run per the project build/run commands — no new golden image required.
+- [x] Layout recomputes only on tree-structure change or viewport resize; a no-change frame performs no `taffy` recompute (verifiable via a recompute counter or dirty flag in a test).
+- [x] The renderer builds a non-empty UI draw list from a descriptor tree on the gameplay path (in B the test feeds a fixture tree, not a real screen); an empty tree early-outs the UI pass (no `begin_render_pass`). The early-out is at the pass-orchestration level and applies to the gameplay path only; it must not regress the splash's frame-0 black clear, which currently relies on `encode` opening the pass with empty draw lists.
+- [x] Computed quad/panel rects snap to integer device pixels; text glyphs remain exempt (reuses A).
+- [x] `taffy` is a workspace dependency; no QuickJS/Luau ingestion or `StateValue`/slot code is added.
+- [x] The Boundary inventory table pins Rust/wire/JS/Luau casing for every kind and its fields.
 
 ## Tasks
 

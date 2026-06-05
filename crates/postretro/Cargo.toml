@@ -58,6 +58,11 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
+# Player options persistence (`options` module): `settings.toml` wire format and
+# platform config-dir resolution. No wgpu/renderer coupling.
+toml.workspace = true
+directories.workspace = true
+
 # Scripting runtimes (embedded)
 rquickjs.workspace = true
 mlua.workspace = true
@@ -112,6 +117,11 @@ proptest = { workspace = true }
 # Reference Catmull-Rom evaluator for WGSL parity tests
 # (see src/render/curve_eval_test.rs).
 splines = "4"
+
+# Injected temp dirs for the `options` persistence tests — keeps load/save tests
+# off the real user config dir. Not used by the atomic-save path (that hand-rolls
+# its own sibling temp file).
+tempfile = "3"
 
 # Any explicit `[[bin]]` entry disables Cargo's implicit `src/main.rs`
 # detection, so the engine binary must also be declared explicitly.

@@ -13,6 +13,7 @@ mod lighting;
 mod material;
 mod model;
 mod movement;
+mod options;
 mod weapon;
 
 mod portal_vis;
@@ -218,11 +219,53 @@ fn main() -> Result<()> {
     let mut classname_dispatch = ClassnameDispatch::new();
     register_builtin_classnames(&mut classname_dispatch);
 
+    // Player options load before `InputSystem` is constructed so the loaded
+    // look preferences seed input at startup. On first boot (no file present),
+    // write defaults so the human gets an editable starting file — the only
+    // `save` call until the M13 settings menu lands. Missing config dir or a
+    // save failure is logged, not fatal: boot proceeds on in-memory defaults.
+    // See: context/lib/player_options.md §3
+    let settings_path = options::settings_path();
+    let player_options = match &settings_path {
+        Some(path) => {
+            // `load` returns defaults for both missing and malformed files, so
+            // detect first-run by probing existence before loading. A malformed
+            // file exists, so it is never overwritten here.
+            let existed = path.exists();
+            let options = options::PlayerOptions::load(path);
+            if !existed {
+                match options.save(path) {
+                    Ok(()) => log::info!(
+                        "[Options] no settings file found; wrote defaults to {}",
+                        path.display()
+                    ),
+                    Err(err) => log::warn!(
+                        "[Options] failed to write default settings to {}: {err}; \
+                         running on in-memory defaults",
+                        path.display()
+                    ),
+                }
+            }
+            options
+        }
+        None => {
+            log::warn!(
+                "[Options] no platform config directory; running on in-memory \
+                 defaults without persistence"
+            );
+            options::PlayerOptions::default()
+        }
+    };
+
     // Mod init, hot-reload watcher start, and the level-load worker spawn
     // are all deferred to the splash frame loop so the first splash frame
     // paints before any of those run — the user sees pixels before any
     // mod-supplied work executes.
     // See: context/lib/boot_sequence.md §8
+
+    let mut input_system = input::InputSystem::new(input::default_bindings());
+    input_system.set_mouse_sensitivity(player_options.mouse_sensitivity);
+    input_system.set_invert_y(player_options.invert_y);
 
     let mut app = App {
         renderer: None,
@@ -233,8 +276,10 @@ fn main() -> Result<()> {
         content_root,
         exit_result: Ok(()),
         camera: Camera::new(initial_camera_pos, 0.0, 0.0),
-        input_system: input::InputSystem::new(input::default_bindings()),
+        input_system,
         gameplay_input_latch: input::GameplayInputLatch::new(),
+        player_options,
+        settings_path,
         input_focus: InputFocus::Gameplay,
         ui_dispatch: input::UiDispatch::new(),
         gamepad_system: input::gamepad::GamepadSystem::new(),
@@ -315,6 +360,19 @@ struct App {
     camera: Camera,
     input_system: input::InputSystem,
     gameplay_input_latch: input::GameplayInputLatch,
+
+    /// Per-human runtime preferences loaded at boot. Seeds input look
+    /// preferences during init; held for the M13 settings menu, which has no
+    /// reader yet. See: context/lib/player_options.md
+    #[allow(dead_code)]
+    player_options: options::PlayerOptions,
+
+    /// Resolved `settings.toml` path, or `None` when the platform exposes no
+    /// config directory (the engine then runs on in-memory defaults). Held for
+    /// the future M13 settings menu's save path; no reader yet.
+    /// See: context/lib/player_options.md
+    #[allow(dead_code)]
+    settings_path: Option<PathBuf>,
 
     /// Coarse owner of keyboard/mouse focus. Drives pointer-lock acquire/release
     /// via `set_input_focus`. See: context/lib/input.md

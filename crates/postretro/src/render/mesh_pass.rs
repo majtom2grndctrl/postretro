@@ -58,14 +58,19 @@ fn build_instance_uniform(model: glam::Mat4, base_index: u32) -> [u8; INSTANCE_U
 
 const SKINNED_MESH_SHADER_SOURCE: &str = include_str!("../shaders/skinned_mesh.wgsl");
 
-/// One uploaded skinned model: GPU vertex + index buffers, its index count, and
-/// the material bind group resolved through the shared `.prm` → `LoadedTexture`
-/// path. The slice carries at most one; the broadening tasks generalize to many.
+/// One uploaded skinned model: GPU vertex + index buffers and the per-submesh
+/// material bind groups (each resolved through the shared `.prm` →
+/// `LoadedTexture` path) paired with the index range that submesh draws. A
+/// single-material model has one submesh spanning the whole index buffer;
+/// multi-material models carry one entry per primitive, in submesh order. The
+/// renderer holds at most one uploaded model.
 struct UploadedModel {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
-    index_count: u32,
-    material_bind_group: wgpu::BindGroup,
+    /// Per-submesh material bind group (group 1) + its `start..end` range into
+    /// the merged index buffer, in submesh order. Distinct keys are deduped
+    /// upstream, so submeshes reusing a material share a (cloned) bind group.
+    submeshes: Vec<(wgpu::BindGroup, std::ops::Range<u32>)>,
 }
 
 /// GPU resources for the skinned-mesh forward pass.
@@ -258,16 +263,17 @@ impl MeshPass {
         }
     }
 
-    /// Upload one skinned mesh's vertex + index buffers and retain its material
-    /// bind group. Replaces any previously uploaded model (the slice carries
-    /// one). The material bind group is built by the renderer via
-    /// `build_material_bind_group` against the shared group-1 layout (the same
-    /// `.prm` → `LoadedTexture` path the world uses).
+    /// Upload one skinned mesh's vertex + index buffers and retain its
+    /// per-submesh material bind groups. Replaces any previously uploaded model.
+    /// Each bind group is built by the renderer via `build_material_bind_group`
+    /// against the shared group-1 layout (the same `.prm` → `LoadedTexture` path
+    /// the world uses); `submeshes` pairs each with the index range it draws, in
+    /// submesh order.
     pub fn set_model(
         &mut self,
         device: &wgpu::Device,
         mesh: &SkinnedMesh,
-        material_bind_group: wgpu::BindGroup,
+        submeshes: Vec<(wgpu::BindGroup, std::ops::Range<u32>)>,
     ) {
         let vertex_bytes = bytemuck::cast_slice(&mesh.vertices);
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -283,8 +289,7 @@ impl MeshPass {
         self.model = Some(UploadedModel {
             vertex_buffer,
             index_buffer,
-            index_count: mesh.indices.len() as u32,
-            material_bind_group,
+            submeshes,
         });
     }
 
@@ -342,7 +347,7 @@ impl MeshPass {
         let Some(uploaded) = &self.model else {
             return;
         };
-        if uploaded.index_count == 0 {
+        if uploaded.submeshes.is_empty() {
             return;
         }
 
@@ -372,11 +377,23 @@ impl MeshPass {
         });
 
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(1, &uploaded.material_bind_group, &[]);
+        // Group 3 (palette + instance) and the vertex/index buffers are shared
+        // across every submesh of this single instance — set once, outside the
+        // loop. Only group 1 (material) and the drawn index range vary per
+        // submesh.
         pass.set_bind_group(3, &instance_bind_group, &[]);
         pass.set_vertex_buffer(0, uploaded.vertex_buffer.slice(..));
         pass.set_index_buffer(uploaded.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        pass.draw_indexed(0..uploaded.index_count, 0, 0..1);
+        for (material_bind_group, indices) in &uploaded.submeshes {
+            // Skip an empty submesh range rather than issue a zero-count draw.
+            if indices.is_empty() {
+                continue;
+            }
+            pass.set_bind_group(1, material_bind_group, &[]);
+            // Single instance, base index/vertex 0; the range slices this
+            // submesh's triangles out of the merged index buffer.
+            pass.draw_indexed(indices.clone(), 0, 0..1);
+        }
     }
 }
 

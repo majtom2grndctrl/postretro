@@ -129,6 +129,8 @@ impl LightmapLayer {
         let count = u32::from_ne_bytes(bytes[8..12].try_into().unwrap()) as usize;
 
         let payload = &bytes[LAYER_HEADER_BYTES..];
+        // A count that overflows means the blob is malformed; the codec's contract
+        // is "malformed blob → cache miss → re-bake, never panic."
         let Some(expected) = count.checked_mul(std::mem::size_of::<LayerTexel>()) else {
             log::warn!("[Compiler] corrupt lightmap layer (count {count} overflows), re-baking");
             return None;
@@ -664,12 +666,23 @@ mod tests {
 
     #[test]
     fn corrupt_layer_blob_is_a_miss() {
-        // A truncated/garbage blob that the StageCache length/hash check would
-        // pass (it validates bytes, not format) must still be rejected by the
-        // codec so the caller re-bakes. The header parses a nonzero count whose
-        // implied body length cannot match this blob's, so the length check
-        // rejects it.
+        // `from_bytes` rejects a garbage blob and returns `None` (format-validation
+        // path). This is independent of the `StageCache` byte-level length/hash
+        // check — it calls `from_bytes` directly, exercising only the codec.
         assert!(LightmapLayer::from_bytes(b"not a valid header+body layer").is_none());
+    }
+
+    #[test]
+    fn from_bytes_rejects_overflowing_texel_count() {
+        // Pins the overflow-guard defense: a header with count = u32::MAX causes
+        // count * size_of::<LayerTexel>() to overflow; from_bytes must return None,
+        // never panic.
+        let mut blob = Vec::new();
+        blob.extend_from_slice(&1u32.to_ne_bytes()); // atlas_width
+        blob.extend_from_slice(&1u32.to_ne_bytes()); // atlas_height
+        blob.extend_from_slice(&u32::MAX.to_ne_bytes()); // count = u32::MAX
+        // No body bytes — the implied body cannot match.
+        assert!(LightmapLayer::from_bytes(&blob).is_none());
     }
 
     #[test]

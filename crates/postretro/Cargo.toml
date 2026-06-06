@@ -79,7 +79,7 @@ log.workspace = true
 env_logger.workspace = true
 
 # Workspace members
-postretro-level-format.workspace = true
+postretro-level-format = { workspace = true, features = ["gltf-resolve"] }
 
 # Debug UI (egui) — only compiled in when the `dev-tools` feature is enabled.
 # Pinned to 0.34: that release line requires `wgpu ^29` and `winit ^0.30`,

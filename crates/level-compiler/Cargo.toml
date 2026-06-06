@@ -11,7 +11,7 @@ name = "prl-build"
 path = "src/main.rs"
 
 [dependencies]
-postretro-level-format = { workspace = true, features = ["serde"] }
+postretro-level-format = { workspace = true, features = ["serde", "gltf-resolve"] }
 shambler.workspace = true
 glam.workspace = true
 anyhow.workspace = true

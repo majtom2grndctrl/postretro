@@ -3523,6 +3523,8 @@ dependencies = [
  "bitflags 2.11.0",
  "criterion",
  "glam",
+ "gltf",
+ "percent-encoding",
  "serde",
  "thiserror 2.0.18",
 ]

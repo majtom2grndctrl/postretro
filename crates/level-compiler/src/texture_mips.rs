@@ -622,6 +622,66 @@ fn atomic_write(target: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Bake one base-color PNG as a diffuse-only `.prm` under `cache_root`.
+/// Returns the 32-byte filename key used for the cache sidecar.
+pub fn bake_diffuse_texture(diffuse_path: &Path, cache_root: &Path) -> anyhow::Result<[u8; 32]> {
+    let diffuse_bytes = std::fs::read(diffuse_path).map_err(|e| {
+        anyhow::anyhow!(
+            "failed to read diffuse texture {}: {e}",
+            diffuse_path.display()
+        )
+    })?;
+    let filename_key = filename_key_for(Some(&diffuse_bytes), None, None);
+    let bundle_hash = bundle_hash_for(Some(&diffuse_bytes), None, None);
+    let prm_path = cache_root.join(format!("{}.prm", cache_filename_for_key(&filename_key)));
+
+    // Match the world-texture cache behavior: a valid header with the same
+    // source bundle hash is already the requested bake.
+    if prm_path.exists() {
+        if let Ok(bytes) = std::fs::read(&prm_path) {
+            let (hdr_result, _slots) = PrmFile::from_bytes_partial(&bytes);
+            if let Ok(hdr) = hdr_result {
+                if hdr.bundle_hash == bundle_hash {
+                    return Ok(filename_key);
+                }
+            }
+        }
+    }
+
+    let (rgba, width, height) = decode_png_rgba(&diffuse_bytes, diffuse_path)?;
+    let lut = build_srgb_to_linear_lut();
+    let payload = build_diffuse_chain(&rgba, width, height, &lut);
+    let prm = PrmFile {
+        header: PrmHeader {
+            stage_version: STAGE_VERSION,
+            slot_mask: PrmSlots::DIFFUSE,
+            bundle_hash,
+            total_body_bytes: 0,
+        },
+        slots: [
+            Some(PrmSlot {
+                format: PrmFormat::Rgba8UnormSrgb,
+                width: width as u16,
+                height: height as u16,
+                level_count: expected_level_count(width as u16, height as u16),
+                payload,
+            }),
+            None,
+            None,
+        ],
+    };
+
+    let encoded = prm.to_bytes().map_err(|e| {
+        anyhow::anyhow!(
+            "encoding diffuse-only .prm for {}: {e}",
+            diffuse_path.display()
+        )
+    })?;
+    atomic_write(&prm_path, &encoded)?;
+
+    Ok(filename_key)
+}
+
 /// Bake per-texture mip pyramids into `.prm` sidecars under `cache_root`.
 /// Returns a map from texture name → 32-byte cache key (the `.prm` filename
 /// stem in hex). Names whose slots are all missing get a `[0u8; 32]` key and
@@ -798,6 +858,115 @@ pub fn bake_texture_mips(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "prl-build-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    fn png_bytes(width: u32, height: u32) -> Vec<u8> {
+        let image = image::RgbaImage::from_fn(width, height, |x, y| {
+            image::Rgba([
+                (x * 37 + y * 11) as u8,
+                (x * 13 + y * 29) as u8,
+                (x * 7 + y * 43) as u8,
+                255,
+            ])
+        });
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        bytes.into_inner()
+    }
+
+    #[test]
+    fn single_diffuse_bake_matches_world_diffuse_only_output() {
+        let root = unique_temp_dir("single-diffuse-equivalence");
+        let texture_root = root.join("textures");
+        let collection = texture_root.join("models");
+        let world_cache = root.join("world-cache");
+        let model_cache = root.join("model-cache");
+        std::fs::create_dir_all(&collection).unwrap();
+
+        let diffuse_path = collection.join("base_color.png");
+        let source_bytes = png_bytes(4, 2);
+        std::fs::write(&diffuse_path, &source_bytes).unwrap();
+
+        let world_keys = bake_texture_mips(
+            &["models/base_color".to_string()],
+            &texture_root,
+            &world_cache,
+        )
+        .unwrap();
+        let world_key = world_keys["models/base_color"];
+        let model_key = bake_diffuse_texture(&diffuse_path, &model_cache).unwrap();
+
+        assert_eq!(model_key, *blake3::hash(&source_bytes).as_bytes());
+        assert_eq!(model_key, world_key);
+
+        let filename = format!("{}.prm", cache_filename_for_key(&model_key));
+        let world_bytes = std::fs::read(world_cache.join(&filename)).unwrap();
+        let model_bytes = std::fs::read(model_cache.join(&filename)).unwrap();
+        assert_eq!(model_bytes, world_bytes);
+
+        let (header, slots) = PrmFile::from_bytes_partial(&model_bytes);
+        let header = header.unwrap();
+        assert_eq!(header.slot_mask, PrmSlots::DIFFUSE);
+        let diffuse = slots[0].as_ref().unwrap();
+        assert_eq!(diffuse.format, PrmFormat::Rgba8UnormSrgb);
+        assert!(slots[1].is_err());
+        assert!(slots[2].is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn single_diffuse_bake_preserves_matching_bundle_hash_cache_entry() {
+        let root = unique_temp_dir("single-diffuse-cache-hit");
+        let cache_root = root.join("cache");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let diffuse_path = root.join("base_color.png");
+        let source_bytes = png_bytes(4, 4);
+        std::fs::write(&diffuse_path, &source_bytes).unwrap();
+
+        let key = filename_key_for(Some(&source_bytes), None, None);
+        let cached = PrmFile {
+            header: PrmHeader {
+                stage_version: STAGE_VERSION,
+                slot_mask: PrmSlots::DIFFUSE,
+                bundle_hash: bundle_hash_for(Some(&source_bytes), None, None),
+                total_body_bytes: 0,
+            },
+            slots: [
+                Some(PrmSlot {
+                    format: PrmFormat::Rgba8UnormSrgb,
+                    width: 1,
+                    height: 1,
+                    level_count: 1,
+                    payload: vec![1, 2, 3, 4],
+                }),
+                None,
+                None,
+            ],
+        }
+        .to_bytes()
+        .unwrap();
+        let cache_path = cache_root.join(format!("{}.prm", cache_filename_for_key(&key)));
+        atomic_write(&cache_path, &cached).unwrap();
+
+        let returned_key = bake_diffuse_texture(&diffuse_path, &cache_root).unwrap();
+
+        assert_eq!(returned_key, key);
+        assert_eq!(std::fs::read(&cache_path).unwrap(), cached);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// Hand-computed gamma-correct downsample sanity: a uniform sRGB image
     /// down-filters to itself (the filter sums to 1.0 and a constant input

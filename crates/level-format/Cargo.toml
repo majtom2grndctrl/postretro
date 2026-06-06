@@ -8,9 +8,12 @@ license.workspace = true
 
 [features]
 serde = ["dep:serde"]
+gltf-resolve = ["dep:gltf", "dep:percent-encoding"]
 
 [dependencies]
 serde = { workspace = true, optional = true }
+gltf = { workspace = true, optional = true }
+percent-encoding = { workspace = true, optional = true }
 glam.workspace = true
 thiserror.workspace = true
 bitflags.workspace = true

@@ -12,6 +12,8 @@ pub mod delta_sh_volumes;
 pub mod fog_cell_masks;
 pub mod fog_volumes;
 pub mod geometry;
+#[cfg(feature = "gltf-resolve")]
+pub mod gltf_resolve;
 pub mod light_influence;
 pub mod light_tags;
 pub mod lightmap;

@@ -85,7 +85,10 @@ impl BuildProgress {
     }
 }
 
-/// Resolve the content root from a map input path.
+/// Resolve the root used by content-relative model handles.
+///
+/// Mirrors the runtime derivation for `content/<mod>/maps/<map>`:
+/// model handles resolve from `content/<mod>`.
 fn resolve_content_root(map_path: &Path) -> PathBuf {
     let map_dir = map_path
         .parent()
@@ -1299,6 +1302,31 @@ fn js_is_fresh(ts_path: &std::path::Path, js_path: &std::path::Path) -> Option<b
 mod tests {
     use super::*;
 
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "prl-build-main-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    fn png_bytes(width: u32, height: u32) -> Vec<u8> {
+        let image = image::RgbaImage::from_fn(width, height, |x, y| {
+            image::Rgba([
+                (x * 37 + y * 11) as u8,
+                (x * 13 + y * 29) as u8,
+                (x * 7 + y * 43) as u8,
+                255,
+            ])
+        });
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        bytes.into_inner()
+    }
+
     fn map_entity(classname: &str, key_values: &[(&str, &str)]) -> map_data::MapEntityRecord {
         map_data::MapEntityRecord {
             classname: classname.to_string(),
@@ -1398,6 +1426,48 @@ mod tests {
             ]
         );
         assert_eq!(baked_textures, vec![shared, first_only, unreadable]);
+    }
+
+    #[test]
+    fn model_texture_bake_creates_and_regenerates_blake3_named_sidecar() {
+        let root = unique_temp_dir("model-texture-boundary");
+        let content_root = root.join("content/base");
+        let models_root = content_root.join("models");
+        let cache_root = root.join("prm-cache");
+        std::fs::create_dir_all(&models_root).unwrap();
+
+        let texture_bytes = png_bytes(2, 2);
+        std::fs::write(models_root.join("base-color.png"), &texture_bytes).unwrap();
+        std::fs::write(
+            models_root.join("fixture.gltf"),
+            r#"{
+                "asset": {"version": "2.0"},
+                "images": [{"uri": "base-color.png"}],
+                "textures": [{"source": 0}],
+                "materials": [{
+                    "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}
+                }]
+            }"#,
+        )
+        .unwrap();
+
+        let entities = vec![map_entity("prop_mesh", &[("model", "models/fixture.gltf")])];
+        let expected_sidecar =
+            cache_root.join(format!("{}.prm", blake3::hash(&texture_bytes).to_hex()));
+
+        bake_model_textures(&entities, &content_root, &cache_root);
+        assert!(expected_sidecar.is_file());
+
+        std::fs::remove_file(&expected_sidecar).unwrap();
+        bake_model_textures(&entities, &content_root, &cache_root);
+        assert!(expected_sidecar.is_file());
+
+        let no_prop_cache_root = root.join("no-prop-prm-cache");
+        let no_prop_entities = vec![map_entity("light", &[("model", "models/fixture.gltf")])];
+        bake_model_textures(&no_prop_entities, &content_root, &no_prop_cache_root);
+        assert!(!no_prop_cache_root.exists());
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

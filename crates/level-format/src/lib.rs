@@ -1,5 +1,5 @@
-// PRL binary container format: header, section table, read/write API.
-// See: context/lib/build_pipeline.md §PRL
+// Shared PRL container format and optional glTF asset-path resolution.
+// See: context/lib/build_pipeline.md §PRL Compilation, §Baked texture mips
 
 pub mod alpha_lights;
 pub mod animated_light_chunks;

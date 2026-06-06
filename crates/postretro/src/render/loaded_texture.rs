@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use postretro_level_format::prm::{
-    PrmFile, PrmFormat, PrmReadError, PrmSlot, cache_filename_for_key,
+    PrmFile, PrmFormat, PrmReadError, PrmSlot, PrmSlots, cache_filename_for_key,
 };
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 
@@ -266,6 +266,38 @@ fn header_mip_count(slots: &[Result<PrmSlot, PrmReadError>; 3]) -> u32 {
         .unwrap_or(1)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextureSlotPolicy {
+    WorldBundle,
+    ModelDiffuseOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TextureSlotPlan {
+    consume: [bool; 3],
+    mip_count: u32,
+}
+
+fn texture_slot_plan(
+    header_slots: PrmSlots,
+    slots: &[Result<PrmSlot, PrmReadError>; 3],
+    policy: TextureSlotPolicy,
+) -> TextureSlotPlan {
+    match policy {
+        TextureSlotPolicy::WorldBundle => TextureSlotPlan {
+            consume: [true, true, true],
+            mip_count: header_mip_count(slots),
+        },
+        TextureSlotPolicy::ModelDiffuseOnly => TextureSlotPlan {
+            consume: [header_slots.contains(PrmSlots::DIFFUSE), false, false],
+            mip_count: slots[0]
+                .as_ref()
+                .map(|slot| slot.level_count as u32)
+                .unwrap_or(1),
+        },
+    }
+}
+
 /// All-slot placeholder texture: 64×64 checkerboard diffuse, 1×1 black specular,
 /// 1×1 neutral normal. Shared between `load_textures`' per-texture fallback path
 /// and the renderer's no-level-loaded bootstrap slot.
@@ -335,8 +367,8 @@ pub fn load_textures(
         };
 
         let (header_result, slot_results) = PrmFile::from_bytes_partial(&bytes);
-        match header_result {
-            Ok(_) => {}
+        let header = match header_result {
+            Ok(header) => header,
             Err(e) => {
                 log::warn!(
                     "[Loader] texture '{name}': .prm header error: {e:?} — using placeholders"
@@ -344,16 +376,41 @@ pub fn load_textures(
                 out.push(placeholder_loaded_texture(device, queue));
                 continue;
             }
-        }
+        };
 
-        let mip_count = header_mip_count(&slot_results);
+        let plan = texture_slot_plan(
+            header.slot_mask,
+            &slot_results,
+            TextureSlotPolicy::WorldBundle,
+        );
 
-        let (diffuse_texture, diffuse_view) =
-            upload_slot_or_placeholder(device, queue, &slot_results[0], 0, name, Slot::Diffuse);
-        let (specular_texture, specular_view) =
-            upload_slot_or_placeholder(device, queue, &slot_results[1], 1, name, Slot::Specular);
-        let (normal_texture, normal_view) =
-            upload_slot_or_placeholder(device, queue, &slot_results[2], 2, name, Slot::Normal);
+        let (diffuse_texture, diffuse_view) = upload_slot_or_placeholder(
+            device,
+            queue,
+            &slot_results[0],
+            0,
+            name,
+            Slot::Diffuse,
+            plan.consume[0],
+        );
+        let (specular_texture, specular_view) = upload_slot_or_placeholder(
+            device,
+            queue,
+            &slot_results[1],
+            1,
+            name,
+            Slot::Specular,
+            plan.consume[1],
+        );
+        let (normal_texture, normal_view) = upload_slot_or_placeholder(
+            device,
+            queue,
+            &slot_results[2],
+            2,
+            name,
+            Slot::Normal,
+            plan.consume[2],
+        );
 
         out.push(LoadedTexture {
             diffuse_texture,
@@ -362,11 +419,75 @@ pub fn load_textures(
             specular_view,
             normal_texture,
             normal_view,
-            mip_count,
+            mip_count: plan.mip_count,
         });
     }
 
     out
+}
+
+/// Load one model material from the shared diffuse-addressed `.prm` cache.
+/// Models consume only diffuse in this slice even when the cache entry is a
+/// richer world bundle; specular and normal always use neutral placeholders.
+pub(super) fn load_model_diffuse_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    name: &str,
+    key: [u8; 32],
+    prm_cache_root: &Path,
+) -> LoadedTexture {
+    if key == [0u8; 32] {
+        return placeholder_loaded_texture(device, queue);
+    }
+
+    let prm_path = prm_cache_root.join(format!("{}.prm", cache_filename_for_key(&key)));
+    let bytes = match std::fs::read(&prm_path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            log::warn!(
+                "[Loader] model texture '{name}': cannot read {} : {err} — using placeholders",
+                prm_path.display(),
+            );
+            return placeholder_loaded_texture(device, queue);
+        }
+    };
+
+    let (header_result, slot_results) = PrmFile::from_bytes_partial(&bytes);
+    let header = match header_result {
+        Ok(header) => header,
+        Err(err) => {
+            log::warn!(
+                "[Loader] model texture '{name}': .prm header error: {err:?} — using placeholders"
+            );
+            return placeholder_loaded_texture(device, queue);
+        }
+    };
+    let plan = texture_slot_plan(
+        header.slot_mask,
+        &slot_results,
+        TextureSlotPolicy::ModelDiffuseOnly,
+    );
+    let (diffuse_texture, diffuse_view) = upload_slot_or_placeholder(
+        device,
+        queue,
+        &slot_results[0],
+        0,
+        name,
+        Slot::Diffuse,
+        plan.consume[0],
+    );
+    let (specular_texture, specular_view) = make_specular_placeholder(device, queue);
+    let (normal_texture, normal_view) = make_normal_placeholder(device, queue);
+
+    LoadedTexture {
+        diffuse_texture,
+        diffuse_view,
+        specular_texture,
+        specular_view,
+        normal_texture,
+        normal_view,
+        mip_count: plan.mip_count,
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -383,7 +504,16 @@ fn upload_slot_or_placeholder(
     slot_idx: u8,
     name: &str,
     slot: Slot,
+    consume: bool,
 ) -> (wgpu::Texture, wgpu::TextureView) {
+    if !consume {
+        return match slot {
+            Slot::Diffuse => make_diffuse_placeholder(device, queue),
+            Slot::Specular => make_specular_placeholder(device, queue),
+            Slot::Normal => make_normal_placeholder(device, queue),
+        };
+    }
+
     match slot_result {
         Ok(slot_data) => {
             let levels = slot_levels(slot_data);
@@ -510,6 +640,55 @@ mod tests {
             "normal absent",
         );
         assert_eq!(header_mip_count(&slots), 3, "4x4 → 3 mips");
+    }
+
+    // Regression: a model sharing a diffuse-addressed cache entry with a richer
+    // world bundle must not consume the world's specular or normal slots.
+    #[test]
+    fn model_slot_plan_consumes_only_diffuse_from_richer_world_bundle() {
+        let file = PrmFile {
+            header: PrmHeader {
+                stage_version: STAGE_VERSION,
+                slot_mask: PrmSlots::DIFFUSE | PrmSlots::SPECULAR | PrmSlots::NORMAL,
+                bundle_hash: [0u8; 32],
+                total_body_bytes: 0,
+            },
+            slots: [
+                Some(PrmSlot {
+                    format: PrmFormat::Rgba8UnormSrgb,
+                    width: 4,
+                    height: 4,
+                    level_count: 3,
+                    payload: vec![0u8; 84],
+                }),
+                Some(PrmSlot {
+                    format: PrmFormat::R8Unorm,
+                    width: 1,
+                    height: 1,
+                    level_count: 1,
+                    payload: vec![255],
+                }),
+                Some(PrmSlot {
+                    format: PrmFormat::Rgba8Unorm,
+                    width: 1,
+                    height: 1,
+                    level_count: 1,
+                    payload: NEUTRAL_NORMAL_PIXEL.to_vec(),
+                }),
+            ],
+        };
+        let bytes = file.to_bytes().unwrap();
+        let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+        let header = header.unwrap();
+
+        let plan = texture_slot_plan(
+            header.slot_mask,
+            &slots,
+            TextureSlotPolicy::ModelDiffuseOnly,
+        );
+
+        assert_eq!(plan.consume, [true, false, false]);
+        assert_eq!(plan.mip_count, 3);
     }
 
     #[test]

@@ -1,10 +1,10 @@
 // glTF → engine skinned-model loader (CPU-only; no wgpu).
 // See: context/lib/rendering_pipeline.md §9 · context/lib/build_pipeline.md §Baked texture mips
 //
-// One model, external-PNG textures, a single animation clip. Multi-primitive
+// One model, external-PNG textures, all animation clips. Multi-primitive
 // meshes merge into one interleaved stream; the per-primitive material split is
 // preserved as submesh index ranges so the renderer can draw each material's
-// triangles separately. Multi-mesh / multi-clip generality is out of scope.
+// triangles separately. Multi-mesh selection is out of scope.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -67,7 +67,7 @@ pub struct LoadedModel {
 /// returns one of these — the loader never panics; the caller handles absence.
 #[derive(Debug, Error)]
 pub enum ModelLoadError {
-    /// The glTF (or a referenced buffer / image) could not be read or parsed.
+    /// The glTF document or a referenced external buffer could not be read or parsed.
     #[error("glTF import failed for {path}: {source}")]
     Import {
         path: String,

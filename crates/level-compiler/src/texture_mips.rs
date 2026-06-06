@@ -217,6 +217,16 @@ fn filename_key_for(
     }
 }
 
+fn cache_entry_has_valid_declared_slots(
+    header: &PrmHeader,
+    slots: &[Result<PrmSlot, postretro_level_format::prm::PrmReadError>; 3],
+) -> bool {
+    [PrmSlots::DIFFUSE, PrmSlots::SPECULAR, PrmSlots::NORMAL]
+        .iter()
+        .enumerate()
+        .all(|(index, slot)| !header.slot_mask.contains(*slot) || slots[index].is_ok())
+}
+
 // -- Gamma helpers --------------------------------------------------------
 
 /// 256-entry sRGB → linear lookup. Built once per call to `bake_texture_mips`.
@@ -635,13 +645,20 @@ pub fn bake_diffuse_texture(diffuse_path: &Path, cache_root: &Path) -> anyhow::R
     let bundle_hash = bundle_hash_for(Some(&diffuse_bytes), None, None);
     let prm_path = cache_root.join(format!("{}.prm", cache_filename_for_key(&filename_key)));
 
-    // Match the world-texture cache behavior: a valid header with the same
-    // source bundle hash is already the requested bake.
+    // A richer world bundle can share this diffuse-addressed filename. Keep it
+    // intact when all declared slots parse; model loading consumes only diffuse.
     if prm_path.exists() {
         if let Ok(bytes) = std::fs::read(&prm_path) {
-            let (hdr_result, _slots) = PrmFile::from_bytes_partial(&bytes);
+            let (hdr_result, slots) = PrmFile::from_bytes_partial(&bytes);
             if let Ok(hdr) = hdr_result {
-                if hdr.bundle_hash == bundle_hash {
+                let valid_slots = cache_entry_has_valid_declared_slots(&hdr, &slots);
+                let matching_diffuse_only = hdr.slot_mask == PrmSlots::DIFFUSE
+                    && hdr.bundle_hash == bundle_hash
+                    && valid_slots;
+                let valid_richer_world_bundle = hdr.slot_mask.contains(PrmSlots::DIFFUSE)
+                    && hdr.slot_mask != PrmSlots::DIFFUSE
+                    && valid_slots;
+                if matching_diffuse_only || valid_richer_world_bundle {
                     return Ok(filename_key);
                 }
             }
@@ -760,12 +777,14 @@ pub fn bake_texture_mips(
 
         let prm_path = cache_root.join(format!("{}.prm", cache_filename_for_key(&filename_key)));
 
-        // Cache hit: header parses and bundle_hash matches.
+        // Cache hit: header and every declared slot parse, and bundle_hash matches.
         if prm_path.exists() {
             if let Ok(bytes) = std::fs::read(&prm_path) {
-                let (hdr_result, _slots) = PrmFile::from_bytes_partial(&bytes);
+                let (hdr_result, slots) = PrmFile::from_bytes_partial(&bytes);
                 if let Ok(hdr) = hdr_result {
-                    if hdr.bundle_hash == bundle_hash {
+                    if hdr.bundle_hash == bundle_hash
+                        && cache_entry_has_valid_declared_slots(&hdr, &slots)
+                    {
                         out.insert(name.clone(), filename_key);
                         continue;
                     }
@@ -964,6 +983,119 @@ mod tests {
 
         assert_eq!(returned_key, key);
         assert_eq!(std::fs::read(&cache_path).unwrap(), cached);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Regression: model baking used to overwrite a world bundle at the shared
+    // diffuse-content filename when the world bundle had sibling slots.
+    #[test]
+    fn single_diffuse_bake_preserves_richer_world_bundle_with_same_diffuse() {
+        let root = unique_temp_dir("single-diffuse-preserves-world-bundle");
+        let texture_root = root.join("textures");
+        let collection = texture_root.join("shared");
+        let cache_root = root.join("cache");
+        std::fs::create_dir_all(&collection).unwrap();
+
+        let diffuse_path = collection.join("surface.png");
+        std::fs::write(&diffuse_path, png_bytes(8, 8)).unwrap();
+        std::fs::write(collection.join("surface_s.png"), png_bytes(8, 8)).unwrap();
+        std::fs::write(collection.join("surface_n.png"), png_bytes(8, 8)).unwrap();
+
+        let world_keys =
+            bake_texture_mips(&["shared/surface".to_string()], &texture_root, &cache_root).unwrap();
+        let key = world_keys["shared/surface"];
+        let cache_path = cache_root.join(format!("{}.prm", cache_filename_for_key(&key)));
+        let world_bytes = std::fs::read(&cache_path).unwrap();
+
+        let returned_key = bake_diffuse_texture(&diffuse_path, &cache_root).unwrap();
+
+        assert_eq!(returned_key, key);
+        assert_eq!(std::fs::read(&cache_path).unwrap(), world_bytes);
+        let (header, slots) = PrmFile::from_bytes_partial(&world_bytes);
+        let header = header.unwrap();
+        assert_eq!(
+            header.slot_mask,
+            PrmSlots::DIFFUSE | PrmSlots::SPECULAR | PrmSlots::NORMAL
+        );
+        assert!(slots.iter().all(Result::is_ok));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Regression: a matching header alone is not a cache hit when the declared
+    // diffuse payload is truncated.
+    #[test]
+    fn single_diffuse_bake_rebuilds_matching_header_with_truncated_diffuse() {
+        let root = unique_temp_dir("single-diffuse-repairs-truncated");
+        let cache_root = root.join("cache");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let diffuse_path = root.join("base_color.png");
+        let source_bytes = png_bytes(8, 8);
+        std::fs::write(&diffuse_path, &source_bytes).unwrap();
+        let key = bake_diffuse_texture(&diffuse_path, &cache_root).unwrap();
+        let cache_path = cache_root.join(format!("{}.prm", cache_filename_for_key(&key)));
+
+        let mut corrupt = std::fs::read(&cache_path).unwrap();
+        corrupt.pop();
+        std::fs::write(&cache_path, &corrupt).unwrap();
+        let (header, slots) = PrmFile::from_bytes_partial(&corrupt);
+        assert!(header.is_ok(), "header remains parseable");
+        assert!(slots[0].is_err(), "declared diffuse payload is corrupt");
+
+        bake_diffuse_texture(&diffuse_path, &cache_root).unwrap();
+
+        let repaired = std::fs::read(&cache_path).unwrap();
+        assert_ne!(repaired, corrupt);
+        let (header, slots) = PrmFile::from_bytes_partial(&repaired);
+        assert!(header.is_ok());
+        assert!(slots[0].is_ok());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Regression: world baking must also reject a matching bundle hash when a
+    // declared slot failed partial parsing, so the model preservation pass
+    // cannot retain a corrupt richer bundle.
+    #[test]
+    fn world_bake_rebuilds_matching_header_with_truncated_declared_slot() {
+        let root = unique_temp_dir("world-repairs-truncated-slot");
+        let texture_root = root.join("textures");
+        let collection = texture_root.join("shared");
+        let cache_root = root.join("cache");
+        std::fs::create_dir_all(&collection).unwrap();
+
+        std::fs::write(collection.join("surface.png"), png_bytes(8, 8)).unwrap();
+        std::fs::write(collection.join("surface_s.png"), png_bytes(8, 8)).unwrap();
+        let names = ["shared/surface".to_string()];
+        let keys = bake_texture_mips(&names, &texture_root, &cache_root).unwrap();
+        let cache_path = cache_root.join(format!(
+            "{}.prm",
+            cache_filename_for_key(&keys["shared/surface"])
+        ));
+
+        let mut corrupt = std::fs::read(&cache_path).unwrap();
+        corrupt.pop();
+        std::fs::write(&cache_path, &corrupt).unwrap();
+        let (header, slots) = PrmFile::from_bytes_partial(&corrupt);
+        assert!(header.is_ok(), "header remains parseable");
+        assert!(
+            slots.iter().any(Result::is_err),
+            "a declared slot must fail partial parsing"
+        );
+
+        bake_texture_mips(&names, &texture_root, &cache_root).unwrap();
+
+        let repaired = std::fs::read(&cache_path).unwrap();
+        let (header, slots) = PrmFile::from_bytes_partial(&repaired);
+        assert!(header.is_ok());
+        assert!(
+            slots
+                .iter()
+                .enumerate()
+                .all(|(index, result)| index == 2 || result.is_ok())
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

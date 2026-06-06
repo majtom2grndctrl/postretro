@@ -45,7 +45,9 @@ use crate::lighting::spot_shadow::SpotShadowPool;
 use crate::lighting::{GPU_LIGHT_SIZE, pack_lights, pack_lights_with_slots_into};
 use crate::material::Material;
 use crate::prl::MapLight;
-use crate::render::loaded_texture::{LoadedTexture, load_textures, placeholder_loaded_texture};
+use crate::render::loaded_texture::{
+    LoadedTexture, load_model_diffuse_texture, load_textures, placeholder_loaded_texture,
+};
 use crate::visibility::VisibleCells;
 use postretro_level_format::alpha_lights::ALPHA_LIGHT_LEAF_UNASSIGNED;
 use postretro_level_format::fog_cell_masks::union_active_mask;
@@ -2686,10 +2688,9 @@ impl Renderer {
             }
         };
 
-        // Resolve every submesh's material key through the SAME `.prm`-open path
-        // `load_textures` uses (content-hash hex → 32-byte key → `.prm`). One
-        // bind group per *distinct* key (deduped), paired with each submesh's
-        // index range in submesh order.
+        // Resolve every submesh's material key through the shared `.prm` cache.
+        // Model materials consume diffuse only even when the diffuse-addressed
+        // entry is a richer world bundle.
         let submesh_materials = self.resolve_skinned_model_material(&model, prm_cache_root);
 
         let crate::model::gltf_loader::LoadedModel {
@@ -2754,8 +2755,8 @@ impl Renderer {
     /// this method is the thin GPU layer that builds the bind groups.
     ///
     /// Degrades to a placeholder per distinct key when its key is absent/garbled
-    /// or its `.prm` is missing (`load_textures` already handles those). The
-    /// diagnostic texture name is generic (the key hex), naming no asset.
+    /// or its `.prm` is missing. Model materials consume only diffuse; specular
+    /// and normal always use neutral placeholders in this slice.
     fn resolve_skinned_model_material(
         &mut self,
         model: &crate::model::gltf_loader::LoadedModel,
@@ -2770,16 +2771,13 @@ impl Renderer {
             .iter()
             .map(|key_hex| {
                 let key = parse_blake3_key(key_hex);
-                let keys = TextureCacheKeysSection { keys: vec![key] };
-                // Generic diagnostic name — the material-key hex, naming no asset.
-                let names = vec![key_hex.clone()];
-
-                let loaded =
-                    load_textures(&self.device, &self.queue, &names, &keys, prm_cache_root);
-                let tex = loaded
-                    .into_iter()
-                    .next()
-                    .unwrap_or_else(|| placeholder_loaded_texture(&self.device, &self.queue));
+                let tex = load_model_diffuse_texture(
+                    &self.device,
+                    &self.queue,
+                    key_hex,
+                    key,
+                    prm_cache_root,
+                );
 
                 let aniso_sampler = self
                     .mip_count_aniso_samplers

@@ -4,10 +4,16 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-/// Resolves a material's external base-color image URI relative to its glTF.
+/// Resolves a material's relative filesystem base-color URI beside its glTF.
 ///
-/// Materials without a base-color texture and images embedded in a buffer view
-/// return `None`.
+/// URI schemes, including `data:` and `file:`, absolute paths, materials without
+/// base-color textures, and buffer-view images return `None`. Callers treat
+/// `None` as unavailable and degrade to a placeholder or skip its offline bake.
+///
+/// Percent decoding follows glTF URI encoding. Invalid UTF-8 falls back to the
+/// literal URI so the later filesystem read owns failure handling. Parent
+/// segments are joined unchanged: glTF content is trusted and may deliberately
+/// reference a sibling directory outside the model's directory.
 pub fn resolve_material_base_color_path(
     material: &gltf::Material,
     parent_dir: &Path,
@@ -24,13 +30,18 @@ pub fn resolve_material_base_color_path(
         .decode_utf8()
         .map(|value| value.into_owned())
         .unwrap_or_else(|_| uri.to_string());
+
+    if uri.contains(':') || Path::new(&decoded).is_absolute() {
+        return None;
+    }
+
     Some(parent_dir.join(decoded))
 }
 
-/// Opens a glTF document and returns its distinct external base-color paths.
+/// Opens a glTF document and returns its distinct relative base-color paths.
 ///
 /// This parses only the glTF document; it does not import buffers or images.
-/// Paths retain first-material order.
+/// Unsupported image sources are omitted. Paths retain first-material order.
 pub fn resolve_document_base_color_paths(gltf_path: &Path) -> Result<Vec<PathBuf>, gltf::Error> {
     let document = gltf::Gltf::open(gltf_path)?;
     let parent_dir = gltf_path.parent().unwrap_or_else(|| Path::new(""));
@@ -114,6 +125,60 @@ mod tests {
         assert_eq!(
             resolve_material_base_color_path(&material, Path::new("/content/models")),
             None
+        );
+    }
+
+    #[test]
+    fn material_resolver_rejects_uri_schemes_and_absolute_paths() {
+        for uri in [
+            "data:image/png;base64,AAAA",
+            "https://example.com/base.png",
+            "file:///content/base.png",
+            "/content/base.png",
+        ] {
+            let json = format!(
+                r#"{{
+                    "asset": {{"version": "2.0"}},
+                    "images": [{{"uri": "{uri}"}}],
+                    "textures": [{{"source": 0}}],
+                    "materials": [{{
+                        "pbrMetallicRoughness": {{"baseColorTexture": {{"index": 0}}}}
+                    }}]
+                }}"#
+            );
+            let document = parse_gltf(&json);
+            let material = document
+                .materials()
+                .next()
+                .expect("fixture must contain a material");
+
+            assert_eq!(
+                resolve_material_base_color_path(&material, Path::new("/content/models")),
+                None,
+                "URI must be unsupported: {uri}"
+            );
+        }
+    }
+
+    #[test]
+    fn material_resolver_preserves_trusted_parent_segments() {
+        let json = r#"{
+            "asset": {"version": "2.0"},
+            "images": [{"uri": "../textures/base.png"}],
+            "textures": [{"source": 0}],
+            "materials": [{
+                "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}
+            }]
+        }"#;
+        let document = parse_gltf(json);
+        let material = document
+            .materials()
+            .next()
+            .expect("fixture must contain a material");
+
+        assert_eq!(
+            resolve_material_base_color_path(&material, Path::new("/content/models")),
+            Some(PathBuf::from("/content/models/../textures/base.png"))
         );
     }
 

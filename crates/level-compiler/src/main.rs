@@ -140,6 +140,7 @@ fn prop_mesh_model_handles(entities: &[map_data::MapEntityRecord]) -> Vec<&str> 
         let Some(model) = entity
             .key_values
             .iter()
+            .rev()
             .find_map(|(key, value)| (key == "model").then_some(value.as_str()))
         else {
             continue;
@@ -1353,7 +1354,7 @@ mod tests {
     }
 
     #[test]
-    fn prop_mesh_model_handles_filter_and_deduplicate_in_map_order() {
+    fn prop_mesh_model_handles_use_final_value_and_deduplicate_in_map_order() {
         let entities = vec![
             map_entity("light", &[("model", "models/ignored.gltf")]),
             map_entity("prop_mesh", &[("other", "value")]),
@@ -1363,9 +1364,20 @@ mod tests {
             map_entity(
                 "prop_mesh",
                 &[
+                    ("model", "models/ignored-overwritten.gltf"),
                     ("model", "models/second.gltf"),
-                    ("model", "models/ignored-duplicate-key.gltf"),
                 ],
+            ),
+            map_entity(
+                "prop_mesh",
+                &[
+                    ("model", "models/ignored-overwritten.gltf"),
+                    ("model", "models/first.gltf"),
+                ],
+            ),
+            map_entity(
+                "prop_mesh",
+                &[("model", "models/ignored-overwritten.gltf"), ("model", "")],
             ),
         ];
 

@@ -1,10 +1,5 @@
 // glTF → engine skinned-model loader (CPU-only; no wgpu).
 // See: context/lib/rendering_pipeline.md §9 · context/lib/build_pipeline.md §Baked texture mips
-//
-// One model, external-PNG textures, all animation clips. Multi-primitive
-// meshes merge into one interleaved stream; the per-primitive material split is
-// preserved as submesh index ranges so the renderer can draw each material's
-// triangles separately. Multi-mesh selection is out of scope.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -56,10 +51,9 @@ pub struct LoadedModel {
     /// resolves each key against the shared material/texture cache and draws each
     /// range against its (possibly shared) material.
     pub submeshes: Vec<Submesh>,
-    /// Entity tags read from the document's top-level `extras` (`{ "tags": [..] }`).
-    /// The spawn seam attaches these to the spawned entity. Empty when the glTF
-    /// carries no `extras`, no `tags` key, or a malformed `extras` shape — a
-    /// missing/garbled `extras` yields no tags rather than a load error.
+    /// Tags parsed from the document's top-level `extras` (`{ "tags": [..] }`).
+    /// They are returned but currently unused; map placement tags are separate.
+    /// Empty when `extras` or `tags` is absent or malformed.
     pub tags: Vec<String>,
 }
 
@@ -114,8 +108,8 @@ fn pack_tangent(tangent: [f32; 4]) -> [u16; 2] {
     [oct[0], v_15bit | sign_bit]
 }
 
-/// The all-zero cache key, hex-encoded (64 chars). `load_textures` reads this as
-/// the "no source PNG" sentinel and binds a silent placeholder.
+/// The all-zero cache key, hex-encoded (64 chars). The shared `.prm` convention
+/// treats it as the "no source PNG" sentinel and binds a silent placeholder.
 ///
 /// The all-zero key is a convention shared with the level compiler, not a local
 /// choice — `build_pipeline.md` §"Baked texture mips" defines it as the key that
@@ -131,7 +125,7 @@ fn zero_material_key() -> String {
 /// Recipe (mirrors the level compiler's `filename_key_for` for a
 /// diffuse-present texture, per `build_pipeline.md` §Baked texture mips):
 /// `blake3(baseColor PNG bytes)`, hex-encoded — the same key the offline baker
-/// names the `.prm` with, so `load_textures` opens `<key>.prm` directly. We
+/// uses for `<key>.prm`. Runtime model materials use that same address. We
 /// reproduce the recipe inline because `filename_key_for` is private to the
 /// level-compiler crate.
 ///
@@ -153,10 +147,9 @@ fn content_hash_material_key(material: &gltf::Material, parent_dir: &Path) -> St
     }
 }
 
-/// Lowercase-hex encode a 32-byte cache key into the 64-char string
-/// `load_textures` / `cache_filename_for_key` consume. `blake3::Hash::to_hex()`
-/// returns a fixed-size `HexString`, not an owned `String`; this produces the
-/// owned `String` the rest of the key pipeline expects.
+/// Lowercase-hex encode a 32-byte cache key into the shared 64-char `.prm` key
+/// convention. `blake3::Hash::to_hex()` returns a fixed-size `HexString`, not an
+/// owned `String`; this produces the owned `String` the key pipeline expects.
 fn hex_encode(bytes: &[u8; 32]) -> String {
     use std::fmt::Write;
     let mut s = String::with_capacity(64);

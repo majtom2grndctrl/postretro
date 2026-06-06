@@ -548,10 +548,9 @@ fn plan_submesh_materials(submeshes: &[crate::model::gltf_loader::Submesh]) -> S
     }
 }
 
-/// Parse a 64-char hex blake3 cache key into 32 bytes. Returns the all-zero key
-/// (the `load_textures` "no source PNG" → silent placeholder sentinel) on any
-/// malformed input, so an absent/garbled key degrades to a placeholder rather
-/// than panicking. Used by the temp skinned-model material resolve.
+/// Parse a 64-char hex blake3 cache key into 32 bytes. Returns the shared
+/// all-zero placeholder sentinel on malformed input, so an absent/garbled model
+/// material key degrades to a placeholder rather than panicking.
 fn parse_blake3_key(hex: &str) -> [u8; 32] {
     let mut key = [0u8; 32];
     if hex.len() != 64 {

@@ -192,7 +192,7 @@ The renderer owns all GPU-side resources: wgpu buffers, textures, samplers. CPU-
 | Type | Location | Description |
 |------|----------|-------------|
 | `UiTexture` | `crates/postretro/src/ui_texture.rs` | CPU-side `{ data, width, height }`. RGBA8 decoded from PNG. Used for splash and HUD blits. No wgpu handles. |
-| `LoadedTexture` | `crates/postretro/src/render/loaded_texture.rs` | World-material GPU textures: wgpu handles for diffuse, specular, and normal slots plus `mip_count`. Lives inside the renderer module to preserve the "Renderer owns GPU" invariant. |
+| `LoadedTexture` | `crates/postretro/src/render/loaded_texture.rs` | World- and model-material GPU resources: wgpu handles for diffuse, specular, and normal slots plus `mip_count`. World loading consumes all available slots; model loading consumes diffuse only. Lives inside the renderer module to preserve the "Renderer owns GPU" invariant. |
 
 ### 7.2 Lifecycle
 

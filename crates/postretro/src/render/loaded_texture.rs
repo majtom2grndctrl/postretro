@@ -1,7 +1,5 @@
-// World-material texture loading: maps PRL texture names to baked `.prm`
-// mip-chain sidecars and uploads them directly. Owns the wgpu handles for
-// each material's diffuse/specular/normal slots.
-// See: context/lib/resource_management.md · context/lib/build_pipeline.md
+// GPU texture resources and baked `.prm` upload for world and model materials.
+// See: context/lib/resource_management.md · context/lib/rendering_pipeline.md
 
 use std::path::Path;
 
@@ -21,8 +19,9 @@ const BLACK_RGBA: [u8; 4] = [0, 0, 0, 255];
 /// `texture_2d<f32>`, so its `.rg * 2 - 1` decode works for either format.
 const NEUTRAL_NORMAL_PIXEL: [u8; 4] = [127, 127, 255, 255];
 
-/// GPU resources for one world-material texture (diffuse + specular + normal).
-/// Each slot carries its full mip chain; the sampler clamp matches `mip_count`.
+/// GPU resources for one world or model material.
+/// World loading consumes all available slots; model loading consumes diffuse
+/// only. Each uploaded slot carries its full mip chain.
 pub struct LoadedTexture {
     pub diffuse_texture: wgpu::Texture,
     pub diffuse_view: wgpu::TextureView,

@@ -17,6 +17,8 @@
 //     struct SpecLight {
 //         position_and_range: vec4<f32>, // xyz = position, w = falloff_range
 //         color_and_pad:      vec4<f32>, // xyz = color × intensity, w = sdf flag
+//         cone_dir_and_type:  vec4<f32>, // xyz = normalized aim, w = light type
+//         cone_cos:           vec4<f32>, // x = cos(inner), y = cos(outer)
 //     };
 //     struct ChunkGridInfo {
 //         grid_origin: vec3<f32>,

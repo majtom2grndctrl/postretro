@@ -93,11 +93,13 @@ struct MaterialUniform {
 @group(2) @binding(1) var<storage, read> light_influence: array<vec4<f32>>;
 
 // Static light buffer: specular + per-light SDF diffuse for sdf-tagged lights.
-// Two vec4 slots (32 B stride); see postretro/src/lighting/spec_buffer.rs
+// Four vec4 slots (64 B stride); see postretro/src/lighting/spec_buffer.rs
 // for the CPU-side layout.
 struct SpecLight {
     position_and_range: vec4<f32>, // xyz = position, w = falloff_range
     color_and_pad:      vec4<f32>, // xyz = color × intensity, w = sdf flag (>0.5 ⇒ _shadow_type sdf)
+    cone_dir_and_type:  vec4<f32>, // xyz = normalized aim, w = light type (1.0 ⇒ spot)
+    cone_cos:           vec4<f32>, // x = cos(inner), y = cos(outer); non-spot carries 1/-1 (full bright)
 };
 @group(2) @binding(2) var<storage, read> spec_lights: array<SpecLight>;
 
@@ -358,6 +360,13 @@ fn cone_attenuation(L: vec3<f32>, aim: vec3<f32>, inner_angle: f32, outer_angle:
     let cos_angle = dot(-L, aim);
     let cos_inner = cos(inner_angle);
     let cos_outer = cos(outer_angle);
+    return smoothstep(cos_outer, cos_inner, cos_angle);
+}
+
+// Cone falloff from pre-baked cos cutoffs (static `SpecLight` path). Non-spot
+// lights pack cos_inner = 1, cos_outer = -1 so this returns 1.0 everywhere.
+fn cone_attenuation_cos(L: vec3<f32>, aim: vec3<f32>, cos_inner: f32, cos_outer: f32) -> f32 {
+    let cos_angle = dot(-L, aim);
     return smoothstep(cos_outer, cos_inner, cos_angle);
 }
 
@@ -813,8 +822,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 continue;
             }
             let atten = select(1.0, max(1.0 - dist / max(range, 0.001), 0.0), range > 0.0);
+            let cone = cone_attenuation_cos(L, sl.cone_dir_and_type.xyz, sl.cone_cos.x, sl.cone_cos.y);
             let visibility = select(slice_for_visibility(sdf_factor, s), 1.0, sdf_force_lit);
-            static_direct = static_direct + sl.color_and_pad.xyz * (n_dot_l * atten * visibility);
+            static_direct = static_direct + sl.color_and_pad.xyz * (n_dot_l * atten * cone * visibility);
         }
     }
 
@@ -867,6 +877,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 continue;
             }
             let atten = select(1.0, max(1.0 - dist / max(range, 0.001), 0.0), range > 0.0);
+            let cone = cone_attenuation_cos(L, sl.cone_dir_and_type.xyz, sl.cone_cos.x, sl.cone_cos.y);
             // Specular is shadowed by the light's OWN technique (invariant 9). An
             // `sdf`-tagged light's specular multiplies by the SAME per-light
             // visibility slice its diffuse used — resolved through the shared
@@ -885,7 +896,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             );
             let contribution = blinn_phong(
                 L, V, N_bump, sl.color_and_pad.xyz, spec_exp, spec_int
-            ) * (atten * visibility);
+            ) * (atten * cone * visibility);
             specular_sum = specular_sum + contribution;
         }
     }

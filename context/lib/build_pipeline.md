@@ -226,6 +226,8 @@ Per-texture mip-chain sidecars live alongside the stage-output cache. prl-build 
 
 **Runtime.** Level load resolves each `TextureNamesSection` entry's blake3 key from `TextureCacheKeysSection`, opens the corresponding `.prm`, and uploads each slot's mip chain directly. A zero key (`[0u8; 32]`) substitutes per-slot placeholders silently. A corrupt or missing `.prm` substitutes per-slot placeholders and logs a `warn!`; load continues. Sampler `lod_max_clamp` is set to `mip_count - 1` per texture.
 
+**Model textures.** `prop_mesh` model base-color textures bake the same way, content-driven from the model placements in the map — no CLI flag, mirroring how world materials follow from `TextureNames`. prl-build resolves each placed model's glTF base-color PNG(s) and bakes a diffuse-only `.prm`, content-addressed by `blake3(base-color PNG)` — byte-identical to a diffuse-only world sidecar. Unlike world materials, no PRL section carries model keys: the runtime content-hashes the same PNG when it loads the glTF and opens `<key>.prm` directly, so the compiler only has to make the sidecar exist. The glTF base-color path resolver is shared by runtime and compiler through the `gltf-resolve` feature of `postretro-level-format`. A missing or unreadable glTF/PNG degrades to the placeholder at runtime as before; the bake warns and continues. This removes the prior coupling where a model's runtime texture depended on a hand-staged, gitignored cache file that nothing regenerated.
+
 ---
 
 ## Non-Goals

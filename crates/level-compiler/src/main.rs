@@ -380,55 +380,104 @@ fn main() -> anyhow::Result<()> {
                 .filter(|l| l.shadow_type != map_data::ShadowType::Sdf)
                 .collect();
 
-            let mut layers: Vec<lightmap_layer::LightmapLayer> =
-                Vec::with_capacity(layer_lights.len());
-            for light in &layer_lights {
-                let input_hash = lightmap_layer::layer_input_hash(
-                    light,
-                    &shared,
-                    &bvh_primitives,
-                    &geo_result,
-                    density,
-                    args.soft_shadow_samples,
-                );
-                let layer_key = cache::CacheKey::new(
-                    "lightmap_layer",
-                    lightmap_layer::LAYER_FORMAT_VERSION,
-                    &input_hash,
-                );
-                let layer = match cache
-                    .get(&layer_key)
-                    .and_then(|bytes| lightmap_layer::LightmapLayer::from_bytes(&bytes))
-                {
-                    Some(layer) => {
-                        log::info!("[cache] lightmap_layer hit");
-                        layer
-                    }
-                    None => {
-                        log::info!("[cache] lightmap_layer miss");
-                        let layer = lightmap_layer::bake_light_layer(
-                            light,
-                            &shared,
-                            &bvh,
-                            &bvh_primitives,
-                            &geo_result,
-                            args.soft_shadow_samples,
-                        );
-                        cache.put(&layer_key, &layer.to_bytes());
-                        layer
-                    }
-                };
-                layers.push(layer);
-            }
+            // Compute every light's layer input hash up front (cheap — no blob
+            // reads). These both fold into the second-level section key and feed
+            // the per-light layer keys on a section-cache miss.
+            let layer_input_hashes: Vec<[u8; 32]> = layer_lights
+                .iter()
+                .map(|light| {
+                    lightmap_layer::layer_input_hash(
+                        light,
+                        &shared,
+                        &bvh_primitives,
+                        &geo_result,
+                        density,
+                        args.soft_shadow_samples,
+                    )
+                })
+                .collect();
 
-            let mut composite = lightmap_layer::composite_layers(
-                &layers,
-                prepared.atlas_width,
-                prepared.atlas_height,
+            // Second-level cache: memoize the composited `LightmapSection` so a
+            // no-edit rebuild does one section decode and skips the layer reads,
+            // composite, dilate, and BC6H encode entirely. The section bytes are
+            // a pure function of the folded inputs (proven byte-identical by the
+            // existing determinism gate), so caching them cannot perturb output.
+            let section_input_hash = lightmap_layer::section_input_hash(
+                &layer_input_hashes,
+                density,
+                lightmap_config.uncompressed_irradiance,
             );
-            composite.dilate();
-            let section =
-                composite.encode_section(density, lightmap_config.uncompressed_irradiance);
+            let section_key = cache::CacheKey::new(
+                "lightmap_section",
+                lightmap_layer::LIGHTMAP_SECTION_VERSION,
+                &section_input_hash,
+            );
+
+            // A `from_bytes` failure on a present entry is treated as a miss
+            // (warn + recompose), mirroring the layer codec's corruption handling.
+            let cached_section = cache.get(&section_key).and_then(|bytes| {
+                match postretro_level_format::lightmap::LightmapSection::from_bytes(&bytes) {
+                    Ok(section) => Some(section),
+                    Err(err) => {
+                        log::warn!("[Compiler] corrupt lightmap section, recomposing: {err}");
+                        None
+                    }
+                }
+            });
+
+            let section = match cached_section {
+                Some(section) => {
+                    log::info!("[cache] lightmap_section hit");
+                    section
+                }
+                None => {
+                    log::info!("[cache] lightmap_section miss");
+                    let mut layers: Vec<lightmap_layer::LightmapLayer> =
+                        Vec::with_capacity(layer_lights.len());
+                    for (light, input_hash) in layer_lights.iter().zip(&layer_input_hashes) {
+                        let layer_key = cache::CacheKey::new(
+                            "lightmap_layer",
+                            lightmap_layer::LAYER_FORMAT_VERSION,
+                            input_hash,
+                        );
+                        let layer = match cache
+                            .get(&layer_key)
+                            .and_then(|bytes| lightmap_layer::LightmapLayer::from_bytes(&bytes))
+                        {
+                            Some(layer) => {
+                                log::info!("[cache] lightmap_layer hit");
+                                layer
+                            }
+                            None => {
+                                log::info!("[cache] lightmap_layer miss");
+                                let layer = lightmap_layer::bake_light_layer(
+                                    light,
+                                    &shared,
+                                    &bvh,
+                                    &bvh_primitives,
+                                    &geo_result,
+                                    args.soft_shadow_samples,
+                                );
+                                cache.put(&layer_key, &layer.to_bytes());
+                                layer
+                            }
+                        };
+                        layers.push(layer);
+                    }
+
+                    let mut composite = lightmap_layer::composite_layers(
+                        &layers,
+                        prepared.atlas_width,
+                        prepared.atlas_height,
+                    );
+                    composite.dilate();
+                    let section =
+                        composite.encode_section(density, lightmap_config.uncompressed_irradiance);
+                    cache.put(&section_key, &section.to_bytes());
+                    section
+                }
+            };
+
             lightmap_bake::LightmapBakeOutput {
                 section,
                 charts: prepared.charts,

@@ -22,6 +22,17 @@ use glam::DVec3;
 /// separately from the per-group SH and animated-weight-map stages.
 pub const LAYER_FORMAT_VERSION: u32 = 1;
 
+/// Bump when the composite/dilate/`encode_section` pipeline or
+/// `LightmapSection::to_bytes` serialization changes. Folded into the
+/// `"lightmap_section"` cache key (the second-level memo of the composited
+/// section), so a bump invalidates every cached section and forces a recompose.
+///
+/// Disjoint from [`LAYER_FORMAT_VERSION`]: that constant covers the per-light
+/// layer payload and single-light bake math; this one covers how those layers
+/// are composited and encoded into the shipped `Lightmap` (id 22) bytes. A
+/// change to either concern bumps only its own constant.
+pub const LIGHTMAP_SECTION_VERSION: u32 = 1;
+
 /// One covered atlas texel's contribution from a single light.
 ///
 /// These are exactly the values `bake_face_chart` accumulates per light *before*
@@ -371,6 +382,43 @@ pub fn layer_input_hash(
     hasher.update(&lightmap_density.to_le_bytes());
     hasher.update(&area_sample_count.to_le_bytes());
     hasher.update(&atlas_layout_fingerprint(atlas));
+    *hasher.finalize().as_bytes()
+}
+
+/// Build the cache key for the composited lightmap section — the second-level
+/// memo that lets a no-edit rebuild skip the per-light layer reads, composite,
+/// dilate, and BC6H encode and instead decode the section bytes directly.
+///
+/// The fold covers every input that determines the section bytes, under a fixed
+/// unambiguous byte layout:
+/// 1. `LAYER_FORMAT_VERSION` (u32 LE) — couples this key to the per-light layer
+///    format the same way the private per-light `CacheKey.digest`s would; a
+///    layer-format bump invalidates the section without reading the layer keys.
+/// 2. light count (u32 LE) — so add/remove can never alias a reorder. The
+///    fixed-width 32-byte hash records below already make a plain concatenation
+///    injective, but folding the count is a cheap belt-and-suspenders guard.
+/// 3. each light's `layer_input_hash` `[u8; 32]`, in the caller's exact filtered
+///    order (global static order, `ShadowType::Sdf` dropped). Folding the input
+///    hashes mirrors folding the full per-light keys: any per-light input change
+///    (light params, geometry slice, density, atlas layout) flows through here.
+/// 4. `texel_density` (f32 LE) — the `density` passed to `encode_section`.
+/// 5. `uncompressed_irradiance` (1 byte, 0/1) — selects BC6H vs RGBA16F output.
+///
+/// `layer_input_hashes` must be supplied in the same filtered order the warm
+/// composite loop uses; the helper does not re-derive or re-sort them.
+pub fn section_input_hash(
+    layer_input_hashes: &[[u8; 32]],
+    texel_density: f32,
+    uncompressed_irradiance: bool,
+) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&LAYER_FORMAT_VERSION.to_le_bytes());
+    hasher.update(&(layer_input_hashes.len() as u32).to_le_bytes());
+    for hash in layer_input_hashes {
+        hasher.update(hash);
+    }
+    hasher.update(&texel_density.to_le_bytes());
+    hasher.update(&[u8::from(uncompressed_irradiance)]);
     *hasher.finalize().as_bytes()
 }
 

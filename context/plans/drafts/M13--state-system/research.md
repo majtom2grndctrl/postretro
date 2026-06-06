@@ -683,10 +683,46 @@ is **not** gated on health. The real residual risk is that the slot *schema* is 
 - **RECOMMEND (a):** write the schema *as if M10 exists*, mark it the published
   contract; keeps the seam pure. (b) is viable if schema-correctness anxiety dominates.
 
+### 11.10 The store/UI split — three state concepts (owner decision, 2026-06-06)
+
+A follow-up session split "state" into three distinct concepts (the §11.3 instinct,
+applied to the architecture):
+
+1. **Engine-owned global slots** — `player.health` / `player.ammo`. Engine writes,
+   readonly to scripts, the M10 contract.
+2. **Modder-defined global store** — declared at mod level, shared, persisted; game
+   logic owns values the HUD merely displays (score, objective progress, custom
+   resources). Game logic writes, UI reads.
+3. **Component-local state** — `liveValue()`, per-component-instance, ephemeral.
+
+**Decisions:**
+
+- **The store (#1 + #2 mechanism) is extracted to its own scripting-foundation spec,
+  `drafts/mod-state-store/`** — not UI-only, so it sits *below* the UI milestone. It
+  owns the slot table, `defineState`, validation, ownership/readonly, the persist wire
+  format, the branded `StateValue<T>`, and a behavior-context read/write API (game logic
+  reads and writes it). Independently testable; no render.
+- **Goal C is now the UI *consumption* layer** — the once-per-frame published snapshot,
+  bind-by-slot-name, value diffing → relayout/redraw, the retained tree, the static
+  proxy, and publishing the `player.*` schema. C *consumes* the store. Retitled "State
+  binding." (Earlier §1–§10 here describe the pre-split monolithic C; the store half of
+  that content now lives in the store spec. §11 is the authoritative decision log.)
+- **`liveValue()` (component-local) → G1.** It needs a component instance + lifecycle to
+  scope to, and script-authored components are G1. Distinct primitive from the global
+  store's declaration verb.
+- **Naming.** `liveValue()` = component-local (G1). Global store declaration verb is
+  `defineState` (working name) or `liveState` (live-family parallel) — **OPEN**, owned
+  by the store spec. Type `StateValue<T>` stays.
+- **Writes.** Behavior-context direct read/write (game logic, like `world.setGravity`)
+  lives in the store spec. The UI-reaction `setState` (writing a slot from a UI
+  event/reaction as serializable IR) stays deferred to **E / F**.
+
 ---
 
-*End of research. The spec author should resolve the §8 open questions (especially
-slot-table ownership, `defineState` scope, the generic-brand typedef gap, and the
-slot-write / `setState` scope) before drafting tasks. The `bar`-widget question is
-resolved: C does **not** add `bar` (owner, 2026-06) — see §11.8. New roadmap goal **TW**
-(UI value tweening) was added this session to home animated/eased display values.*
+*End of research. Two specs now exist: `drafts/mod-state-store/` (scripting foundation,
+ships first) and `drafts/M13--state-system/` (UI consumption, depends on it). Resolve
+each spec's open questions before promotion — notably the global declaration verb
+(`defineState` vs `liveState`), the read/write ergonomic shape, and the generic-brand
+typedef gap (store spec); the snapshot value carrier and format scope (Goal C). The
+`bar` widget is deferred to F (owner, 2026-06); `liveValue()` component-local state →
+G1; roadmap goal **TW** homes value tweening.*

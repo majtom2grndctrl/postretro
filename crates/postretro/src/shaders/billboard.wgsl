@@ -36,6 +36,8 @@ struct GpuLight {
 struct SpecLight {
     position_and_range: vec4<f32>,
     color_and_pad: vec4<f32>,
+    cone_dir_and_type: vec4<f32>, // xyz = normalized aim, w = light type (1.0 ⇒ spot)
+    cone_cos: vec4<f32>,          // x = cos(inner), y = cos(outer); non-spot carries 1/-1
 };
 @group(2) @binding(2) var<storage, read> spec_lights: array<SpecLight>;
 
@@ -249,6 +251,13 @@ fn cone_attenuation(L: vec3<f32>, aim: vec3<f32>, inner_angle: f32, outer_angle:
     return smoothstep(cos_outer, cos_inner, cos_angle);
 }
 
+// Cone falloff from pre-baked cos cutoffs (static `SpecLight` path). Non-spot
+// lights pack cos_inner = 1, cos_outer = -1 so this returns 1.0 everywhere.
+fn cone_attenuation_cos(L: vec3<f32>, aim: vec3<f32>, cos_inner: f32, cos_outer: f32) -> f32 {
+    let cos_angle = dot(-L, aim);
+    return smoothstep(cos_outer, cos_inner, cos_angle);
+}
+
 // The depth-aware octahedral irradiance sampler lives in `sh_sample.wgsl`,
 // concatenated after this source at pipeline-build time (render/smoke.rs
 // `BILLBOARD_SHADER_SOURCE`). Billboard passes `reject_backface = false`: a
@@ -329,8 +338,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 }
                 let L = to_light / max(dist, 0.0001);
                 let atten = select(1.0, max(1.0 - dist / max(range, 0.001), 0.0), range > 0.0);
+                let cone = cone_attenuation_cos(L, sl.cone_dir_and_type.xyz, sl.cone_cos.x, sl.cone_cos.y);
                 // Broad highlight on smoke: low specular exponent.
-                let contribution = blinn_phong(L, V, N, sl.color_and_pad.xyz, 4.0, spec_int) * atten;
+                let contribution = blinn_phong(L, V, N, sl.color_and_pad.xyz, 4.0, spec_int) * (atten * cone);
                 static_specular = static_specular + contribution;
             }
         }

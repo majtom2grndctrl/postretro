@@ -1140,16 +1140,20 @@ impl Renderer {
             );
         }
 
-        // Forward pass exceeds the WebGPU spec floor for per-stage sampled
-        // texture bindings. Desktop backends report far higher (Metal/AMD =
-        // 128), so we request the count the pipelines need.
+        // The forward pass binds more sampled textures per stage than wgpu's
+        // *default* request (4 bind groups) would carry, so we request the exact
+        // count the pipelines need. This stays under the WebGPU spec floor of 16
+        // (`wgpu::Limits::defaults().max_sampled_textures_per_shader_stage`), and
+        // every targeted backend reports far higher (Metal/AMD = 128) — the
+        // adapter pre-check below confirms the granted maximum still covers it.
         //
-        // Sampled texture inventory (11 total across the forward shader stage):
+        // Sampled texture inventory (12 total across the forward shader stage):
         //   Group 1 — material (3): diffuse, specular, normal
         //   Group 3 — SH volume (2): octahedral atlas + depth-moments
-        //   Group 4 — lightmap (3): static irradiance, static dominant-direction, animated-contribution atlas
+        //   Group 4 — lightmap (4): static irradiance, static dominant-direction,
+        //                           animated-contribution atlas, animated dominant-direction
         //   Group 5 — shadow (3): spot-shadow depth array (binding 0), SDF shadow factor (binding 3), scene depth (binding 4)
-        const REQUIRED_SAMPLED_TEXTURES: u32 = 11;
+        const REQUIRED_SAMPLED_TEXTURES: u32 = 12;
         const REQUIRED_STORAGE_TEXTURES: u32 = 4;
         // Stopgap: SH compose's flat delta-probe storage buffer outgrows the
         // WebGPU spec floor (128 MiB) on maps with many animated lights because
@@ -1702,6 +1706,14 @@ impl Renderer {
         );
 
         let animated_lm_debug = animated_lightmap::AnimatedLmDebugConfig::from_env();
+        // Source the animated atlas size from the same resolver the static
+        // lightmap texture uses, so the two atlases are guaranteed to match (the
+        // compose pass writes at absolute static-atlas coordinates; the forward
+        // pass samples both with one normalized lightmap_uv).
+        let lightmap_atlas_dimensions = crate::lighting::lightmap::usable_atlas_dimensions(
+            geometry.and_then(|g| g.lightmap),
+            device.limits().max_texture_dimension_2d,
+        );
         let animated_lightmap = animated_lightmap::AnimatedLightmapResources::new(
             &device,
             geometry.and_then(|g| g.animated_light_weight_maps),
@@ -1709,6 +1721,7 @@ impl Renderer {
             &bvh_leaves,
             &sh_volume_resources.animation,
             &uniform_bind_group_layout,
+            lightmap_atlas_dimensions,
             animated_lm_debug,
         )
         .map_err(|msg| anyhow::anyhow!("[Renderer] animated lightmap init failed: {msg}"))?;
@@ -1721,6 +1734,7 @@ impl Renderer {
             geometry.and_then(|g| g.lightmap),
             &lightmap_bind_group_layout,
             &animated_lightmap.forward_view,
+            &animated_lightmap.direction_forward_view,
         );
 
         // SDF half-res shadow pass (Task 4). Always allocated — dispatch is
@@ -2513,6 +2527,13 @@ impl Renderer {
         let lightmap_bgl = crate::lighting::lightmap::bind_group_layout(&self.device);
         let animated_lm_debug = animated_lightmap::AnimatedLmDebugConfig::from_env();
         let bvh_leaves: Vec<crate::geometry::BvhLeaf> = geometry.bvh.leaves.clone();
+        // Match the animated atlas to the static lightmap atlas the same way the
+        // constructor does — one resolver, one device limit, guaranteed-equal
+        // dimensions (see `usable_atlas_dimensions`).
+        let lightmap_atlas_dimensions = crate::lighting::lightmap::usable_atlas_dimensions(
+            geometry.lightmap,
+            self.device.limits().max_texture_dimension_2d,
+        );
 
         let animated_lightmap_result = animated_lightmap::AnimatedLightmapResources::new(
             &self.device,
@@ -2521,6 +2542,7 @@ impl Renderer {
             &bvh_leaves,
             &self.sh_volume_resources.animation,
             &self.uniform_bind_group_layout,
+            lightmap_atlas_dimensions,
             animated_lm_debug,
         );
         match animated_lightmap_result {
@@ -2531,6 +2553,7 @@ impl Renderer {
                     geometry.lightmap,
                     &lightmap_bgl,
                     &al.forward_view,
+                    &al.direction_forward_view,
                 );
                 self.animated_lightmap = al;
             }

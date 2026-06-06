@@ -23,6 +23,14 @@ pub const BIND_ANIMATED_ATLAS: u32 = 3;
 /// linear-filterability is a hard runtime requirement checked at init
 /// (see `atlas_format_filterable`; see also `rendering_pipeline.md §4`).
 pub const BIND_FILTERING_SAMPLER: u32 = 4;
+/// Animated dominant-direction atlas (Rgba8Unorm: octahedral direction in `.rg`,
+/// coverage flag in `.a`). Composed each frame alongside the animated irradiance
+/// atlas; the forward pass samples it to apply bumped-Lambert normal-map correction
+/// to the animated term. Sampled through the nearest sampler at binding 2 — oct
+/// directions must not be linearly interpolated. Binding 5 here (group 4, forward
+/// pass) and binding 8 in the compose shader are independent numbering spaces for
+/// the same atlas.
+pub const BIND_ANIMATED_DIRECTION: u32 = 5;
 
 /// GPU-side lightmap atlas: irradiance texture, direction texture, sampler,
 /// and the bind group that exposes them to the forward shader.
@@ -68,6 +76,7 @@ impl LightmapResources {
         section: Option<&LightmapSection>,
         bind_group_layout: &wgpu::BindGroupLayout,
         animated_atlas_view: &wgpu::TextureView,
+        animated_direction_view: &wgpu::TextureView,
     ) -> Self {
         // Nearest sampler for the octahedral direction texture (binding 1):
         // linear interpolation of octahedral-encoded unit vectors does not
@@ -147,6 +156,10 @@ impl LightmapResources {
                     binding: BIND_FILTERING_SAMPLER,
                     resource: wgpu::BindingResource::Sampler(&filtering_sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: BIND_ANIMATED_DIRECTION,
+                    resource: wgpu::BindingResource::TextureView(animated_direction_view),
+                },
             ],
         });
 
@@ -158,7 +171,7 @@ impl LightmapResources {
     }
 }
 
-fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 5] {
+fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
     // Two samplers (binding 2 nearest, binding 4 linear), split by what each
     // texture needs:
     //   - Irradiance (0) and animated atlas (3) are `Rgba16Float`, which is
@@ -166,9 +179,10 @@ fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 5] {
     //     `float32-filterable` feature). Marked `filterable: true` and always
     //     sampled through the linear sampler so baked penumbra ramps read as
     //     continuous gradients instead of stair-stepping at texel boundaries.
-    //   - Direction (1) stays `filterable: false` on the nearest sampler:
-    //     linear interpolation of octahedral-encoded unit vectors does not
-    //     commute with slerp.
+    //   - Direction (1) and animated direction (5) stay `filterable: false` on
+    //     the nearest sampler: linear interpolation of direction vectors does
+    //     not commute with slerp (both atlases are octahedral-encoded, so
+    //     both must read nearest).
     // There is one pipeline variant; the BGL is fixed. No fallback path.
     [
         wgpu::BindGroupLayoutEntry {
@@ -215,7 +229,33 @@ fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 5] {
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
             count: None,
         },
+        // Animated dominant-direction atlas (Rgba8Unorm: octahedral in `.rg`,
+        // coverage in `.a`) — `filterable: false`, nearest sampler at binding 2,
+        // mirroring the static direction atlas (1).
+        wgpu::BindGroupLayoutEntry {
+            binding: BIND_ANIMATED_DIRECTION,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        },
     ]
+}
+
+/// Dimensions the static irradiance/direction atlases are created at, using the
+/// same usability filter as `new()`. Returns `None` when the section is absent,
+/// zero-area, or oversize — exactly when the static path falls back to the 1×1
+/// placeholder. Routing both the static and animated atlas creation through this
+/// function keeps their sizes in lock-step (compose writes at absolute atlas
+/// coordinates; forward samples all three atlases with one normalized `lightmap_uv`).
+pub(crate) fn usable_atlas_dimensions(
+    section: Option<&LightmapSection>,
+    max_texture_dimension_2d: u32,
+) -> Option<(u32, u32)> {
+    filter_usable_section(section, max_texture_dimension_2d).map(|s| (s.width, s.height))
 }
 
 /// Filter out an absent (`None`), zero-dimension, or oversize `LightmapSection`,
@@ -488,7 +528,7 @@ mod tests {
     #[test]
     fn bgl_entries_pin_sampler_split() {
         let entries = bind_group_layout_entries();
-        assert_eq!(entries.len(), 5, "group-4 BGL grew to 5 entries");
+        assert_eq!(entries.len(), 6, "group-4 BGL grew to 6 entries");
 
         let tex_sample = |b: u32| {
             entries
@@ -518,9 +558,15 @@ mod tests {
             tex_sample(BIND_ANIMATED_ATLAS),
             Some(wgpu::TextureSampleType::Float { filterable: true })
         );
-        // Direction stays nearest (octahedral lerp ≠ slerp).
+        // Both direction atlases stay nearest (direction lerp ≠ slerp): both are
+        // octahedral-encoded (static atlas 1, animated atlas 5), and oct vectors
+        // must not be linearly interpolated.
         assert_eq!(
             tex_sample(BIND_DIRECTION),
+            Some(wgpu::TextureSampleType::Float { filterable: false })
+        );
+        assert_eq!(
+            tex_sample(BIND_ANIMATED_DIRECTION),
             Some(wgpu::TextureSampleType::Float { filterable: false })
         );
         // Two samplers: nearest at binding 2, linear at binding 4.

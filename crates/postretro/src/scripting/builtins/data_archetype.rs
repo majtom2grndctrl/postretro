@@ -102,10 +102,8 @@ fn apply_emitter_kvp_overrides(
                     applied.insert(DescriptorMapOverride::EmitterInitialColor);
                 }
             }
-            "velocity" => {
-                if parse_into_vec3(raw, &mut component.velocity, entity, key) {
-                    applied.insert(DescriptorMapOverride::EmitterInitialVelocity);
-                }
+            "velocity" if parse_into_vec3(raw, &mut component.velocity, entity, key) => {
+                applied.insert(DescriptorMapOverride::EmitterInitialVelocity);
             }
             _ => {}
         }
@@ -150,10 +148,8 @@ fn apply_light_kvp_overrides(
                 }
                 None => warn_parse(entity, key, raw),
             },
-            "color" => {
-                if parse_into_vec3(raw, &mut descriptor.color, entity, key) {
-                    applied.insert(DescriptorMapOverride::LightInitialColor);
-                }
+            "color" if parse_into_vec3(raw, &mut descriptor.color, entity, key) => {
+                applied.insert(DescriptorMapOverride::LightInitialColor);
             }
             _ => {}
         }

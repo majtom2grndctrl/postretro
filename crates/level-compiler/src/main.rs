@@ -338,12 +338,13 @@ fn main() -> anyhow::Result<()> {
     };
     let final_lightmap_density;
     let lightmap_bake_output = if let Some(ref cache) = stage_cache {
-        // Warm path: per-light lightmap layers (Task 7). Prepare the shared atlas
-        // ONCE over the full static set, then bake/load one cached layer per static
-        // light and composite into the byte-identical pre-BC6H atlas. The composite
-        // equals the monolithic `bake_face_chart` bit-for-bit, so the only
-        // difference from the cold path is that an unchanged light's layer is
-        // served from cache instead of re-baked.
+        // Warm path: two-level lightmap cache. First checks a memoized composited
+        // `LightmapSection`; on a hit (no-edit rebuild) it skips the layer reads,
+        // composite, dilate, and BC6H encode entirely. On a section-cache miss it
+        // falls through to the per-light layer cache — each unchanged light's layer
+        // hits, only edited lights re-bake — then composites/dilates/encodes. Either
+        // way the composite equals the monolithic `bake_face_chart` output bit-for-bit,
+        // so the only difference from the cold path is cache reuse, not different output.
         let (prepared, density) = prepare_lightmap_atlas_with_retry(
             &mut geo_result,
             &static_baked_lights,

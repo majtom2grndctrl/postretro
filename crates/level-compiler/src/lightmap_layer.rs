@@ -1,7 +1,7 @@
 // Per-light lightmap contribution layers: bake one static light's irradiance +
 // unnormalized weighted direction across the shared atlas, cache it, and
 // composite the layers back into a byte-identical pre-BC6H atlas.
-// See: context/plans/in-progress/incremental-bake-per-element/index.md
+// See: context/plans/done/incremental-bake-per-element/index.md
 
 use glam::Vec3;
 
@@ -27,10 +27,14 @@ pub const LAYER_FORMAT_VERSION: u32 = 2;
 /// `"lightmap_section"` cache key (the second-level memo of the composited
 /// section), so a bump invalidates every cached section and forces a recompose.
 ///
-/// Disjoint from [`LAYER_FORMAT_VERSION`]: that constant covers the per-light
-/// layer payload and single-light bake math; this one covers how those layers
-/// are composited and encoded into the shipped `Lightmap` (id 22) bytes. A
-/// change to either concern bumps only its own constant.
+/// Scoped differently from [`LAYER_FORMAT_VERSION`]: that constant covers the
+/// per-light layer payload and single-light bake math; this one covers how
+/// those layers are composited and encoded into the shipped `Lightmap` (id 22)
+/// bytes. The scopes are disjoint, but a `LAYER_FORMAT_VERSION` bump also
+/// invalidates every section entry — `section_input_hash` folds
+/// `LAYER_FORMAT_VERSION` directly, so the section key changes with it.
+/// Bump `LIGHTMAP_SECTION_VERSION` only when the composite/dilate/encode
+/// pipeline or `LightmapSection::to_bytes` format changes independently.
 pub const LIGHTMAP_SECTION_VERSION: u32 = 1;
 
 /// One covered atlas texel's contribution from a single light.
@@ -58,6 +62,10 @@ pub struct LayerTexel {
     /// Surface-normal fallback for the degenerate-direction branch.
     pub fallback_normal: [f32; 3],
 }
+
+// Pins the fixed codec stride: `to_bytes`/`from_bytes` cast the blob directly
+// via bytemuck; any field change that shifts the stride breaks the on-disk format.
+const _: () = assert!(std::mem::size_of::<LayerTexel>() == 40);
 
 /// One light's contribution across the shared atlas.
 ///
@@ -121,7 +129,10 @@ impl LightmapLayer {
         let count = u32::from_ne_bytes(bytes[8..12].try_into().unwrap()) as usize;
 
         let payload = &bytes[LAYER_HEADER_BYTES..];
-        let expected = count * std::mem::size_of::<LayerTexel>();
+        let Some(expected) = count.checked_mul(std::mem::size_of::<LayerTexel>()) else {
+            log::warn!("[Compiler] corrupt lightmap layer (count {count} overflows), re-baking");
+            return None;
+        };
         if payload.len() != expected {
             log::warn!(
                 "[Compiler] corrupt lightmap layer (body {} bytes, expected {}), re-baking",
@@ -132,10 +143,9 @@ impl LightmapLayer {
         }
 
         // `pod_collect_to_vec` bulk-copies the payload into an aligned
-        // `Vec<LayerTexel>`, so it tolerates the source `&[u8]`'s arbitrary
-        // alignment (a borrowed `cast_slice::<u8, LayerTexel>` would panic on a
-        // misaligned slice). Still a single memcpy — far cheaper than postcard's
-        // per-field parse over millions of texels.
+        // `Vec<LayerTexel>`, tolerating the source `&[u8]`'s arbitrary
+        // alignment — a borrowed `cast_slice::<u8, LayerTexel>` would panic on
+        // a misaligned slice. Single memcpy — no per-field deserialization.
         let texels = bytemuck::pod_collect_to_vec::<u8, LayerTexel>(payload);
 
         Some(Self {
@@ -397,8 +407,9 @@ fn bytemuck_f32x3(v: &[f32; 3]) -> Vec<u8> {
 /// The full input fingerprint for one light's lightmap layer cache key.
 ///
 /// Folds, under a fixed byte layout:
-/// - the light's params (whole `MapLight`, fixed `postcard` encoding — the
-///   same discipline the whole-stage key uses),
+/// - the light's params (whole `MapLight`, fixed `postcard` encoding for the
+///   key hash — `postcard` is used here only; the layer blob itself uses the
+///   bytemuck codec),
 /// - the influence-bounded geometry slice hash,
 /// - `lightmap_density` + `area_sample_count`,
 /// - the atlas layout descriptor (dims + per-chart placements).
@@ -444,6 +455,8 @@ pub fn layer_input_hash(
 ///    hashes mirrors folding the full per-light keys: any per-light input change
 ///    (light params, geometry slice, density, atlas layout) flows through here.
 /// 4. `texel_density` (f32 LE) — the `density` passed to `encode_section`.
+///    Already folded into every `layer_input_hash` via `lightmap_density`, so
+///    this is belt-and-suspenders (same rationale as the light-count fold).
 /// 5. `uncompressed_irradiance` (1 byte, 0/1) — selects BC6H vs RGBA16F output.
 ///
 /// `layer_input_hashes` must be supplied in the same filtered order the warm
@@ -719,8 +732,8 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Task 8 additions: cache wiring behaviors at the module API seam and the
-    // full-fixture determinism gate (1).
+    // Cache wiring behaviors at the module API seam and the full-fixture
+    // determinism gate (1).
 
     use crate::cache::{CacheKey, StageCache};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1088,10 +1101,10 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Task 3 additions: second-level "lightmap_section" cache behaviors,
-    // mirroring the layer suite above. These protect the warm no-edit rebuild
-    // (section hit → one decode, no layer reads / composite / encode) and the
-    // section-key invalidation coupling that the `main.rs` wiring relies on.
+    // Second-level "lightmap_section" cache behaviors, mirroring the layer
+    // suite above. These protect the warm no-edit rebuild (section hit → one
+    // decode, no layer reads / composite / encode) and the section-key
+    // invalidation coupling that the `main.rs` wiring relies on.
 
     use postretro_level_format::lightmap::LightmapSection;
 

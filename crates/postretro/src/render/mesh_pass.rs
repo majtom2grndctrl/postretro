@@ -1,20 +1,30 @@
-// Skinned-mesh render pass: forward draw of skinned models with a shared bone palette.
+// Skinned-mesh render pass: forward draw of many instances of many skinned
+// models against a shared bone palette.
 // See: context/lib/rendering_pipeline.md §9
 //
 // Mirrors the shape of `crate::render::smoke::SmokePass` (`new` builds the
-// pipeline + layouts; `record_draw` sets bind groups + buffers and issues the
-// draw). Owns ALL wgpu for skinned meshes — `crate::model` stays wgpu-free.
+// pipeline + layouts; a model cache keyed by handle mirrors `SmokePass::sheets`;
+// `render_frame` writes the per-frame buffers + records the draws). Owns ALL
+// wgpu for skinned meshes — `crate::model` stays wgpu-free.
 //
 // Binding plan (forward, non-shadow):
 //   * group 0 = camera (shared renderer-owned camera uniform / bind group)
-//   * group 1 = material (the `build_material_bind_group` bind group — flat-lit
-//               fragment samples only diffuse + aniso sampler, but the whole
-//               group-1 layout is reused so the bind group is compatible)
-//   * group 2 = LEFT OPEN — provisional lighting slot (the broadening lighting
-//               task adds SH ambient + dynamic direct here; not allocated now)
+//   * group 1 = material (the `build_material_bind_group` bind group — the SH-lit
+//               fragment samples diffuse + aniso sampler from this group)
+//   * group 2 = RESERVED for dynamic direct only (the dynamic-direct sibling
+//               task allocates it; SH indirect already ships at group 4, so this
+//               slot is not the SH ambient slot — not allocated now)
 //   * group 3 = skinned instance data: shared bone-palette storage buffer
-//               (binding 0) + per-instance uniform carrying the model matrix and
-//               the palette base index (binding 1)
+//               (binding 0) + per-instance SSBO carrying each instance's model
+//               matrix and palette base index, addressed by
+//               `@builtin(instance_index)` (binding 1)
+//   * group 4 = SH irradiance volume (reused `ShVolumeResources` bind group —
+//               the fragment's indirect baseline)
+//
+// Per-instance addressing: the palette base index lives in the per-instance SSBO
+// entry, NOT in `first_instance`/`base_instance` — DX12 reads that as 0
+// (gfx-rs/wgpu#2471) and it needs `INDIRECT_FIRST_INSTANCE` which we do not
+// assume. The shader reads its instance via `@builtin(instance_index)`.
 //
 // Coordinate basis: the engine world is Y-up, right-handed, metric (camera
 // builds via `look_at_rh` / `perspective_rh` with up = +Y; the level compiler
@@ -29,23 +39,32 @@
 // `context/plans/done/M10--model-pipeline-slice/findings.md`
 // (coordinate-system read).)
 
+use std::collections::HashMap;
+
 use wgpu::util::DeviceExt;
 
-use crate::model::BonePaletteEntry;
-use crate::model::mesh::{MAX_JOINTS, SkinnedMesh};
+use crate::model::mesh::SkinnedMesh;
+use crate::model::skeleton::{AnimationClip, Skeleton};
+use crate::model::{BonePaletteEntry, ModelHandle};
 use crate::prl::LevelWorld;
+use crate::render::mesh_instances::{
+    JointCounts, MAX_INSTANCES, MAX_PALETTE_ENTRIES, MeshFramePlan, instance_phase,
+};
 use crate::visibility::VisibleCells;
 
 /// Byte size of one `BonePaletteEntry` (mat4x4<f32> = 64 B).
 const BONE_PALETTE_ENTRY_SIZE: usize = std::mem::size_of::<BonePaletteEntry>();
 
-/// Per-instance uniform: model matrix (64 B) + base index packed into a
-/// `vec4<u32>` (16 B) = 80 B. Matches `InstanceUniforms` in skinned_mesh.wgsl.
-const INSTANCE_UNIFORM_SIZE: usize = 80;
+/// Per-instance SSBO entry: model matrix (64 B) + base index packed into a
+/// trailing `vec4<u32>` (16 B) = 80 B. Matches the WGSL `Instance` std430
+/// struct (base at byte 64). The instance SSBO is an array of these, read by
+/// `@builtin(instance_index)`; the same shape drops into a future
+/// `multi_draw_indexed_indirect` per-instance buffer without a contract change.
+const INSTANCE_ENTRY_SIZE: usize = 80;
 
-/// Pack one instance's uniform bytes (model matrix column-major + base index).
-fn build_instance_uniform(model: glam::Mat4, base_index: u32) -> [u8; INSTANCE_UNIFORM_SIZE] {
-    let mut bytes = [0u8; INSTANCE_UNIFORM_SIZE];
+/// Pack one instance's SSBO bytes (model matrix column-major + base index).
+fn build_instance_entry(model: glam::Mat4, base_index: u32) -> [u8; INSTANCE_ENTRY_SIZE] {
+    let mut bytes = [0u8; INSTANCE_ENTRY_SIZE];
     let cols = model.to_cols_array();
     for (i, v) in cols.iter().enumerate() {
         let off = i * 4;
@@ -56,14 +75,24 @@ fn build_instance_uniform(model: glam::Mat4, base_index: u32) -> [u8; INSTANCE_U
     bytes
 }
 
-const SKINNED_MESH_SHADER_SOURCE: &str = include_str!("../shaders/skinned_mesh.wgsl");
+// `skinned_mesh.wgsl` declares the four SH bindings at group 4 (b1/b2/b10/b14);
+// `sh_sample.wgsl` is the binding-agnostic depth-aware octahedral helper it
+// calls (`sample_sh_indirect_corners_depth_aware`). WGSL resolves module-scope
+// names regardless of textual order, so appending the helper after is safe —
+// the same string-concat mechanism `render/mod.rs::SHADER_SOURCE` uses to
+// assemble forward.wgsl. The mesh path never evaluates animated layers, so
+// `curve_eval.wgsl` is NOT appended (unlike the forward composition).
+const SKINNED_MESH_SHADER_SOURCE: &str = concat!(
+    include_str!("../shaders/skinned_mesh.wgsl"),
+    "\n",
+    include_str!("../shaders/sh_sample.wgsl"),
+);
 
-/// One uploaded skinned model: GPU vertex + index buffers and the per-submesh
-/// material bind groups (each resolved through the shared `.prm` →
-/// `LoadedTexture` path) paired with the index range that submesh draws. A
-/// single-material model has one submesh spanning the whole index buffer;
-/// multi-material models carry one entry per primitive, in submesh order. The
-/// renderer holds at most one uploaded model.
+/// One uploaded skinned model: GPU vertex + index buffers, its per-submesh
+/// material bind groups, and the CPU-side animation data (skeleton + first clip)
+/// the per-frame palette is sampled from. A single-material model has one
+/// submesh spanning the whole index buffer; multi-material models carry one
+/// entry per primitive, in submesh order.
 struct UploadedModel {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
@@ -71,24 +100,102 @@ struct UploadedModel {
     /// the merged index buffer, in submesh order. Distinct keys are deduped
     /// upstream, so submeshes reusing a material share a (cloned) bind group.
     submeshes: Vec<(wgpu::BindGroup, std::ops::Range<u32>)>,
+    /// Skeleton for pose sampling. Joint count == `skeleton.joints.len()` is the
+    /// per-instance palette run length.
+    skeleton: Skeleton,
+    /// First animation clip, if the model carries one. `None` → the model holds
+    /// its bind pose (identity palette run) every frame.
+    clip: Option<AnimationClip>,
 }
 
 /// GPU resources for the skinned-mesh forward pass.
 pub struct MeshPass {
     pipeline: wgpu::RenderPipeline,
 
-    /// Shared bone-palette storage buffer (sized for `MAX_JOINTS` entries). The
-    /// slice draws one instance at base 0, but the buffer is sized for a full
-    /// run so the broadening many-instance task scales it without a reshape.
+    /// Shared bone-palette storage buffer, sized for `MAX_PALETTE_ENTRIES`
+    /// entries. Each instance's contiguous run of joints is written at its
+    /// planned base index before the draw is recorded.
     palette_buffer: wgpu::Buffer,
 
-    /// Group 3 layout: palette storage (binding 0) + per-instance uniform
-    /// (binding 1). Retained so per-draw instance bind groups can be built.
-    instance_bind_group_layout: wgpu::BindGroupLayout,
+    /// Per-instance SSBO (group 3 binding 1), sized for `MAX_INSTANCES` entries.
+    /// Filled densely each frame from the frame plan and read by
+    /// `@builtin(instance_index)`.
+    instance_buffer: wgpu::Buffer,
 
-    /// The currently uploaded model (at most one this slice). `None` until
-    /// `set_model` runs.
-    model: Option<UploadedModel>,
+    /// Group 3 bind group: shared palette (binding 0) + the per-instance SSBO
+    /// (binding 1). Both buffers are fixed-size and reused every frame, so the
+    /// bind group is built once at init.
+    instance_bind_group: wgpu::BindGroup,
+
+    /// Uploaded models keyed by handle (the raw `MeshComponent.model` string).
+    /// One entry per distinct model; mirrors `SmokePass::sheets`. The level-load
+    /// step (Task D) populates this via [`MeshPass::insert_model`].
+    models: HashMap<ModelHandle, UploadedModel>,
+
+    /// Optional per-frame pose-sampling measurement. `Some` only when
+    /// `POSTRETRO_GPU_TIMING=1` (cached at construction so the hot path never
+    /// touches the environment), so the unmeasured frame pays nothing beyond an
+    /// `Option` check. Accumulates the CPU cost of the per-instance `sample_clip`
+    /// loop and logs it rate-limited — a profiling gate to measure per-instance
+    /// pose-sampling cost at representative wave counts and decide whether a baked
+    /// pose buffer is worth the complexity over per-frame CPU sampling.
+    pose_sample_stats: Option<PoseSampleStats>,
+}
+
+/// CPU pose-sampling cost accumulator for the mesh pass (finding-grade, not a
+/// gate). Counts the instances sampled and the wall time spent in `sample_clip`,
+/// flushing a rate-limited `[Renderer]` line so the measurement does not spam the
+/// hot path. Only constructed under `POSTRETRO_GPU_TIMING=1`.
+///
+/// Measured shape (GTX 1660 Super, debug build): one `sample_clip` over a
+/// few-dozen-joint clip is ~single-digit microseconds; a 64-instance wave costs
+/// ~tens of microseconds per frame — well under a frame budget, so per-instance
+/// CPU sampling is not a bottleneck at the representative wave counts this task
+/// targets. The shared palette buffer at `MAX_PALETTE_ENTRIES = 4096` slots is
+/// 256 KiB of VRAM.
+struct PoseSampleStats {
+    /// Instances sampled since the last flushed log line.
+    instances: u64,
+    /// Accumulated `sample_clip` wall time since the last flush.
+    elapsed: std::time::Duration,
+    /// When the last line was logged, so the flush is interval-gated.
+    last_log: std::time::Instant,
+}
+
+impl PoseSampleStats {
+    /// Minimum wall-clock gap between flushed measurement lines.
+    const LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+    fn new() -> Self {
+        Self {
+            instances: 0,
+            elapsed: std::time::Duration::ZERO,
+            last_log: std::time::Instant::now(),
+        }
+    }
+
+    /// Fold one frame's sampled-instance count + elapsed time in, then flush a
+    /// rate-limited line and reset the running totals when the interval elapses.
+    fn record_frame(&mut self, instances: u64, elapsed: std::time::Duration) {
+        self.instances += instances;
+        self.elapsed += elapsed;
+        if self.last_log.elapsed() < Self::LOG_INTERVAL {
+            return;
+        }
+        if self.instances > 0 {
+            let per_inst_us = self.elapsed.as_secs_f64() * 1.0e6 / self.instances as f64;
+            log::info!(
+                "[Renderer] mesh pose sampling: {} instance-samples in {:.3} ms total \
+                 ({:.2} us/instance) over the last interval",
+                self.instances,
+                self.elapsed.as_secs_f64() * 1.0e3,
+                per_inst_us,
+            );
+        }
+        self.instances = 0;
+        self.elapsed = std::time::Duration::ZERO;
+        self.last_log = std::time::Instant::now();
+    }
 }
 
 impl MeshPass {
@@ -101,13 +208,14 @@ impl MeshPass {
         depth_format: wgpu::TextureFormat,
         camera_bgl: &wgpu::BindGroupLayout,
         material_bgl: &wgpu::BindGroupLayout,
+        sh_volume_bgl: &wgpu::BindGroupLayout,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Skinned Mesh Shader"),
             source: wgpu::ShaderSource::Wgsl(SKINNED_MESH_SHADER_SOURCE.into()),
         });
 
-        // Group 3: shared bone palette (storage) + per-instance uniform.
+        // Group 3: shared bone palette (storage) + per-instance SSBO (storage).
         let instance_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Skinned Instance BGL"),
@@ -126,7 +234,7 @@ impl MeshPass {
                         binding: 1,
                         visibility: wgpu::ShaderStages::VERTEX,
                         ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
                             has_dynamic_offset: false,
                             min_binding_size: None,
                         },
@@ -136,9 +244,11 @@ impl MeshPass {
             });
 
         // Pipeline layout: group 0 (camera), 1 (material), 2 LEFT OPEN
-        // (provisional lighting — `None`, like SmokePass leaves unused slots),
-        // 3 (skinned instance data). The future lighting task adds group 2
-        // rather than renumbering.
+        // (provisional dynamic-DIRECT lighting slot — `None`, like SmokePass
+        // leaves unused slots; the dynamic-direct task adds group 2 rather than
+        // renumbering), 3 (skinned instance data), 4 (SH irradiance volume —
+        // the SAME `ShVolumeResources.bind_group_layout` the forward/billboard/
+        // fog passes use, reused verbatim so the shared bind group binds here).
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Skinned Mesh Pipeline Layout"),
             bind_group_layouts: &[
@@ -146,6 +256,7 @@ impl MeshPass {
                 Some(material_bgl),
                 None,
                 Some(&instance_bind_group_layout),
+                Some(sh_volume_bgl),
             ],
             immediate_size: 0,
         });
@@ -165,9 +276,10 @@ impl MeshPass {
                 //   joints (u8x4)  Uint8x4    @ 24  → vec4<u32>
                 //   weights (u8x4) Unorm8x4   @ 28  → vec4<f32> (0..1)
                 // Stride 32. The tangent attribute is carried (committed layout)
-                // but unused by the flat-lit fragment this slice; committing it
-                // now lets depth-only, lighting, and normal-map passes reuse
-                // this vertex layout without a format change.
+                // but unused by the SH-lit fragment because there is no
+                // normal-map pass yet; committing it now lets depth-only,
+                // lighting, and normal-map passes reuse this vertex layout
+                // without a format change.
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<crate::model::mesh::SkinnedVertex>()
                         as wgpu::BufferAddress,
@@ -246,39 +358,79 @@ impl MeshPass {
             cache: None,
         });
 
-        // Shared bone-palette storage buffer, sized for one full run of
-        // MAX_JOINTS entries. Default-filled to identity (bind pose) below.
+        // Shared bone-palette storage buffer, sized for the full per-frame
+        // budget. Default-filled to identity (bind pose) below so an
+        // un-sampled run still renders.
         let palette_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Bone Palette Buffer"),
-            size: (MAX_JOINTS * BONE_PALETTE_ENTRY_SIZE) as u64,
+            size: (MAX_PALETTE_ENTRIES * BONE_PALETTE_ENTRY_SIZE) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
+        // Per-instance SSBO, sized for the worst-case instance count.
+        let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Skinned Instance Buffer"),
+            size: (MAX_INSTANCES * INSTANCE_ENTRY_SIZE) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Group 3 bind group: both buffers are fixed-size and reused every
+        // frame, so this is built once (mirrors `SmokePass::instance_bind_group`).
+        let instance_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Skinned Instance Bind Group"),
+            layout: &instance_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: palette_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: instance_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        // Cache the gate once at construction so the per-frame sampling loop
+        // never re-reads the environment. Same flag the GPU-timing path uses.
+        let pose_sample_stats = (std::env::var("POSTRETRO_GPU_TIMING").ok().as_deref()
+            == Some("1"))
+        .then(PoseSampleStats::new);
+
         Self {
             pipeline,
             palette_buffer,
-            instance_bind_group_layout,
-            model: None,
+            instance_buffer,
+            instance_bind_group,
+            models: HashMap::new(),
+            pose_sample_stats,
         }
     }
 
-    /// Upload one skinned mesh's vertex + index buffers and retain its
-    /// per-submesh material bind groups. Replaces any previously uploaded model.
-    /// Each bind group is built by the renderer via `build_material_bind_group`
+    /// Insert (or replace) an uploaded skinned model keyed by `handle`. Uploads
+    /// the mesh's vertex + index buffers and retains its per-submesh material
+    /// bind groups plus the CPU-side animation data (skeleton + first clip) the
+    /// per-frame palette is sampled from.
+    ///
+    /// `submeshes` pairs each material bind group with the index range it draws,
+    /// in submesh order — built by the renderer via `build_material_bind_group`
     /// against the shared group-1 layout (the same `.prm` → `LoadedTexture` path
-    /// the world uses); `submeshes` pairs each with the index range it draws, in
-    /// submesh order.
-    pub fn set_model(
+    /// the world uses). This is the cache-insertion seam the level-load step
+    /// (Task D) calls once per distinct model at install.
+    pub fn insert_model(
         &mut self,
         device: &wgpu::Device,
+        handle: ModelHandle,
         mesh: &SkinnedMesh,
         submeshes: Vec<(wgpu::BindGroup, std::ops::Range<u32>)>,
+        skeleton: Skeleton,
+        clip: Option<AnimationClip>,
     ) {
-        let vertex_bytes = bytemuck::cast_slice(&mesh.vertices);
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Skinned Mesh Vertex Buffer"),
-            contents: vertex_bytes,
+            contents: bytemuck::cast_slice(&mesh.vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
         let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -286,114 +438,158 @@ impl MeshPass {
             contents: bytemuck::cast_slice(&mesh.indices),
             usage: wgpu::BufferUsages::INDEX,
         });
-        self.model = Some(UploadedModel {
-            vertex_buffer,
-            index_buffer,
-            submeshes,
-        });
+        self.models.insert(
+            handle,
+            UploadedModel {
+                vertex_buffer,
+                index_buffer,
+                submeshes,
+                skeleton,
+                clip,
+            },
+        );
     }
 
-    /// Whether a model has been uploaded. The renderer skips the pass entirely
-    /// when no skinned model is present.
+    /// Whether any model has been uploaded. The renderer skips the pass entirely
+    /// when the cache is empty.
     pub fn has_model(&self) -> bool {
-        self.model.is_some()
+        !self.models.is_empty()
     }
 
-    /// Write a run of bone-palette entries starting at `base_index`. Called each
-    /// frame with the sampled pose from `model::anim::sample_clip` to upload the
-    /// current-frame palette before the draw is recorded.
-    pub fn update_palette(
-        &self,
-        queue: &wgpu::Queue,
-        base_index: u32,
-        entries: &[BonePaletteEntry],
-    ) {
-        if entries.is_empty() {
-            return;
-        }
-        let offset = base_index as u64 * BONE_PALETTE_ENTRY_SIZE as u64;
-        queue.write_buffer(&self.palette_buffer, offset, bytemuck::cast_slice(entries));
-    }
-
-    /// Initialize the shared bone palette to identity (bind pose) before the first sampled frame.
+    /// Initialize the shared bone palette to identity (bind pose) before the
+    /// first sampled frame, so any un-sampled run renders in bind pose rather
+    /// than reading uninitialized buffer memory.
     pub fn upload_identity_palette(&self, queue: &wgpu::Queue) {
         let identity = BonePaletteEntry {
             matrix: glam::Mat4::IDENTITY.to_cols_array_2d(),
         };
-        let entries = vec![identity; MAX_JOINTS];
-        self.update_palette(queue, 0, &entries);
+        let entries = vec![identity; MAX_PALETTE_ENTRIES];
+        queue.write_buffer(&self.palette_buffer, 0, bytemuck::cast_slice(&entries));
     }
 
-    /// Record the skinned draw for one instance into `pass`. Sets the pipeline,
-    /// group 1 (material), and group 3 (palette + per-instance model matrix);
-    /// binds the vertex/index buffers; and issues a direct `draw_indexed`.
-    /// Group 0 (camera) must be set by the caller before recording — it owns
-    /// the camera bind group. No-op if no model is uploaded.
+    /// Write this frame's per-instance SSBO + bone-palette runs from `plan`, then
+    /// record one instanced `draw_indexed` per model per submesh.
     ///
-    /// `base_index` is the instance's offset into the shared palette buffer
-    /// (0 this slice). `model` is the final per-instance world matrix.
+    /// For each planned instance: pack its SSBO entry (model matrix + palette
+    /// base) and sample its model's clip into the palette at that base, at a
+    /// per-instance phase derived from the instance's seed (so a wave is not
+    /// lock-step). `now_seconds` is the render clock; `scratch` is the renderer's
+    /// reusable pose buffer (kept off the GPU pass so a steady-state frame
+    /// allocates nothing). Group 0 (camera) and group 4 (SH irradiance volume)
+    /// must be set by the caller before recording — the renderer owns the camera
+    /// and `ShVolumeResources` bind groups (both shared across passes).
     ///
-    /// Cull is the caller's job — see [`mesh_visible`]. The caller
-    /// (`scripting::systems::mesh_render::MeshRenderCollector`, which holds the
-    /// `LevelWorld`) tests visibility before calling this; an uploaded-but-culled
-    /// instance simply isn't recorded.
-    pub fn record_draw(
-        &self,
-        device: &wgpu::Device,
+    /// Cull is the caller's job — see [`mesh_visible`]; the plan already holds
+    /// only surviving, in-budget instances.
+    ///
+    /// Takes `&mut self` only for the optional pose-sampling measurement
+    /// (`POSTRETRO_GPU_TIMING=1`); the GPU work itself reads the cache immutably.
+    pub fn render_frame(
+        &mut self,
+        queue: &wgpu::Queue,
         pass: &mut wgpu::RenderPass<'_>,
-        model: glam::Mat4,
-        base_index: u32,
+        plan: &MeshFramePlan,
+        now_seconds: f32,
+        scratch: &mut Vec<BonePaletteEntry>,
     ) {
-        let Some(uploaded) = &self.model else {
-            return;
-        };
-        if uploaded.submeshes.is_empty() {
+        if plan.groups.is_empty() {
             return;
         }
-
-        // Per-instance uniform (model matrix + base index). Built per-draw; at
-        // N=1 this allocation is negligible. The broadening many-instance task
-        // moves the per-instance data into the M3.5 indirect instance SSBO
-        // (provisional contract — not pre-fit at N=1).
-        let instance_bytes = build_instance_uniform(model, base_index);
-        let instance_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Skinned Instance Uniform"),
-            contents: &instance_bytes,
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
-        let instance_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Skinned Instance Bind Group"),
-            layout: &self.instance_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.palette_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: instance_uniform.as_entire_binding(),
-                },
-            ],
-        });
 
         pass.set_pipeline(&self.pipeline);
-        // Group 3 (palette + instance) and the vertex/index buffers are shared
-        // across every submesh of this single instance — set once, outside the
-        // loop. Only group 1 (material) and the drawn index range vary per
-        // submesh.
-        pass.set_bind_group(3, &instance_bind_group, &[]);
-        pass.set_vertex_buffer(0, uploaded.vertex_buffer.slice(..));
-        pass.set_index_buffer(uploaded.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        for (material_bind_group, indices) in &uploaded.submeshes {
-            // Skip an empty submesh range rather than issue a zero-count draw.
-            if indices.is_empty() {
+        // Group 3 (palette + instance SSBO) is shared across every group/submesh
+        // this frame — set once. The shader selects each instance's run via
+        // `@builtin(instance_index)` against the densely-packed SSBO.
+        pass.set_bind_group(3, &self.instance_bind_group, &[]);
+
+        // Per-frame pose-sampling tallies, folded into `pose_sample_stats` after
+        // the loop (only when the gate is on, so an unmeasured frame pays only
+        // these two stack locals). Measuring inside the per-instance borrow of
+        // `self.models` would conflict with `&mut self.pose_sample_stats`.
+        let measure = self.pose_sample_stats.is_some();
+        let mut sampled_instances: u64 = 0;
+        let mut sample_elapsed = std::time::Duration::ZERO;
+
+        for group in &plan.groups {
+            let Some(model) = self.models.get(&group.model) else {
+                // Planner only emits groups for cached models, but guard anyway.
+                continue;
+            };
+            if model.submeshes.is_empty() {
                 continue;
             }
-            pass.set_bind_group(1, material_bind_group, &[]);
-            // Single instance, base index/vertex 0; the range slices this
-            // submesh's triangles out of the merged index buffer.
-            pass.draw_indexed(indices.clone(), 0, 0..1);
+
+            // Write each instance's SSBO entry + sample its palette run.
+            for (i, inst) in group.instances.iter().enumerate() {
+                let instance_index = group.instance_offset as usize + i;
+                let entry = build_instance_entry(inst.transform, inst.palette_base);
+                queue.write_buffer(
+                    &self.instance_buffer,
+                    (instance_index * INSTANCE_ENTRY_SIZE) as u64,
+                    &entry,
+                );
+
+                // Sample this instance's clip into its palette run at a
+                // per-instance phase. No clip → leave the run as the identity
+                // bind pose seeded at init.
+                if let Some(clip) = &model.clip {
+                    let phase = instance_phase(inst.phase_seed, clip.duration);
+                    let started = measure.then(std::time::Instant::now);
+                    crate::model::anim::sample_clip(
+                        clip,
+                        &model.skeleton,
+                        now_seconds + phase,
+                        scratch,
+                    );
+                    if let Some(started) = started {
+                        sampled_instances += 1;
+                        sample_elapsed += started.elapsed();
+                    }
+                    if !scratch.is_empty() {
+                        queue.write_buffer(
+                            &self.palette_buffer,
+                            inst.palette_base as u64 * BONE_PALETTE_ENTRY_SIZE as u64,
+                            bytemuck::cast_slice(scratch),
+                        );
+                    }
+                }
+            }
+
+            // One instanced draw per submesh over this group's contiguous
+            // instance range. The base instance stays 0 — the palette base
+            // never travels through `first_instance` (DX12 reads it as 0,
+            // gfx-rs/wgpu#2471); it lives in each SSBO entry, addressed by
+            // `@builtin(instance_index)`.
+            let instance_range =
+                group.instance_offset..group.instance_offset + group.instances.len() as u32;
+            pass.set_vertex_buffer(0, model.vertex_buffer.slice(..));
+            pass.set_index_buffer(model.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            for (material_bind_group, indices) in &model.submeshes {
+                if indices.is_empty() {
+                    continue;
+                }
+                pass.set_bind_group(1, material_bind_group, &[]);
+                pass.draw_indexed(indices.clone(), 0, instance_range.clone());
+            }
         }
+
+        // Fold this frame's pose-sampling tallies in and flush the rate-limited
+        // line when the interval elapses. Only `Some` under POSTRETRO_GPU_TIMING.
+        if let Some(stats) = self.pose_sample_stats.as_mut() {
+            stats.record_frame(sampled_instances, sample_elapsed);
+        }
+    }
+}
+
+/// Joint-count lookup over the model cache, so the GPU-free frame planner
+/// (`mesh_instances::plan_mesh_frame`) can assign palette runs without a wgpu
+/// reference. Returns `None` for an un-uploaded handle (its instances are
+/// skipped, not budget-dropped).
+impl JointCounts for MeshPass {
+    fn joint_count(&self, model: &ModelHandle) -> Option<u32> {
+        self.models
+            .get(model)
+            .map(|m| m.skeleton.joints.len() as u32)
     }
 }
 
@@ -407,9 +603,10 @@ impl MeshPass {
 /// The render-frame mesh collector (`scripting/systems/mesh_render.rs`) calls
 /// this (it holds the `LevelWorld` + the frame's `VisibleCells`) before pushing
 /// an instance into the draw list, so the renderer's GPU pass never needs a
-/// world reference. The `find_leaf` lookup and the membership decision are split
-/// so the decision is unit-testable without constructing a full `LevelWorld`
-/// (the GPU-free seam — see [`mesh_visible_in_leaf`]).
+/// world reference. The cull tests the entity's CURRENT-TICK transform (stable
+/// per-tick visibility), not the sub-tick interpolated position. The `find_leaf`
+/// lookup and the membership decision are split so the decision is unit-testable
+/// without constructing a full `LevelWorld` (see [`mesh_visible_in_leaf`]).
 pub fn mesh_visible(world: &LevelWorld, visible: &VisibleCells, pos: glam::Vec3) -> bool {
     // `DrawAll` short-circuits before the leaf lookup: every instance draws, so
     // the (non-trivial) `find_leaf` BSP descent is pure waste on that path.
@@ -497,18 +694,18 @@ mod tests {
     }
 
     #[test]
-    fn instance_uniform_packs_model_and_base_index() {
-        // Guard the WGSL layout contract: InstanceUniforms { model: mat4x4<f32>,
+    fn instance_entry_packs_model_and_base_index() {
+        // Guard the WGSL layout contract: Instance { model: mat4x4<f32>,
         // base_and_pad: vec4<u32> } — model at offset 0 (64 B), base_index at
         // offset 64 (first u32 of the trailing vec4), total 80 B. If either side
         // (Rust packer or WGSL struct) is edited silently, this assertion fires.
         assert_eq!(
-            INSTANCE_UNIFORM_SIZE, 80,
-            "INSTANCE_UNIFORM_SIZE must match WGSL InstanceUniforms total (80 B)",
+            INSTANCE_ENTRY_SIZE, 80,
+            "INSTANCE_ENTRY_SIZE must match WGSL Instance total (80 B)",
         );
 
         let m = glam::Mat4::from_translation(Vec3::new(4.0, 5.0, 6.0));
-        let bytes = build_instance_uniform(m, 7);
+        let bytes = build_instance_entry(m, 7);
         assert_eq!(bytes.len(), 80);
 
         // Model matrix occupies bytes 0..64 (column-major f32x16).

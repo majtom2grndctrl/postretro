@@ -8,6 +8,7 @@ use crate::scripting::registry::EntityRegistry;
 
 pub(crate) mod billboard_emitter;
 pub(crate) mod data_archetype;
+pub(crate) mod prop_mesh;
 
 // Used by `main.rs` for the level-load sweep. The `gen-script-types` bin
 // includes the scripting tree via `#[path]` but never references this
@@ -79,6 +80,7 @@ pub(crate) fn register_builtins(dispatch: &mut ClassnameDispatch) {
         billboard_emitter::CLASSNAME,
         billboard_emitter::handle as ClassnameHandler,
     );
+    dispatch.register(prop_mesh::CLASSNAME, prop_mesh::handle as ClassnameHandler);
 }
 
 /// Walk `entities` and dispatch each one through the built-in classname
@@ -150,9 +152,13 @@ mod tests {
             dispatch.lookup("billboard_emitter").is_some(),
             "billboard_emitter should be registered"
         );
+        assert!(
+            dispatch.lookup("prop_mesh").is_some(),
+            "prop_mesh should be registered"
+        );
         // Lock the count so adding a new built-in is a deliberate, reviewed
         // change rather than an accidental fall-through.
-        assert_eq!(dispatch.len(), 1);
+        assert_eq!(dispatch.len(), 2);
     }
 
     #[test]

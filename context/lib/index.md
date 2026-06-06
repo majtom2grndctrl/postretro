@@ -38,7 +38,7 @@
 
 **Retro-inspired FPS engine** — a hybrid of new and old. Doom/Quake boomer shooter with a cyberpunk aesthetic. Monster closets and scripted reveals are first-class set-pieces rather than engine-fighting workarounds, making for theatrical gameplay experiences. Inspired by retro look and feel but game design is a meaningful iteration beyond games of the period.
 
-**Aesthetic:** Low-poly 3D environments + blocky pixelated textures; with modern embellishments like baked volumetric indirect lighting (SH irradiance volumes), normal-mapped surfaces, fully dynamic direct lighting, and billboard sprite volumetrics that react to light.
+**Aesthetic:** Low-poly 3D environments + blocky pixelated textures; with modern embellishments like baked volumetric indirect lighting (SH irradiance volumes), normal-mapped surfaces, dynamic direct lighting, and billboard sprite volumetrics that react to light.
 
 **Architectural northstar:** Lean, wgpu-driven pipeline — not a resource heavy modern engine with retro filters. Near-instant boot, tiny binary, and _some_ retro filters, but used sparingly.
 
@@ -49,7 +49,7 @@
 | Principle | Invariant |
 |-----------|-----------|
 | **Renderer owns GPU** | All wgpu calls live in the renderer module. Other subsystems never touch wgpu types. |
-| **Baked over computed** | Spatial data and indirect lighting baked offline. Two deliberate exceptions: visibility computes per frame from baked portal geometry (id Tech 4 lineage; portal traversal is the sole visibility path), and direct illumination is fully dynamic (flat per-fragment light loop with per-light influence-volume early-out and shadow maps). Baked SH irradiance volume carries indirect light; dynamic lights drive direct shading. |
+| **Baked over computed** | Spatial data and indirect lighting are baked offline; visibility computes per frame from baked portal geometry (id Tech 4 lineage; portal traversal is the sole visibility path). Direct light may be baked (static lightmaps; baked layers for movers) or evaluated at runtime — whether a light is authored static (baked) or dynamic (runtime) is an **authoring choice, not an engine rule**. The one engine invariant: a physical light's contribution must never be **double-counted on a given receiver** — overlapping static and dynamic light must not over-brighten the same fragment. Lighting techniques compose additively in the forward pass. |
 | **Subsystem boundaries** | Renderer, audio, input, game logic are distinct modules with explicit contracts. |
 | **Frame ordering** | Input → Game logic → Audio → Render → Present. Later stages depend on earlier ones. |
 | **No `unsafe`** | The crate stack provides safe APIs. If `unsafe` appears necessary, stop and consult the project owner. |

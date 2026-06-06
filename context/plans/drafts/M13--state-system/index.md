@@ -17,11 +17,11 @@ C also **publishes the engine-owned `player.*` slot schema** (declared in the st
 - **Retained `UiTree` + diffing → relayout/redraw split.** Hold the gameplay `UiTree` on the `Renderer` across frames (B's deferred follow-up). Subscriber-aware diffing: only slots bound in the tree are compared frame-over-frame (store value vs. the node's last resolved value). A layout-affecting change (text content/size) marks the node dirty → taffy relayout; an appearance-only change (color/fill) refreshes the draw list from cached layout with **no** relayout. The draw list re-reads live slot values every frame under cached layout.
 - **Static proxy.** Engine-side stand-in (in `App`) that writes `player.health` / `player.ammo` and animates `intro.flashColor` each frame through the store's engine-side write API. Load-bearing — the real producer (M10 entity health) does not exist yet.
 - **Publish the `player.*` schema as the M10 contract.** The engine-owned `player.health` / `player.ammo` slots (registered via the store) are the typed, ranged, readonly contract M10's health/damage task writes.
-- **Demo screen + CPU test gate.** A Rust-built descriptor binding `player.health` / `player.ammo` to `text` and `intro.flashColor` to a `panel` fill; a reference demo mod (TS + Luau) declaring `intro` via `defineState`. CPU draw-list / diff / recompute-counter assertions are the hard gate.
+- **Demo screen + CPU test gate.** A Rust-built descriptor binding `player.health` / `player.ammo` to `text` and `intro.flashColor` to a `panel` fill; a reference demo mod (TS + Luau) declaring `intro` via `defineStore`. CPU draw-list / diff / recompute-counter assertions are the hard gate.
 
 ### Out of scope
 
-- **The store mechanism** — the slot table, `defineState`, schema validation, ownership, persistence, the branded `StateValue<T>`, the read/write API. → **Mod State Store** (prereq spec).
+- **The store mechanism** — the slot table, `defineStore`, schema validation, ownership, persistence, the branded `StateValue<T>`, the read/write API. → **Mod State Store** (prereq spec).
 - **`styleRanges` / `onStateCrossing`** — value→style maps and discrete crossings → reactions. → **E**.
 - **Value tweening / eased display values** — animating a value toward a target over time. → **TW**. The proxy toggles/sets values directly; it does not ease.
 - **The `bar` widget** — the HUD health bar. → **F**. C's demo uses `panel` + `text` only.
@@ -57,11 +57,11 @@ Add an optional `bind` to `TextWidget` (slot name + optional single-`{}` format 
 Hold the gameplay `UiTree` on the `Renderer` (today `layout_tree` builds a fresh `UiTree::from_descriptor` every frame — `render/ui/mod.rs`). Rebuild only on descriptor structural change or viewport resize; otherwise reuse. Record, per bound node (in the tree's `NodeContext`), which slot it binds and that field's last resolved value. Each frame, diff only bound slots (subscriber-aware) against the new snapshot: a layout-affecting change (text content → re-measure) marks the node dirty so taffy relayouts; an appearance-only change (panel fill / text color) refreshes the draw list with no relayout. Split `build_draw_data` so layout-compute stays gated (the `viewport_changed || structural_change` condition extended with the value-driven dirty mark) while draw-data collection runs each frame from cached layout reading live snapshot values. The recompute counter must not increment on an appearance-only frame. Depends on Tasks 1 + 3.
 
 ### Task 5: Demo screen + CPU test gate
-A Rust `build_demo_descriptor` (B's `build_splash_descriptor` precedent) binding `player.health` / `player.ammo` to `text` and `intro.flashColor` to a `panel` `fill`. A reference demo mod in TS and Luau declaring `intro` via `defineState`. Extend A/B's CPU assertion harness: bind resolution, subscriber-aware diff, the appearance-only-no-relayout vs content-change-relayout split, the post-settle no-recompute frame. Splash and egui untouched. Depends on Tasks 2, 3, 4.
+A Rust `build_demo_descriptor` (B's `build_splash_descriptor` precedent) binding `player.health` / `player.ammo` to `text` and `intro.flashColor` to a `panel` `fill`. A reference demo mod in TS and Luau declaring `intro` via `defineStore`. Extend A/B's CPU assertion harness: bind resolution, subscriber-aware diff, the appearance-only-no-relayout vs content-change-relayout split, the post-settle no-recompute frame. Splash and egui untouched. Depends on Tasks 2, 3, 4.
 
 ## Sequencing
 
-**Prereq:** the Mod State Store spec ships first (slot table, `defineState`, engine-owned slots, read/write, persistence).
+**Prereq:** the Mod State Store spec ships first (slot table, `defineStore`, engine-owned slots, read/write, persistence).
 
 **Phase 1 (concurrent):** Task 1 (read handle), Task 2 (proxy + schema) — each depends only on the store, independent of each other.
 **Phase 2 (sequential):** Task 3 — `bind` + resolution. Consumes Task 1's snapshot.
@@ -70,7 +70,7 @@ A Rust `build_demo_descriptor` (B's `build_splash_descriptor` precedent) binding
 
 ## Rough sketch
 
-**Read handle + resolution.** `UiReadSnapshot` gains a resolved-values map (cloned slot name → value). `App` fills it after game logic from the store table. `bind` on a widget is a slot-name string; resolution happens at draw-data build, reading the snapshot. No `StateValue` handle / named-leaf IR in C — that ergonomic layer is G1; C binds by string.
+**Read handle + resolution.** `UiReadSnapshot` gains a resolved-values map (cloned slot name → value). `App` fills it after game logic from the store table. `bind` on a widget is a slot-name string; resolution happens at draw-data build, reading the snapshot. No `StateValue` handle / named-leaf IR in C — that ergonomic layer is G1; C binds by string. Binding by slot name keeps C **name-stable under the entity-model refactor**: `player.health` projects whatever authoritative producer the store exposes — engine health component today, a generic scalar-stat or a future representation later — with no change to C. Write the demo and the M10 contract against the stable surface (slot names, `defineStore`), never against entity-component internals.
 
 **Retained tree + split.** Hold `Option<UiTree>` (plus the descriptor it was built from) on the `Renderer` for the gameplay path. The tree's `NodeContext` carries the binding (slot name + target field) and last resolved value per bound node. Layout-compute stays behind the gate (`viewport_changed || structural_change || value_forced_dirty`); draw-data collection runs every frame from cached taffy rects, substituting current bound values. A color/fill change touches only draw data; a text-content change calls `taffy.mark_dirty(node)` so the gate fires. The splash path keeps rebuilding its descriptor each frame (transient, pre-state) — only the gameplay path retains.
 
@@ -80,7 +80,7 @@ A Rust `build_demo_descriptor` (B's `build_splash_descriptor` precedent) binding
 
 ## Boundary inventory
 
-The descriptor `bind` crosses Rust ↔ wire ↔ JS/TS ↔ Luau (the `defineState` schema casing is pinned in the store spec). Rust snake_case; wire/JS/Luau camelCase.
+The descriptor `bind` crosses Rust ↔ wire ↔ JS/TS ↔ Luau (the `defineStore` schema casing is pinned in the store spec). Rust snake_case; wire/JS/Luau camelCase.
 
 | Name | Rust | Wire / serde | JS / TS | Luau |
 |---|---|---|---|---|
@@ -94,4 +94,4 @@ The descriptor `bind` crosses Rust ↔ wire ↔ JS/TS ↔ Luau (the `defineState
 - **`UiReadSnapshot` value carrier.** The snapshot clones resolved values (decided — renderer never touches the live table). Residual: clone the full slot set vs. only bound slots. Recommend bound-only (subscriber-aware) once Task 4's binding inventory exists; full set is simpler for Task 1. Confirm.
 - **Previous-frame value ownership.** The per-node last-resolved value lives in the tree's `NodeContext` (C owns diffing). Confirm vs. a parallel side-table on the `Renderer`.
 - **Format scope.** Single-`{}` template in C; multi-value (`"{}/{max}"`) lands with `bar` (F). Confirm.
-- **Demo mod necessity.** C proves the store's `defineState` via a reference mod declaring `intro` (the descriptor stays Rust-built until G1). Confirm the split — declare-in-script, bind-in-Rust — reads cleanly as the C deliverable.
+- **Demo mod necessity.** C proves the store's `defineStore` via a reference mod declaring `intro` (the descriptor stays Rust-built until G1). Confirm the split — declare-in-script, bind-in-Rust — reads cleanly as the C deliverable.

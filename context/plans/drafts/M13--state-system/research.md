@@ -591,7 +591,8 @@ PostRetro's narrow-primitive, additive-growth ethos.
 - Counterweight: if modder familiarity (React/Svelte "declare state") is the priority
   *and* you commit to "exactly one kind of state, forever," `defineState` is
   defensible. **OPEN** — owner picks the verb. Cheap pre-ship; the contract-bearing
-  name (`StateValue<T>`) is unaffected either way.
+  name (`StateValue<T>`) is unaffected either way. **(Resolved → §11.12: `defineStore`
+  — it names a *grouping*, sidestepping the overclaim critique above.)**
 
 ### 11.4 Value vs. store — the slot is a projection, not the source of truth
 
@@ -712,17 +713,92 @@ applied to the architecture):
   store's declaration verb.
 - **Naming.** `liveValue()` = component-local (G1). Global store declaration verb is
   `defineState` (working name) or `liveState` (live-family parallel) — **OPEN**, owned
-  by the store spec. Type `StateValue<T>` stays.
+  by the store spec. Type `StateValue<T>` stays. **(Resolved → §11.12: `defineStore`.)**
 - **Writes.** Behavior-context direct read/write (game logic, like `world.setGravity`)
   lives in the store spec. The UI-reaction `setState` (writing a slot from a UI
   event/reaction as serializable IR) stays deferred to **E / F**.
+
+### 11.11 Engine ownership, the command buffer, and the unified model (2026-06-06)
+
+A session on store foundations, after the owner discovered the typed command buffer
+(`scripting.md` §11) is a fully-articulated engine principle. Reshaped the ownership
+story and surfaced a new milestone.
+
+- **Two senses of "engine owns," both legitimate.** (a) *hardware-/loop-layer
+  primitives* (storage layout, per-tick systems a script VM can't drive at scale);
+  (b) the *opinionated genre vocabulary* — a retro shooter owns health, shields, ammo
+  as first-class nouns. Health is (b), **not** (a): the earlier "the loop forces health
+  engine-side" argument was overstated — health is a scalar, and the firehose is
+  projectiles, not health components. Genre opinion, not hardware, is why it lives in
+  core.
+- **ECS is two orthogonal axes.** Data layout (dense per-kind component columns —
+  already in `registry.rs`, gives projectile scale) vs. who owns the component
+  *vocabulary* (engine-closed vs. modder-extensible). Projectile performance pushes only
+  on the first; "should the modder own health" only on the second. The index §4
+  non-goal was blunted to distinguish them (data-oriented storage = yes; general
+  extensible ECS framework = no).
+- **The command buffer dissolves the noun/verb tension.** Engine owns the nouns
+  (components, store slots) and the total evaluator; the author owns the verbs as IR.
+  Shield recharge (`recharge = f(timeSinceDamage, element, damageType)`) is §11's own
+  `boost = f(...)` shape — elemental shields and Halo-vs-Borderlands recharge need no new
+  mechanism, just §11 bound to a Shield component. Authored *policy* lives in the command
+  buffer; the engine ships the component + per-tick system. No live VM.
+- **`Stat` vs. dedicated kind — invisible at the syntax layer.** Whether Rust stores a
+  dedicated `Health` component or a generic scalar-stat parameterized by name is an
+  internal choice; the author writes `health({ max, regen: <policy> })` either way. The
+  fork is deferrable and changeable without touching modder code. Lean: a generic
+  `Stat`/`Resource` kind serving health + shields, but unforced.
+- **The declare-time lifecycle is the same everywhere.** `defineEntity` (→ component
+  struct), `defineStore` (→ slot table), the command buffer (→ evaluated IR), reactions
+  (→ one-instruction buffer) are one family: **declare as data at load, Rust owns at
+  runtime, the VM drops.** No ECS *runtime* API (no `entity.add(Health)`); the model is
+  declarative composition, not imperative mutation. Runtime structural change (grant a
+  shield to a live entity) is the open edge — lean (a) component-always-present, a
+  reaction flips it active; (b) a `grantComponent` reaction opcode only if a case
+  demands it.
+- **The store is the connective tissue.** Entity components / store slots / command
+  buffers / reactions are one architecture; the store slots are the named-input/output
+  namespace the evaluator binds against and the UI projects. Deeper reason the store
+  ships first.
+- **The primitives predate the command buffer.** Reactions, animation channels, and
+  behavioral descriptor fields are pre-IR special cases (§11 already calls reactions
+  "a one-instruction command buffer"). Consolidating them onto one IR substrate is
+  *demand-driven refactoring*, not a teardown — only computed/conditional/derived fields
+  migrate; static config stays plain data.
+
+### 11.12 Verb resolved — `defineStore` (supersedes §11.3, §11.10) (2026-06-06)
+
+Owner picked **`defineStore`** for the global store declaration. It declares a *grouping*
+of global state values (a store namespace), so the verb names exactly what it returns —
+resolving §11.3's "verb overclaims its noun" critique, which the working name
+`defineState` triggered. It joins the `define*` family (`defineEntity`, `defineReaction`)
+— one definition-context, declare-as-data lifecycle. The component-local `liveValue()`
+(G1) is a distinct primitive/lifecycle, so the family split is principled. The type
+`StateValue<T>` is unchanged. Follow-up: `research/ui-layer.md` §9 still carries the older
+`defineState` term — sync on the next M13 doc pass.
+
+### 11.13 Placement of these decisions (2026-06-06)
+
+Where each conclusion was filed, per the context style guide (durable → `lib/`;
+sequenced → roadmap; spec detail + rationale → here):
+
+- **Durable → `context/lib/`.** `index.md` §4 (ECS non-goal split); `entity_model.md`
+  §1 (component ownership = hardware + genre vocabulary; representation is internal);
+  `scripting.md` §11 (noun/verb ownership split; the named-state surface; the unified
+  four-part family).
+- **Sequenced → `roadmap.md`.** New **Milestone 14 — Behavior IR (Typed Command
+  Buffer)** (substrate + evaluator → IR versioning → first adopter → primitive
+  consolidation); M10 health task note (published contract; representation fork; policy
+  defers); Future/Gameplay **Shields + damage-type system**.
+- **Spec → here + the two `index.md`s.** This decision log holds the reasoning; the
+  store spec and Goal C carry only the distilled, implementer-facing form.
 
 ---
 
 *End of research. Two specs now exist: `drafts/mod-state-store/` (scripting foundation,
 ships first) and `drafts/M13--state-system/` (UI consumption, depends on it). Resolve
-each spec's open questions before promotion — notably the global declaration verb
-(`defineState` vs `liveState`), the read/write ergonomic shape, and the generic-brand
-typedef gap (store spec); the snapshot value carrier and format scope (Goal C). The
-`bar` widget is deferred to F (owner, 2026-06); `liveValue()` component-local state →
-G1; roadmap goal **TW** homes value tweening.*
+each spec's remaining open questions before promotion — the read/write ergonomic shape
+and the generic-brand typedef gap (store spec); the snapshot value carrier and format
+scope (Goal C). Resolved this session: the declaration verb is `defineStore` (§11.12).
+The `bar` widget is deferred to F (owner, 2026-06); `liveValue()` component-local state →
+G1; roadmap goal **TW** homes value tweening; the behavior-IR foundation is Milestone 14.*

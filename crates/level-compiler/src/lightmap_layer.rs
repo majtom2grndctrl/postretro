@@ -20,7 +20,7 @@ use glam::DVec3;
 /// invalidates all cached layers and forces a re-bake. Each cached stage owns
 /// its own version constant and bumps independently — the layer codec evolves
 /// separately from the per-group SH and animated-weight-map stages.
-pub const LAYER_FORMAT_VERSION: u32 = 1;
+pub const LAYER_FORMAT_VERSION: u32 = 2;
 
 /// Bump when the composite/dilate/`encode_section` pipeline or
 /// `LightmapSection::to_bytes` serialization changes. Folded into the
@@ -46,7 +46,8 @@ pub const LIGHTMAP_SECTION_VERSION: u32 = 1;
 /// Lossless full-precision `f32` (never f16): the layer is compiler-internal and
 /// must round-trip exactly so summed layers reproduce the monolithic bake
 /// bit-for-bit.
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct LayerTexel {
     /// Linear atlas texel index (`y * atlas_width + x`).
     pub idx: u32,
@@ -71,7 +72,7 @@ pub struct LayerTexel {
 /// cache blobs, not shipped runtime data, so the storage overhead is acceptable;
 /// storing every covered texel (not just lit ones) is what lets the compositor
 /// reproduce the monolithic bake's coverage and dark-texel fallback exactly.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LightmapLayer {
     pub atlas_width: u32,
     pub atlas_height: u32,
@@ -81,12 +82,27 @@ pub struct LightmapLayer {
     pub texels: Vec<LayerTexel>,
 }
 
+/// Fixed-layout header preceding the texel block in a layer blob: atlas
+/// dimensions plus the texel count, three native-endian `u32`s (12 bytes).
+const LAYER_HEADER_BYTES: usize = 3 * std::mem::size_of::<u32>();
+
 impl LightmapLayer {
-    /// Serialize to a deterministic, fixed-layout byte blob for the cache.
-    /// Postcard over the owned fields gives an exact round-trip and a stable
-    /// encoding for hashing.
+    /// Serialize to a fixed-layout native-endian byte blob for the cache.
+    ///
+    /// A 12-byte header (`atlas_width`, `atlas_height`, texel `count`, native
+    /// `u32`s) followed by the `[LayerTexel]` block copied verbatim via
+    /// `bytemuck::cast_slice`. The blob is compiler-internal and dev-local (never
+    /// shipped, never read across architectures, matching the layer cache), so
+    /// native-endian is fine and lets the body be a bulk memory copy instead of
+    /// a per-field encode.
     pub fn to_bytes(&self) -> Vec<u8> {
-        postcard::to_allocvec(self).expect("postcard serialize LightmapLayer")
+        let texel_bytes = bytemuck::cast_slice::<LayerTexel, u8>(&self.texels);
+        let mut out = Vec::with_capacity(LAYER_HEADER_BYTES + texel_bytes.len());
+        out.extend_from_slice(&self.atlas_width.to_ne_bytes());
+        out.extend_from_slice(&self.atlas_height.to_ne_bytes());
+        out.extend_from_slice(&(self.texels.len() as u32).to_ne_bytes());
+        out.extend_from_slice(texel_bytes);
+        out
     }
 
     /// Deserialize a layer blob. A decode failure (truncated or format-skewed
@@ -94,13 +110,39 @@ impl LightmapLayer {
     /// `None` so the caller treats it as a miss and re-bakes. The cache's own
     /// length/hash validation catches bit-rot; this catches format skew.
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        match postcard::from_bytes::<Self>(bytes) {
-            Ok(layer) => Some(layer),
-            Err(err) => {
-                log::warn!("[Compiler] corrupt lightmap layer, re-baking: {err}");
-                None
-            }
+        if bytes.len() < LAYER_HEADER_BYTES {
+            log::warn!("[Compiler] corrupt lightmap layer (truncated header), re-baking");
+            return None;
         }
+        // Header is 3 native-endian u32s; the slice lengths are fixed above, so
+        // the `try_into`s cannot fail.
+        let atlas_width = u32::from_ne_bytes(bytes[0..4].try_into().unwrap());
+        let atlas_height = u32::from_ne_bytes(bytes[4..8].try_into().unwrap());
+        let count = u32::from_ne_bytes(bytes[8..12].try_into().unwrap()) as usize;
+
+        let payload = &bytes[LAYER_HEADER_BYTES..];
+        let expected = count * std::mem::size_of::<LayerTexel>();
+        if payload.len() != expected {
+            log::warn!(
+                "[Compiler] corrupt lightmap layer (body {} bytes, expected {}), re-baking",
+                payload.len(),
+                expected
+            );
+            return None;
+        }
+
+        // `pod_collect_to_vec` bulk-copies the payload into an aligned
+        // `Vec<LayerTexel>`, so it tolerates the source `&[u8]`'s arbitrary
+        // alignment (a borrowed `cast_slice::<u8, LayerTexel>` would panic on a
+        // misaligned slice). Still a single memcpy — far cheaper than postcard's
+        // per-field parse over millions of texels.
+        let texels = bytemuck::pod_collect_to_vec::<u8, LayerTexel>(payload);
+
+        Some(Self {
+            atlas_width,
+            atlas_height,
+            texels,
+        })
     }
 }
 
@@ -611,8 +653,10 @@ mod tests {
     fn corrupt_layer_blob_is_a_miss() {
         // A truncated/garbage blob that the StageCache length/hash check would
         // pass (it validates bytes, not format) must still be rejected by the
-        // codec so the caller re-bakes.
-        assert!(LightmapLayer::from_bytes(b"not a valid postcard layer").is_none());
+        // codec so the caller re-bakes. The header parses a nonzero count whose
+        // implied body length cannot match this blob's, so the length check
+        // rejects it.
+        assert!(LightmapLayer::from_bytes(b"not a valid header+body layer").is_none());
     }
 
     #[test]

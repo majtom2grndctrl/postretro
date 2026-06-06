@@ -46,10 +46,6 @@ gltf.workspace = true
 # baked `.prm` cache key (mirrors the level compiler's filename-key recipe).
 blake3.workspace = true
 
-# Percent-decode glTF image URIs before resolving them (mirrors how `gltf`'s
-# `import_buffers` decodes the external buffer URI).
-percent-encoding.workspace = true
-
 # Error handling
 thiserror.workspace = true
 anyhow.workspace = true

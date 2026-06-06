@@ -33,6 +33,8 @@ pub mod texture_mips;
 pub mod texture_validation;
 pub mod visibility;
 
+use std::collections::HashSet;
+use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -83,6 +85,18 @@ impl BuildProgress {
     }
 }
 
+/// Resolve the content root from a map input path.
+fn resolve_content_root(map_path: &Path) -> PathBuf {
+    let map_dir = map_path
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    map_dir
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
 /// Resolve the textures directory from a map input path.
 ///
 /// Mirrors the runtime resolver `content_root_from_map` in
@@ -91,15 +105,7 @@ impl BuildProgress {
 /// `content/<mod>/maps/`). For a map outside this layout the path is still
 /// constructed; the validator is a no-op if the directory does not exist.
 fn resolve_texture_root(map_path: &Path) -> PathBuf {
-    let map_dir = map_path
-        .parent()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    let content_root = map_dir
-        .parent()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    content_root.join("textures")
+    resolve_content_root(map_path).join("textures")
 }
 
 /// Resolve the `.prm` mip-cache root from a map input path.
@@ -118,6 +124,84 @@ fn resolve_prm_cache_root_via_cargo(map_path: &Path) -> PathBuf {
         })
         .join(".build-caches")
         .join("prm-cache")
+}
+
+fn prop_mesh_model_handles(entities: &[map_data::MapEntityRecord]) -> Vec<&str> {
+    let mut seen = HashSet::new();
+    let mut handles = Vec::new();
+
+    for entity in entities {
+        if entity.classname != "prop_mesh" {
+            continue;
+        }
+        let Some(model) = entity
+            .key_values
+            .iter()
+            .find_map(|(key, value)| (key == "model").then_some(value.as_str()))
+        else {
+            continue;
+        };
+        if !model.trim().is_empty() && seen.insert(model) {
+            handles.push(model);
+        }
+    }
+
+    handles
+}
+
+fn bake_model_textures_with<Resolve, ResolveError, Bake, BakeError>(
+    entities: &[map_data::MapEntityRecord],
+    content_root: &Path,
+    prm_cache_root: &Path,
+    mut resolve_base_color_paths: Resolve,
+    mut bake_diffuse: Bake,
+) where
+    Resolve: FnMut(&Path) -> Result<Vec<PathBuf>, ResolveError>,
+    ResolveError: Display,
+    Bake: FnMut(&Path, &Path) -> Result<[u8; 32], BakeError>,
+    BakeError: Display,
+{
+    let mut seen_textures = HashSet::new();
+
+    for model_handle in prop_mesh_model_handles(entities) {
+        let model_path = content_root.join(model_handle);
+        let texture_paths = match resolve_base_color_paths(&model_path) {
+            Ok(paths) => paths,
+            Err(error) => {
+                log::warn!(
+                    "[prl-build] failed to resolve model textures for {}: {error}",
+                    model_path.display()
+                );
+                continue;
+            }
+        };
+
+        for texture_path in texture_paths {
+            if !seen_textures.insert(texture_path.clone()) {
+                continue;
+            }
+            if let Err(error) = bake_diffuse(&texture_path, prm_cache_root) {
+                log::warn!(
+                    "[prl-build] failed to bake model texture {}: {error}",
+                    texture_path.display()
+                );
+            }
+        }
+    }
+}
+
+fn bake_model_textures(
+    entities: &[map_data::MapEntityRecord],
+    content_root: &Path,
+    prm_cache_root: &Path,
+) {
+    bake_model_textures_with(
+        entities,
+        content_root,
+        prm_cache_root,
+        postretro_level_format::gltf_resolve::resolve_document_base_color_paths,
+        texture_mips::bake_diffuse_texture,
+    );
 }
 
 /// Whether the SDF occluder atlas must bake — true iff any light carries the
@@ -753,6 +837,8 @@ fn main() -> anyhow::Result<()> {
         &texture_root,
         &prm_cache_root,
     )?;
+    let content_root = resolve_content_root(&args.input);
+    bake_model_textures(&map_data.map_entities, &content_root, &prm_cache_root);
     timings.push(("TextureMips", stage_start.elapsed()));
 
     progress.start_stage("Packing and writing...");
@@ -1212,6 +1298,107 @@ fn js_is_fresh(ts_path: &std::path::Path, js_path: &std::path::Path) -> Option<b
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn map_entity(classname: &str, key_values: &[(&str, &str)]) -> map_data::MapEntityRecord {
+        map_data::MapEntityRecord {
+            classname: classname.to_string(),
+            origin: glam::DVec3::ZERO,
+            angles: [0.0; 3],
+            key_values: key_values
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect(),
+            tags: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn resolve_content_root_uses_map_directory_grandparent() {
+        assert_eq!(
+            resolve_content_root(Path::new("content/base/maps/test.map")),
+            PathBuf::from("content/base")
+        );
+        assert_eq!(
+            resolve_texture_root(Path::new("content/base/maps/test.map")),
+            PathBuf::from("content/base/textures")
+        );
+    }
+
+    #[test]
+    fn prop_mesh_model_handles_filter_and_deduplicate_in_map_order() {
+        let entities = vec![
+            map_entity("light", &[("model", "models/ignored.gltf")]),
+            map_entity("prop_mesh", &[("other", "value")]),
+            map_entity("prop_mesh", &[("model", "")]),
+            map_entity("prop_mesh", &[("model", "models/first.gltf")]),
+            map_entity("prop_mesh", &[("model", "models/first.gltf")]),
+            map_entity(
+                "prop_mesh",
+                &[
+                    ("model", "models/second.gltf"),
+                    ("model", "models/ignored-duplicate-key.gltf"),
+                ],
+            ),
+        ];
+
+        assert_eq!(
+            prop_mesh_model_handles(&entities),
+            vec!["models/first.gltf", "models/second.gltf"]
+        );
+    }
+
+    #[test]
+    fn model_texture_bake_deduplicates_paths_and_continues_after_errors() {
+        let entities = vec![
+            map_entity("prop_mesh", &[("model", "models/first.gltf")]),
+            map_entity("prop_mesh", &[("model", "models/first.gltf")]),
+            map_entity("prop_mesh", &[("model", "models/malformed.gltf")]),
+            map_entity("prop_mesh", &[("model", "models/second.gltf")]),
+        ];
+        let content_root = Path::new("content/base");
+        let cache_root = Path::new(".build-caches/prm-cache");
+        let shared = PathBuf::from("content/base/models/shared.png");
+        let first_only = PathBuf::from("content/base/models/first.png");
+        let unreadable = PathBuf::from("content/base/models/unreadable.png");
+        let mut resolved_models = Vec::new();
+        let mut baked_textures = Vec::new();
+
+        bake_model_textures_with(
+            &entities,
+            content_root,
+            cache_root,
+            |model_path| -> Result<Vec<PathBuf>, &'static str> {
+                resolved_models.push(model_path.to_path_buf());
+                match model_path.file_name().and_then(|name| name.to_str()) {
+                    Some("first.gltf") => {
+                        Ok(vec![shared.clone(), first_only.clone(), shared.clone()])
+                    }
+                    Some("malformed.gltf") => Err("malformed glTF"),
+                    Some("second.gltf") => Ok(vec![shared.clone(), unreadable.clone()]),
+                    _ => Ok(Vec::new()),
+                }
+            },
+            |texture_path, observed_cache_root| -> Result<[u8; 32], &'static str> {
+                assert_eq!(observed_cache_root, cache_root);
+                baked_textures.push(texture_path.to_path_buf());
+                if texture_path == unreadable {
+                    Err("unreadable PNG")
+                } else {
+                    Ok([1; 32])
+                }
+            },
+        );
+
+        assert_eq!(
+            resolved_models,
+            vec![
+                content_root.join("models/first.gltf"),
+                content_root.join("models/malformed.gltf"),
+                content_root.join("models/second.gltf"),
+            ]
+        );
+        assert_eq!(baked_textures, vec![shared, first_only, unreadable]);
+    }
 
     #[test]
     fn parse_args_basic() {

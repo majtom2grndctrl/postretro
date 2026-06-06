@@ -7,9 +7,10 @@
 // triangles separately. Multi-mesh / multi-clip generality is out of scope.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use glam::{Mat4, Quat, Vec3};
+use postretro_level_format::gltf_resolve::resolve_material_base_color_path;
 use postretro_level_format::octahedral;
 use serde::Deserialize;
 use thiserror::Error;
@@ -124,26 +125,6 @@ fn zero_material_key() -> String {
     "0".repeat(64)
 }
 
-/// Resolve a base-color image URI (relative to the glTF's directory) to a file
-/// path, percent-decoding the URI first.
-///
-/// The glTF spec allows image URIs to be percent-encoded (e.g. `base%20color.png`
-/// for a file named `base color.png`); without decoding, a raw `join` would miss
-/// the file and wrongly degrade to the zero sentinel. Decoding an already-unencoded
-/// URI is a no-op, so normal paths pass through unchanged. On invalid UTF-8 in the
-/// decoded bytes we fall back to the raw URI rather than lossily mangling it.
-///
-/// A `../`-containing URI can join past `parent_dir`; acceptable here because the
-/// path is only ever read to content-hash (never surfaced), and the glTF is
-/// already trusted user-chosen content.
-fn resolve_image_path(parent_dir: &Path, uri: &str) -> PathBuf {
-    let decoded = percent_encoding::percent_decode_str(uri)
-        .decode_utf8()
-        .map(|s| s.into_owned())
-        .unwrap_or_else(|_| uri.to_string());
-    parent_dir.join(decoded)
-}
-
 /// Resolve a material's base-color texture to its baked `.prm` cache key by
 /// content-hashing the source PNG.
 ///
@@ -159,18 +140,10 @@ fn resolve_image_path(parent_dir: &Path, uri: &str) -> PathBuf {
 /// missing/unreadable — an unresolvable material renders a placeholder rather
 /// than failing the whole load.
 fn content_hash_material_key(material: &gltf::Material, parent_dir: &Path) -> String {
-    let Some(uri) = material
-        .pbr_metallic_roughness()
-        .base_color_texture()
-        .and_then(|info| match info.texture().source().source() {
-            gltf::image::Source::Uri { uri, .. } => Some(uri.to_string()),
-            gltf::image::Source::View { .. } => None,
-        })
-    else {
+    let Some(png_path) = resolve_material_base_color_path(material, parent_dir) else {
         return zero_material_key();
     };
 
-    let png_path = resolve_image_path(parent_dir, &uri);
     match std::fs::read(&png_path) {
         Ok(png_bytes) => {
             let key = *blake3::hash(&png_bytes).as_bytes();
@@ -736,39 +709,6 @@ mod tests {
         // Index 7 has no mapping → defaults to joint 0.
         let out = remap_joint_quad([5, 9, 7, 5], &map);
         assert_eq!(out, [2, 0, 0, 2]);
-    }
-
-    #[test]
-    fn image_uri_is_percent_decoded_before_resolving_path() {
-        // The glTF spec allows percent-encoded image URIs; `import_buffers`
-        // decodes the `.bin` URI the same way, so the material path must match.
-        // A `%20`-encoded URI must resolve to the real `base color.png` file
-        // (with a literal space) and content-hash it — not degrade to the zero
-        // sentinel. An unencoded URI passes through unchanged (decode is a no-op).
-        let dir = std::env::temp_dir().join("postretro_percent_decode_test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let png_bytes = b"not a real png, just bytes to hash";
-        let file_path = dir.join("base color.png");
-        std::fs::write(&file_path, png_bytes).unwrap();
-
-        // Encoded URI resolves to the space-bearing filename.
-        let resolved = resolve_image_path(&dir, "base%20color.png");
-        assert_eq!(resolved, file_path, "%20 must decode to a literal space");
-        // Unencoded URI is a no-op pass-through.
-        assert_eq!(
-            resolve_image_path(&dir, "plain.png"),
-            dir.join("plain.png"),
-            "an unencoded URI must not be mangled",
-        );
-
-        // End-to-end: reading the decoded path yields the file's content hash,
-        // matching what `content_hash_material_key` would produce — proving the
-        // encoded URI does NOT fall back to the zero sentinel.
-        let bytes = std::fs::read(&resolved).expect("decoded path resolves to the file");
-        let expected_key = hex_encode(blake3::hash(&bytes).as_bytes());
-        assert_ne!(expected_key, zero_material_key(), "key is not the sentinel");
-
-        let _ = std::fs::remove_file(&file_path);
     }
 
     // --- Error handling (automated AC: malformed input returns Err, no panic) ---

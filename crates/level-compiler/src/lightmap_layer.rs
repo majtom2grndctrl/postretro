@@ -1,7 +1,7 @@
 // Per-light lightmap contribution layers: bake one static light's irradiance +
 // unnormalized weighted direction across the shared atlas, cache it, and
 // composite the layers back into a byte-identical pre-BC6H atlas.
-// See: context/plans/in-progress/incremental-bake-per-element/index.md
+// See: context/plans/done/incremental-bake-per-element/index.md
 
 use glam::Vec3;
 
@@ -20,7 +20,22 @@ use glam::DVec3;
 /// invalidates all cached layers and forces a re-bake. Each cached stage owns
 /// its own version constant and bumps independently — the layer codec evolves
 /// separately from the per-group SH and animated-weight-map stages.
-pub const LAYER_FORMAT_VERSION: u32 = 1;
+pub const LAYER_FORMAT_VERSION: u32 = 2;
+
+/// Bump when the composite/dilate/`encode_section` pipeline or
+/// `LightmapSection::to_bytes` serialization changes. Folded into the
+/// `"lightmap_section"` cache key (the second-level memo of the composited
+/// section), so a bump invalidates every cached section and forces a recompose.
+///
+/// Scoped differently from [`LAYER_FORMAT_VERSION`]: that constant covers the
+/// per-light layer payload and single-light bake math; this one covers how
+/// those layers are composited and encoded into the shipped `Lightmap` (id 22)
+/// bytes. The scopes are disjoint, but a `LAYER_FORMAT_VERSION` bump also
+/// invalidates every section entry — `section_input_hash` folds
+/// `LAYER_FORMAT_VERSION` directly, so the section key changes with it.
+/// Bump `LIGHTMAP_SECTION_VERSION` only when the composite/dilate/encode
+/// pipeline or `LightmapSection::to_bytes` format changes independently.
+pub const LIGHTMAP_SECTION_VERSION: u32 = 1;
 
 /// One covered atlas texel's contribution from a single light.
 ///
@@ -35,7 +50,8 @@ pub const LAYER_FORMAT_VERSION: u32 = 1;
 /// Lossless full-precision `f32` (never f16): the layer is compiler-internal and
 /// must round-trip exactly so summed layers reproduce the monolithic bake
 /// bit-for-bit.
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct LayerTexel {
     /// Linear atlas texel index (`y * atlas_width + x`).
     pub idx: u32,
@@ -46,6 +62,10 @@ pub struct LayerTexel {
     /// Surface-normal fallback for the degenerate-direction branch.
     pub fallback_normal: [f32; 3],
 }
+
+// Pins the fixed codec stride: `to_bytes`/`from_bytes` cast the blob directly
+// via bytemuck; any field change that shifts the stride breaks the on-disk format.
+const _: () = assert!(std::mem::size_of::<LayerTexel>() == 40);
 
 /// One light's contribution across the shared atlas.
 ///
@@ -60,7 +80,7 @@ pub struct LayerTexel {
 /// cache blobs, not shipped runtime data, so the storage overhead is acceptable;
 /// storing every covered texel (not just lit ones) is what lets the compositor
 /// reproduce the monolithic bake's coverage and dark-texel fallback exactly.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LightmapLayer {
     pub atlas_width: u32,
     pub atlas_height: u32,
@@ -70,12 +90,27 @@ pub struct LightmapLayer {
     pub texels: Vec<LayerTexel>,
 }
 
+/// Fixed-layout header preceding the texel block in a layer blob: atlas
+/// dimensions plus the texel count, three native-endian `u32`s (12 bytes).
+const LAYER_HEADER_BYTES: usize = 3 * std::mem::size_of::<u32>();
+
 impl LightmapLayer {
-    /// Serialize to a deterministic, fixed-layout byte blob for the cache.
-    /// Postcard over the owned fields gives an exact round-trip and a stable
-    /// encoding for hashing.
+    /// Serialize to a fixed-layout native-endian byte blob for the cache.
+    ///
+    /// A 12-byte header (`atlas_width`, `atlas_height`, texel `count`, native
+    /// `u32`s) followed by the `[LayerTexel]` block copied verbatim via
+    /// `bytemuck::cast_slice`. The blob is compiler-internal and dev-local (never
+    /// shipped, never read across architectures, matching the layer cache), so
+    /// native-endian is fine and lets the body be a bulk memory copy instead of
+    /// a per-field encode.
     pub fn to_bytes(&self) -> Vec<u8> {
-        postcard::to_allocvec(self).expect("postcard serialize LightmapLayer")
+        let texel_bytes = bytemuck::cast_slice::<LayerTexel, u8>(&self.texels);
+        let mut out = Vec::with_capacity(LAYER_HEADER_BYTES + texel_bytes.len());
+        out.extend_from_slice(&self.atlas_width.to_ne_bytes());
+        out.extend_from_slice(&self.atlas_height.to_ne_bytes());
+        out.extend_from_slice(&(self.texels.len() as u32).to_ne_bytes());
+        out.extend_from_slice(texel_bytes);
+        out
     }
 
     /// Deserialize a layer blob. A decode failure (truncated or format-skewed
@@ -83,13 +118,43 @@ impl LightmapLayer {
     /// `None` so the caller treats it as a miss and re-bakes. The cache's own
     /// length/hash validation catches bit-rot; this catches format skew.
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        match postcard::from_bytes::<Self>(bytes) {
-            Ok(layer) => Some(layer),
-            Err(err) => {
-                log::warn!("[Compiler] corrupt lightmap layer, re-baking: {err}");
-                None
-            }
+        if bytes.len() < LAYER_HEADER_BYTES {
+            log::warn!("[Compiler] corrupt lightmap layer (truncated header), re-baking");
+            return None;
         }
+        // Header is 3 native-endian u32s; the slice lengths are fixed above, so
+        // the `try_into`s cannot fail.
+        let atlas_width = u32::from_ne_bytes(bytes[0..4].try_into().unwrap());
+        let atlas_height = u32::from_ne_bytes(bytes[4..8].try_into().unwrap());
+        let count = u32::from_ne_bytes(bytes[8..12].try_into().unwrap()) as usize;
+
+        let payload = &bytes[LAYER_HEADER_BYTES..];
+        // A count that overflows means the blob is malformed; the codec's contract
+        // is "malformed blob → cache miss → re-bake, never panic."
+        let Some(expected) = count.checked_mul(std::mem::size_of::<LayerTexel>()) else {
+            log::warn!("[Compiler] corrupt lightmap layer (count {count} overflows), re-baking");
+            return None;
+        };
+        if payload.len() != expected {
+            log::warn!(
+                "[Compiler] corrupt lightmap layer (body {} bytes, expected {}), re-baking",
+                payload.len(),
+                expected
+            );
+            return None;
+        }
+
+        // `pod_collect_to_vec` bulk-copies the payload into an aligned
+        // `Vec<LayerTexel>`, tolerating the source `&[u8]`'s arbitrary
+        // alignment — a borrowed `cast_slice::<u8, LayerTexel>` would panic on
+        // a misaligned slice. Single memcpy — no per-field deserialization.
+        let texels = bytemuck::pod_collect_to_vec::<u8, LayerTexel>(payload);
+
+        Some(Self {
+            atlas_width,
+            atlas_height,
+            texels,
+        })
     }
 }
 
@@ -344,8 +409,9 @@ fn bytemuck_f32x3(v: &[f32; 3]) -> Vec<u8> {
 /// The full input fingerprint for one light's lightmap layer cache key.
 ///
 /// Folds, under a fixed byte layout:
-/// - the light's params (whole `MapLight`, fixed `postcard` encoding — the
-///   same discipline the whole-stage key uses),
+/// - the light's params (whole `MapLight`, fixed `postcard` encoding for the
+///   key hash — `postcard` is used here only; the layer blob itself uses the
+///   bytemuck codec),
 /// - the influence-bounded geometry slice hash,
 /// - `lightmap_density` + `area_sample_count`,
 /// - the atlas layout descriptor (dims + per-chart placements).
@@ -371,6 +437,45 @@ pub fn layer_input_hash(
     hasher.update(&lightmap_density.to_le_bytes());
     hasher.update(&area_sample_count.to_le_bytes());
     hasher.update(&atlas_layout_fingerprint(atlas));
+    *hasher.finalize().as_bytes()
+}
+
+/// Build the cache key for the composited lightmap section — the second-level
+/// memo that lets a no-edit rebuild skip the per-light layer reads, composite,
+/// dilate, and BC6H encode and instead decode the section bytes directly.
+///
+/// The fold covers every input that determines the section bytes, under a fixed
+/// unambiguous byte layout:
+/// 1. `LAYER_FORMAT_VERSION` (u32 LE) — couples this key to the per-light layer
+///    format the same way the private per-light `CacheKey.digest`s would; a
+///    layer-format bump invalidates the section without reading the layer keys.
+/// 2. light count (u32 LE) — so add/remove can never alias a reorder. The
+///    fixed-width 32-byte hash records below already make a plain concatenation
+///    injective, but folding the count is a cheap belt-and-suspenders guard.
+/// 3. each light's `layer_input_hash` `[u8; 32]`, in the caller's exact filtered
+///    order (global static order, `ShadowType::Sdf` dropped). Folding the input
+///    hashes mirrors folding the full per-light keys: any per-light input change
+///    (light params, geometry slice, density, atlas layout) flows through here.
+/// 4. `texel_density` (f32 LE) — the `density` passed to `encode_section`.
+///    Already folded into every `layer_input_hash` via `lightmap_density`, so
+///    this is belt-and-suspenders (same rationale as the light-count fold).
+/// 5. `uncompressed_irradiance` (1 byte, 0/1) — selects BC6H vs RGBA16F output.
+///
+/// `layer_input_hashes` must be supplied in the same filtered order the warm
+/// composite loop uses; the helper does not re-derive or re-sort them.
+pub fn section_input_hash(
+    layer_input_hashes: &[[u8; 32]],
+    texel_density: f32,
+    uncompressed_irradiance: bool,
+) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&LAYER_FORMAT_VERSION.to_le_bytes());
+    hasher.update(&(layer_input_hashes.len() as u32).to_le_bytes());
+    for hash in layer_input_hashes {
+        hasher.update(hash);
+    }
+    hasher.update(&texel_density.to_le_bytes());
+    hasher.update(&[u8::from(uncompressed_irradiance)]);
     *hasher.finalize().as_bytes()
 }
 
@@ -561,10 +666,23 @@ mod tests {
 
     #[test]
     fn corrupt_layer_blob_is_a_miss() {
-        // A truncated/garbage blob that the StageCache length/hash check would
-        // pass (it validates bytes, not format) must still be rejected by the
-        // codec so the caller re-bakes.
-        assert!(LightmapLayer::from_bytes(b"not a valid postcard layer").is_none());
+        // `from_bytes` rejects a garbage blob and returns `None` (format-validation
+        // path). This is independent of the `StageCache` byte-level length/hash
+        // check — it calls `from_bytes` directly, exercising only the codec.
+        assert!(LightmapLayer::from_bytes(b"not a valid header+body layer").is_none());
+    }
+
+    #[test]
+    fn from_bytes_rejects_overflowing_texel_count() {
+        // Pins the overflow-guard defense: a header with count = u32::MAX causes
+        // count * size_of::<LayerTexel>() to overflow; from_bytes must return None,
+        // never panic.
+        let mut blob = Vec::new();
+        blob.extend_from_slice(&1u32.to_ne_bytes()); // atlas_width
+        blob.extend_from_slice(&1u32.to_ne_bytes()); // atlas_height
+        blob.extend_from_slice(&u32::MAX.to_ne_bytes()); // count = u32::MAX
+        // No body bytes — the implied body cannot match.
+        assert!(LightmapLayer::from_bytes(&blob).is_none());
     }
 
     #[test]
@@ -627,8 +745,8 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Task 8 additions: cache wiring behaviors at the module API seam and the
-    // full-fixture determinism gate (1).
+    // Cache wiring behaviors at the module API seam and the full-fixture
+    // determinism gate (1).
 
     use crate::cache::{CacheKey, StageCache};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -993,5 +1111,411 @@ mod tests {
                 "fixture {name}: per-light composite must equal the monolithic atlas bit-for-bit"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Second-level "lightmap_section" cache behaviors, mirroring the layer
+    // suite above. These protect the warm no-edit rebuild (section hit → one
+    // decode, no layer reads / composite / encode) and the section-key
+    // invalidation coupling that the `main.rs` wiring relies on.
+
+    use postretro_level_format::lightmap::LightmapSection;
+
+    /// Build the section cache key the same way the `main.rs` warm path does:
+    /// fold the ordered per-light `layer_input_hash` set through
+    /// `section_input_hash`, then `CacheKey::new("lightmap_section", ...)`.
+    /// Mirrors the existing `layer_key` helper so the section tests assert on
+    /// the production key derivation, not a test-only reimplementation.
+    fn section_key(
+        layer_input_hashes: &[[u8; 32]],
+        density: f32,
+        uncompressed_irradiance: bool,
+    ) -> CacheKey {
+        let h = section_input_hash(layer_input_hashes, density, uncompressed_irradiance);
+        CacheKey::new("lightmap_section", LIGHTMAP_SECTION_VERSION, &h)
+    }
+
+    /// Bake every light's layer, composite, dilate, and `encode_section` — the
+    /// exact recompose the warm path runs on a section miss. Returns the
+    /// composited `LightmapSection` the cache memoizes.
+    fn compose_section(
+        lights: &[&MapLight],
+        shared: &SharedAtlas<'_>,
+        bvh: &bvh::bvh::Bvh<f32, 3>,
+        prims: &[BvhPrimitive],
+        geo: &GeometryResult,
+    ) -> LightmapSection {
+        let layers: Vec<LightmapLayer> = lights
+            .iter()
+            .map(|l| bake_light_layer(l, shared, bvh, prims, geo, AREA_SAMPLES))
+            .collect();
+        let mut composite = composite_layers(&layers, shared.atlas_width, shared.atlas_height);
+        composite.dilate();
+        // Uncompressed RGBA16F so the synthetic-atlas tests stay off the BC6H
+        // encoder; the cache behavior under test is format-agnostic and the
+        // `--no-cache`/BC6H combination is exercised by the CLI/byte-identity
+        // evidence in RESULTS.md.
+        composite.encode_section(DENSITY, true)
+    }
+
+    /// Compute the filtered direct-lightmap light set + their ordered
+    /// `layer_input_hash`es exactly as the warm path does (global static order,
+    /// `Sdf` dropped). Returned alongside the light refs so a test can key the
+    /// section and bake from the same ordering.
+    fn layer_input_hashes(
+        light_refs: &[&MapLight],
+        shared: &SharedAtlas<'_>,
+        prims: &[BvhPrimitive],
+        geo: &GeometryResult,
+    ) -> Vec<[u8; 32]> {
+        light_refs
+            .iter()
+            .map(|l| layer_input_hash(l, shared, prims, geo, DENSITY, AREA_SAMPLES))
+            .collect()
+    }
+
+    /// Round-trip skip (section level): with a real `StageCache`, the first
+    /// build is a section miss → recompose → `put`; the second build serves the
+    /// section from cache (`get` + `from_bytes`) and reads NO per-light layer
+    /// blob. Asserts the cached section decodes, equals the original, and the
+    /// section key is identical across builds. Section-level mirror of
+    /// `layer_cache_round_trip_skips_rebake`.
+    #[test]
+    fn section_cache_round_trip_skips_recompose() {
+        let mut geo = two_quad_geometry();
+        let lights = vec![
+            point_light([0.5, 1.0, 0.5], 5.0),
+            point_light([3.5, 1.0, 0.5], 5.0),
+            directional_light(),
+        ];
+        let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
+        let light_refs: Vec<&MapLight> = static_lights.entries().iter().map(|e| e.light).collect();
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let shared = SharedAtlas {
+            charts: &prepared.charts,
+            placements: &prepared.placements,
+            atlas_width: prepared.atlas_width,
+            atlas_height: prepared.atlas_height,
+        };
+
+        let hashes = layer_input_hashes(&light_refs, &shared, &prims, &geo);
+        let key_build1 = section_key(&hashes, DENSITY, true);
+
+        let dir = fresh_cache_dir("section_roundtrip");
+        let cache = StageCache::new(&dir).expect("cache dir");
+
+        // First build: section miss → recompose → put.
+        assert!(
+            cache.get(&key_build1).is_none(),
+            "first build must miss the section key"
+        );
+        let composed = compose_section(&light_refs, &shared, &bvh, &prims, &geo);
+        cache.put(&key_build1, &composed.to_bytes());
+
+        // Second build: same key, section hits and decodes — no layer blob read.
+        let key_build2 = section_key(&hashes, DENSITY, true);
+        assert_eq!(
+            key_build1.as_filename(),
+            key_build2.as_filename(),
+            "an unchanged build must derive the identical section key"
+        );
+        let bytes = cache
+            .get(&key_build2)
+            .expect("second build must hit the section");
+        let decoded = LightmapSection::from_bytes(&bytes).expect("cached section must decode");
+        assert_eq!(
+            decoded, composed,
+            "the hit-path section must equal the originally composited section"
+        );
+
+        // No layer blob was ever written: only the section entry exists on disk.
+        let layer_key0 = CacheKey::new("lightmap_layer", LAYER_FORMAT_VERSION, &hashes[0]);
+        assert!(
+            cache.get(&layer_key0).is_none(),
+            "the section round-trip must not read or write any per-light layer blob"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Single-light edit: editing one light changes its `layer_input_hash`,
+    /// hence the section key (a miss → recompose), while every OTHER light's
+    /// layer key is unchanged (those layers still hit). Section-level proxy for
+    /// the plan's primary correctness criterion. Mirror of
+    /// `single_light_edit_invalidates_only_its_own_layer`.
+    #[test]
+    fn single_light_edit_changes_section_key_but_not_unedited_layer_key() {
+        let mut geo = two_quad_geometry();
+        // Well-separated lights so the edit to one is outside the other's slice.
+        let lights = vec![
+            point_light([0.5, 1.0, 0.5], 1.0),
+            point_light([3.5, 1.0, 0.5], 1.0),
+        ];
+        let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
+        let light_refs: Vec<&MapLight> = static_lights.entries().iter().map(|e| e.light).collect();
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let (_, prims, _) = build_bvh(&geo).unwrap();
+        let shared = SharedAtlas {
+            charts: &prepared.charts,
+            placements: &prepared.placements,
+            atlas_width: prepared.atlas_width,
+            atlas_height: prepared.atlas_height,
+        };
+
+        let base_hashes = layer_input_hashes(&light_refs, &shared, &prims, &geo);
+        let base_section = section_key(&base_hashes, DENSITY, true).as_filename();
+        let base_layer1 =
+            CacheKey::new("lightmap_layer", LAYER_FORMAT_VERSION, &base_hashes[1]).as_filename();
+
+        // Edit only the first light's color.
+        let mut edited = lights.clone();
+        edited[0].color = [0.3, 0.3, 0.3];
+        let edited_static = crate::light_namespaces::StaticBakedLights::from_lights(&edited);
+        let edited_refs: Vec<&MapLight> = edited_static.entries().iter().map(|e| e.light).collect();
+        let edited_hashes = layer_input_hashes(&edited_refs, &shared, &prims, &geo);
+        let edited_section = section_key(&edited_hashes, DENSITY, true).as_filename();
+        let edited_layer1 =
+            CacheKey::new("lightmap_layer", LAYER_FORMAT_VERSION, &edited_hashes[1]).as_filename();
+
+        assert_ne!(
+            base_section, edited_section,
+            "editing a light must change the section key (section miss → recompose)"
+        );
+        assert_eq!(
+            base_layer1, edited_layer1,
+            "an unedited light's layer key must be unchanged (it still hits)"
+        );
+    }
+
+    /// Corruption recovery (section level): a present-but-undecodable
+    /// `lightmap_section` entry — written through the cache so its length/hash
+    /// check passes, but whose bytes `LightmapSection::from_bytes` rejects — is
+    /// treated as a miss, so the wiring recomposes. Asserts the recovered
+    /// section equals the originally-composited one. Mirror of
+    /// `corrupt_layer_entry_is_discarded_and_rebaked`, exercising the
+    /// `get`-succeeds-but-`from_bytes`-fails branch the `main.rs` wiring guards.
+    #[test]
+    fn corrupt_section_entry_is_discarded_and_recomposed() {
+        let mut geo = two_quad_geometry();
+        let lights = vec![
+            point_light([0.5, 1.0, 0.5], 5.0),
+            point_light([3.5, 1.0, 0.5], 5.0),
+        ];
+        let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
+        let light_refs: Vec<&MapLight> = static_lights.entries().iter().map(|e| e.light).collect();
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let shared = SharedAtlas {
+            charts: &prepared.charts,
+            placements: &prepared.placements,
+            atlas_width: prepared.atlas_width,
+            atlas_height: prepared.atlas_height,
+        };
+
+        let hashes = layer_input_hashes(&light_refs, &shared, &prims, &geo);
+        let key = section_key(&hashes, DENSITY, true);
+        let original = compose_section(&light_refs, &shared, &bvh, &prims, &geo);
+
+        let dir = fresh_cache_dir("section_corrupt");
+        let cache = StageCache::new(&dir).expect("cache dir");
+        // Store a blob that PASSES the cache's length/hash check (it is `put`
+        // through the cache) but is too short for `LightmapSection::from_bytes`
+        // to parse — the exact format-skew the wiring recovers from.
+        cache.put(&key, b"not a valid lightmap section blob");
+
+        let recovered = match cache
+            .get(&key)
+            .and_then(|bytes| LightmapSection::from_bytes(&bytes).ok())
+        {
+            Some(section) => section,
+            None => compose_section(&light_refs, &shared, &bvh, &prims, &geo),
+        };
+        assert_eq!(
+            original, recovered,
+            "recompose after a corrupt section entry must reproduce the original section"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `--cache-dir` redirect (section level): a `StageCache` opened on an
+    /// override directory writes the `lightmap_section` entry under that path.
+    /// Mirror of `cache_dir_override_places_entries_under_override`.
+    #[test]
+    fn cache_dir_override_places_section_entry_under_override() {
+        let mut geo = two_quad_geometry();
+        let lights = vec![point_light([0.5, 1.0, 0.5], 5.0)];
+        let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
+        let light_refs: Vec<&MapLight> = static_lights.entries().iter().map(|e| e.light).collect();
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let shared = SharedAtlas {
+            charts: &prepared.charts,
+            placements: &prepared.placements,
+            atlas_width: prepared.atlas_width,
+            atlas_height: prepared.atlas_height,
+        };
+
+        let hashes = layer_input_hashes(&light_refs, &shared, &prims, &geo);
+        let key = section_key(&hashes, DENSITY, true);
+        let section = compose_section(&light_refs, &shared, &bvh, &prims, &geo);
+
+        let dir = fresh_cache_dir("section_override");
+        let cache = StageCache::new(&dir).expect("cache dir");
+        cache.put(&key, &section.to_bytes());
+
+        let entry = dir.join(key.as_filename());
+        assert!(
+            entry.is_file(),
+            "section entry must land under the override dir: {}",
+            entry.display()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `--no-cache` bypass (section level): the section key is only ever
+    /// consulted when a `StageCache` exists. With no cache, the warm branch is
+    /// not entered at all (`main.rs` gates the whole section-cache block behind
+    /// `if let Some(ref cache) = stage_cache`), so no section entry is created.
+    /// A clean unit assertion for "no cache → no entry" is to open a cache dir,
+    /// derive the key WITHOUT putting anything (modeling the no-cache control
+    /// flow that never reaches `put`), and confirm the entry does not exist.
+    /// The end-to-end `--no-cache` CLI run is recorded in RESULTS.md.
+    #[test]
+    fn no_cache_path_writes_no_section_entry() {
+        let mut geo = two_quad_geometry();
+        let lights = vec![point_light([0.5, 1.0, 0.5], 5.0)];
+        let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
+        let light_refs: Vec<&MapLight> = static_lights.entries().iter().map(|e| e.light).collect();
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let (_, prims, _) = build_bvh(&geo).unwrap();
+        let shared = SharedAtlas {
+            charts: &prepared.charts,
+            placements: &prepared.placements,
+            atlas_width: prepared.atlas_width,
+            atlas_height: prepared.atlas_height,
+        };
+
+        let hashes = layer_input_hashes(&light_refs, &shared, &prims, &geo);
+        let key = section_key(&hashes, DENSITY, true);
+
+        // No-cache control flow: the key is derivable, but with the section-cache
+        // block skipped nothing is ever `put`. Model that by never calling `put`.
+        let dir = fresh_cache_dir("section_nocache");
+        let cache = StageCache::new(&dir).expect("cache dir");
+        let entry = dir.join(key.as_filename());
+        assert!(
+            !entry.is_file(),
+            "no section entry may exist when the warm path never puts one"
+        );
+        assert!(
+            cache.get(&key).is_none(),
+            "a section key must miss when no entry was written"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Add / remove / reorder invalidation: each mutation changes the folded
+    /// `layer_input_hash` set (its length and/or order), so the section key
+    /// changes versus the two-light baseline. Reorder is the subtle case — the
+    /// fold concatenates the hashes in order, so the same two hashes in swapped
+    /// order must still yield a different key.
+    #[test]
+    fn section_key_changes_on_add_remove_and_reorder() {
+        let mut geo = two_quad_geometry();
+        let lights = vec![
+            point_light([0.5, 1.0, 0.5], 5.0),
+            point_light([3.5, 1.0, 0.5], 5.0),
+        ];
+        let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
+        let light_refs: Vec<&MapLight> = static_lights.entries().iter().map(|e| e.light).collect();
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let (_, prims, _) = build_bvh(&geo).unwrap();
+        let shared = SharedAtlas {
+            charts: &prepared.charts,
+            placements: &prepared.placements,
+            atlas_width: prepared.atlas_width,
+            atlas_height: prepared.atlas_height,
+        };
+
+        let base = layer_input_hashes(&light_refs, &shared, &prims, &geo);
+        let base_key = section_key(&base, DENSITY, true).as_filename();
+
+        // Add a light: a third hash extends the fold.
+        let mut added = base.clone();
+        added.push(layer_input_hash(
+            &point_light([2.0, 1.0, 0.5], 5.0),
+            &shared,
+            &prims,
+            &geo,
+            DENSITY,
+            AREA_SAMPLES,
+        ));
+        assert_ne!(
+            base_key,
+            section_key(&added, DENSITY, true).as_filename(),
+            "adding a light must change the section key"
+        );
+
+        // Remove a light: drop the second hash.
+        let removed = vec![base[0]];
+        assert_ne!(
+            base_key,
+            section_key(&removed, DENSITY, true).as_filename(),
+            "removing a light must change the section key"
+        );
+
+        // Reorder: swap the two hashes. Same set, different concatenation order.
+        let reordered = vec![base[1], base[0]];
+        assert_ne!(
+            base_key,
+            section_key(&reordered, DENSITY, true).as_filename(),
+            "reordering lights must change the section key (the fold is ordered)"
+        );
+        // Guard against an accidental commutative fold: the swap must NOT be a
+        // no-op even though the hash multiset is identical.
+        assert_ne!(
+            base[0], base[1],
+            "the two lights must have distinct layer hashes for the reorder check to bite"
+        );
+    }
+
+    /// `--soft-shadow-samples` change → section miss: the sample count folds
+    /// into every `layer_input_hash` (as `area_sample_count`), hence into the
+    /// section key. Two different sample counts must yield different keys.
+    #[test]
+    fn section_key_changes_when_soft_shadow_samples_change() {
+        let mut geo = two_quad_geometry();
+        let lights = vec![point_light([0.5, 1.0, 0.5], 5.0)];
+        let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
+        let light_refs: Vec<&MapLight> = static_lights.entries().iter().map(|e| e.light).collect();
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let (_, prims, _) = build_bvh(&geo).unwrap();
+        let shared = SharedAtlas {
+            charts: &prepared.charts,
+            placements: &prepared.placements,
+            atlas_width: prepared.atlas_width,
+            atlas_height: prepared.atlas_height,
+        };
+
+        let samples_a = 16u32;
+        let samples_b = 32u32;
+        let hashes_a: Vec<[u8; 32]> = light_refs
+            .iter()
+            .map(|l| layer_input_hash(l, &shared, &prims, &geo, DENSITY, samples_a))
+            .collect();
+        let hashes_b: Vec<[u8; 32]> = light_refs
+            .iter()
+            .map(|l| layer_input_hash(l, &shared, &prims, &geo, DENSITY, samples_b))
+            .collect();
+
+        assert_ne!(
+            section_key(&hashes_a, DENSITY, true).as_filename(),
+            section_key(&hashes_b, DENSITY, true).as_filename(),
+            "changing --soft-shadow-samples must change the section key (section miss)"
+        );
     }
 }

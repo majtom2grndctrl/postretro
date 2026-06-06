@@ -25,6 +25,7 @@ nalgebra = { version = "0.33", default-features = false, features = ["std"] }
 png.workspace = true
 image.workspace = true
 blake3 = "1"
+bytemuck = { workspace = true }
 postcard = { version = "1", features = ["alloc"] }
 serde.workspace = true
 

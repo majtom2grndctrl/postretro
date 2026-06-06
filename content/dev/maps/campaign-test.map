@@ -1173,15 +1173,6 @@
 }
 // entity 5
 {
-"classname" "light_dynamic"
-"origin" "-176 2416 140"
-"light" "5"
-"_color" "220 220 255"
-"_falloff_range" "325"
-"_tags" "arena_wave_2"
-}
-// entity 6
-{
 "classname" "light"
 "origin" "-1184 2080 432"
 "light" "500"
@@ -1190,16 +1181,7 @@
 "_bake_only" "0"
 "_shadow_type" "static_light_map"
 }
-// entity 7
-{
-"classname" "light_dynamic"
-"origin" "-224 1792 284"
-"light" "5"
-"_color" "220 220 255"
-"_falloff_range" "325"
-"_tags" "arena_wave_2"
-}
-// entity 8
+// entity 6
 {
 "classname" "light_dynamic_spot"
 "origin" "424 968 300"
@@ -1210,7 +1192,7 @@
 "angles" "-15 -60.6 0"
 "_light_radius" "800"
 }
-// entity 9
+// entity 7
 {
 "classname" "light_dynamic_spot"
 "origin" "968 952 300"
@@ -1221,7 +1203,7 @@
 "angles" "-15 -130.6 0"
 "_light_radius" "800"
 }
-// entity 10
+// entity 8
 {
 "classname" "light_dynamic_spot"
 "origin" "768 960 300"
@@ -1232,7 +1214,7 @@
 "angles" "-15 -100.3 0"
 "_light_radius" "800"
 }
-// entity 11
+// entity 9
 {
 "classname" "light_dynamic_spot"
 "origin" "936 664 300"
@@ -1243,7 +1225,7 @@
 "angles" "-15 -154.7 0"
 "_light_radius" "800"
 }
-// entity 12
+// entity 10
 {
 "classname" "light_dynamic_spot"
 "origin" "936 408 300"
@@ -1254,7 +1236,7 @@
 "angles" "-15 159.6 0"
 "_light_radius" "800"
 }
-// entity 13
+// entity 11
 {
 "classname" "light_dynamic_spot"
 "origin" "920 136 300"
@@ -1265,7 +1247,7 @@
 "angles" "-15 131.7 0"
 "_light_radius" "800"
 }
-// entity 14
+// entity 12
 {
 "classname" "light_dynamic_spot"
 "origin" "120 88 300"
@@ -1276,7 +1258,7 @@
 "angles" "-15 44.0 0"
 "_light_radius" "800"
 }
-// entity 15
+// entity 13
 {
 "classname" "light_dynamic_spot"
 "origin" "448 64 300"
@@ -1287,7 +1269,7 @@
 "angles" "-15 66.5 0"
 "_light_radius" "800"
 }
-// entity 16
+// entity 14
 {
 "classname" "light_dynamic_spot"
 "origin" "744 72 300"
@@ -1298,121 +1280,32 @@
 "angles" "-15 106.1 0"
 "_light_radius" "800"
 }
-// entity 17
-{
-"classname" "light"
-"origin" "-1368 2616 140"
-"light" "350"
-"_color" "252 235 86"
-"_falloff_range" "150"
-"_bake_only" "0"
-"style" "2"
-"_shadow_type" "static_light_map"
-}
-// entity 18
-{
-"classname" "light"
-"origin" "-1704 2392 140"
-"light" "350"
-"_color" "252 235 86"
-"_falloff_range" "150"
-"_bake_only" "0"
-"style" "2"
-"_shadow_type" "static_light_map"
-}
-// entity 19
-{
-"classname" "light"
-"origin" "-1688 1784 140"
-"light" "350"
-"_color" "252 235 86"
-"_falloff_range" "150"
-"_bake_only" "0"
-"style" "2"
-"_shadow_type" "static_light_map"
-}
-// entity 20
-{
-"classname" "light"
-"origin" "-1336 1560 140"
-"light" "350"
-"_color" "252 235 86"
-"_falloff_range" "150"
-"_bake_only" "0"
-"style" "2"
-"_shadow_type" "static_light_map"
-}
-// entity 21
-{
-"classname" "light_dynamic"
-"origin" "-176 1648 172"
-"light" "5"
-"_color" "220 220 255"
-"_falloff_range" "325"
-"_tags" "arena_wave_2"
-}
-// entity 22
-{
-"classname" "light_dynamic"
-"origin" "-176 1904 172"
-"light" "5"
-"_color" "220 220 255"
-"_falloff_range" "325"
-"_tags" "arena_wave_2"
-}
-// entity 23
-{
-"classname" "light_dynamic"
-"origin" "-176 2160 172"
-"light" "5"
-"_color" "220 220 255"
-"_falloff_range" "325"
-"_tags" "arena_wave_2"
-}
-// entity 24
-{
-"classname" "light_dynamic"
-"origin" "-208 2048 284"
-"light" "5"
-"_color" "220 220 255"
-"_falloff_range" "325"
-"_tags" "arena_wave_2"
-}
-// entity 25
-{
-"classname" "light_dynamic"
-"origin" "-208 2288 268"
-"light" "5"
-"_color" "220 220 255"
-"_falloff_range" "325"
-"_tags" "arena_wave_2"
-}
-// entity 26
+// entity 15
 {
 "classname" "light_spot"
-"origin" "-600 2408 72"
+"origin" "-600 2408 104"
 "light" "250"
 "_color" "255 255 255"
 "_falloff_range" "900"
-"angles" "-42 -98 167"
-"_cone" "20"
+"angles" "-13 -98 167"
+"_cone" "3"
 "delay" "0"
-"_cone2" "45"
+"_cone2" "25"
 "_shadow_type" "static_light_map"
 }
-// entity 27
+// entity 16
 {
 "classname" "game_rotator_driver"
 "origin" "640 384 96"
 "_tags" "rotatorDriver"
 }
-// entity 28
+// entity 17
 {
 "classname" "game_damage_source"
 "origin" "384 384 96"
 "_tags" "damageSource"
 }
-// entity 29
+// entity 18
 {
 "classname" "light"
 "origin" "1248 2576 440"
@@ -1423,7 +1316,7 @@
 "light" "150"
 "_shadow_type" "static_light_map"
 }
-// entity 30
+// entity 19
 {
 "classname" "light"
 "origin" "2400 2656 552"
@@ -1434,7 +1327,7 @@
 "light" "150"
 "_shadow_type" "static_light_map"
 }
-// entity 31
+// entity 20
 {
 "classname" "light"
 "origin" "2416 1488 552"
@@ -1445,7 +1338,7 @@
 "light" "150"
 "_shadow_type" "static_light_map"
 }
-// entity 32
+// entity 21
 {
 "classname" "light"
 "origin" "1248 1568 440"
@@ -1456,7 +1349,7 @@
 "light" "150"
 "_shadow_type" "static_light_map"
 }
-// entity 33
+// entity 22
 {
 "classname" "fog_volume"
 "edge_softness" "20"
@@ -1471,46 +1364,32 @@
 ( 1639.7645019878214 1522.7451660040651 138.98066401624388 ) ( 1639.7645019878214 1522.7451660040651 629.0193359837575 ) ( 1813.0193359837601 1696 384 ) concrete_stone_022 0.52801514 0.47320557 54.735603 1.1722113 1.1722113
 }
 }
-// entity 34
+// entity 23
 {
 "classname" "fog_lamp"
 "origin" "1832 2088 440"
 "_tags" "pulse_fog"
 }
-// entity 35
+// entity 24
 {
 "classname" "fog_volume"
 "_tags" ""
-"edge_softness" "2"
-// brush 0
-{
-( -800 2720 64 ) ( -800 1440 64 ) ( -800 1440 -48 ) concrete_stone_030 0 0.5714288 0 5 1.75
-( -800 1440 64 ) ( -304 1440 64 ) ( -304 1440 -48 ) concrete_stone_030 0.9032259 0.5714288 0 1.9375 1.75
-( -304 1440 -48 ) ( -304 2720 -48 ) ( -800 2720 -48 ) concrete_stone_030 0.47720528 -0.56814384 0 1.93933 5.0813947
-( -800 2720 64 ) ( -304 2720 64 ) ( -304 1440 64 ) concrete_stone_030 0.47720528 -0.56814384 0 1.93933 5.0813947
-( -304 2720 -48 ) ( -304 2720 64 ) ( -800 2720 64 ) concrete_stone_030 -0.096775055 0.5714288 0 1.9375 1.75
-( -304 1440 64 ) ( -304 2720 64 ) ( -304 2720 -48 ) concrete_stone_030 0 0.5714288 0 5 1.75
-}
-}
-// entity 36
-{
-"classname" "fog_volume"
-"_tags" ""
-"edge_softness" "2"
-"glow" "0.25"
+"edge_softness" "0.15"
+"glow" "0.9"
 "saturation" "1.5"
-"scatter_bias" "1.0"
+"scatter_bias" "0.2"
+"density" "0.8"
 // brush 0
 {
-( -1824 2720 64 ) ( -1824 1440 64 ) ( -1824 1440 -48 ) concrete_stone_030 0 -0.42857146 0 5 1.75
-( -1824 1440 64 ) ( -1312 1440 64 ) ( -1312 1440 -48 ) concrete_stone_030 0 -0.42857146 0 2 1.75
-( -1312 1440 -48 ) ( -1312 2720 -48 ) ( -1824 2720 -48 ) concrete_stone_030 0.4829731 0.13603115 0 2.0040426 5.075943
-( -1824 2720 64 ) ( -1312 2720 64 ) ( -1312 1440 64 ) concrete_stone_030 0.4829731 0.13603115 0 2.0040426 5.075943
-( -1312 2720 -48 ) ( -1312 2720 64 ) ( -1824 2720 64 ) concrete_stone_030 0 -0.42857146 0 2 1.75
-( -1312 1440 64 ) ( -1312 2720 64 ) ( -1312 2720 -48 ) concrete_stone_030 0.99999976 -0.42857146 0 5 1.75
+( -2032 2720 64 ) ( -2032 1440 64 ) ( -2032 1440 -16 ) concrete_stone_030 0 0.8571434 0 5 1.75
+( -2032 1440 64 ) ( -320 1440 64 ) ( -320 1440 -16 ) concrete_stone_030 0 0.8571434 0 2 1.75
+( -320 1440 -16 ) ( -320 2720 -16 ) ( -2032 2720 -16 ) concrete_stone_030 0.4829712 0.13601685 0 2.0040426 5.075943
+( -2032 2720 64 ) ( -320 2720 64 ) ( -320 1440 64 ) concrete_stone_030 0.4829712 0.13601685 0 2.0040426 5.075943
+( -320 2720 -16 ) ( -320 2720 64 ) ( -2032 2720 64 ) concrete_stone_030 0 0.8571434 0 2 1.75
+( -320 1440 64 ) ( -320 2720 64 ) ( -320 2720 -16 ) concrete_stone_030 0 0.8571434 0 5 1.75
 }
 }
-// entity 37
+// entity 25
 {
 "classname" "fog_volume"
 "_tags" ""
@@ -1522,15 +1401,15 @@
 "scatter_bias" "0.8"
 // brush 0
 {
-( -1616 2720 608 ) ( -1616 1440 608 ) ( -1616 1440 160 ) concrete_stone_030 0 -0.14284527 0 5 7
-( -1616 1440 608 ) ( -752 1440 608 ) ( -752 1440 160 ) concrete_stone_030 -0.6558094 -0.25185692 0 3.3757033 7.083303
-( -752 1440 160 ) ( -752 2720 160 ) ( -1616 2720 160 ) concrete_stone_030 -0.8283901 0.13601685 0 3.3818226 5.075943
-( -1616 2720 608 ) ( -752 2720 608 ) ( -752 1440 608 ) concrete_stone_030 -0.8283901 0.13601685 0 3.3818226 5.075943
-( -752 2720 160 ) ( -752 2720 608 ) ( -1616 2720 608 ) concrete_stone_030 -0.6558094 -0.25185692 0 3.3757033 7.083303
-( -752 1440 608 ) ( -752 2720 608 ) ( -752 2720 160 ) concrete_stone_030 0 -0.14284718 0 5 7
+( -1616 2720 608 ) ( -1616 1440 608 ) ( -1616 1440 240 ) concrete_stone_030 0 -0.14284515 0 5 7
+( -1616 1440 608 ) ( -752 1440 608 ) ( -752 1440 240 ) concrete_stone_030 -0.65582275 -0.25185776 0 3.3757033 7.083303
+( -752 1440 240 ) ( -752 2720 240 ) ( -1616 2720 240 ) concrete_stone_030 -0.82839966 0.13601685 0 3.3818226 5.075943
+( -1616 2720 608 ) ( -752 2720 608 ) ( -752 1440 608 ) concrete_stone_030 -0.82839966 0.13601685 0 3.3818226 5.075943
+( -752 2720 240 ) ( -752 2720 608 ) ( -1616 2720 608 ) concrete_stone_030 -0.65582275 -0.25185776 0 3.3757033 7.083303
+( -752 1440 608 ) ( -752 2720 608 ) ( -752 2720 240 ) concrete_stone_030 0 -0.14284897 0 5 7
 }
 }
-// entity 38
+// entity 26
 {
 "classname" "light_spot"
 "origin" "-1184 2080 272"
@@ -1542,4 +1421,139 @@
 "_cone" "20"
 "_cone2" "60"
 "_shadow_type" "static_light_map"
+}
+// entity 27
+{
+"classname" "func_group"
+"_tb_type" "_tb_group"
+"_tb_name" "Phase Lights"
+"_tb_id" "2"
+"_tb_linked_group_id" "{6bd87f46-d2bc-42bd-93d0-f0a29282d027}"
+"_tb_transformation" "1 0 0 0 0 1 0 0 0 0 1 48 0 0 0 1"
+}
+// entity 28
+{
+"classname" "light"
+"origin" "-1800 1896 188"
+"light" "250"
+"_color" "252 235 86"
+"_falloff_range" "250"
+"_bake_only" "0"
+"style" "2"
+"_shadow_type" "static_light_map"
+"_tb_group" "2"
+}
+// entity 29
+{
+"classname" "light"
+"origin" "-1800 2296 188"
+"light" "250"
+"_color" "252 235 86"
+"_falloff_range" "250"
+"_bake_only" "0"
+"style" "2"
+"_shadow_type" "static_light_map"
+"_tb_group" "2"
+}
+// entity 30
+{
+"classname" "light"
+"origin" "-1368 2616 188"
+"light" "250"
+"_color" "252 235 86"
+"_falloff_range" "250"
+"_bake_only" "0"
+"style" "2"
+"_shadow_type" "static_light_map"
+"_tb_group" "2"
+}
+// entity 31
+{
+"classname" "light"
+"origin" "-1336 1560 188"
+"light" "250"
+"_color" "252 235 86"
+"_falloff_range" "250"
+"_bake_only" "0"
+"style" "2"
+"_shadow_type" "static_light_map"
+"_tb_group" "2"
+}
+// entity 32
+{
+"classname" "func_group"
+"_tb_type" "_tb_group"
+"_tb_name" "Animated Points"
+"_tb_id" "4"
+"_tb_linked_group_id" "{ac370c0e-154f-4c8f-8070-a19493a39f7a}"
+}
+// entity 33
+{
+"classname" "light_dynamic"
+"origin" "-208 2288 268"
+"light" "300"
+"_color" "220 220 255"
+"_falloff_range" "325"
+"_tags" "arena_wave_2"
+"_tb_group" "4"
+}
+// entity 34
+{
+"classname" "light_dynamic"
+"origin" "-176 2416 140"
+"light" "300"
+"_color" "220 220 255"
+"_falloff_range" "325"
+"_tags" "arena_wave_2"
+"_tb_group" "4"
+}
+// entity 35
+{
+"classname" "light_dynamic"
+"origin" "-208 2048 284"
+"light" "300"
+"_color" "220 220 255"
+"_falloff_range" "325"
+"_tags" "arena_wave_2"
+"_tb_group" "4"
+}
+// entity 36
+{
+"classname" "light_dynamic"
+"origin" "-224 1792 284"
+"light" "300"
+"_color" "220 220 255"
+"_falloff_range" "325"
+"_tags" "arena_wave_2"
+"_tb_group" "4"
+}
+// entity 37
+{
+"classname" "light_dynamic"
+"origin" "-176 1648 172"
+"light" "300"
+"_color" "220 220 255"
+"_falloff_range" "325"
+"_tags" "arena_wave_2"
+"_tb_group" "4"
+}
+// entity 38
+{
+"classname" "light_dynamic"
+"origin" "-176 1904 172"
+"light" "300"
+"_color" "220 220 255"
+"_falloff_range" "325"
+"_tags" "arena_wave_2"
+"_tb_group" "4"
+}
+// entity 39
+{
+"classname" "light_dynamic"
+"origin" "-176 2160 172"
+"light" "300"
+"_color" "220 220 255"
+"_falloff_range" "325"
+"_tags" "arena_wave_2"
+"_tb_group" "4"
 }

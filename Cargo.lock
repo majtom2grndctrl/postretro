@@ -3499,6 +3499,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "bvh",
+ "bytemuck",
  "env_logger",
  "glam",
  "image",

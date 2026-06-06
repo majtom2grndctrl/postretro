@@ -55,7 +55,7 @@ No new layout. A model `.prm` is the existing diffuse-only `.prm` shape: header 
 
 ### Task A: Shared glTF base-color resolver
 
-Create a small workspace crate (proposed `crates/model-assets`, package `postretro-model-assets`) depending only on `gltf` and `percent-encoding`. It returns **paths only** — no hashing, no `blake3` dependency (the runtime and compiler each own their own bake/hash step). It exposes two entry points:
+Add the resolver as a module in `postretro-level-format`, gated behind a new optional `gltf-resolve` feature that pulls `gltf` and `percent-encoding` (mirroring the crate's existing optional `serde` feature). Both `postretro` and `postretro-level-compiler` enable the feature; pure PRL consumers don't pay the glTF dependency. `level-format` is the only crate both already depend on, so it is the single home that avoids duplicating the resolver into the compiler (the compiler cannot depend on the runtime crate — that pulls in wgpu). The module returns **paths only** — no hashing, no `blake3` (the runtime and compiler each own their own bake/hash step). It exposes two entry points:
 
 - **Per-material** — given a `&gltf::Material` and the glTF's `parent_dir`, returns `Option<PathBuf>`: the resolved base-color PNG path, or `None` for an absent base-color URI or an embedded `Source::View` image. This is the base-color-URI match currently inlined in `content_hash_material_key` plus the percent-decode/join currently in private `resolve_image_path`. The runtime (Task D) calls this per primitive, inside its already-open document loop.
 - **Per-document** — given a glTF file path, opens the document (no buffer/image import), walks every material through the per-material resolver, and returns the deduplicated `Vec<PathBuf>` of base-color PNG paths. The compiler (Task C) calls this; the `Vec` matches the runtime resolving a key per submesh material — a multi-material model has multiple distinct base-color PNGs, all of which must bake.
@@ -81,11 +81,10 @@ Refactor `gltf_loader::content_hash_material_key` (and remove the now-redundant 
 
 ## Sequencing
 
-**Phase 1 (concurrent):** Task A — new shared crate; Task B — `texture_mips` single-diffuse baker. Independent (different crates, no shared types).
+**Phase 1 (concurrent):** Task A — shared resolver module in `postretro-level-format` (feature-gated); Task B — `texture_mips` single-diffuse baker. Independent (different crates, no shared types).
 **Phase 2 (concurrent):** Task C — compiler stage, consumes A + B; Task D — runtime loader refactor, consumes A. Different crates; no shared files.
 
 ## Open questions
 
-- **Shared crate vs. shared module.** A new `crates/model-assets` is the proposed home because `level-format` (the only existing shared crate) is the wire-format crate and should not gain a `gltf` dependency. If a whole crate feels heavy for a ~20-line resolver, the fallback is still a single home (e.g. the resolver living in the runtime crate, re-exported) — but it must not be duplicated into the compiler. Decision needed before Task A lands.
 - **Stage placement / cache reporting.** The model bake can run as its own progress stage or fold into the existing "Texture mip bake" stage. Folding keeps one timing line; a separate stage makes the model-vs-world split legible in `--verbose`. Either satisfies the AC.
 - **`done/M10` findings note.** `context/plans/done/M10--model-pipeline-slice/findings.md` documents the manual-staging workaround as a known gap. It is a historical record (not maintained), so it needs no edit — but the durable note that model textures are now a compiler output belongs in `context/lib/build_pipeline.md` at promotion, not during drafting.

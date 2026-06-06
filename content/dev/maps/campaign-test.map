@@ -1557,3 +1557,23 @@
 "_tags" "arena_wave_2"
 "_tb_group" "4"
 }
+// entity 40
+{
+"classname" "prop_mesh"
+"origin" "-1720 2344 72"
+"model" "models/decraniated_low_poly_retro_pixel/scene.gltf"
+"angles" "0 180 0"
+}
+// entity 41
+{
+"classname" "prop_mesh"
+"origin" "472 504 72"
+"model" "models/decraniated_low_poly_retro_pixel/scene.gltf"
+}
+// entity 42
+{
+"classname" "prop_mesh"
+"origin" "-1272 2136 72"
+"model" "models/decraniated_low_poly_retro_pixel/scene.gltf"
+"angles" "0 180 0"
+}

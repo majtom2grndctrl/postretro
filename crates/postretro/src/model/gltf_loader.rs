@@ -111,10 +111,9 @@ fn pack_tangent(tangent: [f32; 4]) -> [u16; 2] {
 /// The all-zero cache key, hex-encoded (64 chars). The shared `.prm` convention
 /// treats it as the "no source PNG" sentinel and binds a silent placeholder.
 ///
-/// The all-zero key is a convention shared with the level compiler, not a local
-/// choice — `build_pipeline.md` §"Baked texture mips" defines it as the key that
-/// "substitutes per-slot placeholders silently". Both producers emit it for a
-/// material with no resolvable base-color PNG.
+/// World `TextureCacheKeys` stores zero entries for unresolved textures. Model
+/// compilation stores no key; this runtime loader produces the same sentinel
+/// when a material has no resolvable base-color PNG.
 fn zero_material_key() -> String {
     "0".repeat(64)
 }

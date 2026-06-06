@@ -198,7 +198,7 @@ The renderer owns all GPU-side resources: wgpu buffers, textures, samplers. CPU-
 
 | Phase | Action |
 |-------|--------|
-| Level load | Parse PRL `TextureNames` and `TextureCacheKeys`. Open each `.prm` sidecar, upload mip chains to GPU. Build sampler pool. Distribute handles. |
+| Level load | Parse PRL `TextureNames` and `TextureCacheKeys`. Open each `.prm` sidecar, upload mip chains to GPU. During model upload, resolve each glTF-derived content key, load only the diffuse slot from its `.prm`, and bind neutral specular and normal placeholders. Build sampler pool. Distribute handles. |
 | Gameplay | Handles are stable. No allocation or deallocation during gameplay. |
 | Level unload | Release all GPU resources. Drop all texture data. Handles become invalid. |
 

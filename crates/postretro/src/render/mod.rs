@@ -556,13 +556,26 @@ fn parse_blake3_key(hex: &str) -> [u8; 32] {
     if hex.len() != 64 {
         return [0u8; 32];
     }
-    for (i, byte) in key.iter_mut().enumerate() {
-        match u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16) {
-            Ok(b) => *byte = b,
-            Err(_) => return [0u8; 32],
-        }
+
+    for (byte, pair) in key.iter_mut().zip(hex.as_bytes().chunks_exact(2)) {
+        let [high, low] = pair else {
+            return [0u8; 32];
+        };
+        let (Some(high), Some(low)) = (ascii_hex_nibble(*high), ascii_hex_nibble(*low)) else {
+            return [0u8; 32];
+        };
+        *byte = (high << 4) | low;
     }
     key
+}
+
+fn ascii_hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// Derive the glTF open path and the renderer cache handle for one skinned model
@@ -2687,9 +2700,6 @@ impl Renderer {
             }
         };
 
-        // Resolve every submesh's material key through the shared `.prm` cache.
-        // Model materials consume diffuse only even when the diffuse-addressed
-        // entry is a richer world bundle.
         let submesh_materials = self.resolve_skinned_model_material(&model, prm_cache_root);
 
         let crate::model::gltf_loader::LoadedModel {
@@ -5801,6 +5811,18 @@ mod tests {
         // 64 chars but contains 'zz' at the start — not valid hex.
         let bad = format!("zz{}", "00".repeat(31));
         assert_eq!(parse_blake3_key(&bad), [0u8; 32]);
+    }
+
+    // Regression: a 64-byte non-ASCII key panicked on a UTF-8 boundary slice.
+    #[test]
+    fn parse_blake3_key_non_ascii_input_does_not_panic_and_returns_zero_sentinel() {
+        let non_ascii = "é".repeat(32);
+        assert_eq!(non_ascii.len(), 64);
+
+        let result = std::panic::catch_unwind(|| parse_blake3_key(&non_ascii));
+
+        assert!(result.is_ok());
+        assert_eq!(result.expect("parser must not panic"), [0u8; 32]);
     }
 
     /// The all-zero 64-char sentinel string maps to the zero key. This is the

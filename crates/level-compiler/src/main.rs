@@ -1,5 +1,5 @@
 // postretro-level-compiler: level compiler entry point.
-// See: context/lib/build_pipeline.md §PRL
+// See: context/lib/build_pipeline.md §PRL Compilation
 
 pub mod affinity_grid;
 pub mod animated_light_chunks;
@@ -137,6 +137,7 @@ fn prop_mesh_model_handles(entities: &[map_data::MapEntityRecord]) -> Vec<&str> 
         if entity.classname != "prop_mesh" {
             continue;
         }
+        // Runtime KVP conversion is last-value-wins, so bake the same model.
         let Some(model) = entity
             .key_values
             .iter()

@@ -31,7 +31,7 @@ pub fn resolve_material_base_color_path(
         .map(|value| value.into_owned())
         .unwrap_or_else(|_| uri.to_string());
 
-    if uri.contains(':') || Path::new(&decoded).is_absolute() {
+    if decoded.contains(':') || Path::new(&decoded).is_absolute() {
         return None;
     }
 
@@ -160,26 +160,71 @@ mod tests {
         }
     }
 
+    // Regression: percent-encoded schemes bypassed validation before URI decoding.
+    #[test]
+    fn material_resolver_rejects_percent_encoded_uri_schemes() {
+        for uri in [
+            "https%3A%2F%2Fexample.com%2Fbase.png",
+            "file%3A%2F%2F%2Fcontent%2Fbase.png",
+        ] {
+            let json = format!(
+                r#"{{
+                    "asset": {{"version": "2.0"}},
+                    "images": [{{"uri": "{uri}"}}],
+                    "textures": [{{"source": 0}}],
+                    "materials": [{{
+                        "pbrMetallicRoughness": {{"baseColorTexture": {{"index": 0}}}}
+                    }}]
+                }}"#
+            );
+            let document = parse_gltf(&json);
+            let material = document
+                .materials()
+                .next()
+                .expect("fixture must contain a material");
+
+            assert_eq!(
+                resolve_material_base_color_path(&material, Path::new("/content/models")),
+                None,
+                "URI must be unsupported after decoding: {uri}"
+            );
+        }
+    }
+
     #[test]
     fn material_resolver_preserves_trusted_parent_segments() {
-        let json = r#"{
-            "asset": {"version": "2.0"},
-            "images": [{"uri": "../textures/base.png"}],
-            "textures": [{"source": 0}],
-            "materials": [{
-                "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}
-            }]
-        }"#;
-        let document = parse_gltf(json);
-        let material = document
-            .materials()
-            .next()
-            .expect("fixture must contain a material");
+        for (uri, expected) in [
+            (
+                "../textures/base.png",
+                "/content/models/../textures/base.png",
+            ),
+            (
+                "%2E%2E%2Ftextures%2Fbase%20color.png",
+                "/content/models/../textures/base color.png",
+            ),
+        ] {
+            let json = format!(
+                r#"{{
+                    "asset": {{"version": "2.0"}},
+                    "images": [{{"uri": "{uri}"}}],
+                    "textures": [{{"source": 0}}],
+                    "materials": [{{
+                        "pbrMetallicRoughness": {{"baseColorTexture": {{"index": 0}}}}
+                    }}]
+                }}"#
+            );
+            let document = parse_gltf(&json);
+            let material = document
+                .materials()
+                .next()
+                .expect("fixture must contain a material");
 
-        assert_eq!(
-            resolve_material_base_color_path(&material, Path::new("/content/models")),
-            Some(PathBuf::from("/content/models/../textures/base.png"))
-        );
+            assert_eq!(
+                resolve_material_base_color_path(&material, Path::new("/content/models")),
+                Some(PathBuf::from(expected)),
+                "relative URI must remain supported: {uri}"
+            );
+        }
     }
 
     #[test]

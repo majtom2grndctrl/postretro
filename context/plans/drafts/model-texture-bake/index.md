@@ -39,7 +39,7 @@ The `model` value is a content-root-relative path (e.g. `models/decraniated_low_
 
 ## Wire format
 
-No new layout. A model `.prm` is the existing diffuse-only `.prm` shape: header with `slot_mask = DIFFUSE`, `bundle_hash = bundle_hash_for(Some(diffuse), None, None)`, one `Rgba8UnormSrgb` diffuse slot built by `build_diffuse_chain`. Filename stem is `blake3(diffuse_png_bytes)` hex. This is the same file a diffuse-only world texture produces today; `postretro-level-format::prm` owns the layout.
+No new layout. A model `.prm` is the existing diffuse-only `.prm` shape: header with `slot_mask = PrmSlots::DIFFUSE`, `bundle_hash = bundle_hash_for(Some(diffuse), None, None)`, one `PrmFormat::Rgba8UnormSrgb` diffuse slot built by `build_diffuse_chain`. Filename stem is `blake3(diffuse_png_bytes)` hex. This is the same file a diffuse-only world texture produces today; `postretro-level-format::prm` owns the layout.
 
 ## Acceptance criteria
 
@@ -55,31 +55,29 @@ No new layout. A model `.prm` is the existing diffuse-only `.prm` shape: header 
 
 ### Task A: Shared glTF base-color resolver
 
-Create a small workspace crate (proposed `crates/model-assets`, package `postretro-model-assets`) depending only on `gltf` and `percent-encoding`. It exposes:
+Create a small workspace crate (proposed `crates/model-assets`, package `postretro-model-assets`) depending only on `gltf` and `percent-encoding`. It returns **paths only** — no hashing, no `blake3` dependency (the runtime and compiler each own their own bake/hash step). It exposes two entry points:
 
-- A path resolver equivalent to the runtime's current private `resolve_image_path` (percent-decode the URI, join `parent_dir`).
-- A function that, given a glTF file path, opens the document (no buffer/image import) and returns the deduplicated set of resolved base-color PNG paths across all materials — the base-color-URI match currently inlined in `content_hash_material_key`, applied per material. `Source::View` (embedded) materials contribute no path.
-
-Returning a `Vec` (not one path) matches the runtime, which resolves a key per submesh material — a multi-material model has multiple distinct base-color PNGs, all of which must bake.
+- **Per-material** — given a `&gltf::Material` and the glTF's `parent_dir`, returns `Option<PathBuf>`: the resolved base-color PNG path, or `None` for an absent base-color URI or an embedded `Source::View` image. This is the base-color-URI match currently inlined in `content_hash_material_key` plus the percent-decode/join currently in private `resolve_image_path`. The runtime (Task D) calls this per primitive, inside its already-open document loop.
+- **Per-document** — given a glTF file path, opens the document (no buffer/image import), walks every material through the per-material resolver, and returns the deduplicated `Vec<PathBuf>` of base-color PNG paths. The compiler (Task C) calls this; the `Vec` matches the runtime resolving a key per submesh material — a multi-material model has multiple distinct base-color PNGs, all of which must bake.
 
 ### Task B: Single-diffuse bake entry point in `texture_mips`
 
-Add a function to `crates/level-compiler/src/texture_mips.rs` that bakes one base-color PNG into `prm-cache` and returns its 32-byte key. It reuses the existing primitives — `decode_png_rgba`, `build_diffuse_chain`, `filename_key_for(Some(d), None, None)`, `bundle_hash_for(Some(d), None, None)`, `expected_level_count`, `PrmFile`/`PrmSlot`, the cache-hit short-circuit, and `atomic_write` — emitting a DIFFUSE-only `.prm`. No bake algorithm is duplicated; this is the diffuse-only slice of the existing per-texture loop body factored for a caller that supplies a PNG path directly rather than a `TextureNames` entry. Independent of Task A (no glTF knowledge — it takes a PNG path/bytes).
+Add a function to `crates/level-compiler/src/texture_mips.rs` that bakes one base-color PNG into `prm-cache` and returns its 32-byte key. It reuses the existing reusable functions — `decode_png_rgba`, `build_diffuse_chain`, `build_srgb_to_linear_lut` (the `&[f32; 256]` LUT `build_diffuse_chain` requires; built once inside the new entry point), `filename_key_for(Some(d), None, None)`, `bundle_hash_for(Some(d), None, None)`, `expected_level_count`, `cache_filename_for_key`, `PrmFile`/`PrmSlot`, and `atomic_write` — emitting a DIFFUSE-only `.prm`. The cache-hit short-circuit is inline loop logic in `bake_texture_mips`, not a callable primitive, so the new entry point re-implements it from the same shape (read existing `.prm`, compare `bundle_hash`, skip on match). No bake algorithm is duplicated; this is the diffuse-only slice of the existing per-texture loop body factored for a caller that supplies a PNG path directly rather than a `TextureNames` entry. Independent of Task A (no glTF knowledge — it takes a PNG path/bytes).
 
 ### Task C: `prl-build` model-texture stage
 
 Add a stage to `crates/level-compiler/src/main.rs`, near the existing "Texture mip bake" stage. It:
 
-1. Resolves `content_root` from the input `.map` (grandparent of the input; add a helper mirroring `resolve_texture_root`'s parent logic).
-2. Walks `map_data.map_entities` for records with `classname == "prop_mesh"`, reading the `"model"` key from `key_values`; collects the distinct non-empty model handles.
-3. For each handle, resolves `content_root.join(model)`, calls Task A to get base-color PNG paths, and bakes each distinct path via Task B into the same `prm_cache_root` already resolved at the texture-mip stage.
+1. Resolves `content_root` from the input `.map` — the grandparent of the input path. Mirror the grandparent computation inside `resolve_texture_root` (`map_dir.parent()`), but stop at `content_root`; do not call `resolve_texture_root` itself, which appends `textures`.
+2. Walks `map_data.map_entities` for records with `classname == "prop_mesh"`, reading the `"model"` value from `key_values`. `key_values` is a `Vec<(String, String)>`, so this is a linear scan for `k == "model"`, not a keyed lookup. Collects the distinct non-empty model handles.
+3. For each handle, resolves `content_root.join(model)`, calls Task A's per-document resolver to get the base-color PNG paths, and bakes each distinct path via Task B into the same `prm_cache_root` already resolved at the texture-mip stage.
 4. Warns and continues on any missing/malformed glTF or unreadable PNG; never fails the build.
 
 Depends on Task A (resolver) and Task B (baker). The map entities are already parsed into `map_data.map_entities`; the `prm_cache_root` is already in scope from the texture-mip stage.
 
 ### Task D: Point the runtime loader at the shared resolver
 
-Refactor `gltf_loader::content_hash_material_key` (and remove the now-redundant private `resolve_image_path`) to call the Task A resolver. Behavior is unchanged: same base-color-URI match, same percent-decode/join, same `blake3` → hex, same zero-sentinel degradation. The existing key-recipe test (the `581e80bb…` assertion) must still pass unchanged — it pins the recipe the shared resolver now backs. Depends on Task A.
+Refactor `gltf_loader::content_hash_material_key` (and remove the now-redundant private `resolve_image_path`) to call Task A's per-material resolver — passing the `&gltf::Material` and `parent_dir` it already has, getting back the `Option<PathBuf>`, then hashing as today. Behavior is unchanged: same base-color-URI match, same percent-decode/join, same `blake3` → hex, same zero-sentinel degradation (a `None` path is the zero sentinel). The existing key-recipe test (the `581e80bb…` assertion) must still pass unchanged — it pins the recipe the shared resolver now backs. Depends on Task A.
 
 ## Sequencing
 

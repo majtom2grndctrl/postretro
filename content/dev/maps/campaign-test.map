@@ -1283,14 +1283,14 @@
 // entity 15
 {
 "classname" "light_spot"
-"origin" "-600 2408 72"
+"origin" "-600 2408 104"
 "light" "250"
 "_color" "255 255 255"
 "_falloff_range" "900"
-"angles" "-42 -98 167"
-"_cone" "20"
+"angles" "-13 -98 167"
+"_cone" "3"
 "delay" "0"
-"_cone2" "45"
+"_cone2" "25"
 "_shadow_type" "static_light_map"
 }
 // entity 16
@@ -1374,7 +1374,7 @@
 {
 "classname" "fog_volume"
 "_tags" ""
-"edge_softness" "0.5"
+"edge_softness" "0.15"
 "glow" "0.9"
 "saturation" "1.5"
 "scatter_bias" "0.2"

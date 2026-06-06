@@ -1159,34 +1159,109 @@ where
 // shared `postretro-scripts-tools` crate when the level-compiler gains more
 // scripting integration. See:
 // context/plans/drafts/scripting-tools-dedup/index.md
+fn is_compiler_stale(binary_path: &Path) -> bool {
+    let source_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("script-compiler")
+        .join("src");
+    if !source_dir.is_dir() {
+        return false;
+    }
+    let sidecar_mtime = match std::fs::metadata(binary_path).and_then(|m| m.modified()) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    
+    // Find newest source mtime recursively
+    let mut newest: Option<std::time::SystemTime> = None;
+    let mut stack = vec![source_dir];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if let Ok(metadata) = std::fs::metadata(&path) {
+                if let Ok(mtime) = metadata.modified() {
+                    newest = Some(newest.map_or(mtime, |cur| cur.max(mtime)));
+                }
+            }
+        }
+    }
+    
+    match newest {
+        Some(newest_mtime) => newest_mtime > sidecar_mtime,
+        None => false,
+    }
+}
+
 fn find_scripts_build() -> Option<PathBuf> {
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()));
-    if let Some(dir) = &exe_dir {
-        let name = if cfg!(windows) {
-            "scripts-build.exe"
-        } else {
-            "scripts-build"
-        };
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    let path_var = std::env::var_os("PATH")?;
-    let exe_name = if cfg!(windows) {
+    let name = if cfg!(windows) {
         "scripts-build.exe"
     } else {
         "scripts-build"
     };
-    for dir in std::env::split_paths(&path_var) {
-        let candidate = dir.join(exe_name);
+
+    let path = if let Some(ref dir) = exe_dir {
+        let candidate = dir.join(name);
         if candidate.is_file() {
-            return Some(candidate);
+            Some(candidate)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let path = path.or_else(|| {
+        std::env::var_os("PATH").and_then(|path_var| {
+            for dir in std::env::split_paths(&path_var) {
+                let candidate = dir.join(name);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+            None
+        })
+    });
+
+    let needs_build = match &path {
+        None => true,
+        Some(p) => is_compiler_stale(p),
+    };
+
+    if needs_build {
+        log::info!("[prl-build] scripts-build is missing or stale. Rebuilding via cargo...");
+        let mut cmd = std::process::Command::new("cargo");
+        cmd.arg("build").arg("-p").arg("postretro-script-compiler");
+        if !cfg!(debug_assertions) {
+            cmd.arg("--release");
+        }
+        match cmd.status() {
+            Ok(status) if status.success() => {
+                log::info!("[prl-build] scripts-build compiled successfully.");
+                if let Some(ref dir) = exe_dir {
+                    let candidate = dir.join(name);
+                    if candidate.is_file() {
+                        return Some(candidate);
+                    }
+                }
+            }
+            Ok(status) => {
+                log::error!("[prl-build] Failed to compile scripts-build: exit code {}", status);
+            }
+            Err(err) => {
+                log::error!("[prl-build] Failed to spawn cargo build: {}", err);
+            }
         }
     }
-    None
+
+    path
 }
 
 /// Compile the worldspawn `data_script`, if present, and return the

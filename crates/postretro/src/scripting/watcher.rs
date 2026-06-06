@@ -97,7 +97,31 @@ impl TsCompilerPath {
             .ok()
             .and_then(|p| p.parent().map(Path::to_path_buf));
         let path_var = std::env::var_os("PATH");
-        Self::detect_with(exe_dir.as_deref(), path_var.as_deref())
+        let path = Self::detect_with(exe_dir.as_deref(), path_var.as_deref());
+
+        let needs_build = match &path {
+            None => true,
+            Some(p) => p.is_stale(),
+        };
+
+        if needs_build {
+            info!("[Scripting] `scripts-build` is missing or stale. Compiling via cargo...");
+            let mut cmd = std::process::Command::new("cargo");
+            cmd.arg("build").arg("-p").arg("postretro-script-compiler");
+            match cmd.status() {
+                Ok(status) if status.success() => {
+                    info!("[Scripting] `scripts-build` compiled successfully.");
+                    return Self::detect_with(exe_dir.as_deref(), path_var.as_deref());
+                }
+                Ok(status) => {
+                    error!("[Scripting] Failed to compile `scripts-build`: exit code {}", status);
+                }
+                Err(err) => {
+                    error!("[Scripting] Failed to spawn cargo build for `scripts-build`: {}", err);
+                }
+            }
+        }
+        path
     }
 
     /// Test-visible core of [`detect`]. Separate from process-global env so
@@ -133,6 +157,23 @@ impl TsCompilerPath {
         }
     }
 
+    pub(crate) fn is_stale(&self) -> bool {
+        let source_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("script-compiler")
+            .join("src");
+        if !source_dir.is_dir() {
+            return false;
+        }
+        let (Some(sidecar_mtime), Some(newest_source_mtime)) = (
+            file_mtime(self.binary_path()),
+            newest_mtime_under(&source_dir),
+        ) else {
+            return false;
+        };
+        sidecar_is_stale(sidecar_mtime, newest_source_mtime)
+    }
+
     /// Warn if the resolved sidecar predates its own source. `cargo run -p
     /// postretro` rebuilds the engine but not the `scripts-build` sidecar, so a
     /// developer editing `crates/script-compiler` launches against a stale
@@ -145,20 +186,7 @@ impl TsCompilerPath {
     /// unreadable (e.g. a shipped distribution) skips silently: this is a
     /// best-effort heuristic, never a startup gate.
     pub(crate) fn warn_if_stale(&self) {
-        let source_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("script-compiler")
-            .join("src");
-        if !source_dir.is_dir() {
-            return;
-        }
-        let (Some(sidecar_mtime), Some(newest_source_mtime)) = (
-            file_mtime(self.binary_path()),
-            newest_mtime_under(&source_dir),
-        ) else {
-            return;
-        };
-        if sidecar_is_stale(sidecar_mtime, newest_source_mtime) {
+        if self.is_stale() {
             warn!(
                 "[Scripting] `scripts-build` looks stale (older than its source). \
                  `cargo run -p postretro` does not rebuild the sidecar — hot reload \

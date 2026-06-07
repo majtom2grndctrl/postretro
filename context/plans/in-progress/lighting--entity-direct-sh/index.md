@@ -64,6 +64,14 @@ Task 0's gating harness PASSED. The D3 **assembly is correct as written** — lo
 - **Pinned threshold: `D3_LIGHT_ALIGNED_REL_TOLERANCE = 0.045` (4.5%)** over the mid-cone (observed worst case 4.03%). The exact-peak overshoot is pinned SEPARATELY as a known ~1.0625 ratio constant so a future cosine-lobe-factor regression is still caught.
 - Implementation landed: `incident_radiance_at_point` (`pub(crate)`, `sh_bake.rs`) is the normal-free primitive Task 2 consumes — factored OUT of `light_contribution_lambert` (which now calls it), covering Point/Spot/Directional. Harness tests live in `sh_bake.rs` `mod tests`.
 
+## Task 4 outcome (recorded — binding index correction)
+
+The plan's "bindings 1, 2, 10, 11, 12 occupied; use binding 13" was STALE — by implementation time bindings 13 (`BIND_SCRIPTED_LIGHT_DESCRIPTORS`) and 14 (`BIND_SH_DEPTH_MOMENTS`) were already claimed. Per the spec's actual intent ("the NEXT FREE index"):
+- **Direct atlas binding = 15** (`BIND_SH_DIRECT_ATLAS`), in the shared group-3 SH layout AND the mesh group-4 superset (same index). FRAGMENT visibility. Lives on `ShVolumeResources` (`direct_atlas_view`).
+- **Binding 16 is left FREE** for Task 6's mesh-only `DynamicDirectParams` uniform.
+- Tasks 5 and 6 MUST declare the direct atlas at **binding 15** (NOT 13); Task 6's mesh uniform at **binding 16**.
+- Absent-section fallback: a 4×4 `Bc6hRgbUfloat` single-zero-block dummy (never sampled).
+
 ## Acceptance criteria
 
 ### Visual / behavioral (eyeball in-engine, dev-tools)

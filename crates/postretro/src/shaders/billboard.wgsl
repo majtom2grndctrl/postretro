@@ -237,9 +237,16 @@ fn sample_post_retro(tex: texture_2d<f32>, samp: sampler, uv: vec2<f32>,
     let dims = vec2<f32>(textureDimensions(tex, 0));
     let uv_tex = uv * dims;
     let seam = floor(uv_tex + 0.5);
+    // Floor the seam-width divisor: a fragment with constant UV (edge-on face or
+    // vanishing derivatives) gives fwidth == 0; clamp() does not sanitize the
+    // resulting NaN/Inf reliably in WGSL.
     let seam_width = max(fwidth(uv_tex), vec2<f32>(1.0e-6));
     let aa = clamp((uv_tex - seam) / seam_width, vec2(-0.5), vec2(0.5));
     let uv_recon = (seam + aa) / dims;
+    // Pass the ORIGINAL derivatives, not derivatives of `uv_recon`. The warp
+    // only shifts the sample point; mip selection and the aniso footprint must
+    // track the true screen-space pixel footprint. Derivatives of the warped UV
+    // collapse the footprint at seams and break mip/aniso selection.
     return textureSampleGrad(tex, samp, uv_recon, ddx, ddy);
 }
 

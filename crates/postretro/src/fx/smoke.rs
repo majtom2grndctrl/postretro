@@ -14,7 +14,7 @@ use std::path::Path;
 
 /// Maximum live sprites per emitter. Bound enforced by the emitter bridge
 /// (`scripting/systems/emitter_bridge.rs`) when spawning particles.
-pub const MAX_SPRITES: usize = 512;
+pub const MAX_SPRITES: usize = 4096;
 
 /// GPU-side sprite instance layout. Two `vec4<f32>` slots = 32 bytes.
 /// Layout must match the WGSL `SpriteInstance` struct in `billboard.wgsl`.

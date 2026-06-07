@@ -24,13 +24,10 @@ pub const BIND_SCRIPTED_LIGHT_DESCRIPTORS: u32 = 13;
 /// Static per-probe depth moments: R = mean distance, G = mean squared distance.
 pub const BIND_SH_DEPTH_MOMENTS: u32 = BIND_SCRIPTED_LIGHT_DESCRIPTORS + 1;
 /// Baked DIRECT static-light octahedral atlas, sampled ONLY by the dynamic
-/// pipelines (mesh + billboard). Rides the shared group-3 SH layout so the
-/// reserved group-2 dynamic-direct slot stays free, and the mesh group-4
-/// superset uses this SAME index. The plan named binding 13, but bindings 13
-/// and 14 were claimed by the scripted-light descriptors and depth moments
-/// after the plan was written — this takes the actual NEXT FREE index (15).
-/// Task 6's mesh-only `DynamicDirectParams` uniform binds at the next free
-/// index AFTER this one (16) in the mesh group-4 superset.
+/// pipelines (mesh + billboard). Binding 13 (`BIND_SCRIPTED_LIGHT_DESCRIPTORS`)
+/// and binding 14 (`BIND_SH_DEPTH_MOMENTS`) are already claimed, so this takes
+/// the next free index (15). The mesh-only `DynamicDirectParams` uniform binds
+/// at the next free index after this one (16) in the mesh group-4 superset.
 pub const BIND_SH_DIRECT_ATLAS: u32 = BIND_SH_DEPTH_MOMENTS + 1;
 
 /// Mesh-ONLY dynamic-direct params uniform (Task 6). Lives only on the mesh

@@ -28,10 +28,11 @@ struct Uniforms {
     // forward.wgsl. See `SdfShadowMode` in render/mod.rs.
     sdf_shadow_mode: u32,
     _sdf_pad0: u32,
-    // The dynamic-direct tail (baked-static-direct-sh Task 6) — never read by
+    // `dynamic_direct_scale` in forward.wgsl (offset 108..112) — never read by
     // the wireframe pipeline, present only to keep the shared group-0 `Uniforms`
-    // stride in lockstep with forward.wgsl (128 bytes). See forward.wgsl.
-    _sdf_pad1: u32,
+    // stride in lockstep with forward.wgsl (128 bytes). See forward.wgsl for
+    // semantics.
+    _dynamic_direct_scale_inert: u32,
     _dyn_pad0: u32,
     _dyn_pad1: u32,
     _dyn_pad2: u32,

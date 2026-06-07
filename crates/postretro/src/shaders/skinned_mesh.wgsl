@@ -119,6 +119,11 @@ struct ShGridInfo {
 @group(4) @binding(2) var sh_atlas_sampler: sampler;
 @group(4) @binding(10) var<uniform> sh_grid: ShGridInfo;
 @group(4) @binding(14) var sh_depth_moments: texture_3d<f32>;
+// Baked static direct SH atlas (BC6H-at-rest, hardware-decoded to f32). Bound at
+// `BIND_SH_DIRECT_ATLAS` (group 4 binding 15) on the mesh group-4 superset by
+// render/sh_volume.rs. Same octahedral tile geometry as `sh_total_atlas`, so it
+// samples through the shared `sh_sample.wgsl` chain with the same grid/sampler.
+@group(4) @binding(15) var sh_direct_atlas: texture_2d<f32>;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -251,6 +256,38 @@ fn sample_sh_indirect(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_norma
     );
 }
 
+// Baked static direct SH read, the sibling of `sample_sh_indirect` against the
+// direct atlas. Same normal-offset bias and grid derivation (so the direct term
+// lines up with the indirect one), then defers to the shared-weights direct
+// corner blend. Backface rejection stays OFF (entities are not static surfaces)
+// and Chebyshev stays ON, reading the shared `sh_depth_moments`.
+fn sample_sh_direct(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_normal: vec3<f32>) -> vec3<f32> {
+    if sh_grid.has_sh_volume == 0u {
+        return vec3<f32>(0.0);
+    }
+
+    const SH_NORMAL_OFFSET_M: f32 = 0.1;
+    let offset_world = world_pos + shading_normal * SH_NORMAL_OFFSET_M * sh_grid.cell_size;
+    let gdims_u = sh_grid.grid_dimensions;
+    let gdims_f = max(vec3<f32>(gdims_u) - vec3<f32>(1.0), vec3<f32>(0.0));
+    let cell_coord = (offset_world - sh_grid.grid_origin) /
+        max(sh_grid.cell_size, vec3<f32>(1.0e-6));
+    let gf = clamp(cell_coord, vec3<f32>(0.0), gdims_f);
+    let gi = vec3<u32>(floor(gf));
+    let gfrac = fract(gf);
+
+    return sample_sh_direct_corners_depth_aware(
+        sh_direct_atlas,
+        gi,
+        gfrac,
+        offset_world,
+        shading_normal,
+        geo_normal,
+        false,
+        sh_grid.probe_occlusion != 0u,
+    );
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // SH-lit: sample base color, then multiply by the local baked indirect
@@ -261,5 +298,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let base_color = textureSample(base_texture, aniso_sampler, in.uv);
     let n = normalize(in.world_normal);
     let indirect = sample_sh_indirect(in.world_position, n, n);
-    return vec4<f32>(base_color.rgb * indirect, base_color.a);
+    // Baked static direct SH term, sampled with the same normal/grid as the
+    // indirect read (corners-depth-aware, backface rejection off). Task 6 will
+    // wrap this `indirect + direct` sum with the debug scale/isolation controls;
+    // for now the two terms sum unconditionally before the albedo multiply.
+    let direct = sample_sh_direct(in.world_position, n, n);
+    return vec4<f32>(base_color.rgb * (indirect + direct), base_color.a);
 }

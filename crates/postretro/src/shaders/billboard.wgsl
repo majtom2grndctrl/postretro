@@ -99,6 +99,12 @@ struct AnimationDescriptor {
 // path deliberately skips backface rejection because sprites have no stable
 // geometric surface normal.
 @group(3) @binding(14) var sh_depth_moments: texture_3d<f32>;
+// Baked static direct SH atlas (BC6H-at-rest, hardware-decoded to f32). Bound at
+// `BIND_SH_DIRECT_ATLAS` (binding 15) on the SHARED `ShVolumeResources` bind
+// group layout — declared here at group 3, the same group billboard binds
+// `sh_total_atlas` in. Same octahedral tile geometry as `sh_total_atlas`, so it
+// samples through the shared `sh_sample.wgsl` chain with the same grid/sampler.
+@group(3) @binding(15) var sh_direct_atlas: texture_2d<f32>;
 
 // --- Group 6: sprite instance storage buffer ---
 struct SpriteInstance {
@@ -293,6 +299,34 @@ fn sample_sh_indirect(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
     );
 }
 
+// Baked static direct SH read — the sibling of billboard's `sample_sh_indirect`
+// against the direct atlas. Single-normal convention: the caller passes
+// camera-forward (`N = V`) and this fills both the shading- and geo-normal slots
+// (`reject_backface = false`, so the geo-normal arg is inert). Grid derivation
+// is identical to the indirect wrapper so the two terms line up; the shared
+// direct corner blend keeps Chebyshev ON, reading the shared `sh_depth_moments`.
+fn sample_sh_direct(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
+    if sh_grid.has_sh_volume == 0u {
+        return vec3<f32>(0.0);
+    }
+    let cell_coord = (world_pos - sh_grid.grid_origin) /
+        max(sh_grid.cell_size, vec3<f32>(1.0e-6));
+    let clamped = max(cell_coord, vec3<f32>(0.0));
+    let gi = vec3<u32>(floor(clamped));
+    let gfrac = fract(clamped);
+
+    return sample_sh_direct_corners_depth_aware(
+        sh_direct_atlas,
+        gi,
+        gfrac,
+        world_pos,
+        normal,
+        normal,
+        false,
+        sh_grid.probe_occlusion != 0u,
+    );
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let sprite_sample = textureSample(sprite_texture, sprite_sampler, in.uv);
@@ -304,8 +338,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let V = normalize(uniforms.camera_position - in.world_position);
     let N = V;
 
-    // SH ambient.
+    // SH ambient (baked indirect) plus the baked static direct SH term. Both use
+    // camera-forward `N = V` (single-normal convention, backface rejection off).
+    // Task 6 will wrap the `sh_ambient + sh_direct` sum with debug
+    // scale/isolation; for now they sum unconditionally before the albedo multiply.
     let sh_ambient = sample_sh_indirect(in.world_position, N);
+    let sh_direct = sample_sh_direct(in.world_position, N);
 
     // Multi-source static specular via the chunk light list.
     //
@@ -396,7 +434,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         dynamic_diffuse = dynamic_diffuse + light.color_and_falloff_model.xyz * attenuation * NdotL;
     }
 
-    let lighting = sh_ambient + static_specular + dynamic_diffuse;
+    let lighting = sh_ambient + sh_direct + static_specular + dynamic_diffuse;
     let rgb = sprite_sample.rgb * lighting * in.opacity;
     // Alpha channel is used as the additive blend factor; driver expects
     // straight color. The pipeline's blend state is set to additive

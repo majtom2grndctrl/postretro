@@ -822,11 +822,10 @@ fn lighting_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
 /// it (e.g. the SH direct atlas, which only billboard samples).
 ///
 /// Used by the runtime `debug_assert!` in `Renderer::new` and the
-/// `forward_pipeline_sampled_texture_request_matches_bgl_definitions` test. The
-/// `debug_assert!` call compiles out in release builds, so without `allow` this
-/// reads as dead code in `--release` even though it is exercised in debug and
-/// test builds.
-#[allow(dead_code)]
+/// `forward_pipeline_sampled_texture_request_matches_bgl_definitions` test.
+/// Gated with `#[cfg(debug_assertions)]` so it compiles in and out alongside
+/// its only non-test call site (the `debug_assert!`).
+#[cfg(debug_assertions)]
 fn fragment_sampled_textures(entries: &[wgpu::BindGroupLayoutEntry]) -> u32 {
     entries
         .iter()
@@ -846,11 +845,10 @@ fn fragment_sampled_textures(entries: &[wgpu::BindGroupLayoutEntry]) -> u32 {
 /// sources of truth from drifting (the bug this guards against).
 ///
 /// Consumed by the runtime `debug_assert!` in `Renderer::new` and the
-/// `forward_pipeline_sampled_texture_request_matches_bgl_definitions` test. The
-/// `debug_assert!` call compiles out in release builds, so without `allow` this
-/// reads as dead code in `--release` even though it is exercised in debug and
-/// test builds.
-#[allow(dead_code)]
+/// `forward_pipeline_sampled_texture_request_matches_bgl_definitions` test.
+/// Gated with `#[cfg(debug_assertions)]` so it compiles in and out alongside
+/// its only non-test call site (the `debug_assert!`).
+#[cfg(debug_assertions)]
 fn forward_pipeline_sampled_texture_count() -> u32 {
     // Groups 0 (uniform) and 2 (lighting) carry no textures, but include them so
     // adding a texture entry to either BGL is caught here automatically.

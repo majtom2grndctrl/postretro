@@ -146,8 +146,10 @@ fn sphere_intersects_any_fog_aabb(center: Vec3, radius: f32, aabbs: &[(Vec3, Vec
 // `sh_total_atlas`, `sh_depth_moments`, and `sh_grid`, all declared in
 // `forward.wgsl`. WGSL resolves module-scope names regardless of textual order,
 // so appending after is safe. `sh_sample.wgsl` owns the SH reconstruction +
-// 8-corner blend symbols (`sh_irradiance`, `sample_sh_indirect_corners_depth_aware`,
-// `sample_sh_indirect_corners_without_depth`) — forward must not redeclare them.
+// 8-corner blend symbols (`sample_sh_indirect_corners_pair`,
+// `sample_sh_indirect_direct_corners`, `sample_sh_direct_corners_depth_aware`,
+// `sample_sh_indirect_corners_depth_aware`, `sample_sh_indirect_corners_without_depth`,
+// `sample_sh_indirect_corners_two_without_depth`) — forward must not redeclare them.
 //
 // `sdf_light_select.wgsl` is the LOAD-BEARING K-selection parity seam: the same
 // source string is concatenated into the half-res SDF visibility pass

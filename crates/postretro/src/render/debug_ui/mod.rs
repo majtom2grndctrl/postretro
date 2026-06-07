@@ -41,8 +41,8 @@ impl DebugUiGpu {
 pub struct DiagnosticsState {
     pub ambient_floor: f32,
     pub indirect_scale: f32,
-    /// DYNAMIC baked-static-direct SH scale slider — parity instrument for the
-    /// entity/billboard direct term, independent of `indirect_scale`.
+    /// Scale slider for the baked static-direct SH term on entities/billboards.
+    /// Independent of `indirect_scale` (which controls the static-surface indirect).
     pub dynamic_direct_scale: f32,
     // Task 7: SDF / Fog quality sliders. Seeded from the live renderer values
     // on first draw — see the `seeded` flag below.

@@ -33,6 +33,7 @@ struct Uniforms {
     // 0 when the baked DIRECT SH section is absent → skip the direct sample.
     has_direct: u32,
     _pad: u32,
+    _dyn_pad1: u32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;

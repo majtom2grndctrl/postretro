@@ -13,19 +13,22 @@
 // excluded by the `StaticBakedLights` filter (`!is_dynamic && animation.is_none()`);
 // animated direct is owned by `lm_anim`.
 //
-// For each reaching static light at a probe, the validated D3 assembly (Task 0):
+// For each reaching static light at a probe:
 //   radiance = incident_radiance_at_point(light, probe) * soft_visibility(probe, light)
 //   accumulate_sh_rgb along probe→light
 // then after all lights apply_cosine_lobe_rgb and pack into the octahedral atlas.
 //
-// Per-probe light-reach culling (D9): before the per-probe shadow-ray pass, each
+// Per-probe light-reach culling: before the per-probe shadow-ray pass, each
 // probe's reaching-light set is derived from the SAME two-stage reach test the
 // delta bake uses (falloff-sphere AABB clip + portal-reachability flood, via
 // `affinity_grid::decompose_affinity_for_lights`). That yields a per-LIGHT→cell
 // CSR; this module inverts it ONCE into cell→lights, then maps each probe to its
 // affinity cell to read its reaching-light set. A culled light is provably
 // zero-contribution at that probe, so baked coefficients stay byte-identical to an
-// unculled bake.
+// unculled bake. The byte-identity guarantee is exact for the falloff-AABB stage
+// (culled lights are out of range everywhere they were dropped), and matches the
+// delta bake's portal-reach assumption for the flood stage (the same disjoint-reach
+// contract both modules share).
 //
 // See: context/lib/build_pipeline.md, context/lib/rendering_pipeline.md §4
 
@@ -52,8 +55,8 @@ use crate::sh_group::geometry_content_hash;
 /// Cache stage id for the whole-section direct SH bake on the shared `StageCache`.
 pub const DIRECT_SH_STAGE_ID: &str = "direct_sh_volume";
 
-/// Bump when the direct SH bake's output computation changes (the D3 assembly,
-/// the cull, the octahedral packing, or the section layout). Versions
+/// Bump when the direct SH bake's output computation changes (the radiance
+/// assembly, the cull, the octahedral packing, or the section layout). Versions
 /// independently from the indirect SH stages and from the section-internal
 /// `DIRECT_SH_VOLUME_VERSION` (which guards the on-disk format).
 pub const DIRECT_SH_STAGE_VERSION: u32 = 1;
@@ -105,7 +108,7 @@ fn static_direct_lights<'a>(static_lights: &[&'a MapLight]) -> (Vec<&'a MapLight
     (lights, global_indices)
 }
 
-/// Per-probe reaching-light index lists, derived from the D9 two-stage reach test.
+/// Per-probe reaching-light index lists, derived from the two-stage reach test.
 ///
 /// `decompose_affinity_for_lights` produces a per-LIGHT→affinity-cell CSR
 /// (`per_light_cells`). We invert it ONCE into cell→light-list, then map each
@@ -177,9 +180,11 @@ fn build_reach_index(
 }
 
 /// Bake the dense direct SH atlas without touching the cache. Returns the
-/// uncompressed-debug section (`IRRADIANCE_FORMAT_RGBA16F`); Task 3 BC6H-encodes
-/// the atlas at emit time. Empty geometry yields the empty-section degradation
-/// path (`grid_dimensions == [0,0,0]`).
+/// lossless intermediate section (`IRRADIANCE_FORMAT_RGBA16F`); BC6H encoding
+/// happens at emit time via [`encode_direct_section_bc6h`]. The cache stores this
+/// lossless form so the cache key covers inputs, not the output format — matching
+/// the lightmap stage's encode-on-emit pattern. Empty geometry yields the
+/// empty-section degradation path (`grid_dimensions == [0,0,0]`).
 pub fn bake_direct_sh_volume(
     inputs: &DirectBakeInputs<'_, '_>,
     config: &ShConfig,
@@ -257,7 +262,7 @@ fn bake_probe_tile(
         return pack_octahedral_irradiance_tile(&[0.0; 27], false, TILE_DIMENSION, TILE_BORDER);
     }
 
-    // Probe grid coords (z-major linear order, matching `sh_bake`).
+    // Probe grid coords (x-fastest linear order, matching `sh_bake`).
     let pz = (probe_index / (nx * ny)) as u32;
     let rem = probe_index - pz as usize * nx * ny;
     let py = (rem / nx) as u32;
@@ -292,9 +297,9 @@ fn bake_probe_tile(
 }
 
 /// Pack per-probe octahedral tiles into the dense near-square atlas, then
-/// serialize to the row-major `Rgba16Float` byte blob (the uncompressed-debug
+/// serialize to the row-major `Rgba16Float` byte blob (the lossless intermediate
 /// variant). Byte layout matches the indirect `OctahedralShVolumeSection` atlas
-/// block, so Task 3's BC6H encoder reads a familiar input.
+/// block, so the BC6H encoder in [`encode_direct_section_bc6h`] reads a familiar input.
 fn pack_atlas(
     tiles: &[Vec<OctahedralAtlasTexel>],
     atlas_dimensions: [u32; 2],
@@ -396,11 +401,10 @@ fn direct_cache_key(
 }
 
 /// Bake the direct SH section, going through the shared `StageCache` when one is
-/// supplied. This is the SEAM Task 3 wires into `main.rs`: it produces the
-/// section + atlas (uncompressed `IRRADIANCE_FORMAT_RGBA16F` variant) and handles
-/// the whole-section cache get/put around the full bake. The cold `--no-cache`
-/// path passes `cache == None` and runs the exact uncached bake (matching the
-/// indirect cold path).
+/// supplied. Produces the section + atlas (`IRRADIANCE_FORMAT_RGBA16F` lossless
+/// intermediate) and handles the whole-section cache get/put around the full bake.
+/// The cold `--no-cache` path passes `cache == None` and runs the exact uncached
+/// bake (matching the indirect cold path).
 ///
 /// The cull is the STRICT provably-zero falloff+portal test in BOTH warm and cold
 /// modes — it does NOT inherit warm SH's lossy bounded-light dilation — so the
@@ -505,7 +509,7 @@ pub fn log_cull_savings(inputs: &DirectBakeInputs<'_, '_>, config: &ShConfig) ->
 }
 
 // ---------------------------------------------------------------------------
-// Emit-side BC6H encode (Task 3)
+// Emit-side BC6H encode
 
 /// Byte size of the pre-compression dense RGBA-f32 buffer that
 /// [`encode_direct_section_bc6h`] feeds to the BC6H encoder for a section with
@@ -521,8 +525,8 @@ pub fn direct_dense_atlas_byte_size(section: &DirectShVolumeSection) -> usize {
 /// Round each atlas axis up to the next multiple of 4 so the BC6H encoder's
 /// `≥4 / 4-aligned` rule holds. The LOGICAL atlas geometry (`atlas_dimensions`)
 /// is unchanged — only the encoded buffer is padded — mirroring the lightmap
-/// atlas builder's power-of-two ≥64 rounding (per Task 1's noted approach). Empty
-/// grids yield `[0, 0]`; the caller short-circuits those.
+/// atlas builder's power-of-two ≥64 rounding. Empty grids yield `[0, 0]`; the
+/// caller short-circuits those.
 fn bc6h_padded_atlas_dimensions(atlas_dimensions: [u32; 2]) -> (u32, u32) {
     (
         atlas_dimensions[0].div_ceil(4) * 4,
@@ -530,7 +534,7 @@ fn bc6h_padded_atlas_dimensions(atlas_dimensions: [u32; 2]) -> (u32, u32) {
     )
 }
 
-/// Re-encode the Task-2 `IRRADIANCE_FORMAT_RGBA16F` direct section into the
+/// Re-encode the lossless `IRRADIANCE_FORMAT_RGBA16F` direct section into the
 /// production `IRRADIANCE_FORMAT_BC6H` at-rest section (mirroring
 /// `lightmap_bake::CompositedAtlas::encode_section`'s BC6H route).
 ///
@@ -980,8 +984,8 @@ mod tests {
         let shadowed = flat_index(3, 1, 2, dims);
         assert_eq!(section.tile_dimension, TILE_DIMENSION);
 
-        // Mid-cone receiver normal (per Task 0 outcome — never the exact lobe
-        // axis). Point the normal generally toward the light (-x, +y) for both.
+        // Mid-cone receiver normal — never the exact lobe axis.
+        // Point the normal generally toward the light (-x, +y) for both.
         let n = glam::Vec3::new(-0.6, 0.8, 0.0).normalize();
         let lit_irr = reconstruct_irradiance(&section, &atlas, lit, n);
         let shadowed_irr = reconstruct_irradiance(&section, &atlas, shadowed, n);
@@ -1422,9 +1426,9 @@ mod tests {
         // overhead at x=8, z=1.5; pick a probe directly under it.
         let probe = flat_index(8, 0, 1, dims);
 
-        // Mid-cone receiver normal (~20°-45° off the probe→light axis, per Task 0 —
-        // NOT the exact lobe peak, which carries ~6.25% intrinsic L2 overshoot). The
-        // light is overhead (+y) and slightly +z of the probe.
+        // Mid-cone receiver normal (~20°-45° off the probe→light axis) — NOT the
+        // exact lobe peak, which carries ~6.25% intrinsic L2 overshoot. The light
+        // is overhead (+y) and slightly +z of the probe.
         let n = glam::Vec3::new(0.0, 0.85, 0.5).normalize();
 
         let logical = reconstruct_irradiance(&section, &logical_atlas, probe, n);
@@ -1451,6 +1455,90 @@ mod tests {
             "logical-divisor sample {bugged} of the padded buffer must DIVERGE from the \
              correct reconstruction {logical} (the stretch the fix removed)",
         );
+    }
+
+    /// AC 10: mutating a keyed input (here, `probe_spacing`) changes the
+    /// `DirectCacheKey`, causing a cache miss and producing a different bake.
+    #[test]
+    fn direct_sh_cache_key_changes_when_keyed_input_mutates() {
+        let geo = floor_and_walls_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let tree = tree_all_empty();
+        let exterior: HashSet<usize> = HashSet::new();
+        let lights = vec![static_point_light(
+            DVec3::new(2.0, 1.5, 2.0),
+            8.0,
+            [1.0, 0.8, 0.6],
+        )];
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let animated_lights = AnimatedBakedLights::from_lights(&lights);
+        let sh_ctx = ShBakeCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
+            total_light_count: lights.len(),
+        };
+        let inputs = DirectBakeInputs {
+            sh_ctx: &sh_ctx,
+            portals: &[],
+        };
+
+        let config_a = ShConfig { probe_spacing: 1.0 };
+        let config_b = ShConfig { probe_spacing: 0.5 };
+
+        // Compute keys for both configs; they must differ.
+        let static_refs = static_light_refs(&sh_ctx);
+        let (direct_lights, global_indices) = static_direct_lights(&static_refs);
+        let geom_hash = geometry_content_hash(inputs.sh_ctx.geometry);
+
+        let layout_a = probe_grid_layout(inputs.sh_ctx, &config_a);
+        let key_a = direct_cache_key(
+            &inputs,
+            &layout_a,
+            &direct_lights,
+            &global_indices,
+            config_a.probe_spacing,
+            &geom_hash,
+        );
+
+        let layout_b = probe_grid_layout(inputs.sh_ctx, &config_b);
+        let key_b = direct_cache_key(
+            &inputs,
+            &layout_b,
+            &direct_lights,
+            &global_indices,
+            config_b.probe_spacing,
+            &geom_hash,
+        );
+
+        assert_ne!(
+            key_a.as_filename(),
+            key_b.as_filename(),
+            "mutating probe_spacing must produce a different DirectCacheKey (miss)",
+        );
+
+        // Warm the cache with config_a, then bake with config_b using the same
+        // cache: it must be a miss (different key) and produce different bytes.
+        let dir = std::env::temp_dir().join(format!(
+            "postretro_direct_sh_cache_miss_test_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let cache = StageCache::new(&dir).expect("cache dir");
+
+        let bake_a = bake_direct_sh_volume_cached(&inputs, &config_a, Some(&cache)).to_bytes();
+        let bake_b = bake_direct_sh_volume_cached(&inputs, &config_b, Some(&cache)).to_bytes();
+
+        assert_ne!(
+            bake_a, bake_b,
+            "mutated probe_spacing must produce a different bake result (cache miss path)",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Cache round-trip: a second build with a warm cache reproduces the first

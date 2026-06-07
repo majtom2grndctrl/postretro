@@ -268,7 +268,7 @@ All wgpu calls live in the renderer module. Map loader, game logic, audio, and i
 | 0 | Camera uniforms |
 | 1 | Material (albedo texture, normal map, per-material uniforms) |
 | 2 | Dynamic lights, influence volumes, per-chunk static light lists |
-| 3 | Octahedral irradiance atlas (sampled total atlas, grid/tile uniform, animation descriptor + sample buffers, per-probe depth moments; see §4, §8) + direct static-light atlas (`BIND_SH_DIRECT_ATLAS = 15`; bound for billboard and forward/fog pipelines — forward/fog do not sample it) |
+| 3 | Octahedral irradiance atlas (sampled total atlas, grid/tile uniform, animation descriptor + sample buffers, per-probe depth moments; see §4, §8) + direct static-light atlas (`BIND_SH_DIRECT_ATLAS = 15`; billboard samples it; forward and fog carry the binding in the shared group but do not read it) |
 | 4 | Lightmap atlas (irradiance + dominant direction textures; nearest + linear samplers) |
 | 5 | Spot shadow maps (depth texture array, comparison sampler, light-space matrices) |
 | 6 | FX resources (sprite instance storage buffer; fog depth buffer, AABB buffer, scatter target) |

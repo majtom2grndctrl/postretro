@@ -14,7 +14,7 @@
 // `chunk_light_list_bake` (BFS over the `Portal` adjacency graph seeded at the
 // light's containing leaf), including the solid/exterior-seed bypass.
 //
-// See: context/plans/in-progress/perf-animated-sh-light-culling/
+// See: context/lib/build_pipeline.md §DeltaShVolumes (id 27)
 
 use std::collections::{HashMap, HashSet, VecDeque};
 

@@ -27,7 +27,11 @@ struct Uniforms {
     // only to keep the shared uniform struct stride in lockstep with
     // forward.wgsl. See `SdfShadowMode` in render/mod.rs.
     sdf_shadow_mode: u32,
-    _sdf_pad0: u32,
+    // `sdf_force_visibility_one` in forward.wgsl (offset 104..108) — never read
+    // by the wireframe pipeline, present only to keep the shared group-0
+    // `Uniforms` stride in lockstep with forward.wgsl. See forward.wgsl for
+    // semantics.
+    _sdf_force_visibility_one_inert: u32,
     // `dynamic_direct_scale` in forward.wgsl (offset 108..112) — never read by
     // the wireframe pipeline, present only to keep the shared group-0 `Uniforms`
     // stride in lockstep with forward.wgsl (128 bytes). See forward.wgsl for

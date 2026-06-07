@@ -318,8 +318,7 @@ mod tests {
     use crate::octahedral::DEFAULT_IRRADIANCE_TILE_DIMENSION;
 
     /// Build a populated section whose atlas is a stand-in BC6H blob sized to the
-    /// 4×4-block count for the grid's atlas dimensions. (Task 1 only carries and
-    /// round-trips the bytes; the real BC6H encode lands in Task 3.)
+    /// 4×4-block count for the grid's atlas dimensions.
     fn direct_section(grid: [u32; 3], format: u32) -> DirectShVolumeSection {
         let tile_dimension = DEFAULT_IRRADIANCE_TILE_DIMENSION;
         let tile_border = DEFAULT_IRRADIANCE_TILE_BORDER;

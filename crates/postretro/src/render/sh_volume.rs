@@ -785,12 +785,12 @@ fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         },
         count: None,
     });
-    // Direct static-light atlas. Only the dynamic fragment stages sample it
-    // (v1), so visibility is FRAGMENT only — forward/fog leave it undeclared,
-    // which is valid since a pipeline's BGL may carry entries a shader doesn't
-    // read. `Bc6hRgbUfloat` hardware-decodes to filterable float, sampled
-    // through the shared `BIND_SH_ATLAS_SAMPLER` linear sampler exactly like the
-    // indirect atlas.
+    // Direct static-light atlas. Only the mesh and billboard fragment stages
+    // sample it, so visibility is FRAGMENT only — forward/fog leave it
+    // undeclared, which is valid since a pipeline's BGL may carry entries a
+    // shader doesn't read. `Bc6hRgbUfloat` hardware-decodes to filterable
+    // float, sampled through the shared `BIND_SH_ATLAS_SAMPLER` linear sampler
+    // exactly like the indirect atlas.
     entries.push(wgpu::BindGroupLayoutEntry {
         binding: BIND_SH_DIRECT_ATLAS,
         visibility: wgpu::ShaderStages::FRAGMENT,

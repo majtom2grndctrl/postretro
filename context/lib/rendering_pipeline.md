@@ -98,6 +98,8 @@ The seams that keep direct and indirect disjoint — tier routing, the position-
 
 **Animated SH delta volumes.** For complex lighting scenes, animated lights also contribute to the irradiance atlas. To avoid dynamic scene recomputation, each animated light's **indirect-only** (bounced) contribution at peak brightness is baked offline as octahedral delta tiles, stored sparsely against the base probe grid (f16, 1.0m probe spacing). Indirect is separate from direct: the animated light's *direct* term lives in `lm_anim` (the animated weight-map bake, occlusion-tested), so the delta carries bounce only — baking direct into both would double-count. The bake clips each light to its portal-reachable region and stores delta probes only where the light actually reaches: the base probe volume is partitioned into **affinity cells** of 4×4×4 base probes (`AFFINITY_FACTOR = 4`), and the section carries a CSR index (`affinity_offsets`/`affinity_lights`) mapping each affinity cell to the lights overlapping it, plus one dense 64-probe octahedral-tile sub-block per (cell, light) entry. At runtime, a pre-frame compute pass (§7.1 step 5) dispatches over the base atlas texels, reverses the near-square tile packing (`probe_index = tile_x + tile_y × atlas_tiles_per_row`) back to the x-fastest base probe, maps that probe to its affinity cell, evaluates animation curves for the current frame time, and adds the composed delta into the base atlas at full weight, writing the total atlas. Forward, billboard, and fog consumers read that composed total atlas through the shared octahedral sampler in group 3. (The former `delta_scale` dev knob was retired with the indirect-only amendment — the delta carries bounce only, so there is no double-count to bisect.) Forward shader includes 10 lighting isolation modes for independently inspecting each lighting contribution. Wire format / bake detail: `crates/level-format/src/delta_sh_volumes.rs`.
 
+**Baked static direct for entities/billboards.** Skinned meshes and billboards additionally sample the baked static-direct SH atlas (`DirectShVolume`, PRL section 35), gated by `has_direct`, via the group-3/group-4 direct atlas binding. World geometry and fog do not use this atlas. See §9 for the full bind-group layout.
+
 **Normal maps.** Perturb the per-fragment normal before direct and indirect evaluation. Tangents baked into the vertex format at compile time.
 
 **Light authoring.** Mappers place light entities in TrenchBroom. Compiler translates FGD properties to a canonical internal format with validation (falloff distance, spotlight direction, intensity bounds). Canonical lights feed both the SH baker and the runtime direct path. See `build_pipeline.md` §Custom FGD.
@@ -163,7 +165,7 @@ Depth testing and back-face culling are permanent from this pass forward.
 
 ### 7.4 Billboard Sprite Pass
 
-Camera-facing quads driven by the particle system. Alpha-blended additive pass; depth write disabled, depth test enabled. Quads are expanded in the vertex shader using the view-space right and up vectors — no geometry shader. Lit by the full stack: SH ambient, multi-source static specular via the chunk light list, and dynamic direct (diffuse only). Batched by sprite-sheet collection — all particles sharing a collection issue one draw call per frame.
+Camera-facing quads driven by the particle system. Alpha-blended additive pass; depth write disabled, depth test enabled. Quads are expanded in the vertex shader using the view-space right and up vectors — no geometry shader. Lit by: baked indirect (SH ambient) plus baked static direct (direct SH atlas, `sample_sh_direct`, gated by `has_direct`), multi-source static specular via the chunk light list, and dynamic direct (diffuse only). See §9 for the direct atlas binding. Batched by sprite-sheet collection — all particles sharing a collection issue one draw call per frame.
 
 Billboard instances come from `BillboardEmitterComponent` particles packed by `ParticleRenderCollector` each frame. The collector walks `ParticleState` entities in the entity registry, buckets them by `SpriteVisual.sprite`, and hands the packed byte slices to `SmokePass::record_draw`. Bind group 6 carries the sprite instance storage buffer.
 
@@ -241,7 +243,7 @@ The skinned pass owns its **own pipeline layout**, so its group mapping is indep
 | 1 | Material (the shared material bind group; the full layout is reused so the bind group stays compatible) |
 | 2 | **Reserved** — the dynamic-direct lighting bind group goes here when that work settles. Left unallocated; the pipeline layout passes an empty slot so that work *adds* a group rather than renumbering. |
 | 3 | Per-instance data: the shared bone-palette storage buffer + a per-instance SSBO (model matrix + palette base index), addressed by `@builtin(instance_index)` — never `first_instance`, which is unreliable on DX12 (gfx-rs/wgpu#2471) |
-| 4 | SH atlas (indirect lighting baseline): reused `ShVolumeResources` — octahedral irradiance atlas, grid uniform, per-probe depth moments |
+| 4 | SH atlas superset (`mesh_bind_group`): octahedral indirect atlas + direct static-light atlas (`BIND_SH_DIRECT_ATLAS = 15`) + grid uniform + per-probe depth moments + `DynamicDirectParams` uniform (scale, isolation, `has_direct`; binding 16) |
 
 This differs from §10's world mapping (where group 2 is dynamic lights / influence volumes / per-chunk light lists and groups 3–4 are the irradiance and lightmap atlases). The two layouts coexist because each pipeline declares its own; the shared groups (0 camera, 1 material) carry compatible bind groups.
 
@@ -249,7 +251,7 @@ This differs from §10's world mapping (where group 2 is dynamic lights / influe
 
 The **vertex attribute set** (the encoding above) and the **shared-palette + base-index scheme** are committed — consumers build against them. What is flat-lit or held open now is a deliberate, consumer-bound choice, not missing work:
 
-- **Lighting.** The fragment samples the SH indirect baseline (group 4, reused `ShVolumeResources` — depth-aware Chebyshev octahedral irradiance, `reject_backface = false`, Chebyshev probe-occlusion enabled, matching the billboard precedent). Group 2 is reserved for the dynamic-direct additive term. The vertex stage already carries the skinned world-space normal for it.
+- **Lighting.** The fragment samples the SH indirect baseline and the baked static-direct SH atlas (group 4, `mesh_bind_group` superset — depth-aware Chebyshev octahedral irradiance, `reject_backface = false`, Chebyshev probe-occlusion enabled, direct atlas at binding 15, `DynamicDirectParams` at binding 16). Group 2 is reserved for the future dynamic-direct *light loop* — runtime dynamic-tier lights (plan decision D10), distinct from the baked static direct now in group 4. The vertex stage already carries the skinned world-space normal for it.
 - **Instancing.** Instances of the same model are batched into a single instanced `draw_indexed`; per-instance data (model matrix + palette base index) lives in a per-instance SSBO addressed by `@builtin(instance_index)`. The per-instance SSBO and argument layout are shaped to drop into `multi_draw_indexed_indirect` without a contract change; this task draws with instanced `draw_indexed` + CPU cull.
 - **Depth variant.** A depth-only skinned pipeline (for shadows) would reuse the same palette + base-index scheme with position/joints/weights only. Not built here; the skinning vertex stage is kept separable for it.
 
@@ -266,7 +268,7 @@ All wgpu calls live in the renderer module. Map loader, game logic, audio, and i
 | 0 | Camera uniforms |
 | 1 | Material (albedo texture, normal map, per-material uniforms) |
 | 2 | Dynamic lights, influence volumes, per-chunk static light lists |
-| 3 | Octahedral irradiance atlas (sampled total atlas, grid/tile uniform, animation descriptor + sample buffers, per-probe depth moments; see §4, §8) |
+| 3 | Octahedral irradiance atlas (sampled total atlas, grid/tile uniform, animation descriptor + sample buffers, per-probe depth moments; see §4, §8) + direct static-light atlas (`BIND_SH_DIRECT_ATLAS = 15`; bound for billboard and forward/fog pipelines — forward/fog do not sample it) |
 | 4 | Lightmap atlas (irradiance + dominant direction textures; nearest + linear samplers) |
 | 5 | Spot shadow maps (depth texture array, comparison sampler, light-space matrices) |
 | 6 | FX resources (sprite instance storage buffer; fog depth buffer, AABB buffer, scatter target) |

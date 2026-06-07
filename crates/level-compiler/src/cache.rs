@@ -4,6 +4,13 @@
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+
+/// Default LRU size budget for the on-disk stage cache, in bytes (2 GiB).
+/// Pruned down to this at build start unless `--cache-max-size` overrides it.
+/// Content addressing never reclaims orphaned generations on its own, so this
+/// bound is what stops the cache from growing without limit.
+pub const DEFAULT_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 /// Length-of-payload prefix (u32 little endian) preceding the integrity hash.
 const LENGTH_PREFIX_BYTES: usize = 4;
@@ -59,6 +66,11 @@ impl StageCache {
     /// Load and validate an entry. Missing entries return `None` silently.
     /// Corrupted entries (short read, length mismatch, hash mismatch) log a
     /// warning and return `None` so the stage falls through to a rebuild.
+    ///
+    /// A successful read bumps the entry's mtime to now so the LRU prune
+    /// (`prune_to_budget`) treats it as recently used. This is what keeps a
+    /// long-stable entry (one whose inputs never change, so it is hit every
+    /// build but never rewritten) from being evicted purely for being old.
     pub fn get(&self, key: &CacheKey) -> Option<Vec<u8>> {
         let path = self.entry_path(key);
         let mut file = match fs::File::open(&path) {
@@ -69,6 +81,10 @@ impl StageCache {
                 return None;
             }
         };
+
+        // Mark the entry as freshly used for LRU. Best-effort: a failure here
+        // only makes the prune slightly less accurate, never breaks the read.
+        let _ = file.set_modified(SystemTime::now());
 
         let mut header = [0u8; HEADER_BYTES];
         if let Err(err) = file.read_exact(&mut header) {
@@ -135,6 +151,109 @@ impl StageCache {
         }
     }
 
+    /// Evict least-recently-used entries until the cache directory's total size
+    /// is at or below `max_bytes`. Run once at build start, before any bake
+    /// writes a fresh generation, so the directory stays bounded across builds.
+    ///
+    /// Recency is the entry's mtime, which `get` bumps on every hit and `put`
+    /// sets on write — so "least recently used" means "longest since a build
+    /// last read or wrote it", which is exactly the orphaned-generation tail
+    /// that content addressing leaves behind. Within the same mtime, eviction
+    /// order is unspecified.
+    ///
+    /// Best-effort: any I/O error while scanning or deleting is logged and the
+    /// prune moves on. A failure to reclaim enough never fails the build — the
+    /// cache is always safe to leave larger than the budget. Entries are deleted
+    /// oldest-first only as far as needed; if the total already fits, nothing is
+    /// touched. `*.tmp` files (in-flight `put` stages) are skipped so a
+    /// concurrent write is never corrupted.
+    pub fn prune_to_budget(&self, max_bytes: u64) {
+        let read_dir = match fs::read_dir(&self.dir) {
+            Ok(rd) => rd,
+            Err(err) => {
+                log::warn!(
+                    "[cache] prune skipped: cannot read {}: {err}",
+                    self.dir.display()
+                );
+                return;
+            }
+        };
+
+        // Gather (mtime, size, path) for every entry file. Skip non-files and
+        // in-flight `.tmp` stages; a metadata failure drops just that entry.
+        struct Entry {
+            mtime: SystemTime,
+            size: u64,
+            path: PathBuf,
+        }
+        let mut entries: Vec<Entry> = Vec::new();
+        let mut total: u64 = 0;
+        for dir_entry in read_dir {
+            let dir_entry = match dir_entry {
+                Ok(e) => e,
+                Err(err) => {
+                    log::warn!("[cache] prune: directory entry error: {err}");
+                    continue;
+                }
+            };
+            let path = dir_entry.path();
+            if path.extension().is_some_and(|ext| ext == "tmp") {
+                continue;
+            }
+            let meta = match dir_entry.metadata() {
+                Ok(m) => m,
+                Err(err) => {
+                    log::warn!("[cache] prune: cannot stat {}: {err}", path.display());
+                    continue;
+                }
+            };
+            if !meta.is_file() {
+                continue;
+            }
+            let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            let size = meta.len();
+            total = total.saturating_add(size);
+            entries.push(Entry { mtime, size, path });
+        }
+
+        if total <= max_bytes {
+            return;
+        }
+
+        // Oldest first, so we evict the least-recently-used generations.
+        entries.sort_by_key(|e| e.mtime);
+
+        let mut reclaimed: u64 = 0;
+        let mut removed: usize = 0;
+        for entry in &entries {
+            if total <= max_bytes {
+                break;
+            }
+            match fs::remove_file(&entry.path) {
+                Ok(()) => {
+                    total = total.saturating_sub(entry.size);
+                    reclaimed = reclaimed.saturating_add(entry.size);
+                    removed += 1;
+                }
+                Err(err) => {
+                    log::warn!(
+                        "[cache] prune: failed to remove {}: {err}",
+                        entry.path.display()
+                    );
+                }
+            }
+        }
+
+        if removed > 0 {
+            log::info!(
+                "[cache] prune: evicted {removed} LRU entries ({} reclaimed), now ~{} (budget {})",
+                human_bytes(reclaimed),
+                human_bytes(total),
+                human_bytes(max_bytes),
+            );
+        }
+    }
+
     fn write_entry(&self, tmp_path: &Path, bytes: &[u8]) -> io::Result<()> {
         let hash = blake3::hash(bytes);
         let len = u32::try_from(bytes.len()).map_err(|_| {
@@ -172,6 +291,22 @@ pub fn find_workspace_root(start: &Path) -> Option<PathBuf> {
         current = dir.parent();
     }
     None
+}
+
+/// Compact human-readable byte count for prune log lines (e.g. `1.83 GiB`).
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} {}", UNITS[0])
+    } else {
+        format!("{value:.2} {}", UNITS[unit])
+    }
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -246,6 +381,118 @@ mod tests {
 
         assert!(cache.get(&key).is_none());
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Overwrite an entry's mtime so prune-ordering tests are deterministic
+    /// instead of depending on wall-clock write order.
+    fn set_mtime(path: &Path, t: SystemTime) {
+        fs::File::open(path)
+            .expect("open entry to set mtime")
+            .set_modified(t)
+            .expect("set mtime");
+    }
+
+    #[test]
+    fn prune_evicts_least_recently_used_until_under_budget() {
+        let dir = fresh_temp_dir("prune_lru");
+        let cache = StageCache::new(&dir).expect("create cache dir");
+
+        // Three 100-byte entries with distinct ages: a oldest, c newest.
+        let payload = vec![0u8; 100];
+        let entry_len = (HEADER_BYTES + payload.len()) as u64;
+        let now = SystemTime::now();
+        for (label, age_secs) in [("a", 300u64), ("b", 200), ("c", 100)] {
+            let key = CacheKey::new("lightmap_layer", 1, label.as_bytes());
+            cache.put(&key, &payload);
+            set_mtime(
+                &dir.join(key.as_filename()),
+                now - std::time::Duration::from_secs(age_secs),
+            );
+        }
+
+        // Budget fits two entries but not three: the oldest (a) must go.
+        cache.prune_to_budget(entry_len * 2 + 10);
+
+        let a = CacheKey::new("lightmap_layer", 1, b"a");
+        let b = CacheKey::new("lightmap_layer", 1, b"b");
+        let c = CacheKey::new("lightmap_layer", 1, b"c");
+        assert!(cache.get(&a).is_none(), "oldest entry must be evicted");
+        assert!(cache.get(&b).is_some(), "newer entry must survive");
+        assert!(cache.get(&c).is_some(), "newest entry must survive");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_is_noop_when_under_budget() {
+        let dir = fresh_temp_dir("prune_noop");
+        let cache = StageCache::new(&dir).expect("create cache dir");
+        let key = CacheKey::new("sh_group", 1, b"keep-me");
+        cache.put(&key, b"payload");
+
+        cache.prune_to_budget(DEFAULT_MAX_BYTES);
+
+        assert!(
+            cache.get(&key).is_some(),
+            "entry must survive when total is under budget"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn get_refreshes_mtime_so_hot_entries_survive_prune() {
+        let dir = fresh_temp_dir("prune_touch");
+        let cache = StageCache::new(&dir).expect("create cache dir");
+
+        let payload = vec![0u8; 100];
+        let entry_len = (HEADER_BYTES + payload.len()) as u64;
+        let now = SystemTime::now();
+
+        // `old` was written long ago; `new` more recently. Without a touch,
+        // a budget-for-one prune would evict `old`.
+        let old = CacheKey::new("lightmap_layer", 1, b"old");
+        let new = CacheKey::new("lightmap_layer", 1, b"new");
+        cache.put(&old, &payload);
+        set_mtime(
+            &dir.join(old.as_filename()),
+            now - std::time::Duration::from_secs(300),
+        );
+        cache.put(&new, &payload);
+        set_mtime(
+            &dir.join(new.as_filename()),
+            now - std::time::Duration::from_secs(100),
+        );
+
+        // A hit on `old` bumps its mtime to ~now, making `new` the LRU victim.
+        assert!(cache.get(&old).is_some(), "warm-up read must hit");
+
+        cache.prune_to_budget(entry_len + 10); // room for exactly one entry
+
+        assert!(
+            cache.get(&old).is_some(),
+            "the recently-read entry must survive even though it was written first"
+        );
+        assert!(
+            cache.get(&new).is_none(),
+            "the now-least-recently-used entry must be evicted"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_skips_in_flight_tmp_files() {
+        let dir = fresh_temp_dir("prune_tmp");
+        let cache = StageCache::new(&dir).expect("create cache dir");
+
+        // Simulate an in-flight `put` stage file that prune must not touch.
+        let tmp = dir.join("deadbeef.tmp");
+        fs::write(&tmp, vec![0u8; 4096]).expect("write tmp stage");
+
+        // Budget 0 forces eviction of everything prune is willing to delete.
+        cache.prune_to_budget(0);
+
+        assert!(tmp.is_file(), ".tmp stage files must be left untouched");
         let _ = fs::remove_dir_all(&dir);
     }
 

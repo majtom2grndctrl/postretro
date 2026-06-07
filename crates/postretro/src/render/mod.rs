@@ -1347,12 +1347,13 @@ impl Renderer {
         //   Group 4 — lightmap (4): static irradiance, static dominant-direction,
         //                           animated-contribution atlas, animated dominant-direction
         //   Group 5 — shadow (3): spot-shadow depth array (binding 0), SDF shadow factor (binding 3), scene depth (binding 4)
-        // The limit counts BGL *entries* visible to the stage, not the textures a
-        // shader actually samples — so the direct atlas counts here even though
-        // only the billboard pipeline (which shares this group-3 BGL/bind group)
-        // reads it; forward and fog carry the binding but never sample it. See
-        // `forward_pipeline_sampled_texture_count`.
-        let required_sampled_textures: u32 = forward_pipeline_sampled_texture_count();
+        // 16 is the WebGPU spec floor and wgpu's `Limits::default()` value; it is
+        // also the hard ceiling on Metal (macOS) and is universally supported on
+        // all desktop adapters. We use it as a fixed design budget rather than
+        // deriving the exact binding count here — the unit test
+        // `forward_pipeline_sampled_texture_request_matches_bgl_definitions`
+        // verifies that the derived count stays within this budget independently.
+        const REQUIRED_SAMPLED_TEXTURES: u32 = 16;
         const REQUIRED_STORAGE_TEXTURES: u32 = 4;
         // Stopgap: SH compose's flat delta-probe storage buffer outgrows the
         // WebGPU spec floor (128 MiB) on maps with many animated lights because
@@ -1374,7 +1375,7 @@ impl Renderer {
         let adapter_limits = adapter.limits();
         let required_limits = wgpu::Limits {
             max_bind_groups: 8,
-            max_sampled_textures_per_shader_stage: required_sampled_textures,
+            max_sampled_textures_per_shader_stage: REQUIRED_SAMPLED_TEXTURES,
             max_storage_textures_per_shader_stage: REQUIRED_STORAGE_TEXTURES,
             max_storage_buffer_binding_size: REQUIRED_STORAGE_BUFFER_BINDING_SIZE,
             max_texture_dimension_2d: REQUIRED_MAX_TEXTURE_DIMENSION_2D,
@@ -1391,12 +1392,12 @@ impl Renderer {
                  a desktop GPU with BC texture support"
             );
         }
-        if adapter_limits.max_sampled_textures_per_shader_stage < required_sampled_textures {
+        if adapter_limits.max_sampled_textures_per_shader_stage < REQUIRED_SAMPLED_TEXTURES {
             anyhow::bail!(
                 "GPU adapter supports only {} sampled textures per shader stage; \
                  the forward pass requires {}",
                 adapter_limits.max_sampled_textures_per_shader_stage,
-                required_sampled_textures
+                REQUIRED_SAMPLED_TEXTURES
             );
         }
         if adapter_limits.max_storage_textures_per_shader_stage < REQUIRED_STORAGE_TEXTURES {
@@ -4924,9 +4925,9 @@ mod tests {
     // hand-maintained device-limit constant was not bumped, so
     // create_pipeline_layout panicked at launch — uncatchable in CI, which has no
     // GPU. This re-derives the requested limit from the same GPU-free BGL builders
-    // the pipeline layout is composed from, asserting the request can never drift
-    // from the real binding count again. Mirrors
-    // `sh_volume::group3_shader_bindings_are_represented_by_rust_layout`.
+    // the pipeline layout is composed from, asserting the actual binding count
+    // stays within the 16-texture design budget (the Metal/WebGPU spec floor).
+    // Mirrors `sh_volume::group3_shader_bindings_are_represented_by_rust_layout`.
     #[test]
     fn forward_pipeline_sampled_texture_request_matches_bgl_definitions() {
         // The forward pipeline layout (see `create_pipeline_layout`) composes
@@ -4950,12 +4951,15 @@ mod tests {
         );
 
         let derived: u32 = per_group.iter().sum();
-        // The aggregation helper and the device-limit request must agree with the
-        // hand-summed inventory above.
+        // The aggregation helper must agree with the hand-summed inventory above.
         assert_eq!(forward_pipeline_sampled_texture_count(), derived);
-        assert_eq!(
-            derived, 13,
-            "forward pipeline now needs a different limit; verify it stays under the WebGPU floor of 16"
+        // 16 is the design budget: the WebGPU spec floor and Metal's hard ceiling.
+        // If the derived count exceeds 16, switch to bindless (TEXTURE_BINDING_ARRAY)
+        // rather than raising REQUIRED_SAMPLED_TEXTURES in the device limit request.
+        assert!(
+            derived <= 16,
+            "forward pipeline sampled-texture count ({derived}) exceeds the Metal/WebGPU spec floor of 16; \
+             use bindless (TEXTURE_BINDING_ARRAY) rather than raising this limit"
         );
     }
 

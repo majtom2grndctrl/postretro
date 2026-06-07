@@ -852,6 +852,60 @@ pub(crate) fn bake_probe_indirect_rgb(
     acc
 }
 
+/// Direct-at-probe SH L2 RGB for the direct SH baker (`direct_sh_bake.rs`). Bakes
+/// DIRECT light from STATIC lights along the probe→light incident direction using
+/// the validated D3 assembly (Task 0): for each light reaching the probe,
+/// `radiance = incident_radiance_at_point(light, probe) × soft_visibility(probe,
+/// light)` (NORMAL-FREE — the surface cosine is left to the runtime fragment),
+/// `accumulate_sh_rgb` along the incident direction, then `apply_cosine_lobe_rgb`
+/// once after all lights. The packed coefficients reconstruct irradiance directly
+/// (the cosine lobe is already convolved in).
+///
+/// `lights` is the per-probe reaching set (after the D9 falloff+portal cull);
+/// `light_global_indices[i]` is `lights[i]`'s position in the full global
+/// `static_lights` slice, threaded into the soft-visibility seed so a kept light
+/// gets the same lattice rotation whether the bake sees the full set or a culled
+/// subset — the same determinism rule the warm-SH per-group path uses. A culled
+/// light is provably zero-contribution at this probe, so the seed indexing keeps
+/// the output byte-identical to an unculled bake.
+///
+/// The probe is a point in air with no surface normal, so `soft_visibility` uses
+/// the incident direction `l` as the offset normal (matching the Task 0 D3
+/// harness); the hard-shadow case routes through `segment_clear`, the same
+/// shadow-ray routine the indirect bake uses.
+pub(crate) fn bake_probe_direct_rgb(
+    ctx: &RaytracingCtx<'_>,
+    probe_pos: Vec3,
+    lights: &[&MapLight],
+    light_global_indices: &[u64],
+    probe_index: u64,
+) -> [f32; 27] {
+    let mut acc = [0f32; 27];
+    for (light_index, light) in lights.iter().enumerate() {
+        let Some((radiance, l)) = incident_radiance_at_point(light, probe_pos) else {
+            continue;
+        };
+        let global_index = light_global_indices[light_index];
+        // No per-ray axis here (direct is a single shadow query per light, not a
+        // sphere of rays), so the ray-index seed axis is fixed at 0.
+        let seed = soft_visibility_seed(probe_index, 0, global_index);
+        let v = soft_visibility(
+            probe_pos,
+            l,
+            light,
+            seed,
+            crate::lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
+            |from, to| segment_clear(ctx, from, to),
+        );
+        if v <= 0.0 {
+            continue;
+        }
+        accumulate_sh_rgb(&mut acc, l, radiance * v, 1.0);
+    }
+    apply_cosine_lobe_rgb(&mut acc);
+    acc
+}
+
 /// SH-volume-path twin of `bake_probe_indirect_rgb` that also accumulates the
 /// per-probe depth moments `Σd` / `Σd²` over the same 256-direction loop. The
 /// shared per-ray sampler keeps the bounce math identical across both paths;

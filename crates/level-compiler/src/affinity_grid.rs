@@ -66,6 +66,22 @@ pub struct AffinityInputs<'a> {
     pub probe_spacing: f32,
 }
 
+/// Light-list-generic inputs for the affinity decomposition: the same world /
+/// portal / spacing context as [`AffinityInputs`], but with the light set passed
+/// as a plain `&[&MapLight]` slice instead of an `AnimatedBakedLights` envelope.
+///
+/// The direct-at-probe SH bake (`direct_sh_bake.rs`) runs the SAME two-stage
+/// reach test (falloff-sphere AABB clip + portal-reachability flood) over its
+/// STATIC light set, so it reuses this core rather than reimplementing the cull.
+/// `decompose_affinity` (the animated-delta path) is a thin wrapper over this.
+pub struct AffinityReachInputs<'a> {
+    pub geometry_vertices: &'a [[f32; 3]],
+    pub tree: &'a BspTree,
+    pub exterior_leaves: &'a HashSet<usize>,
+    pub portals: &'a [Portal],
+    pub probe_spacing: f32,
+}
+
 /// Result of the affinity decomposition.
 pub struct AffinityDecomposition {
     /// Affinity grid dimensions = `ceil(base_dims / AFFINITY_FACTOR)`, per axis.
@@ -93,6 +109,32 @@ impl AffinityDecomposition {
 /// when its centroid lands in a portal-reachable leaf (with the same
 /// solid/exterior-seed bypass `chunk_light_list_bake` uses).
 pub fn decompose_affinity(inputs: &AffinityInputs<'_>) -> AffinityDecomposition {
+    let reach = AffinityReachInputs {
+        geometry_vertices: inputs.geometry_vertices,
+        tree: inputs.tree,
+        exterior_leaves: inputs.exterior_leaves,
+        portals: inputs.portals,
+        probe_spacing: inputs.probe_spacing,
+    };
+    let lights: Vec<&MapLight> = inputs
+        .animated_lights
+        .entries()
+        .iter()
+        .map(|e| e.light)
+        .collect();
+    decompose_affinity_for_lights(&reach, &lights)
+}
+
+/// Light-list-generic affinity decomposition: the same two-stage reach test
+/// (falloff-sphere AABB clip + portal-reachability flood) as [`decompose_affinity`],
+/// but over an arbitrary `&[&MapLight]` slice in caller order. The
+/// direct-at-probe SH bake (`direct_sh_bake.rs`) consumes this over its STATIC
+/// light set; `decompose_affinity` is a thin wrapper over it for the animated
+/// delta path. `per_light_cells[i]` aligns with `lights[i]`.
+pub fn decompose_affinity_for_lights(
+    inputs: &AffinityReachInputs<'_>,
+    lights: &[&MapLight],
+) -> AffinityDecomposition {
     let (base_min, base_max) = world_aabb(inputs.geometry_vertices);
     let base_dims = grid_dimensions(base_min, base_max, inputs.probe_spacing);
     let affinity_dims = [
@@ -105,7 +147,7 @@ pub fn decompose_affinity(inputs: &AffinityInputs<'_>) -> AffinityDecomposition 
     if !base_min.x.is_finite() {
         return AffinityDecomposition {
             affinity_dims,
-            per_light_cells: vec![Vec::new(); inputs.animated_lights.len()],
+            per_light_cells: vec![Vec::new(); lights.len()],
         };
     }
 
@@ -122,12 +164,9 @@ pub fn decompose_affinity(inputs: &AffinityInputs<'_>) -> AffinityDecomposition 
 
     let world_aabb_d = world_aabb_for_directional(inputs.geometry_vertices);
 
-    let per_light_cells = inputs
-        .animated_lights
-        .entries()
+    let per_light_cells = lights
         .iter()
-        .map(|entry| {
-            let light = entry.light;
+        .map(|&light| {
             let reachable = reachable_leaves(light, inputs, &adjacency);
             cells_for_light(
                 light,
@@ -155,7 +194,7 @@ pub fn decompose_affinity(inputs: &AffinityInputs<'_>) -> AffinityDecomposition 
 /// set of leaves reachable from the light's leaf through non-exterior portals.
 fn reachable_leaves(
     light: &MapLight,
-    inputs: &AffinityInputs<'_>,
+    inputs: &AffinityReachInputs<'_>,
     adjacency: &HashMap<usize, Vec<usize>>,
 ) -> Option<HashSet<usize>> {
     if matches!(light.light_type, LightType::Directional) {
@@ -197,7 +236,7 @@ fn cells_for_light(
     base_min: DVec3,
     affinity_dims: [u32; 3],
     affinity_cell_meters: f64,
-    inputs: &AffinityInputs<'_>,
+    inputs: &AffinityReachInputs<'_>,
     reachable: Option<&HashSet<usize>>,
 ) -> Vec<u32> {
     let (light_min, light_max) = light_aabb(light, world_aabb_d);

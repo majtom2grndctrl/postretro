@@ -11,6 +11,7 @@ pub mod cache;
 pub mod chart_raster;
 pub mod chunk_light_list_bake;
 pub mod delta_sh_bake;
+pub mod direct_sh_bake;
 #[cfg(test)]
 pub mod fixture_pipeline;
 pub mod fog_cell_masks;

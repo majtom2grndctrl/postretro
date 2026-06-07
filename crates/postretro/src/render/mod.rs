@@ -820,6 +820,13 @@ fn lighting_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
 /// pipeline layout per stage, not against how many textures a shader actually
 /// samples — so a fragment-visible texture entry counts even if no shader reads
 /// it (e.g. the SH direct atlas, which only billboard samples).
+///
+/// Used by the runtime `debug_assert!` in `Renderer::new` and the
+/// `forward_pipeline_sampled_texture_request_matches_bgl_definitions` test. The
+/// `debug_assert!` call compiles out in release builds, so without `allow` this
+/// reads as dead code in `--release` even though it is exercised in debug and
+/// test builds.
+#[allow(dead_code)]
 fn fragment_sampled_textures(entries: &[wgpu::BindGroupLayoutEntry]) -> u32 {
     entries
         .iter()
@@ -837,6 +844,13 @@ fn fragment_sampled_textures(entries: &[wgpu::BindGroupLayoutEntry]) -> u32 {
 /// this runs in unit tests and at init without a device. Keeping the layout
 /// creation and this count reading from the same builders prevents the two
 /// sources of truth from drifting (the bug this guards against).
+///
+/// Consumed by the runtime `debug_assert!` in `Renderer::new` and the
+/// `forward_pipeline_sampled_texture_request_matches_bgl_definitions` test. The
+/// `debug_assert!` call compiles out in release builds, so without `allow` this
+/// reads as dead code in `--release` even though it is exercised in debug and
+/// test builds.
+#[allow(dead_code)]
 fn forward_pipeline_sampled_texture_count() -> u32 {
     // Groups 0 (uniform) and 2 (lighting) carry no textures, but include them so
     // adding a texture entry to either BGL is caught here automatically.
@@ -1354,6 +1368,24 @@ impl Renderer {
         // `forward_pipeline_sampled_texture_request_matches_bgl_definitions`
         // verifies that the derived count stays within this budget independently.
         const REQUIRED_SAMPLED_TEXTURES: u32 = 16;
+        // 16 is the fixed design budget, but the forward pipeline's *actual*
+        // fragment-stage sampled-texture count is derived from the same GPU-free
+        // BGL builders that compose the layout. Assert here — at the one site that
+        // requests the limit — that the real count never exceeds the budget. This
+        // ties the count helpers into the runtime path (they are otherwise only
+        // exercised by the unit test below), so adding a fragment-visible texture
+        // entry that overflows 16 trips here in debug builds. CI has no GPU, so a
+        // release panic at pipeline creation would be uncatchable; the test
+        // `forward_pipeline_sampled_texture_request_matches_bgl_definitions`
+        // checks the same invariant headlessly.
+        debug_assert!(
+            forward_pipeline_sampled_texture_count() <= REQUIRED_SAMPLED_TEXTURES,
+            "forward pipeline sampled-texture count ({}) exceeds the requested \
+             budget ({}); switch to bindless (TEXTURE_BINDING_ARRAY) rather than \
+             raising the limit (16 is Metal's hard ceiling)",
+            forward_pipeline_sampled_texture_count(),
+            REQUIRED_SAMPLED_TEXTURES
+        );
         const REQUIRED_STORAGE_TEXTURES: u32 = 4;
         // Stopgap: SH compose's flat delta-probe storage buffer outgrows the
         // WebGPU spec floor (128 MiB) on maps with many animated lights because

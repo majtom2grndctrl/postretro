@@ -1198,13 +1198,18 @@ impl Renderer {
         // every targeted backend reports far higher (Metal/AMD = 128) — the
         // adapter pre-check below confirms the granted maximum still covers it.
         //
-        // Sampled texture inventory (12 total across the forward shader stage):
+        // Sampled texture inventory (13 total across the forward fragment stage).
+        // The limit counts BGL *entries* visible to the stage, not the textures a
+        // shader actually samples — so the direct atlas counts here even though
+        // only the billboard pipeline (which shares this group-3 BGL/bind group)
+        // reads it; forward and fog carry the binding but never sample it.
         //   Group 1 — material (3): diffuse, specular, normal
-        //   Group 3 — SH volume (2): octahedral atlas + depth-moments
+        //   Group 3 — SH volume (3): octahedral atlas + depth-moments
+        //                            + direct static-light atlas (billboard samples; forward/fog carry, never sample)
         //   Group 4 — lightmap (4): static irradiance, static dominant-direction,
         //                           animated-contribution atlas, animated dominant-direction
         //   Group 5 — shadow (3): spot-shadow depth array (binding 0), SDF shadow factor (binding 3), scene depth (binding 4)
-        const REQUIRED_SAMPLED_TEXTURES: u32 = 12;
+        const REQUIRED_SAMPLED_TEXTURES: u32 = 13;
         const REQUIRED_STORAGE_TEXTURES: u32 = 4;
         // Stopgap: SH compose's flat delta-probe storage buffer outgrows the
         // WebGPU spec floor (128 MiB) on maps with many animated lights because

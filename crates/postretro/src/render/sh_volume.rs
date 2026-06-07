@@ -785,12 +785,14 @@ fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         },
         count: None,
     });
-    // Direct static-light atlas. Only the mesh and billboard fragment stages
-    // sample it, so visibility is FRAGMENT only — forward/fog leave it
-    // undeclared, which is valid since a pipeline's BGL may carry entries a
-    // shader doesn't read. `Bc6hRgbUfloat` hardware-decodes to filterable
-    // float, sampled through the shared `BIND_SH_ATLAS_SAMPLER` linear sampler
-    // exactly like the indirect atlas.
+    // Direct static-light atlas. Through this shared group-3 BGL only the
+    // billboard fragment stage samples it; forward/fog carry the entry but
+    // leave binding 15 undeclared, which is valid since a pipeline's BGL may
+    // hold entries a shader doesn't read. The mesh also samples this atlas, but
+    // via the group-4 superset (see `mesh_bind_group_layout_entries`) at the
+    // same binding index. Visibility is FRAGMENT only. `Bc6hRgbUfloat`
+    // hardware-decodes to filterable float, sampled through the shared
+    // `BIND_SH_ATLAS_SAMPLER` linear sampler exactly like the indirect atlas.
     entries.push(wgpu::BindGroupLayoutEntry {
         binding: BIND_SH_DIRECT_ATLAS,
         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -1837,9 +1839,9 @@ mod tests {
             BIND_SCRIPTED_LIGHT_DESCRIPTORS,
             BIND_SH_DEPTH_MOMENTS,
             // Direct static-light atlas (Task 4). Declared in the shared group-3
-            // BGL but sampled only by the dynamic shaders (billboard, Task 5);
-            // forward/fog leave it undeclared, which the subset check below
-            // permits.
+            // BGL; only billboard samples it here (the mesh samples it via the
+            // group-4 superset at the same binding index). Forward/fog leave it
+            // undeclared, which the subset check below permits.
             BIND_SH_DIRECT_ATLAS,
         ]
         .into_iter()

@@ -2,6 +2,8 @@
 declare module "postretro" {
   export type EntityId = number & { readonly __brand: "EntityId" };
 
+  export type StateValue<T> = T & { readonly __brand: "StateValue" };
+
   export type Vec3 = { x: number; y: number; z: number };
 
   export type EulerDegrees = { pitch: number; yaw: number; roll: number };
@@ -315,6 +317,9 @@ declare module "postretro" {
     component: LightComponent;
   };
 
+  /** Declare an engine-global typed state-store namespace during mod init. Every mod-owned slot requires a default. Supported types are number, boolean, string, enum, and array. Namespace registration is atomic and rejects existing or dotted-prefix-colliding namespaces. Returns an object keyed by slot name whose branded string values are stable dotted-name handles. Definition context. */
+  export function defineStore(namespace: string, schema: unknown): { readonly [slot: string]: StateValue<string> };
+
   /** Returns true if the entity id refers to a live entity. */
   export function entityExists(id: EntityId): boolean;
 
@@ -323,6 +328,12 @@ declare module "postretro" {
 
   /** Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. Non-unit direction samples are silently normalized; zero-length direction samples and empty channel arrays error with InvalidArgument. Definition context. */
   export function setLightAnimation(id: EntityId, animation: LightAnimation | null): void;
+
+  /** Read the current value of an engine-global state slot by stable dotted name. Available in definition and data contexts. */
+  export function storeRead(name: string): unknown;
+
+  /** Write an engine-global state slot by stable dotted name. The value must exactly match the declared slot type. Finite numbers are clamped to the declared inclusive range. Readonly slots reject script writes with a warning and remain unchanged. Available in definition and data contexts. */
+  export function storeWrite(name: string, value: unknown): void;
 
   /** Return the current world gravity in m/s² (negative = downward; positive = upward). Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or a `worldSetGravity` call. The `world.ts` vocabulary module wraps this as `world.getGravity`. */
   export function worldGetGravity(): number;

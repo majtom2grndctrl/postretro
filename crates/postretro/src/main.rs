@@ -67,6 +67,10 @@ use crate::scripting::reactions::registry::{
 };
 use crate::scripting::runtime::{ReloadSummary, ScriptRuntime, ScriptRuntimeConfig};
 use crate::scripting::sequence::SequencedPrimitiveRegistry;
+use crate::scripting::state_persistence::{
+    STATE_FILE_PATH, StateStoreLifecycle, collect_persisted_state, load_persisted_state,
+    overlay_persisted_state, save_persisted_state,
+};
 use crate::startup::{BootState, LoadOutcome, SplashSource, StartupTimings, spawn_level_worker};
 use crate::visibility::{VisibilityPath, VisibilityResult, VisibilityStats, VisibleCells};
 
@@ -269,6 +273,7 @@ fn main() -> Result<()> {
         last_title_update: Instant::now(),
         script_runtime,
         script_ctx,
+        state_store_lifecycle: StateStoreLifecycle::default(),
         sequence_registry,
         reaction_registry,
         progress_tracker: ProgressTracker::new(),
@@ -395,6 +400,9 @@ struct App {
     /// runtime. Outlives the renderer so device resets preserve scripted
     /// light state. See: context/lib/scripting.md
     script_ctx: ScriptCtx,
+
+    /// Gates the one-time persistence overlay and clean-exit save.
+    state_store_lifecycle: StateStoreLifecycle,
 
     /// Consulted by `fire_named_event_with_sequences` for `Sequence` steps.
     /// No per-level state — entity lookups go through `ScriptCtx`, which the
@@ -1474,6 +1482,25 @@ impl ApplicationHandler for App {
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // Saving before declarations commit and restore completes could replace
+        // a valid state file with an empty or default-only snapshot.
+        if self.state_store_lifecycle.can_save() {
+            let state_path = Path::new(STATE_FILE_PATH);
+            let collected = collect_persisted_state(&self.script_ctx.slot_table.borrow());
+            for warning in collected.warnings {
+                log::warn!("[State] {warning}");
+            }
+            match save_persisted_state(state_path, &collected.state) {
+                Ok(()) => {
+                    log::info!("[State] saved persistent slots to {}", state_path.display())
+                }
+                Err(error) => log::warn!(
+                    "[State] failed to save persistent slots to {}: {error}",
+                    state_path.display()
+                ),
+            }
+        }
+
         // Release the level's sound registry at teardown, mirroring the texture
         // release on level unload (`resource_management.md` §7.2). This engine
         // has a single level for its lifetime, so unload coincides with exit.
@@ -1555,9 +1582,9 @@ impl App {
                 // App construction time.
                 self.mod_timings = StartupTimings::new();
 
-                // Mod init runs before the worker spawns so any splash
-                // override registered during init can land before the level
-                // load begins.
+                // Mod init runs before the worker spawns so declarations and
+                // entity descriptors commit together, then persistence
+                // overlays defaults once before any level work begins.
                 //
                 // In debug builds, compile any stale definition scripts first
                 // so the hot-reload watcher starts from a consistent baseline.
@@ -1567,16 +1594,47 @@ impl App {
                     .compile_stale_scripts(&script_root, &self.content_root);
                 if let Err(err) = self.script_runtime.run_mod_init(&self.content_root) {
                     log::error!("[Scripting] mod_init failed: {err}");
-                } else if let Some(manifest) = self.script_runtime.mod_manifest_mut() {
-                    // Drain entity-type descriptors from the validated
-                    // `setupMod()` return value into the engine-global
-                    // `DataRegistry`. Runtime parses; caller owns lifecycle.
-                    // See: context/lib/boot_sequence.md §3.
-                    let mut data_registry = self.script_ctx.data_registry.borrow_mut();
-                    for desc in std::mem::take(&mut manifest.entities) {
-                        data_registry.upsert_entity_type(desc);
+                } else {
+                    let has_manifest = self.script_runtime.mod_manifest().is_some();
+                    if let Some(manifest) = self.script_runtime.mod_manifest_mut() {
+                        // Drain entity-type descriptors from the validated
+                        // `setupMod()` return value into the engine-global
+                        // `DataRegistry`. Runtime parses; caller owns lifecycle.
+                        // See: context/lib/boot_sequence.md §3.
+                        let mut data_registry = self.script_ctx.data_registry.borrow_mut();
+                        for desc in std::mem::take(&mut manifest.entities) {
+                            data_registry.upsert_entity_type(desc);
+                        }
+                        drop(data_registry);
                     }
-                    drop(data_registry);
+
+                    if self
+                        .state_store_lifecycle
+                        .should_restore_after_mod_init(has_manifest)
+                    {
+                        let state_path = Path::new(STATE_FILE_PATH);
+                        match load_persisted_state(state_path) {
+                            Ok(Some(persisted)) => {
+                                let warnings = overlay_persisted_state(
+                                    &mut self.script_ctx.slot_table.borrow_mut(),
+                                    &persisted,
+                                );
+                                for warning in warnings {
+                                    log::warn!("[State] {warning}");
+                                }
+                                log::info!(
+                                    "[State] restored persistent slots from {}",
+                                    state_path.display()
+                                );
+                            }
+                            Ok(None) => {}
+                            Err(error) => log::warn!(
+                                "[State] failed to load persistent slots from {}: {error}; using declared defaults",
+                                state_path.display()
+                            ),
+                        }
+                        self.state_store_lifecycle.mark_restore_completed();
+                    }
                 }
                 // Hot-reload watcher (debug-only); release builds no-op.
                 if let Err(err) = self

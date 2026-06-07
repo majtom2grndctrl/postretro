@@ -847,19 +847,42 @@ pub(super) fn lua_to_json(value: LuaValue) -> mlua::Result<serde_json::Value> {
             .unwrap_or(serde_json::Value::Null)),
         LuaValue::String(s) => Ok(serde_json::Value::String(s.to_str()?.to_string())),
         LuaValue::Table(t) => {
-            // Distinguish array-like from map-like by checking for contiguous
-            // integer keys starting at 1.
             let len = t.raw_len();
-            let mut is_array = len > 0;
-            // A table with any non-integer key is a map.
+            let mut integer_keys = Vec::new();
+            let mut has_only_integer_keys = true;
             for pair in t.clone().pairs::<LuaValue, LuaValue>() {
                 let (k, _) = pair?;
-                if !matches!(k, LuaValue::Integer(_)) {
-                    is_array = false;
-                    break;
+                match k {
+                    LuaValue::Integer(i) => integer_keys.push(i),
+                    _ => {
+                        has_only_integer_keys = false;
+                    }
                 }
             }
-            if is_array {
+
+            if !integer_keys.is_empty() && has_only_integer_keys {
+                for &key in &integer_keys {
+                    if key < 1 || usize::try_from(key).ok().is_none_or(|key| key > len) {
+                        return Err(mlua::Error::FromLuaConversionError {
+                            from: "table",
+                            to: "JSON array".to_string(),
+                            message: Some(format!(
+                                "array keys must be exactly the contiguous integer set 1..={len}; found key {key}"
+                            )),
+                        });
+                    }
+                }
+                if integer_keys.len() != len {
+                    return Err(mlua::Error::FromLuaConversionError {
+                        from: "table",
+                        to: "JSON array".to_string(),
+                        message: Some(format!(
+                            "array keys must be exactly the contiguous integer set 1..={len}; found {} integer keys",
+                            integer_keys.len()
+                        )),
+                    });
+                }
+
                 let mut out = Vec::with_capacity(len);
                 for i in 1..=len {
                     let v: LuaValue = t.get(i)?;
@@ -996,6 +1019,50 @@ mod tests {
         assert!(serde_json::from_str::<Vec3Lit>("[1.0, 0.0]").is_err());
         assert!(serde_json::from_str::<Vec3Lit>(r#"{"x":1.0,"y":0.0}"#).is_err());
         assert!(serde_json::from_str::<Vec3Lit>("\"not a vec\"").is_err());
+    }
+
+    #[test]
+    fn lua_to_json_accepts_contiguous_integer_array_keys() {
+        let lua = Lua::new();
+        let value = lua.load("return { 10, 20, 30 }").eval().unwrap();
+
+        assert_eq!(lua_to_json(value).unwrap(), serde_json::json!([10, 20, 30]));
+    }
+
+    #[test]
+    fn lua_to_json_preserves_string_keyed_object_tables() {
+        let lua = Lua::new();
+        let value = lua
+            .load(r#"return { name = "test", [0] = "metadata" }"#)
+            .eval()
+            .unwrap();
+
+        assert_eq!(
+            lua_to_json(value).unwrap(),
+            serde_json::json!({ "name": "test", "0": "metadata" })
+        );
+    }
+
+    #[test]
+    fn lua_to_json_rejects_sparse_and_out_of_range_integer_array_keys() {
+        // Regression: raw_len-based array conversion silently discarded integer
+        // keys outside 1..=raw_len, bypassing validation of their values.
+        let lua = Lua::new();
+        for source in [
+            "return { [1] = 10, [3] = 30 }",
+            "return { [0] = 0, [1] = 10 }",
+            "return { [-1] = -1, [1] = 10 }",
+            "return { [1] = 10, [2] = 20, [4] = math.huge }",
+        ] {
+            let value = lua.load(source).eval().unwrap();
+            let error = lua_to_json(value).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("array keys must be exactly the contiguous integer set"),
+                "unexpected error for `{source}`: {error}"
+            );
+        }
     }
 
     #[test]

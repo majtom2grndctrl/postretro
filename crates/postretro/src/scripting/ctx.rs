@@ -13,8 +13,9 @@ use std::rc::Rc;
 
 use super::data_registry::DataRegistry;
 use super::registry::EntityRegistry;
+use super::slot_table::SlotTable;
 
-/// Handle every primitive closure captures. Cloning is cheap — it bumps two
+/// Handle every primitive closure captures. Cloning is cheap — it bumps shared
 /// `Rc`s. The fields behind `Rc<RefCell<_>>` are the subsystems the scripting
 /// surface is allowed to touch. Extend by adding one field per subsystem.
 #[derive(Clone)]
@@ -27,6 +28,9 @@ pub(crate) struct ScriptCtx {
     /// per-level. `App` reaches this registry via `script_ctx.data_registry`;
     /// no separate handle is held on `App`.
     pub(crate) data_registry: Rc<RefCell<DataRegistry>>,
+    /// Engine-global typed state slots. Populated during mod init and retained
+    /// until process exit; production level-clear paths never touch it.
+    pub(crate) slot_table: Rc<RefCell<SlotTable>>,
     /// Engine frame counter, incremented once at the start of the Game logic
     /// phase. No current consumers — reserved for future primitives that need
     /// a per-frame ordering stamp.
@@ -47,6 +51,7 @@ impl ScriptCtx {
         Self {
             registry: Rc::new(RefCell::new(EntityRegistry::new())),
             data_registry: Rc::new(RefCell::new(DataRegistry::new())),
+            slot_table: Rc::new(RefCell::new(SlotTable::new())),
             frame: Rc::new(Cell::new(0)),
             // Seeded to NaN so any code path that constructs `ScriptCtx`
             // without going through `prl::load_prl` (which seeds from
@@ -57,5 +62,77 @@ impl ScriptCtx {
             // writes, so scripts cannot reintroduce this sentinel.
             gravity: Rc::new(Cell::new(f32::NAN)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scripting::slot_table::{
+        NumericRange, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
+    };
+
+    fn health_slot() -> SlotRecord {
+        SlotRecord::new(SlotSchema {
+            slot_type: SlotType::Number,
+            default: Some(SlotValue::Number(100.0)),
+            range: Some(NumericRange {
+                min: 0.0,
+                max: 100.0,
+            }),
+            persist: false,
+            readonly: true,
+            ownership: SlotOwnership::Engine,
+        })
+    }
+
+    #[test]
+    fn cloned_contexts_share_slot_table_access() {
+        let ctx = ScriptCtx::new();
+        let clone = ctx.clone();
+
+        ctx.slot_table
+            .borrow_mut()
+            .insert("test.health".to_string(), health_slot())
+            .expect("slot should be vacant");
+
+        assert_eq!(
+            clone
+                .slot_table
+                .borrow()
+                .get("test.health")
+                .and_then(|slot| slot.value.as_ref()),
+            Some(&SlotValue::Number(100.0))
+        );
+
+        clone
+            .slot_table
+            .borrow_mut()
+            .get_mut("test.health")
+            .expect("slot should exist")
+            .value = Some(SlotValue::Number(75.0));
+
+        assert_eq!(
+            ctx.slot_table
+                .borrow()
+                .get("test.health")
+                .and_then(|slot| slot.value.as_ref()),
+            Some(&SlotValue::Number(75.0))
+        );
+    }
+
+    #[test]
+    fn data_registry_clear_leaves_slot_table_untouched() {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("test.health".to_string(), health_slot())
+            .expect("slot should be vacant");
+
+        ctx.data_registry.borrow_mut().clear();
+
+        let slots = ctx.slot_table.borrow();
+        assert_eq!(slots.len(), 3);
+        assert!(slots.get("test.health").is_some());
     }
 }

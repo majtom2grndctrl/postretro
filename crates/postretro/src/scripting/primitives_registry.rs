@@ -98,6 +98,11 @@ pub(crate) struct RegisteredType {
 pub(crate) enum TypeShape {
     /// Alias like `EntityId = number`. Emits as a brand in TS, alias in Luau.
     Brand { underlying: &'static str },
+    /// Generic branded alias like `StateValue<T> = T & { __brand: ... }`.
+    GenericBrand {
+        type_param: &'static str,
+        underlying: &'static str,
+    },
     /// Object type with named fields.
     Struct { fields: Vec<FieldInfo> },
     /// String-literal union (enum with no data).
@@ -263,8 +268,16 @@ impl PrimitiveRegistry {
 
 enum TypeBuilderKind {
     Unset,
-    Brand { underlying: &'static str },
-    Struct { fields: Vec<FieldInfo> },
+    Brand {
+        underlying: &'static str,
+    },
+    GenericBrand {
+        type_param: &'static str,
+        underlying: &'static str,
+    },
+    Struct {
+        fields: Vec<FieldInfo>,
+    },
 }
 
 pub(crate) struct TypeBuilder<'r> {
@@ -291,7 +304,26 @@ impl<'r> TypeBuilder<'r> {
         self
     }
 
-    /// Add a struct field. Must not be combined with `.brand(...)`.
+    /// Set a generic brand's type parameter and underlying type expression.
+    /// Must not be combined with `.brand(...)` or `.field(...)`.
+    pub(crate) fn generic_brand(
+        mut self,
+        type_param: &'static str,
+        underlying: &'static str,
+    ) -> Self {
+        debug_assert!(
+            matches!(self.kind, TypeBuilderKind::Unset),
+            "type `{}`: `.generic_brand()` conflicts with prior shape selection",
+            self.name
+        );
+        self.kind = TypeBuilderKind::GenericBrand {
+            type_param,
+            underlying,
+        };
+        self
+    }
+
+    /// Add a struct field. Must not be combined with a brand shape.
     pub(crate) fn field(
         mut self,
         name: &'static str,
@@ -313,6 +345,12 @@ impl<'r> TypeBuilder<'r> {
                     self.name
                 );
             }
+            TypeBuilderKind::GenericBrand { .. } => {
+                panic!(
+                    "type `{}`: `.field()` after `.generic_brand()` is not permitted",
+                    self.name
+                );
+            }
         }
         self
     }
@@ -326,6 +364,13 @@ impl<'r> TypeBuilder<'r> {
                 );
             }
             TypeBuilderKind::Brand { underlying } => TypeShape::Brand { underlying },
+            TypeBuilderKind::GenericBrand {
+                type_param,
+                underlying,
+            } => TypeShape::GenericBrand {
+                type_param,
+                underlying,
+            },
             TypeBuilderKind::Struct { fields } => TypeShape::Struct { fields },
         };
         self.registry.types.push(RegisteredType {

@@ -2,11 +2,12 @@
 // See: context/lib/scripting.md
 //
 // Per-domain primitive registration lives in sibling modules (`entity`,
-// `light`, `world`); this file owns shared types and the `register_all`
+// `light`, `store`, `world`); this file owns shared types and the `register_all`
 // entry point that the engine and tests converge on.
 
 pub(crate) mod entity;
 pub(crate) mod light;
+pub(crate) mod store;
 pub(crate) mod world;
 
 use crate::scripting::ctx::ScriptCtx;
@@ -16,6 +17,10 @@ use crate::scripting::primitives_registry::PrimitiveRegistry;
 /// feed the typedef generator (see: context/lib/scripting.md §7).
 pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
     registry.register_type("EntityId").brand("number").finish();
+    registry
+        .register_type("StateValue")
+        .generic_brand("T", "T")
+        .finish();
     registry
         .register_type("Vec3")
         .field("x", "f32", "")
@@ -308,6 +313,7 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
     register_shared_types(registry);
     light::register_shared_types(registry);
     light::register_light_entity_primitives(registry, ctx.clone());
+    store::register_store_primitives(registry, ctx.clone());
     world::register_world_primitives(registry, ctx.clone());
     entity::register_entity_primitives(registry, ctx);
 }
@@ -335,6 +341,7 @@ mod tests {
             "worldGetGravity",
             "worldSetGravity",
             "setLightAnimation",
+            "defineStore",
             "getEntityProperty",
         ] {
             assert!(names.contains(&expected), "missing primitive {expected}");
@@ -376,12 +383,13 @@ mod tests {
         use crate::scripting::primitives_registry::TypeShape;
         use crate::scripting::runtime::ModManifestResult;
 
-        // Compile-time anchor: ensure the struct still has `name` and
-        // `entities` fields (and nothing else load-bearing). Adding a field
-        // here would fail to compile; removing one likewise.
+        // Compile-time anchor for script-visible fields. Store declarations
+        // are attempt-local engine metadata and do not belong in the
+        // generated `ModManifest` shape.
         let _shape_anchor = ModManifestResult {
             name: String::new(),
             entities: Vec::new(),
+            store_declarations: crate::scripting::slot_table::StoreDeclarationSet::default(),
         };
         let expected_fields: &[&str] = &["name", "entities"];
 

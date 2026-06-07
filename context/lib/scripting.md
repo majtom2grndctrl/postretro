@@ -32,7 +32,7 @@ Both are the authoring path: scripts run once at load time and register intent. 
 
 The context is dropped after the data script completes. No live reference to the data VM remains. The reaction registry is per-level and clears on unload; the entity-type registry is engine-global. The two registries are separate Rust structures — each can be cleared and repopulated independently.
 
-**Mod-init context lifecycle.** Engine init runs `start-script.{ts,luau}` at the mod root (the content root resolved from the loaded map's path). The script must export a `setupMod()` function that returns a `ModManifest` (`{ name: string }` minimum). Entity-type registrations arrive as `entities: EntityTypeDescriptor[]` on the return value; the engine drains them into the engine-global type registry after manifest validation. They survive level loads. Each descriptor declares an optional `canonicalName`; the second dispatch sweep (see `build_pipeline.md §Built-in Classname Routing`) matches map placements only when that value belongs to a descriptor with a placeable component. Absence, or a descriptor with no placeable component, means the archetype is not directly placeable from a map source. Weapon-only descriptors still use `canonicalName` as equip targets for player/default weapon selection. The engine errors at init if: both `.js` and `.lua[u]` start-scripts exist; in release builds, neither exists; `setupMod` is not exported; `setupMod` throws; or its return value is missing `name`. In debug builds, an absent start-script is a no-op (no mod-init context is created). Domain scripts (actors, weapons, etc.) are pulled in by the start-script via `import` (TS) or `require` (Luau) — there is no auto-scan.
+**Mod-init context lifecycle.** Engine init runs `start-script.{ts,luau}` at the mod root (the content root resolved from the loaded map's path). The script must export a `setupMod()` function that returns a `ModManifest` (`{ name: string }` minimum). Entity-type registrations arrive as `entities: EntityTypeDescriptor[]` on the return value; the engine drains them into the engine-global type registry after manifest validation. Store declarations are collected in the same attempt and commit only after script evaluation and manifest validation succeed. A failed attempt changes neither registry. Repeated init after platform resume accepts identical store schemas without resetting values. They survive level loads. Each descriptor declares an optional `canonicalName`; the second dispatch sweep (see `build_pipeline.md §Built-in Classname Routing`) matches map placements only when that value belongs to a descriptor with a placeable component. Absence, or a descriptor with no placeable component, means the archetype is not directly placeable from a map source. Weapon-only descriptors still use `canonicalName` as equip targets for player/default weapon selection. The engine errors at init if: both `.js` and `.lua[u]` start-scripts exist; in release builds, neither exists; `setupMod` is not exported; `setupMod` throws; or its return value is missing `name`. In debug builds, an absent start-script is a no-op (no mod-init context is created). Domain scripts (actors, weapons, etc.) are pulled in by the start-script via `import` (TS) or `require` (Luau) — there is no auto-scan.
 
 **Luau `require` resolver.** The mod-init Luau VM installs a `require` global rooted at the mod root. `require("./actors/player")` reads `<mod_root>/actors/player.luau`, compiles it, and returns its export. `..` segments and absolute paths are rejected (mods must not escape their root). Module caching, init-file conventions, and upward search are deliberately omitted — the resolver is the minimum needed to share descriptors across files. The long-lived definition Luau state has no `require` (the deny-list nil's it out); only short-lived VMs with a known mod root install the resolver.
 
@@ -42,7 +42,7 @@ The context is dropped after the data script completes. No live reference to the
 
 Each primitive declares one of two scopes: `DefinitionOnly` or `Both`. Both the definition context and the data context install all primitives as real functions — there is no stub install and no enforcement at call time. Scope is advisory metadata: the typedef generator uses it to document which contexts a primitive is available in, producing accurate SDK type definitions and developer guidance.
 
-After `registerEntity`'s removal (entity-type registration now flows through `setupMod`'s return value), `DefinitionOnly` has no in-tree consumer. The enum variant is retained as a hook for future primitives that need definition-context-only visibility. `Both` is the only active scope today — tests cover only the `Both` path, and `DefinitionOnly` install behavior is untested.
+`DefinitionOnly` marks declaration-time APIs such as `defineStore` and `setLightAnimation`. `Both` marks APIs intended for definition and data contexts, including store reads and writes. The distinction guides authors and generated SDK documentation; it is not a runtime security boundary.
 
 ---
 
@@ -54,13 +54,25 @@ Once registered, the runtime installs each primitive into every context it creat
 
 **Naming convention:** Primitive names are camelCase, matching the idiom of the target languages (TypeScript, JavaScript, Luau). Wire format field names match the script-facing API; internal Rust representation may differ. Named entity instance constants in user scripts follow the same camelCase rule (`const exhaustPort = defineEntity({...})`, `const campfire = defineEntity({...})`). PascalCase is reserved for types and interfaces only.
 
-Entry points: `postretro/src/scripting/primitives/` (day-one primitive set — `mod.rs` owns shared types and the `register_all` entry point; `entity.rs` owns entity-domain primitives; `light.rs` owns light-domain primitives; `world.rs` owns world-domain primitives (`worldQuery`, `worldGetGravity`, `worldSetGravity`)); `postretro/src/scripting/primitives_registry.rs` (builder and registry).
+Entry points: `crates/postretro/src/scripting/primitives/` (day-one primitive set — `mod.rs` owns shared types and the `register_all` entry point; `entity.rs` owns entity-domain primitives; `light.rs` owns light-domain primitives; `world.rs` owns world-domain primitives (`worldQuery`, `worldGetGravity`, `worldSetGravity`); `store.rs` owns state-store declaration and stable dotted-name reads and writes); `crates/postretro/src/scripting/primitives_registry.rs` (builder and registry).
 
 ---
 
 ## 5. Shared Engine State
 
 Primitive closures access engine state through a shared handle (`ScriptCtx`) captured at registration time. It holds `Rc<RefCell<_>>` references to the entity registry and other mutable engine state. All script-visible state flows through this handle — never through globals or statics.
+
+### Durable State Store
+
+The state store has engine-global lifetime and is never cleared on level unload, platform suspend, or hot reload. Slots use stable dotted names grouped into unique namespaces.
+
+`defineStore` returns a table keyed by declared slot name. Each value is the stable dotted name as a branded string (`StateValue<string>`). The runtime representation is a plain string, such as `"audio.master"`; it carries no methods. Namespaced `.get()` / `.set()` wrappers remain SDK work.
+
+Engine-owned slots may be readonly to scripts while remaining writable by engine systems. Engine writes bypass readonly but still apply declared type, enum, finite-number, and range validation. Mod-owned slots are script-writable unless declared otherwise. Scripts and engine systems address slots by dotted name so references remain valid after the authoring VM drops.
+
+Declaration attempts validate as a whole before commit. Repeating an identical schema preserves current values. New non-overlapping namespaces may commit during staged hot reload. Changed schemas, duplicate declarations, and namespace overlap reject the whole staged result. Removed declarations do not clear committed stores.
+
+Declarations establish slot schemas and defaults before persisted values are restored. Persistence overlays compatible declared slots once per process, after the first successful mod-init commit. Missing or malformed files leave defaults active and still permit later clean-exit saving. Failed or absent mod init cannot overwrite persistence. Persisted slots save best-effort on clean engine exit; abnormal termination may lose unsaved changes.
 
 ---
 

@@ -13,8 +13,12 @@ use rquickjs::{
 use super::data_descriptors::{EntityTypeDescriptor, entity_descriptor_from_js};
 use super::error::ScriptError;
 use super::luau::{LuauConfig, LuauRequireTracker};
+use super::primitives::store::{
+    SharedStoreDeclarationAttempt, StoreDeclarationAttempt, store_declaration_primitive,
+};
 use super::quickjs::{QuickJsConfig, run_script};
 use super::runtime::ModManifestResult;
+use super::slot_table::StoreDeclarationSet;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum StagedManifestDiagnosticSeverity {
@@ -48,6 +52,7 @@ impl StagedManifestDiagnostic {
 pub(crate) struct StagedManifest {
     pub(crate) name: String,
     pub(crate) entities: Vec<EntityTypeDescriptor>,
+    pub(crate) store_declarations: StoreDeclarationSet,
     /// Canonical mod-init source dependencies carried across the worker→main
     /// thread boundary. The descriptor registry write and watcher classifier
     /// update both happen on the main thread in `commit_staged_manifest_result`,
@@ -354,6 +359,7 @@ fn run_staged_manifest_build(
     Ok(Some(StagedManifest {
         name: manifest.name,
         entities: manifest.entities,
+        store_declarations: manifest.store_declarations,
         dependency_paths,
     }))
 }
@@ -375,12 +381,22 @@ fn run_staged_mod_init_quickjs(
     let ctx = JsContext::full(&runtime).map_err(|e| ScriptError::InvalidArgument {
         reason: format!("mod-init: failed to create context: {e}"),
     })?;
+    let declaration_attempt: SharedStoreDeclarationAttempt =
+        std::rc::Rc::new(std::cell::RefCell::new(StoreDeclarationAttempt::default()));
+    let declaration_primitive = store_declaration_primitive(declaration_attempt.clone());
 
     let mut out: Result<ModManifestResult, ScriptError> = Err(ScriptError::InvalidArgument {
         reason: "mod-init: setupMod did not produce a manifest".to_string(),
     });
 
     ctx.with(|ctx| {
+        if let Err(e) = (declaration_primitive.quickjs_installer)(&ctx) {
+            out = Err(ScriptError::InvalidArgument {
+                reason: format!("mod-init: failed to install primitive `defineStore`: {e}"),
+            });
+            return;
+        }
+
         if let Err(e) = super::quickjs::evaluate_prelude(&ctx) {
             out = Err(e);
             return;
@@ -421,7 +437,9 @@ fn run_staged_mod_init_quickjs(
         out = manifest_from_js_value(&ctx, source_path, returned);
     });
 
-    out
+    let mut manifest = out?;
+    manifest.store_declarations = declaration_attempt.borrow().clone().finish()?;
+    Ok(manifest)
 }
 
 fn manifest_from_js_value<'js>(
@@ -476,7 +494,11 @@ fn manifest_from_js_value<'js>(
         }
     };
 
-    Ok(ModManifestResult { name, entities })
+    Ok(ModManifestResult {
+        name,
+        entities,
+        store_declarations: StoreDeclarationSet::default(),
+    })
 }
 
 fn run_staged_mod_init_luau(
@@ -486,8 +508,11 @@ fn run_staged_mod_init_luau(
     _cfg: &LuauConfig,
     require_tracker: Option<&LuauRequireTracker>,
 ) -> Result<ModManifestResult, ScriptError> {
+    let declaration_attempt: SharedStoreDeclarationAttempt =
+        std::rc::Rc::new(std::cell::RefCell::new(StoreDeclarationAttempt::default()));
+    let declaration_primitive = store_declaration_primitive(declaration_attempt.clone());
     let lua = super::luau::build_lua_state_with_require_tracking(
-        &[],
+        &[declaration_primitive],
         None,
         Some(mod_root),
         require_tracker,
@@ -587,7 +612,11 @@ fn run_staged_mod_init_luau(
         Vec::new()
     };
 
-    Ok(ModManifestResult { name, entities })
+    Ok(ModManifestResult {
+        name,
+        entities,
+        store_declarations: declaration_attempt.borrow().clone().finish()?,
+    })
 }
 
 #[cfg(test)]
@@ -638,6 +667,10 @@ mod tests {
         fs::write(
             dir.join("start-script.js"),
             r#"
+            const handles = defineStore("staged", {
+                count: { type: "number", default: 1 },
+            });
+            if (handles.count !== "staged.count") throw new Error("bad store handle");
             globalThis.setupMod = function() {
                 return {
                     name: "StagedMod",
@@ -655,6 +688,7 @@ mod tests {
         };
         assert_eq!(manifest.name, "StagedMod");
         assert_eq!(manifest.entities.len(), 1);
+        assert_eq!(manifest.store_declarations.len(), 1);
         assert_eq!(
             manifest.entities[0].canonical_name.as_deref(),
             Some("smoke_pillar")
@@ -734,6 +768,10 @@ mod tests {
             local player = require("./actors/player")
             local player_again = require("./actors/player.luau")
             local weapons = require("actors/weapons")
+            local handles = defineStore("staged", {
+                count = { type = "number", default = 1 },
+            })
+            assert(handles.count == "staged.count")
             function setupMod()
                 return {
                     name = "LuauDeps",
@@ -759,6 +797,7 @@ mod tests {
             dir.join("start-script.luau").canonicalize().unwrap(),
         ];
         assert_eq!(manifest.name, "LuauDeps");
+        assert_eq!(manifest.store_declarations.len(), 1);
         assert_eq!(manifest.dependency_paths, expected);
         assert!(
             !manifest

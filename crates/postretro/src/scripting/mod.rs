@@ -1,5 +1,5 @@
-// Scripting subsystem: the Rust-owned entity/component surface that scripts manipulate.
-// See: context/lib/scripting.md (not ECS; scripting owns a narrow surface only).
+// Scripting subsystem: Rust-owned entity/component APIs, engine-global typed state, and persistence.
+// See: context/lib/scripting.md for governing scripting contracts and ownership.
 
 // Renderer, audio, and input own their own data structures and are unaffected
 // by anything in this module.
@@ -28,7 +28,9 @@ pub(crate) mod refresh_plan;
 pub(crate) mod registry;
 pub(crate) mod runtime;
 pub(crate) mod sequence;
+pub(crate) mod slot_table;
 pub(crate) mod staged_manifest;
+pub(crate) mod state_persistence;
 pub(crate) mod typedef;
 
 // Dev-mode hot reload. Compiled in debug builds only; the module itself has a

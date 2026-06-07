@@ -28,7 +28,7 @@ Boot runs in two stages: a setup pass that builds session-lifetime state, then a
 The splash advances one frame per redraw, deferring all CPU-heavy work behind visible pixels:
 
 - **First frame.** Paint a black frame so the OS window appears immediately (no splash texture bound yet). After present: decode and upload the splash image. No mod or level work.
-- **Second frame.** Paint the splash so it is visible before any user-authored work. After paint: recompile stale scripts (debug-only; release no-ops), then run mod init. On success the engine drains the validated `setupMod()` return's entity-type descriptors into the engine-global `data_registry`. Start the hot-reload watcher (debug-only). Then spawn the level worker — **PRL parse only** (§2).
+- **Second frame.** Paint the splash so it is visible before any user-authored work. After paint: recompile stale scripts (debug-only; release no-ops), then run mod init. On success the engine commits the validated entity descriptors and transactional mod-state declarations. Persistence overlays declared defaults only on the first successful commit in the process. All store initialization completes before level work and the first gameplay frame. Start the hot-reload watcher (debug-only). Then spawn the level worker — **PRL parse only** (§2).
 - **Remaining frames.** Non-blocking poll of the worker channel. Keep painting the splash while it runs. On a non-empty payload: install the level, clear the splash, enter Running. A delivered-but-empty payload or a worker error stays in Splash.
 
 The two-frame delay is causal: pixels reach the user before any mod-supplied or level-load CPU work runs.
@@ -83,8 +83,9 @@ Lights come from PRL data via the light bridge, not classname dispatch. Entity t
 There is no in-engine level unload distinct from process exit: this engine runs one level per lifetime, so unload coincides with exit.
 
 - A close request or Escape exits the event loop.
-- The exit teardown hook releases level sounds (mirrors texture release on unload), then drops renderer and window.
-- There is NO `Drop` impl on the app and NO save-on-exit precedent. The app holds `script_ctx`/`data_registry` until the event loop returns and the process ends.
+- On clean exit, teardown saves persistent mod-state slots best-effort, releases level sounds (mirrors texture release on unload), then drops renderer and window.
+- Abnormal termination may lose writes made since the last successful save.
+- The app holds `script_ctx`/`data_registry` until the event loop returns and the process ends.
 
 Platform suspend is a separate path: it clears renderer/window/fog/collision and the in-flight worker, and resets state to Booting so resume rebuilds the surface. It does NOT clear `script_ctx`/`data_registry`.
 
@@ -99,7 +100,7 @@ Platform suspend is a separate path: it clears renderer/window/fog/collision and
 | Per-level reactions (`data_registry.reactions`) | Level unload. |
 | Renderer, window, audio, collision world, fog bridge | Dropped on exit; cleared on suspend and rebuilt on resume. |
 
-Level install runs exactly once per process — there is no runtime path to swap levels. Hot reload (debug only) recompiles changed script files and replaces engine-global entity types; definition-context changes still require a restart.
+Level install runs exactly once per process — there is no runtime path to swap levels. Hot reload (debug only) stages entity descriptors and store declarations off-thread, then reconciles both on the main thread. Compatible store schemas preserve live values; incompatible changes reject the staged result; removed declarations never clear committed stores.
 
 ---
 
@@ -109,7 +110,6 @@ Level install runs exactly once per process — there is no runtime path to swap
 - Runtime level-to-level transition / level swap mid-process
 - Networked mod sync; runtime mod hot-swap mid-level
 - Sandboxing mods from each other (mods share VM contexts and `data_registry` by design)
-- Save-on-exit / persisted session state
 
 ---
 

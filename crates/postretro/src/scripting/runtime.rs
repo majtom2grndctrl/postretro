@@ -22,10 +22,14 @@ use super::data_descriptors::{
 };
 use super::error::ScriptError;
 use super::luau::{LuauConfig, LuauSubsystem, Which as LuauWhich};
+use super::primitives::store::{
+    SharedStoreDeclarationAttempt, StoreDeclarationAttempt, store_declaration_primitive,
+};
 use super::primitives_registry::{PrimitiveRegistry, ScriptPrimitive};
 use super::quickjs::{QuickJsConfig, QuickJsSubsystem, run_script};
 #[cfg(debug_assertions)]
 use super::refresh_plan::{apply_descriptor_refresh_plan, plan_descriptor_refresh};
+use super::slot_table::StoreDeclarationSet;
 use super::staged_manifest::StagedManifestBuildResult;
 #[cfg(debug_assertions)]
 use super::staged_manifest::{StagedManifestBuildConfig, StagedManifestBuildLane};
@@ -41,6 +45,9 @@ pub(crate) struct ModManifestResult {
     /// returned object omits the `entities` field. Drained into `DataRegistry`
     /// by the boot caller after `run_mod_init` returns.
     pub(crate) entities: Vec<EntityTypeDescriptor>,
+    /// Validated state-store declarations collected during this mod-init
+    /// attempt. This is engine metadata, not a `ModManifest` script field.
+    pub(crate) store_declarations: StoreDeclarationSet,
 }
 
 /// Aggregated reload signal returned by
@@ -292,6 +299,7 @@ pub(crate) struct ScriptRuntime {
     staged_manifest_lane: Option<StagedManifestBuildLane>,
     #[cfg(debug_assertions)]
     active_mod_init_dependencies: Option<ActiveModInitDependencies>,
+    script_ctx: ScriptCtx,
     cfg: ScriptRuntimeConfig,
 }
 
@@ -309,7 +317,7 @@ impl ScriptRuntime {
     pub(crate) fn new(
         registry: &PrimitiveRegistry,
         cfg: &ScriptRuntimeConfig,
-        _ctx: &ScriptCtx,
+        ctx: &ScriptCtx,
     ) -> Result<Self, ScriptError> {
         let quickjs = QuickJsSubsystem::new(registry, &cfg.quickjs)?;
         let luau = LuauSubsystem::new(registry, &cfg.luau)?;
@@ -324,6 +332,7 @@ impl ScriptRuntime {
             staged_manifest_lane: None,
             #[cfg(debug_assertions)]
             active_mod_init_dependencies: None,
+            script_ctx: ctx.clone(),
             cfg: *cfg,
         })
     }
@@ -458,68 +467,89 @@ impl ScriptRuntime {
 
             self.log_staged_manifest_diagnostics(result);
 
-            let (next_descriptors, next_dependencies, descriptor_label) = match &result.status {
-                StagedManifestBuildStatus::Built(manifest) => {
-                    let dependencies = match ActiveModInitDependencies::from_dependencies(
-                        &result.mod_root,
-                        manifest.dependency_paths.iter(),
-                    ) {
-                        Ok(dependencies) => dependencies,
-                        Err(err) => {
-                            log::error!(
-                                "[Scripting] staged mod-init generation {} rejected before commit: {err}",
-                                result.generation,
-                            );
-                            return StagedManifestCommitOutcome::Rejected {
-                                generation: result.generation,
-                                reason: err,
-                            };
-                        }
-                    };
-                    (
-                        manifest.entities.clone(),
-                        dependencies,
-                        format!("mod `{}`", manifest.name),
-                    )
-                }
-                StagedManifestBuildStatus::NoStartScript => {
-                    let dependencies = match ActiveModInitDependencies::no_start_script(
-                        &result.mod_root,
-                    ) {
-                        Ok(dependencies) => dependencies,
-                        Err(err) => {
-                            log::error!(
-                                "[Scripting] staged mod-init generation {} rejected before commit: {err}",
-                                result.generation,
-                            );
-                            return StagedManifestCommitOutcome::Rejected {
-                                generation: result.generation,
-                                reason: err,
-                            };
-                        }
-                    };
-                    (
-                        Vec::new(),
-                        dependencies,
-                        "debug no-start-script state".to_string(),
-                    )
-                }
-                StagedManifestBuildStatus::Failed => {
-                    log::error!(
-                        "[Scripting] staged mod-init generation {} failed; keeping current descriptor registry",
-                        result.generation,
-                    );
-                    return StagedManifestCommitOutcome::FailedBuild {
-                        generation: result.generation,
-                    };
-                }
-            };
+            let (next_descriptors, next_store_declarations, next_dependencies, descriptor_label) =
+                match &result.status {
+                    StagedManifestBuildStatus::Built(manifest) => {
+                        let dependencies = match ActiveModInitDependencies::from_dependencies(
+                            &result.mod_root,
+                            manifest.dependency_paths.iter(),
+                        ) {
+                            Ok(dependencies) => dependencies,
+                            Err(err) => {
+                                log::error!(
+                                    "[Scripting] staged mod-init generation {} rejected before commit: {err}",
+                                    result.generation,
+                                );
+                                return StagedManifestCommitOutcome::Rejected {
+                                    generation: result.generation,
+                                    reason: err,
+                                };
+                            }
+                        };
+                        (
+                            manifest.entities.clone(),
+                            manifest.store_declarations.clone(),
+                            dependencies,
+                            format!("mod `{}`", manifest.name),
+                        )
+                    }
+                    StagedManifestBuildStatus::NoStartScript => {
+                        let dependencies = match ActiveModInitDependencies::no_start_script(
+                            &result.mod_root,
+                        ) {
+                            Ok(dependencies) => dependencies,
+                            Err(err) => {
+                                log::error!(
+                                    "[Scripting] staged mod-init generation {} rejected before commit: {err}",
+                                    result.generation,
+                                );
+                                return StagedManifestCommitOutcome::Rejected {
+                                    generation: result.generation,
+                                    reason: err,
+                                };
+                            }
+                        };
+                        (
+                            Vec::new(),
+                            StoreDeclarationSet::default(),
+                            dependencies,
+                            "debug no-start-script state".to_string(),
+                        )
+                    }
+                    StagedManifestBuildStatus::Failed => {
+                        log::error!(
+                            "[Scripting] staged mod-init generation {} failed; keeping current descriptor registry",
+                            result.generation,
+                        );
+                        return StagedManifestCommitOutcome::FailedBuild {
+                            generation: result.generation,
+                        };
+                    }
+                };
 
             // Dedup once up front (last-write-wins, matching startup's upsert)
             // so the warning fires a single time and both the refresh plan and
             // the registry replace observe the same deduped snapshot.
             let next_descriptors =
                 super::data_registry::DataRegistry::dedup_entity_type_snapshot(next_descriptors);
+            let store_plan = match ctx
+                .slot_table
+                .borrow()
+                .plan_reconcile(&next_store_declarations)
+            {
+                Ok(plan) => plan,
+                Err(error) => {
+                    let reason = format!("state-store declarations rejected: {error}");
+                    log::error!(
+                        "[Scripting] staged mod-init generation {} rejected before commit: {reason}",
+                        result.generation,
+                    );
+                    return StagedManifestCommitOutcome::Rejected {
+                        generation: result.generation,
+                        reason,
+                    };
+                }
+            };
 
             let old_descriptors = ctx.data_registry.borrow().entities.clone();
             let refresh_plan = {
@@ -553,6 +583,7 @@ impl ScriptRuntime {
                 }
             };
 
+            ctx.slot_table.borrow_mut().apply_reconcile_plan(store_plan);
             ctx.data_registry
                 .borrow_mut()
                 .replace_entity_types(next_descriptors);
@@ -887,6 +918,19 @@ impl ScriptRuntime {
                 mod_root,
             )?
         };
+
+        let store_plan = self
+            .script_ctx
+            .slot_table
+            .borrow()
+            .plan_reconcile(&manifest.store_declarations)
+            .map_err(|error| ScriptError::InvalidArgument {
+                reason: format!("mod-init: state-store declarations rejected: {error}"),
+            })?;
+        self.script_ctx
+            .slot_table
+            .borrow_mut()
+            .apply_reconcile_plan(store_plan);
 
         log::info!("[Mod-init] mod `{}` initialized", manifest.name);
         self.mod_manifest = Some(manifest);
@@ -1324,6 +1368,9 @@ fn run_mod_init_quickjs(
     })?;
 
     let primitives = subsys.primitives();
+    let declaration_attempt: SharedStoreDeclarationAttempt =
+        std::rc::Rc::new(std::cell::RefCell::new(StoreDeclarationAttempt::default()));
+    let declaration_primitive = store_declaration_primitive(declaration_attempt.clone());
     let mut out: Result<ModManifestResult, ScriptError> = Err(ScriptError::InvalidArgument {
         reason: "mod-init: setupMod did not produce a manifest".to_string(),
     });
@@ -1336,6 +1383,12 @@ fn run_mod_init_quickjs(
                 });
                 return;
             }
+        }
+        if let Err(e) = (declaration_primitive.quickjs_installer)(&ctx) {
+            out = Err(ScriptError::InvalidArgument {
+                reason: format!("mod-init: failed to install primitive `defineStore`: {e}"),
+            });
+            return;
         }
 
         if let Err(e) = super::quickjs::evaluate_prelude(&ctx) {
@@ -1455,10 +1508,16 @@ fn run_mod_init_quickjs(
             }
         };
 
-        out = Ok(ModManifestResult { name, entities });
+        out = Ok(ModManifestResult {
+            name,
+            entities,
+            store_declarations: StoreDeclarationSet::default(),
+        });
     });
 
-    out
+    let mut manifest = out?;
+    manifest.store_declarations = declaration_attempt.borrow().clone().finish()?;
+    Ok(manifest)
 }
 
 fn run_mod_init_luau(
@@ -1469,7 +1528,12 @@ fn run_mod_init_luau(
 ) -> Result<ModManifestResult, ScriptError> {
     // The mod-init Luau VM gets a working `require` resolver rooted at the
     // mod root so start-script can pull in domain scripts.
-    let lua = super::luau::build_lua_state(primitives, None, Some(mod_root))?;
+    let declaration_attempt: SharedStoreDeclarationAttempt =
+        std::rc::Rc::new(std::cell::RefCell::new(StoreDeclarationAttempt::default()));
+    let declaration_primitive = store_declaration_primitive(declaration_attempt.clone());
+    let mut mod_init_primitives = primitives.to_vec();
+    mod_init_primitives.push(declaration_primitive);
+    let lua = super::luau::build_lua_state(&mod_init_primitives, None, Some(mod_root))?;
 
     let bytecode = mlua::Compiler::new()
         .compile(source)
@@ -1569,7 +1633,11 @@ fn run_mod_init_luau(
         Vec::new()
     };
 
-    Ok(ModManifestResult { name, entities })
+    Ok(ModManifestResult {
+        name,
+        entities,
+        store_declarations: declaration_attempt.borrow().clone().finish()?,
+    })
 }
 
 #[cfg(test)]
@@ -1584,6 +1652,9 @@ mod tests {
         DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath,
     };
     use crate::scripting::registry::{ComponentKind, RegistryError, Transform};
+    use crate::scripting::slot_table::{
+        SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue, StoreDeclaration,
+    };
     use crate::scripting::staged_manifest::StagedManifest;
 
     fn runtime() -> (ScriptRuntime, ScriptCtx) {
@@ -1630,6 +1701,27 @@ mod tests {
         }
     }
 
+    fn number_store_declarations(namespace: &str, default: f32) -> StoreDeclarationSet {
+        let mut declarations = StoreDeclarationSet::default();
+        declarations
+            .add(StoreDeclaration {
+                namespace: namespace.to_string(),
+                records: vec![(
+                    "value".to_string(),
+                    SlotRecord::new(SlotSchema {
+                        slot_type: SlotType::Number,
+                        default: Some(SlotValue::Number(default)),
+                        range: None,
+                        persist: false,
+                        readonly: false,
+                        ownership: SlotOwnership::Mod,
+                    }),
+                )],
+            })
+            .unwrap();
+        declarations
+    }
+
     #[cfg(debug_assertions)]
     fn set_latest_staged_generation(rt: &mut ScriptRuntime, generation: u64) {
         rt.staged_manifest_lane = Some(StagedManifestBuildLane::new_for_test_latest(generation));
@@ -1649,6 +1741,7 @@ mod tests {
             status: StagedManifestBuildStatus::Built(StagedManifest {
                 name: name.to_string(),
                 entities,
+                store_declarations: StoreDeclarationSet::default(),
                 dependency_paths,
             }),
             diagnostics: Vec::new(),
@@ -1768,6 +1861,53 @@ mod tests {
         );
         let manifest = rt.run_data_script(&section, &std::env::temp_dir());
         assert_eq!(manifest.reactions.len(), 1);
+    }
+
+    #[test]
+    fn ephemeral_data_contexts_read_and_write_store_in_both_runtimes() {
+        for (source_path, body) in [
+            (
+                "/maps/store-data.js",
+                r#"
+                globalThis.setupLevel = function(ctx) {
+                    storeWrite("data.value", 2);
+                    if (storeRead("data.value") !== 2) throw new Error("store read");
+                    return { reactions: [] };
+                };
+                "#,
+            ),
+            (
+                "/maps/store-data.luau",
+                r#"
+                function setupLevel(ctx)
+                    storeWrite("data.value", 2)
+                    assert(storeRead("data.value") == 2)
+                    return { reactions = {} }
+                end
+                "#,
+            ),
+        ] {
+            let (rt, ctx) = runtime();
+            let declarations = number_store_declarations("data", 1.0);
+            let plan = ctx
+                .slot_table
+                .borrow()
+                .plan_reconcile(&declarations)
+                .unwrap();
+            ctx.slot_table.borrow_mut().apply_reconcile_plan(plan);
+
+            let manifest =
+                rt.run_data_script(&data_section(source_path, body), &std::env::temp_dir());
+            assert!(manifest.reactions.is_empty());
+            assert_eq!(
+                ctx.slot_table
+                    .borrow()
+                    .get("data.value")
+                    .and_then(|slot| slot.value.as_ref()),
+                Some(&SlotValue::Number(2.0)),
+                "{source_path} did not mutate the shared store"
+            );
+        }
     }
 
     #[test]
@@ -2314,6 +2454,107 @@ mod tests {
 
     #[test]
     #[cfg(debug_assertions)]
+    fn staged_manifest_commit_preserves_compatible_store_values() {
+        let (mut rt, ctx) = runtime();
+        let dir = temp_mod_root("commit_store_compatible");
+        let entry = dir.join("start-script.js");
+        fs::write(&entry, "").unwrap();
+        set_latest_staged_generation(&mut rt, 6);
+
+        let declarations = number_store_declarations("session", 1.0);
+        let plan = ctx
+            .slot_table
+            .borrow()
+            .plan_reconcile(&declarations)
+            .unwrap();
+        ctx.slot_table.borrow_mut().apply_reconcile_plan(plan);
+        ctx.slot_table
+            .borrow_mut()
+            .get_mut("session.value")
+            .unwrap()
+            .value = Some(SlotValue::Number(0.25));
+
+        let mut result = built_result(
+            6,
+            &dir,
+            "CompatibleStore",
+            vec![descriptor("new")],
+            vec![entry],
+        );
+        let StagedManifestBuildStatus::Built(manifest) = &mut result.status else {
+            unreachable!()
+        };
+        manifest.store_declarations = number_store_declarations("session", 1.0);
+
+        assert!(matches!(
+            rt.commit_staged_manifest_result(&result, &ctx),
+            StagedManifestCommitOutcome::Committed { generation: 6, .. }
+        ));
+        assert_eq!(
+            ctx.slot_table
+                .borrow()
+                .get("session.value")
+                .and_then(|slot| slot.value.as_ref())
+                .cloned(),
+            Some(SlotValue::Number(0.25))
+        );
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn staged_manifest_commit_rejects_schema_change_without_partial_commit() {
+        let (mut rt, ctx) = runtime();
+        let dir = temp_mod_root("commit_store_changed");
+        let entry = dir.join("start-script.js");
+        fs::write(&entry, "").unwrap();
+        set_latest_staged_generation(&mut rt, 7);
+        ctx.data_registry
+            .borrow_mut()
+            .replace_entity_types(vec![descriptor("old")]);
+
+        let existing = number_store_declarations("session", 1.0);
+        let plan = ctx.slot_table.borrow().plan_reconcile(&existing).unwrap();
+        ctx.slot_table.borrow_mut().apply_reconcile_plan(plan);
+
+        let mut changed = number_store_declarations("session", 2.0);
+        changed
+            .add(
+                number_store_declarations("new_namespace", 1.0)
+                    .iter()
+                    .next()
+                    .unwrap()
+                    .clone(),
+            )
+            .unwrap();
+        let mut result = built_result(
+            7,
+            &dir,
+            "ChangedStore",
+            vec![descriptor("new")],
+            vec![entry],
+        );
+        let StagedManifestBuildStatus::Built(manifest) = &mut result.status else {
+            unreachable!()
+        };
+        manifest.store_declarations = changed;
+
+        assert!(matches!(
+            rt.commit_staged_manifest_result(&result, &ctx),
+            StagedManifestCommitOutcome::Rejected { generation: 7, .. }
+        ));
+        assert_eq!(ctx.data_registry.borrow().entities, vec![descriptor("old")]);
+        assert!(ctx.slot_table.borrow().get("new_namespace.value").is_none());
+        assert_eq!(
+            ctx.slot_table
+                .borrow()
+                .get("session.value")
+                .and_then(|slot| slot.value.as_ref()),
+            Some(&SlotValue::Number(1.0))
+        );
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
     fn staged_manifest_commit_no_start_script_replaces_descriptors_and_applies_removal() {
         let (mut rt, ctx) = runtime();
         let dir = temp_mod_root("commit_no_start");
@@ -2482,6 +2723,98 @@ mod tests {
                 .iter()
                 .any(|e| e.canonical_name.as_deref() == Some("smoke_pillar")),
             "setupMod's `entities` field must carry the descriptor on the manifest"
+        );
+    }
+
+    #[test]
+    fn failed_mod_init_rolls_back_quickjs_and_luau_store_declarations() {
+        for (name, file_name, source) in [
+            (
+                "js",
+                "start-script.js",
+                r#"
+                defineStore("attempt", {
+                    value: { type: "number", default: 1 },
+                });
+                globalThis.setupMod = function() { return {}; };
+                "#,
+            ),
+            (
+                "luau",
+                "start-script.luau",
+                r#"
+                defineStore("attempt", {
+                    value = { type = "number", default = 1 },
+                })
+                function setupMod() return {} end
+                "#,
+            ),
+        ] {
+            let (mut rt, ctx) = runtime();
+            let dir = temp_mod_root(&format!("{name}_store_rollback"));
+            fs::write(dir.join(file_name), source).unwrap();
+
+            rt.run_mod_init(&dir)
+                .expect_err("missing manifest name must fail");
+            assert!(
+                ctx.slot_table.borrow().get("attempt.value").is_none(),
+                "{name} declaration leaked from failed mod init"
+            );
+        }
+    }
+
+    #[test]
+    fn caught_duplicate_store_declaration_still_rejects_whole_attempt() {
+        let (mut rt, ctx) = runtime();
+        let dir = temp_mod_root("caught_duplicate_store");
+        fs::write(
+            dir.join("start-script.js"),
+            r#"
+            defineStore("attempt", {
+                value: { type: "number", default: 1 },
+            });
+            try {
+                defineStore("attempt", {
+                    value: { type: "number", default: 1 },
+                });
+            } catch (_) {}
+            globalThis.setupMod = function() { return { name: "CaughtDuplicate" }; };
+            "#,
+        )
+        .unwrap();
+
+        rt.run_mod_init(&dir)
+            .expect_err("caught duplicate must poison the declaration attempt");
+        assert!(ctx.slot_table.borrow().get("attempt.value").is_none());
+    }
+
+    #[test]
+    fn repeated_mod_init_preserves_live_store_values() {
+        let (mut rt, ctx) = runtime();
+        let dir = temp_mod_root("repeat_store");
+        fs::write(
+            dir.join("start-script.js"),
+            r#"
+            defineStore("session", {
+                volume: { type: "number", default: 1, persist: true },
+            });
+            globalThis.setupMod = function() { return { name: "RepeatStore" }; };
+            "#,
+        )
+        .unwrap();
+
+        rt.run_mod_init(&dir).unwrap();
+        crate::scripting::primitives::store::write_store_slot(
+            &ctx,
+            "session.volume",
+            crate::scripting::slot_table::SlotValue::Number(0.25),
+        )
+        .unwrap();
+
+        rt.run_mod_init(&dir).unwrap();
+        assert_eq!(
+            crate::scripting::primitives::store::read_store_slot(&ctx, "session.volume").unwrap(),
+            crate::scripting::slot_table::SlotValue::Number(0.25)
         );
     }
 

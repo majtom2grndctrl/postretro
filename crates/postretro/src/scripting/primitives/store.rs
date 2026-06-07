@@ -1,0 +1,1174 @@
+// State-store declaration, read/write primitives, and engine accessors.
+// See: context/lib/scripting.md §5 "Durable State Store"
+
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+use std::rc::Rc;
+
+use mlua::{FromLua, IntoLua, Lua, Table as LuaTable, Value as LuaValue};
+use rquickjs::{Array, Ctx, FromJs, IntoJs, Object as JsObject, Value as JsValue};
+use serde::Deserialize;
+use serde_json::Value;
+
+use crate::scripting::conv::{js_to_json, lua_to_json};
+use crate::scripting::ctx::ScriptCtx;
+use crate::scripting::error::ScriptError;
+use crate::scripting::primitives_registry::{ContextScope, PrimitiveRegistry, ScriptPrimitive};
+use crate::scripting::slot_table::{
+    NumericRange, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue, StoreDeclaration,
+    StoreDeclarationSet,
+};
+
+struct StoreSchemaJson(Value);
+
+impl<'js> FromJs<'js> for StoreSchemaJson {
+    fn from_js(ctx: &Ctx<'js>, value: JsValue<'js>) -> rquickjs::Result<Self> {
+        js_to_json(ctx, value).map(Self)
+    }
+}
+
+impl FromLua for StoreSchemaJson {
+    fn from_lua(value: LuaValue, _lua: &Lua) -> mlua::Result<Self> {
+        lua_to_json(value).map(Self)
+    }
+}
+
+#[derive(Clone, Debug)]
+enum ScriptSlotValue {
+    Number(f64),
+    Boolean(bool),
+    String(String),
+    Array(Vec<f64>),
+    Unsupported(&'static str),
+}
+
+impl<'js> FromJs<'js> for ScriptSlotValue {
+    fn from_js(ctx: &Ctx<'js>, value: JsValue<'js>) -> rquickjs::Result<Self> {
+        if let Some(value) = value.as_bool() {
+            return Ok(Self::Boolean(value));
+        }
+        if let Some(value) = value.as_int() {
+            return Ok(Self::Number(f64::from(value)));
+        }
+        if let Some(value) = value.as_float() {
+            return Ok(Self::Number(value));
+        }
+        if let Some(value) = value.as_string() {
+            return Ok(Self::String(value.to_string()?));
+        }
+        if let Some(array) = value.as_array() {
+            let mut values = Vec::with_capacity(array.len());
+            for index in 0..array.len() {
+                let item: JsValue = array.get(index)?;
+                let number = if let Some(value) = item.as_int() {
+                    f64::from(value)
+                } else if let Some(value) = item.as_float() {
+                    value
+                } else {
+                    return Ok(Self::Unsupported("array containing a non-number"));
+                };
+                values.push(number);
+            }
+            return Ok(Self::Array(values));
+        }
+        let _ = ctx;
+        Ok(Self::Unsupported("unsupported value"))
+    }
+}
+
+impl FromLua for ScriptSlotValue {
+    fn from_lua(value: LuaValue, _lua: &Lua) -> mlua::Result<Self> {
+        match value {
+            LuaValue::Boolean(value) => Ok(Self::Boolean(value)),
+            LuaValue::Integer(value) => Ok(Self::Number(value as f64)),
+            LuaValue::Number(value) => Ok(Self::Number(value)),
+            LuaValue::String(value) => Ok(Self::String(value.to_str()?.to_string())),
+            LuaValue::Table(table) => {
+                let len = table.raw_len();
+                for pair in table.clone().pairs::<LuaValue, LuaValue>() {
+                    let (key, _) = pair?;
+                    let LuaValue::Integer(index) = key else {
+                        return Ok(Self::Unsupported("table with non-array keys"));
+                    };
+                    if index < 1 || index as usize > len {
+                        return Ok(Self::Unsupported("sparse array"));
+                    }
+                }
+
+                let mut values = Vec::with_capacity(len);
+                for index in 1..=len {
+                    match table.get::<LuaValue>(index)? {
+                        LuaValue::Integer(value) => values.push(value as f64),
+                        LuaValue::Number(value) => values.push(value),
+                        _ => {
+                            return Ok(Self::Unsupported("array containing a non-number"));
+                        }
+                    }
+                }
+                Ok(Self::Array(values))
+            }
+            _ => Ok(Self::Unsupported("unsupported value")),
+        }
+    }
+}
+
+struct Any(SlotValue);
+
+impl<'js> IntoJs<'js> for Any {
+    fn into_js(self, ctx: &Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        match self.0 {
+            SlotValue::Number(value) => value.into_js(ctx),
+            SlotValue::Boolean(value) => value.into_js(ctx),
+            SlotValue::String(value) | SlotValue::Enum(value) => value.into_js(ctx),
+            SlotValue::Array(values) => {
+                let array = Array::new(ctx.clone())?;
+                for (index, value) in values.into_iter().enumerate() {
+                    array.set(index, value)?;
+                }
+                Ok(array.into_value())
+            }
+        }
+    }
+}
+
+/// Script-facing handles returned by `defineStore`.
+///
+/// Each property value is the stable dotted slot name. The brand exists only
+/// in generated types; the runtime identity is an ordinary string.
+#[derive(Debug)]
+pub(crate) struct StoreHandles(BTreeMap<String, String>);
+
+impl<'js> IntoJs<'js> for StoreHandles {
+    fn into_js(self, ctx: &Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        let object = JsObject::new(ctx.clone())?;
+        for (slot_name, dotted_name) in self.0 {
+            object.set(slot_name, dotted_name)?;
+        }
+        Ok(object.into_value())
+    }
+}
+
+impl IntoLua for StoreHandles {
+    fn into_lua(self, lua: &Lua) -> mlua::Result<LuaValue> {
+        let table: LuaTable = lua.create_table()?;
+        for (slot_name, dotted_name) in self.0 {
+            table.set(slot_name, dotted_name)?;
+        }
+        Ok(LuaValue::Table(table))
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct StoreDeclarationAttempt {
+    declarations: StoreDeclarationSet,
+    failure: Option<String>,
+}
+
+impl StoreDeclarationAttempt {
+    fn collect(&mut self, namespace: &str, schema: Value) -> Result<StoreHandles, ScriptError> {
+        let result = store_declaration(namespace, schema).and_then(|declaration| {
+            let handles = handles_for(&declaration);
+            self.declarations
+                .add(declaration)
+                .map_err(|error| ScriptError::InvalidArgument {
+                    reason: format!("defineStore: {error}"),
+                })?;
+            Ok(handles)
+        });
+
+        if let Err(error) = &result {
+            self.failure.get_or_insert_with(|| error.to_string());
+        }
+        result
+    }
+
+    pub(crate) fn finish(self) -> Result<StoreDeclarationSet, ScriptError> {
+        if let Some(reason) = self.failure {
+            return Err(ScriptError::InvalidArgument {
+                reason: format!(
+                    "mod-init: store declaration attempt failed before commit: {reason}"
+                ),
+            });
+        }
+        Ok(self.declarations)
+    }
+}
+
+pub(crate) type SharedStoreDeclarationAttempt = Rc<RefCell<StoreDeclarationAttempt>>;
+
+impl IntoLua for Any {
+    fn into_lua(self, lua: &Lua) -> mlua::Result<LuaValue> {
+        match self.0 {
+            SlotValue::Number(value) => value.into_lua(lua),
+            SlotValue::Boolean(value) => value.into_lua(lua),
+            SlotValue::String(value) | SlotValue::Enum(value) => value.into_lua(lua),
+            SlotValue::Array(values) => values.into_lua(lua),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SlotSchemaInput {
+    #[serde(rename = "type")]
+    slot_type: String,
+    #[serde(default)]
+    default: Option<Value>,
+    #[serde(default)]
+    range: Option<Value>,
+    #[serde(default)]
+    persist: bool,
+    #[serde(default)]
+    readonly: bool,
+    #[serde(default)]
+    values: Option<Value>,
+}
+
+const DEFINE_STORE_DOC: &str = "Declare an engine-global typed state-store namespace during mod init. \
+     Every mod-owned slot requires a default. Supported types are number, boolean, string, enum, and array. \
+     Namespace registration is atomic and rejects existing or dotted-prefix-colliding namespaces. \
+     Returns an object keyed by slot name whose branded string values are stable dotted-name handles. \
+     Definition context.";
+
+const STORE_READ_DOC: &str = "Read the current value of an engine-global state slot by stable dotted name. \
+     Available in definition and data contexts.";
+
+const STORE_WRITE_DOC: &str = "Write an engine-global state slot by stable dotted name. \
+     The value must exactly match the declared slot type. Finite numbers are clamped to the declared inclusive range. \
+     Readonly slots reject script writes with a warning and remain unchanged. Available in definition and data contexts.";
+
+pub(crate) fn register_store_primitives(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
+    registry
+        .register("defineStore", {
+            let ctx = ctx.clone();
+            move |namespace: String, schema: StoreSchemaJson| -> Result<StoreHandles, ScriptError> {
+                define_store(&ctx, &namespace, schema.0)
+            }
+        })
+        .scope(ContextScope::DefinitionOnly)
+        .doc(DEFINE_STORE_DOC)
+        .param("namespace", "String")
+        .param("schema", "Any")
+        .finish();
+
+    registry
+        .register("storeRead", {
+            let ctx = ctx.clone();
+            move |name: String| -> Result<Any, ScriptError> {
+                read_store_slot(&ctx, &name).map(Any)
+            }
+        })
+        .scope(ContextScope::Both)
+        .doc(STORE_READ_DOC)
+        .param("name", "String")
+        .finish();
+
+    registry
+        .register(
+            "storeWrite",
+            move |name: String, value: ScriptSlotValue| -> Result<(), ScriptError> {
+                write_script_store_slot(&ctx, &name, value)
+            },
+        )
+        .scope(ContextScope::Both)
+        .doc(STORE_WRITE_DOC)
+        .param("name", "String")
+        .param("value", "Any")
+        .finish();
+}
+
+/// Build an attempt-local `defineStore` primitive for mod-init contexts.
+///
+/// Installing this after the normal primitive snapshot replaces only
+/// `defineStore`; reads and writes still target the live table.
+pub(crate) fn store_declaration_primitive(
+    attempt: SharedStoreDeclarationAttempt,
+) -> ScriptPrimitive {
+    let mut registry = PrimitiveRegistry::new();
+    registry
+        .register(
+            "defineStore",
+            move |namespace: String,
+                  schema: StoreSchemaJson|
+                  -> Result<StoreHandles, ScriptError> {
+                attempt.borrow_mut().collect(&namespace, schema.0)
+            },
+        )
+        .scope(ContextScope::DefinitionOnly)
+        .doc(DEFINE_STORE_DOC)
+        .param("namespace", "String")
+        .param("schema", "Any")
+        .finish();
+    registry
+        .iter()
+        .next()
+        .expect("collector registry contains defineStore")
+        .clone()
+}
+
+pub(crate) fn read_store_slot(ctx: &ScriptCtx, name: &str) -> Result<SlotValue, ScriptError> {
+    let table = ctx.slot_table.borrow();
+    let slot = table
+        .get(name)
+        .ok_or_else(|| unknown_slot("storeRead", name))?;
+    slot.value
+        .clone()
+        .ok_or_else(|| ScriptError::InvalidArgument {
+            reason: format!("storeRead: state slot `{name}` has no current value"),
+        })
+}
+
+/// Engine-side write path. Readonly is a script ownership rule, so engine
+/// systems bypass it while still applying the declared type/range validation.
+pub(crate) fn write_store_slot(
+    ctx: &ScriptCtx,
+    name: &str,
+    value: SlotValue,
+) -> Result<(), ScriptError> {
+    let mut table = ctx.slot_table.borrow_mut();
+    let slot = table
+        .get_mut(name)
+        .ok_or_else(|| unknown_slot("storeWrite", name))?;
+    slot.value = Some(validate_slot_value(name, &slot.schema, value)?);
+    Ok(())
+}
+
+fn write_script_store_slot(
+    ctx: &ScriptCtx,
+    name: &str,
+    value: ScriptSlotValue,
+) -> Result<(), ScriptError> {
+    let mut table = ctx.slot_table.borrow_mut();
+    let slot = table
+        .get_mut(name)
+        .ok_or_else(|| unknown_slot("storeWrite", name))?;
+    if slot.schema.readonly {
+        log::warn!("[Scripting] storeWrite: rejected write to readonly slot `{name}`");
+        return Ok(());
+    }
+
+    let value = script_value_for_slot(name, &slot.schema.slot_type, value)?;
+    slot.value = Some(validate_slot_value(name, &slot.schema, value)?);
+    Ok(())
+}
+
+fn script_value_for_slot(
+    name: &str,
+    slot_type: &SlotType,
+    value: ScriptSlotValue,
+) -> Result<SlotValue, ScriptError> {
+    match (slot_type, value) {
+        (SlotType::Number, ScriptSlotValue::Number(value)) => {
+            Ok(SlotValue::Number(finite_f32(name, value)?))
+        }
+        (SlotType::Boolean, ScriptSlotValue::Boolean(value)) => Ok(SlotValue::Boolean(value)),
+        (SlotType::String, ScriptSlotValue::String(value)) => Ok(SlotValue::String(value)),
+        (SlotType::Enum { .. }, ScriptSlotValue::String(value)) => Ok(SlotValue::Enum(value)),
+        (SlotType::Array, ScriptSlotValue::Array(values)) => Ok(SlotValue::Array(
+            values
+                .into_iter()
+                .enumerate()
+                .map(|(index, value)| finite_array_f32(name, index, value))
+                .collect::<Result<Vec<_>, _>>()?,
+        )),
+        (_, ScriptSlotValue::Unsupported(actual)) => Err(wrong_write_type(name, slot_type, actual)),
+        (_, actual) => Err(wrong_write_type(
+            name,
+            slot_type,
+            script_value_kind(&actual),
+        )),
+    }
+}
+
+fn validate_slot_value(
+    name: &str,
+    schema: &SlotSchema,
+    value: SlotValue,
+) -> Result<SlotValue, ScriptError> {
+    match (&schema.slot_type, value) {
+        (SlotType::Number, SlotValue::Number(value)) => {
+            if !value.is_finite() {
+                return Err(non_finite_write(name, "number"));
+            }
+            if let Some(range) = schema.range {
+                let clamped = value.clamp(range.min, range.max);
+                if clamped != value {
+                    log::warn!(
+                        "[Scripting] storeWrite: clamped slot `{name}` from {value} to {clamped} within [{}, {}]",
+                        range.min,
+                        range.max
+                    );
+                }
+                Ok(SlotValue::Number(clamped))
+            } else {
+                Ok(SlotValue::Number(value))
+            }
+        }
+        (SlotType::Boolean, SlotValue::Boolean(value)) => Ok(SlotValue::Boolean(value)),
+        (SlotType::String, SlotValue::String(value)) => Ok(SlotValue::String(value)),
+        (SlotType::Enum { values }, SlotValue::Enum(value)) => {
+            if values.contains(&value) {
+                Ok(SlotValue::Enum(value))
+            } else {
+                Err(ScriptError::InvalidArgument {
+                    reason: format!(
+                        "storeWrite: value `{value}` is not declared for enum slot `{name}`"
+                    ),
+                })
+            }
+        }
+        (SlotType::Array, SlotValue::Array(values)) => {
+            if values.iter().all(|value| value.is_finite()) {
+                Ok(SlotValue::Array(values))
+            } else {
+                Err(non_finite_write(name, "array element"))
+            }
+        }
+        (expected, actual) => Err(wrong_write_type(name, expected, slot_value_kind(&actual))),
+    }
+}
+
+fn finite_f32(name: &str, value: f64) -> Result<f32, ScriptError> {
+    let narrowed = value as f32;
+    if value.is_finite() && narrowed.is_finite() {
+        Ok(narrowed)
+    } else {
+        Err(non_finite_write(name, "number"))
+    }
+}
+
+fn finite_array_f32(name: &str, index: usize, value: f64) -> Result<f32, ScriptError> {
+    finite_f32(name, value).map_err(|_| ScriptError::InvalidArgument {
+        reason: format!("storeWrite: slot `{name}` array element [{index}] must be finite"),
+    })
+}
+
+fn unknown_slot(primitive: &str, name: &str) -> ScriptError {
+    ScriptError::InvalidArgument {
+        reason: format!("{primitive}: unknown state slot `{name}`"),
+    }
+}
+
+fn non_finite_write(name: &str, kind: &str) -> ScriptError {
+    ScriptError::InvalidArgument {
+        reason: format!("storeWrite: slot `{name}` {kind} must be finite"),
+    }
+}
+
+fn wrong_write_type(name: &str, expected: &SlotType, actual: &str) -> ScriptError {
+    ScriptError::InvalidArgument {
+        reason: format!(
+            "storeWrite: slot `{name}` expects {}, got {actual}",
+            slot_type_name(expected)
+        ),
+    }
+}
+
+fn slot_type_name(slot_type: &SlotType) -> &'static str {
+    match slot_type {
+        SlotType::Number => "number",
+        SlotType::Boolean => "boolean",
+        SlotType::String => "string",
+        SlotType::Enum { .. } => "enum string",
+        SlotType::Array => "number array",
+    }
+}
+
+fn script_value_kind(value: &ScriptSlotValue) -> &'static str {
+    match value {
+        ScriptSlotValue::Number(_) => "number",
+        ScriptSlotValue::Boolean(_) => "boolean",
+        ScriptSlotValue::String(_) => "string",
+        ScriptSlotValue::Array(_) => "array",
+        ScriptSlotValue::Unsupported(kind) => kind,
+    }
+}
+
+fn slot_value_kind(value: &SlotValue) -> &'static str {
+    match value {
+        SlotValue::Number(_) => "number",
+        SlotValue::Boolean(_) => "boolean",
+        SlotValue::String(_) => "string",
+        SlotValue::Enum(_) => "enum",
+        SlotValue::Array(_) => "array",
+    }
+}
+
+fn define_store(
+    ctx: &ScriptCtx,
+    namespace: &str,
+    schema: Value,
+) -> Result<StoreHandles, ScriptError> {
+    let declaration = store_declaration(namespace, schema)?;
+    let handles = handles_for(&declaration);
+    ctx.slot_table
+        .borrow_mut()
+        .insert_namespace(&declaration.namespace, declaration.records)
+        .map_err(|error| ScriptError::InvalidArgument {
+            reason: format!("defineStore: {error}"),
+        })?;
+    Ok(handles)
+}
+
+fn store_declaration(namespace: &str, schema: Value) -> Result<StoreDeclaration, ScriptError> {
+    let inputs: BTreeMap<String, SlotSchemaInput> =
+        serde_json::from_value(schema).map_err(|error| invalid_schema(None, error))?;
+
+    let mut records = Vec::with_capacity(inputs.len());
+    for (slot_name, input) in inputs {
+        let record = validate_slot_schema(&slot_name, input)?;
+        records.push((slot_name, record));
+    }
+
+    Ok(StoreDeclaration {
+        namespace: namespace.to_string(),
+        records,
+    })
+}
+
+fn handles_for(declaration: &StoreDeclaration) -> StoreHandles {
+    StoreHandles(
+        declaration
+            .records
+            .iter()
+            .map(|(slot_name, _)| {
+                (
+                    slot_name.clone(),
+                    format!("{}.{}", declaration.namespace, slot_name),
+                )
+            })
+            .collect(),
+    )
+}
+
+fn validate_slot_schema(
+    slot_name: &str,
+    input: SlotSchemaInput,
+) -> Result<SlotRecord, ScriptError> {
+    let SlotSchemaInput {
+        slot_type,
+        default,
+        range,
+        persist,
+        readonly,
+        values,
+    } = input;
+
+    let default = default.ok_or_else(|| ScriptError::InvalidArgument {
+        reason: format!("defineStore: slot `{slot_name}` requires `default`"),
+    })?;
+
+    let (slot_type, default, range) = match slot_type.as_str() {
+        "number" => {
+            let default = json_number(&default, slot_name, "default")?;
+            let range = range
+                .as_ref()
+                .map(|value| number_range(value, slot_name, default))
+                .transpose()?;
+            (SlotType::Number, SlotValue::Number(default), range)
+        }
+        "boolean" => (
+            SlotType::Boolean,
+            SlotValue::Boolean(
+                default
+                    .as_bool()
+                    .ok_or_else(|| wrong_default(slot_name, "boolean"))?,
+            ),
+            None,
+        ),
+        "string" => (
+            SlotType::String,
+            SlotValue::String(
+                default
+                    .as_str()
+                    .ok_or_else(|| wrong_default(slot_name, "string"))?
+                    .to_string(),
+            ),
+            None,
+        ),
+        "enum" => {
+            let values: Vec<String> =
+                serde_json::from_value(values.ok_or_else(|| ScriptError::InvalidArgument {
+                    reason: format!("defineStore: enum slot `{slot_name}` requires `values`"),
+                })?)
+                .map_err(|error| invalid_schema(Some(slot_name), error))?;
+            if values.is_empty() {
+                return Err(ScriptError::InvalidArgument {
+                    reason: format!(
+                        "defineStore: enum slot `{slot_name}` requires at least one value"
+                    ),
+                });
+            }
+            let default = default
+                .as_str()
+                .ok_or_else(|| wrong_default(slot_name, "enum string"))?
+                .to_string();
+            if !values.contains(&default) {
+                return Err(ScriptError::InvalidArgument {
+                    reason: format!(
+                        "defineStore: enum slot `{slot_name}` default `{default}` is not in `values`"
+                    ),
+                });
+            }
+            (SlotType::Enum { values }, SlotValue::Enum(default), None)
+        }
+        "array" => {
+            let elements = default
+                .as_array()
+                .ok_or_else(|| wrong_default(slot_name, "number array"))?;
+            let values = elements
+                .iter()
+                .enumerate()
+                .map(|(index, value)| json_number(value, slot_name, &format!("default[{index}]")))
+                .collect::<Result<Vec<_>, _>>()?;
+            (SlotType::Array, SlotValue::Array(values), None)
+        }
+        other => {
+            return Err(ScriptError::InvalidArgument {
+                reason: format!("defineStore: slot `{slot_name}` has unknown type `{other}`"),
+            });
+        }
+    };
+
+    Ok(SlotRecord::new(SlotSchema {
+        slot_type,
+        default: Some(default),
+        range,
+        persist,
+        readonly,
+        ownership: SlotOwnership::Mod,
+    }))
+}
+
+fn json_number(value: &Value, slot_name: &str, field: &str) -> Result<f32, ScriptError> {
+    let Some(number) = value.as_f64() else {
+        return Err(ScriptError::InvalidArgument {
+            reason: format!("defineStore: slot `{slot_name}` `{field}` must be a finite number"),
+        });
+    };
+    let narrowed = number as f32;
+    if !number.is_finite() || !narrowed.is_finite() {
+        return Err(ScriptError::InvalidArgument {
+            reason: format!("defineStore: slot `{slot_name}` `{field}` must be a finite number"),
+        });
+    }
+    Ok(narrowed)
+}
+
+fn number_range(value: &Value, slot_name: &str, default: f32) -> Result<NumericRange, ScriptError> {
+    let values = value
+        .as_array()
+        .ok_or_else(|| ScriptError::InvalidArgument {
+            reason: format!("defineStore: number slot `{slot_name}` `range` must be [min, max]"),
+        })?;
+    if values.len() != 2 {
+        return Err(ScriptError::InvalidArgument {
+            reason: format!("defineStore: number slot `{slot_name}` `range` must be [min, max]"),
+        });
+    }
+    let min = json_number(&values[0], slot_name, "range[0]")?;
+    let max = json_number(&values[1], slot_name, "range[1]")?;
+    if min > max {
+        return Err(ScriptError::InvalidArgument {
+            reason: format!(
+                "defineStore: number slot `{slot_name}` range minimum {min} exceeds maximum {max}"
+            ),
+        });
+    }
+    if !(min..=max).contains(&default) {
+        return Err(ScriptError::InvalidArgument {
+            reason: format!(
+                "defineStore: number slot `{slot_name}` default {default} is outside inclusive range [{min}, {max}]"
+            ),
+        });
+    }
+    Ok(NumericRange { min, max })
+}
+
+fn wrong_default(slot_name: &str, expected: &str) -> ScriptError {
+    ScriptError::InvalidArgument {
+        reason: format!("defineStore: slot `{slot_name}` default must be {expected}"),
+    }
+}
+
+fn invalid_schema(slot_name: Option<&str>, error: serde_json::Error) -> ScriptError {
+    let location = slot_name
+        .map(|name| format!(" for slot `{name}`"))
+        .unwrap_or_default();
+    ScriptError::InvalidArgument {
+        reason: format!("defineStore: malformed schema{location}: {error}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scripting::luau::{LuauConfig, LuauSubsystem, Which};
+    use crate::scripting::primitives_registry::PrimitiveRegistry;
+    use crate::scripting::quickjs::{QuickJsConfig, QuickJsSubsystem, run_script};
+    use crate::scripting::slot_table::NamespaceInsertError;
+
+    fn registry_for(ctx: ScriptCtx) -> PrimitiveRegistry {
+        let mut registry = PrimitiveRegistry::new();
+        register_store_primitives(&mut registry, ctx);
+        registry
+    }
+
+    fn define_runtime_test_store(ctx: &ScriptCtx) {
+        define_store(
+            ctx,
+            "test",
+            serde_json::json!({
+                "number": { "type": "number", "default": 0.5, "range": [0, 1] },
+                "boolean": { "type": "boolean", "default": false },
+                "string": { "type": "string", "default": "before" },
+                "enum": { "type": "enum", "values": ["idle", "active"], "default": "idle" },
+                "array": { "type": "array", "default": [0, 1] },
+            }),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn define_store_is_definition_only() {
+        let registry = registry_for(ScriptCtx::new());
+        let primitive = registry
+            .iter()
+            .find(|primitive| primitive.name == "defineStore")
+            .unwrap();
+        assert_eq!(primitive.context_scope, ContextScope::DefinitionOnly);
+    }
+
+    #[test]
+    fn store_read_and_write_are_both_scoped_and_avoid_reserved_name() {
+        let registry = registry_for(ScriptCtx::new());
+        for name in ["storeRead", "storeWrite"] {
+            let primitive = registry
+                .iter()
+                .find(|primitive| primitive.name == name)
+                .unwrap();
+            assert_eq!(primitive.context_scope, ContextScope::Both);
+        }
+        assert!(
+            registry
+                .iter()
+                .all(|primitive| primitive.name != "setState")
+        );
+    }
+
+    #[test]
+    fn define_store_quickjs_and_luau_produce_equivalent_slots() {
+        let js_ctx = ScriptCtx::new();
+        let js_registry = registry_for(js_ctx.clone());
+        let quickjs = QuickJsSubsystem::new(&js_registry, &QuickJsConfig::default()).unwrap();
+        quickjs.definition_ctx().with(|qjs| {
+            run_script::<()>(
+                &qjs,
+                r#"
+                defineStore("audio", {
+                    master: { type: "number", default: 0.8, range: [0, 1], persist: true },
+                    muted: { type: "boolean", default: false },
+                    label: { type: "string", default: "" },
+                    mode: { type: "enum", values: ["quiet", "loud"], default: "quiet" },
+                    curve: { type: "array", default: [0, 0.5, 1] },
+                });
+                "#,
+                "store.js",
+            )
+            .unwrap();
+        });
+
+        let luau_ctx = ScriptCtx::new();
+        let luau_registry = registry_for(luau_ctx.clone());
+        let luau = LuauSubsystem::new(&luau_registry, &LuauConfig::default()).unwrap();
+        luau.run_source::<()>(
+            Which::Definition,
+            r#"
+            defineStore("audio", {
+                master = { type = "number", default = 0.8, range = {0, 1}, persist = true },
+                muted = { type = "boolean", default = false },
+                label = { type = "string", default = "" },
+                mode = { type = "enum", values = {"quiet", "loud"}, default = "quiet" },
+                curve = { type = "array", default = {0, 0.5, 1} },
+            })
+            "#,
+            "store.luau",
+        )
+        .unwrap();
+
+        let js_slots = js_ctx.slot_table.borrow();
+        let luau_slots = luau_ctx.slot_table.borrow();
+        for name in [
+            "audio.master",
+            "audio.muted",
+            "audio.label",
+            "audio.mode",
+            "audio.curve",
+        ] {
+            assert_eq!(js_slots.get(name), luau_slots.get(name), "slot {name}");
+        }
+    }
+
+    #[test]
+    fn malformed_schemas_return_errors_without_partial_insertion() {
+        let cases = [
+            r#"({ value: { type: "number" } })"#,
+            r#"({ value: { type: "number", default: "one" } })"#,
+            r#"({ value: { type: "number", default: 2, range: [0, 1] } })"#,
+            r#"({ value: { type: "number", default: 1, range: [2, 1] } })"#,
+            r#"({ value: { type: "boolean", default: 1 } })"#,
+            r#"({ value: { type: "string", default: false } })"#,
+            r#"({ value: { type: "enum", values: [], default: "a" } })"#,
+            r#"({ value: { type: "enum", values: ["a"], default: "b" } })"#,
+            r#"({ value: { type: "array", default: [1, NaN] } })"#,
+            r#"({ value: { type: "vector", default: 1 } })"#,
+        ];
+
+        for (index, schema) in cases.into_iter().enumerate() {
+            let ctx = ScriptCtx::new();
+            let registry = registry_for(ctx.clone());
+            let quickjs = QuickJsSubsystem::new(&registry, &QuickJsConfig::default()).unwrap();
+            quickjs.definition_ctx().with(|qjs| {
+                let source = format!("defineStore(\"bad{index}\", {schema});");
+                let err = run_script::<()>(&qjs, &source, "bad-store.js")
+                    .expect_err("malformed schema should throw");
+                assert!(matches!(err, ScriptError::ScriptThrew { .. }));
+            });
+            assert!(
+                ctx.slot_table
+                    .borrow()
+                    .get(&format!("bad{index}.value"))
+                    .is_none()
+            );
+        }
+
+        let ctx = ScriptCtx::new();
+        let err = define_store(
+            &ctx,
+            "mixed",
+            serde_json::json!({
+                "good": { "type": "number", "default": 1 },
+                "bad": { "type": "enum", "values": [], "default": "x" },
+            }),
+        )
+        .unwrap_err();
+        assert!(matches!(err, ScriptError::InvalidArgument { .. }));
+        assert!(ctx.slot_table.borrow().get("mixed.good").is_none());
+    }
+
+    #[test]
+    fn define_store_rejects_engine_namespace_and_prefix_collisions() {
+        let ctx = ScriptCtx::new();
+        let schema = serde_json::json!({
+            "shield": { "type": "number", "default": 100 }
+        });
+
+        for namespace in ["player", "player.stats"] {
+            let err = define_store(&ctx, namespace, schema.clone()).unwrap_err();
+            assert!(matches!(err, ScriptError::InvalidArgument { .. }));
+        }
+        assert!(ctx.slot_table.borrow().get("player.shield").is_none());
+        assert!(ctx.slot_table.borrow().get("player.stats.shield").is_none());
+    }
+
+    #[test]
+    fn duplicate_mod_namespace_is_rejected_without_mutation() {
+        let ctx = ScriptCtx::new();
+        define_store(
+            &ctx,
+            "audio",
+            serde_json::json!({
+                "master": { "type": "number", "default": 1 }
+            }),
+        )
+        .unwrap();
+        let before = ctx.slot_table.borrow().len();
+
+        let err = define_store(
+            &ctx,
+            "audio",
+            serde_json::json!({
+                "music": { "type": "number", "default": 0.5 }
+            }),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("collides"));
+        assert_eq!(ctx.slot_table.borrow().len(), before);
+        assert!(ctx.slot_table.borrow().get("audio.music").is_none());
+    }
+
+    #[test]
+    fn namespace_error_type_remains_matchable() {
+        let mut table = crate::scripting::slot_table::SlotTable::new();
+        let err = table.insert_namespace("player", Vec::new()).unwrap_err();
+        assert!(matches!(
+            err,
+            NamespaceInsertError::NamespaceCollision { .. }
+        ));
+    }
+
+    #[test]
+    fn define_store_returns_stable_dotted_handles_in_both_runtimes() {
+        let js_ctx = ScriptCtx::new();
+        let js_registry = registry_for(js_ctx);
+        let quickjs = QuickJsSubsystem::new(&js_registry, &QuickJsConfig::default()).unwrap();
+        quickjs.definition_ctx().with(|qjs| {
+            run_script::<()>(
+                &qjs,
+                r#"
+                const handles = defineStore("audio", {
+                    master: { type: "number", default: 1 },
+                    muted: { type: "boolean", default: false },
+                });
+                if (handles.master !== "audio.master") throw new Error("master handle");
+                if (handles.muted !== "audio.muted") throw new Error("muted handle");
+                "#,
+                "store-handles.js",
+            )
+            .unwrap();
+        });
+
+        let luau_ctx = ScriptCtx::new();
+        let luau_registry = registry_for(luau_ctx);
+        let luau = LuauSubsystem::new(&luau_registry, &LuauConfig::default()).unwrap();
+        luau.run_source::<()>(
+            Which::Definition,
+            r#"
+            local handles = defineStore("audio", {
+                master = { type = "number", default = 1 },
+                muted = { type = "boolean", default = false },
+            })
+            assert(handles.master == "audio.master")
+            assert(handles.muted == "audio.muted")
+            "#,
+            "store-handles.luau",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn malformed_schemas_have_luau_parity_without_partial_insertion() {
+        let cases = [
+            r#"{ value = { type = "number" } }"#,
+            r#"{ value = { type = "number", default = "one" } }"#,
+            r#"{ value = { type = "number", default = 2, range = {0, 1} } }"#,
+            r#"{ value = { type = "boolean", default = 1 } }"#,
+            r#"{ value = { type = "enum", values = {}, default = "a" } }"#,
+            r#"{ value = { type = "array", default = {1, 0 / 0} } }"#,
+            r#"{ value = { type = "vector", default = 1 } }"#,
+        ];
+
+        for (index, schema) in cases.into_iter().enumerate() {
+            let ctx = ScriptCtx::new();
+            let registry = registry_for(ctx.clone());
+            let luau = LuauSubsystem::new(&registry, &LuauConfig::default()).unwrap();
+            let source = format!(r#"defineStore("bad{index}", {schema})"#);
+            let err = luau
+                .run_source::<()>(Which::Definition, &source, "bad-store.luau")
+                .expect_err("malformed schema should throw");
+            assert!(matches!(err, ScriptError::ScriptThrew { .. }));
+            assert!(
+                ctx.slot_table
+                    .borrow()
+                    .get(&format!("bad{index}.value"))
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn store_read_write_quickjs_and_luau_cover_all_value_kinds_and_clamp() {
+        let js_ctx = ScriptCtx::new();
+        define_runtime_test_store(&js_ctx);
+        let js_registry = registry_for(js_ctx.clone());
+        let quickjs = QuickJsSubsystem::new(&js_registry, &QuickJsConfig::default()).unwrap();
+        quickjs.definition_ctx().with(|qjs| {
+            run_script::<()>(
+                &qjs,
+                r#"
+                storeWrite("test.number", 5);
+                storeWrite("test.boolean", true);
+                storeWrite("test.string", "after");
+                storeWrite("test.enum", "active");
+                storeWrite("test.array", [2, 3.5, 4]);
+                if (storeRead("test.number") !== 1) throw new Error("number");
+                if (storeRead("test.boolean") !== true) throw new Error("boolean");
+                if (storeRead("test.string") !== "after") throw new Error("string");
+                if (storeRead("test.enum") !== "active") throw new Error("enum");
+                const array = storeRead("test.array");
+                if (array.length !== 3 || array[0] !== 2 || array[1] !== 3.5 || array[2] !== 4) {
+                    throw new Error("array");
+                }
+                "#,
+                "store-read-write.js",
+            )
+            .unwrap();
+        });
+
+        let luau_ctx = ScriptCtx::new();
+        define_runtime_test_store(&luau_ctx);
+        let luau_registry = registry_for(luau_ctx.clone());
+        let luau = LuauSubsystem::new(&luau_registry, &LuauConfig::default()).unwrap();
+        luau.run_source::<()>(
+            Which::Definition,
+            r#"
+            storeWrite("test.number", 5)
+            storeWrite("test.boolean", true)
+            storeWrite("test.string", "after")
+            storeWrite("test.enum", "active")
+            storeWrite("test.array", {2, 3.5, 4})
+            assert(storeRead("test.number") == 1)
+            assert(storeRead("test.boolean") == true)
+            assert(storeRead("test.string") == "after")
+            assert(storeRead("test.enum") == "active")
+            local array = storeRead("test.array")
+            assert(#array == 3 and array[1] == 2 and array[2] == 3.5 and array[3] == 4)
+            "#,
+            "store-read-write.luau",
+        )
+        .unwrap();
+
+        let js_slots = js_ctx.slot_table.borrow();
+        let luau_slots = luau_ctx.slot_table.borrow();
+        for name in [
+            "test.number",
+            "test.boolean",
+            "test.string",
+            "test.enum",
+            "test.array",
+        ] {
+            assert_eq!(js_slots.get(name), luau_slots.get(name), "slot {name}");
+        }
+    }
+
+    #[test]
+    fn readonly_script_write_is_rejected_but_engine_write_succeeds() {
+        for runtime in ["quickjs", "luau"] {
+            let ctx = ScriptCtx::new();
+            let registry = registry_for(ctx.clone());
+            match runtime {
+                "quickjs" => {
+                    let quickjs =
+                        QuickJsSubsystem::new(&registry, &QuickJsConfig::default()).unwrap();
+                    quickjs.definition_ctx().with(|qjs| {
+                        run_script::<()>(
+                            &qjs,
+                            r#"storeWrite("player.health", 25);"#,
+                            "readonly-store.js",
+                        )
+                        .unwrap();
+                    });
+                }
+                "luau" => {
+                    let luau = LuauSubsystem::new(&registry, &LuauConfig::default()).unwrap();
+                    luau.run_source::<()>(
+                        Which::Definition,
+                        r#"storeWrite("player.health", 25)"#,
+                        "readonly-store.luau",
+                    )
+                    .unwrap();
+                }
+                _ => unreachable!(),
+            }
+
+            assert_eq!(
+                ctx.slot_table
+                    .borrow()
+                    .get("player.health")
+                    .and_then(|slot| slot.value.as_ref()),
+                None
+            );
+            write_store_slot(&ctx, "player.health", SlotValue::Number(75.0)).unwrap();
+            assert_eq!(
+                read_store_slot(&ctx, "player.health").unwrap(),
+                SlotValue::Number(75.0)
+            );
+        }
+    }
+
+    #[test]
+    fn store_write_type_enum_array_and_unknown_name_errors_preserve_values() {
+        let js_ctx = ScriptCtx::new();
+        define_runtime_test_store(&js_ctx);
+        let js_registry = registry_for(js_ctx.clone());
+        let quickjs = QuickJsSubsystem::new(&js_registry, &QuickJsConfig::default()).unwrap();
+        quickjs.definition_ctx().with(|qjs| {
+            run_script::<()>(
+                &qjs,
+                r#"
+                for (const write of [
+                    () => storeWrite("test.number", true),
+                    () => storeWrite("test.enum", "missing"),
+                    () => storeWrite("test.array", [1, NaN]),
+                    () => storeWrite("test.missing", 1),
+                ]) {
+                    let threw = false;
+                    try { write(); } catch (_) { threw = true; }
+                    if (!threw) throw new Error("invalid write did not throw");
+                }
+                "#,
+                "invalid-store-write.js",
+            )
+            .unwrap();
+        });
+
+        let luau_ctx = ScriptCtx::new();
+        define_runtime_test_store(&luau_ctx);
+        let luau_registry = registry_for(luau_ctx.clone());
+        let luau = LuauSubsystem::new(&luau_registry, &LuauConfig::default()).unwrap();
+        luau.run_source::<()>(
+            Which::Definition,
+            r#"
+            local writes = {
+                function() storeWrite("test.number", true) end,
+                function() storeWrite("test.enum", "missing") end,
+                function() storeWrite("test.array", {1, 0 / 0}) end,
+                function() storeWrite("test.missing", 1) end,
+            }
+            for _, write in writes do
+                local ok = pcall(write)
+                assert(not ok)
+            end
+            "#,
+            "invalid-store-write.luau",
+        )
+        .unwrap();
+
+        for ctx in [&js_ctx, &luau_ctx] {
+            assert_eq!(
+                read_store_slot(ctx, "test.number").unwrap(),
+                SlotValue::Number(0.5)
+            );
+            assert_eq!(
+                read_store_slot(ctx, "test.enum").unwrap(),
+                SlotValue::Enum("idle".to_string())
+            );
+            assert_eq!(
+                read_store_slot(ctx, "test.array").unwrap(),
+                SlotValue::Array(vec![0.0, 1.0])
+            );
+        }
+    }
+
+    #[test]
+    fn engine_write_validates_types_enum_values_arrays_and_ranges() {
+        let ctx = ScriptCtx::new();
+        define_runtime_test_store(&ctx);
+
+        write_store_slot(&ctx, "test.number", SlotValue::Number(-10.0)).unwrap();
+        assert_eq!(
+            read_store_slot(&ctx, "test.number").unwrap(),
+            SlotValue::Number(0.0)
+        );
+
+        for (name, value) in [
+            ("test.number", SlotValue::Boolean(true)),
+            ("test.enum", SlotValue::Enum("missing".to_string())),
+            ("test.array", SlotValue::Array(vec![1.0, f32::INFINITY])),
+        ] {
+            assert!(write_store_slot(&ctx, name, value).is_err());
+        }
+        assert!(read_store_slot(&ctx, "test.missing").is_err());
+        assert!(write_store_slot(&ctx, "test.missing", SlotValue::Number(1.0)).is_err());
+    }
+}

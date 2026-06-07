@@ -321,8 +321,11 @@ pub fn encode_portals(portals: &[Portal]) -> PortalsSection {
 /// write optional sections (direct SH volume, animated-light chunks and weight
 /// maps, light tags, delta SH volumes, data script, map entities, and fog cell
 /// masks) when their arguments are non-`None`. The direct SH volume is `None`
-/// exactly when the map has no static (baked) lights — absence signals direct = 0
-/// to the loader, so animated-only maps emit no direct section.
+/// only when the map has no static (baked) lights at all — the loader treats
+/// absence as direct = 0, so animated-only maps emit no direct section. A map
+/// whose static-baked lights are all `ShadowType::Sdf` still emits a PRESENT
+/// all-zero section: `Sdf` lights are dropped by `static_direct_lights` (their
+/// direct term is runtime-traced), but the section itself is not omitted.
 ///
 /// `texture_cache_keys` maps each texture name (as it appears in
 /// `geo_result.texture_names.names`) to the 32-byte `.prm` filename key

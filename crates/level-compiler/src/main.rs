@@ -719,10 +719,10 @@ fn main() -> anyhow::Result<()> {
             sh_ctx: &sh_ctx,
             portals: &generated_portals,
         };
-        // Warm/cold cache selection mirrors the indirect SH bake: the warm path
-        // passes the shared `StageCache`; the cold `--no-cache`/`--release` path
-        // passes `None` (the bake is byte-identical either way — the direct cull is
-        // the strict provably-zero test in both modes).
+        // Warm path passes the shared `StageCache`; cold (`--no-cache`/`--release`)
+        // passes `None`. Unlike the indirect bake's warm bounded-light approximation,
+        // the direct bake uses a strict whole-section cache key with the provably-zero
+        // light-reach cull in both modes — output is byte-identical regardless of path.
         let raw =
             direct_sh_bake::bake_direct_sh_volume_cached(&inputs, &sh_config, stage_cache.as_ref());
         if args.verbose {

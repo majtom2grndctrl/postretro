@@ -16,6 +16,7 @@ use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhSection};
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::data_script::DataScriptSection;
 use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSection};
+use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_level_format::fog_cell_masks::FogCellMasksSection;
 use postretro_level_format::fog_volumes::{FogVolumeRecord, FogVolumesSection};
 use postretro_level_format::geometry::{GeometrySection, NO_TEXTURE};
@@ -280,6 +281,13 @@ pub struct LevelWorld {
     /// brightness. `None` when no animated lights — compose pass falls back to
     /// base→total copy.
     pub delta_sh_volumes: Option<DeltaShVolumesSection>,
+    /// Dense baked DIRECT static-light octahedral atlas for dynamic objects
+    /// (mesh entities + billboards). `None` for legacy v7 maps / maps with no
+    /// static lights — dynamic objects fall back to indirect-only (the renderer
+    /// binds a 4×4 BC6H zero dummy). Tile geometry is byte-identical to
+    /// `sh_volume`; the runtime reuses that section's grid uniform + depth
+    /// moments.
+    pub direct_sh_volume: Option<DirectShVolumeSection>,
     /// `None` when level has no `data_script` worldspawn KVP.
     /// See: context/lib/scripting.md §2 (Data context lifecycle)
     pub data_script: Option<DataScriptSection>,
@@ -904,6 +912,34 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         None => None,
     };
 
+    // Optional — absent for legacy v7 maps (no `SH_VOLUME_VERSION` bump) and for
+    // maps with no static lights. Dynamic objects fall back to indirect-only.
+    let direct_sh_volume: Option<DirectShVolumeSection> = match prl_format::read_section_data(
+        &mut cursor,
+        &meta,
+        SectionId::DirectShVolume as u32,
+    )? {
+        Some(data) => {
+            let section = DirectShVolumeSection::from_bytes(&data)?;
+            log::info!(
+                "[PRL] DirectShVolume: {}×{}×{} grid ({} probes, {}×{} atlas, tile {} + border {}, {} tile(s)/row, format {}, {} atlas byte(s))",
+                section.grid_dimensions[0],
+                section.grid_dimensions[1],
+                section.grid_dimensions[2],
+                section.total_probes(),
+                section.atlas_dimensions[0],
+                section.atlas_dimensions[1],
+                section.tile_dimension,
+                section.tile_border,
+                section.atlas_tiles_per_row,
+                section.irradiance_format,
+                section.atlas.len(),
+            );
+            Some(section)
+        }
+        None => None,
+    };
+
     // Optional — absent when map has no `data_script` worldspawn KVP.
     let data_script: Option<DataScriptSection> =
         match prl_format::read_section_data(&mut cursor, &meta, SectionId::DataScript as u32)? {
@@ -1119,6 +1155,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         animated_light_chunks,
         animated_light_weight_maps,
         delta_sh_volumes,
+        direct_sh_volume,
         data_script,
         map_entities,
         fog_volumes,
@@ -1341,6 +1378,7 @@ mod tests {
             animated_light_chunks: None,
             animated_light_weight_maps: None,
             delta_sh_volumes: None,
+            direct_sh_volume: None,
             data_script: None,
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
@@ -1399,6 +1437,7 @@ mod tests {
             animated_light_chunks: None,
             animated_light_weight_maps: None,
             delta_sh_volumes: None,
+            direct_sh_volume: None,
             data_script: None,
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
@@ -1450,6 +1489,7 @@ mod tests {
             animated_light_chunks: None,
             animated_light_weight_maps: None,
             delta_sh_volumes: None,
+            direct_sh_volume: None,
             data_script: None,
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
@@ -1490,6 +1530,7 @@ mod tests {
             animated_light_chunks: None,
             animated_light_weight_maps: None,
             delta_sh_volumes: None,
+            direct_sh_volume: None,
             data_script: None,
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
@@ -2405,6 +2446,107 @@ mod tests {
         assert_eq!(parsed.brick_size_voxels, brick_size);
         assert_eq!(parsed.surface_brick_count, 1);
         assert_eq!(parsed.atlas.len(), voxels_per_brick);
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// AC 6: a legacy map without the new DirectShVolume section loads and
+    /// surfaces `direct_sh_volume = None` (dynamic objects fall back to
+    /// indirect-only; the renderer binds the 4×4 BC6H dummy).
+    #[test]
+    fn load_prl_absent_direct_sh_volume_section_yields_none() {
+        let geom = sample_geometry();
+        let bvh = sample_bvh_section();
+
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geom.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_no_direct_sh_volume.prl");
+        let world =
+            load_prl(tmp.to_str().unwrap()).expect("legacy PRL without DirectShVolume must load");
+        assert!(
+            world.direct_sh_volume.is_none(),
+            "absent DirectShVolume section should yield None (indirect-only fallback)"
+        );
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// AC 12/13 (loader half): a DirectShVolume section round-trips through the
+    /// PRL container and is surfaced on `LevelWorld`, BC6H tag preserved.
+    #[test]
+    fn load_prl_parses_direct_sh_volume_section() {
+        use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
+        use postretro_level_format::octahedral::{
+            DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            irradiance_atlas_dimensions, irradiance_atlas_tiles_per_row,
+        };
+
+        let grid = [3u32, 2, 4];
+        let tile_dimension = DEFAULT_IRRADIANCE_TILE_DIMENSION;
+        let atlas_dimensions = irradiance_atlas_dimensions(grid, tile_dimension);
+        let atlas_tiles_per_row = irradiance_atlas_tiles_per_row(grid).unwrap();
+        // BC6H blob length for the 4-aligned padded atlas (the emitter rounds
+        // each axis up to a multiple of 4 before encoding).
+        let padded_w = atlas_dimensions[0].div_ceil(4) * 4;
+        let padded_h = atlas_dimensions[1].div_ceil(4) * 4;
+        let block_count = (padded_w / 4) as usize * (padded_h / 4) as usize;
+        let section = DirectShVolumeSection {
+            grid_origin: [1.0, 2.0, 3.0],
+            cell_size: [0.5, 0.5, 0.5],
+            grid_dimensions: grid,
+            tile_dimension,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            atlas_dimensions,
+            atlas_tiles_per_row,
+            irradiance_format: IRRADIANCE_FORMAT_BC6H,
+            atlas: vec![0u8; block_count * 16],
+        };
+
+        let geom = sample_geometry();
+        let bvh = sample_bvh_section();
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geom.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::DirectShVolume as u32,
+                version: 1,
+                data: section.to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_with_direct_sh_volume.prl");
+        let world = load_prl(tmp.to_str().unwrap()).expect("PRL with DirectShVolume must load");
+        let parsed = world
+            .direct_sh_volume
+            .as_ref()
+            .expect("DirectShVolume section must round-trip into LevelWorld");
+        assert_eq!(parsed.grid_dimensions, grid);
+        assert_eq!(parsed.atlas_dimensions, atlas_dimensions);
+        assert_eq!(parsed.irradiance_format, IRRADIANCE_FORMAT_BC6H);
+        assert_eq!(parsed.atlas.len(), block_count * 16);
 
         std::fs::remove_file(&tmp).ok();
     }

@@ -1,6 +1,6 @@
 # Baked Static Direct SH for Entities + Billboards
 
-> **Status:** ready (promoted after two review rounds; mechanical fixes applied, goal-derived clarifications pinned).
+> **Status:** in-progress. Phase 0 (Task 0) COMPLETE — gate passed. See "Task 0 outcome (recorded)" below.
 > **Track:** Lighting — closes the half-built dynamic-object lighting model. Follows M9 (octahedral SH GI) and rides on M10's mesh pass.
 > **Related:** `context/lib/rendering_pipeline.md` §4 (lighting), §8 (shader composition), §9 (skinned model pipeline) · `context/lib/experimental_spikes.md` (Task 0 validation harness convention) · `context/plans/in-progress/M10--mesh-render-pass/` · sibling `research.md` (code-grounding citations).
 
@@ -54,6 +54,23 @@ Net runtime symmetry after this lands: static surface = lightmap-direct + SH-ind
 **D9 — Per-probe light-reach culling, mirroring the delta SH bake's affinity-cell clip (in v1; INSIDE the D6 determinism contract).** Direct adds a per-static-light shadow-ray pass at every probe; on light-dense maps this can dominate bake time. In v1 (not a follow-up) the direct bake culls non-reaching static lights per probe BEFORE the shadow-ray pass, using the SAME two-stage reach test the delta bake uses: (1) falloff-sphere AABB clip (`light_aabb` `affinity_grid.rs:274`, `cells_for_light` `affinity_grid.rs:194`) and (2) portal-reachability flood (`reachable_leaves` `affinity_grid.rs:156`), as assembled by `decompose_affinity` (`affinity_grid.rs:95`) and consumed by `bake_delta_sh_volumes` (`delta_sh_bake.rs:97`). A culled light is beyond falloff and/or not portal-reachable, so its `light_contribution_lambert` × `soft_visibility` is provably zero at that probe — culling skips only zero-contribution shadow-ray work and CANNOT change the baked coefficients. The cull set is derived purely from light geometry/origin + the static portal graph (index-derived, input-determined, no RNG); the bake fan-out stays order-preserving (no float reduce, no HashMap-iteration to assemble output), so the determinism + cache contract (D6) is unbroken. Baked output is byte-identical to an unculled bake; the cull report mirrors `log_per_light_culling` (`delta_sh_bake.rs:377`). The cull is the STRICT provably-zero falloff+portal test in BOTH warm and cold build modes — it does NOT inherit the warm indirect bake's lossy bounded-light dilation; "slots into the warm/cold driver paths" (D6) refers to CACHE plumbing only. The direct section is therefore exact regardless of build mode.
 
 **D10 — Future group-2 dynamic-direct owns dynamic-tier lights ONLY; static-tier direct for movers is owned exclusively by this baked atlas (PINNED INVARIANT).** When the deferred group-2 dynamic-direct loop lands, it must evaluate ONLY dynamic-tier lights (`is_dynamic`) at runtime for movers — it must NOT re-evaluate the STATIC lights this baked direct atlas already covers, or a mover would receive static direct twice (baked SH + runtime loop). This is the same anti-double-count discipline the engine invariant requires (a light's contribution is never summed twice on one receiver) and mirrors the existing pins (`lm_anim` owns animated direct; the delta carries bounce only). The tier filter is the seam: this bake takes static-tier only (D4); group-2 takes dynamic-tier only. A future task implementing group-2 MUST honor this split; note it here so that work doesn't reintroduce the double-count.
+
+## Task 0 outcome (recorded — harness is the source of truth, D7)
+
+Task 0's gating harness PASSED. The D3 **assembly is correct as written** — lobe direction = probe→light, RGB = normal-free falloff·intensity·color·visibility × `soft_visibility`, `accumulate_sh_rgb` then `apply_cosine_lobe_rgb` (byte-for-byte the indirect bake's convolution). No change to lobe direction or normalization.
+
+**Correction to D3/D7's "well-conditioned regime" wording (LOAD-BEARING for downstream comparisons):** the L2-SH cosine-lobe reconstruction overshoots the true clamped cosine by a fixed **~6.25% (ratio ≈ 1.0625) at the EXACT lobe axis** (n = probe→light). The lobe axis is the WORST-conditioned point of the cone, not the best — error climbs from ~4% mid-cone to 6.25% at 0°. Therefore:
+- The well-conditioned regime is the **mid-cone (~20°–45° off the probe→light axis)**, NOT the exact peak. All tight per-channel relative-error comparisons (Task 0 harness, the AC 1 readback, any direct-vs-lightmap parity check) MUST sample mid-cone normals, never the exact axis.
+- **Pinned threshold: `D3_LIGHT_ALIGNED_REL_TOLERANCE = 0.045` (4.5%)** over the mid-cone (observed worst case 4.03%). The exact-peak overshoot is pinned SEPARATELY as a known ~1.0625 ratio constant so a future cosine-lobe-factor regression is still caught.
+- Implementation landed: `incident_radiance_at_point` (`pub(crate)`, `sh_bake.rs`) is the normal-free primitive Task 2 consumes — factored OUT of `light_contribution_lambert` (which now calls it), covering Point/Spot/Directional. Harness tests live in `sh_bake.rs` `mod tests`.
+
+## Task 4 outcome (recorded — binding index correction)
+
+The plan's "bindings 1, 2, 10, 11, 12 occupied; use binding 13" was STALE — by implementation time bindings 13 (`BIND_SCRIPTED_LIGHT_DESCRIPTORS`) and 14 (`BIND_SH_DEPTH_MOMENTS`) were already claimed. Per the spec's actual intent ("the NEXT FREE index"):
+- **Direct atlas binding = 15** (`BIND_SH_DIRECT_ATLAS`), in the shared group-3 SH layout AND the mesh group-4 superset (same index). FRAGMENT visibility. Lives on `ShVolumeResources` (`direct_atlas_view`).
+- **Binding 16 is left FREE** for Task 6's mesh-only `DynamicDirectParams` uniform.
+- Tasks 5 and 6 MUST declare the direct atlas at **binding 15** (NOT 13); Task 6's mesh uniform at **binding 16**.
+- Absent-section fallback: a 4×4 `Bc6hRgbUfloat` single-zero-block dummy (never sampled).
 
 ## Acceptance criteria
 

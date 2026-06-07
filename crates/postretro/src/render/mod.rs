@@ -146,8 +146,10 @@ fn sphere_intersects_any_fog_aabb(center: Vec3, radius: f32, aabbs: &[(Vec3, Vec
 // `sh_total_atlas`, `sh_depth_moments`, and `sh_grid`, all declared in
 // `forward.wgsl`. WGSL resolves module-scope names regardless of textual order,
 // so appending after is safe. `sh_sample.wgsl` owns the SH reconstruction +
-// 8-corner blend symbols (`sh_irradiance`, `sample_sh_indirect_corners_depth_aware`,
-// `sample_sh_indirect_corners_without_depth`) — forward must not redeclare them.
+// 8-corner blend symbols (`sample_sh_indirect_corners_pair`,
+// `sample_sh_indirect_direct_corners`, `sample_sh_direct_corners_depth_aware`,
+// `sample_sh_indirect_corners_depth_aware`, `sample_sh_indirect_corners_without_depth`,
+// `sample_sh_indirect_corners_two_without_depth`) — forward must not redeclare them.
 //
 // `sdf_light_select.wgsl` is the LOAD-BEARING K-selection parity seam: the same
 // source string is concatenated into the half-res SDF visibility pass
@@ -190,7 +192,8 @@ const TIMING_PAIR_COUNT: usize = 6;
 //   0..64    view_proj  64..76   camera_position  76..80   ambient_floor
 //   80..84   light_count  84..88  time  88..92   lighting_isolation  92..96  indirect_scale
 //   96..100  sdf_shadow_flags  100..104 sdf_shadow_mode
-//   104..108 sdf_force_visibility_one  108..112 _pad
+//   104..108 sdf_force_visibility_one  108..112 dynamic_direct_scale
+//   112..116 dynamic_direct_isolation  116..120 has_direct  120..128 _pad
 // `sdf_shadow_flags` gates whether the forward samples the half-res SDF
 // visibility target at all:
 //   bit 0 = a baked SDF atlas is loaded, so the four RGBA channels hold valid
@@ -200,8 +203,14 @@ const TIMING_PAIR_COUNT: usize = 6;
 // lights for the fragment.
 // `sdf_shadow_mode` overlays the debug selector; `sdf_force_visibility_one`
 // is the dev "force visibility to 1.0" toggle for the no-double-count A/B.
-// Struct stride rounds up to 112 (multiple of mat4 alignment).
-const UNIFORM_SIZE: usize = 112;
+// The dynamic-direct tail (Task 6 of baked-static-direct-sh): repurposes the
+// old `_sdf_pad1` slot (108..112) for `dynamic_direct_scale`, then a fresh
+// 16-byte row carries `dynamic_direct_isolation` + `has_direct` + padding.
+// Only billboard.wgsl reads these (the mesh path uses its own group-4
+// `DynamicDirectParams`); forward/wireframe declare them as inert tail so the
+// shared 3-way byte contract (Rust writer + forward.wgsl + billboard.wgsl)
+// keeps a single stride. Struct stride rounds to 128 (multiple of mat4 align).
+const UNIFORM_SIZE: usize = 128;
 
 /// Bit 0 of `Uniforms.sdf_shadow_flags` — an SDF atlas is loaded, so the
 /// half-res factor target holds valid per-light visibility slices and the
@@ -339,6 +348,53 @@ impl LightingIsolation {
     }
 }
 
+/// Isolation mode for the DYNAMIC (entity / billboard) baked-static-direct SH
+/// path. Separate, 3-state instrument — NOT the 10-variant `LightingIsolation`
+/// (which controls the forward/static pass and stays independent so the
+/// dynamic-vs-static parity comparison still works). Encoded as the enum's
+/// `u32` repr into the mesh `DynamicDirectParams` uniform (binding 16) and the
+/// tail of the group-0 `Uniforms` (billboard).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// Selected via the Diagnostics panel; dev-tools only.
+#[allow(dead_code)]
+#[repr(u32)]
+pub enum DynamicDirectIsolation {
+    /// indirect + scale * direct.
+    Combined = 0,
+    /// scale * direct only.
+    DirectOnly = 1,
+    /// indirect only (direct suppressed).
+    IndirectOnly = 2,
+}
+
+impl DynamicDirectIsolation {
+    /// All variants in display order. Used by the debug UI dropdown.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub const ALL_VARIANTS: [DynamicDirectIsolation; 3] = [
+        DynamicDirectIsolation::Combined,
+        DynamicDirectIsolation::DirectOnly,
+        DynamicDirectIsolation::IndirectOnly,
+    ];
+
+    #[allow(dead_code)]
+    pub fn cycle(self) -> Self {
+        match self {
+            DynamicDirectIsolation::Combined => DynamicDirectIsolation::DirectOnly,
+            DynamicDirectIsolation::DirectOnly => DynamicDirectIsolation::IndirectOnly,
+            DynamicDirectIsolation::IndirectOnly => DynamicDirectIsolation::Combined,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn label(self) -> &'static str {
+        match self {
+            DynamicDirectIsolation::Combined => "Combined (indirect + scale·direct)",
+            DynamicDirectIsolation::DirectOnly => "DirectOnly (scale·direct)",
+            DynamicDirectIsolation::IndirectOnly => "IndirectOnly (indirect)",
+        }
+    }
+}
+
 struct FrameUniforms {
     view_proj: Mat4,
     camera_position: Vec3,
@@ -363,6 +419,17 @@ struct FrameUniforms {
     /// render (disjoint sets guarantee no re-weighting). Encoded as a u32
     /// (0 = normal, non-zero = forced) into the uniform's first pad slot.
     sdf_force_visibility_one: bool,
+    /// DYNAMIC baked-static-direct SH scale (0..1). Multiplies the direct term
+    /// for the billboard path (the mesh path reads its own copy from the
+    /// group-4 `DynamicDirectParams`). Repurposes the former `_sdf_pad1` slot.
+    dynamic_direct_scale: f32,
+    /// DYNAMIC-direct isolation mode (billboard path). Separate from
+    /// `lighting_isolation`. Lands in a fresh trailing 16-byte row.
+    dynamic_direct_isolation: DynamicDirectIsolation,
+    /// Whether a baked DIRECT SH section is present. When false the dynamic
+    /// shaders skip the direct sample (direct = 0), falling back to
+    /// indirect-only. Owned here (and mirrored in the mesh uniform).
+    has_direct: bool,
 }
 
 fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
@@ -386,7 +453,12 @@ fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
     bytes[100..104].copy_from_slice(&mode.to_ne_bytes());
     let force_vis: u32 = u.sdf_force_visibility_one as u32;
     bytes[104..108].copy_from_slice(&force_vis.to_ne_bytes());
-    // 108..112 stays zero — explicit pad matching the WGSL `_sdf_pad1: u32`.
+    bytes[108..112].copy_from_slice(&u.dynamic_direct_scale.to_ne_bytes());
+    let dyn_iso: u32 = u.dynamic_direct_isolation as u32;
+    bytes[112..116].copy_from_slice(&dyn_iso.to_ne_bytes());
+    let has_direct: u32 = u.has_direct as u32;
+    bytes[116..120].copy_from_slice(&has_direct.to_ne_bytes());
+    // 120..128 stays zero — explicit pad rounding the tail row to 16 bytes.
     bytes
 }
 
@@ -395,6 +467,10 @@ pub const DEFAULT_AMBIENT_FLOOR: f32 = 0.001;
 
 /// Full SH contribution weight — production default. Default value seeded into the Diagnostics panel slider on first open.
 pub const DEFAULT_INDIRECT_SCALE: f32 = 1.0;
+
+/// Full dynamic baked-static-direct SH weight — production default. Seeded into
+/// the Diagnostics panel slider on first open.
+pub const DEFAULT_DYNAMIC_DIRECT_SCALE: f32 = 1.0;
 
 struct GpuTexture {
     bind_group: wgpu::BindGroup,
@@ -655,6 +731,11 @@ pub struct LevelGeometry<'a> {
     /// `None` → compose pass falls back to a base→total copy.
     pub delta_sh_volumes:
         Option<&'a postretro_level_format::delta_sh_volumes::DeltaShVolumesSection>,
+    /// Dense baked DIRECT static-light octahedral atlas sampled by the dynamic
+    /// pipelines (mesh + billboard). `None` → renderer binds a 4×4 BC6H zero
+    /// dummy and the dynamic shaders skip the direct sample (indirect-only).
+    pub direct_sh_volume:
+        Option<&'a postretro_level_format::direct_sh_volume::DirectShVolumeSection>,
     /// `None` → no SDF static-occluder atlas; runtime SDF shadow pass disabled.
     /// An empty-geometry section (zero grid dims) is treated the same way.
     pub sdf_atlas: Option<&'a postretro_level_format::sdf_atlas::SdfAtlasSection>,
@@ -725,6 +806,11 @@ pub struct Renderer {
     light_count: u32,
     ambient_floor: f32,
     indirect_scale: f32,
+    /// DYNAMIC baked-static-direct SH scale (0..1). Debug instrument for the
+    /// entity/billboard direct term, independent of `indirect_scale`. Mirrors
+    /// the `indirect_scale` knob — uploaded to the billboard group-0 tail and
+    /// the mesh group-4 `DynamicDirectParams` each frame.
+    dynamic_direct_scale: f32,
     /// Runtime SH probe-occlusion toggle. Default-on; `POSTRETRO_SH_FAST=1`
     /// seeds it off for benchmark/headless runs, and the diagnostics panel can
     /// flip it later. Uploaded through `ShGridInfo`.
@@ -841,6 +927,11 @@ pub struct Renderer {
     debug_lines: debug_lines::DebugLineRenderer,
 
     lighting_isolation: LightingIsolation,
+
+    /// DYNAMIC baked-static-direct SH isolation (combined / direct-only /
+    /// indirect-only). Separate from `lighting_isolation` (the forward/static
+    /// control), so the dynamic-vs-static parity comparison stays valid.
+    dynamic_direct_isolation: DynamicDirectIsolation,
 
     /// Debug selector for the SDF static-occluder shadow path. Mirrors
     /// `lighting_isolation` — panel-only dropdown, surfaces through
@@ -1335,6 +1426,11 @@ impl Renderer {
             sdf_shadow_flags: 0,
             sdf_shadow_mode: SdfShadowMode::On,
             sdf_force_visibility_one: false,
+            dynamic_direct_scale: DEFAULT_DYNAMIC_DIRECT_SCALE,
+            dynamic_direct_isolation: DynamicDirectIsolation::Combined,
+            // No level loaded yet — `has_direct` reflects the direct SH section
+            // once geometry installs (see `update_per_frame_uniforms`).
+            has_direct: false,
         });
 
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1627,6 +1723,7 @@ impl Renderer {
             &device,
             &queue,
             geometry.and_then(|g| g.sh_volume),
+            geometry.and_then(|g| g.direct_sh_volume),
             level_lights.len(),
             probe_occlusion_enabled,
         );
@@ -2121,7 +2218,9 @@ impl Renderer {
             DEPTH_FORMAT,
             &uniform_bind_group_layout,
             &texture_bind_group_layout,
-            &sh_volume_resources.bind_group_layout,
+            // Mesh group 4 uses the SUPERSET layout (shared SH entries + the
+            // mesh-only dynamic-direct params uniform at binding 16).
+            &sh_volume_resources.mesh_bind_group_layout,
         );
         mesh_pass.upload_identity_palette(&queue);
 
@@ -2185,6 +2284,7 @@ impl Renderer {
             light_count,
             ambient_floor,
             indirect_scale: DEFAULT_INDIRECT_SCALE,
+            dynamic_direct_scale: DEFAULT_DYNAMIC_DIRECT_SCALE,
             probe_occlusion_enabled,
             sh_volume_resources,
             sdf_atlas_resources,
@@ -2227,6 +2327,7 @@ impl Renderer {
             #[cfg(feature = "dev-tools")]
             debug_lines,
             lighting_isolation: LightingIsolation::Normal,
+            dynamic_direct_isolation: DynamicDirectIsolation::Combined,
             sdf_shadow_mode: SdfShadowMode::On,
             sdf_force_visibility_one: std::env::var("POSTRETRO_SDF_FORCE_VISIBILITY_ONE")
                 .ok()
@@ -2450,6 +2551,7 @@ impl Renderer {
             &self.device,
             &self.queue,
             geometry.sh_volume,
+            geometry.direct_sh_volume,
             self.level_lights.len(),
             self.probe_occlusion_enabled,
         );
@@ -3273,9 +3375,21 @@ impl Renderer {
             sdf_shadow_flags,
             sdf_shadow_mode: self.sdf_shadow_mode,
             sdf_force_visibility_one: self.sdf_force_visibility_one,
+            dynamic_direct_scale: self.dynamic_direct_scale,
+            dynamic_direct_isolation: self.dynamic_direct_isolation,
+            has_direct: self.sh_volume_resources.has_direct,
         });
         self.queue.write_buffer(&self.uniform_buffer, 0, &data);
         self.last_camera_position = camera_position;
+
+        // Mesh dynamic-direct uniform (group 4 binding 16). The mesh path reads
+        // a trimmed camera uniform (no group-0 tail), so the scale/isolation/
+        // has_direct knobs reach it through this dedicated uniform instead.
+        self.sh_volume_resources.write_dynamic_direct_params(
+            &self.queue,
+            self.dynamic_direct_scale,
+            self.dynamic_direct_isolation as u32,
+        );
 
         // Must precede the compose and SH fragment passes (both read the descriptor buffer).
         self.sh_volume_resources
@@ -3698,6 +3812,28 @@ impl Renderer {
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn set_indirect_scale(&mut self, value: f32) {
         self.indirect_scale = value.clamp(0.0, 1.0);
+    }
+
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn dynamic_direct_scale(&self) -> f32 {
+        self.dynamic_direct_scale
+    }
+
+    /// Takes effect on the next `update_per_frame_uniforms` upload.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn set_dynamic_direct_scale(&mut self, value: f32) {
+        self.dynamic_direct_scale = value.clamp(0.0, 1.0);
+    }
+
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn dynamic_direct_isolation(&self) -> DynamicDirectIsolation {
+        self.dynamic_direct_isolation
+    }
+
+    /// Takes effect on the next `update_per_frame_uniforms` upload.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn set_dynamic_direct_isolation(&mut self, mode: DynamicDirectIsolation) {
+        self.dynamic_direct_isolation = mode;
     }
 
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
@@ -4177,11 +4313,12 @@ impl Renderer {
                     ..Default::default()
                 });
                 mesh_enc.set_bind_group(0, &self.uniform_bind_group, &[]);
-                // Group 4 = SH irradiance volume (baked indirect). The SAME
-                // `ShVolumeResources` bind group the forward/billboard/fog passes
-                // hold, bound here so the SH-lit mesh fragment samples the local
-                // baked irradiance (group 3 = instance data; group 2 unallocated).
-                mesh_enc.set_bind_group(4, &self.sh_volume_resources.bind_group, &[]);
+                // Group 4 = SH irradiance volume (baked indirect) + the mesh-only
+                // dynamic-direct params uniform (binding 16). The mesh SUPERSET
+                // bind group: shared SH entries the forward/billboard/fog passes
+                // hold PLUS the dynamic-direct knobs (group 3 = instance data;
+                // group 2 unallocated).
+                mesh_enc.set_bind_group(4, &self.sh_volume_resources.mesh_bind_group, &[]);
                 // The mesh pass writes each instance's SSBO entry + samples its
                 // palette run (per-instance phase from the seed), then records one
                 // instanced draw per model per submesh. `now_seconds` is the
@@ -4712,6 +4849,7 @@ pub fn level_world_to_geometry<'a>(
         animated_light_chunks: world.animated_light_chunks.as_ref(),
         animated_light_weight_maps: world.animated_light_weight_maps.as_ref(),
         delta_sh_volumes: world.delta_sh_volumes.as_ref(),
+        direct_sh_volume: world.direct_sh_volume.as_ref(),
         sdf_atlas: world.sdf_atlas.as_ref(),
         lightmap_mode: world.lightmap_mode,
         texture_materials,
@@ -4909,6 +5047,9 @@ mod tests {
             sdf_shadow_flags: 0,
             sdf_shadow_mode: SdfShadowMode::On,
             sdf_force_visibility_one: false,
+            dynamic_direct_scale: DEFAULT_DYNAMIC_DIRECT_SCALE,
+            dynamic_direct_isolation: DynamicDirectIsolation::Combined,
+            has_direct: false,
         });
         assert_eq!(data.len(), UNIFORM_SIZE);
     }
@@ -4927,16 +5068,21 @@ mod tests {
             sdf_shadow_flags: SDF_SHADOW_FLAG_ATLAS_PRESENT,
             sdf_shadow_mode: SdfShadowMode::On,
             sdf_force_visibility_one: false,
+            dynamic_direct_scale: 0.0,
+            dynamic_direct_isolation: DynamicDirectIsolation::Combined,
+            has_direct: false,
         });
         let flags = u32::from_ne_bytes(data[96..100].try_into().unwrap());
         assert_eq!(flags, SDF_SHADOW_FLAG_ATLAS_PRESENT);
         // `sdf_shadow_mode` at 100..104 — `On` encodes to 0;
-        // `sdf_force_visibility_one` at 104..108 (false ⇒ 0); pad 108..112 zero.
+        // `sdf_force_visibility_one` at 104..108 (false ⇒ 0). The dynamic-direct
+        // tail (108..120) is zero here (scale 0, Combined=0, has_direct=false),
+        // and the trailing pad 120..128 stays zero.
         assert_eq!(
             u32::from_ne_bytes(data[100..104].try_into().unwrap()),
             SdfShadowMode::On as u32,
         );
-        assert!(data[104..112].iter().all(|&b| b == 0));
+        assert!(data[104..128].iter().all(|&b| b == 0));
     }
 
     /// sdf-per-light-shadows Task 3: the dev "force visibility 1.0" toggle
@@ -4957,6 +5103,9 @@ mod tests {
                 sdf_shadow_flags: 0,
                 sdf_shadow_mode: SdfShadowMode::On,
                 sdf_force_visibility_one: force,
+                dynamic_direct_scale: 0.0,
+                dynamic_direct_isolation: DynamicDirectIsolation::Combined,
+                has_direct: false,
             });
             assert_eq!(
                 u32::from_ne_bytes(data[104..108].try_into().unwrap()),
@@ -4964,8 +5113,8 @@ mod tests {
                 "sdf_force_visibility_one={force} should encode to {expected} at 104..108",
             );
             assert!(
-                data[108..112].iter().all(|&b| b == 0),
-                "tail pad 108..112 must stay zero for force={force}",
+                data[120..128].iter().all(|&b| b == 0),
+                "tail pad 120..128 must stay zero for force={force}",
             );
         }
     }
@@ -4989,6 +5138,9 @@ mod tests {
                 sdf_shadow_flags: 0,
                 sdf_shadow_mode: mode,
                 sdf_force_visibility_one: false,
+                dynamic_direct_scale: 0.0,
+                dynamic_direct_isolation: DynamicDirectIsolation::Combined,
+                has_direct: false,
             });
             let decoded = u32::from_ne_bytes(data[100..104].try_into().unwrap());
             assert_eq!(
@@ -4996,13 +5148,52 @@ mod tests {
                 "SdfShadowMode::{:?} should encode to {} at offset 100..104",
                 mode, mode as u32,
             );
-            // Tail pad 108..112 stays zero regardless of mode.
+            // Trailing pad 120..128 stays zero regardless of mode.
             assert!(
-                data[108..112].iter().all(|&b| b == 0),
-                "tail pad bytes 108..112 must stay zero for {:?}",
+                data[120..128].iter().all(|&b| b == 0),
+                "trailing pad bytes 120..128 must stay zero for {:?}",
                 mode,
             );
         }
+    }
+
+    /// baked-static-direct-sh Task 6: the dynamic-direct tail of the shared
+    /// group-0 `Uniforms` must round-trip through the byte packer. `direct_scale`
+    /// repurposes the former `_sdf_pad1` slot (108..112); isolation + has_direct
+    /// land in the fresh 16-byte row (112..120), with 120..128 padding.
+    #[test]
+    fn uniform_data_encodes_dynamic_direct_tail_at_correct_offsets() {
+        let data = build_uniform_data(&FrameUniforms {
+            view_proj: Mat4::IDENTITY,
+            camera_position: Vec3::ZERO,
+            ambient_floor: 0.0,
+            light_count: 0,
+            time: 0.0,
+            lighting_isolation: LightingIsolation::Normal,
+            indirect_scale: 1.0,
+            sdf_shadow_flags: 0,
+            sdf_shadow_mode: SdfShadowMode::On,
+            sdf_force_visibility_one: false,
+            dynamic_direct_scale: 0.25,
+            dynamic_direct_isolation: DynamicDirectIsolation::IndirectOnly,
+            has_direct: true,
+        });
+        let scale = f32::from_ne_bytes(data[108..112].try_into().unwrap());
+        assert!((scale - 0.25).abs() < 1e-6, "direct_scale at 108..112");
+        assert_eq!(
+            u32::from_ne_bytes(data[112..116].try_into().unwrap()),
+            DynamicDirectIsolation::IndirectOnly as u32,
+            "dynamic_direct_isolation at 112..116",
+        );
+        assert_eq!(
+            u32::from_ne_bytes(data[116..120].try_into().unwrap()),
+            1,
+            "has_direct at 116..120",
+        );
+        assert!(
+            data[120..128].iter().all(|&b| b == 0),
+            "trailing pad 120..128 must stay zero",
+        );
     }
 
     #[test]
@@ -5631,6 +5822,9 @@ mod tests {
             sdf_shadow_flags: 0,
             sdf_shadow_mode: SdfShadowMode::On,
             sdf_force_visibility_one: false,
+            dynamic_direct_scale: DEFAULT_DYNAMIC_DIRECT_SCALE,
+            dynamic_direct_isolation: DynamicDirectIsolation::Combined,
+            has_direct: false,
         });
 
         // view_proj: first 64 bytes = 16 f32 identity columns.
@@ -5695,6 +5889,9 @@ mod tests {
             sdf_shadow_flags: 0,
             sdf_shadow_mode: SdfShadowMode::On,
             sdf_force_visibility_one: false,
+            dynamic_direct_scale: DEFAULT_DYNAMIC_DIRECT_SCALE,
+            dynamic_direct_isolation: DynamicDirectIsolation::Combined,
+            has_direct: false,
         });
         // time at bytes 84..88.
         let t = f32::from_ne_bytes(data[84..88].try_into().unwrap());

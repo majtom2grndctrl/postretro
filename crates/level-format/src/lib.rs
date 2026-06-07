@@ -9,6 +9,7 @@ pub mod bvh;
 pub mod chunk_light_list;
 pub mod data_script;
 pub mod delta_sh_volumes;
+pub mod direct_sh_volume;
 pub mod fog_cell_masks;
 pub mod fog_volumes;
 pub mod geometry;
@@ -191,6 +192,15 @@ pub enum SectionId {
     /// validity, grid metadata, depth moments, and animation descriptors keep
     /// the same meaning. See `sh_volume::OctahedralShVolumeSection`.
     OctahedralShVolume = 34,
+
+    /// Dense octahedral irradiance atlas carrying DIRECT light from STATIC
+    /// lights, sampled at runtime by dynamic objects (entities/billboards).
+    /// Sibling to `OctahedralShVolume` (the INDIRECT atlas) with byte-identical
+    /// tile geometry so the runtime sampler is shared, but with no depth moments
+    /// and no animation data — those are read from the indirect section, whose
+    /// probe grid is byte-identical in position. Stored BC6H-compressed at rest.
+    /// See `direct_sh_volume::DirectShVolumeSection`.
+    DirectShVolume = 35,
 }
 
 impl SectionId {
@@ -218,6 +228,7 @@ impl SectionId {
             32 => Some(Self::TextureCacheKeys),
             33 => Some(Self::SdfAtlas),
             34 => Some(Self::OctahedralShVolume),
+            35 => Some(Self::DirectShVolume),
             _ => None,
         }
     }

@@ -15,19 +15,23 @@
 // from forward.wgsl. `tangent_packed` (location 3) is carried but unused by the SH-lit fragment
 // (no normal map yet); its decode lands with the normal-mapping work.
 //
-// Lighting: SH-lit indirect baseline. The fragment samples the material
-// base-color texture (group 1) and multiplies it by the baked spherical-harmonic
-// irradiance read from the SH volume at NEW group 4 (the same `ShVolumeResources`
-// bind group the forward/billboard/fog passes hold — bound here at slot 4, no
-// new resource). The depth-aware octahedral helper from `sh_sample.wgsl` is
-// appended to this source at pipeline creation (render/mesh_pass.rs), mirroring
-// how forward.wgsl is assembled (render/mod.rs `SHADER_SOURCE`).
+// Lighting: SH-lit indirect + baked static direct. The fragment samples the
+// material base-color texture (group 1), multiplies it by the baked indirect
+// irradiance (`sample_sh_indirect`), and adds the baked static-direct term
+// (`sample_sh_direct`) from the direct atlas at group 4 binding 15. Both SH
+// reads use the same grid/sampler from the group-4 superset. The depth-aware
+// octahedral helper from `sh_sample.wgsl` is appended to this source at
+// pipeline creation (render/mesh_pass.rs), mirroring how forward.wgsl is
+// assembled (render/mod.rs `SHADER_SOURCE`). Group 4 is the `mesh_bind_group`
+// SUPERSET (shared SH entries + direct atlas at binding 15 +
+// `DynamicDirectParams` uniform at binding 16) — NOT the shared `bind_group`
+// the forward/billboard/fog passes hold.
 //
 // Entities follow the BILLBOARD precedent, not forward's static-surface variant:
 // `reject_backface = false` (a moving skinned entity is not a static world
-// surface) with Chebyshev probe-occlusion on. No direct lighting is computed
-// here); group 2 is reserved for the dynamic-direct additive term when that
-// work lands.
+// surface) with Chebyshev probe-occlusion on. Baked static direct is computed
+// here via `sample_sh_direct`; group 2 stays UNALLOCATED, reserved for the
+// future dynamic-direct light loop (runtime dynamic-tier lights, plan D10).
 //
 // Design note (non-binding): the skinning vertex stage is kept separable so a
 // future position-only depth-only skinned variant (the shadow task) can share
@@ -52,10 +56,11 @@ struct CameraUniforms {
 @group(1) @binding(5) var aniso_sampler: sampler;
 
 // --- Group 3: skinned instance data ------------------------------------------
-// Group 2 is intentionally left UNALLOCATED — the provisional slot the
-// dynamic-direct lighting task adds later (SH indirect already ships at
-// group 4). The pipeline layout passes `None` for group 2 so that task adds
-// a slot rather than renumbering existing groups.
+// Group 2 is intentionally left UNALLOCATED. It is reserved for the future
+// dynamic-direct light loop (runtime dynamic-tier lights, plan D10) — distinct
+// from the baked static-direct term, which already landed in group 4 (binding
+// 15). The pipeline layout passes `None` for group 2; D10 inserts a slot here
+// rather than renumbering existing groups.
 //
 // `bone_palette` is the SHARED palette storage buffer; every instance's run of
 // `BonePaletteEntry` (one mat4 per joint) is appended into it. Each instance's
@@ -82,19 +87,16 @@ struct Instance {
 };
 @group(3) @binding(1) var<storage, read> instances: array<Instance>;
 
-// --- Group 4: SH irradiance volume (baked indirect) --------------------------
-// The SAME `ShVolumeResources` bind group the forward/billboard/fog passes use,
-// bound here at group 4 (group 3 is locked to instance data; group 2 stays
-// UNALLOCATED). Binding indices mirror forward.wgsl exactly (b1/b2/b10/b14); the
-// renderer puts the shared `bind_group_layout` at slot 4 in the mesh pipeline
-// layout and binds the shared `bind_group` there (bind groups are
-// group-index-agnostic at `set_bind_group` time). The appended `sh_sample.wgsl`
-// helper reads these four bindings by lexical name. The animated-layer storage
-// buffers (b11/b12/b13) live in the same bind group layout but are not declared
-// here — the mesh indirect path never evaluates animated layers, mirroring
-// billboard.wgsl, which only needs the four indirect-sampling bindings... except
-// the bind group layout still carries them, and WGSL binds by declared name, so
-// omitting the unused bindings is legal and layout-compatible.
+// --- Group 4: SH volume superset (baked indirect + baked static direct) ------
+// Binds `mesh_bind_group` / `mesh_bind_group_layout` — the SUPERSET of the
+// shared SH bind group. It adds direct atlas at binding 15 and the mesh-only
+// `DynamicDirectParams` uniform at binding 16 on top of the shared entries
+// (b1/b2/b10/b11/b12/b13/b14). Group 3 is locked to instance data; group 2
+// stays UNALLOCATED (reserved for the future dynamic-direct light loop, D10).
+// The appended `sh_sample.wgsl` helper reads the shared bindings by lexical
+// name. The animated-layer storage buffers (b11/b12/b13) live in the layout
+// but are not declared here — the mesh path never evaluates animated layers
+// (mirrors billboard.wgsl); omitting undeclared bindings is legal in WGSL.
 struct ShGridInfo {
     grid_origin: vec3<f32>,
     has_sh_volume: u32,
@@ -119,6 +121,28 @@ struct ShGridInfo {
 @group(4) @binding(2) var sh_atlas_sampler: sampler;
 @group(4) @binding(10) var<uniform> sh_grid: ShGridInfo;
 @group(4) @binding(14) var sh_depth_moments: texture_3d<f32>;
+// Baked static direct SH atlas (BC6H-at-rest, hardware-decoded to f32). Bound at
+// `BIND_SH_DIRECT_ATLAS` (group 4 binding 15) on the mesh group-4 superset by
+// render/sh_volume.rs. Same octahedral tile geometry as `sh_total_atlas`, so it
+// samples through the shared `sh_sample.wgsl` chain with the same grid/sampler.
+@group(4) @binding(15) var sh_direct_atlas: texture_2d<f32>;
+
+// Mesh-only dynamic-direct debug params (binding 16). The mesh path reads a
+// trimmed group-0 camera uniform (only `view_proj`), so the scale / isolation /
+// has_direct knobs reach it through this dedicated uniform instead of the
+// group-0 `Uniforms` tail that billboard.wgsl uses. std140: padded to 16 bytes.
+//   scale      — multiplies the baked direct term (0..1).
+//   isolation  — 0 = combined (indirect + scale·direct),
+//                1 = direct-only (scale·direct), 2 = indirect-only.
+//   has_direct — 0 when the baked DIRECT SH section is absent; the direct term
+//                is forced to 0 (fall back to indirect-only) with no error.
+struct DynamicDirectParams {
+    scale: f32,
+    isolation: u32,
+    has_direct: u32,
+    _pad: u32,
+};
+@group(4) @binding(16) var<uniform> dynamic_direct: DynamicDirectParams;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -251,15 +275,65 @@ fn sample_sh_indirect(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_norma
     );
 }
 
+// Baked static direct SH read, the sibling of `sample_sh_indirect` against the
+// direct atlas. Same normal-offset bias and grid derivation (so the direct term
+// lines up with the indirect one), then defers to the shared-weights direct
+// corner blend. Backface rejection stays OFF (entities are not static surfaces)
+// and Chebyshev stays ON, reading the shared `sh_depth_moments`.
+fn sample_sh_direct(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_normal: vec3<f32>) -> vec3<f32> {
+    if sh_grid.has_sh_volume == 0u {
+        return vec3<f32>(0.0);
+    }
+
+    const SH_NORMAL_OFFSET_M: f32 = 0.1;
+    let offset_world = world_pos + shading_normal * SH_NORMAL_OFFSET_M * sh_grid.cell_size;
+    let gdims_u = sh_grid.grid_dimensions;
+    let gdims_f = max(vec3<f32>(gdims_u) - vec3<f32>(1.0), vec3<f32>(0.0));
+    let cell_coord = (offset_world - sh_grid.grid_origin) /
+        max(sh_grid.cell_size, vec3<f32>(1.0e-6));
+    let gf = clamp(cell_coord, vec3<f32>(0.0), gdims_f);
+    let gi = vec3<u32>(floor(gf));
+    let gfrac = fract(gf);
+
+    return sample_sh_direct_corners_depth_aware(
+        sh_direct_atlas,
+        gi,
+        gfrac,
+        offset_world,
+        shading_normal,
+        geo_normal,
+        false,
+        sh_grid.probe_occlusion != 0u,
+    );
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // SH-lit: sample base color, then multiply by the local baked indirect
-    // irradiance read from the SH volume at the skinned world position. No direct
-    // light loop yet — that is the dynamic-direct task's additive group (group 2,
-    // unallocated). The skinned world normal drives both the octahedral direction
-    // lookup and (unused, backface rejection off) the geometric backface test.
+    // SH-lit: sample base color, multiply by baked indirect irradiance, then add
+    // the baked static-direct term (group 4 binding 15; gated by `has_direct`).
+    // The future dynamic-direct light loop (D10, group 2) is not yet built.
+    // The skinned world normal drives the octahedral direction lookup and
+    // (unused, backface rejection off) the geometric backface test.
     let base_color = textureSample(base_texture, aniso_sampler, in.uv);
     let n = normalize(in.world_normal);
     let indirect = sample_sh_indirect(in.world_position, n, n);
-    return vec4<f32>(base_color.rgb * indirect, base_color.a);
+    // Baked static direct SH term, sampled with the same normal/grid as the
+    // indirect read (corners-depth-aware, backface rejection off). The direct
+    // term is gated off (0) when the baked DIRECT section is absent
+    // (`has_direct == 0`) — the absent-section fallback to indirect-only.
+    var direct = vec3<f32>(0.0);
+    if dynamic_direct.has_direct != 0u {
+        direct = dynamic_direct.scale * sample_sh_direct(in.world_position, n, n);
+    }
+    // Dynamic-direct isolation (debug instrument):
+    //   0 = combined    → indirect + scale·direct
+    //   1 = direct-only  → scale·direct
+    //   2 = indirect-only → indirect
+    var lighting = indirect + direct;
+    if dynamic_direct.isolation == 1u {
+        lighting = direct;
+    } else if dynamic_direct.isolation == 2u {
+        lighting = indirect;
+    }
+    return vec4<f32>(base_color.rgb * lighting, base_color.a);
 }

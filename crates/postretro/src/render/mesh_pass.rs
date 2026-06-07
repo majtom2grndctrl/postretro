@@ -18,8 +18,11 @@
 //               (binding 0) + per-instance SSBO carrying each instance's model
 //               matrix and palette base index, addressed by
 //               `@builtin(instance_index)` (binding 1)
-//   * group 4 = SH irradiance volume (reused `ShVolumeResources` bind group —
-//               the fragment's indirect baseline)
+//   * group 4 = SH irradiance volume (`ShVolumeResources.mesh_bind_group` —
+//               the SUPERSET bind group that extends the shared SH entries with
+//               the direct-atlas texture at binding 15 and the
+//               `DynamicDirectParams` uniform at binding 16; forward/billboard/
+//               fog passes use the smaller base `bind_group` and its layout)
 //
 // Per-instance addressing: the palette base index lives in the per-instance SSBO
 // entry, NOT in `first_instance`/`base_instance` — DX12 reads that as 0
@@ -247,8 +250,12 @@ impl MeshPass {
         // (provisional dynamic-DIRECT lighting slot — `None`, like SmokePass
         // leaves unused slots; the dynamic-direct task adds group 2 rather than
         // renumbering), 3 (skinned instance data), 4 (SH irradiance volume —
-        // the SAME `ShVolumeResources.bind_group_layout` the forward/billboard/
-        // fog passes use, reused verbatim so the shared bind group binds here).
+        // `ShVolumeResources.mesh_bind_group_layout`, the SUPERSET layout that
+        // extends the shared SH entries with the direct-atlas texture at binding
+        // 15 and the `DynamicDirectParams` uniform at binding 16; forward/
+        // billboard/fog passes use the smaller `bind_group_layout` without those
+        // two extra bindings, so mesh binds `mesh_bind_group`, not the shared
+        // `ShVolumeResources` bind group).
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Skinned Mesh Pipeline Layout"),
             bind_group_layouts: &[
@@ -477,7 +484,8 @@ impl MeshPass {
     /// reusable pose buffer (kept off the GPU pass so a steady-state frame
     /// allocates nothing). Group 0 (camera) and group 4 (SH irradiance volume)
     /// must be set by the caller before recording — the renderer owns the camera
-    /// and `ShVolumeResources` bind groups (both shared across passes).
+    /// and `ShVolumeResources` bind groups (camera is shared across passes; SH
+    /// uses the mesh-superset `mesh_bind_group` here, not the base bind group).
     ///
     /// Cull is the caller's job — see [`mesh_visible`]; the plan already holds
     /// only surviving, in-budget instances.

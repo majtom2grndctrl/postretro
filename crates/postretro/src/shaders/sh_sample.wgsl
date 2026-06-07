@@ -76,7 +76,15 @@ fn probe_tile_origin(idx: vec3<i32>) -> vec2<u32> {
     );
 }
 
-fn sample_probe_atlas(idx: vec3<i32>, dir: vec3<f32>) -> vec4<f32> {
+// Atlas-parameterized tile fetch. The tile geometry (origin, octahedral remap,
+// border, dimensions) is identical across the indirect and direct octahedral
+// atlases because they share one probe grid layout, so the only difference is
+// which `texture_2d<f32>` is sampled. Passing the atlas as an argument keeps
+// `sh_sample.wgsl` binding-agnostic: consumers that only declare the indirect
+// atlas (forward.wgsl, fog_volume.wgsl) never name the direct atlas, while the
+// dynamic-entity shaders (skinned_mesh, billboard) can fetch a second atlas with
+// the same math. `sh_atlas_sampler`/`sh_grid` remain shared module bindings.
+fn sample_probe_atlas_tex(atlas: texture_2d<f32>, idx: vec3<i32>, dir: vec3<f32>) -> vec4<f32> {
     let origin = probe_tile_origin(idx);
     let oct = oct_encode_unquantized(dir);
     let interior = max(sh_grid.tile_interior, 1u);
@@ -86,9 +94,22 @@ fn sample_probe_atlas(idx: vec3<i32>, dir: vec3<f32>) -> vec4<f32> {
     let texel = vec2<f32>(origin)
         + vec2<f32>(f32(sh_grid.tile_border))
         + oct * vec2<f32>(f32(interior));
-    let atlas_dimensions = max(sh_grid.atlas_dimensions, vec2<u32>(1u));
+    // Normalize by the SAMPLED atlas's OWN physical extent, not the logical
+    // `sh_grid.atlas_dimensions`. Tile texel POSITIONS are identical across the
+    // indirect and direct atlases (same probe layout; padding is appended only at
+    // the right/bottom edges), so only the divisor differs. The indirect atlas is
+    // stored at physical == logical extent, so `textureDimensions` returns the
+    // logical dims there and the indirect path is unchanged. The direct atlas is a
+    // BC6H texture rounded up to a 4-aligned physical extent; using its logical
+    // dims would progressively stretch the fetch and pull the zeroed fringe into
+    // the sample. `textureDimensions(atlas)` keeps this helper binding-agnostic.
+    let atlas_dimensions = max(textureDimensions(atlas), vec2<u32>(1u));
     let uv = texel / vec2<f32>(atlas_dimensions);
-    return textureSampleLevel(sh_total_atlas, sh_atlas_sampler, uv, 0.0);
+    return textureSampleLevel(atlas, sh_atlas_sampler, uv, 0.0);
+}
+
+fn sample_probe_atlas(idx: vec3<i32>, dir: vec3<f32>) -> vec4<f32> {
+    return sample_probe_atlas_tex(sh_total_atlas, idx, dir);
 }
 
 fn sh_trilinear_weight(corner_offset: vec3<u32>, gfrac: vec3<f32>) -> f32 {
@@ -181,6 +202,91 @@ fn sample_sh_indirect_corners_pair(
     result.a = sum_a / weight_sum;
     result.b = sum_b / weight_sum;
     return result;
+}
+
+// Shared-weights indirect + direct corner blend. The per-probe weights (probe
+// selection, trilinear, validity from atlas alpha, backface, Chebyshev depth
+// visibility) are computed ONCE from the indirect atlas and reused for both
+// octahedral fetches — the two atlases differ only in the radiance they store,
+// not in probe layout or validity (both keyed on the shared grid, and validity
+// alpha is authored identically). Returns `.a` = indirect, `.b` = direct.
+//
+// `direct_atlas` is passed as an argument so this helper stays binding-agnostic;
+// only the dynamic-entity shaders that declare a direct atlas call it. Chebyshev
+// stays ON for the direct term (entities are not static surfaces) and reads the
+// shared `sh_depth_moments` (same grid → same moments) used by the indirect path.
+fn sample_sh_indirect_direct_corners(
+    direct_atlas: texture_2d<f32>,
+    gi: vec3<u32>,
+    gfrac: vec3<f32>,
+    sample_world: vec3<f32>,
+    shading_normal: vec3<f32>,
+    geo_normal: vec3<f32>,
+    reject_backface: bool,
+    probe_occlusion_enabled: bool,
+) -> ShDirPair {
+    var sum_indirect = vec3<f32>(0.0);
+    var sum_direct = vec3<f32>(0.0);
+    var weight_sum = 0.0;
+
+    for (var c: u32 = 0u; c < 8u; c = c + 1u) {
+        let corner_offset = sh_corner_offset(c);
+        let idx = sh_corner_index(gi, corner_offset);
+
+        let sample_indirect = sample_probe_atlas_tex(sh_total_atlas, idx, shading_normal);
+        let is_valid = sample_indirect.a >= 0.5;
+        let w = sh_probe_weight(
+            idx,
+            corner_offset,
+            gfrac,
+            sample_world,
+            geo_normal,
+            is_valid,
+            reject_backface,
+            true,
+            probe_occlusion_enabled,
+        );
+        sum_indirect = sum_indirect + w * max(sample_indirect.rgb, vec3<f32>(0.0));
+        let sample_direct = sample_probe_atlas_tex(direct_atlas, idx, shading_normal);
+        sum_direct = sum_direct + w * max(sample_direct.rgb, vec3<f32>(0.0));
+        weight_sum = weight_sum + w;
+    }
+
+    var result: ShDirPair;
+    if (weight_sum < SH_WEIGHT_EPSILON) {
+        result.a = vec3<f32>(0.0);
+        result.b = vec3<f32>(0.0);
+        return result;
+    }
+    result.a = sum_indirect / weight_sum;
+    result.b = sum_direct / weight_sum;
+    return result;
+}
+
+// Direct-only corner blend (the `.b` of the shared-weights pair). The indirect
+// term is still fetched to derive validity alpha and to share the renormalizing
+// weight sum, but only the direct radiance is returned. Consumers that already
+// computed the indirect term separately use this to add the direct contribution.
+fn sample_sh_direct_corners_depth_aware(
+    direct_atlas: texture_2d<f32>,
+    gi: vec3<u32>,
+    gfrac: vec3<f32>,
+    sample_world: vec3<f32>,
+    shading_normal: vec3<f32>,
+    geo_normal: vec3<f32>,
+    reject_backface: bool,
+    probe_occlusion_enabled: bool,
+) -> vec3<f32> {
+    return sample_sh_indirect_direct_corners(
+        direct_atlas,
+        gi,
+        gfrac,
+        sample_world,
+        shading_normal,
+        geo_normal,
+        reject_backface,
+        probe_occlusion_enabled,
+    ).b;
 }
 
 fn sample_sh_indirect_corners_depth_aware(

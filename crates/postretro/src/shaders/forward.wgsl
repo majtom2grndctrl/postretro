@@ -44,12 +44,19 @@ struct Uniforms {
     // pre-change render with no brightening (disjoint sets guarantee the term
     // is purely additive). Set via the Diagnostics panel checkbox.
     sdf_force_visibility_one: u32,
-    // One u32 padding slot — keeps the trailing 16-byte vec4 row of the
-    // struct fully accounted for. A plain u32 (not folded into a vec) so the
-    // struct's natural alignment stays 4 bytes and total stride lands
-    // exactly at 112 bytes — wgpu rejects the pipeline if the CPU-side
+    // --- dynamic-direct tail (baked-static-direct-sh Task 6) ---
+    // These belong to the DYNAMIC (entity / billboard) path and are NOT read by
+    // the forward fragment. They are declared here only to keep the shared
+    // group-0 `Uniforms` byte layout in lockstep (the 3-way contract: Rust
+    // writer + forward.wgsl + billboard.wgsl). The first field repurposes the
+    // former `_sdf_pad1` slot; the rest land in a fresh 16-byte row so the
+    // struct stride is exactly 128 — wgpu rejects the pipeline if the CPU-side
     // `UNIFORM_SIZE` and WGSL-derived stride drift.
-    _sdf_pad1: u32,
+    dynamic_direct_scale: f32,
+    dynamic_direct_isolation: u32,
+    has_direct: u32,
+    _dyn_pad0: u32,
+    _dyn_pad1: u32,
 };
 
 // Four vec4<f32> slots — see postretro/src/lighting/mod.rs for field semantics.

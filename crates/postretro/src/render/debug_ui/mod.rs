@@ -4,6 +4,7 @@
 use winit::event::WindowEvent;
 use winit::window::Window;
 
+use super::DynamicDirectIsolation;
 use super::LightingIsolation;
 use super::Renderer;
 use super::SdfShadowMode;
@@ -40,6 +41,9 @@ impl DebugUiGpu {
 pub struct DiagnosticsState {
     pub ambient_floor: f32,
     pub indirect_scale: f32,
+    /// Scale slider for the baked static-direct SH term on entities/billboards.
+    /// Independent of `indirect_scale` (which controls the static-surface indirect).
+    pub dynamic_direct_scale: f32,
     // Task 7: SDF / Fog quality sliders. Seeded from the live renderer values
     // on first draw — see the `seeded` flag below.
     pub sdf_max_march_steps: u32,
@@ -59,6 +63,7 @@ impl Default for DiagnosticsState {
         Self {
             ambient_floor: super::DEFAULT_AMBIENT_FLOOR,
             indirect_scale: super::DEFAULT_INDIRECT_SCALE,
+            dynamic_direct_scale: super::DEFAULT_DYNAMIC_DIRECT_SCALE,
             // Placeholder values overwritten by the seed-from-renderer pass on
             // first draw (see `draw_diagnostics_panel`). Match the SDF /
             // fog defaults so the struct is still legible in isolation.
@@ -142,6 +147,7 @@ pub fn draw_diagnostics_panel(
     if !state.seeded {
         state.ambient_floor = renderer.ambient_floor();
         state.indirect_scale = renderer.indirect_scale();
+        state.dynamic_direct_scale = renderer.dynamic_direct_scale();
         // Task 7: pull live SDF / Fog tuning so the sliders open at the
         // engine's current values, not the struct-default placeholders.
         state.sdf_max_march_steps = renderer.sdf_max_march_steps();
@@ -171,6 +177,33 @@ pub fn draw_diagnostics_panel(
                     .changed()
                 {
                     renderer.set_indirect_scale(state.indirect_scale);
+                }
+
+                // Dynamic baked-static-direct SH controls (entities + billboards).
+                // Separate from the forward Indirect Scale / Lighting Isolation
+                // above so the dynamic-vs-static parity comparison stays valid.
+                ui.label("Dynamic Direct Scale");
+                if ui
+                    .add(egui::Slider::new(
+                        &mut state.dynamic_direct_scale,
+                        0.0_f32..=1.0,
+                    ))
+                    .changed()
+                {
+                    renderer.set_dynamic_direct_scale(state.dynamic_direct_scale);
+                }
+
+                let mut dyn_iso = renderer.dynamic_direct_isolation();
+                let prev_dyn_iso = dyn_iso;
+                egui::ComboBox::from_label("Dynamic Direct Isolation")
+                    .selected_text(dyn_iso.label())
+                    .show_ui(ui, |ui| {
+                        for variant in DynamicDirectIsolation::ALL_VARIANTS {
+                            ui.selectable_value(&mut dyn_iso, variant, variant.label());
+                        }
+                    });
+                if dyn_iso != prev_dyn_iso {
+                    renderer.set_dynamic_direct_isolation(dyn_iso);
                 }
 
                 let mut probe_occlusion = renderer.probe_occlusion_enabled();

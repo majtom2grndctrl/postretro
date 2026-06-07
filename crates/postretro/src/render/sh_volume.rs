@@ -1,9 +1,12 @@
 // SH irradiance volume GPU resources: octahedral atlas textures, grid-info uniform, bind group (group 3).
 // See: context/lib/rendering_pipeline.md §4, §8
 
+use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
+use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
 use postretro_level_format::sh_volume::{
     AnimationDescriptor, OctahedralAtlasTexel, OctahedralShProbe, OctahedralShVolumeSection,
 };
+use wgpu::util::DeviceExt;
 
 /// Group 3 binding indices for the octahedral irradiance atlas resources.
 pub const BIND_SH_TOTAL_ATLAS: u32 = 1;
@@ -20,6 +23,15 @@ pub const BIND_ANIM_SAMPLES: u32 = 12;
 pub const BIND_SCRIPTED_LIGHT_DESCRIPTORS: u32 = 13;
 /// Static per-probe depth moments: R = mean distance, G = mean squared distance.
 pub const BIND_SH_DEPTH_MOMENTS: u32 = BIND_SCRIPTED_LIGHT_DESCRIPTORS + 1;
+/// Baked DIRECT static-light octahedral atlas, sampled ONLY by the dynamic
+/// pipelines (mesh + billboard). Rides the shared group-3 SH layout so the
+/// reserved group-2 dynamic-direct slot stays free, and the mesh group-4
+/// superset uses this SAME index. The plan named binding 13, but bindings 13
+/// and 14 were claimed by the scripted-light descriptors and depth moments
+/// after the plan was written — this takes the actual NEXT FREE index (15).
+/// Task 6's mesh-only `DynamicDirectParams` uniform binds at the next free
+/// index AFTER this one (16) in the mesh group-4 superset.
+pub const BIND_SH_DIRECT_ATLAS: u32 = BIND_SH_DEPTH_MOMENTS + 1;
 
 /// Byte size of `ShGridInfo` — six `vec4` slots to satisfy std140 alignment
 /// rules (vec3 fields align to 16, followed by a same-slot scalar).
@@ -111,6 +123,15 @@ pub struct ShVolumeResources {
     /// `TextureView` via `make_depth_moment_view` (wgpu views aren't `Clone`,
     /// and the SDF shadow pass rebuilds its bind group on resize / level reload).
     depth_moment_texture: wgpu::Texture,
+    /// Baked DIRECT static-light octahedral atlas (`Bc6hRgbUfloat` at rest, or
+    /// `Rgba16Float` for the uncompressed-debug tag). Shared by both dynamic
+    /// consumers (mesh + billboard), so it lives on the shared SH resources.
+    /// Bound at `BIND_SH_DIRECT_ATLAS`; the dummy 4×4 BC6H zero block is bound
+    /// when the section is absent. The mesh-only dynamic-direct uniform (Task 6)
+    /// deliberately does NOT live here — these shared resources stay free of
+    /// mesh-only fields.
+    #[allow(dead_code)]
+    pub direct_atlas_view: wgpu::TextureView,
     /// Owned here but shared with the compose pass — one upload, two bind groups.
     /// CPU mirror kept alongside so per-frame `active` edits patch bytes and flush in one `write_buffer`.
     pub animation: AnimatedLightBuffers,
@@ -271,6 +292,7 @@ impl ShVolumeResources {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         section: Option<&OctahedralShVolumeSection>,
+        direct_section: Option<&DirectShVolumeSection>,
         map_light_count: usize,
         probe_occlusion_enabled: bool,
     ) -> Self {
@@ -452,6 +474,19 @@ impl ShVolumeResources {
             label: Some("SH Depth Moment View"),
             ..Default::default()
         });
+
+        // Direct static-light atlas. BC6H-at-rest is the default: the texture is
+        // created with `Bc6hRgbUfloat` and the compressed blocks upload verbatim
+        // (hardware decode at sample), mirroring the lightmap irradiance atlas's
+        // BC6H load path. The uncompressed-debug tag routes to `Rgba16Float`.
+        // Absent section → a 4×4 BC6H zero-block dummy (valid for `Bc6hRgbUfloat`,
+        // never sampled — Task 6's `has_direct` flag gates the sample off).
+        let direct_atlas_texture = upload_direct_atlas_texture(device, queue, direct_section);
+        let direct_atlas_view = direct_atlas_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("SH Direct Octahedral Atlas View"),
+            ..Default::default()
+        });
+
         let atlas_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("SH Octahedral Atlas Sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -492,6 +527,10 @@ impl ShVolumeResources {
                 binding: BIND_SH_DEPTH_MOMENTS,
                 resource: wgpu::BindingResource::TextureView(&depth_moment_view),
             },
+            wgpu::BindGroupEntry {
+                binding: BIND_SH_DIRECT_ATLAS,
+                resource: wgpu::BindingResource::TextureView(&direct_atlas_view),
+            },
         ];
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -526,6 +565,7 @@ impl ShVolumeResources {
             base_atlas_view,
             total_atlas_storage_view,
             depth_moment_texture,
+            direct_atlas_view,
             animation,
             scripted_light_descriptors: scripted_light_descriptors_buffer,
             scripted_light_count: map_light_count as u32,
@@ -578,7 +618,7 @@ impl ShVolumeResources {
 // --- Helpers ---
 
 fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
-    let mut entries: Vec<wgpu::BindGroupLayoutEntry> = Vec::with_capacity(7);
+    let mut entries: Vec<wgpu::BindGroupLayoutEntry> = Vec::with_capacity(8);
     // Shared with the forward pass (fragment) and fog raymarch (compute), so visibility
     // covers both stages on every entry.
     let vis = wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE;
@@ -633,6 +673,22 @@ fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         ty: wgpu::BindingType::Texture {
             sample_type: wgpu::TextureSampleType::Float { filterable: false },
             view_dimension: wgpu::TextureViewDimension::D3,
+            multisampled: false,
+        },
+        count: None,
+    });
+    // Direct static-light atlas. Only the dynamic fragment stages sample it
+    // (v1), so visibility is FRAGMENT only — forward/fog leave it undeclared,
+    // which is valid since a pipeline's BGL may carry entries a shader doesn't
+    // read. `Bc6hRgbUfloat` hardware-decodes to filterable float, sampled
+    // through the shared `BIND_SH_ATLAS_SAMPLER` linear sampler exactly like the
+    // indirect atlas.
+    entries.push(wgpu::BindGroupLayoutEntry {
+        binding: BIND_SH_DIRECT_ATLAS,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2,
             multisampled: false,
         },
         count: None,
@@ -712,6 +768,111 @@ fn upload_atlas_texture(
     );
 
     texture
+}
+
+/// Build the DIRECT static-light atlas texture from the (optional) direct
+/// section. BC6H-at-rest is the default: the texture is created with
+/// `Bc6hRgbUfloat` and the compressed blocks upload verbatim
+/// (`create_texture_with_data` accepts the block-compressed payload — the
+/// dimensions are texel-space and the slice is `ceil(w/4)·ceil(h/4)·16` bytes),
+/// hardware-decoded at sample time. The uncompressed-debug tag
+/// (`IRRADIANCE_FORMAT_RGBA16F`) routes to a row-major `Rgba16Float` texture.
+/// This mirrors the lightmap irradiance atlas's BC6H load path
+/// (`lighting::lightmap::upload_irradiance_texture`).
+///
+/// When the section is absent (legacy v7 map / no static lights), upload a
+/// minimal valid 4×4 `Bc6hRgbUfloat` zero-block texture — a single 16-byte zero
+/// block satisfies BC6H's ≥4 / 4-aligned rule. A 1×1 texture is invalid for
+/// `Bc6hRgbUfloat`. The dummy is never sampled (Task 6's `has_direct` flag gates
+/// the direct sample off), so its contents are irrelevant.
+fn upload_direct_atlas_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    section: Option<&DirectShVolumeSection>,
+) -> wgpu::Texture {
+    let max_texture_dimension_2d = device.limits().max_texture_dimension_2d;
+    let usable = section.filter(|s| {
+        let fits = s.atlas_dimensions[0] <= max_texture_dimension_2d
+            && s.atlas_dimensions[1] <= max_texture_dimension_2d
+            && s.atlas_dimensions[0] > 0
+            && s.atlas_dimensions[1] > 0;
+        if !fits {
+            log::error!(
+                "[Renderer] Direct SH atlas {}x{} exceeds device maxTextureDimension2D {} (or is empty); binding the direct dummy for this level",
+                s.atlas_dimensions[0],
+                s.atlas_dimensions[1],
+                max_texture_dimension_2d,
+            );
+        }
+        fits
+    });
+
+    let Some(sec) = usable else {
+        return upload_direct_atlas_dummy(device, queue);
+    };
+
+    let (format, width, height) = if sec.irradiance_format == IRRADIANCE_FORMAT_BC6H {
+        // BC6H texel-space dimensions are the next multiple of 4 on each axis
+        // (the emitter pads to 4×4 blocks before encoding); the block count is
+        // derived from the padded extent so the supplied blob length matches.
+        let w = sec.atlas_dimensions[0].div_ceil(4) * 4;
+        let h = sec.atlas_dimensions[1].div_ceil(4) * 4;
+        (wgpu::TextureFormat::Bc6hRgbUfloat, w, h)
+    } else {
+        // Uncompressed-debug `Rgba16Float`: row-major, dimensions are the logical
+        // atlas dimensions verbatim.
+        (
+            wgpu::TextureFormat::Rgba16Float,
+            sec.atlas_dimensions[0],
+            sec.atlas_dimensions[1],
+        )
+    };
+
+    device.create_texture_with_data(
+        queue,
+        &wgpu::TextureDescriptor {
+            label: Some("SH Direct Octahedral Atlas"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &sec.atlas,
+    )
+}
+
+/// 4×4 `Bc6hRgbUfloat` zero-block dummy for the absent-direct-section case. One
+/// 16-byte zero block satisfies BC6H's ≥4 / 4-aligned requirement; never
+/// sampled.
+fn upload_direct_atlas_dummy(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
+    let zero_block = [0u8; 16];
+    device.create_texture_with_data(
+        queue,
+        &wgpu::TextureDescriptor {
+            label: Some("SH Direct Octahedral Atlas Dummy"),
+            size: wgpu::Extent3d {
+                width: 4,
+                height: 4,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bc6hRgbUfloat,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &zero_block,
+    )
 }
 
 fn upload_depth_moment_texture(
@@ -1100,7 +1261,6 @@ impl DeviceBufferInit for wgpu::Device {
         contents: &[u8],
         usage: wgpu::BufferUsages,
     ) -> wgpu::Buffer {
-        use wgpu::util::DeviceExt;
         self.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some(label),
             contents,
@@ -1446,6 +1606,33 @@ mod tests {
     }
 
     #[test]
+    fn sh_bind_group_layout_includes_direct_atlas_after_depth_moments() {
+        // The plan named binding 13, but 13/14 were already claimed; the direct
+        // atlas takes the actual next free index (15). Task 6's mesh-only
+        // uniform reserves 16, the next index after this one.
+        assert_eq!(BIND_SH_DIRECT_ATLAS, BIND_SH_DEPTH_MOMENTS + 1);
+        assert_eq!(BIND_SH_DIRECT_ATLAS, 15);
+
+        let entries = sh_bind_group_layout_entries();
+        let entry = entries
+            .iter()
+            .find(|entry| entry.binding == BIND_SH_DIRECT_ATLAS)
+            .expect("group 3 layout should include the direct static-light atlas");
+
+        // FRAGMENT-only: only the dynamic fragment stages sample it in v1.
+        assert_eq!(entry.visibility, wgpu::ShaderStages::FRAGMENT);
+        assert!(entry.count.is_none());
+        match entry.ty {
+            wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            } => {}
+            other => panic!("unexpected SH direct atlas binding type: {other:?}"),
+        }
+    }
+
+    #[test]
     fn group3_shader_bindings_are_represented_by_rust_layout() {
         use std::collections::BTreeSet;
 
@@ -1487,6 +1674,11 @@ mod tests {
             BIND_ANIM_SAMPLES,
             BIND_SCRIPTED_LIGHT_DESCRIPTORS,
             BIND_SH_DEPTH_MOMENTS,
+            // Direct static-light atlas (Task 4). Declared in the shared group-3
+            // BGL but sampled only by the dynamic shaders (billboard, Task 5);
+            // forward/fog leave it undeclared, which the subset check below
+            // permits.
+            BIND_SH_DIRECT_ATLAS,
         ]
         .into_iter()
         .collect();
@@ -1983,7 +2175,6 @@ mod tests {
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
                 .expect("device");
 
-        use wgpu::util::DeviceExt;
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("test descriptors"),
             contents: &mirror,

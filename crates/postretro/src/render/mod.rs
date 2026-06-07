@@ -655,6 +655,11 @@ pub struct LevelGeometry<'a> {
     /// `None` → compose pass falls back to a base→total copy.
     pub delta_sh_volumes:
         Option<&'a postretro_level_format::delta_sh_volumes::DeltaShVolumesSection>,
+    /// Dense baked DIRECT static-light octahedral atlas sampled by the dynamic
+    /// pipelines (mesh + billboard). `None` → renderer binds a 4×4 BC6H zero
+    /// dummy and the dynamic shaders skip the direct sample (indirect-only).
+    pub direct_sh_volume:
+        Option<&'a postretro_level_format::direct_sh_volume::DirectShVolumeSection>,
     /// `None` → no SDF static-occluder atlas; runtime SDF shadow pass disabled.
     /// An empty-geometry section (zero grid dims) is treated the same way.
     pub sdf_atlas: Option<&'a postretro_level_format::sdf_atlas::SdfAtlasSection>,
@@ -1627,6 +1632,7 @@ impl Renderer {
             &device,
             &queue,
             geometry.and_then(|g| g.sh_volume),
+            geometry.and_then(|g| g.direct_sh_volume),
             level_lights.len(),
             probe_occlusion_enabled,
         );
@@ -2450,6 +2456,7 @@ impl Renderer {
             &self.device,
             &self.queue,
             geometry.sh_volume,
+            geometry.direct_sh_volume,
             self.level_lights.len(),
             self.probe_occlusion_enabled,
         );
@@ -4712,6 +4719,7 @@ pub fn level_world_to_geometry<'a>(
         animated_light_chunks: world.animated_light_chunks.as_ref(),
         animated_light_weight_maps: world.animated_light_weight_maps.as_ref(),
         delta_sh_volumes: world.delta_sh_volumes.as_ref(),
+        direct_sh_volume: world.direct_sh_volume.as_ref(),
         sdf_atlas: world.sdf_atlas.as_ref(),
         lightmap_mode: world.lightmap_mode,
         texture_materials,

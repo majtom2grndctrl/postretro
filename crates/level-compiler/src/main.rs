@@ -703,6 +703,58 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    progress.start_stage("Direct SH volume bake...");
+    let stage_start = Instant::now();
+    // Baked static-direct octahedral SH for dynamic objects. Emitted IFF there are
+    // static (baked) lights — a map whose only lights are animated produces NO
+    // direct section (absence; the loader treats it as direct = 0), so animated
+    // direct never double-counts against `lm_anim` (AC 7).
+    let direct_sh_volume_section = if static_baked_lights.is_empty() {
+        if args.verbose {
+            log::info!("DirectShVolume: skipped (no static lights)");
+        }
+        None
+    } else {
+        let inputs = direct_sh_bake::DirectBakeInputs {
+            sh_ctx: &sh_ctx,
+            portals: &generated_portals,
+        };
+        // Warm/cold cache selection mirrors the indirect SH bake: the warm path
+        // passes the shared `StageCache`; the cold `--no-cache`/`--release` path
+        // passes `None` (the bake is byte-identical either way — the direct cull is
+        // the strict provably-zero test in both modes).
+        let raw = direct_sh_bake::bake_direct_sh_volume_cached(
+            &inputs,
+            &sh_config,
+            stage_cache.as_ref(),
+        );
+        if args.verbose {
+            direct_sh_bake::log_cull_savings(&inputs, &sh_config);
+        }
+        // BC6H-at-rest (D8): re-encode the uncompressed RGBA16F bake output into the
+        // production BC6H section, honoring the same `uncompressed_irradiance` debug
+        // bypass the lightmap path uses.
+        let section = direct_sh_bake::encode_direct_section_bc6h(
+            &raw,
+            lightmap_config.uncompressed_irradiance,
+        );
+        if args.verbose {
+            // AC 14: report the post-compression footprint and the pre-compression
+            // dense figure (the RGBA-f32 buffer fed to the encoder), alongside the
+            // indirect atlas size for comparison.
+            let post_compression = section.atlas.len();
+            let pre_compression = direct_sh_bake::direct_dense_atlas_byte_size(&raw);
+            let indirect_atlas = sh_volume_section.to_bytes().len();
+            log::info!(
+                "[Compiler] DirectShVolume atlas footprint: {post_compression} bytes BC6H \
+                 (pre-compression dense {pre_compression} bytes); indirect OctahedralShVolume \
+                 section {indirect_atlas} bytes",
+            );
+        }
+        Some(section)
+    };
+    timings.push(("Direct SH Bake", stage_start.elapsed()));
+
     progress.start_stage("Chunk light list bake...");
     let stage_start = Instant::now();
     let chunk_light_list_section = {
@@ -919,6 +971,7 @@ fn main() -> anyhow::Result<()> {
         &alpha_lights_section,
         &light_influence_section,
         &sh_volume_section,
+        direct_sh_volume_section.as_ref(),
         &lightmap_section,
         &chunk_light_list_section,
         animated_light_chunks_section.as_ref(),

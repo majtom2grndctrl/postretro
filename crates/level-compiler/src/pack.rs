@@ -17,6 +17,7 @@ use postretro_level_format::bvh::BvhSection;
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::data_script::DataScriptSection;
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
+use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_level_format::fog_cell_masks::FogCellMasksSection;
 use postretro_level_format::fog_volumes::{FogVolumeRecord, FogVolumesSection};
 use postretro_level_format::light_influence::{InfluenceRecord, LightInfluenceSection};
@@ -317,9 +318,11 @@ pub fn encode_portals(portals: &[Portal]) -> PortalsSection {
 /// Write all required sections (geometry, texture names, texture cache keys,
 /// BSP nodes, BSP leaves, portals, BVH, alpha lights, light influence,
 /// lightmap, chunk light list, SH volume, and FogVolumes) and conditionally
-/// write optional sections (animated-light chunks and weight maps, light tags,
-/// delta SH volumes, data script, map entities, and fog cell masks) when their
-/// arguments are non-`None`.
+/// write optional sections (direct SH volume, animated-light chunks and weight
+/// maps, light tags, delta SH volumes, data script, map entities, and fog cell
+/// masks) when their arguments are non-`None`. The direct SH volume is `None`
+/// exactly when the map has no static (baked) lights — absence signals direct = 0
+/// to the loader, so animated-only maps emit no direct section.
 ///
 /// `texture_cache_keys` maps each texture name (as it appears in
 /// `geo_result.texture_names.names`) to the 32-byte `.prm` filename key
@@ -339,6 +342,7 @@ pub fn pack_and_write_portals(
     alpha_lights: &AlphaLightsSection,
     light_influence: &LightInfluenceSection,
     sh_volume: &OctahedralShVolumeSection,
+    direct_sh_volume: Option<&DirectShVolumeSection>,
     lightmap: &LightmapSection,
     chunk_light_list: &ChunkLightListSection,
     animated_light_chunks: Option<&AnimatedLightChunksSection>,
@@ -369,6 +373,7 @@ pub fn pack_and_write_portals(
     let alpha_lights_bytes = alpha_lights.to_bytes();
     let light_influence_bytes = light_influence.to_bytes();
     let sh_volume_bytes = sh_volume.to_bytes();
+    let direct_sh_volume_bytes = direct_sh_volume.map(|s| s.to_bytes());
     let lightmap_bytes = lightmap.to_bytes();
     let chunk_light_list_bytes = chunk_light_list.to_bytes();
     let animated_light_chunks_bytes = animated_light_chunks.map(|s| s.to_bytes());
@@ -443,6 +448,13 @@ pub fn pack_and_write_portals(
             data: lightmap_bytes.clone(),
         },
     ];
+    if let Some(ref bytes) = direct_sh_volume_bytes {
+        sections.push(SectionBlob {
+            section_id: SectionId::DirectShVolume as u32,
+            version: 1,
+            data: bytes.clone(),
+        });
+    }
     if let Some(ref bytes) = animated_light_chunks_bytes {
         sections.push(SectionBlob {
             section_id: SectionId::AnimatedLightChunks as u32,
@@ -542,6 +554,14 @@ pub fn pack_and_write_portals(
         sh_volume_bytes.len(),
         sh_volume.probes.len()
     );
+    if let (Some(section), Some(bytes)) = (direct_sh_volume, &direct_sh_volume_bytes) {
+        log::info!(
+            "  DirectShVolume: {} bytes ({} probes, format {})",
+            bytes.len(),
+            section.total_probes(),
+            section.irradiance_format,
+        );
+    }
     log::info!(
         "  Lightmap: {} bytes ({}x{})",
         lightmap_bytes.len(),
@@ -838,6 +858,7 @@ mod tests {
             &alpha_lights,
             &empty_light_influence(),
             &empty_sh_volume(),
+            None,
             &placeholder_lightmap(),
             &placeholder_chunk_light_list(),
             None,
@@ -910,6 +931,7 @@ mod tests {
             &alpha_lights,
             &empty_light_influence(),
             &empty_sh_volume(),
+            None,
             &placeholder_lightmap(),
             &placeholder_chunk_light_list(),
             None,
@@ -993,6 +1015,7 @@ mod tests {
             &alpha_lights,
             &light_influence,
             &sh_volume,
+            None,
             &placeholder_lightmap(),
             &placeholder_chunk_light_list(),
             None,

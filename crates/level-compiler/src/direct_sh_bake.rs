@@ -30,7 +30,7 @@
 // See: context/lib/build_pipeline.md, context/lib/rendering_pipeline.md §4
 
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
-use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
+use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
 use postretro_level_format::octahedral::{
     DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION, irradiance_atlas_dimensions,
     irradiance_atlas_tiles_per_row, irradiance_tile_origin,
@@ -41,6 +41,7 @@ use rayon::prelude::*;
 use crate::affinity_grid::{
     AFFINITY_FACTOR, AffinityReachInputs, decompose_affinity_for_lights,
 };
+use crate::bc6h;
 use crate::cache::{CacheKey, StageCache};
 use crate::map_data::{MapLight, ShadowType};
 use crate::portals::Portal;
@@ -493,6 +494,89 @@ pub fn log_cull_savings(inputs: &DirectBakeInputs<'_, '_>, config: &ShConfig) ->
         decomposition.per_light_cells.len(),
     );
     culled_count
+}
+
+// ---------------------------------------------------------------------------
+// Emit-side BC6H encode (Task 3)
+
+/// Byte size of the pre-compression dense RGBA-f32 buffer that
+/// [`encode_direct_section_bc6h`] feeds to the BC6H encoder for a section with
+/// the given (padded) atlas dimensions: `padded_w · padded_h · 16` bytes (4 f32
+/// channels per texel). This is the AC-14 "pre-compression dense" figure, and it
+/// is always defined — even on the debug bypass — so the footprint log can report
+/// it alongside the post-compression size.
+pub fn direct_dense_atlas_byte_size(section: &DirectShVolumeSection) -> usize {
+    let (padded_w, padded_h) = bc6h_padded_atlas_dimensions(section.atlas_dimensions);
+    padded_w as usize * padded_h as usize * 16
+}
+
+/// Round each atlas axis up to the next multiple of 4 so the BC6H encoder's
+/// `≥4 / 4-aligned` rule holds. The LOGICAL atlas geometry (`atlas_dimensions`)
+/// is unchanged — only the encoded buffer is padded — mirroring the lightmap
+/// atlas builder's power-of-two ≥64 rounding (per Task 1's noted approach). Empty
+/// grids yield `[0, 0]`; the caller short-circuits those.
+fn bc6h_padded_atlas_dimensions(atlas_dimensions: [u32; 2]) -> (u32, u32) {
+    (
+        atlas_dimensions[0].div_ceil(4) * 4,
+        atlas_dimensions[1].div_ceil(4) * 4,
+    )
+}
+
+/// Re-encode the Task-2 `IRRADIANCE_FORMAT_RGBA16F` direct section into the
+/// production `IRRADIANCE_FORMAT_BC6H` at-rest section (mirroring
+/// `lightmap_bake::CompositedAtlas::encode_section`'s BC6H route).
+///
+/// The atlas axes (multiples of the tile dimension, 6) are NOT guaranteed
+/// 4-aligned, so the encoded buffer is padded up to a multiple of 4 per axis
+/// before encoding; the padded fringe carries zeros (decoded but never sampled —
+/// the logical tile geometry stays at `atlas_dimensions`). The stored blob is the
+/// padded BC6H block payload, carried verbatim in `irradiance_len`.
+///
+/// When `uncompressed_irradiance` is set (the same debug bypass the lightmap path
+/// honors, for A/B + determinism baselines) the RGBA16F section is returned as-is.
+/// Empty sections (no probe grid) pass through unchanged — there is nothing to
+/// compress.
+pub fn encode_direct_section_bc6h(
+    section: &DirectShVolumeSection,
+    uncompressed_irradiance: bool,
+) -> DirectShVolumeSection {
+    if uncompressed_irradiance || section.grid_dimensions == [0, 0, 0] {
+        return section.clone();
+    }
+    debug_assert_eq!(
+        section.irradiance_format, IRRADIANCE_FORMAT_RGBA16F,
+        "direct BC6H encode expects the uncompressed RGBA16F section from the bake",
+    );
+
+    let aw = section.atlas_dimensions[0];
+    let ah = section.atlas_dimensions[1];
+    let (padded_w, padded_h) = bc6h_padded_atlas_dimensions(section.atlas_dimensions);
+
+    // Decode the row-major f16×4 RGBA atlas into the padded RGBA-f32 buffer the
+    // encoder expects (`padded_w · padded_h · 4` floats). The padded fringe stays
+    // zero. Source texels are 8 bytes (4 × f16); RGB feeds the encoder, A drops.
+    let mut rgba_f32 = vec![0.0f32; padded_w as usize * padded_h as usize * 4];
+    for y in 0..ah {
+        for x in 0..aw {
+            let src = ((y * aw + x) * 8) as usize;
+            let dst = ((y * padded_w + x) * 4) as usize;
+            for c in 0..4 {
+                let bits = u16::from_le_bytes([
+                    section.atlas[src + c * 2],
+                    section.atlas[src + c * 2 + 1],
+                ]);
+                rgba_f32[dst + c] = crate::sh_bake::f16_bits_to_f32(bits);
+            }
+        }
+    }
+
+    let bc6h_bytes = bc6h::encode_bc6h_rgb_from_f32_rgba(&rgba_f32, padded_w, padded_h);
+
+    DirectShVolumeSection {
+        irradiance_format: IRRADIANCE_FORMAT_BC6H,
+        atlas: bc6h_bytes,
+        ..section.clone()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -986,6 +1070,106 @@ mod tests {
         assert_eq!(section.grid_dimensions, [0, 0, 0]);
         assert_eq!(section.atlas_dimensions, [0, 0]);
         assert!(section.atlas.is_empty());
+    }
+
+    /// AC 13: the production emit produces a BC6H-tagged section whose atlas blob
+    /// is the padded 4×4-block payload, while the logical tile geometry is
+    /// unchanged. Decoding the blocks back reproduces the bake's irradiance within
+    /// the BC6H round-trip tolerance.
+    #[test]
+    fn encode_direct_section_bc6h_tags_and_pads_to_block_size() {
+        let geo = floor_and_walls_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let tree = tree_all_empty();
+        let exterior: HashSet<usize> = HashSet::new();
+        let lights = vec![static_point_light(DVec3::new(2.0, 1.5, 2.0), 8.0, [1.0, 0.8, 0.6])];
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let animated_lights = AnimatedBakedLights::from_lights(&lights);
+        let sh_ctx = ShBakeCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
+            total_light_count: lights.len(),
+        };
+        let inputs = DirectBakeInputs {
+            sh_ctx: &sh_ctx,
+            portals: &[],
+        };
+        let config = ShConfig { probe_spacing: 1.0 };
+
+        let raw = bake_direct_sh_volume(&inputs, &config);
+        assert_eq!(raw.irradiance_format, IRRADIANCE_FORMAT_RGBA16F);
+
+        let encoded = encode_direct_section_bc6h(&raw, false);
+        assert_eq!(encoded.irradiance_format, IRRADIANCE_FORMAT_BC6H);
+        // Logical tile geometry is unchanged — only the encoded buffer is padded.
+        assert_eq!(encoded.grid_dimensions, raw.grid_dimensions);
+        assert_eq!(encoded.atlas_dimensions, raw.atlas_dimensions);
+        assert_eq!(encoded.atlas_tiles_per_row, raw.atlas_tiles_per_row);
+
+        // Blob length equals the padded 4×4-block payload size.
+        let padded_w = raw.atlas_dimensions[0].div_ceil(4) * 4;
+        let padded_h = raw.atlas_dimensions[1].div_ceil(4) * 4;
+        let expected_len = (padded_w / 4) as usize * (padded_h / 4) as usize * 16;
+        assert_eq!(encoded.atlas.len(), expected_len);
+
+        // The encoded section round-trips through the format codec.
+        let restored = DirectShVolumeSection::from_bytes(&encoded.to_bytes()).unwrap();
+        assert_eq!(restored, encoded);
+    }
+
+    /// The debug bypass returns the RGBA16F section verbatim (A/B + determinism
+    /// baseline), and the pre-compression dense figure is defined either way.
+    #[test]
+    fn encode_direct_section_bc6h_debug_bypass_is_passthrough() {
+        let geo = floor_and_walls_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let tree = tree_all_empty();
+        let exterior: HashSet<usize> = HashSet::new();
+        let lights = vec![static_point_light(DVec3::new(2.0, 1.5, 2.0), 8.0, [1.0, 0.8, 0.6])];
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let animated_lights = AnimatedBakedLights::from_lights(&lights);
+        let sh_ctx = ShBakeCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
+            total_light_count: lights.len(),
+        };
+        let inputs = DirectBakeInputs {
+            sh_ctx: &sh_ctx,
+            portals: &[],
+        };
+        let config = ShConfig { probe_spacing: 1.0 };
+
+        let raw = bake_direct_sh_volume(&inputs, &config);
+        let bypassed = encode_direct_section_bc6h(&raw, true);
+        assert_eq!(bypassed, raw, "debug bypass must return the RGBA16F section as-is");
+
+        // Pre-compression dense figure is the padded RGBA-f32 buffer size.
+        let padded_w = raw.atlas_dimensions[0].div_ceil(4) * 4;
+        let padded_h = raw.atlas_dimensions[1].div_ceil(4) * 4;
+        assert_eq!(
+            direct_dense_atlas_byte_size(&raw),
+            padded_w as usize * padded_h as usize * 16,
+        );
+    }
+
+    /// An empty section (no probe grid) passes through the encoder untouched —
+    /// there is nothing to compress.
+    #[test]
+    fn encode_direct_section_bc6h_empty_section_passthrough() {
+        let empty = empty_section();
+        let encoded = encode_direct_section_bc6h(&empty, false);
+        assert_eq!(encoded, empty);
+        assert_eq!(direct_dense_atlas_byte_size(&empty), 0);
     }
 
     /// Cache round-trip: a second build with a warm cache reproduces the first

@@ -1,112 +1,92 @@
 # Boot Sequence
 
-> **Read this when:** wiring mod loading, level loading, the mod browser, or any startup-phase work; or when reasoning about where a new piece of init code belongs.
-> **Key invariant:** mods own scripts and assets; the engine owns the schedule. Mod code runs only inside phases the engine grants it.
+> **Read this when:** wiring startup, splash, level-load, or shutdown code; or reasoning about where new init/teardown belongs.
+> **Key invariant:** the engine owns the schedule; mod code runs only inside phases the engine grants. The boot path is single-window, single-level-per-process — there is no runtime level-to-level transition.
 > **Related:** [Architecture Index](./index.md) · [Scripting](./scripting.md) · [Entity Model](./entity_model.md) · [Build Pipeline](./build_pipeline.md)
 
----
-
-## 1. Folder Structure (planned — paths below are aspirational; most do not exist yet)
-
-```
-content/
-  base/                          # base game (always present)
-    start-script.{ts,luau}       # mod entry point — fixed path at mod root
-    actors/                      # enemies, NPCs, any autonomous mobile entity
-      <actor-name>/
-        sounds/                  # actor-specific sounds
-        <actor-name>.png         # actor-specific textures
-        <actor-name>.ts          # schema + reactions
-    weapons/
-      <weapon-name>/
-        sounds/                  # weapon-specific sounds
-        <weapon-name>.png
-        <weapon-name>.ts
-    levels/
-      _textures/                 # shared level-surface textures (walls, floors, sky)
-      sounds/                    # shared level ambient and music
-      <level-name>/
-        <level-name>.prl         # compiled level
-        <level-name>.ts          # level-specific entity definitions; auto-discovered by name
-  mods/
-    <mod-name>/                  # one folder per mod; same shape as base/
-      ...
-```
-
-| Concept | Definition |
-|---------|-----------|
-| Base game | The shipped game in `content/base/`. Loaded as a mod with implicit highest precedence. |
-| Mod | A folder under `content/mods/`. Augments or replaces base content. |
-| Total conversion | A mod that defines its own UI, menus, and full content set. |
-| Level pack | A loosely-defined mod — primarily maps, light scripting. |
-| Actor | Any autonomous mobile entity regardless of faction. Faction is a schema field, not a folder. |
-
-The domain folder structure, the fixed `start-script` entry, and the `mods/` directory are **planned**. The folder layout above is aspirational — these paths do not yet exist.
+Boot code lives in `crates/postretro/src/main.rs` and `crates/postretro/src/startup/`.
 
 ---
 
-## 2. Script Roles
+## 1. Boot Order
 
-| Role | Context | Lifetime | Discovery |
-|------|---------|----------|-----------|
-| Start script | Definition (one-shot) | Runs once at mod init | Fixed path: `<mod>/start-script.{ts,luau}` |
-| Domain script | Definition (one-shot) | Runs once at mod init via start-script imports | Explicit `import`/`require` from start-script |
-| Level script | Definition (one-shot) | Runs once at level load | Auto-discovered: `levels/<name>/<name>.{ts,luau}` |
-| UI definition script | Declarative (no VM at runtime) | Parsed once; rendered from data | **Open** — format and load point unspecified |
+Boot runs in two stages: a setup pass that builds session-lifetime state, then a winit-driven state machine (Booting → Splash → Running) that opens the window and loads the level. Mod init and level load are deliberately deferred out of the setup pass so the first splash frame paints before any user-authored work runs.
 
-Start scripts and domain scripts declare entity types as `entities` on the `setupMod()` return value; the engine boot caller drains them into the engine-global `DataRegistry` after `run_mod_init` returns. Level scripts export `setupLevel(ctx)`, which returns per-level reactions; those land in the per-level reaction registry. See `scripting.md` §2.
+| # | Stage | Notes |
+|---|-------|-------|
+| 1 | Init logging and boot clock, parse args, resolve map path + content root | |
+| 2 | Build the script runtime: `ScriptCtx`, primitive registry (`register_all`), `ScriptRuntime` | Constructed ONCE, before the window. Primitive closures capture `ScriptCtx` clones. Held for the whole session, never recreated. |
+| 3 | Build the event loop and Rust-side registries (sequenced/reaction primitives, classname dispatch) | These survive level unload — they describe engine types, not per-level state. |
+| 4 | Construct the app in the Booting state | Mod init, hot-reload watcher, and worker spawn are NOT done here. |
+| 5 | On resume: create window, init the renderer (wgpu), build audio, enter Splash, request first redraw | Fires once on desktop; guarded against re-entry. Adapter requirement checks live in renderer init and fail fast with a named message (see `rendering_pipeline.md` §4). Audio init is fault-tolerant — failure logs and runs silent. No mod or level work. |
+| 6 | Redraw drives the splash state machine (below) | |
+| 7 | Install the level (§3) | Runs ONCE per process, on the main thread, on worker delivery. |
+| 8 | Steady per-frame loop: Input → Game logic → Audio → Render → Present | |
 
----
+### Splash state machine
 
-## 3. Boot Sequence (planned full product)
+The splash advances one frame per redraw, deferring all CPU-heavy work behind visible pixels:
 
-| Phase | Stage | Owner | Status |
-|-------|-------|-------|--------|
-| 0 | Engine init: wgpu adapter, input, scripting runtimes constructed; SDK preludes installed. Adapter requirements checked here — fail fast with a named renderer message if unmet (e.g. `Rgba16Float` linear-filterability, see `rendering_pipeline.md` §4) | Engine | today |
-| 1 | Discover mods: scan `content/base/` and `content/mods/*/` for valid manifests | Engine | planned |
-| 2 | Mod browser UI: present discovered mods, user selects active set (or skip via CLI / saved selection) | Engine + UI system | planned |
-| 3 | Resolve load order: base first, then selected mods in user-specified order | Engine | planned |
-| 4 | Per-mod init: for each active mod in order — run `start-script` in a definition VM (module imports resolve domain scripts); fire `modLoad` event | Engine + scripts | planned |
-| 5 | Main menu: rendered from UI definitions contributed by active mods. User picks a level (mod-defined level selector / class chooser / etc.) | UI system | planned |
-| 6 | Level load (see §4) | Engine | partial today |
-| 7 | First game tick: Input → Game logic → Audio → Render → Present | Engine | today |
+- **First frame.** Paint a black frame so the OS window appears immediately (no splash texture bound yet). After present: decode and upload the splash image. No mod or level work.
+- **Second frame.** Paint the splash so it is visible before any user-authored work. After paint: recompile stale scripts (debug-only; release no-ops), then run mod init. On success the engine drains the validated `setupMod()` return's entity-type descriptors into the engine-global `data_registry`. Start the hot-reload watcher (debug-only). Then spawn the level worker — **PRL parse only** (§2).
+- **Remaining frames.** Non-blocking poll of the worker channel. Keep painting the splash while it runs. On a non-empty payload: install the level, clear the splash, enter Running. A delivered-but-empty payload or a worker error stays in Splash.
 
-**Open (D2):** how scripts declare tick order across mods.
-**Open (D3):** whether `data/` is a single entry file or a lexicographic multi-file scan.
-**Open:** mod manifest format (name, version, dependencies, UI contributions). Required by phase 1.
-**Open:** UI system — declarative format, where definitions live (per-mod `ui/` folder?), and how the renderer consumes them.
-
-### 3a. Boot State Machine (today)
-
-Engine startup today runs a three-state progression: pre-window → splash → running.
-
-The engine transitions from pre-window to splash when the OS window and GPU device are ready. From that point, a per-frame splash protocol runs:
-
-- **Frame 0.** Renders a black screen so the OS window appears immediately. After present, decodes the splash image synchronously and uploads it to the GPU. No mod or level work runs yet.
-- **Frame 1.** Renders the splash so the user sees it before any user-authored work executes. After present: runs mod init (compiles stale scripts, executes the start-script, drains entity-type descriptors into the global registry); optionally swaps in a mod-supplied splash image; spawns the level-load worker thread. The worker handles PRL parse, texture decode, and UV normalization off the main thread.
-- **Frames 2+.** Polls the worker channel each frame. Splash keeps painting while the worker runs. When the worker delivers, the main thread performs GPU upload and level install, then transitions to running.
-
-The purpose of the two-frame delay is causal: pixels reach the user before any mod-supplied or level-load work consumes CPU. All GPU work (texture upload, geometry upload) stays on the main thread; only file I/O, parsing, and decoding run on the worker.
+The two-frame delay is causal: pixels reach the user before any mod-supplied or level-load CPU work runs.
 
 ---
 
-## 4. Level Load Sequence
+## 2. Worker vs. Main Thread
 
-Today:
+The level worker parses the PRL only. Texture decode, GPU upload, and UV normalization run on the **main thread** during level install — they need the renderer, which is not `Send`.
+
+Textures are decoded from baked `.prm` mip sidecars, not from the PRL. The worker derives the texture cache root and ships it in the payload so the main thread can locate sidecars without re-deriving the layout. Missing or unusable sidecars degrade per-texture to placeholders with a warning — not a startup failure.
+
+| Owner | Work |
+|-------|------|
+| Main thread | winit event loop, wgpu (device, queue, all GPU work), audio mixer, all script-VM execution, texture decode/upload, UV normalize, geometry upload. The script runtime and renderer are not `Send` — enforced by the types. |
+| Worker thread | PRL parse only. Output is plain `Send` POD — no engine handles, no GPU resources. |
+
+Handoff is an `mpsc` channel. One worker per load; no thread pool, no async runtime (`std::thread` + `mpsc`).
+
+---
+
+## 3. Level Install Order
+
+Level install runs once, on the main thread, after worker delivery. Texture upload precedes UV normalize: `.prm` slot dimensions drive UV normalization, so the renderer must produce loaded textures before texel-space UVs convert to `[0,1]`.
 
 | Order | Stage |
 |-------|-------|
-| 1 | PRL parse, texture decode, UV normalize |
-| 2 | Geometry and texture upload to GPU |
-| 3 | Spatial subsystems initialized from level data: fog volumes registered per leaf; collision world populated from static geometry (separate from BSP) |
-| 4 | Built-in classname dispatch: `player_spawn` placements routed to player-spawn logic; `billboard_emitter` placements materialized as engine emitter entities. Lights come from PRL data via the light bridge, not classname dispatch. |
-| 5 | Level script runs in a short-lived VM; `setupLevel(ctx)` returns `{reactions}` → per-level reaction registry. Entity types are engine-global and arrive via `setupMod`, not here. |
-| 6 | Entity spawn sweep: match map entity list against `DataRegistry`, spawn |
-| 7 | `levelLoad` event fired |
+| 1 | Seed world gravity from the level's authored value (before scripts run) |
+| 2 | Texture upload from `.prm` sidecars |
+| 3 | UV normalize using uploaded texture dimensions |
+| 4 | Geometry upload (vertex/index buffers) |
+| 5 | World mesh spawn (see seam note below) |
+| 6 | Light bridge: one light entity per map-authored light |
+| 7 | Fog bridge: fog-volume entities + renderer pixel-scale / cell masks |
+| 8 | Collision world populated from static geometry (separate from BSP) |
+| 9 | Level sound loading from `sounds/` (fault-tolerant; silent if audio init failed) |
+| 10 | Built-in classname dispatch (player spawns partitioned out; remainder dispatched, handled set stashed) |
+| 11 | Sprite-collection registration for map-spawned emitters |
+| 12 | Data script run → per-level reactions into `data_registry`; progress tracker init |
+| 13 | Data-archetype sweep (match map placements against registered entity types not already handled), player spawn, camera teleport to first player spawn (or geometry center) |
+| 14 | Second sprite pass for descriptor-spawned emitters |
+| 15 | Fire the `levelLoad` named event |
 
-Planned change: stage 5 level script sourced from `levels/<name>/<name>.{ts,luau}` (auto-discovered by name convention) instead of bundled in PRL.
+Lights come from PRL data via the light bridge, not classname dispatch. Entity types are engine-global and arrive at mod-init via `setupMod` — `setupLevel`/the data script contributes only per-level reactions (see `scripting.md` §2).
 
-**Open (D3):** if data scripts move out of PRL, level launch parameters (chosen by the mod's menu in phase 5) need a delivery channel into the data context.
+**Mesh-spawn seam.** World mesh spawning is its own install stage, distinct from classname dispatch. The durable contract: map geometry becomes renderable mesh entities here, after geometry upload and before the light/fog bridges. (The current implementation hardwires a single world mesh; a classname-driven handler is planned — see §7.)
+
+---
+
+## 4. Shutdown
+
+There is no in-engine level unload distinct from process exit: this engine runs one level per lifetime, so unload coincides with exit.
+
+- A close request or Escape exits the event loop.
+- The exit teardown hook releases level sounds (mirrors texture release on unload), then drops renderer and window.
+- There is NO `Drop` impl on the app and NO save-on-exit precedent. The app holds `script_ctx`/`data_registry` until the event loop returns and the process ends.
+
+Platform suspend is a separate path: it clears renderer/window/fog/collision and the in-flight worker, and resets state to Booting so resume rebuilds the surface. It does NOT clear `script_ctx`/`data_registry`.
 
 ---
 
@@ -114,41 +94,33 @@ Planned change: stage 5 level script sourced from `levels/<name>/<name>.{ts,luau
 
 | Scope | Cleared on |
 |-------|-----------|
-| Engine init (preludes, primitive registry) | Process exit |
-| Mod init state (start-script effects) | Mod unload / engine restart (planned) |
-| `DataRegistry` (entity-type descriptors from `setupMod` return) | Engine-global; survives level unload. Cleared on full reload of mod set. |
-| Per-level reaction registry | Level unload |
+| Engine init (preludes, primitive registry, `ScriptCtx`, `ScriptRuntime`, Rust-side registries) | Process exit only — built once at startup, never recreated. |
+| `data_registry.entities` (entity-type descriptors from `setupMod` return) | Engine-global. Survives level unload; survives platform suspend. |
+| Per-level reactions (`data_registry.reactions`) | Level unload. |
+| Renderer, window, audio, collision world, fog bridge | Dropped on exit; cleared on suspend and rebuilt on resume. |
 
-Hot reload (debug only) triggers recompilation of changed script files; definition-context changes require an engine restart.
-
----
-
-## 6. Mod Browser (planned)
-
-Phase 2 must run before any mod scripts execute. Constraints:
-
-- Cannot depend on mod-supplied UI definitions (they aren't loaded yet).
-- Renders in engine-native UI only (declarative, not VM-driven).
-- Output: ordered list of active mod paths handed to phase 3.
-- Skippable: CLI flag (`--mods base,foo,bar`) or persisted selection from previous session.
-
-Reachable from main menu (phase 5) for re-selection; triggers a full mod unload + reload cycle.
+Level install runs exactly once per process — there is no runtime path to swap levels. Hot reload (debug only) recompiles changed script files and replaces engine-global entity types; definition-context changes still require a restart.
 
 ---
 
-## 7. Non-Goals
+## 6. Non-Goals
 
 - Per-entity script lifecycle callbacks (see `entity_model.md` §9)
-- Networked mod sync
-- Runtime mod hot-swap mid-level
-- Sandboxing mods from each other (mods share the same VM contexts and `DataRegistry` by design)
+- Runtime level-to-level transition / level swap mid-process
+- Networked mod sync; runtime mod hot-swap mid-level
+- Sandboxing mods from each other (mods share VM contexts and `data_registry` by design)
+- Save-on-exit / persisted session state
 
 ---
 
-## 8. Boot-Phase Concurrency Model
+## 7. Planned (not implemented)
 
-- **Main thread owns** the winit event loop, wgpu (device, queue, all GPU work), the audio mixer, and all script-VM execution. `ScriptRuntime` and `Renderer` are not `Send`; enforced by the types, not by convention.
-- **Worker threads own** file I/O, parsing, and decoding. Outputs must be plain `Send` data — no engine handles, no GPU resources.
-- **Handoff** is `mpsc` channels carrying POD. One worker per kicked-off task; no thread pool until measurement demands one.
-- **Phases are sequential; intra-phase work is parallel.** Phase N does not advance until its worker outputs are consumed and main-thread follow-up (GPU upload, script run, registry populate) completes.
-- **No async runtime.** `std::thread` + `mpsc`.
+None of the following exists in code. Do not treat any of it as current behavior; it is recorded only to anchor future work.
+
+- **Mod discovery / `content/mods/`.** A scan of `content/base/` and `content/mods/*/` for manifests, a mod manifest format, and per-mod load-order resolution. Today there is a single content root derived from the map path; mod init runs against it directly.
+- **Mod browser UI and main menu.** Engine-native mod selection (`--mods` flag, persisted selection) and a mod-contributed main menu / level selector. Today the map is a CLI argument and the engine boots straight into it.
+- **Mod-supplied splash override.** The frame-two override hook exists but is always absent until the mod system ships.
+- **Classname-driven world mesh spawn.** A classname handler replaces the hardwired single-mesh seam (§3 stage 5).
+- **Domain folder convention.** Fixed `start-script` entry, `actors/`, `weapons/`, `levels/<name>/<name>.{ts,luau}` auto-discovery, and moving the data script out of the PRL. Today the data script is bundled in the PRL.
+</content>
+</invoke>

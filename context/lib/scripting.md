@@ -218,6 +218,10 @@ Six tag-targeted reaction primitives operate on `FogVolumeComponent`: `setFogDen
 
 The typed command buffer is the shape these already take, extended from a fixed opcode to a vocabulary of composable ones.
 
+**Ownership split — nouns vs. verbs.** The engine owns the nouns (entity components, store slots) and the evaluator; the author owns the verbs — behavior expressed as IR the evaluator runs. Authored *policy* lives here: shield recharge curves (fast like Halo, slow like Borderlands), elemental damage interactions, derived display values. The engine ships the component and its per-tick system; the author ships the policy as a command buffer. Health and shield policy join movement (`movement.md` §2) as candidate adopters.
+
+**The named-state surface is the binding namespace.** The evaluator binds leaf nodes to live state by name. Those named leaves are the engine's addressable state — entity component fields and global store slots (the mod state store). A command buffer reads an input like `timeSinceDamage` and writes an output like `player.shield` by name; the store is the namespace it binds against, and the same names the UI projects. Entity components (nouns), store slots (named state), command buffers (verbs), and reactions (one-instruction buffers) are one architecture: declare as data, Rust evaluates, the VM drops.
+
 > **Invariant — the evaluator is engine-owned.** Authors never ship code the engine executes at runtime. Behavior crosses as a typed command buffer. This is the durable form of "scripts declare, Rust executes" (§1) for behavior that depends on live state.
 
 **Preserves the two hard rules.** The VM still drops after load (§1, §2) — the IR is plain data that outlives it, so no live VM is needed at tick time. The vocabulary still arrives through generated typedefs (§7): builder opcodes are registered like any primitive and emitted into `postretro.d.ts` / `postretro.d.luau`.

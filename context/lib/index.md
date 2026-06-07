@@ -83,7 +83,7 @@ Full detail (section inventory, SectionId registry): `build_pipeline.md`.
 ## 4. Non-Goals
 
 - General-purpose game engine
-- ECS architecture
+- General-purpose / extensible ECS framework — archetype storage, query planner, system scheduler, modder-defined component types. Internal storage *is* data-oriented (dense per-kind component columns); the component *vocabulary* is engine-closed. See `entity_model.md` §1.
 - Deferred rendering
 - Runtime level compilation
 - Multiplayer / networking

@@ -125,6 +125,23 @@ struct ShGridInfo {
 // samples through the shared `sh_sample.wgsl` chain with the same grid/sampler.
 @group(4) @binding(15) var sh_direct_atlas: texture_2d<f32>;
 
+// Mesh-only dynamic-direct debug params (binding 16). The mesh path reads a
+// trimmed group-0 camera uniform (only `view_proj`), so the scale / isolation /
+// has_direct knobs reach it through this dedicated uniform instead of the
+// group-0 `Uniforms` tail that billboard.wgsl uses. std140: padded to 16 bytes.
+//   scale      — multiplies the baked direct term (0..1).
+//   isolation  — 0 = combined (indirect + scale·direct),
+//                1 = direct-only (scale·direct), 2 = indirect-only.
+//   has_direct — 0 when the baked DIRECT SH section is absent; the direct term
+//                is forced to 0 (fall back to indirect-only) with no error.
+struct DynamicDirectParams {
+    scale: f32,
+    isolation: u32,
+    has_direct: u32,
+    _pad: u32,
+};
+@group(4) @binding(16) var<uniform> dynamic_direct: DynamicDirectParams;
+
 struct VertexInput {
     @location(0) position: vec3<f32>,
     // base_uv is stored u16-quantized; the vertex layout declares it Unorm16x2
@@ -299,9 +316,22 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let n = normalize(in.world_normal);
     let indirect = sample_sh_indirect(in.world_position, n, n);
     // Baked static direct SH term, sampled with the same normal/grid as the
-    // indirect read (corners-depth-aware, backface rejection off). Task 6 will
-    // wrap this `indirect + direct` sum with the debug scale/isolation controls;
-    // for now the two terms sum unconditionally before the albedo multiply.
-    let direct = sample_sh_direct(in.world_position, n, n);
-    return vec4<f32>(base_color.rgb * (indirect + direct), base_color.a);
+    // indirect read (corners-depth-aware, backface rejection off). The direct
+    // term is gated off (0) when the baked DIRECT section is absent
+    // (`has_direct == 0`) — the absent-section fallback to indirect-only.
+    var direct = vec3<f32>(0.0);
+    if dynamic_direct.has_direct != 0u {
+        direct = dynamic_direct.scale * sample_sh_direct(in.world_position, n, n);
+    }
+    // Dynamic-direct isolation (debug instrument):
+    //   0 = combined    → indirect + scale·direct
+    //   1 = direct-only  → scale·direct
+    //   2 = indirect-only → indirect
+    var lighting = indirect + direct;
+    if dynamic_direct.isolation == 1u {
+        lighting = direct;
+    } else if dynamic_direct.isolation == 2u {
+        lighting = indirect;
+    }
+    return vec4<f32>(base_color.rgb * lighting, base_color.a);
 }

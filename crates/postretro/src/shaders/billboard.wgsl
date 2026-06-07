@@ -6,6 +6,13 @@
 // See: context/lib/rendering_pipeline.md §7.4
 
 // --- Group 0: camera uniforms (shared with forward pass) ---
+// Shares the forward pass's group-0 uniform buffer. The billboard path reads
+// `view_proj`, `camera_position`, `light_count`, and the dynamic-direct tail
+// (`direct_scale` / `dynamic_direct_isolation` / `has_direct`); the rest are
+// declared so the field offsets line up with the Rust `Uniforms` writer (a
+// 3-way byte contract: render/mod.rs + forward.wgsl + billboard.wgsl). The
+// existing `lighting_isolation` stays the forward/static control and is NOT
+// reused here.
 struct Uniforms {
     view_proj: mat4x4<f32>,
     camera_position: vec3<f32>,
@@ -13,6 +20,18 @@ struct Uniforms {
     light_count: u32,
     time: f32,
     lighting_isolation: u32,
+    indirect_scale: f32,
+    sdf_shadow_flags: u32,
+    sdf_shadow_mode: u32,
+    sdf_force_visibility_one: u32,
+    // --- dynamic-direct tail (baked-static-direct-sh Task 6) ---
+    // Multiplies the baked DIRECT SH term (0..1).
+    direct_scale: f32,
+    // 0 = combined (sh_ambient + scale·direct), 1 = direct-only (scale·direct),
+    // 2 = indirect-only (sh_ambient). Separate from `lighting_isolation`.
+    dynamic_direct_isolation: u32,
+    // 0 when the baked DIRECT SH section is absent → skip the direct sample.
+    has_direct: u32,
     _pad: u32,
 };
 
@@ -340,10 +359,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // SH ambient (baked indirect) plus the baked static direct SH term. Both use
     // camera-forward `N = V` (single-normal convention, backface rejection off).
-    // Task 6 will wrap the `sh_ambient + sh_direct` sum with debug
-    // scale/isolation; for now they sum unconditionally before the albedo multiply.
+    // `sh_ambient` IS the billboard's indirect term. The direct term is gated
+    // off (0) when the baked DIRECT section is absent (`has_direct == 0`).
     let sh_ambient = sample_sh_indirect(in.world_position, N);
-    let sh_direct = sample_sh_direct(in.world_position, N);
+    var sh_direct = vec3<f32>(0.0);
+    if uniforms.has_direct != 0u {
+        sh_direct = uniforms.direct_scale * sample_sh_direct(in.world_position, N);
+    }
 
     // Multi-source static specular via the chunk light list.
     //
@@ -434,7 +456,18 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         dynamic_diffuse = dynamic_diffuse + light.color_and_falloff_model.xyz * attenuation * NdotL;
     }
 
-    let lighting = sh_ambient + sh_direct + static_specular + dynamic_diffuse;
+    // Dynamic-direct isolation over the SH terms (debug instrument):
+    //   0 = combined     → sh_ambient + scale·direct
+    //   1 = direct-only   → scale·direct
+    //   2 = indirect-only → sh_ambient
+    // The dynamic light terms (static specular, dynamic diffuse) ride along.
+    var sh_lighting = sh_ambient + sh_direct;
+    if uniforms.dynamic_direct_isolation == 1u {
+        sh_lighting = sh_direct;
+    } else if uniforms.dynamic_direct_isolation == 2u {
+        sh_lighting = sh_ambient;
+    }
+    let lighting = sh_lighting + static_specular + dynamic_diffuse;
     let rgb = sprite_sample.rgb * lighting * in.opacity;
     // Alpha channel is used as the additive blend factor; driver expects
     // straight color. The pipeline's blend state is set to additive

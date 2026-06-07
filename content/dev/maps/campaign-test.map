@@ -1577,3 +1577,3707 @@
 "model" "models/decraniated_low_poly_retro_pixel/scene.gltf"
 "angles" "0 180 0"
 }
+// entity 43
+{
+"classname" "func_group"
+"_tb_type" "_tb_group"
+"_tb_name" "Smoke Puffs"
+"_tb_id" "5"
+"_tb_linked_group_id" "{fe6a80e4-da44-40d8-9f01-454fe730a201}"
+}
+// entity 44
+{
+"classname" "billboard_emitter"
+"origin" "-1272 2440 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 45
+{
+"classname" "billboard_emitter"
+"origin" "-1320 2296 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 46
+{
+"classname" "billboard_emitter"
+"origin" "-1416 2120 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 47
+{
+"classname" "billboard_emitter"
+"origin" "-1112 2312 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 48
+{
+"classname" "billboard_emitter"
+"origin" "-1560 1944 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 49
+{
+"classname" "billboard_emitter"
+"origin" "-1352 1848 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 50
+{
+"classname" "billboard_emitter"
+"origin" "-1192 1720 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 51
+{
+"classname" "billboard_emitter"
+"origin" "-1192 1752 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 52
+{
+"classname" "billboard_emitter"
+"origin" "-1464 1992 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 53
+{
+"classname" "billboard_emitter"
+"origin" "-1624 2120 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 54
+{
+"classname" "billboard_emitter"
+"origin" "-1416 2024 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 55
+{
+"classname" "billboard_emitter"
+"origin" "-1304 1784 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 56
+{
+"classname" "billboard_emitter"
+"origin" "-1256 2248 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 57
+{
+"classname" "billboard_emitter"
+"origin" "-1512 2216 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 58
+{
+"classname" "billboard_emitter"
+"origin" "-1560 2072 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 59
+{
+"classname" "billboard_emitter"
+"origin" "-1400 1944 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 60
+{
+"classname" "billboard_emitter"
+"origin" "-1272 1832 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 61
+{
+"classname" "billboard_emitter"
+"origin" "-1160 1800 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 62
+{
+"classname" "billboard_emitter"
+"origin" "-1208 1656 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 63
+{
+"classname" "billboard_emitter"
+"origin" "-1256 2536 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 64
+{
+"classname" "billboard_emitter"
+"origin" "-1144 2504 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 65
+{
+"classname" "billboard_emitter"
+"origin" "-1192 2360 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 66
+{
+"classname" "billboard_emitter"
+"origin" "-1032 2440 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 67
+{
+"classname" "billboard_emitter"
+"origin" "-920 2408 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 68
+{
+"classname" "billboard_emitter"
+"origin" "-968 2264 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 69
+{
+"classname" "billboard_emitter"
+"origin" "-984 2664 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 70
+{
+"classname" "billboard_emitter"
+"origin" "-872 2632 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 71
+{
+"classname" "billboard_emitter"
+"origin" "-920 2488 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 72
+{
+"classname" "billboard_emitter"
+"origin" "-1080 2456 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 73
+{
+"classname" "billboard_emitter"
+"origin" "-968 2424 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 74
+{
+"classname" "billboard_emitter"
+"origin" "-1016 2280 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 75
+{
+"classname" "billboard_emitter"
+"origin" "-728 2408 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 76
+{
+"classname" "billboard_emitter"
+"origin" "-776 2264 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 77
+{
+"classname" "billboard_emitter"
+"origin" "-664 1832 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 78
+{
+"classname" "billboard_emitter"
+"origin" "-552 1800 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 79
+{
+"classname" "billboard_emitter"
+"origin" "-600 1656 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 80
+{
+"classname" "billboard_emitter"
+"origin" "-904 1880 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 81
+{
+"classname" "billboard_emitter"
+"origin" "-792 1848 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 82
+{
+"classname" "billboard_emitter"
+"origin" "-840 1704 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 83
+{
+"classname" "billboard_emitter"
+"origin" "-616 2232 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 84
+{
+"classname" "billboard_emitter"
+"origin" "-504 2200 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 85
+{
+"classname" "billboard_emitter"
+"origin" "-552 2056 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 86
+{
+"classname" "billboard_emitter"
+"origin" "-664 2296 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 87
+{
+"classname" "billboard_emitter"
+"origin" "-552 2264 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 88
+{
+"classname" "billboard_emitter"
+"origin" "-600 2120 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 89
+{
+"classname" "billboard_emitter"
+"origin" "-872 2104 72"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 90
+{
+"classname" "billboard_emitter"
+"origin" "-760 2072 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 91
+{
+"classname" "billboard_emitter"
+"origin" "-808 1928 72"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 92
+{
+"classname" "billboard_emitter"
+"origin" "-664 2024 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 93
+{
+"classname" "billboard_emitter"
+"origin" "-552 1992 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 94
+{
+"classname" "billboard_emitter"
+"origin" "-600 1848 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 95
+{
+"classname" "billboard_emitter"
+"origin" "-648 2008 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 96
+{
+"classname" "billboard_emitter"
+"origin" "-536 1976 72"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 97
+{
+"classname" "billboard_emitter"
+"origin" "-584 1832 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 98
+{
+"classname" "billboard_emitter"
+"origin" "-776 1816 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 99
+{
+"classname" "billboard_emitter"
+"origin" "-664 1784 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 100
+{
+"classname" "billboard_emitter"
+"origin" "-712 1640 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 101
+{
+"classname" "billboard_emitter"
+"origin" "-1032 1672 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 102
+{
+"classname" "billboard_emitter"
+"origin" "-920 1640 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 103
+{
+"classname" "billboard_emitter"
+"origin" "-968 1496 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 104
+{
+"classname" "billboard_emitter"
+"origin" "-1080 1880 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 105
+{
+"classname" "billboard_emitter"
+"origin" "-968 1848 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 106
+{
+"classname" "billboard_emitter"
+"origin" "-1016 1704 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 107
+{
+"classname" "billboard_emitter"
+"origin" "-1064 1640 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 108
+{
+"classname" "billboard_emitter"
+"origin" "-952 1608 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 109
+{
+"classname" "billboard_emitter"
+"origin" "-1000 1464 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 110
+{
+"classname" "billboard_emitter"
+"origin" "-1096 1832 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 111
+{
+"classname" "billboard_emitter"
+"origin" "-1592 2056 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 112
+{
+"classname" "billboard_emitter"
+"origin" "-1480 2024 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 113
+{
+"classname" "billboard_emitter"
+"origin" "-1528 1880 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 114
+{
+"classname" "billboard_emitter"
+"origin" "-1512 1976 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 115
+{
+"classname" "billboard_emitter"
+"origin" "-1400 1944 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 116
+{
+"classname" "billboard_emitter"
+"origin" "-1448 1800 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 117
+{
+"classname" "billboard_emitter"
+"origin" "-1336 2712 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 118
+{
+"classname" "billboard_emitter"
+"origin" "-1224 2680 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 119
+{
+"classname" "billboard_emitter"
+"origin" "-1272 2536 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 120
+{
+"classname" "billboard_emitter"
+"origin" "-1704 2008 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 121
+{
+"classname" "billboard_emitter"
+"origin" "-1592 1976 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 122
+{
+"classname" "billboard_emitter"
+"origin" "-1640 1832 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 123
+{
+"classname" "billboard_emitter"
+"origin" "-1464 2232 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 124
+{
+"classname" "billboard_emitter"
+"origin" "-1320 2280 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 125
+{
+"classname" "billboard_emitter"
+"origin" "-1400 2056 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 126
+{
+"classname" "billboard_emitter"
+"origin" "-1464 2600 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 127
+{
+"classname" "billboard_emitter"
+"origin" "-1352 2568 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 128
+{
+"classname" "billboard_emitter"
+"origin" "-1400 2424 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 129
+{
+"classname" "billboard_emitter"
+"origin" "-1576 2520 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 130
+{
+"classname" "billboard_emitter"
+"origin" "-1464 2488 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 131
+{
+"classname" "billboard_emitter"
+"origin" "-1512 2344 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 132
+{
+"classname" "billboard_emitter"
+"origin" "-1480 2440 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 133
+{
+"classname" "billboard_emitter"
+"origin" "-1528 2296 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 134
+{
+"classname" "billboard_emitter"
+"origin" "-1624 2120 72"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 135
+{
+"classname" "billboard_emitter"
+"origin" "-1320 2312 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 136
+{
+"classname" "billboard_emitter"
+"origin" "-1768 1944 72"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 137
+{
+"classname" "billboard_emitter"
+"origin" "-1560 1848 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 138
+{
+"classname" "billboard_emitter"
+"origin" "-1400 1720 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 139
+{
+"classname" "billboard_emitter"
+"origin" "-1400 1752 72"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 140
+{
+"classname" "billboard_emitter"
+"origin" "-1672 1992 72"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 141
+{
+"classname" "billboard_emitter"
+"origin" "-1832 2120 72"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 142
+{
+"classname" "billboard_emitter"
+"origin" "-1624 2024 72"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 143
+{
+"classname" "billboard_emitter"
+"origin" "-1512 1784 72"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 144
+{
+"classname" "billboard_emitter"
+"origin" "-1464 2248 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 145
+{
+"classname" "billboard_emitter"
+"origin" "-1720 2216 72"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 146
+{
+"classname" "billboard_emitter"
+"origin" "-1768 2072 72"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 147
+{
+"classname" "billboard_emitter"
+"origin" "-1608 1944 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 148
+{
+"classname" "billboard_emitter"
+"origin" "-1480 1832 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 149
+{
+"classname" "billboard_emitter"
+"origin" "-1368 1800 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 150
+{
+"classname" "billboard_emitter"
+"origin" "-1416 1656 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 151
+{
+"classname" "billboard_emitter"
+"origin" "-1464 2536 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 152
+{
+"classname" "billboard_emitter"
+"origin" "-1352 2504 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 153
+{
+"classname" "billboard_emitter"
+"origin" "-1400 2360 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 154
+{
+"classname" "billboard_emitter"
+"origin" "-1240 2440 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 155
+{
+"classname" "billboard_emitter"
+"origin" "-1128 2408 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 156
+{
+"classname" "billboard_emitter"
+"origin" "-1176 2264 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 157
+{
+"classname" "billboard_emitter"
+"origin" "-1192 2664 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 158
+{
+"classname" "billboard_emitter"
+"origin" "-1080 2632 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 159
+{
+"classname" "billboard_emitter"
+"origin" "-1128 2488 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 160
+{
+"classname" "billboard_emitter"
+"origin" "-1288 2456 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 161
+{
+"classname" "billboard_emitter"
+"origin" "-1176 2424 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 162
+{
+"classname" "billboard_emitter"
+"origin" "-1224 2280 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 163
+{
+"classname" "billboard_emitter"
+"origin" "-936 2408 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 164
+{
+"classname" "billboard_emitter"
+"origin" "-984 2264 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 165
+{
+"classname" "billboard_emitter"
+"origin" "-872 1832 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 166
+{
+"classname" "billboard_emitter"
+"origin" "-760 1800 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 167
+{
+"classname" "billboard_emitter"
+"origin" "-808 1656 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 168
+{
+"classname" "billboard_emitter"
+"origin" "-1112 1880 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 169
+{
+"classname" "billboard_emitter"
+"origin" "-1000 1848 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 170
+{
+"classname" "billboard_emitter"
+"origin" "-1048 1704 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 171
+{
+"classname" "billboard_emitter"
+"origin" "-824 2232 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 172
+{
+"classname" "billboard_emitter"
+"origin" "-712 2200 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 173
+{
+"classname" "billboard_emitter"
+"origin" "-760 2056 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 174
+{
+"classname" "billboard_emitter"
+"origin" "-872 2296 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 175
+{
+"classname" "billboard_emitter"
+"origin" "-760 2264 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 176
+{
+"classname" "billboard_emitter"
+"origin" "-808 2120 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 177
+{
+"classname" "billboard_emitter"
+"origin" "-1080 2104 88"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 178
+{
+"classname" "billboard_emitter"
+"origin" "-968 2072 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 179
+{
+"classname" "billboard_emitter"
+"origin" "-1016 1928 88"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 180
+{
+"classname" "billboard_emitter"
+"origin" "-872 2024 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 181
+{
+"classname" "billboard_emitter"
+"origin" "-760 1992 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 182
+{
+"classname" "billboard_emitter"
+"origin" "-808 1848 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 183
+{
+"classname" "billboard_emitter"
+"origin" "-856 2008 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 184
+{
+"classname" "billboard_emitter"
+"origin" "-744 1976 88"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 185
+{
+"classname" "billboard_emitter"
+"origin" "-792 1832 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 186
+{
+"classname" "billboard_emitter"
+"origin" "-984 1816 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 187
+{
+"classname" "billboard_emitter"
+"origin" "-872 1784 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 188
+{
+"classname" "billboard_emitter"
+"origin" "-920 1640 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 189
+{
+"classname" "billboard_emitter"
+"origin" "-1240 1672 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 190
+{
+"classname" "billboard_emitter"
+"origin" "-1128 1640 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 191
+{
+"classname" "billboard_emitter"
+"origin" "-1176 1496 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 192
+{
+"classname" "billboard_emitter"
+"origin" "-1288 1880 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 193
+{
+"classname" "billboard_emitter"
+"origin" "-1176 1848 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 194
+{
+"classname" "billboard_emitter"
+"origin" "-1224 1704 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 195
+{
+"classname" "billboard_emitter"
+"origin" "-1272 1640 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 196
+{
+"classname" "billboard_emitter"
+"origin" "-1160 1608 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 197
+{
+"classname" "billboard_emitter"
+"origin" "-1208 1464 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 198
+{
+"classname" "billboard_emitter"
+"origin" "-1304 1832 72"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 199
+{
+"classname" "billboard_emitter"
+"origin" "-1800 2056 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 200
+{
+"classname" "billboard_emitter"
+"origin" "-1688 2024 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 201
+{
+"classname" "billboard_emitter"
+"origin" "-1736 1880 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 202
+{
+"classname" "billboard_emitter"
+"origin" "-1720 1976 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 203
+{
+"classname" "billboard_emitter"
+"origin" "-1608 1944 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 204
+{
+"classname" "billboard_emitter"
+"origin" "-1656 1800 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 205
+{
+"classname" "billboard_emitter"
+"origin" "-1544 2712 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 206
+{
+"classname" "billboard_emitter"
+"origin" "-1432 2680 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 207
+{
+"classname" "billboard_emitter"
+"origin" "-1480 2536 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 208
+{
+"classname" "billboard_emitter"
+"origin" "-1912 2008 72"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 209
+{
+"classname" "billboard_emitter"
+"origin" "-1800 1976 72"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 210
+{
+"classname" "billboard_emitter"
+"origin" "-1848 1832 72"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 211
+{
+"classname" "billboard_emitter"
+"origin" "-1672 2232 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 212
+{
+"classname" "billboard_emitter"
+"origin" "-1528 2280 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 213
+{
+"classname" "billboard_emitter"
+"origin" "-1608 2056 72"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 214
+{
+"classname" "billboard_emitter"
+"origin" "-1672 2600 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 215
+{
+"classname" "billboard_emitter"
+"origin" "-1560 2568 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 216
+{
+"classname" "billboard_emitter"
+"origin" "-1608 2424 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 217
+{
+"classname" "billboard_emitter"
+"origin" "-1784 2520 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 218
+{
+"classname" "billboard_emitter"
+"origin" "-1672 2488 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 219
+{
+"classname" "billboard_emitter"
+"origin" "-1720 2344 72"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 220
+{
+"classname" "billboard_emitter"
+"origin" "-1416 1976 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 221
+{
+"classname" "billboard_emitter"
+"origin" "-1464 1832 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 222
+{
+"classname" "billboard_emitter"
+"origin" "-1560 1656 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 223
+{
+"classname" "billboard_emitter"
+"origin" "-1256 1848 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 224
+{
+"classname" "billboard_emitter"
+"origin" "-1704 1480 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 225
+{
+"classname" "billboard_emitter"
+"origin" "-1496 1384 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 226
+{
+"classname" "billboard_emitter"
+"origin" "-1496 1672 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 227
+{
+"classname" "billboard_emitter"
+"origin" "-1336 1288 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 228
+{
+"classname" "billboard_emitter"
+"origin" "-1608 1528 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 229
+{
+"classname" "billboard_emitter"
+"origin" "-1768 1656 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 230
+{
+"classname" "billboard_emitter"
+"origin" "-1560 1560 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 231
+{
+"classname" "billboard_emitter"
+"origin" "-1608 1736 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 232
+{
+"classname" "billboard_emitter"
+"origin" "-1400 1784 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 233
+{
+"classname" "billboard_emitter"
+"origin" "-1656 1752 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 234
+{
+"classname" "billboard_emitter"
+"origin" "-1704 1608 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 235
+{
+"classname" "billboard_emitter"
+"origin" "-1544 1480 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 236
+{
+"classname" "billboard_emitter"
+"origin" "-1576 1784 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 237
+{
+"classname" "billboard_emitter"
+"origin" "-1464 1752 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 238
+{
+"classname" "billboard_emitter"
+"origin" "-1512 1608 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 239
+{
+"classname" "billboard_emitter"
+"origin" "-1400 2072 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 240
+{
+"classname" "billboard_emitter"
+"origin" "-1288 2040 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 241
+{
+"classname" "billboard_emitter"
+"origin" "-1336 1896 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 242
+{
+"classname" "billboard_emitter"
+"origin" "-1176 1976 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 243
+{
+"classname" "billboard_emitter"
+"origin" "-1064 1944 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 244
+{
+"classname" "billboard_emitter"
+"origin" "-1112 1800 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 245
+{
+"classname" "billboard_emitter"
+"origin" "-1128 2200 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 246
+{
+"classname" "billboard_emitter"
+"origin" "-1016 2168 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 247
+{
+"classname" "billboard_emitter"
+"origin" "-1064 2024 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 248
+{
+"classname" "billboard_emitter"
+"origin" "-1224 1992 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 249
+{
+"classname" "billboard_emitter"
+"origin" "-1112 1960 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 250
+{
+"classname" "billboard_emitter"
+"origin" "-1160 1816 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 251
+{
+"classname" "billboard_emitter"
+"origin" "-872 1944 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 252
+{
+"classname" "billboard_emitter"
+"origin" "-920 1800 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 253
+{
+"classname" "billboard_emitter"
+"origin" "-808 1368 -8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 254
+{
+"classname" "billboard_emitter"
+"origin" "-696 1336 -8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 255
+{
+"classname" "billboard_emitter"
+"origin" "-904 1608 -8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 256
+{
+"classname" "billboard_emitter"
+"origin" "-1208 1832 -8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 257
+{
+"classname" "billboard_emitter"
+"origin" "-1096 1800 -8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 258
+{
+"classname" "billboard_emitter"
+"origin" "-984 1240 -8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 259
+{
+"classname" "billboard_emitter"
+"origin" "-760 1768 -8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 260
+{
+"classname" "billboard_emitter"
+"origin" "-648 1736 -8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 261
+{
+"classname" "billboard_emitter"
+"origin" "-696 1592 -8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 262
+{
+"classname" "billboard_emitter"
+"origin" "-808 1832 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 263
+{
+"classname" "billboard_emitter"
+"origin" "-696 1800 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 264
+{
+"classname" "billboard_emitter"
+"origin" "-744 1656 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 265
+{
+"classname" "billboard_emitter"
+"origin" "-1016 1640 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 266
+{
+"classname" "billboard_emitter"
+"origin" "-904 1608 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 267
+{
+"classname" "billboard_emitter"
+"origin" "-952 1464 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 268
+{
+"classname" "billboard_emitter"
+"origin" "-808 1560 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 269
+{
+"classname" "billboard_emitter"
+"origin" "-696 1528 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 270
+{
+"classname" "billboard_emitter"
+"origin" "-744 1384 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 271
+{
+"classname" "billboard_emitter"
+"origin" "-792 1544 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 272
+{
+"classname" "billboard_emitter"
+"origin" "-680 1512 56"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 273
+{
+"classname" "billboard_emitter"
+"origin" "-728 1368 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 274
+{
+"classname" "billboard_emitter"
+"origin" "-1080 1768 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 275
+{
+"classname" "billboard_emitter"
+"origin" "-808 1320 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 276
+{
+"classname" "billboard_emitter"
+"origin" "-1016 1592 8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 277
+{
+"classname" "billboard_emitter"
+"origin" "-1176 1208 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 278
+{
+"classname" "billboard_emitter"
+"origin" "-1064 1176 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 279
+{
+"classname" "billboard_emitter"
+"origin" "-1112 1032 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 280
+{
+"classname" "billboard_emitter"
+"origin" "-1224 1416 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 281
+{
+"classname" "billboard_emitter"
+"origin" "-1272 1800 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 282
+{
+"classname" "billboard_emitter"
+"origin" "-1160 1240 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 283
+{
+"classname" "billboard_emitter"
+"origin" "-1368 1592 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 284
+{
+"classname" "billboard_emitter"
+"origin" "-1256 1560 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 285
+{
+"classname" "billboard_emitter"
+"origin" "-1304 1416 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 286
+{
+"classname" "billboard_emitter"
+"origin" "-1400 1784 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 287
+{
+"classname" "billboard_emitter"
+"origin" "-1736 1592 -8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 288
+{
+"classname" "billboard_emitter"
+"origin" "-1624 1560 -8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 289
+{
+"classname" "billboard_emitter"
+"origin" "-1832 1832 -8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 290
+{
+"classname" "billboard_emitter"
+"origin" "-1656 1512 -8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 291
+{
+"classname" "billboard_emitter"
+"origin" "-1544 1480 -8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 292
+{
+"classname" "billboard_emitter"
+"origin" "-1752 1752 -8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 293
+{
+"classname" "billboard_emitter"
+"origin" "-1480 2248 -8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 294
+{
+"classname" "billboard_emitter"
+"origin" "-1368 2216 -8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 295
+{
+"classname" "billboard_emitter"
+"origin" "-1416 2072 -8"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 296
+{
+"classname" "billboard_emitter"
+"origin" "-1848 1544 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 297
+{
+"classname" "billboard_emitter"
+"origin" "-1736 1512 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 298
+{
+"classname" "billboard_emitter"
+"origin" "-1784 1368 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 299
+{
+"classname" "billboard_emitter"
+"origin" "-1608 1768 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 300
+{
+"classname" "billboard_emitter"
+"origin" "-1464 1816 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 301
+{
+"classname" "billboard_emitter"
+"origin" "-1544 1592 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 302
+{
+"classname" "billboard_emitter"
+"origin" "-1608 2136 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 303
+{
+"classname" "billboard_emitter"
+"origin" "-1496 2104 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 304
+{
+"classname" "billboard_emitter"
+"origin" "-1544 1960 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 305
+{
+"classname" "billboard_emitter"
+"origin" "-1720 2056 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 306
+{
+"classname" "billboard_emitter"
+"origin" "-1608 2024 24"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}
+// entity 307
+{
+"classname" "billboard_emitter"
+"origin" "-1656 1880 40"
+"sprite" "smoke_puff"
+"rate" "1"
+"buoyancy" "-0.01"
+"initial_velocity_y" "0.5"
+"spin_rate" "1"
+"spread" "15"
+"lifetime" "15"
+"drag" "0.6"
+"_tb_group" "5"
+}

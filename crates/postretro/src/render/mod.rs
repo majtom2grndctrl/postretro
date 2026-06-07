@@ -820,11 +820,6 @@ fn lighting_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
 /// pipeline layout per stage, not against how many textures a shader actually
 /// samples — so a fragment-visible texture entry counts even if no shader reads
 /// it (e.g. the SH direct atlas, which only billboard samples).
-///
-/// Used by the runtime `debug_assert!` in `Renderer::new` and the
-/// `forward_pipeline_sampled_texture_request_matches_bgl_definitions` test.
-/// Gated with `#[cfg(debug_assertions)]` so it compiles in and out alongside
-/// its only non-test call site (the `debug_assert!`).
 #[cfg(debug_assertions)]
 fn fragment_sampled_textures(entries: &[wgpu::BindGroupLayoutEntry]) -> u32 {
     entries
@@ -842,12 +837,9 @@ fn fragment_sampled_textures(entries: &[wgpu::BindGroupLayoutEntry]) -> u32 {
 /// matching group order). GPU-free: every builder returns plain CPU structs, so
 /// this runs in unit tests and at init without a device. Keeping the layout
 /// creation and this count reading from the same builders prevents the two
-/// sources of truth from drifting (the bug this guards against).
-///
-/// Consumed by the runtime `debug_assert!` in `Renderer::new` and the
+/// sources of truth from drifting (the bug this guards against). Asserted in
+/// `Renderer::new` and the
 /// `forward_pipeline_sampled_texture_request_matches_bgl_definitions` test.
-/// Gated with `#[cfg(debug_assertions)]` so it compiles in and out alongside
-/// its only non-test call site (the `debug_assert!`).
 #[cfg(debug_assertions)]
 fn forward_pipeline_sampled_texture_count() -> u32 {
     // Groups 0 (uniform) and 2 (lighting) carry no textures, but include them so
@@ -1366,16 +1358,10 @@ impl Renderer {
         // `forward_pipeline_sampled_texture_request_matches_bgl_definitions`
         // verifies that the derived count stays within this budget independently.
         const REQUIRED_SAMPLED_TEXTURES: u32 = 16;
-        // 16 is the fixed design budget, but the forward pipeline's *actual*
-        // fragment-stage sampled-texture count is derived from the same GPU-free
-        // BGL builders that compose the layout. Assert here — at the one site that
-        // requests the limit — that the real count never exceeds the budget. This
-        // ties the count helpers into the runtime path (they are otherwise only
-        // exercised by the unit test below), so adding a fragment-visible texture
-        // entry that overflows 16 trips here in debug builds. CI has no GPU, so a
-        // release panic at pipeline creation would be uncatchable; the test
-        // `forward_pipeline_sampled_texture_request_matches_bgl_definitions`
-        // checks the same invariant headlessly.
+        // Pull the count helpers onto the runtime path (they are otherwise
+        // test-only), so overflowing the budget trips here in debug builds.
+        // debug-only because CI has no GPU: a release panic at pipeline creation
+        // would be uncatchable, and the headless test covers the same invariant.
         debug_assert!(
             forward_pipeline_sampled_texture_count() <= REQUIRED_SAMPLED_TEXTURES,
             "forward pipeline sampled-texture count ({}) exceeds the requested \

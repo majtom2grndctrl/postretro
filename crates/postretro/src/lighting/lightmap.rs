@@ -171,7 +171,7 @@ impl LightmapResources {
     }
 }
 
-fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
+pub(crate) fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
     // Two samplers (binding 2 nearest, binding 4 linear), split by what each
     // texture needs:
     //   - Irradiance (0) and animated atlas (3) are `Rgba16Float`, which is

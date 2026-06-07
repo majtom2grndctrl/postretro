@@ -707,6 +707,147 @@ fn create_depth_texture(
     (depth_texture, view)
 }
 
+// Group 0: per-frame uniforms (view/proj/time). One buffer entry, no textures.
+// COMPUTE required: animated-lightmap compose reuses this BGL (same buffer;
+// `uniforms.time` drives curve sampling). Dropping COMPUTE fails wgpu validation
+// at compute pipeline creation.
+fn uniform_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 1] {
+    [wgpu::BindGroupLayoutEntry {
+        binding: 0,
+        visibility: wgpu::ShaderStages::VERTEX
+            | wgpu::ShaderStages::FRAGMENT
+            | wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }]
+}
+
+// Group 1: 0=diffuse(sRGB), 2=specular(R8), 3=shininess, 4=normal(Rgba8Unorm,
+// NOT sRGB; n = sample.rgb*2-1), 5=aniso_sampler (linear+anisotropic).
+// Binding 1 is intentionally vacated (former nearest sampler); the aniso sampler
+// stays at 5 — non-contiguous bindings are valid.
+fn material_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 5] {
+    [
+        wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 2,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 3,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 4,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 5,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        },
+    ]
+}
+
+// Group 2: 0=dynamic lights, 1=influence volumes, 2=spec-only statics,
+//          3=ChunkGridInfo, 4=chunk offsets, 5=chunk indices. All buffers, no
+// textures.
+fn lighting_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
+    let storage_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    };
+    [
+        storage_entry(0),
+        storage_entry(1),
+        storage_entry(2),
+        wgpu::BindGroupLayoutEntry {
+            binding: 3,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        },
+        storage_entry(4),
+        storage_entry(5),
+    ]
+}
+
+/// Count BGL entries that consume a `max_sampled_textures_per_shader_stage` slot
+/// for the FRAGMENT stage: `BindingType::Texture` entries whose visibility
+/// includes FRAGMENT. wgpu charges the limit against the BGL *entry* set of a
+/// pipeline layout per stage, not against how many textures a shader actually
+/// samples — so a fragment-visible texture entry counts even if no shader reads
+/// it (e.g. the SH direct atlas, which only billboard samples).
+fn fragment_sampled_textures(entries: &[wgpu::BindGroupLayoutEntry]) -> u32 {
+    entries
+        .iter()
+        .filter(|e| {
+            e.visibility.contains(wgpu::ShaderStages::FRAGMENT)
+                && matches!(e.ty, wgpu::BindingType::Texture { .. })
+        })
+        .count() as u32
+}
+
+/// Single source of truth for the forward ("Textured") pipeline's sampled-texture
+/// budget. Sums the fragment-visible texture entries across the exact BGLs that
+/// compose the forward pipeline layout (see `create_pipeline_layout` for the
+/// matching group order). GPU-free: every builder returns plain CPU structs, so
+/// this runs in unit tests and at init without a device. Keeping the layout
+/// creation and this count reading from the same builders prevents the two
+/// sources of truth from drifting (the bug this guards against).
+fn forward_pipeline_sampled_texture_count() -> u32 {
+    // Groups 0 (uniform) and 2 (lighting) carry no textures, but include them so
+    // adding a texture entry to either BGL is caught here automatically.
+    fragment_sampled_textures(&uniform_bind_group_layout_entries())
+        + fragment_sampled_textures(&material_bind_group_layout_entries())
+        + fragment_sampled_textures(&lighting_bind_group_layout_entries())
+        + fragment_sampled_textures(&sh_volume::sh_bind_group_layout_entries())
+        + fragment_sampled_textures(&crate::lighting::lightmap::bind_group_layout_entries())
+        + fragment_sampled_textures(&SpotShadowPool::bind_group_layout_entries())
+}
+
 pub struct LevelGeometry<'a> {
     pub vertices: &'a [crate::geometry::WorldVertex],
     pub indices: &'a [u32],
@@ -1198,18 +1339,20 @@ impl Renderer {
         // every targeted backend reports far higher (Metal/AMD = 128) — the
         // adapter pre-check below confirms the granted maximum still covers it.
         //
-        // Sampled texture inventory (13 total across the forward fragment stage).
-        // The limit counts BGL *entries* visible to the stage, not the textures a
-        // shader actually samples — so the direct atlas counts here even though
-        // only the billboard pipeline (which shares this group-3 BGL/bind group)
-        // reads it; forward and fog carry the binding but never sample it.
+        // Derived (currently 13) from the actual BGLs that compose the forward
+        // pipeline layout, so it can never drift from the real binding count:
         //   Group 1 — material (3): diffuse, specular, normal
         //   Group 3 — SH volume (3): octahedral atlas + depth-moments
         //                            + direct static-light atlas (billboard samples; forward/fog carry, never sample)
         //   Group 4 — lightmap (4): static irradiance, static dominant-direction,
         //                           animated-contribution atlas, animated dominant-direction
         //   Group 5 — shadow (3): spot-shadow depth array (binding 0), SDF shadow factor (binding 3), scene depth (binding 4)
-        const REQUIRED_SAMPLED_TEXTURES: u32 = 13;
+        // The limit counts BGL *entries* visible to the stage, not the textures a
+        // shader actually samples — so the direct atlas counts here even though
+        // only the billboard pipeline (which shares this group-3 BGL/bind group)
+        // reads it; forward and fog carry the binding but never sample it. See
+        // `forward_pipeline_sampled_texture_count`.
+        let required_sampled_textures: u32 = forward_pipeline_sampled_texture_count();
         const REQUIRED_STORAGE_TEXTURES: u32 = 4;
         // Stopgap: SH compose's flat delta-probe storage buffer outgrows the
         // WebGPU spec floor (128 MiB) on maps with many animated lights because
@@ -1231,7 +1374,7 @@ impl Renderer {
         let adapter_limits = adapter.limits();
         let required_limits = wgpu::Limits {
             max_bind_groups: 8,
-            max_sampled_textures_per_shader_stage: REQUIRED_SAMPLED_TEXTURES,
+            max_sampled_textures_per_shader_stage: required_sampled_textures,
             max_storage_textures_per_shader_stage: REQUIRED_STORAGE_TEXTURES,
             max_storage_buffer_binding_size: REQUIRED_STORAGE_BUFFER_BINDING_SIZE,
             max_texture_dimension_2d: REQUIRED_MAX_TEXTURE_DIMENSION_2D,
@@ -1248,12 +1391,12 @@ impl Renderer {
                  a desktop GPU with BC texture support"
             );
         }
-        if adapter_limits.max_sampled_textures_per_shader_stage < REQUIRED_SAMPLED_TEXTURES {
+        if adapter_limits.max_sampled_textures_per_shader_stage < required_sampled_textures {
             anyhow::bail!(
                 "GPU adapter supports only {} sampled textures per shader stage; \
                  the forward pass requires {}",
                 adapter_limits.max_sampled_textures_per_shader_stage,
-                REQUIRED_SAMPLED_TEXTURES
+                required_sampled_textures
             );
         }
         if adapter_limits.max_storage_textures_per_shader_stage < REQUIRED_STORAGE_TEXTURES {
@@ -1447,21 +1590,7 @@ impl Renderer {
         let uniform_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Uniform Bind Group Layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    // COMPUTE required: animated-lightmap compose reuses this BGL
-                    // (same buffer; `uniforms.time` drives curve sampling).
-                    // Dropping COMPUTE fails wgpu validation at compute pipeline creation.
-                    visibility: wgpu::ShaderStages::VERTEX
-                        | wgpu::ShaderStages::FRAGMENT
-                        | wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
+                entries: &uniform_bind_group_layout_entries(),
             });
 
         let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1481,88 +1610,13 @@ impl Renderer {
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Material Bind Group Layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 4,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 5,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
+                entries: &material_bind_group_layout_entries(),
             });
 
-        // Group 2: 0=dynamic lights, 1=influence volumes, 2=spec-only statics,
-        //          3=ChunkGridInfo, 4=chunk offsets, 5=chunk indices
-        let storage_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Storage { read_only: true },
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        };
         let lighting_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Lighting Bind Group Layout"),
-                entries: &[
-                    storage_entry(0),
-                    storage_entry(1),
-                    storage_entry(2),
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    storage_entry(4),
-                    storage_entry(5),
-                ],
+                entries: &lighting_bind_group_layout_entries(),
             });
 
         for (idx, light) in level_lights.iter().enumerate() {
@@ -4864,6 +4918,46 @@ pub fn level_world_to_geometry<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Regression: the forward "Textured Pipeline Layout" grew a fragment-stage
+    // sampled-texture binding (the SH direct atlas, group-3 binding 15) but the
+    // hand-maintained device-limit constant was not bumped, so
+    // create_pipeline_layout panicked at launch — uncatchable in CI, which has no
+    // GPU. This re-derives the requested limit from the same GPU-free BGL builders
+    // the pipeline layout is composed from, asserting the request can never drift
+    // from the real binding count again. Mirrors
+    // `sh_volume::group3_shader_bindings_are_represented_by_rust_layout`.
+    #[test]
+    fn forward_pipeline_sampled_texture_request_matches_bgl_definitions() {
+        // The forward pipeline layout (see `create_pipeline_layout`) composes
+        // exactly these six BGLs in this group order. Counting fragment-visible
+        // texture entries across them is how wgpu charges
+        // `max_sampled_textures_per_shader_stage`.
+        let per_group = [
+            fragment_sampled_textures(&uniform_bind_group_layout_entries()), // group 0
+            fragment_sampled_textures(&material_bind_group_layout_entries()), // group 1
+            fragment_sampled_textures(&lighting_bind_group_layout_entries()), // group 2
+            fragment_sampled_textures(&sh_volume::sh_bind_group_layout_entries()), // group 3
+            fragment_sampled_textures(&crate::lighting::lightmap::bind_group_layout_entries()), // group 4
+            fragment_sampled_textures(&SpotShadowPool::bind_group_layout_entries()), // group 5
+        ];
+        // Per-group expectations document the inventory; if a BGL changes, the
+        // failing index points straight at the group that drifted.
+        assert_eq!(
+            per_group,
+            [0, 3, 0, 3, 4, 3],
+            "forward BGL texture inventory changed"
+        );
+
+        let derived: u32 = per_group.iter().sum();
+        // The aggregation helper and the device-limit request must agree with the
+        // hand-summed inventory above.
+        assert_eq!(forward_pipeline_sampled_texture_count(), derived);
+        assert_eq!(
+            derived, 13,
+            "forward pipeline now needs a different limit; verify it stays under the WebGPU floor of 16"
+        );
+    }
 
     #[test]
     fn compute_fog_cell_mask_culled_unions_visible_leaf_masks() {

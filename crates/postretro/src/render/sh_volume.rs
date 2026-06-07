@@ -725,7 +725,7 @@ fn mesh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
     entries
 }
 
-fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
+pub(super) fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
     let mut entries: Vec<wgpu::BindGroupLayoutEntry> = Vec::with_capacity(8);
     // Shared with the forward pass (fragment) and fog raymarch (compute), so visibility
     // covers both stages on every entry.

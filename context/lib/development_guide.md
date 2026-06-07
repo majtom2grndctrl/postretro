@@ -210,6 +210,19 @@ Do not write `unsafe` blocks. The crate stack (wgpu, winit, kira, gilrs, glam) p
 
 If a situation appears to require `unsafe`, stop and consult the project owner. Do not proceed until the need is confirmed and a risk mitigation approach is agreed on. If `unsafe` is approved, document the rationale and invariants with a `// SAFETY:` comment.
 
+### 3.6 `debug_assert!`-only helpers
+
+When a helper exists only to feed a `debug_assert!`, gate it with `#[cfg(debug_assertions)]` — not `#[allow(dead_code)]`. The assertion is the sole non-test caller, and it too compiles out in release. Helper and caller then appear and disappear together, so no dead-code warning can arise.
+
+```rust
+#[cfg(debug_assertions)]
+fn forward_pipeline_sampled_texture_count() -> u32 { /* ... */ }
+
+debug_assert_eq!(forward_pipeline_sampled_texture_count(), REQUIRED_SAMPLED_TEXTURES);
+```
+
+The `cfg` gate states why the helper is absent in release; `#[allow]` only suppresses the symptom.
+
 ---
 
 ## 4) Engine Constraints

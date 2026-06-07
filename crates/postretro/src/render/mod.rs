@@ -820,6 +820,7 @@ fn lighting_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
 /// pipeline layout per stage, not against how many textures a shader actually
 /// samples — so a fragment-visible texture entry counts even if no shader reads
 /// it (e.g. the SH direct atlas, which only billboard samples).
+#[cfg(debug_assertions)]
 fn fragment_sampled_textures(entries: &[wgpu::BindGroupLayoutEntry]) -> u32 {
     entries
         .iter()
@@ -836,7 +837,10 @@ fn fragment_sampled_textures(entries: &[wgpu::BindGroupLayoutEntry]) -> u32 {
 /// matching group order). GPU-free: every builder returns plain CPU structs, so
 /// this runs in unit tests and at init without a device. Keeping the layout
 /// creation and this count reading from the same builders prevents the two
-/// sources of truth from drifting (the bug this guards against).
+/// sources of truth from drifting (the bug this guards against). Asserted in
+/// `Renderer::new` and the
+/// `forward_pipeline_sampled_texture_request_matches_bgl_definitions` test.
+#[cfg(debug_assertions)]
 fn forward_pipeline_sampled_texture_count() -> u32 {
     // Groups 0 (uniform) and 2 (lighting) carry no textures, but include them so
     // adding a texture entry to either BGL is caught here automatically.
@@ -1354,6 +1358,18 @@ impl Renderer {
         // `forward_pipeline_sampled_texture_request_matches_bgl_definitions`
         // verifies that the derived count stays within this budget independently.
         const REQUIRED_SAMPLED_TEXTURES: u32 = 16;
+        // Pull the count helpers onto the runtime path (they are otherwise
+        // test-only), so overflowing the budget trips here in debug builds.
+        // debug-only because CI has no GPU: a release panic at pipeline creation
+        // would be uncatchable, and the headless test covers the same invariant.
+        debug_assert!(
+            forward_pipeline_sampled_texture_count() <= REQUIRED_SAMPLED_TEXTURES,
+            "forward pipeline sampled-texture count ({}) exceeds the requested \
+             budget ({}); switch to bindless (TEXTURE_BINDING_ARRAY) rather than \
+             raising the limit (16 is Metal's hard ceiling)",
+            forward_pipeline_sampled_texture_count(),
+            REQUIRED_SAMPLED_TEXTURES
+        );
         const REQUIRED_STORAGE_TEXTURES: u32 = 4;
         // Stopgap: SH compose's flat delta-probe storage buffer outgrows the
         // WebGPU spec floor (128 MiB) on maps with many animated lights because

@@ -250,6 +250,32 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
 
 // --- Lighting helpers (copy of subset of forward.wgsl) ---
 
+// Crisp texel snapping (copy of forward.wgsl `sample_post_retro`). Converts UV
+// to texel space, snaps toward the nearest texel center, and antialiases only
+// the seam between texels across an `fwidth`-wide band. Samples through the
+// hardware linear sampler via `textureSampleGrad`, passing the ORIGINAL
+// (unwarped) derivatives so mip/aniso footprint selection tracks the true
+// screen-space pixel footprint. Snapping against the full sprite-strip
+// `textureDimensions` is correct because the strip's texels are the sprite's
+// texels.
+fn sample_post_retro(tex: texture_2d<f32>, samp: sampler, uv: vec2<f32>,
+                     ddx: vec2<f32>, ddy: vec2<f32>) -> vec4<f32> {
+    let dims = vec2<f32>(textureDimensions(tex, 0));
+    let uv_tex = uv * dims;
+    let seam = floor(uv_tex + 0.5);
+    // Floor the seam-width divisor: a fragment with constant UV (edge-on face or
+    // vanishing derivatives) gives fwidth == 0; clamp() does not sanitize the
+    // resulting NaN/Inf reliably in WGSL.
+    let seam_width = max(fwidth(uv_tex), vec2<f32>(1.0e-6));
+    let aa = clamp((uv_tex - seam) / seam_width, vec2(-0.5), vec2(0.5));
+    let uv_recon = (seam + aa) / dims;
+    // Pass the ORIGINAL derivatives, not derivatives of `uv_recon`. The warp
+    // only shifts the sample point; mip selection and the aniso footprint must
+    // track the true screen-space pixel footprint. Derivatives of the warped UV
+    // collapse the footprint at seams and break mip/aniso selection.
+    return textureSampleGrad(tex, samp, uv_recon, ddx, ddy);
+}
+
 fn blinn_phong(L: vec3<f32>, V: vec3<f32>, N: vec3<f32>,
                color: vec3<f32>, spec_exp: f32, spec_int: f32) -> vec3<f32> {
     let H = normalize(L + V);
@@ -349,7 +375,11 @@ fn sample_sh_direct(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let sprite_sample = textureSample(sprite_texture, sprite_sampler, in.uv);
+    // Derivatives of the unwarped UV, computed in uniform control flow (WGSL
+    // requirement) so they can feed `textureSampleGrad` inside `sample_post_retro`.
+    let ddx = dpdx(in.uv);
+    let ddy = dpdy(in.uv);
+    let sprite_sample = sample_post_retro(sprite_texture, sprite_sampler, in.uv, ddx, ddy);
 
     // Camera forward points from the fragment toward the camera; we use it
     // as the normal for Blinn-Phong so sprites respond to lights as if their

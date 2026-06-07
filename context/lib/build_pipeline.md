@@ -202,13 +202,14 @@ Disk-backed content-hash cache that lets `prl-build` skip the two expensive bake
 | Flag | Effect |
 |------|--------|
 | `--cache-dir <PATH>` | Use a custom cache directory instead of `.build-caches/prl-cache/` at the workspace root |
-| `--no-cache` | Disable the cache entirely — neither read nor write, no directory created |
+| `--cache-max-size <SIZE>` | LRU size budget for the cache, swept at build start (default 2 GiB). Accepts a byte count or a binary-unit suffix (`2GiB`, `512MiB`, `1.5GiB`) |
+| `--no-cache` | Disable the cache entirely — neither read nor write, no directory created (no prune either) |
 | `--release` | Produce a shippable map: the exact ship path (exact monolithic lightmap + exact whole-volume SH). Intent-named ship mode; implies `--no-cache` (passing both is fine and identical). The interactive default is a warm build — ship only `--release` artifacts. |
 | `--soft-shadow-samples <N>` | Soft-shadow penumbra escalated full-sample count (default 32). Folds into the lightmap stage's cache key (raising it invalidates the cache and re-bakes); the uncached animated weight-map stage recomputes from scratch. Run `prl-build --help` for the full flag list. |
 
 **Entry format.** One file per entry, named by the hex key. `get()` validates integrity before returning payload; mismatch is a soft failure (warning, cache miss).
 
-**Eviction.** No policy-driven eviction. Delete `.build-caches/prl-cache/` manually when it grows too large. A corrupted entry is discarded as a cache miss without touching other entries.
+**Eviction.** LRU size cap, enforced by a sweep at the start of every cached build (before the bake writes a fresh generation). When the directory exceeds the budget (`--cache-max-size`, default 2 GiB), the least-recently-used entries are deleted oldest-first until the total fits. Recency is the entry's mtime: `get` bumps it on every hit and `put` sets it on write, so a long-stable entry (hit every build, never rewritten) stays warm while orphaned generations — the tail content addressing leaves behind whenever an input changes — age out and get reclaimed. The sweep is off the bake path (one directory listing plus a few unlinks) and best-effort: any I/O error is logged and the build proceeds. In-flight `*.tmp` stage files are never touched. `--no-cache`/`--release` skip the cache (and the sweep) entirely. A corrupted entry is still discarded as a cache miss without touching other entries. The cache remains safe to delete manually at any time.
 
 ---
 

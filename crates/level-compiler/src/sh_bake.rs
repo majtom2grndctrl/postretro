@@ -551,57 +551,76 @@ fn segment_clear(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
     true
 }
 
-/// Lambert contribution without visibility — caller handles shadow testing.
-fn light_contribution_lambert(light: &MapLight, surface_point: Vec3, surface_normal: Vec3) -> Vec3 {
+/// Normal-free incident radiance reaching `point` from `light`, plus the unit
+/// incident direction (point→light). This is the surface-cosine-removed core of
+/// `light_contribution_lambert`: falloff + spot-cone + directional intensity, but
+/// no `n·l` term. A probe is a point in air with no surface normal at bake time,
+/// so the direct-at-probe SH bake (D3) projects THIS radiance along the incident
+/// direction and lets the runtime fragment's normal apply the cosine.
+///
+/// Returns `None` when the light reaches the point with zero radiance — too close
+/// to the origin (degenerate direction), outside falloff range, or fully outside
+/// the spot cone. The unit direction for Point/Spot is geometric (point→light);
+/// for Directional it is `-cone_direction` (the photon travel vector negated).
+///
+/// `light_contribution_lambert` is exactly `radiance × max(n·l, 0)`, so the two
+/// stay in lockstep by construction — `light_contribution_lambert` calls this and
+/// applies the cosine. The Task 0 harness pins that factoring for all three light
+/// types.
+pub(crate) fn incident_radiance_at_point(light: &MapLight, point: Vec3) -> Option<(Vec3, Vec3)> {
     match light.light_type {
         LightType::Point => {
             let to_light = Vec3::new(
-                light.origin.x as f32 - surface_point.x,
-                light.origin.y as f32 - surface_point.y,
-                light.origin.z as f32 - surface_point.z,
+                light.origin.x as f32 - point.x,
+                light.origin.y as f32 - point.y,
+                light.origin.z as f32 - point.z,
             );
             let dist = to_light.length();
             if dist < 1.0e-4 {
-                return Vec3::ZERO;
+                return None;
             }
             let l = to_light / dist;
-            let n_dot_l = surface_normal.dot(l).max(0.0);
-            if n_dot_l <= 0.0 {
-                return Vec3::ZERO;
-            }
-            let attenuation = falloff(light, dist);
-            Vec3::from(light.color) * (light.intensity * n_dot_l * attenuation)
+            let radiance = Vec3::from(light.color) * (light.intensity * falloff(light, dist));
+            Some((radiance, l))
         }
         LightType::Spot => {
             let to_light = Vec3::new(
-                light.origin.x as f32 - surface_point.x,
-                light.origin.y as f32 - surface_point.y,
-                light.origin.z as f32 - surface_point.z,
+                light.origin.x as f32 - point.x,
+                light.origin.y as f32 - point.y,
+                light.origin.z as f32 - point.z,
             );
             let dist = to_light.length();
             if dist < 1.0e-4 {
-                return Vec3::ZERO;
+                return None;
             }
             let l = to_light / dist;
-            let n_dot_l = surface_normal.dot(l).max(0.0);
-            if n_dot_l <= 0.0 {
-                return Vec3::ZERO;
-            }
-            let attenuation = falloff(light, dist);
             let cone = spot_cone_attenuation(light, -l);
-            Vec3::from(light.color) * (light.intensity * n_dot_l * attenuation * cone)
+            let radiance =
+                Vec3::from(light.color) * (light.intensity * falloff(light, dist) * cone);
+            Some((radiance, l))
         }
         LightType::Directional => {
             let dir = Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0]));
             // cone_direction is the photon travel vector; negate to get the surface-to-light vector.
             let l = (-dir).normalize_or_zero();
-            let n_dot_l = surface_normal.dot(l).max(0.0);
-            if n_dot_l <= 0.0 {
-                return Vec3::ZERO;
+            if l.length_squared() < 1.0e-8 {
+                return None;
             }
-            Vec3::from(light.color) * (light.intensity * n_dot_l)
+            let radiance = Vec3::from(light.color) * light.intensity;
+            Some((radiance, l))
         }
     }
+}
+
+/// Lambert contribution without visibility — caller handles shadow testing.
+/// Exactly `incident_radiance_at_point × max(n·l, 0)`, the surface-cosine the
+/// probe bake omits.
+fn light_contribution_lambert(light: &MapLight, surface_point: Vec3, surface_normal: Vec3) -> Vec3 {
+    let Some((radiance, l)) = incident_radiance_at_point(light, surface_point) else {
+        return Vec3::ZERO;
+    };
+    let n_dot_l = surface_normal.dot(l).max(0.0);
+    radiance * n_dot_l
 }
 
 /// Must match `falloff` in `forward.wgsl` exactly — divergence produces "ghost glow"
@@ -1408,6 +1427,250 @@ mod tests {
                 "constant radiance L=1 should reconstruct to π irradiance; \
                  got {got} for normal {n:?}, expected {expected}",
             );
+        }
+    }
+
+    // D3 GATING HARNESS — empirically validates the direct-at-probe SH projection
+    // convention (plan "Baked Static Direct SH for Entities + Billboards", Task 0).
+    // This is a PERMANENT regression test, not a build-to-learn spike: it pins the
+    // exact assembly downstream tasks bake with. Source of truth — if the assembly
+    // drifts (lobe direction, normalization, cosine-lobe factors), this fails.
+    //
+    // D3 assembly under test, for one probe under one static light:
+    //   1. (radiance, l) = incident_radiance_at_point(light, probe)  // l = probe→light
+    //   2. vis           = soft_visibility(probe, l, light, ...)      // shadow factor
+    //   3. accumulate_sh_rgb(acc, l, radiance * vis, 1.0)             // delta lobe along l
+    //   4. apply_cosine_lobe_rgb(acc)                                  // irradiance convolve
+    // Reconstructed at a receiver normal `n`, the pinned equality is
+    //   evaluate_sh_rgb(acc, n) == radiance · max(dot(n, l), 0)
+    // where `radiance` is the normal-free falloff·intensity·color·visibility term.
+
+    // Pinned per-channel relative-error gate on the light-aligned cone, observed
+    // worst-case 4.03% (colored light, normals at 20°/30°/40°/45° × 4 azimuths).
+    // A-priori ceiling is 5%; pinned tighter at 4.5% with headroom over observed.
+    // NOTE: the cone for this tight bound EXCLUDES the exact peak n=l — see
+    // `d3_direct_at_probe_peak_overshoots_by_known_l2_truncation`.
+    const D3_LIGHT_ALIGNED_REL_TOLERANCE: f32 = 0.045;
+
+    /// Bake one probe's direct-at-probe SH under one static light using the exact
+    /// D3 assembly, with an unoccluded trace (probe in open air). Returns the L2
+    /// SH RGB coefficients the runtime would sample.
+    fn bake_direct_at_probe_d3(light: &MapLight, probe: Vec3) -> [f32; 27] {
+        let (radiance, l) =
+            incident_radiance_at_point(light, probe).expect("light must reach the probe");
+        // Open air: nothing occludes, so the trace is always clear and visibility
+        // collapses to 1.0. soft_visibility uses `l` as the offset normal (a probe
+        // has no surface normal; the incident direction stands in).
+        let vis = soft_visibility(probe, l, light, 0, 0, |_from, _to| true);
+        let mut acc = [0f32; 27];
+        accumulate_sh_rgb(&mut acc, l, radiance * vis, 1.0);
+        apply_cosine_lobe_rgb(&mut acc);
+        acc
+    }
+
+    /// Normals at `cone_deg` off `l`, swept over four azimuths around `l`, so a
+    /// per-azimuth or single-band normalization error can't hide behind one sample.
+    fn normals_on_cone(l: Vec3, cone_deg: f32) -> Vec<Vec3> {
+        // Pick a reference not parallel to `l` to build a stable tangent frame.
+        let up = if l.y.abs() < 0.9 { Vec3::Y } else { Vec3::X };
+        let tangent = l.cross(up).normalize();
+        let bitangent = l.cross(tangent).normalize();
+        let a = cone_deg.to_radians();
+        [0.0f32, 90.0, 180.0, 270.0]
+            .iter()
+            .map(|&phi_deg| {
+                let phi = phi_deg.to_radians();
+                let radial = tangent * phi.cos() + bitangent * phi.sin();
+                (l * a.cos() + radial * a.sin()).normalize()
+            })
+            .collect()
+    }
+
+    /// Asserts the D3 pinned equality at light-aligned normals across the ±45° cone
+    /// (AC 8): per-channel rel error `abs(diff)/orig.max(1e-3)` ≤ pinned threshold.
+    /// `name` identifies the LightType arm in failure output.
+    fn assert_d3_light_aligned(light: &MapLight, probe: Vec3, name: &str) {
+        let coeffs = bake_direct_at_probe_d3(light, probe);
+        let (radiance, l) = incident_radiance_at_point(light, probe).unwrap();
+
+        // ≥3 distinct light-aligned normals spanning the cone — peak excluded
+        // (its known L2 overshoot is pinned separately).
+        let mut tested = 0usize;
+        for cone_deg in [20.0f32, 30.0, 40.0, 45.0] {
+            for n in normals_on_cone(l, cone_deg) {
+                tested += 1;
+                let reconstructed = evaluate_sh_rgb(&coeffs, n);
+                let expected = radiance * n.dot(l).max(0.0);
+                for c in 0..3 {
+                    let rel = (reconstructed[c] - expected[c]).abs() / expected[c].max(1.0e-3);
+                    assert!(
+                        rel <= D3_LIGHT_ALIGNED_REL_TOLERANCE,
+                        "{name}: D3 rel error {rel:.4} exceeds {D3_LIGHT_ALIGNED_REL_TOLERANCE} \
+                         at cone {cone_deg}°, channel {c}, normal {n:?}; \
+                         got {reconstructed:?}, expected {expected:?}",
+                    );
+                }
+            }
+        }
+        assert!(tested >= 3, "AC 8 requires ≥3 light-aligned normals, tested {tested}");
+    }
+
+    fn point_light_colored(origin: glam::DVec3, color: [f32; 3], intensity: f32) -> MapLight {
+        MapLight {
+            origin,
+            light_type: LightType::Point,
+            intensity,
+            color,
+            falloff_model: FalloffModel::Linear,
+            falloff_range: 20.0,
+            light_size: 0.0,
+            angular_diameter: 0.0,
+            cone_angle_inner: None,
+            cone_angle_outer: None,
+            cone_direction: None,
+            animation: None,
+            cast_shadows: true,
+            bake_only: false,
+            is_dynamic: false,
+            casts_entity_shadows: false,
+            is_animated: false,
+            tags: vec![],
+            shadow_type: crate::map_data::ShadowType::StaticLightMap,
+        }
+    }
+
+    #[test]
+    fn d3_direct_at_probe_reconstructs_lambert_for_point_light() {
+        // Colored, scaled light so a per-channel or constant-factor normalization
+        // error can't be tuned away — the bound must hold on all three channels.
+        let probe = Vec3::new(0.0, 0.0, 0.0);
+        let light = point_light_colored(glam::DVec3::new(0.9, 3.0, 0.6), [1.4, 0.6, 2.3], 1.0);
+        assert_d3_light_aligned(&light, probe, "Point");
+    }
+
+    #[test]
+    fn d3_direct_at_probe_reconstructs_lambert_for_spot_light() {
+        // Probe sits well inside the inner cone so spot attenuation is ~1.0 and the
+        // reconstruction is a clean Lambert lobe (cone attenuation is folded into
+        // `radiance`, validated separately by the lightmap cross-check test).
+        let probe = Vec3::new(0.0, 0.0, 0.0);
+        let mut light = point_light_colored(glam::DVec3::new(0.0, 4.0, 0.0), [0.8, 1.1, 0.5], 1.2);
+        light.light_type = LightType::Spot;
+        light.cone_direction = Some([0.0, -1.0, 0.0]); // aimed straight down at the probe
+        light.cone_angle_inner = Some(0.6);
+        light.cone_angle_outer = Some(0.9);
+        assert_d3_light_aligned(&light, probe, "Spot");
+    }
+
+    #[test]
+    fn d3_direct_at_probe_reconstructs_lambert_for_directional_light() {
+        let probe = Vec3::new(2.0, 2.0, -1.0); // position is irrelevant for directional
+        let mut light = point_light_colored(glam::DVec3::ZERO, [1.0, 0.9, 1.3], 0.7);
+        light.light_type = LightType::Directional;
+        light.cone_direction = Some([0.2, -1.0, 0.1]); // photon travel; probe→light = -this
+        assert_d3_light_aligned(&light, probe, "Directional");
+    }
+
+    /// D3 CORRECTION FINDING: the pinned equality holds across the ±45° cone EXCEPT
+    /// at the exact peak n=l, where the L2-SH cosine-lobe reconstruction overshoots
+    /// the true clamped cosine by a fixed ~6.25%. This is intrinsic L2 truncation
+    /// (the lobe axis is the WORST-conditioned point in the cone, not the best — the
+    /// spec's "well-conditioned cone" must exclude the inner peak), NOT an assembly
+    /// error: the lobe direction (probe→light) and cosine-lobe normalization match
+    /// the indirect bake exactly. Pinned here so a regression in the cosine-lobe
+    /// factors (which would shift this constant) is caught.
+    #[test]
+    fn d3_direct_at_probe_peak_overshoots_by_known_l2_truncation() {
+        let probe = Vec3::ZERO;
+        let light = point_light_colored(glam::DVec3::new(0.9, 3.0, 0.6), [1.4, 0.6, 2.3], 1.0);
+        let coeffs = bake_direct_at_probe_d3(&light, probe);
+        let (radiance, l) = incident_radiance_at_point(&light, probe).unwrap();
+        let reconstructed = evaluate_sh_rgb(&coeffs, l); // n = l, the lobe axis
+        // At n=l the true Lambert value is `radiance` (dot=1). The L2 overshoot is
+        // a constant factor, so the per-channel ratio is identical on every channel.
+        for c in 0..3 {
+            let ratio = reconstructed[c] / radiance[c];
+            assert!(
+                (ratio - 1.0625).abs() < 0.01,
+                "peak overshoot ratio drifted: channel {c} got {ratio:.4}, expected ~1.0625",
+            );
+        }
+    }
+
+    /// Off-axis / terminator normals (beyond the cone, toward grazing) — assert
+    /// ONLY sign and monotonicity, NOT a tight relative bound: near the terminator
+    /// the true Lambert value → 0 and L2 ringing makes relative error unbounded.
+    /// Monotonicity: reconstructed irradiance decreases as the normal tilts away
+    /// from the light toward grazing, and never goes negative (evaluate clamps).
+    #[test]
+    fn d3_direct_at_probe_monotone_toward_terminator() {
+        let probe = Vec3::ZERO;
+        let light = point_light_colored(glam::DVec3::new(0.0, 3.0, 0.0), [1.0, 1.0, 1.0], 1.0);
+        let coeffs = bake_direct_at_probe_d3(&light, probe);
+        let (_radiance, l) = incident_radiance_at_point(&light, probe).unwrap();
+
+        let mut prev = f32::INFINITY;
+        for cone_deg in [50.0f32, 65.0, 80.0, 90.0] {
+            // Single azimuth is enough for a monotonicity sweep.
+            let n = normals_on_cone(l, cone_deg)[0];
+            let value = evaluate_sh_rgb(&coeffs, n).x;
+            assert!(value >= 0.0, "irradiance went negative at {cone_deg}°: {value}");
+            assert!(
+                value <= prev + 1.0e-4,
+                "irradiance not monotone decreasing at {cone_deg}°: {value} > prev {prev}",
+            );
+            prev = value;
+        }
+        assert!(prev >= 0.0);
+    }
+
+    /// Cross-check (NOT the comparison target for the convolved irradiance): the
+    /// normal-free `radiance` from `incident_radiance_at_point` must match the
+    /// lightmap baker's `light_contribution_and_direction` with the cosine divided
+    /// back out — pinning that the two bakers agree on falloff/intensity/cone
+    /// magnitude for all three light types. The lightmap value bundles `n_dot_l`;
+    /// recovering `radiance = contribution / n_dot_l` is the only valid bridge.
+    #[test]
+    fn incident_radiance_matches_lightmap_baker_magnitude_for_all_light_types() {
+        use crate::lightmap_bake::light_contribution_and_direction;
+
+        let probe = Vec3::new(0.0, 0.0, 0.0);
+        let point = point_light_colored(glam::DVec3::new(0.9, 3.0, 0.6), [1.4, 0.6, 2.3], 1.1);
+
+        let mut spot = point_light_colored(glam::DVec3::new(0.0, 4.0, 0.0), [0.8, 1.1, 0.5], 1.2);
+        spot.light_type = LightType::Spot;
+        spot.cone_direction = Some([0.0, -1.0, 0.0]);
+        spot.cone_angle_inner = Some(0.6);
+        spot.cone_angle_outer = Some(0.9);
+
+        let mut directional =
+            point_light_colored(glam::DVec3::ZERO, [1.0, 0.9, 1.3], 0.7);
+        directional.light_type = LightType::Directional;
+        directional.cone_direction = Some([0.2, -1.0, 0.1]);
+
+        for (light, name) in [(&point, "Point"), (&spot, "Spot"), (&directional, "Directional")] {
+            let (radiance, l) = incident_radiance_at_point(light, probe).unwrap();
+            // Use a normal tilted off `l` so n_dot_l is a clean, non-degenerate
+            // divisor (not 1.0, not near 0.0).
+            let n = normals_on_cone(l, 30.0)[0];
+            let n_dot_l = n.dot(l).max(0.0);
+            let (contribution, lm_l) = light_contribution_and_direction(light, probe, n);
+            // Both bakers must agree on the incident direction.
+            assert!(
+                (lm_l - l).length() < 1.0e-5,
+                "{name}: incident direction mismatch: {lm_l:?} vs {l:?}",
+            );
+            let recovered = contribution / n_dot_l;
+            for c in 0..3 {
+                let rel = (recovered[c] - radiance[c]).abs() / radiance[c].max(1.0e-3);
+                assert!(
+                    rel < 1.0e-4,
+                    "{name}: recovered radiance channel {c} = {} disagrees with \
+                     incident_radiance_at_point {} (rel {rel:.5})",
+                    recovered[c],
+                    radiance[c],
+                );
+            }
         }
     }
 

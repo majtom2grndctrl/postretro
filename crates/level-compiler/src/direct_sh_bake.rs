@@ -1214,6 +1214,245 @@ mod tests {
         assert_eq!(direct_dense_atlas_byte_size(&empty), 0);
     }
 
+    /// Build the padded *physical* RGBA-f32 atlas the BC6H emitter/uploader feeds
+    /// the GPU: each axis padded up to a multiple of 4 (`bc6h_padded_atlas_dimensions`),
+    /// tiles at the SAME texel positions as the logical atlas, fringe zeroed. This
+    /// mirrors `encode_direct_section_bc6h`'s decode-into-padded-buffer step (without
+    /// the lossy BC6H block round-trip, so the comparison isolates the layout/UV
+    /// bug rather than codec error). Returns `(rgba_f32, padded_w, padded_h)`.
+    fn build_padded_physical_atlas(section: &DirectShVolumeSection) -> (Vec<f32>, u32, u32) {
+        let aw = section.atlas_dimensions[0];
+        let ah = section.atlas_dimensions[1];
+        let (padded_w, padded_h) = bc6h_padded_atlas_dimensions(section.atlas_dimensions);
+        let mut rgba = vec![0.0f32; padded_w as usize * padded_h as usize * 4];
+        for y in 0..ah {
+            for x in 0..aw {
+                let src = ((y * aw + x) * 8) as usize;
+                let dst = ((y * padded_w + x) * 4) as usize;
+                for c in 0..4 {
+                    let bits = u16::from_le_bytes([
+                        section.atlas[src + c * 2],
+                        section.atlas[src + c * 2 + 1],
+                    ]);
+                    rgba[dst + c] = f16_to_f32(bits);
+                }
+            }
+        }
+        (rgba, padded_w, padded_h)
+    }
+
+    /// Model the WGSL sampler's UV math (`sh_sample.wgsl::sample_probe_atlas_tex`)
+    /// for an interior texel direction, reading the padded physical buffer the GPU
+    /// actually samples. `divisor` is the atlas extent used to normalize the UV:
+    /// the SHADER FIX passes the buffer's PHYSICAL dims (`textureDimensions`); the
+    /// BUG passed the LOGICAL `atlas_dimensions`.
+    ///
+    /// For an interior texel center, `oct_encode(dir) * interior == interior_xy + 0.5`,
+    /// so the shader's continuous `texel` coordinate lands exactly on the center of
+    /// atlas pixel `(origin + border + interior_xy)`. A bilinear tap at an exact
+    /// texel center returns that texel, so we recover the sampled texel by
+    /// `floor(uv * physical_dims)` — the integer pixel the center UV resolves to.
+    fn sample_padded_like_shader(
+        section: &DirectShVolumeSection,
+        rgba: &[f32],
+        padded_w: u32,
+        padded_h: u32,
+        probe_index: usize,
+        n: glam::Vec3,
+    ) -> glam::Vec3 {
+        let origin = irradiance_tile_origin(
+            probe_index,
+            section.tile_dimension,
+            section.atlas_tiles_per_row,
+        );
+        let interior = section.tile_dimension - 2 * section.tile_border;
+        // Pick the interior texel whose direction best matches `n` (same selection
+        // the logical-layout `reconstruct_irradiance` uses, so the two reads target
+        // the same tile texel — only the divisor under test differs).
+        let mut best_dot = f32::NEG_INFINITY;
+        let mut best_ix = 0u32;
+        let mut best_iy = 0u32;
+        for iy in 0..interior {
+            for ix in 0..interior {
+                let dir = glam::Vec3::from(irradiance_interior_texel_direction(
+                    ix,
+                    iy,
+                    section.tile_dimension,
+                    section.tile_border,
+                ));
+                let d = dir.dot(n);
+                if d > best_dot {
+                    best_dot = d;
+                    best_ix = ix;
+                    best_iy = iy;
+                }
+            }
+        }
+
+        // Shader's continuous texel-center coordinate for that interior texel.
+        let texel_x = origin[0] as f32 + section.tile_border as f32 + best_ix as f32 + 0.5;
+        let texel_y = origin[1] as f32 + section.tile_border as f32 + best_iy as f32 + 0.5;
+
+        // Normalize by the divisor under test, then resolve to the physical pixel
+        // the center UV lands on (matching the GPU's bilinear-at-center behavior).
+        let uv = glam::Vec2::new(texel_x / padded_w as f32, texel_y / padded_h as f32);
+        let px = (uv.x * padded_w as f32).floor() as i64;
+        let py = (uv.y * padded_h as f32).floor() as i64;
+        let px = px.clamp(0, padded_w as i64 - 1) as usize;
+        let py = py.clamp(0, padded_h as i64 - 1) as usize;
+        let off = (py * padded_w as usize + px) * 4;
+        glam::Vec3::new(rgba[off], rgba[off + 1], rgba[off + 2])
+    }
+
+    /// Same as `sample_padded_like_shader` but normalizes the UV by the LOGICAL
+    /// `atlas_dimensions` (the BUG) while still reading the PHYSICAL buffer — the
+    /// exact mismatch the shader fix removed. Returns the texel that the stretched
+    /// UV resolves to in the padded buffer.
+    fn sample_padded_with_logical_divisor(
+        section: &DirectShVolumeSection,
+        rgba: &[f32],
+        padded_w: u32,
+        padded_h: u32,
+        probe_index: usize,
+        n: glam::Vec3,
+    ) -> glam::Vec3 {
+        let origin = irradiance_tile_origin(
+            probe_index,
+            section.tile_dimension,
+            section.atlas_tiles_per_row,
+        );
+        let interior = section.tile_dimension - 2 * section.tile_border;
+        let mut best_dot = f32::NEG_INFINITY;
+        let mut best_ix = 0u32;
+        let mut best_iy = 0u32;
+        for iy in 0..interior {
+            for ix in 0..interior {
+                let dir = glam::Vec3::from(irradiance_interior_texel_direction(
+                    ix,
+                    iy,
+                    section.tile_dimension,
+                    section.tile_border,
+                ));
+                let d = dir.dot(n);
+                if d > best_dot {
+                    best_dot = d;
+                    best_ix = ix;
+                    best_iy = iy;
+                }
+            }
+        }
+        let texel_x = origin[0] as f32 + section.tile_border as f32 + best_ix as f32 + 0.5;
+        let texel_y = origin[1] as f32 + section.tile_border as f32 + best_iy as f32 + 0.5;
+        let aw = section.atlas_dimensions[0] as f32;
+        let ah = section.atlas_dimensions[1] as f32;
+        // BUG: divide by logical, sample physical → progressive stretch.
+        let uv = glam::Vec2::new(texel_x / aw, texel_y / ah);
+        let px = ((uv.x * padded_w as f32).floor() as i64).clamp(0, padded_w as i64 - 1) as usize;
+        let py = ((uv.y * padded_h as f32).floor() as i64).clamp(0, padded_h as i64 - 1) as usize;
+        let off = (py * padded_w as usize + px) * 4;
+        glam::Vec3::new(rgba[off], rgba[off + 1], rgba[off + 2])
+    }
+
+    /// Regression (lighting--entity-direct-sh): the direct BC6H atlas is uploaded at
+    /// a 4-padded PHYSICAL extent, but the shared sampler normalized the UV by the
+    /// LOGICAL `sh_grid.atlas_dimensions` (multiples of tile-dim 6, almost never
+    /// 4-aligned). That divides the texel coordinate by the wrong extent, so a
+    /// logical texel `t` was sampled at physical `t·(padded/logical)` — a progressive
+    /// stretch that pulled the zeroed fringe into the tap and broke brightness parity
+    /// (AC 1). The fix normalizes by the atlas's OWN physical extent
+    /// (`textureDimensions`).
+    ///
+    /// This test models the shader's UV math on the as-uploaded padded physical
+    /// buffer: reading it with the SAMPLER's physical-extent normalization recovers
+    /// the same irradiance as the logical-layout reconstruction, AND the
+    /// logical-divisor read (the bug) DIVERGES — pinning the regression.
+    #[test]
+    fn direct_sh_padded_physical_sample_matches_logical_reconstruction() {
+        // A 16 m floor strip → a 17×1×4 = 68-probe grid → ceil_sqrt(68) = 9 tiles per
+        // row → logical atlas axis 9·6 = 54, which is NOT 4-aligned (54 % 4 == 2), so
+        // the BC6H emitter pads it to 56 and the physical extent strictly exceeds the
+        // logical — the precondition that triggered the stretch.
+        let geo = long_floor_geometry(16.0);
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let tree = tree_all_empty();
+        let exterior: HashSet<usize> = HashSet::new();
+        let lights = vec![static_point_light(
+            DVec3::new(8.0, 2.0, 1.5),
+            50.0,
+            [1.0, 0.8, 0.6],
+        )];
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let animated_lights = AnimatedBakedLights::from_lights(&lights);
+        let sh_ctx = ShBakeCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
+            total_light_count: lights.len(),
+        };
+        let inputs = DirectBakeInputs {
+            sh_ctx: &sh_ctx,
+            portals: &[],
+        };
+        let config = ShConfig { probe_spacing: 1.0 };
+
+        let section = bake_direct_sh_volume(&inputs, &config);
+        let logical_atlas = decode_atlas(&section);
+
+        // Precondition: the padded physical extent must exceed the logical extent on
+        // at least one axis, or there is no stretch to catch.
+        let (padded_w, padded_h) = bc6h_padded_atlas_dimensions(section.atlas_dimensions);
+        assert!(
+            padded_w > section.atlas_dimensions[0] || padded_h > section.atlas_dimensions[1],
+            "test scene must produce a non-4-aligned logical atlas so the physical \
+             padding differs (logical {:?}, padded {padded_w}x{padded_h})",
+            section.atlas_dimensions,
+        );
+
+        let (padded_rgba, pw, ph) = build_padded_physical_atlas(&section);
+        assert_eq!((pw, ph), (padded_w, padded_h));
+
+        let dims = section.grid_dimensions;
+        // A lit probe with a HIGH linear index (large x), so its tile sits far from
+        // the atlas origin where the progressive stretch is largest — the buggy
+        // logical-divisor read lands on a different physical pixel there. Light is
+        // overhead at x=8, z=1.5; pick a probe directly under it.
+        let probe = flat_index(8, 0, 1, dims);
+
+        // Mid-cone receiver normal (~20°-45° off the probe→light axis, per Task 0 —
+        // NOT the exact lobe peak, which carries ~6.25% intrinsic L2 overshoot). The
+        // light is overhead (+y) and slightly +z of the probe.
+        let n = glam::Vec3::new(0.0, 0.85, 0.5).normalize();
+
+        let logical = reconstruct_irradiance(&section, &logical_atlas, probe, n);
+        assert!(
+            logical.length() > 1.0e-3,
+            "lit probe must carry direct irradiance for the comparison to be meaningful, got {logical}",
+        );
+
+        // The FIX: physical-extent normalization recovers the logical-layout value.
+        let physical = sample_padded_like_shader(&section, &padded_rgba, pw, ph, probe, n);
+        let eps = 1.0e-4_f32;
+        assert!(
+            (physical - logical).length() <= eps,
+            "physical-divisor sample {physical} of the padded buffer must match the \
+             logical-layout reconstruction {logical} within {eps} (the shader fix)",
+        );
+
+        // The BUG: logical-divisor normalization of the padded buffer DIVERGES. This
+        // pins the regression — if someone reintroduced `sh_grid.atlas_dimensions` as
+        // the direct divisor, this assertion would fail.
+        let bugged = sample_padded_with_logical_divisor(&section, &padded_rgba, pw, ph, probe, n);
+        assert!(
+            (bugged - logical).length() > eps,
+            "logical-divisor sample {bugged} of the padded buffer must DIVERGE from the \
+             correct reconstruction {logical} (the stretch the fix removed)",
+        );
+    }
+
     /// Cache round-trip: a second build with a warm cache reproduces the first
     /// build byte-for-byte, and matches the uncached bake.
     #[test]

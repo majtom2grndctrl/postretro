@@ -94,7 +94,16 @@ fn sample_probe_atlas_tex(atlas: texture_2d<f32>, idx: vec3<i32>, dir: vec3<f32>
     let texel = vec2<f32>(origin)
         + vec2<f32>(f32(sh_grid.tile_border))
         + oct * vec2<f32>(f32(interior));
-    let atlas_dimensions = max(sh_grid.atlas_dimensions, vec2<u32>(1u));
+    // Normalize by the SAMPLED atlas's OWN physical extent, not the logical
+    // `sh_grid.atlas_dimensions`. Tile texel POSITIONS are identical across the
+    // indirect and direct atlases (same probe layout; padding is appended only at
+    // the right/bottom edges), so only the divisor differs. The indirect atlas is
+    // stored at physical == logical extent, so `textureDimensions` returns the
+    // logical dims there and the indirect path is unchanged. The direct atlas is a
+    // BC6H texture rounded up to a 4-aligned physical extent; using its logical
+    // dims would progressively stretch the fetch and pull the zeroed fringe into
+    // the sample. `textureDimensions(atlas)` keeps this helper binding-agnostic.
+    let atlas_dimensions = max(textureDimensions(atlas), vec2<u32>(1u));
     let uv = texel / vec2<f32>(atlas_dimensions);
     return textureSampleLevel(atlas, sh_atlas_sampler, uv, 0.0);
 }

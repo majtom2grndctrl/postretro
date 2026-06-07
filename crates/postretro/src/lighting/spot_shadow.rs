@@ -48,7 +48,7 @@ pub fn light_space_matrix(light: &MapLight) -> Mat4 {
 }
 
 /// Number of shadow-map slots in the pool (retunable constant).
-pub const SHADOW_POOL_SIZE: usize = 12;
+pub const SHADOW_POOL_SIZE: usize = 64;
 
 /// Depth format for shadow maps.
 pub const SHADOW_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -60,7 +60,7 @@ pub const SHADOW_MAP_RESOLUTION: u32 = 1024;
 pub const NO_SHADOW_SLOT: u32 = 0xFFFFFFFF;
 
 /// Size of the `array<mat4x4<f32>, SHADOW_POOL_SIZE>` storage buffer consumed
-/// by the forward shader at `@group(5) @binding(2)`. 12 4×4 f32 matrices.
+/// by the forward shader at `@group(5) @binding(2)`. 64 4×4 f32 matrices.
 pub const LIGHT_SPACE_MATRICES_SIZE: u64 = (SHADOW_POOL_SIZE * 16 * 4) as u64;
 
 /// Pool of shadow-map texture slots, one per dynamic spot light that

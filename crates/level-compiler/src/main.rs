@@ -723,11 +723,8 @@ fn main() -> anyhow::Result<()> {
         // passes the shared `StageCache`; the cold `--no-cache`/`--release` path
         // passes `None` (the bake is byte-identical either way — the direct cull is
         // the strict provably-zero test in both modes).
-        let raw = direct_sh_bake::bake_direct_sh_volume_cached(
-            &inputs,
-            &sh_config,
-            stage_cache.as_ref(),
-        );
+        let raw =
+            direct_sh_bake::bake_direct_sh_volume_cached(&inputs, &sh_config, stage_cache.as_ref());
         if args.verbose {
             direct_sh_bake::log_cull_savings(&inputs, &sh_config);
         }

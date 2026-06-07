@@ -38,9 +38,7 @@ use postretro_level_format::octahedral::{
 use postretro_level_format::sh_volume::OctahedralAtlasTexel;
 use rayon::prelude::*;
 
-use crate::affinity_grid::{
-    AFFINITY_FACTOR, AffinityReachInputs, decompose_affinity_for_lights,
-};
+use crate::affinity_grid::{AFFINITY_FACTOR, AffinityReachInputs, decompose_affinity_for_lights};
 use crate::bc6h;
 use crate::cache::{CacheKey, StageCache};
 use crate::map_data::{MapLight, ShadowType};
@@ -273,8 +271,14 @@ fn bake_probe_tile(
         .unwrap_or(&[]);
 
     // Gather the reaching subset (light refs + their global static_lights index).
-    let lights: Vec<&MapLight> = reaching.iter().map(|&i| direct_lights[i as usize]).collect();
-    let seed_indices: Vec<u64> = reaching.iter().map(|&i| global_indices[i as usize]).collect();
+    let lights: Vec<&MapLight> = reaching
+        .iter()
+        .map(|&i| direct_lights[i as usize])
+        .collect();
+    let seed_indices: Vec<u64> = reaching
+        .iter()
+        .map(|&i| global_indices[i as usize])
+        .collect();
 
     let ctx = RaytracingCtx {
         bvh: inputs.sh_ctx.bvh,
@@ -384,7 +388,11 @@ fn direct_cache_key(
     }
 
     let digest = hasher.finalize();
-    CacheKey::new(DIRECT_SH_STAGE_ID, DIRECT_SH_STAGE_VERSION, digest.as_bytes())
+    CacheKey::new(
+        DIRECT_SH_STAGE_ID,
+        DIRECT_SH_STAGE_VERSION,
+        digest.as_bytes(),
+    )
 }
 
 /// Bake the direct SH section, going through the shared `StageCache` when one is
@@ -598,7 +606,14 @@ mod tests {
     use std::collections::HashSet;
 
     fn tri_vertex(pos: [f32; 3]) -> Vertex {
-        Vertex::new(pos, [0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], true, [0.0, 0.0])
+        Vertex::new(
+            pos,
+            [0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            true,
+            [0.0, 0.0],
+        )
     }
 
     fn multi_triangle_geometry(triangles: &[[[f32; 3]; 3]]) -> GeometryResult {
@@ -933,7 +948,11 @@ mod tests {
 
         // Light on the -x side, high enough to be above the floor but the wall
         // shadows the +x side. Large range so falloff doesn't confound the test.
-        let lights = vec![static_point_light(DVec3::new(0.5, 2.0, 2.0), 50.0, [1.0, 1.0, 1.0])];
+        let lights = vec![static_point_light(
+            DVec3::new(0.5, 2.0, 2.0),
+            50.0,
+            [1.0, 1.0, 1.0],
+        )];
         let static_lights = StaticBakedLights::from_lights(&lights);
         let animated_lights = AnimatedBakedLights::from_lights(&lights);
         let sh_ctx = ShBakeCtx {
@@ -1024,13 +1043,25 @@ mod tests {
         let static_refs = static_light_refs(&sh_ctx);
 
         // StaticBakedLights already drops animated (1) and dynamic (2): refs = [0, 3].
-        assert_eq!(static_refs.len(), 2, "StaticBakedLights must drop animated + dynamic");
+        assert_eq!(
+            static_refs.len(),
+            2,
+            "StaticBakedLights must drop animated + dynamic"
+        );
 
         // The direct filter then drops the Sdf light, leaving only light 0, and its
         // global index must remain its position in the static_lights slice (0).
         let (direct_lights, global_indices) = static_direct_lights(&static_refs);
-        assert_eq!(direct_lights.len(), 1, "direct filter must drop the Sdf light");
-        assert_eq!(global_indices, vec![0], "kept light keeps its global static index");
+        assert_eq!(
+            direct_lights.len(),
+            1,
+            "direct filter must drop the Sdf light"
+        );
+        assert_eq!(
+            global_indices,
+            vec![0],
+            "kept light keeps its global static index"
+        );
     }
 
     /// Empty geometry yields the empty-section degradation path.
@@ -1082,7 +1113,11 @@ mod tests {
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let tree = tree_all_empty();
         let exterior: HashSet<usize> = HashSet::new();
-        let lights = vec![static_point_light(DVec3::new(2.0, 1.5, 2.0), 8.0, [1.0, 0.8, 0.6])];
+        let lights = vec![static_point_light(
+            DVec3::new(2.0, 1.5, 2.0),
+            8.0,
+            [1.0, 0.8, 0.6],
+        )];
         let static_lights = StaticBakedLights::from_lights(&lights);
         let animated_lights = AnimatedBakedLights::from_lights(&lights);
         let sh_ctx = ShBakeCtx {
@@ -1130,7 +1165,11 @@ mod tests {
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let tree = tree_all_empty();
         let exterior: HashSet<usize> = HashSet::new();
-        let lights = vec![static_point_light(DVec3::new(2.0, 1.5, 2.0), 8.0, [1.0, 0.8, 0.6])];
+        let lights = vec![static_point_light(
+            DVec3::new(2.0, 1.5, 2.0),
+            8.0,
+            [1.0, 0.8, 0.6],
+        )];
         let static_lights = StaticBakedLights::from_lights(&lights);
         let animated_lights = AnimatedBakedLights::from_lights(&lights);
         let sh_ctx = ShBakeCtx {
@@ -1151,7 +1190,10 @@ mod tests {
 
         let raw = bake_direct_sh_volume(&inputs, &config);
         let bypassed = encode_direct_section_bc6h(&raw, true);
-        assert_eq!(bypassed, raw, "debug bypass must return the RGBA16F section as-is");
+        assert_eq!(
+            bypassed, raw,
+            "debug bypass must return the RGBA16F section as-is"
+        );
 
         // Pre-compression dense figure is the padded RGBA-f32 buffer size.
         let padded_w = raw.atlas_dimensions[0].div_ceil(4) * 4;
@@ -1180,7 +1222,11 @@ mod tests {
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let tree = tree_all_empty();
         let exterior: HashSet<usize> = HashSet::new();
-        let lights = vec![static_point_light(DVec3::new(2.0, 1.5, 2.0), 8.0, [1.0, 0.8, 0.6])];
+        let lights = vec![static_point_light(
+            DVec3::new(2.0, 1.5, 2.0),
+            8.0,
+            [1.0, 0.8, 0.6],
+        )];
         let static_lights = StaticBakedLights::from_lights(&lights);
         let animated_lights = AnimatedBakedLights::from_lights(&lights);
         let sh_ctx = ShBakeCtx {

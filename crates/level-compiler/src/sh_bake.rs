@@ -1566,7 +1566,10 @@ mod tests {
                 }
             }
         }
-        assert!(tested >= 3, "AC 8 requires ≥3 light-aligned normals, tested {tested}");
+        assert!(
+            tested >= 3,
+            "AC 8 requires ≥3 light-aligned normals, tested {tested}"
+        );
     }
 
     fn point_light_colored(origin: glam::DVec3, color: [f32; 3], intensity: f32) -> MapLight {
@@ -1668,7 +1671,10 @@ mod tests {
             // Single azimuth is enough for a monotonicity sweep.
             let n = normals_on_cone(l, cone_deg)[0];
             let value = evaluate_sh_rgb(&coeffs, n).x;
-            assert!(value >= 0.0, "irradiance went negative at {cone_deg}°: {value}");
+            assert!(
+                value >= 0.0,
+                "irradiance went negative at {cone_deg}°: {value}"
+            );
             assert!(
                 value <= prev + 1.0e-4,
                 "irradiance not monotone decreasing at {cone_deg}°: {value} > prev {prev}",
@@ -1697,12 +1703,15 @@ mod tests {
         spot.cone_angle_inner = Some(0.6);
         spot.cone_angle_outer = Some(0.9);
 
-        let mut directional =
-            point_light_colored(glam::DVec3::ZERO, [1.0, 0.9, 1.3], 0.7);
+        let mut directional = point_light_colored(glam::DVec3::ZERO, [1.0, 0.9, 1.3], 0.7);
         directional.light_type = LightType::Directional;
         directional.cone_direction = Some([0.2, -1.0, 0.1]);
 
-        for (light, name) in [(&point, "Point"), (&spot, "Spot"), (&directional, "Directional")] {
+        for (light, name) in [
+            (&point, "Point"),
+            (&spot, "Spot"),
+            (&directional, "Directional"),
+        ] {
             let (radiance, l) = incident_radiance_at_point(light, probe).unwrap();
             // Use a normal tilted off `l` so n_dot_l is a clean, non-degenerate
             // divisor (not 1.0, not near 0.0).

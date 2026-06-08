@@ -50,6 +50,8 @@ TrenchBroom identifies materials by their path **relative to the textures root**
 - The incoming map name is normalized (lowercase, `\`→`/`, leading `textures/` stripped) so both `collection/stem` and root-inclusive `textures/collection/stem` map to the relative key. Lookup tries the normalized relative name, then falls back to the bare last path segment.
 - `_s`/`_n` siblings are derived by appending to **the same form that resolved the diffuse**, so siblings come from the same collection.
 
+A material name with a space (e.g. a collection dir `Level Eleven Games Sci-Fi Texture Pack v1`) is double-quoted in the `.map` by TrenchBroom. shalrath has no quote handling, so the parser (`crates/level-compiler/src/parse.rs`) runs a pre-parse pass that strips the quotes and swaps interior spaces for a path-illegal sentinel byte, keeping the material field one token. The sentinel is decoded back to a real space at the single texture-read boundary, so every downstream stage sees the human-readable name.
+
 ---
 
 ## Custom FGD

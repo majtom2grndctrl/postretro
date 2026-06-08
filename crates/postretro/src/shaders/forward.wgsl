@@ -493,7 +493,7 @@ fn sample_sh_indirect(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_norma
 // and break mip/aniso selection.
 fn sample_post_retro(tex: texture_2d<f32>, samp: sampler, uv: vec2<f32>,
                      ddx: vec2<f32>, ddy: vec2<f32>) -> vec4<f32> {
-    let dims = vec2<f32>(textureDimensions(tex, 1));
+    let dims = vec2<f32>(textureDimensions(tex, 0));
     let uv_tex = uv * dims;
     let seam = floor(uv_tex + 0.5);
     // Floor the seam-width divisor: a constant-UV fragment (edge-on face,

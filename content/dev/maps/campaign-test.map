@@ -495,12 +495,12 @@
 }
 // brush 54
 {
-( 1040 2864 -16 ) ( 1040 1296 0 ) ( 1040 1296 -16 ) default_grass_001 0 0 0 1 1
-( 1040 1296 -16 ) ( 2608 1296 0 ) ( 2608 1296 -16 ) default_grass_001 0 0 0 1 1
-( 1040 1296 -16 ) ( 2608 2864 -16 ) ( 1040 2864 -16 ) default_grass_001 0 0 0 1 1
-( 1040 2864 0 ) ( 2608 1296 0 ) ( 1040 1296 0 ) default_grass_001 0 0 0 1 1
-( 2608 2864 -16 ) ( 1040 2864 0 ) ( 1040 2864 -16 ) default_grass_001 0 0 0 1 1
-( 2608 1296 -16 ) ( 2608 2864 0 ) ( 2608 2864 -16 ) default_grass_001 0 0 0 1 1
+( 1040 2864 -16 ) ( 1040 1296 0 ) ( 1040 1296 -16 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+( 1040 1296 -16 ) ( 2608 1296 0 ) ( 2608 1296 -16 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+( 1040 1296 -16 ) ( 2608 2864 -16 ) ( 1040 2864 -16 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+( 1040 2864 0 ) ( 2608 1296 0 ) ( 1040 1296 0 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+( 2608 2864 -16 ) ( 1040 2864 0 ) ( 1040 2864 -16 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+( 2608 1296 -16 ) ( 2608 2864 0 ) ( 2608 2864 -16 ) 50-free-textures/default_dirt_014 0 0 0 1 1
 }
 // brush 55
 {
@@ -585,12 +585,12 @@
 }
 // brush 64
 {
-( 2336 2848 0 ) ( 2336 1312 512 ) ( 2336 1312 0 ) concrete_stone_033 0 0 0 1 1
-( 2336 1312 0 ) ( 2592 1312 512 ) ( 2592 1312 0 ) concrete_stone_033 0 0 0 1 1
-( 2336 1312 0 ) ( 2592 2848 0 ) ( 2336 2848 0 ) concrete_stone_033 0 0 0 1 1
-( 2336 2848 512 ) ( 2592 1312 512 ) ( 2336 1312 512 ) concrete_stone_033 0 0 0 1 1
-( 2592 2848 0 ) ( 2336 2848 512 ) ( 2336 2848 0 ) concrete_stone_033 0 0 0 1 1
-( 2592 1312 0 ) ( 2592 2848 512 ) ( 2592 2848 0 ) concrete_stone_033 0 0 0 1 1
+( 2336 2848 0 ) ( 2336 1312 512 ) ( 2336 1312 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2336 1312 0 ) ( 2592 1312 512 ) ( 2592 1312 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2336 1312 0 ) ( 2592 2848 0 ) ( 2336 2848 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2336 2848 512 ) ( 2592 1312 512 ) ( 2336 1312 512 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2592 2848 0 ) ( 2336 2848 512 ) ( 2336 2848 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2592 1312 0 ) ( 2592 2848 512 ) ( 2592 2848 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
 }
 // brush 65
 {
@@ -612,21 +612,21 @@
 }
 // brush 67
 {
-( 1608 1760 0 ) ( 1608 1664 64 ) ( 1608 1664 0 ) concrete_stone_033 0 0 0 1 1
-( 1608 1664 0 ) ( 1704 1664 64 ) ( 1704 1664 0 ) concrete_stone_033 0 0 0 1 1
-( 1608 1664 0 ) ( 1704 1760 0 ) ( 1608 1760 0 ) concrete_stone_033 0 0 0 1 1
-( 1608 1760 64 ) ( 1704 1664 64 ) ( 1608 1664 64 ) concrete_stone_033 0 0 0 1 1
-( 1704 1760 0 ) ( 1608 1760 64 ) ( 1608 1760 0 ) concrete_stone_033 0 0 0 1 1
-( 1704 1664 0 ) ( 1704 1760 64 ) ( 1704 1760 0 ) concrete_stone_033 0 0 0 1 1
+( 1608 1760 0 ) ( 1608 1664 64 ) ( 1608 1664 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-003" 0 0 0 1 1
+( 1608 1664 0 ) ( 1704 1664 64 ) ( 1704 1664 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-003" 0 0 0 1 1
+( 1608 1664 0 ) ( 1704 1760 0 ) ( 1608 1760 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-003" 0 0 0 1 1
+( 1608 1760 64 ) ( 1704 1664 64 ) ( 1608 1664 64 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-003" 0 0 0 1 1
+( 1704 1760 0 ) ( 1608 1760 64 ) ( 1608 1760 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-003" 0 0 0 1 1
+( 1704 1664 0 ) ( 1704 1760 64 ) ( 1704 1760 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-003" 0 0 0 1 1
 }
 // brush 68
 {
-( 2008 2160 0 ) ( 2008 2064 64 ) ( 2008 2064 0 ) concrete_stone_033 0 0 0 1 1
-( 2008 2064 0 ) ( 2104 2064 64 ) ( 2104 2064 0 ) concrete_stone_033 0 0 0 1 1
-( 2008 2064 0 ) ( 2104 2160 0 ) ( 2008 2160 0 ) concrete_stone_033 0 0 0 1 1
-( 2008 2160 64 ) ( 2104 2064 64 ) ( 2008 2064 64 ) concrete_stone_033 0 0 0 1 1
-( 2104 2160 0 ) ( 2008 2160 64 ) ( 2008 2160 0 ) concrete_stone_033 0 0 0 1 1
-( 2104 2064 0 ) ( 2104 2160 64 ) ( 2104 2160 0 ) concrete_stone_033 0 0 0 1 1
+( 2008 2160 0 ) ( 2008 2064 64 ) ( 2008 2064 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-003" 0 0 0 1 1
+( 2008 2064 0 ) ( 2104 2064 64 ) ( 2104 2064 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-003" 0 0 0 1 1
+( 2008 2064 0 ) ( 2104 2160 0 ) ( 2008 2160 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-003" 0 0 0 1 1
+( 2008 2160 64 ) ( 2104 2064 64 ) ( 2008 2064 64 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-003" 0 0 0 1 1
+( 2104 2160 0 ) ( 2008 2160 64 ) ( 2008 2160 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-003" 0 0 0 1 1
+( 2104 2064 0 ) ( 2104 2160 64 ) ( 2104 2160 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-003" 0 0 0 1 1
 }
 // brush 69
 {
@@ -1035,30 +1035,30 @@
 }
 // brush 114
 {
-( 1744 1296 112 ) ( 1744 1040 128 ) ( 1744 1040 112 ) concrete_stone_021 0 0 0 1 1
-( 1744 1040 112 ) ( 1904 1040 128 ) ( 1904 1040 112 ) concrete_stone_021 0 0 0 1 1
-( 1744 1040 112 ) ( 1904 1296 112 ) ( 1744 1296 112 ) concrete_stone_021 0 0 0 1 1
-( 1744 1296 128 ) ( 1904 1040 128 ) ( 1744 1040 128 ) concrete_stone_021 0 0 0 1 1
-( 1904 1296 112 ) ( 1744 1296 128 ) ( 1744 1296 112 ) concrete_stone_021 0 0 0 1 1
-( 1904 1040 112 ) ( 1904 1296 128 ) ( 1904 1296 112 ) concrete_stone_021 0 0 0 1 1
+( 1744 1296 112 ) ( 1744 1040 128 ) ( 1744 1040 112 ) "Level Eleven Games Sci-Fi Texture Pack v1/PipesnCableswGlow-01V_64" 0 0 90 1 1
+( 1744 1040 112 ) ( 1904 1040 128 ) ( 1904 1040 112 ) "Level Eleven Games Sci-Fi Texture Pack v1/PipesnCableswGlow-01V_64" 0 0 90 1 1
+( 1744 1040 112 ) ( 1904 1296 112 ) ( 1744 1296 112 ) "Level Eleven Games Sci-Fi Texture Pack v1/PipesnCableswGlow-01V_64" 0 0 90 1 1
+( 1744 1296 128 ) ( 1904 1040 128 ) ( 1744 1040 128 ) "Level Eleven Games Sci-Fi Texture Pack v1/PipesnCableswGlow-01V_64" 0 0 90 1 1
+( 1904 1296 112 ) ( 1744 1296 128 ) ( 1744 1296 112 ) "Level Eleven Games Sci-Fi Texture Pack v1/PipesnCableswGlow-01V_64" 0 0 90 1 1
+( 1904 1040 112 ) ( 1904 1296 128 ) ( 1904 1296 112 ) "Level Eleven Games Sci-Fi Texture Pack v1/PipesnCableswGlow-01V_64" 0 0 90 1 1
 }
 // brush 115
 {
-( 1744 1296 0 ) ( 1744 1040 112 ) ( 1744 1040 0 ) concrete_stone_022 0 0 0 1 1
-( 1744 1040 0 ) ( 1760 1040 112 ) ( 1760 1040 0 ) concrete_stone_022 0 0 0 1 1
-( 1744 1040 0 ) ( 1760 1296 0 ) ( 1744 1296 0 ) concrete_stone_022 0 0 0 1 1
-( 1744 1296 112 ) ( 1760 1040 112 ) ( 1744 1040 112 ) concrete_stone_022 0 0 0 1 1
-( 1760 1296 0 ) ( 1744 1296 112 ) ( 1744 1296 0 ) concrete_stone_022 0 0 0 1 1
-( 1760 1040 0 ) ( 1760 1296 112 ) ( 1760 1296 0 ) concrete_stone_022 0 0 0 1 1
+( 1744 1296 0 ) ( 1744 1040 112 ) ( 1744 1040 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/PipesnCableswGlow-01V_64" 0 0 0 1 1
+( 1744 1040 0 ) ( 1760 1040 112 ) ( 1760 1040 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/PipesnCableswGlow-01V_64" 0 0 0 1 1
+( 1744 1040 0 ) ( 1760 1296 0 ) ( 1744 1296 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/PipesnCableswGlow-01V_64" 0 0 0 1 1
+( 1744 1296 112 ) ( 1760 1040 112 ) ( 1744 1040 112 ) "Level Eleven Games Sci-Fi Texture Pack v1/PipesnCableswGlow-01V_64" 0 0 0 1 1
+( 1760 1296 0 ) ( 1744 1296 112 ) ( 1744 1296 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/PipesnCableswGlow-01V_64" 0 0 0 1 1
+( 1760 1040 0 ) ( 1760 1296 112 ) ( 1760 1296 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/PipesnCableswGlow-01V_64" 0 0 0 1 1
 }
 // brush 116
 {
-( 1888 1296 0 ) ( 1888 1040 112 ) ( 1888 1040 0 ) concrete_stone_022 0 0 0 1 1
-( 1888 1040 0 ) ( 1904 1040 112 ) ( 1904 1040 0 ) concrete_stone_022 0 0 0 1 1
-( 1888 1040 0 ) ( 1904 1296 0 ) ( 1888 1296 0 ) concrete_stone_022 0 0 0 1 1
-( 1888 1296 112 ) ( 1904 1040 112 ) ( 1888 1040 112 ) concrete_stone_022 0 0 0 1 1
-( 1904 1296 0 ) ( 1888 1296 112 ) ( 1888 1296 0 ) concrete_stone_022 0 0 0 1 1
-( 1904 1040 0 ) ( 1904 1296 112 ) ( 1904 1296 0 ) concrete_stone_022 0 0 0 1 1
+( 1888 1296 0 ) ( 1888 1040 112 ) ( 1888 1040 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/PipesnCableswGlow-01V_64" 0 0 0 1 1
+( 1888 1040 0 ) ( 1904 1040 112 ) ( 1904 1040 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/PipesnCableswGlow-01V_64" 0 0 0 1 1
+( 1888 1040 0 ) ( 1904 1296 0 ) ( 1888 1296 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/PipesnCableswGlow-01V_64" 0 0 0 1 1
+( 1888 1296 112 ) ( 1904 1040 112 ) ( 1888 1040 112 ) "Level Eleven Games Sci-Fi Texture Pack v1/PipesnCableswGlow-01V_64" 0 0 0 1 1
+( 1904 1296 0 ) ( 1888 1296 112 ) ( 1888 1296 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/PipesnCableswGlow-01V_64" 0 0 0 1 1
+( 1904 1040 0 ) ( 1904 1296 112 ) ( 1904 1296 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/PipesnCableswGlow-01V_64" 0 0 0 1 1
 }
 // brush 117
 {
@@ -1352,7 +1352,7 @@
 // entity 22
 {
 "classname" "fog_volume"
-"edge_softness" "20"
+"edge_softness" "0.25"
 "_tags" "pulse_fog"
 // brush 0
 {

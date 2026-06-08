@@ -78,6 +78,94 @@ fn parse_origin(s: &str) -> Option<DVec3> {
     }
 }
 
+/// Sentinel standing in for a space inside an encoded brush-face material name.
+/// U+0001 (Start of Heading) is a non-printable control byte: it never occurs
+/// in a `.map` material token or a real filesystem path, it is space-free (so
+/// shalrath's `take_until(" ")` reads the whole name as one token), and it is
+/// non-quote and non-newline (so it survives shalrath's tokenizer). A
+/// path-illegal sentinel round-trips unambiguously — unlike a printable
+/// stand-in such as `%20`, it cannot collide with a literal substring an author
+/// put in a real material name.
+const SPACE_SENTINEL: char = '\u{1}';
+
+/// String form of [`SPACE_SENTINEL`], for use as a replacement target.
+const SPACE_SENTINEL_STR: &str = "\u{1}";
+
+/// Encode spaces inside quoted brush-face material fields so shalrath's
+/// brush-plane grammar can tokenize them.
+///
+/// TrenchBroom (idTech2 output) double-quotes a face's material name only when
+/// it contains a space. shalrath has no quote handling, so we rewrite each
+/// affected line: the quotes are stripped and interior spaces become
+/// [`SPACE_SENTINEL`], yielding a single space-free token that shalrath stores
+/// verbatim. The token is decoded back to its original spelling by
+/// [`decode_brush_texture`] at the texture-read boundary.
+///
+/// Only brush-plane lines are touched. A brush-plane line begins with `(` (its
+/// first point triple); entity key/value lines begin with `"`. The point
+/// triples never contain quotes, so the first `"` on a brush-plane line is
+/// always the material field's opening quote. Lines without a quoted material
+/// field pass through unchanged (the common case), so this is a no-op for maps
+/// that use only space-free names.
+fn encode_quoted_brush_textures(map_text: &str) -> String {
+    let mut out = String::with_capacity(map_text.len());
+    for line in map_text.split_inclusive('\n') {
+        // Preserve the trailing newline (if any) when re-emitting the line.
+        let (body, newline) = match line.strip_suffix('\n') {
+            Some(b) => (b, "\n"),
+            None => (line, ""),
+        };
+
+        // Brush-plane lines start with the first point's `(` (after optional
+        // indentation). Anything else (KVP lines starting with `"`, braces,
+        // blank lines) is emitted verbatim.
+        let trimmed = body.trim_start();
+        let is_brush_plane = trimmed.starts_with('(');
+        let has_quote = body.contains('"');
+        if !is_brush_plane || !has_quote {
+            out.push_str(body);
+            out.push_str(newline);
+            continue;
+        }
+
+        // The first `"` on the line opens the material field — the point triples
+        // ahead of it never contain a quote, so this is robust even when the
+        // material name itself contains `)`.
+        out.push_str(&encode_quoted_run(body));
+        out.push_str(newline);
+    }
+    out
+}
+
+/// Rewrite the first double-quoted run in `line` into a space-free, unquoted
+/// token: strip the surrounding quotes and replace interior spaces with the
+/// space sentinel. Text outside the quoted run is preserved exactly. If there
+/// is no complete quoted run, `line` is returned unchanged.
+fn encode_quoted_run(line: &str) -> String {
+    let open = match line.find('"') {
+        Some(i) => i,
+        None => return line.to_string(),
+    };
+    // Find the matching close quote after the open quote.
+    let close = match line[open + 1..].find('"') {
+        Some(i) => open + 1 + i,
+        None => return line.to_string(),
+    };
+
+    let mut out = String::with_capacity(line.len());
+    out.push_str(&line[..open]);
+    out.push_str(&line[open + 1..close].replace(' ', SPACE_SENTINEL_STR));
+    out.push_str(&line[close + 1..]);
+    out
+}
+
+/// Decode a brush-face material name produced by [`encode_quoted_brush_textures`],
+/// turning the space sentinel back into a space. A no-op for names that were
+/// never encoded (the sentinel does not appear in real material names).
+fn decode_brush_texture(name: &str) -> String {
+    name.replace(SPACE_SENTINEL, " ")
+}
+
 /// Look up a property value by key from shambler's entity properties.
 fn get_property(geo_map: &GeoMap, entity_id: &EntityId, key: &str) -> Option<String> {
     let props = geo_map.entity_properties.get(entity_id)?;
@@ -104,8 +192,20 @@ fn collect_entity_properties(geo_map: &GeoMap, entity_id: &EntityId) -> HashMap<
 /// All downstream stages receive engine-native coordinates and meters.
 pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     let scale = format.units_to_meters();
-    let map_text = std::fs::read_to_string(path)
+    let raw_map_text = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read map file: {}", path.display()))?;
+
+    // TrenchBroom wraps a brush face's material name in double quotes whenever
+    // that name contains a space (e.g. a collection directory named
+    // `Level Eleven Games Sci-Fi Texture Pack v1`). shalrath's brush-plane
+    // grammar tokenizes the material field with `take_until(" ")` and has no
+    // quote handling, so a quoted, space-containing name shatters the face
+    // grammar — the brush fails, its worldspawn entity fails, and the compiler
+    // reports a misleading "no worldspawn" error. Encode the spaces inside
+    // quoted material fields to a sentinel here so shalrath sees one token; the
+    // name is decoded back to its space-containing form at the texture-read
+    // boundary below. See `context/lib/build_pipeline.md` §Texture name resolution.
+    let map_text = encode_quoted_brush_textures(&raw_map_text);
 
     let shalrath_map: shambler::shalrath::repr::Map = map_text
         .parse()
@@ -118,8 +218,25 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         .entities
         .iter()
         .find(|id| get_property(&geo_map, id, "classname").as_deref() == Some("worldspawn"))
-        .copied()
-        .context("no worldspawn entity found in .map file")?;
+        .copied();
+    let worldspawn_id = match worldspawn_id {
+        Some(id) => id,
+        // If shalrath parsed entities but none is worldspawn, the likely cause
+        // is a brush-face line that failed to tokenize (commonly a material
+        // name with characters shalrath's face grammar can't handle), which
+        // drops the enclosing entity. Point at the material names rather than
+        // at a literally-missing worldspawn.
+        None if !geo_map.entities.is_empty() => {
+            anyhow::bail!(
+                "no worldspawn entity found, though {} entit{} parsed — this often means a \
+                 malformed brush-face line (e.g. an unsupported character in a material name); \
+                 check the map's material names",
+                geo_map.entities.len(),
+                if geo_map.entities.len() == 1 { "y was" } else { "ies were" }
+            );
+        }
+        None => anyhow::bail!("no worldspawn entity found in .map file"),
+    };
 
     // Read the optional worldspawn `data_script` KVP. The level compiler
     // resolves this relative to the `.map` file's directory, compiles `.ts`
@@ -477,12 +594,16 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             // n·x' = d * scale where x' is in meters.
             let distance = plane.distance() as f64 * scale;
 
-            // Look up texture name
+            // Look up texture name. Decode the space sentinel introduced by
+            // `encode_quoted_brush_textures` so every downstream stage — the
+            // PNG resolver and the PRL `TextureNames` section — sees the
+            // human-readable, space-containing name. A no-op for names that
+            // were never encoded.
             let texture = geo_map
                 .face_textures
                 .get(face_id)
                 .and_then(|tex_id| geo_map.textures.get(tex_id))
-                .cloned()
+                .map(|name| decode_brush_texture(name))
                 .unwrap_or_else(|| "unknown".to_string());
 
             // Extract texture projection data (Quake space).
@@ -1390,6 +1511,146 @@ mod tests {
         assert!(origin.x.is_finite(), "origin x should be finite");
         assert!(origin.y.is_finite(), "origin y should be finite");
         assert!(origin.z.is_finite(), "origin z should be finite");
+    }
+
+    // -- Quoted brush-face material encoding --
+
+    /// Extract the material token (the first whitespace-delimited field after
+    /// the third point triple) from an encoded brush-plane line, mirroring how
+    /// shalrath tokenizes it. Anchors on the third `)` — the close of the point
+    /// triples — not the last `)`, since the encoded material token may itself
+    /// contain `)` (e.g. `Pack (v1)/metal panel`).
+    fn material_token(encoded: &str) -> &str {
+        let triples_end = encoded
+            .match_indices(')')
+            .nth(2)
+            .expect("a brush-plane line has three point triples")
+            .0;
+        let tail = &encoded[triples_end + 1..];
+        tail.split_whitespace().next().unwrap()
+    }
+
+    #[test]
+    fn encode_quoted_texture_makes_brush_plane_tokenizable() {
+        // A Standard-format brush-plane line whose material name has spaces is
+        // quoted by TrenchBroom. After encoding, the quotes are gone and the
+        // interior spaces are the sentinel, so the texture field is one token.
+        let line = "( -16 1040 -16 ) ( -16 -16 0 ) ( -16 -16 -16 ) \
+             \"Level Eleven Games/Metal-Panel-002\" 0 0 0 1 1\n";
+        let encoded = encode_quoted_brush_textures(line);
+        assert!(
+            !encoded.contains('"'),
+            "quotes around the material name must be stripped"
+        );
+        let token = material_token(&encoded);
+        assert!(
+            !token.contains(' '),
+            "the material field must be a single space-free token: {token:?}"
+        );
+        assert_eq!(
+            decode_brush_texture(token),
+            "Level Eleven Games/Metal-Panel-002",
+            "decoding the token restores the original spaced name"
+        );
+        // Trailing projection numbers and the point triples are untouched.
+        assert!(encoded.contains("( -16 1040 -16 )"));
+        assert!(encoded.trim_end().ends_with(" 0 0 0 1 1"));
+    }
+
+    #[test]
+    fn encode_handles_material_name_containing_parens() {
+        // A quoted material name with a `)` in it broke the old `rfind(')')`
+        // anchor: the split landed inside the name. Anchoring on the first `"`
+        // avoids that — the name round-trips exactly.
+        let original = "Pack (v1)/metal panel";
+        let line = format!("( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) \"{original}\" 0 0 0 1 1\n");
+        let encoded = encode_quoted_brush_textures(&line);
+        assert!(
+            !encoded.contains('"'),
+            "quotes must be stripped even when the name contains `)`: {encoded}"
+        );
+        let token = material_token(&encoded);
+        assert!(
+            !token.contains(' '),
+            "the material field must be a single space-free token: {token:?}"
+        );
+        assert_eq!(decode_brush_texture(token), original);
+    }
+
+    #[test]
+    fn encode_preserves_literal_value_that_collided_with_old_sentinel() {
+        // The old `%20` sentinel corrupted any literal `%20` an author put in a
+        // real material name. The path-illegal control-byte sentinel cannot
+        // occur in a real name, so a literal `%20` now round-trips losslessly.
+        let original = "weird%20name with space";
+        let line = format!("( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) \"{original}\" 0 0 0 1 1\n");
+        let encoded = encode_quoted_brush_textures(&line);
+        let token = material_token(&encoded);
+        assert!(
+            !token.contains(' '),
+            "the material field must be a single space-free token: {token:?}"
+        );
+        assert_eq!(
+            decode_brush_texture(token),
+            original,
+            "a literal `%20` in the name must survive the round-trip"
+        );
+    }
+
+    #[test]
+    fn encode_handles_valve220_axis_brackets() {
+        // Valve 220 faces append `[ x y z off ] [ x y z off ]` UV axes after the
+        // material. Only the quoted material is encoded; the brackets and the
+        // trailing numbers must survive verbatim.
+        let line = "( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) \"Sci Fi Pack/panel\" \
+             [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1\n";
+        let encoded = encode_quoted_brush_textures(line);
+        assert!(!encoded.contains('"'), "quotes must be stripped: {encoded}");
+        let token = material_token(&encoded);
+        assert_eq!(decode_brush_texture(token), "Sci Fi Pack/panel");
+        assert!(
+            encoded.contains("[ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1"),
+            "Valve220 axis brackets and offsets must survive: {encoded}"
+        );
+    }
+
+    #[test]
+    fn encode_leaves_space_free_brush_planes_unchanged() {
+        let line = "( -16 1040 -16 ) ( -16 -16 0 ) ( -16 -16 -16 ) \
+             concrete_pavement_036 0 0 0 1 1\n";
+        assert_eq!(encode_quoted_brush_textures(line), line);
+    }
+
+    #[test]
+    fn encode_does_not_touch_quoted_entity_kvps() {
+        // Entity key/value lines start with `"` and are parsed correctly by
+        // shalrath; their quoted values (which legitimately contain spaces)
+        // must pass through untouched.
+        let kvp = "\"_tags\" \"arena wave 2\"\n";
+        assert_eq!(encode_quoted_brush_textures(kvp), kvp);
+
+        let origin = "\"origin\" \"-1000 1464 -24\"\n";
+        assert_eq!(encode_quoted_brush_textures(origin), origin);
+    }
+
+    #[test]
+    fn encode_decode_round_trips_to_original_name() {
+        let original = "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel-002_Section-001-3";
+        let line = format!("( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) \"{original}\" 0 0 0 1 1\n");
+        let encoded = encode_quoted_brush_textures(&line);
+        assert_eq!(decode_brush_texture(material_token(&encoded)), original);
+    }
+
+    #[test]
+    fn decode_is_noop_for_unencoded_names() {
+        assert_eq!(
+            decode_brush_texture("concrete_pavement_036"),
+            "concrete_pavement_036"
+        );
+        assert_eq!(
+            decode_brush_texture("collection/metal_panel_01"),
+            "collection/metal_panel_01"
+        );
     }
 
     #[test]

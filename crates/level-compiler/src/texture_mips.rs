@@ -15,6 +15,12 @@ use postretro_level_format::prm::{
 /// when absent). TrenchBroom may emit either `collection/stem` or the
 /// root-inclusive `textures/collection/stem`; both normalize to
 /// `collection/stem`. A bare `stem` normalizes to itself.
+///
+/// Collection directories with spaces (e.g. `Level Eleven Games Sci-Fi Texture
+/// Pack v1`) index under their lowercased, space-preserving relative key, so a
+/// space-containing name matches on disk. The compiler's parse boundary
+/// (`parse::decode_brush_texture`) already restores spaces, so names reach here
+/// with real spaces — no sentinel decoding happens at this layer.
 fn normalize_map_texture_name(name: &str) -> String {
     let lowered = name.to_lowercase().replace('\\', "/");
     lowered
@@ -1472,6 +1478,20 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A space-containing collection name normalizes to the lowercased,
+    /// relative, space-preserving key that `build_name_to_path_map` indexes on
+    /// disk.
+    #[test]
+    fn normalize_preserves_spaces_in_collection_name() {
+        let normalized =
+            normalize_map_texture_name("Level Eleven Games/Metal-Panel-002_Section-001-3");
+        assert_eq!(
+            normalized,
+            "level eleven games/metal-panel-002_section-001-3",
+            "spaces must survive normalization to match the on-disk relative key"
+        );
     }
 
     /// Bare-stem alias is disabled when the same stem exists in two

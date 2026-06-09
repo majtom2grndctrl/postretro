@@ -1488,8 +1488,7 @@ mod tests {
         let normalized =
             normalize_map_texture_name("Level Eleven Games/Metal-Panel-002_Section-001-3");
         assert_eq!(
-            normalized,
-            "level eleven games/metal-panel-002_section-001-3",
+            normalized, "level eleven games/metal-panel-002_section-001-3",
             "spaces must survive normalization to match the on-disk relative key"
         );
     }

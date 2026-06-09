@@ -192,10 +192,11 @@ impl WeaponDescriptor {
 
 /// Authored player-movement component preset. The four core sub-objects
 /// (`capsule`, `ground`, `air`, `fall`) are required when `movement` is
-/// present; `dash` is optional — its absence disables dash entirely. The
-/// data-archetype spawn path materializes the runtime movement component from
-/// this. `ground.max_slope` is in degrees on the wire and converted to a
-/// cosine at materialization (not here).
+/// present; `dash` is optional — its absence disables dash entirely; `crouch`
+/// is optional — its absence disables crouch entirely. The data-archetype
+/// spawn path materializes the runtime movement component from this.
+/// `ground.max_slope` is in degrees on the wire and converted to a cosine at
+/// materialization (not here).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct PlayerMovementDescriptor {
     pub(crate) capsule: CapsuleParams,
@@ -299,8 +300,8 @@ pub(crate) struct GroundParams {
 /// sprint input is held, `crouch` while crouched, and `walk` otherwise; the
 /// chosen value is the omnidirectional horizontal speed target (and airborne
 /// speed cap), not a forward-only bonus. All three fields are required when
-/// `ground` is present and validated non-negative finite, matching the old flat
-/// `speed` contract. `crouch` is in world-units/sec.
+/// `ground` is present and validated non-negative finite. `crouch` is in
+/// world-units/sec.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct SpeedParams {
     pub(crate) walk: f32,
@@ -3423,6 +3424,15 @@ mod tests {
     }
 
     #[test]
+    fn lua_movement_crouch_half_height_negative_is_rejected() {
+        let src = lua_movement_with_crouch(
+            r#"{ halfHeight = -0.4, eyeHeight = 0.3, transitionRate = 8.0 }"#,
+        );
+        let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
     fn lua_movement_crouch_eye_height_above_capsule_top_is_rejected() {
         let src = lua_movement_with_crouch(
             r#"{ halfHeight = 0.4, eyeHeight = 0.9, transitionRate = 8.0 }"#,
@@ -3435,6 +3445,15 @@ mod tests {
     fn lua_movement_crouch_transition_rate_zero_is_rejected() {
         let src = lua_movement_with_crouch(
             r#"{ halfHeight = 0.4, eyeHeight = 0.3, transitionRate = 0.0 }"#,
+        );
+        let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_movement_crouch_transition_rate_negative_is_rejected() {
+        let src = lua_movement_with_crouch(
+            r#"{ halfHeight = 0.4, eyeHeight = 0.3, transitionRate = -1.0 }"#,
         );
         let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
         assert!(matches!(err, DescriptorError::InvalidShape { .. }));

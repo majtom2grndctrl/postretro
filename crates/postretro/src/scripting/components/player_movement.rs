@@ -5,7 +5,7 @@
 //
 // See: context/lib/entity_model.md §7 (collision/movement)
 //      context/lib/movement.md §4 (state-machine seam)
-//      context/lib/movement.md §6 (input forgiveness — D5)
+//      context/lib/movement.md §6 (input forgiveness)
 
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
@@ -18,10 +18,11 @@ use crate::scripting::data_descriptors::{
 /// The player's active movement state. Mutually-exclusive: exactly one state
 /// owns the per-tick velocity intent at a time. `tick` dispatches to the
 /// active state's intent step, runs the shared collision substrate, then
-/// applies any transition the intent returns. Two states exist today:
-/// `Normal` (walk/run/jump/air-control baseline) and `Dash` (directional
-/// velocity-impulse burst). Later states (crouch, slide, wall-run, vault)
-/// plug in behind the same seam.
+/// applies any transition the intent returns. Three states exist today:
+/// `Normal` (walk/run/jump/air-control baseline), `Dash` (directional
+/// velocity-impulse burst), and `Crouching` (reduced-speed locomotion with
+/// a shrunk collision capsule). Later states (slide, wall-run, vault) plug
+/// in behind the same seam.
 ///
 /// See: context/lib/movement.md §4 (state-machine seam).
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]

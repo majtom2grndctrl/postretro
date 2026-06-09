@@ -809,9 +809,10 @@ fn advance_forgiveness(component: &mut PlayerMovementComponent, dt: f32) {
 /// grounded) and the substrate reads the post-intent flag.
 ///
 /// Sets `events.jumped` when a jump launches. Returns the warranted transition
-/// (next state + its carry-rule) or `None` to stay in `Normal`. Today `Normal`
-/// transitions to `Dash` on a rising-edge dash input (see `try_enter_dash`);
-/// future states (crouch, slide, wall-run) plug in behind the same seam without
+/// (next state + its carry-rule) or `None` to stay in `Normal`. `Normal`
+/// transitions to `Dash` on a rising-edge dash input (see `try_enter_dash`) and
+/// to `Crouching` on the resolved `crouch_intent` bit when `CrouchParams` is
+/// present; future states (slide, wall-run) plug in behind the same seam without
 /// reshaping callers.
 ///
 /// `jump_edges` are the forgiveness-derived edges (coyote + buffer), computed
@@ -1260,7 +1261,7 @@ fn dash_intent(
 /// Jump access is NEVER suppressed (D10) — the grounded/air jump branch and the
 /// `Dash` transition stay available exactly as in `Normal`.
 ///
-/// Beyond locomotion the intent owns two crouch-specific responsibilities:
+/// Beyond locomotion the intent owns three crouch-specific responsibilities:
 ///   - Eye smoothing (D3): `eye_current` eases toward the crouched eye target
 ///     by a framerate-independent exponential approach at `transition_rate` per
 ///     second, written into `component.capsule.eye_height` each tick for the
@@ -1583,8 +1584,8 @@ fn apply_carry(rule: CarryRule, velocity: &mut Vec3, boost: Vec3) {
 /// owned by this dispatch point, never by a state intent (D6).
 ///
 /// `jump_edges` are the forgiveness-derived jump edges `tick` computed once
-/// before dispatch; only `normal_intent` consumes them (the `Dash` state drops
-/// jump input by design).
+/// before dispatch; both `normal_intent` and `crouching_intent` consume them
+/// (the `Dash` state drops jump input by design).
 ///
 /// Adding a new state means adding one arm here with its own `&mut` live data;
 /// `tick`'s structure and existing intent signatures are untouched.
@@ -1654,9 +1655,11 @@ pub(crate) fn tick(
     let mut events = MovementEvents::default();
     let was_grounded = component.is_grounded;
     // Mutable working position: a crouch entry/stand-up resize anchors one
-    // capsule extreme and shifts the center by the helper-returned delta, which
-    // the intent applies here BEFORE the substrate integrates from this position
-    // (the resize moves the capsule center, not the planted/anchored extreme).
+    // capsule extreme and shifts the center by the helper-returned delta. The
+    // intent applies that delta in-place (via `position.y += delta`) INSIDE its
+    // own body before returning, so the substrate integrates from the
+    // already-shifted center while the planted/anchored capsule extreme stays
+    // geometrically fixed.
     let mut position = position;
 
     // Input forgiveness (D5): derive the grounded-jump and buffered/coyote jump

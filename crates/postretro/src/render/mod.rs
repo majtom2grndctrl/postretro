@@ -786,11 +786,11 @@ fn material_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 5] {
 //          3=ChunkGridInfo, 4=chunk offsets, 5=chunk indices. All buffers, no
 // textures.
 fn lighting_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
-    // Slice 2 hoists the billboard static-specular and dynamic-light loops into
-    // the billboard VERTEX stage, so group 2 must be VERTEX-visible too. This is
-    // additive — the forward (FRAGMENT) and fog (COMPUTE) pipelines still bind
-    // the same group; wgpu validates the widened visibility at pipeline creation.
-    // The mesh pipeline reuses only groups 0 and 1, so it is unaffected.
+    // Billboard hoists its static-specular and dynamic-light loops into the
+    // vertex stage, so group 2 must be VERTEX-visible too. This is additive —
+    // the forward (FRAGMENT) and fog (COMPUTE) pipelines still bind the same
+    // group; wgpu validates the widened visibility at pipeline creation. The
+    // mesh pipeline reuses only groups 0 and 1, so it is unaffected.
     let storage_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
@@ -824,8 +824,10 @@ fn lighting_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
 /// for the FRAGMENT stage: `BindingType::Texture` entries whose visibility
 /// includes FRAGMENT. wgpu charges the limit against the BGL *entry* set of a
 /// pipeline layout per stage, not against how many textures a shader actually
-/// samples — so a fragment-visible texture entry counts even if no shader reads
-/// it (e.g. the SH direct atlas, which only billboard samples).
+/// samples — so a fragment-visible texture entry counts even if no fragment
+/// shader reads it. Example: billboard samples the SH direct atlas in the
+/// VERTEX stage, but its BGL entry carries `VERTEX | FRAGMENT` visibility, so
+/// it still counts against the fragment texture budget here.
 #[cfg(debug_assertions)]
 fn fragment_sampled_textures(entries: &[wgpu::BindGroupLayoutEntry]) -> u32 {
     entries
@@ -1353,7 +1355,10 @@ impl Renderer {
         // pipeline layout, so it can never drift from the real binding count:
         //   Group 1 — material (3): diffuse, specular, normal
         //   Group 3 — SH volume (3): octahedral atlas + depth-moments
-        //                            + direct static-light atlas (billboard samples; forward/fog carry, never sample)
+        //                            + direct static-light atlas (billboard samples it in
+        //                              the VERTEX stage; entry is VERTEX | FRAGMENT so it
+        //                              counts against the fragment budget; forward/fog
+        //                              carry the entry but never sample it)
         //   Group 4 — lightmap (4): static irradiance, static dominant-direction,
         //                           animated-contribution atlas, animated dominant-direction
         //   Group 5 — shadow (3): spot-shadow depth array (binding 0), SDF shadow factor (binding 3), scene depth (binding 4)
@@ -4500,7 +4505,7 @@ impl Renderer {
             smoke_pass_enc.set_bind_group(2, &self.lighting_bind_group, &[]);
             smoke_pass_enc.set_bind_group(3, &self.sh_volume_resources.bind_group, &[]);
             // One shared instance buffer, drawn per collection from its own
-            // 256-byte-aligned dynamic offset (Slice 5).
+            // 256-byte-aligned dynamic offset.
             self.smoke_pass.record_draws(
                 &self.device,
                 &self.queue,
@@ -5006,6 +5011,7 @@ mod tests {
     // the pipeline layout is composed from, asserting the actual binding count
     // stays within the 16-texture design budget (the Metal/WebGPU spec floor).
     // Mirrors `sh_volume::group3_shader_bindings_are_represented_by_rust_layout`.
+    #[cfg(debug_assertions)]
     #[test]
     fn forward_pipeline_sampled_texture_request_matches_bgl_definitions() {
         // The forward pipeline layout (see `create_pipeline_layout`) composes

@@ -158,8 +158,8 @@ struct VertexOutput {
     @location(2) opacity: f32,
     // Full lighting term computed per-vertex: baked indirect + baked static
     // direct (with the dynamic-direct isolation debug mode applied) PLUS the
-    // multi-source static-specular term and the dynamic-direct diffuse term
-    // (Slice 2). Every lighting input derives from the sprite center
+    // multi-source static-specular term and the dynamic-direct diffuse term.
+    // Every lighting input derives from the sprite center
     // (`world_position`, identical at all four quad corners) and the
     // camera-facing `N = V`, so this term is constant across the quad —
     // interpolation reproduces the corner value exactly, matching the prior
@@ -250,8 +250,8 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
     let u = (f32(frame_idx) + cd.z) / f32(frame_count);
     let v = cd.w;
 
-    // Full lighting, hoisted from the fragment stage (Slice 1 SH terms + Slice 2
-    // static-specular and dynamic-light loops). Every input derives from the
+    // Full lighting, hoisted from the fragment stage (SH indirect + SH direct,
+    // static-specular, and dynamic-light loops). Every input derives from the
     // sprite center (`sprite_pos`) and the camera-facing normal `N = V`, so the
     // term is constant across the quad — computing it once per vertex and
     // interpolating reproduces the prior per-fragment value with no visible
@@ -279,8 +279,8 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
         sh_lighting = sh_ambient;
     }
 
-    // Multi-source static specular via the chunk light list (hoisted from the
-    // fragment stage in Slice 2). Evaluated at the sprite center `sprite_pos`.
+    // Multi-source static specular via the chunk light list, hoisted from the
+    // fragment stage. Evaluated at the sprite center `sprite_pos`.
     //
     // Chunk-list fallback: when `has_chunk_grid == 0` (no chunk index built),
     // fall back to SH + dynamic only. Iterating the full spec buffer here would
@@ -320,8 +320,8 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
     }
 
     // Dynamic direct (diffuse only — sharp specular highlights on billboards
-    // read as artifact). Hoisted from the fragment stage in Slice 2; iterates a
-    // uniform `light_count`, keeping vertex-stage control flow uniform.
+    // read as artifact). Hoisted from the fragment stage; iterates a uniform
+    // `light_count`, keeping vertex-stage control flow uniform.
     var dynamic_diffuse = vec3<f32>(0.0);
     let light_count = uniforms.light_count;
     for (var i: u32 = 0u; i < light_count; i = i + 1u) {
@@ -370,8 +370,8 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
         dynamic_diffuse = dynamic_diffuse + light.color_and_falloff_model.xyz * attenuation * NdotL;
     }
 
-    // Fold the Slice 1 SH term together with the Slice 2 static-specular and
-    // dynamic-diffuse terms into the single interpolated lighting output.
+    // Fold the SH term together with the static-specular and dynamic-diffuse
+    // terms into the single interpolated lighting output.
     let lighting = sh_lighting + static_specular + dynamic_diffuse;
 
     var out: VertexOutput;
@@ -516,7 +516,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let ddy = dpdy(in.uv);
     let sprite_sample = sample_post_retro(sprite_texture, sprite_sampler, in.uv, ddx, ddy);
 
-    // The fragment shader does NO lighting (Slice 2). The full lighting term —
+    // The fragment shader does NO lighting. The full lighting term —
     // baked indirect + baked static direct + static specular + dynamic diffuse —
     // is computed per-vertex and arrives interpolated. Every lighting input
     // derives from the sprite center and the camera-facing `N = V`, so the term

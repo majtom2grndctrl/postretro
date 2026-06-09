@@ -181,7 +181,9 @@ The SDK ships an `emitter()` component constructor (`sdk/lib/entities/emitters.{
 
 Each live particle is a full ECS entity carrying `Transform`, `ParticleState`, and `SpriteVisual`. The emitter bridge owns spawn and despawn via `EntityRegistry::spawn` / `despawn` — scripts never call these directly.
 
-**Per-emitter cap:** `MAX_SPRITES = 4096` concurrent particles per emitter. Overflow is dropped with a rate-limited `log::warn!`.
+`ParticleState.emitter` serves two roles. At each sim tick: spin-rate lookup against the parent emitter. At render-collect: cull grouping — the collector resolves each distinct emitter's BSP leaf once and applies that visibility decision to all its particles. Orphaned particles (emitter despawned) are always drawn, never culled; a mid-life puff does not pop when its emitter dies. Orphans complete their lifetime at their last rotation angle.
+
+**Per-emitter spawn cap:** 4096 concurrent live particles per emitter, enforced at spawn time by the emitter bridge. Overflow spawns are dropped with a rate-limited `log::warn!`. This is not a render-time cap — the billboard pass draws all live sprites from a single frame-sized instance buffer with no per-collection truncation.
 
 **Reaction primitives:** `setEmitterRate` sets the continuous spawn rate (`rate = 0` is the inactive state — there is no separate `setEmitterActive`). `setSpinRate` sets the per-emitter rotation rate, with an optional `SpinAnimation` tween. Both are tag-targeted named reaction primitives in the Rust reaction registry.
 

@@ -13,11 +13,11 @@ use crate::scripting::registry::EntityId;
 /// snapshotting it each tick only bump a refcount. Curves are immutable once
 /// authored (a reaction that changes one installs a fresh `Arc`), so a particle
 /// survives unchanged after its emitter despawns; `emitter` is a back-reference
-/// to the parent emitter entity. The
-/// render collector uses it as the cull-grouping key — particles sharing an
-/// emitter resolve one BSP-leaf visibility decision (see
-/// `scripting/systems/particle_render.rs`). When the emitter has despawned, the
-/// reference dangles and the orphaned particle is drawn (never culled).
+/// to the parent emitter entity, used both for spin-rate lookup and as the
+/// render collector's cull-grouping key — particles sharing an emitter resolve
+/// one BSP-leaf visibility decision (see `scripting/systems/particle_render.rs`).
+/// When the emitter has despawned, the back-reference is stale (points to a
+/// despawned entity) and the orphaned particle is drawn (never culled).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ParticleState {
     pub(crate) velocity: [f32; 3],

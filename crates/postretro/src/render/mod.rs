@@ -1034,10 +1034,6 @@ pub struct Renderer {
     lights_pack_scratch: Vec<u8>,
     #[allow(dead_code)]
     level_lights: Vec<MapLight>,
-    /// CPU-side cache of per-light influence volumes; parallel to `level_lights`.
-    /// Consumed by `SpotShadowPool::rank_lights` to frustum-cull shadow candidates.
-    /// Rebuilt in `Renderer::new` and `reload_geometry` from `filter_dynamic_lights`.
-    dynamic_light_influences: Vec<LightInfluence>,
     /// Candidate set for the spot-shadow pool — sourced from the FULL level
     /// light set filtered by `is_dynamic || casts_entity_shadows`, NOT from
     /// `level_lights`. Dynamic-tier lights (`light_dynamic`/`light_dynamic_spot`)
@@ -1045,13 +1041,13 @@ pub struct Renderer {
     /// occluders (pillars); `casts_entity_shadows` (FGD `_cast_entity_shadows`)
     /// is the per-light opt-in for non-dynamic lights (future moving-mesh shadows).
     shadow_candidate_lights: Vec<MapLight>,
-    /// Influence volumes parallel to `shadow_candidate_lights`. Built
-    /// alongside it from the full level light set.
-    shadow_candidate_influences: Vec<LightInfluence>,
     /// Lights near zero are excluded from shadow slot ranking. Empty = no suppression.
     light_effective_brightness: Vec<f32>,
     /// Cached from `update_per_frame_uniforms` so the shadow pass can re-rank lights.
     last_camera_position: Vec3,
+    /// Cached camera `view_proj` from `update_per_frame_uniforms`; the shadow
+    /// pool derives camera frustum planes from it for cone-frustum culling.
+    last_view_proj: Mat4,
     spot_shadow_pool: SpotShadowPool,
     /// Dynamic-offset into a single buffer; offset selects the per-slot light-space matrix.
     shadow_vs_uniform_buffer: wgpu::Buffer,
@@ -1067,6 +1063,10 @@ pub struct Renderer {
     bvh_leaves: Vec<crate::geometry::BvhLeaf>,
     /// `None` for maps with no BVH.
     compute_cull: Option<ComputeCullPipeline>,
+    /// Per-slot cone cull for the spot-shadow depth passes. Sibling to
+    /// `compute_cull`, sharing its read-only BVH node/leaf buffers. `None` for
+    /// maps with no BVH (kept in lockstep with `compute_cull`).
+    shadow_cull: Option<crate::shadow_cull::ShadowCullPipeline>,
 
     wireframe_pipeline: wgpu::RenderPipeline,
     wireframe_index_buffer: wgpu::Buffer,
@@ -1576,7 +1576,7 @@ impl Renderer {
         let full_influences = geometry.map(|g| g.light_influences).unwrap_or(&[]);
         let (level_lights, dynamic_influences) =
             filter_dynamic_lights(full_lights, full_influences);
-        let (shadow_candidate_lights, shadow_candidate_influences) =
+        let (shadow_candidate_lights, _) =
             filter_entity_shadow_candidates(full_lights, full_influences);
         let light_count = level_lights.len() as u32;
         let ambient_floor = DEFAULT_AMBIENT_FLOOR;
@@ -1797,6 +1797,18 @@ impl Renderer {
         let compute_cull = geometry
             .filter(|g| !g.bvh.leaves.is_empty())
             .map(|g| ComputeCullPipeline::new(&device, g.bvh, has_multi_draw_indirect));
+        // Sibling shadow cull owner shares the camera cull's read-only BVH
+        // node/leaf buffers (uploaded once). Built/rebuilt in lockstep with it.
+        let shadow_cull = compute_cull.as_ref().map(|c| {
+            crate::shadow_cull::ShadowCullPipeline::new(
+                &device,
+                c.node_buffer(),
+                c.leaf_buffer(),
+                c.total_leaves(),
+                c.bucket_ranges().to_vec(),
+                c.has_multi_draw_indirect(),
+            )
+        });
 
         let (_depth_texture, depth_view) =
             create_depth_texture(&device, surface_config.width, surface_config.height);
@@ -2388,11 +2400,10 @@ impl Renderer {
             last_lights_upload: Vec::new(),
             lights_pack_scratch: Vec::new(),
             level_lights,
-            dynamic_light_influences: dynamic_influences,
             shadow_candidate_lights,
-            shadow_candidate_influences,
             light_effective_brightness: Vec::new(),
             last_camera_position: Vec3::ZERO,
+            last_view_proj: Mat4::IDENTITY,
             spot_shadow_pool,
             shadow_vs_uniform_buffer,
             shadow_vs_bind_group,
@@ -2402,6 +2413,7 @@ impl Renderer {
             gpu_textures,
             bvh_leaves,
             compute_cull,
+            shadow_cull,
             wireframe_pipeline,
             wireframe_index_buffer,
             wireframe_index_count,
@@ -2520,7 +2532,7 @@ impl Renderer {
         // --- Lights + lighting bind group ---
         let (level_lights, dynamic_influences) =
             filter_dynamic_lights(geometry.lights, geometry.light_influences);
-        let (shadow_candidate_lights, shadow_candidate_influences) =
+        let (shadow_candidate_lights, _) =
             filter_entity_shadow_candidates(geometry.lights, geometry.light_influences);
         self.light_count = level_lights.len() as u32;
 
@@ -2539,7 +2551,6 @@ impl Renderer {
         self.lights_buffer = lights_buffer;
         self.level_lights = level_lights;
         self.shadow_candidate_lights = shadow_candidate_lights;
-        self.shadow_candidate_influences = shadow_candidate_influences;
 
         let influence_data = if !dynamic_influences.is_empty() {
             influence::pack_influence(&dynamic_influences)
@@ -2553,8 +2564,6 @@ impl Renderer {
                 contents: &influence_data,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             });
-        // Cache CPU-side for shadow slot ranking (consumed by `update_dynamic_light_slots`).
-        self.dynamic_light_influences = dynamic_influences;
 
         let spec_lights_data = {
             let packed = pack_spec_lights(geometry.lights);
@@ -2739,6 +2748,19 @@ impl Renderer {
         } else {
             None
         };
+        // Rebuild the shadow cull owner against the freshly-uploaded BVH
+        // buffers — its per-slot bind groups reference the camera cull's
+        // node/leaf storage, so a stale reference would point at the old BVH.
+        self.shadow_cull = self.compute_cull.as_ref().map(|c| {
+            crate::shadow_cull::ShadowCullPipeline::new(
+                &self.device,
+                c.node_buffer(),
+                c.leaf_buffer(),
+                c.total_leaves(),
+                c.bucket_ranges().to_vec(),
+                c.has_multi_draw_indirect(),
+            )
+        });
 
         self.has_geometry = has_geometry;
         self.last_lights_upload.clear();
@@ -3464,6 +3486,7 @@ impl Renderer {
         });
         self.queue.write_buffer(&self.uniform_buffer, 0, &data);
         self.last_camera_position = camera_position;
+        self.last_view_proj = view_proj;
 
         // Mesh dynamic-direct uniform (group 4 binding 16). The mesh path reads
         // a trimmed camera uniform (no group-0 tail), so the scale/isolation/
@@ -3744,7 +3767,6 @@ impl Renderer {
         &mut self,
         camera_position: Vec3,
         camera_near_clip: f32,
-        _light_influences: &[LightInfluence],
         effective_brightness: &[f32],
         light_reachable_leaf_mask: &[bool],
     ) {
@@ -3790,7 +3812,7 @@ impl Renderer {
             camera_position,
             camera_near_clip,
             &visible_lights,
-            &self.shadow_candidate_influences,
+            &self.last_view_proj,
         );
 
         // The GPU lights buffer is keyed on `level_lights`. Translate slot
@@ -3847,6 +3869,10 @@ impl Renderer {
             vec![0u8; MAT_BYTES * crate::lighting::spot_shadow::SHADOW_POOL_SIZE];
         let mut vertex_uniforms =
             vec![0u8; stride * crate::lighting::spot_shadow::SHADOW_POOL_SIZE];
+        // Reset the per-slot cone-matrix stash; reoccupied slots overwrite, the
+        // rest stay `None` so the GPU cone cull skips them this frame.
+        self.spot_shadow_pool.slot_cone_matrices =
+            [None; crate::lighting::spot_shadow::SHADOW_POOL_SIZE];
         for (light_idx, &slot) in slot_assignment.iter().enumerate() {
             if slot == crate::lighting::spot_shadow::NO_SHADOW_SLOT {
                 continue;
@@ -3854,6 +3880,10 @@ impl Renderer {
             let m = crate::lighting::spot_shadow::light_space_matrix(
                 &self.shadow_candidate_lights[light_idx],
             );
+            // Stash the SAME light-space matrix uploaded to bind-group-5 below —
+            // the shadow-depth render loop reads it to build this slot's cone
+            // cull frustum planes (one source of truth, no recomputation).
+            self.spot_shadow_pool.slot_cone_matrices[slot as usize] = Some(m);
             let cols = m.to_cols_array();
             let mut bytes = [0u8; MAT_BYTES];
             for (i, v) in cols.iter().enumerate() {
@@ -4153,18 +4183,14 @@ impl Renderer {
         // blocking `poll(Wait)` below, once the compose submit has retired.
 
         // mem::take avoids a simultaneous borrow of self; returned after call to reuse the allocation.
-        // Both eff_brightness and influences use this pattern for the same reason.
         let eff_brightness = std::mem::take(&mut self.light_effective_brightness);
-        let influences = std::mem::take(&mut self.dynamic_light_influences);
         self.update_dynamic_light_slots(
             self.last_camera_position,
             crate::lighting::spot_shadow::SHADOW_NEAR_CLIP,
-            &influences,
             &eff_brightness,
             light_reachable_leaf_mask,
         );
         self.light_effective_brightness = eff_brightness;
-        self.dynamic_light_influences = influences;
         if self.has_geometry && self.index_count > 0 {
             let stride = self.shadow_vs_stride;
             let slot_assignment = self.spot_shadow_pool.slot_assignment.clone();
@@ -4175,6 +4201,20 @@ impl Renderer {
                 .collect();
             used_slots.sort_unstable();
             used_slots.dedup();
+
+            // Per-slot GPU cone cull: one compute pass loops the occupied slots,
+            // dispatching BVH traversal into each slot's indirect sub-region
+            // gated by that slot's cone frustum planes. Runs after the camera
+            // BVH cull and before the per-slot depth render passes below, so the
+            // sub-regions are populated when each slot draws indirect.
+            if let Some(shadow_cull) = &self.shadow_cull {
+                shadow_cull.dispatch_occupied_slots(
+                    &self.queue,
+                    &mut encoder,
+                    &self.spot_shadow_pool.slot_cone_matrices,
+                );
+            }
+
             for slot in used_slots {
                 let view = &self.spot_shadow_pool.views[slot as usize];
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -4195,7 +4235,16 @@ impl Renderer {
                 pass.set_bind_group(0, &self.shadow_vs_bind_group, &[slot * stride]);
                 pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..self.index_count, 0, 0..1);
+                // Indirect cone-culled draw from this slot's sub-region. The
+                // depth-only shadow pipeline has no group-1 material slot, so
+                // `None` skips the texture bind (matching the depth pre-pass).
+                // Fall back to the full unconditional draw if the shadow cull
+                // owner is absent (no BVH).
+                if let Some(shadow_cull) = &self.shadow_cull {
+                    shadow_cull.draw_slot_indirect(&mut pass, slot, None);
+                } else {
+                    pass.draw_indexed(0..self.index_count, 0, 0..1);
+                }
             }
         }
 

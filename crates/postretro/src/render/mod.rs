@@ -4450,13 +4450,14 @@ impl Renderer {
             smoke_pass_enc.set_bind_group(0, &self.uniform_bind_group, &[]);
             smoke_pass_enc.set_bind_group(2, &self.lighting_bind_group, &[]);
             smoke_pass_enc.set_bind_group(3, &self.sh_volume_resources.bind_group, &[]);
-            for (collection, bytes) in particle_collections {
-                if bytes.is_empty() {
-                    continue;
-                }
-                self.smoke_pass
-                    .record_draw(&self.queue, &mut smoke_pass_enc, collection, bytes);
-            }
+            // One shared instance buffer, drawn per collection from its own
+            // 256-byte-aligned dynamic offset (Slice 5).
+            self.smoke_pass.record_draws(
+                &self.device,
+                &self.queue,
+                &mut smoke_pass_enc,
+                particle_collections,
+            );
         }
 
         // Volumetric fog: low-res compute raymarch + additive composite.

@@ -11,10 +11,91 @@ use std::collections::HashMap;
 
 use wgpu::util::DeviceExt;
 
-use crate::fx::smoke::{MAX_SPRITES, SPRITE_INSTANCE_SIZE, SpriteFrame};
+use crate::fx::smoke::{SPRITE_INSTANCE_SIZE, SpriteFrame};
 
 /// Byte size of `SpriteDrawParams` (one `vec4<f32>` = 16 B, padded to 16).
 pub const SPRITE_DRAW_PARAMS_SIZE: usize = 16;
+
+/// Storage-buffer dynamic-offset alignment required by wgpu / WebGPU
+/// (`min_storage_buffer_offset_alignment`, 256 on every targeted backend).
+/// Each collection's region in the shared instance buffer starts at a multiple
+/// of this so it can be addressed by a group-6 dynamic offset. The 32-byte
+/// per-instance stride is unchanged *within* a region (256 is a multiple of
+/// 32, so the alignment padding is always a whole number of instance slots).
+const STORAGE_DYNAMIC_OFFSET_ALIGNMENT: usize = 256;
+
+/// Round `bytes` up to the next multiple of `STORAGE_DYNAMIC_OFFSET_ALIGNMENT`.
+fn align_up_to_dynamic_offset(bytes: usize) -> usize {
+    bytes.div_ceil(STORAGE_DYNAMIC_OFFSET_ALIGNMENT) * STORAGE_DYNAMIC_OFFSET_ALIGNMENT
+}
+
+/// Build the group-6 bind group over the whole instance buffer. The binding is
+/// declared `has_dynamic_offset: true`, so this single bind group is reused for
+/// every collection in a frame — `set_bind_group(6, .., &[offset])` rebases
+/// `sprites[0]` in the shader to each collection's 256-byte-aligned region.
+/// Rebuilt only when the buffer object itself changes (growth).
+fn build_instance_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    buffer: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Sprite Instance Bind Group"),
+        layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: buffer.as_entire_binding(),
+        }],
+    })
+}
+
+/// Per-frame layout for the shared instance buffer: each collection's
+/// 256-byte-aligned start offset (the dynamic offset passed at draw time) and
+/// its live-sprite count (drives the `count * 6` vertex range). Computed in
+/// `iter_collections` order; offsets accumulate by each region's *padded* size.
+struct CollectionPlacement<'a> {
+    collection: &'a str,
+    packed_bytes: &'a [u8],
+    offset: u32,
+    live_count: u32,
+}
+
+/// Plan the frame's buffer layout. Returns the placements plus the total buffer
+/// capacity required — `last_offset + window`, where `window` is the largest
+/// (padded) region so the dynamic-offset binding window never runs past the
+/// buffer end for any collection. Collections with zero live sprites are
+/// skipped. Returns `None` when nothing is drawable this frame.
+fn plan_frame_layout<'a>(
+    collections: &[(&'a str, &'a [u8])],
+) -> Option<(Vec<CollectionPlacement<'a>>, usize)> {
+    let mut placements = Vec::new();
+    let mut cursor = 0usize;
+    let mut max_region = 0usize;
+    for &(collection, packed_bytes) in collections {
+        let live_count = packed_bytes.len() / SPRITE_INSTANCE_SIZE;
+        if live_count == 0 {
+            continue;
+        }
+        let region = align_up_to_dynamic_offset(live_count * SPRITE_INSTANCE_SIZE);
+        max_region = max_region.max(region);
+        placements.push(CollectionPlacement {
+            collection,
+            packed_bytes,
+            offset: cursor as u32,
+            live_count: live_count as u32,
+        });
+        cursor += region;
+    }
+    if placements.is_empty() {
+        return None;
+    }
+    // The last region's start offset + a full window must fit; `max_region`
+    // bounds every collection's window, so a buffer of `last_offset + window`
+    // keeps the bound storage slice in-range for the largest collection too.
+    let last_offset = placements.last().map(|p| p.offset as usize).unwrap_or(0);
+    let capacity = last_offset + max_region;
+    Some((placements, capacity))
+}
 
 // `sh_sample.wgsl` reads `sh_total_atlas`, `sh_depth_moments`, and `sh_grid`,
 // declared in `billboard.wgsl`; WGSL resolves module-scope names regardless of
@@ -110,11 +191,24 @@ pub struct SmokePass {
     /// `register_collection` is called.
     sheet_bind_group_layout: wgpu::BindGroupLayout,
 
-    /// Group 6 bind group: sprite instance storage buffer.
-    instance_bind_group: wgpu::BindGroup,
-    /// Per-frame upload target for packed sprite instances. Sized at creation
-    /// for `MAX_SPRITES * SPRITE_INSTANCE_SIZE` bytes and reused every frame.
+    /// Group 6 layout: the sprite instance storage buffer, declared with
+    /// `has_dynamic_offset: true` so each collection draws from its own
+    /// 256-byte-aligned region of the single shared buffer (Slice 5). Retained
+    /// so the per-frame bind group can be rebuilt when the buffer grows.
+    instance_bind_group_layout: wgpu::BindGroupLayout,
+    /// Single shared upload target for *all* collections' packed sprite
+    /// instances this frame. Grown on demand when a frame's total live-sprite
+    /// footprint (padded per collection for dynamic-offset alignment) exceeds
+    /// the current capacity. Replaces the old fixed 4096-sprite-per-collection
+    /// buffer that silently truncated overflow.
     instance_buffer: wgpu::Buffer,
+    /// Current byte capacity of `instance_buffer`.
+    instance_buffer_capacity: usize,
+    /// Group-6 bind group over the whole `instance_buffer`, bound with a
+    /// per-collection dynamic offset at draw time. Rebuilt only when the buffer
+    /// grows (the dynamic offset, not a new bind group, selects each
+    /// collection's region within a frame).
+    instance_bind_group: wgpu::BindGroup,
 
     /// Loaded sprite sheets keyed by collection name. Populated at level load.
     sheets: HashMap<String, SpriteSheet>,
@@ -175,7 +269,10 @@ impl SmokePass {
                 ],
             });
 
-        // Group 6: sprite instance storage buffer.
+        // Group 6: sprite instance storage buffer. `has_dynamic_offset: true`
+        // lets each collection draw from its own 256-byte-aligned region of the
+        // single shared buffer — the dynamic offset rebases `sprites[0]` in the
+        // shader to that collection's first instance (Slice 5).
         let instance_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Sprite Instance BGL"),
@@ -184,7 +281,7 @@ impl SmokePass {
                     visibility: wgpu::ShaderStages::VERTEX,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
+                        has_dynamic_offset: true,
                         min_binding_size: None,
                     },
                     count: None,
@@ -264,27 +361,18 @@ impl SmokePass {
             cache: None,
         });
 
-        // Instance storage buffer — sized for the upper bound per collection
-        // draw. We size it for one emitter's worth of sprites since at
-        // retro-scale a single pass batches by collection and we re-upload
-        // per-draw; the renderer can allocate more if multiple collections
-        // coexist. A future optimization is a single buffer with per-collection
-        // offsets, but that's not on the acceptance-gate path.
-        let instance_buffer_size = (MAX_SPRITES * SPRITE_INSTANCE_SIZE).max(SPRITE_INSTANCE_SIZE);
+        // Single shared instance storage buffer for all collections. Sized for
+        // a modest initial frame footprint and grown on demand by `record_draws`
+        // when a frame's padded total exceeds it — no per-collection cap.
+        let instance_buffer_capacity = align_up_to_dynamic_offset(1024 * SPRITE_INSTANCE_SIZE);
         let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Sprite Instance Buffer"),
-            size: instance_buffer_size as u64,
+            size: instance_buffer_capacity as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let instance_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Sprite Instance Bind Group"),
-            layout: &instance_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: instance_buffer.as_entire_binding(),
-            }],
-        });
+        let instance_bind_group =
+            build_instance_bind_group(device, &instance_bind_group_layout, &instance_buffer);
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Sprite Sampler"),
@@ -300,8 +388,10 @@ impl SmokePass {
         Self {
             pipeline,
             sheet_bind_group_layout,
-            instance_bind_group,
+            instance_bind_group_layout,
             instance_buffer,
+            instance_buffer_capacity,
+            instance_bind_group,
             sheets: HashMap::new(),
             sampler,
         }
@@ -404,36 +494,76 @@ impl SmokePass {
         !self.sheets.is_empty()
     }
 
-    /// Upload packed sprite instances for one collection and record the draw
-    /// on the passed render pass. `packed_bytes` must contain
-    /// `live_count * SPRITE_INSTANCE_SIZE` bytes (packed by
-    /// `scripting::systems::particle_render::pack_particle_instance`).
+    /// Upload every collection's packed sprite instances into the single shared
+    /// buffer and record one draw call per collection from its own region.
     ///
-    /// This is a **per-collection** draw: the caller batches emitters sharing
-    /// a collection into a single packed buffer and one call here.
-    pub fn record_draw<'a>(
-        &'a self,
+    /// Each `(collection, packed_bytes)` slice carries
+    /// `live_count * SPRITE_INSTANCE_SIZE` bytes (packed by
+    /// `scripting::systems::particle_render::pack_particle_instance`). The caller
+    /// batches all emitters sharing a collection into one slice, so a collection
+    /// still issues exactly one draw — N collections produce N draws.
+    ///
+    /// **Buffer sizing / growth.** The frame's regions are laid out back-to-back,
+    /// each padded up to the 256-byte storage dynamic-offset alignment so its
+    /// start offset is a legal dynamic offset (the 32-byte per-instance stride is
+    /// unchanged *within* a region). When the padded total exceeds the current
+    /// capacity the buffer is recreated larger and the group-6 bind group rebuilt
+    /// — there is **no per-collection cap**, so a single collection may exceed the
+    /// old fixed 4096-sprite buffer without silent truncation.
+    ///
+    /// Each collection is uploaded once at its own offset (no redundant offset-0
+    /// re-upload per collection) and drawn via the dynamic-offset bind group,
+    /// which rebases `sprites[0]` in the shader to that region's first instance.
+    pub fn record_draws<'a>(
+        &'a mut self,
+        device: &wgpu::Device,
         queue: &wgpu::Queue,
         pass: &mut wgpu::RenderPass<'a>,
-        collection: &str,
-        packed_bytes: &[u8],
+        collections: &[(&str, &[u8])],
     ) {
-        let Some(sheet) = self.sheets.get(collection) else {
+        let Some((placements, required_capacity)) = plan_frame_layout(collections) else {
             return;
         };
-        let live_count = packed_bytes.len() / SPRITE_INSTANCE_SIZE;
-        if live_count == 0 {
-            return;
+
+        // Grow (and rebuild the bind group) only when this frame's footprint
+        // outgrows the current buffer. Steady-state frames reuse both.
+        if required_capacity > self.instance_buffer_capacity {
+            let new_capacity = align_up_to_dynamic_offset(required_capacity);
+            self.instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Sprite Instance Buffer"),
+                size: new_capacity as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.instance_buffer_capacity = new_capacity;
+            self.instance_bind_group = build_instance_bind_group(
+                device,
+                &self.instance_bind_group_layout,
+                &self.instance_buffer,
+            );
         }
-        let capped = live_count.min(MAX_SPRITES);
-        let byte_len = capped * SPRITE_INSTANCE_SIZE;
-        queue.write_buffer(&self.instance_buffer, 0, &packed_bytes[..byte_len]);
+
+        // Upload each collection at its aligned offset (one write per collection,
+        // no full re-upload at offset 0).
+        for placement in &placements {
+            queue.write_buffer(
+                &self.instance_buffer,
+                placement.offset as u64,
+                placement.packed_bytes,
+            );
+        }
 
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(1, &sheet.bind_group, &[]);
-        pass.set_bind_group(6, &self.instance_bind_group, &[]);
-        // Non-indexed draw of 6 vertices per sprite.
-        pass.draw(0..(capped as u32 * 6), 0..1);
+        for placement in &placements {
+            let Some(sheet) = self.sheets.get(placement.collection) else {
+                continue;
+            };
+            pass.set_bind_group(1, &sheet.bind_group, &[]);
+            pass.set_bind_group(6, &self.instance_bind_group, &[placement.offset]);
+            // Non-indexed draw of 6 vertices per sprite, rebased to this
+            // collection's region by the group-6 dynamic offset.
+            pass.draw(0..(placement.live_count * 6), 0..1);
+        }
     }
 }
 
@@ -559,5 +689,87 @@ mod tests {
         // First column should be red, third column blue.
         assert_eq!(data[0..4], [255, 0, 0, 255]);
         assert_eq!(data[8..12], [0, 0, 255, 255]);
+    }
+
+    /// A dummy packed slice of `n` sprite instances (contents irrelevant to the
+    /// layout planner — only the byte length matters).
+    fn packed(n: usize) -> Vec<u8> {
+        vec![0u8; n * SPRITE_INSTANCE_SIZE]
+    }
+
+    #[test]
+    fn align_up_rounds_to_256_byte_boundary() {
+        assert_eq!(align_up_to_dynamic_offset(0), 0);
+        assert_eq!(align_up_to_dynamic_offset(1), 256);
+        assert_eq!(align_up_to_dynamic_offset(256), 256);
+        assert_eq!(align_up_to_dynamic_offset(257), 512);
+        // One 32-byte instance still pads up to a full 256-byte region.
+        assert_eq!(align_up_to_dynamic_offset(SPRITE_INSTANCE_SIZE), 256);
+    }
+
+    #[test]
+    fn plan_layout_empty_or_all_zero_returns_none() {
+        assert!(plan_frame_layout(&[]).is_none());
+        let empty: Vec<u8> = Vec::new();
+        assert!(plan_frame_layout(&[("smoke", &empty)]).is_none());
+    }
+
+    #[test]
+    fn plan_layout_single_collection_starts_at_zero_with_full_count() {
+        let bytes = packed(10);
+        let (placements, _capacity) = plan_frame_layout(&[("smoke", &bytes)]).unwrap();
+        assert_eq!(placements.len(), 1);
+        assert_eq!(placements[0].offset, 0);
+        assert_eq!(placements[0].live_count, 10);
+    }
+
+    #[test]
+    fn plan_layout_offsets_are_256_aligned_and_non_overlapping() {
+        // 10 instances = 320 bytes → padded to 512; next region starts at 512.
+        let a = packed(10);
+        let b = packed(3);
+        let (placements, _capacity) = plan_frame_layout(&[("smoke", &a), ("spark", &b)]).unwrap();
+        assert_eq!(placements.len(), 2);
+        assert_eq!(placements[0].offset, 0);
+        assert_eq!(placements[1].offset, 512);
+        for p in &placements {
+            assert_eq!(
+                p.offset as usize % STORAGE_DYNAMIC_OFFSET_ALIGNMENT,
+                0,
+                "every collection's dynamic offset must be 256-byte aligned",
+            );
+        }
+        // Region 0 spans bytes [0, 320) of live data within its 512-byte padded
+        // region, so region 1 at offset 512 cannot overlap it.
+        assert!(placements[1].offset as usize >= a.len());
+    }
+
+    #[test]
+    fn plan_layout_single_collection_exceeds_old_4096_cap_without_truncation() {
+        // The old buffer silently truncated a collection to 4096 sprites. The
+        // planner preserves the full count and reserves a region large enough to
+        // hold all of them.
+        let count = 9000;
+        let bytes = packed(count);
+        let (placements, capacity) = plan_frame_layout(&[("smoke", &bytes)]).unwrap();
+        assert_eq!(placements[0].live_count, count as u32);
+        assert!(
+            capacity >= count * SPRITE_INSTANCE_SIZE,
+            "buffer capacity must hold every live sprite, not just 4096",
+        );
+    }
+
+    #[test]
+    fn plan_layout_capacity_covers_the_largest_collection_window() {
+        // The dynamic-offset bind-group window is sized to the largest region,
+        // so the reported capacity must cover `last_offset + largest_window`
+        // even when the largest collection is not last.
+        let big = packed(100); // 3200 B → padded 3328 (13 × 256)
+        let small = packed(2); // 64 B → padded 256
+        let (placements, capacity) =
+            plan_frame_layout(&[("big", &big), ("small", &small)]).unwrap();
+        let last = placements.last().unwrap();
+        let largest_window = align_up_to_dynamic_offset(100 * SPRITE_INSTANCE_SIZE);
+        assert_eq!(capacity, last.offset as usize + largest_window);
     }
 }

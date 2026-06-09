@@ -577,6 +577,125 @@ fn integrate_collision(
     )
 }
 
+/// Which extreme of the capsule stays geometrically fixed when the capsule is
+/// resized in place. A resize changes `half_height`, which moves both the top
+/// and the bottom of the capsule away from (or toward) the center; the anchor
+/// picks which one must NOT move, and the resize helper returns the center
+/// y-delta that keeps it pinned.
+///
+/// State-agnostic by design (D8): the substrate exposes the anchor as a
+/// geometric mode, not a crouch flag. A grounded shrink/grow anchors at the
+/// `Feet` (the planted contact point stays put, the head rises/drops); an
+/// airborne resize anchors at the `Head` (the head stays put, the feet
+/// rise/drop toward center). `movement--slide` reuses both modes without the
+/// helper knowing which state called it.
+// Consumed by the `Crouching` intent (a later task) and `movement--slide`;
+// substrate helpers land first, so the production call sites do not exist yet.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResizeAnchor {
+    /// Lowest point `position.y - (half_height + radius)` stays fixed — feet
+    /// planted on the ground (D2). Center moves by `new_half_height -
+    /// old_half_height` (DOWN on a shrink).
+    Feet,
+    /// Highest point `position.y + (half_height + radius)` stays fixed — head
+    /// pinned while airborne (D4). Center moves by `old_half_height -
+    /// new_half_height` (the feet rise toward center on a shrink).
+    Head,
+}
+
+/// Resize the player capsule in place to a target `half_height` / `eye_height`,
+/// keeping the anchored extreme geometrically fixed, and return the center
+/// y-delta the CALLER must apply to `position`.
+///
+/// Two-party contract (D8): the helper OWNS the capsule size fields — it writes
+/// `component.capsule.half_height` and `component.capsule.eye_height` to the
+/// targets — and RETURNS the center y-delta. The helper MUST NOT touch
+/// `position`; the caller owns `position` and applies the returned delta. This
+/// keeps the helper state-agnostic (no crouch flag): the `Crouching` intent and
+/// `movement--slide` both call it with their own target sizes and anchor mode.
+///
+/// The resize honors the substrate's per-tick `Capsule` rebuild: `radius` is
+/// unchanged and `integrate_collision` reads `half_height`/`radius` fresh each
+/// tick, so there is no second capsule cache to update. `eye_height` is
+/// camera-only (the collision capsule never reads it).
+///
+/// Anchor math (radius is constant, so it cancels):
+///   - `Feet`: keep `position.y - (half_height + radius)` fixed ⇒
+///     `delta = new_half_height - old_half_height` (negative on a shrink: the
+///     center drops so the planted feet stay put).
+///   - `Head`: keep `position.y + (half_height + radius)` fixed ⇒
+///     `delta = old_half_height - new_half_height` (positive on a shrink: the
+///     center rises so the pinned head stays put).
+// Production callers (`Crouching` intent, `movement--slide`) land in later tasks.
+#[allow(dead_code)]
+fn resize_capsule(
+    component: &mut PlayerMovementComponent,
+    target_half_height: f32,
+    target_eye_height: f32,
+    anchor: ResizeAnchor,
+) -> f32 {
+    let old_half_height = component.capsule.half_height;
+    component.capsule.half_height = target_half_height;
+    component.capsule.eye_height = target_eye_height;
+    match anchor {
+        ResizeAnchor::Feet => target_half_height - old_half_height,
+        ResizeAnchor::Head => old_half_height - target_half_height,
+    }
+}
+
+/// Stand-up clearance probe: is there headroom to grow the capsule from the
+/// crouched size back to the standing size with the FEET PLANTED?
+///
+/// Collision exposes only `cast_capsule` (a sweep) — there is no overlap/
+/// intersection query — so headroom is tested by sweeping the CROUCHED-size
+/// capsule straight UP by the head-rise delta. With feet planted, growing the
+/// half-height from crouched to standing raises the head by
+/// `2 × (standing_half_height − crouched_half_height)` (the center rises by the
+/// half-height delta and the top extends a further half-height delta above the
+/// center). A hit within that distance means a ceiling blocks the standing
+/// capsule; clear means the player can stand.
+///
+/// State-agnostic (D8): takes the crouched and standing half-heights as plain
+/// sizes, not a crouch flag — `movement--slide` reuses it to test whether a
+/// slide can stand up. Returns `true` when headroom is CLEAR.
+// Production callers (`Crouching` intent, `movement--slide`) land in later tasks.
+#[allow(dead_code)]
+fn standup_clearance_probe(
+    component: &PlayerMovementComponent,
+    collision_world: &CollisionWorld,
+    position: Vec3,
+    crouched_half_height: f32,
+    standing_half_height: f32,
+) -> bool {
+    let head_rise = 2.0 * (standing_half_height - crouched_half_height);
+    if head_rise <= 0.0 {
+        // Already standing-or-taller: no growth needed, so nothing to clear.
+        return true;
+    }
+    // Build the crouched-size parry capsule (radius unchanged). nalgebra types
+    // stay inside this collision-boundary call; the result crosses back as a
+    // plain bool.
+    let capsule = Capsule::new(
+        Point::new(0.0, -crouched_half_height, 0.0),
+        Point::new(0.0, crouched_half_height, 0.0),
+        component.capsule.radius,
+    );
+    let hit = cast_capsule(
+        collision_world,
+        Point::new(position.x, position.y, position.z),
+        &capsule,
+        Vector::new(0.0, 1.0, 0.0),
+        head_rise,
+    );
+    // A hit strictly within the head-rise distance blocks standing. `None`
+    // (nothing within range) or a hit at/after the full rise is clear.
+    match hit {
+        Some(h) => h.time_of_impact >= head_rise,
+        None => true,
+    }
+}
+
 /// Air-jump (double-jump) gate: the airborne jump fires only while a charge
 /// remains in the budget AND upward velocity is still under `air.jump_ceiling`.
 /// The budget itself replenishes on floor contact via `refresh_on_landing`, so
@@ -4291,5 +4410,186 @@ mod tests {
             events.jumped,
             "default (absent) forgiveness should permit a coyote jump in-window"
         );
+    }
+
+    // ----- Capsule-resize + stand-up-probe substrate helpers (D8) -----------
+    //
+    // These drive `resize_capsule` / `standup_clearance_probe` DIRECTLY with a
+    // target size and anchor mode — no `Crouching` intent involved — proving the
+    // substrate is reusable (slide can call the same helpers).
+
+    /// Lowest point of the collision capsule given a center position.
+    fn capsule_bottom(comp: &PlayerMovementComponent, pos: Vec3) -> f32 {
+        pos.y - (comp.capsule.half_height + comp.capsule.radius)
+    }
+
+    /// Highest point of the collision capsule given a center position.
+    fn capsule_top(comp: &PlayerMovementComponent, pos: Vec3) -> f32 {
+        pos.y + (comp.capsule.half_height + comp.capsule.radius)
+    }
+
+    /// Flat floor at y=0 plus a horizontal ceiling slab at `ceiling_y` spanning
+    /// x∈[-20,20], z∈[-10,10] with a down-facing (−Y) normal. Used to drive the
+    /// stand-up probe: the ceiling sits at a tunable height above the player so
+    /// the head-rise sweep does or does not hit it.
+    fn floor_and_ceiling_world(ceiling_y: f32) -> CollisionWorld {
+        let mut points: Vec<Point<f32>> = Vec::new();
+        let mut tris: Vec<[u32; 3]> = Vec::new();
+
+        // Floor: y=0, up-facing +Y.
+        let f0 = points.len() as u32;
+        points.push(Point::new(-20.0, 0.0, -10.0));
+        points.push(Point::new(20.0, 0.0, -10.0));
+        points.push(Point::new(20.0, 0.0, 10.0));
+        points.push(Point::new(-20.0, 0.0, 10.0));
+        tris.push([f0, f0 + 1, f0 + 2]);
+        tris.push([f0, f0 + 2, f0 + 3]);
+
+        // Ceiling: y=ceiling_y, wound so the normal faces down (−Y) toward the
+        // player below.
+        let c0 = points.len() as u32;
+        points.push(Point::new(-20.0, ceiling_y, -10.0));
+        points.push(Point::new(20.0, ceiling_y, 10.0));
+        points.push(Point::new(20.0, ceiling_y, -10.0));
+        points.push(Point::new(-20.0, ceiling_y, 10.0));
+        tris.push([c0, c0 + 1, c0 + 2]);
+        tris.push([c0, c0 + 3, c0 + 1]);
+
+        let mesh = TriMesh::new(points, tris);
+        CollisionWorld {
+            mesh,
+            isometry: Isometry::identity(),
+        }
+    }
+
+    #[test]
+    fn resize_capsule_feet_anchor_keeps_lowest_point_fixed() {
+        let desc = canonical_descriptor();
+        let mut comp = PlayerMovementComponent::from_descriptor(&desc);
+        // Standing capsule resting on the floor: center at half_height + radius.
+        let mut pos = Vec3::new(0.0, comp.capsule.half_height + comp.capsule.radius, 0.0);
+        let bottom_before = capsule_bottom(&comp, pos);
+
+        // Shrink to a crouched half-height with the FEET planted. Caller applies
+        // the returned center delta to position.
+        let target_half_height = 0.4; // < standing 0.8
+        let target_eye_height = 0.2;
+        let delta = resize_capsule(
+            &mut comp,
+            target_half_height,
+            target_eye_height,
+            ResizeAnchor::Feet,
+        );
+        pos.y += delta;
+
+        // Helper owns the size fields.
+        assert!(
+            approx_eq(comp.capsule.half_height, target_half_height, POS_EPS),
+            "resize must write the target half_height"
+        );
+        assert!(
+            approx_eq(comp.capsule.eye_height, target_eye_height, POS_EPS),
+            "resize must write the target eye_height"
+        );
+        // Feet anchor: the lowest point is unchanged after applying the delta.
+        let bottom_after = capsule_bottom(&comp, pos);
+        assert!(
+            approx_eq(bottom_after, bottom_before, POS_EPS),
+            "Feet anchor must keep the lowest point fixed: before {bottom_before}, after {bottom_after}"
+        );
+        // Center moved DOWN by the half-height delta on a shrink.
+        assert!(
+            approx_eq(delta, target_half_height - 0.8, POS_EPS),
+            "Feet center delta should equal new_half_height - old_half_height"
+        );
+    }
+
+    #[test]
+    fn resize_capsule_head_anchor_keeps_highest_point_fixed() {
+        let desc = canonical_descriptor();
+        let mut comp = PlayerMovementComponent::from_descriptor(&desc);
+        // Airborne capsule somewhere off the floor.
+        let mut pos = Vec3::new(0.0, 5.0, 0.0);
+        let top_before = capsule_top(&comp, pos);
+
+        // Shrink with the HEAD pinned (airborne crouch): feet rise toward center.
+        let target_half_height = 0.4;
+        let target_eye_height = 0.2;
+        let delta = resize_capsule(
+            &mut comp,
+            target_half_height,
+            target_eye_height,
+            ResizeAnchor::Head,
+        );
+        pos.y += delta;
+
+        let top_after = capsule_top(&comp, pos);
+        assert!(
+            approx_eq(top_after, top_before, POS_EPS),
+            "Head anchor must keep the highest point fixed: before {top_before}, after {top_after}"
+        );
+        // Center moved UP by the half-height delta on a shrink.
+        assert!(
+            approx_eq(delta, 0.8 - target_half_height, POS_EPS),
+            "Head center delta should equal old_half_height - new_half_height"
+        );
+    }
+
+    #[test]
+    fn standup_probe_reports_blocked_when_ceiling_within_head_rise() {
+        let desc = canonical_descriptor();
+        let mut comp = PlayerMovementComponent::from_descriptor(&desc);
+
+        let standing_half_height = 0.8; // canonical standing
+        let crouched_half_height = 0.4;
+        // With feet planted, crouched center sits at crouched_hh + radius.
+        let pos = Vec3::new(0.0, crouched_half_height + comp.capsule.radius, 0.0);
+
+        // Head-rise delta = 2 * (0.8 - 0.4) = 0.8. Crouched capsule top sits at
+        // pos.y + crouched_hh + radius. Place the ceiling just BELOW where the
+        // standing head would reach so the upward sweep hits within head-rise.
+        let crouched_top = pos.y + crouched_half_height + comp.capsule.radius;
+        let head_rise = 2.0 * (standing_half_height - crouched_half_height);
+        // Ceiling 0.2 m above the crouched top — well inside the 0.8 m rise.
+        let blocked_world = floor_and_ceiling_world(crouched_top + 0.2);
+        // Reflect the crouched size on the component (as the caller would have
+        // after a resize) before probing.
+        resize_capsule(&mut comp, crouched_half_height, 0.2, ResizeAnchor::Feet);
+        let clear = standup_clearance_probe(
+            &comp,
+            &blocked_world,
+            pos,
+            crouched_half_height,
+            standing_half_height,
+        );
+        assert!(
+            !clear,
+            "ceiling within the {head_rise} m head-rise must report standing blocked"
+        );
+
+        // Ceiling well above the standing head — clear to stand.
+        let clear_world = floor_and_ceiling_world(crouched_top + head_rise + 1.0);
+        let clear = standup_clearance_probe(
+            &comp,
+            &clear_world,
+            pos,
+            crouched_half_height,
+            standing_half_height,
+        );
+        assert!(
+            clear,
+            "ceiling beyond the head-rise must report headroom clear"
+        );
+
+        // No ceiling at all (empty world) — clear.
+        let empty = CollisionWorld::new();
+        let clear = standup_clearance_probe(
+            &comp,
+            &empty,
+            pos,
+            crouched_half_height,
+            standing_half_height,
+        );
+        assert!(clear, "no ceiling geometry must report headroom clear");
     }
 }

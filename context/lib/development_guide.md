@@ -50,6 +50,7 @@ Four crates in a Cargo workspace:
 ## Agent TL;DR
 
 - Optimize for **readability over cleverness**; prefer small, explicit changes.
+- **Runtime performance is a first-class goal** — structural choices that favor it belong in the initial implementation. See §1.4.
 - Respect **subsystem boundaries**: renderer, audio, input, game logic are distinct modules with explicit contracts.
 - **Deliver the impact defined in specs and tasks.** Specs define what and why; use judgment on how. When the plan doesn't survive contact with the code, adapt — but surface deviations and update the context files. See §1.
 - Do not flatten module structure. See §2.
@@ -106,8 +107,22 @@ Over-engineering is as costly as under-delivering. Both create surface area that
 Adjacent work discovered during implementation gets a follow-up task, not a scope expansion.
 
 - **Robustness gaps** outside the task's scope → file a follow-up with enough context for the next agent.
-- **Optimizations** with no current performance problem → file a follow-up, don't cache preemptively.
+- **Speculative optimizations** — no measured bottleneck → file a follow-up.
 - **Abstractions** without multiple concrete consumers → three similar lines beat a premature helper.
+
+**Performance.** Runtime performance is a first-class goal, and this engine's costs are specific — design for them while writing the code, not later. Two domains matter: the per-frame hot path (Input → Game logic → Audio → Render → Present) and build/load iteration time.
+
+In the per-frame hot path, three levers carry most of the weight:
+
+- **Bound the work before optimizing the unit.** The engine's measured wins come from visibility and culling — portal vis, PVS, per-region BVH, cone/frustum culls — and from ranking to a fixed budget, then dropping the overflow. Cap how much runs per frame first.
+- **Bake over compute** (architectural invariant — see [Architecture Index](./index.md) §2). Precompute offline — lightmaps, SH irradiance, portal visibility, BVH — so the runtime stays cheap. Reach for a baked input before a per-frame computation.
+- **Spend GPU budgets deliberately.** VRAM sits on a fixed memory floor; per-stage sampled-texture and binding slots are hard, low ceilings — several pinned by regression tests. Init-time allocations (shadow pools, atlases) and binding counts are up-front budget decisions, not later tuning. Treat a new large allocation or a new sampled binding as drawing down a fixed pool.
+
+Inside the hot path the ordinary defaults still hold: avoid per-frame allocations, prefer cache-friendly layouts, keep hot loops free of needless indirection. Design decisions, not speculative tuning.
+
+**Build and load time is a budget too.** The offline bake dominates compile time — the bake is the engine's most-optimized CPU path (content-hash stage caching, rayon-parallel SH, incremental per-light bake), and near-instant boot is a product goal. The discipline is the warm/cold contract: the cold (`--no-cache`) build is the exact ship source of truth and favors correctness; the warm iteration path is cached, parallelized, and may even approximate for author speed. Coupling: "Bake over compute" moves cost *into* the bake, so weigh what a new baked input costs the build loop, not just the frame.
+
+When per-pass GPU timing (`POSTRETRO_GPU_TIMING=1`) or a profile confirms a real bottleneck, optimize aggressively — but keep the result clean. An optimization that makes the code unmaintainable is not acceptable, even with measurements behind it. Fast *and* clean is the goal; brittleness moves the cost from runtime to maintenance.
 
 Never leave a bare `// TODO: fix later`. Either file a follow-up with context or fix it now.
 

@@ -5,6 +5,7 @@
 
 pub mod chunk_list;
 pub(crate) mod cone_frustum;
+pub mod cube_shadow;
 pub mod influence;
 pub mod lightmap;
 pub mod spec_buffer;

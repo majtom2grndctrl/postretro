@@ -1099,6 +1099,14 @@ pub struct Renderer {
     /// pool derives camera frustum planes from it for cone-frustum culling.
     last_view_proj: Mat4,
     spot_shadow_pool: SpotShadowPool,
+    /// Dynamic point-light cube-array shadow pool. `None` when the adapter lacks
+    /// `CUBE_ARRAY_TEXTURES` — point shadows then cleanly off, spot unaffected.
+    cube_shadow_pool: Option<crate::lighting::cube_shadow::CubeShadowPool>,
+    /// Per-(cube slot, face) light-space matrix uniforms, dynamic-offset like
+    /// `shadow_vs_uniform_buffer`. Slot `slot*6 + face` carries that face's
+    /// matrix; the skinned-depth pass selects it by dynamic offset.
+    cube_shadow_vs_uniform_buffer: wgpu::Buffer,
+    cube_shadow_vs_bind_group: wgpu::BindGroup,
     /// Dynamic-offset into a single buffer; offset selects the per-slot light-space matrix.
     shadow_vs_uniform_buffer: wgpu::Buffer,
     shadow_vs_bind_group: wgpu::BindGroup,
@@ -1191,6 +1199,15 @@ pub struct Renderer {
     /// drawn" acceptance criterion: an instance the per-light cone cull rejects
     /// is never added here. Reset to 0 at the start of the spot-shadow depth loop.
     spot_entity_occluders_submitted: u32,
+
+    /// CPU-side count of skinned ENTITY occluder instances submitted into CUBE
+    /// (point-light) shadow faces last frame, summed across all occupied slots ×
+    /// 6 faces (each instance counted once per face it casts into). Mirrors
+    /// `spot_entity_occluders_submitted` — no GPU readback. Verifies that
+    /// entity occluders render only for `entity_occluder_eligible` point lights
+    /// and only when their bound intersects a face frustum. Reset to 0 at the
+    /// start of the cube-shadow depth loop.
+    cube_entity_occluders_submitted: u32,
 
     /// Instanced UI quad / 9-slice pass for panels and images plus glyphon text.
     /// Built alongside `fog`; records the splash (splash phase) and an empty draw
@@ -1379,6 +1396,20 @@ impl Renderer {
         } else {
             log::info!(
                 "[Renderer] Indirect execution not supported — using singular draw_indexed_indirect fallback"
+            );
+        }
+
+        // Cube-array support gates the dynamic point-light shadow pool. Absent →
+        // the cube pool is disabled (None) and point shadows are cleanly off; the
+        // spot path is entirely unaffected (no panic, no validation error).
+        let cube_array_supported = downlevel
+            .flags
+            .contains(wgpu::DownlevelFlags::CUBE_ARRAY_TEXTURES);
+        if cube_array_supported {
+            log::info!("[Renderer] Cube-array textures supported (dynamic point shadows enabled)");
+        } else {
+            log::info!(
+                "[Renderer] Cube-array textures unsupported — dynamic point-light shadows disabled"
             );
         }
 
@@ -2368,6 +2399,35 @@ impl Renderer {
             }],
         });
 
+        // --- Cube point-shadow pool ------------------------------------------
+        // Disabled (None) when the adapter lacks CUBE_ARRAY_TEXTURES. Its
+        // per-face light-space matrices ride a dynamic-offset uniform buffer
+        // shaped exactly like `shadow_vs_*` (reusing `shadow_vs_bgl`), one slot
+        // per `(cube slot, face)` pair. The skinned-depth pipeline binds it at
+        // group 0 just like the spot path, proving the cube-ready contract.
+        let cube_shadow_pool =
+            crate::lighting::cube_shadow::CubeShadowPool::new(&device, cube_array_supported);
+        let cube_face_count =
+            crate::lighting::cube_shadow::CUBE_COUNT * crate::lighting::cube_shadow::CUBE_FACES;
+        let cube_shadow_vs_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Cube Shadow VS Uniforms"),
+            size: (shadow_vs_stride as u64) * (cube_face_count as u64),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let cube_shadow_vs_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Cube Shadow VS Bind Group"),
+            layout: &shadow_vs_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &cube_shadow_vs_uniform_buffer,
+                    offset: 0,
+                    size: std::num::NonZeroU64::new(64),
+                }),
+            }],
+        });
+
         let frame_timing = if enable_gpu_timing {
             log::info!("[Renderer] GPU timing enabled (POSTRETRO_GPU_TIMING=1)");
             let mut pass_labels = vec![""; TIMING_PAIR_COUNT];
@@ -2501,6 +2561,9 @@ impl Renderer {
             last_camera_position: Vec3::ZERO,
             last_view_proj: Mat4::IDENTITY,
             spot_shadow_pool,
+            cube_shadow_pool,
+            cube_shadow_vs_uniform_buffer,
+            cube_shadow_vs_bind_group,
             shadow_vs_uniform_buffer,
             shadow_vs_bind_group,
             shadow_depth_pipeline,
@@ -2536,6 +2599,7 @@ impl Renderer {
             bone_palette_scratch: Vec::new(),
             mesh_overflow_last_warn: f32::NEG_INFINITY,
             spot_entity_occluders_submitted: 0,
+            cube_entity_occluders_submitted: 0,
             ui,
             splash_logo_size: None,
             ui_images: ui::UiImageRegistry::default(),
@@ -4004,6 +4068,76 @@ impl Renderer {
             .write_buffer(&self.shadow_vs_uniform_buffer, 0, &vertex_uniforms);
 
         self.spot_shadow_pool.slot_assignment = slot_assignment;
+
+        self.update_cube_light_slots(camera_position, camera_near_clip, &visible_lights, stride);
+    }
+
+    /// Rank dynamic POINT lights into the cube pool and write each occupied
+    /// slot's 6 per-face light-space matrices into the cube VS uniform buffer.
+    /// No-op when the pool is disabled (adapter lacks `CUBE_ARRAY_TEXTURES`).
+    ///
+    /// Shares the spot path's per-light eligibility (`visible_lights`) and the
+    /// SHARED scoring/drop ranking core, so cube and spot slot assignment cannot
+    /// drift. Cube faces are ENTITY-ONLY in v1 — `slot_entity_eligible` decides
+    /// whether the depth loop draws anything into a slot at all.
+    fn update_cube_light_slots(
+        &mut self,
+        camera_position: Vec3,
+        camera_near_clip: f32,
+        visible_lights: &[bool],
+        stride: usize,
+    ) {
+        use crate::lighting::cube_shadow;
+
+        let Some(pool) = self.cube_shadow_pool.as_mut() else {
+            return;
+        };
+
+        let slot_assignment = cube_shadow::rank_point_lights(
+            &self.shadow_candidate_lights,
+            camera_position,
+            camera_near_clip,
+            visible_lights,
+        );
+
+        // Reset per-face matrices + per-slot entity gate; reoccupied faces
+        // overwrite, the rest stay `None`/`false` so the render loop skips them.
+        let face_count = cube_shadow::CUBE_COUNT * cube_shadow::CUBE_FACES;
+        for m in pool.face_matrices.iter_mut() {
+            *m = None;
+        }
+        for e in pool.slot_entity_eligible.iter_mut() {
+            *e = false;
+        }
+
+        let mut vertex_uniforms = vec![0u8; stride * face_count];
+        for (light_idx, &slot) in slot_assignment.iter().enumerate() {
+            if slot == crate::lighting::spot_shadow::NO_SHADOW_SLOT {
+                continue;
+            }
+            let candidate = &self.shadow_candidate_lights[light_idx];
+            // Cube faces are entity-only: an ineligible point light draws
+            // nothing, so it needs no per-face matrices either.
+            let eligible = crate::lighting::entity_occluder_eligible(candidate);
+            pool.slot_entity_eligible[slot as usize] = eligible;
+            if !eligible {
+                continue;
+            }
+            let face_mats = cube_shadow::cube_face_matrices(candidate);
+            for (face, m) in face_mats.iter().enumerate() {
+                let layer = cube_shadow::CubeShadowPool::face_layer(slot, face);
+                pool.face_matrices[layer] = Some(*m);
+                let cols = m.to_cols_array();
+                let off = layer * stride;
+                for (i, v) in cols.iter().enumerate() {
+                    vertex_uniforms[off + i * 4..off + i * 4 + 4].copy_from_slice(&v.to_ne_bytes());
+                }
+            }
+        }
+        self.queue
+            .write_buffer(&self.cube_shadow_vs_uniform_buffer, 0, &vertex_uniforms);
+
+        pool.slot_assignment = slot_assignment;
     }
 
     /// Count of skinned entity occluder instances submitted into spot shadow
@@ -4013,6 +4147,15 @@ impl Renderer {
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn spot_entity_occluders_submitted(&self) -> u32 {
         self.spot_entity_occluders_submitted
+    }
+
+    /// Count of skinned entity occluder instances submitted into CUBE point-light
+    /// shadow faces last frame (summed across occupied slots × 6 faces). The
+    /// CPU-side verification that entity occluders render only for eligible point
+    /// lights and only inside a face frustum. No GPU readback.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn cube_entity_occluders_submitted(&self) -> u32 {
+        self.cube_entity_occluders_submitted
     }
 
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
@@ -4443,6 +4586,52 @@ impl Renderer {
                         }
                     }
                 }
+            }
+        }
+
+        // --- Cube point-light shadow depth loop (entity-only) ----------------
+        // For each occupied cube slot whose light is `entity_occluder_eligible`,
+        // render entity occluders into all 6 faces. Cube faces carry NO world
+        // geometry in v1, so this loop is independent of `has_geometry` and an
+        // ineligible point light (which has no per-face matrices) is skipped
+        // entirely. Per face: a depth render pass into the `slot*6 + face`
+        // D2Array view, projecting by that face's light-space matrix (group 0,
+        // dynamic offset into the cube VS uniform buffer), with the per-instance
+        // cone cull inside `record_skinned_depth` testing each bound against the
+        // face's 90° frustum planes. Reuses the SAME cube-ready depth pipeline as
+        // the spot path.
+        self.cube_entity_occluders_submitted = 0;
+        if let (Some(pool), Some(plan)) = (&self.cube_shadow_pool, &mesh_frame_plan) {
+            let stride = self.shadow_vs_stride;
+            for layer in 0..pool.face_matrices.len() {
+                let Some(face_matrix) = pool.face_matrices[layer] else {
+                    continue;
+                };
+                let view = &pool.face_views[layer];
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Cube Shadow Depth Pass"),
+                    color_attachments: &[],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    ..Default::default()
+                });
+                // Face frustum planes from the same matrix uploaded to the cube
+                // VS uniform buffer — one source of truth for cull + projection.
+                let face_planes = crate::lighting::cone_frustum::cone_frustum_planes(&face_matrix);
+                self.cube_entity_occluders_submitted += self.mesh_pass.record_skinned_depth(
+                    &mut pass,
+                    plan,
+                    &self.cube_shadow_vs_bind_group,
+                    layer as u32 * stride,
+                    &face_planes,
+                );
             }
         }
 

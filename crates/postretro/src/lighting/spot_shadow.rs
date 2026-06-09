@@ -51,6 +51,41 @@ pub fn light_space_matrix(light: &MapLight) -> Mat4 {
 /// Number of shadow-map slots in the pool. Re-tunable.
 pub const SHADOW_POOL_SIZE: usize = 96;
 
+/// Shared scoring/drop core for the shadow-slot rankers (spot pool here, cube
+/// point pool in `cube_shadow.rs`). Takes pre-filtered, pre-scored candidates
+/// — each `(light_index, influence_score)` — plus the pool `capacity` and the
+/// total light count, and returns a `slot_assignment` Vec indexed by light
+/// index: each entry is a slot (`0..capacity`) or [`NO_SHADOW_SLOT`].
+///
+/// Sorts by score descending, breaking ties by ascending light index for
+/// determinism, then assigns the top `capacity` to dense slots `0..capacity`;
+/// every lower-ranked candidate keeps `NO_SHADOW_SLOT` (dropped gracefully —
+/// no panic). Spot and point rankers supply their own light-type filter and
+/// influence score but MUST share this drop policy so the two cannot drift.
+///
+/// `candidates` is taken by value (mutated in place by the sort) so the caller
+/// does not pay a clone.
+pub fn assign_ranked_slots(
+    mut candidates: Vec<(usize, f32)>,
+    capacity: usize,
+    light_count: usize,
+) -> Vec<u32> {
+    let mut slot_assignment = vec![NO_SHADOW_SLOT; light_count];
+
+    // Sort by score (descending), then by index (ascending) for determinism.
+    candidates.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.0.cmp(&b.0))
+    });
+
+    for (slot, (light_idx, _score)) in candidates.iter().take(capacity).enumerate() {
+        slot_assignment[*light_idx] = slot as u32;
+    }
+
+    slot_assignment
+}
+
 /// Depth format for shadow maps.
 pub const SHADOW_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
@@ -344,15 +379,13 @@ impl SpotShadowPool {
         eligible_lights: &[bool],
         camera_view_proj: &Mat4,
     ) -> Vec<u32> {
-        let mut slot_assignment = vec![NO_SHADOW_SLOT; lights.len()];
-
         // Camera frustum planes, shared with the GPU BVH-cull convention.
         let camera_frustum_planes: [Vec4; 6] =
             crate::compute_cull::extract_frustum_planes_for_gpu(camera_view_proj)
                 .map(|p| Vec4::new(p[0], p[1], p[2], p[3]));
 
         // Collect visible pool-eligible spot lights with their scores.
-        let mut candidates: Vec<(usize, f32)> = lights
+        let candidates: Vec<(usize, f32)> = lights
             .iter()
             .enumerate()
             .filter_map(|(idx, light)| {
@@ -398,19 +431,6 @@ impl SpotShadowPool {
             })
             .collect();
 
-        // Sort by score (descending), then by index (ascending) for determinism.
-        candidates.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.0.cmp(&b.0))
-        });
-
-        // Assign top SHADOW_POOL_SIZE to slots.
-        for (slot, (light_idx, _score)) in candidates.iter().take(SHADOW_POOL_SIZE).enumerate() {
-            slot_assignment[*light_idx] = slot as u32;
-            log::debug!("[ShadowPool] light {} → slot {}", light_idx, slot);
-        }
-
         if candidates.len() > SHADOW_POOL_SIZE {
             log::debug!(
                 "[ShadowPool] {} pool-eligible spot lights visible; {} assigned to slots, {} unshadowed",
@@ -420,7 +440,10 @@ impl SpotShadowPool {
             );
         }
 
-        slot_assignment
+        // Shared scoring/drop core: sort by score, assign top SHADOW_POOL_SIZE
+        // to slots, drop the rest. The cube point-pool ranker calls the SAME
+        // core so the two cannot drift.
+        assign_ranked_slots(candidates, SHADOW_POOL_SIZE, lights.len())
     }
 }
 

@@ -185,7 +185,8 @@ const TIMING_PAIR_DEPTH_PREPASS: usize = 2;
 const TIMING_PAIR_SDF_SHADOW: usize = 3;
 const TIMING_PAIR_FORWARD: usize = 4;
 const TIMING_PAIR_SH_COMPOSE: usize = 5;
-const TIMING_PAIR_COUNT: usize = 6;
+const TIMING_PAIR_SMOKE: usize = 6;
+const TIMING_PAIR_COUNT: usize = 7;
 
 // Must match `Uniforms` in forward.wgsl and wireframe.wgsl (both bind the same buffer).
 // std140: vec3<f32> aligns to 16 bytes; camera_position and ambient_floor share a slot.
@@ -2269,6 +2270,7 @@ impl Renderer {
             pass_labels[TIMING_PAIR_SDF_SHADOW] = "sdf_shadow";
             pass_labels[TIMING_PAIR_FORWARD] = "forward";
             pass_labels[TIMING_PAIR_SH_COMPOSE] = "sh_compose";
+            pass_labels[TIMING_PAIR_SMOKE] = "smoke";
             Some(FrameTiming::new(&device, &queue, pass_labels))
         } else {
             None
@@ -4414,6 +4416,10 @@ impl Renderer {
 
         // After opaque forward, before wireframe. Alpha additive; depth test on, write off.
         if self.smoke_pass.has_any_sheet() && !particle_collections.is_empty() {
+            let smoke_ts = self
+                .frame_timing
+                .as_ref()
+                .map(|t| t.render_pass_writes(TIMING_PAIR_SMOKE));
             let mut smoke_pass_enc = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Billboard Sprite Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -4433,6 +4439,7 @@ impl Renderer {
                     }),
                     stencil_ops: None,
                 }),
+                timestamp_writes: smoke_ts,
                 ..Default::default()
             });
             smoke_pass_enc.set_bind_group(0, &self.uniform_bind_group, &[]);

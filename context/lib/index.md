@@ -55,6 +55,7 @@
 | **Frame ordering** | Input → Game logic → Audio → Render → Present. Later stages depend on earlier ones. |
 | **No `unsafe`** | The crate stack provides safe APIs. If `unsafe` appears necessary, stop and consult the project owner. |
 | **Primitive surface is a contract** | Engine parameters exposed as scripting primitives carry API contracts. Changing semantics, valid ranges, or clamping behavior requires updating the scripting surface — SDK types, validation rules, and reaction constructors — in the same pass. |
+| **Runtime performance over development velocity** | When an implementation choice trades runtime cost against authoring convenience, prefer the faster runtime path. Abstractions, extra allocations, and indirection layers are only acceptable when they impose no measurable cost on the hot path. |
 
 ---
 

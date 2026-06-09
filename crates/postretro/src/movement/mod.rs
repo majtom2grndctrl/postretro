@@ -93,9 +93,9 @@ pub(crate) struct MovementInput {
     /// `PlayerOptions.crouch_mode`; the movement intent NEVER sees the raw
     /// button or the mode. In `hold` mode this tracks the `Action::Crouch`
     /// level; in `toggle` mode it tracks a latch flipped on each press edge.
-    // Consumed by the `Crouching` intent (a later task); the field and its
-    // threading land first, so there is no reader yet.
-    #[allow(dead_code)]
+    /// Consumed by the `Crouching` intent: drives the `Normal` → `Crouching`
+    /// entry and the stand-up release; the intent treats it as a plain
+    /// "crouch active this tick" boolean and never reasons about toggle vs hold.
     pub(crate) crouch_intent: bool,
     pub(crate) facing_yaw: f32,
 }
@@ -598,9 +598,8 @@ fn integrate_collision(
 /// airborne resize anchors at the `Head` (the head stays put, the feet
 /// rise/drop toward center). `movement--slide` reuses both modes without the
 /// helper knowing which state called it.
-// Consumed by the `Crouching` intent (a later task) and `movement--slide`;
-// substrate helpers land first, so the production call sites do not exist yet.
-#[allow(dead_code)]
+// Consumed by the `Crouching` intent (grounded entry / stand-up `Feet`,
+// airborne entry `Head`); `movement--slide` reuses both modes later.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResizeAnchor {
     /// Lowest point `position.y - (half_height + radius)` stays fixed — feet
@@ -636,8 +635,8 @@ pub(crate) enum ResizeAnchor {
 ///   - `Head`: keep `position.y + (half_height + radius)` fixed ⇒
 ///     `delta = old_half_height - new_half_height` (positive on a shrink: the
 ///     center rises so the pinned head stays put).
-// Production callers (`Crouching` intent, `movement--slide`) land in later tasks.
-#[allow(dead_code)]
+// Production caller: the `Crouching` intent (entry shrink + stand-up grow);
+// `movement--slide` reuses it later.
 fn resize_capsule(
     component: &mut PlayerMovementComponent,
     target_half_height: f32,
@@ -668,8 +667,8 @@ fn resize_capsule(
 /// State-agnostic (D8): takes the crouched and standing half-heights as plain
 /// sizes, not a crouch flag — `movement--slide` reuses it to test whether a
 /// slide can stand up. Returns `true` when headroom is CLEAR.
-// Production callers (`Crouching` intent, `movement--slide`) land in later tasks.
-#[allow(dead_code)]
+// Production caller: the `Crouching` intent (stand-up release + crouch-jump);
+// `movement--slide` reuses it later.
 fn standup_clearance_probe(
     component: &PlayerMovementComponent,
     collision_world: &CollisionWorld,
@@ -825,6 +824,7 @@ fn normal_intent(
     jump_edges: JumpEdges,
     gravity: f32,
     dt: f32,
+    position: &mut Vec3,
     events: &mut MovementEvents,
 ) -> Option<Transition> {
     // 1. Gravity (airborne only).
@@ -961,6 +961,44 @@ fn normal_intent(
     if input.dash_pressed {
         if let Some(transition) = try_enter_dash(component, input) {
             return Some(transition);
+        }
+    }
+
+    // `Normal` → `Crouching`: fire on the resolved `crouch_intent` bit when a
+    // `CrouchParams` is materialized. Absent `crouch` ⇒ the transition NEVER
+    // fires (crouch disabled — no resize, no effect). The entry resize runs here
+    // (the edge): shrink the collision capsule to the crouched size with the
+    // anchor chosen by grounded-vs-airborne — `Feet` when grounded (plant the
+    // feet, drop the center, D2), `Head` when airborne (pin the head, raise the
+    // feet, D4) — and apply the helper-returned center delta to `position`. The
+    // eye smooths from the current standing eye toward the crouched target inside
+    // the `Crouching` intent; seed `eye_current` at the standing eye so the first
+    // tick begins the descent. The carry is `KEEP_ALL`: crouch is a resize, not a
+    // velocity reset, so momentum is preserved unchanged (the §6 parity no-op).
+    if input.crouch_intent {
+        if let Some(crouch) = component.crouch.as_ref() {
+            let target_half_height = crouch.half_height;
+            let target_eye_height = crouch.eye_height;
+            let anchor = if component.is_grounded {
+                ResizeAnchor::Feet
+            } else {
+                ResizeAnchor::Head
+            };
+            let eye_current = component.capsule.eye_height;
+            let delta = resize_capsule(component, target_half_height, target_eye_height, anchor);
+            position.y += delta;
+            // `resize_capsule` snapped `eye_height` to the crouched target; the
+            // eye must SMOOTH instead (D3). Restore the live `eye_height` to the
+            // pre-entry value so the camera does not pop on the entry tick — the
+            // `Crouching` intent advances `eye_current` toward the crouched target
+            // from here and writes the smoothed value each tick. (`half_height`
+            // keeps the crouched value the helper set: collision shrinks
+            // immediately; only the camera eye eases.)
+            component.capsule.eye_height = eye_current;
+            return Some(Transition {
+                next: MovementState::Crouching { eye_current },
+                carry: CarryRule::KEEP_ALL,
+            });
         }
     }
 
@@ -1215,6 +1253,246 @@ fn dash_intent(
     None
 }
 
+/// The `Crouching` state's per-tick velocity intent. Locomotion mirrors
+/// `Normal` (gravity, jump/air-jump, ground/air acceleration, friction, the
+/// airborne cap) with ONE substitution: the omnidirectional horizontal speed
+/// target is the crouch tier `ground.speed.crouch` instead of walk/run (D5).
+/// Jump access is NEVER suppressed (D10) — the grounded/air jump branch and the
+/// `Dash` transition stay available exactly as in `Normal`.
+///
+/// Beyond locomotion the intent owns two crouch-specific responsibilities:
+///   - Eye smoothing (D3): `eye_current` eases toward the crouched eye target
+///     by a framerate-independent exponential approach at `transition_rate` per
+///     second, written into `component.capsule.eye_height` each tick for the
+///     camera follow.
+///   - Stand-up (D7): while `crouch_intent` is INACTIVE, sweep the standing
+///     capsule up via `standup_clearance_probe`; when CLEAR, resize back to
+///     standing (apply the center delta to `position` — the feet stay planted,
+///     the center rises), transition to `Normal` with `KEEP_ALL` (a resize, not
+///     a velocity reset). When BLOCKED, stay crouched and retry next tick.
+///   - Crouch-jump (D10): when a jump edge fires while `crouch_intent` is STILL
+///     ACTIVE, run the same stand-up probe FIRST — clear headroom ⇒ stand
+///     (resize, shift position) and transition to `Normal`, then apply the jump
+///     this tick; blocked ⇒ apply the jump from the crouched state (lower arc,
+///     crouched capsule retained). The jump is never swallowed.
+///
+/// `eye_current` is borrowed in place from the active `Crouching` variant (the
+/// dispatch resolves the component-vs-state borrow once), so the intent advances
+/// its own smoothing source directly. Returns the warranted transition (always
+/// `KEEP_ALL` — crouch never transforms momentum at the seam) or `None` to stay
+/// `Crouching`.
+// Mirrors `normal_intent`'s shape; grouping the substrate/position handles would
+// add an abstraction with one production caller and no reuse.
+#[allow(clippy::too_many_arguments)]
+fn crouching_intent(
+    component: &mut PlayerMovementComponent,
+    input: &MovementInput,
+    jump_edges: JumpEdges,
+    gravity: f32,
+    dt: f32,
+    collision_world: &CollisionWorld,
+    position: &mut Vec3,
+    events: &mut MovementEvents,
+    eye_current: &mut f32,
+) -> Option<Transition> {
+    let crouched_half_height = component.capsule.half_height;
+    let standing_half_height = component.standing_half_height;
+
+    // 1. Gravity (airborne only) — identical to `Normal`.
+    if !component.is_grounded {
+        component.velocity.y += gravity * dt;
+        let terminal = component.fall.terminal_velocity;
+        if component.velocity.y < -terminal {
+            component.velocity.y = -terminal;
+        }
+    }
+
+    // 2. Jump — NEVER suppressed while crouched (D10). A grounded/coyote/buffered
+    // edge or an air-jump edge fires exactly as in `Normal`. The crouch-jump
+    // stand-if-clear behavior is resolved AFTER the velocity is authored (below):
+    // here we only launch the arc and record that a jump fired this tick.
+    let mut jumped_this_tick = false;
+    if jump_edges.grounded {
+        component.velocity.y = component.air.jump_velocity;
+        component.is_grounded = false;
+        component.jump_spent = true;
+        events.jumped = true;
+        jumped_this_tick = true;
+    } else if jump_edges.air && air_jump_ready(component) {
+        component.velocity.y = component.air.jump_velocity;
+        component.air_jumps_remaining -= 1;
+        component.jump_spent = true;
+        events.jumped = true;
+        jumped_this_tick = true;
+    }
+
+    // 3. Locomotion: ground vs air branch, mirroring `Normal` steps 4/5 but with
+    // the crouch speed tier as the target (and airborne cap). Crouch is
+    // omnidirectional like walk/run — the tier just sits below them.
+    let ground_speed = component.ground.speed.crouch;
+    let input_dir_3d = wish_dir_from_input(input.wish_dir, input.facing_yaw);
+    if component.is_grounded {
+        if input_dir_3d.length_squared() > 0.0 {
+            pm_accelerate(
+                &mut component.velocity,
+                input_dir_3d,
+                ground_speed,
+                component.ground.accel,
+                dt,
+            );
+        }
+    } else if input_dir_3d.length_squared() > 0.0 {
+        let wish_dir_3d = if input.wish_dir.y.abs() > 1e-3 {
+            let facing_dir = Vec3::new(-input.facing_yaw.sin(), 0.0, -input.facing_yaw.cos());
+            let steer = component.air.forward_steer.clamp(0.0, 1.0);
+            let blended = input_dir_3d.lerp(facing_dir, steer);
+            if blended.length_squared() > 0.0 {
+                blended.normalize()
+            } else {
+                Vec3::ZERO
+            }
+        } else {
+            input_dir_3d
+        };
+        let wish_speed = component.air.max_control_speed;
+        pm_accelerate(
+            &mut component.velocity,
+            wish_dir_3d,
+            wish_speed,
+            component.air.accel,
+            dt,
+        );
+        if !component.air.bunny_hop {
+            let horiz = Vec2::new(component.velocity.x, component.velocity.z);
+            let h_speed = horiz.length();
+            if h_speed > ground_speed {
+                let scale = ground_speed / h_speed;
+                component.velocity.x *= scale;
+                component.velocity.z *= scale;
+            }
+        }
+    }
+
+    // 4. Ground friction — same contextual decay as `Normal` step 6, using the
+    // crouch tier as the cap so a crouched player bleeds to a stop / back to the
+    // crouch cap rather than the run cap.
+    if component.is_grounded && input.wish_dir.length_squared() < 0.001 {
+        let horiz = Vec2::new(component.velocity.x, component.velocity.z);
+        let h_speed = horiz.length();
+        if h_speed > 0.0 {
+            let drop = h_speed * GROUND_STOP_FRICTION * dt;
+            let new_speed = (h_speed - drop).max(0.0);
+            let scale = new_speed / h_speed;
+            component.velocity.x *= scale;
+            component.velocity.z *= scale;
+        }
+    } else if component.is_grounded {
+        let h_speed = Vec2::new(component.velocity.x, component.velocity.z).length();
+        if h_speed > ground_speed * OVERSPEED_BLEED_MARGIN {
+            let drop = (h_speed - ground_speed) * GROUND_STOP_FRICTION * dt;
+            let new_speed = (h_speed - drop).max(ground_speed);
+            let scale = new_speed / h_speed;
+            component.velocity.x *= scale;
+            component.velocity.z *= scale;
+        }
+    }
+
+    // 5. Eye smoothing (D3). Ease `eye_current` toward the crouched eye target
+    // with a framerate-independent exponential approach and write it into the
+    // live capsule for the camera follow. `crouch` is `Some` here — the state was
+    // only entered when it was — but fall back gracefully (no eye change) if a
+    // descriptor swap cleared it mid-crouch.
+    if let Some(crouch) = component.crouch.as_ref() {
+        let target_eye = crouch.eye_height;
+        let rate = crouch.transition_rate;
+        let alpha = 1.0 - (-rate * dt).exp();
+        *eye_current += (target_eye - *eye_current) * alpha;
+        component.capsule.eye_height = *eye_current;
+    }
+
+    // 6. Stand-up decision. The `Dash` transition stays available from
+    // `Crouching` (D10) — check it first so a dash press exits crouch into the
+    // dash burst regardless of crouch/jump state.
+    if input.dash_pressed {
+        if let Some(transition) = try_enter_dash(component, input) {
+            return Some(transition);
+        }
+    }
+
+    // Crouch-jump (D10): a jump fired this tick while `crouch_intent` is STILL
+    // active. Probe headroom — clear ⇒ stand (resize, shift the center up) and
+    // exit to `Normal` carrying the jump just launched; blocked ⇒ stay crouched,
+    // the jump still applies (lower arc). Either way the jump is never swallowed.
+    if jumped_this_tick && input.crouch_intent {
+        if standup_clearance_probe(
+            component,
+            collision_world,
+            *position,
+            crouched_half_height,
+            standing_half_height,
+        ) {
+            stand_up_resize(component, position);
+            *eye_current = component.capsule.eye_height;
+            return Some(stand_up_transition());
+        }
+        // Blocked: remain `Crouching` with the crouched capsule, jump applied.
+        return None;
+    }
+
+    // Stand-up on release (D7): `crouch_intent` inactive. Probe the standing
+    // capsule upward; CLEAR ⇒ resize to standing (center rises, feet planted) and
+    // exit to `Normal`; BLOCKED ⇒ stay crouched and retry next tick.
+    if !input.crouch_intent
+        && standup_clearance_probe(
+            component,
+            collision_world,
+            *position,
+            crouched_half_height,
+            standing_half_height,
+        )
+    {
+        stand_up_resize(component, position);
+        *eye_current = component.capsule.eye_height;
+        return Some(stand_up_transition());
+    }
+
+    None
+}
+
+/// Resize the live capsule from the crouched size back to the configured
+/// STANDING reference (`standing_half_height` / `standing_eye_height`), feet
+/// planted (the grounded anchor; the center rises), and apply the helper-returned
+/// center delta to `position`. Used by both stand-up paths (release and
+/// crouch-jump). The eye snaps to the standing target here — the smoothing window
+/// is the descent into crouch; standing back up restores the standing eye
+/// directly (the camera-follow read picks it up next tick). Returns the applied
+/// center delta.
+fn stand_up_resize(component: &mut PlayerMovementComponent, position: &mut Vec3) -> f32 {
+    let target_half_height = component.standing_half_height;
+    let target_eye_height = component.standing_eye_height;
+    // Feet planted on stand-up: the grounded contact point stays put, the center
+    // rises (D2). Airborne stand-up via crouch-jump still anchors the feet so the
+    // launch arc starts from the planted position rather than dropping the head.
+    let delta = resize_capsule(
+        component,
+        target_half_height,
+        target_eye_height,
+        ResizeAnchor::Feet,
+    );
+    position.y += delta;
+    delta
+}
+
+/// The `Crouching` → `Normal` transition: `KEEP_ALL` carry. Crouch preserves
+/// momentum across the edge — it is a capsule resize, not a velocity reset — so
+/// the dispatch-applied carry is the §6 parity no-op.
+fn stand_up_transition() -> Transition {
+    Transition {
+        next: MovementState::Normal,
+        carry: CarryRule::KEEP_ALL,
+    }
+}
+
 /// Apply `Normal`'s contextual horizontal decay to a horizontal velocity vector
 /// in place: when grounded, the no-input stop-friction branch of `Normal` step 6
 /// only; when airborne, the horizontal cap (mirroring steps 4/5). Step 6 has a
@@ -1260,6 +1538,10 @@ fn outgoing_boost(state: &MovementState) -> Vec3 {
     match state {
         MovementState::Normal => Vec3::ZERO,
         MovementState::Dash { boost, .. } => *boost,
+        // `Crouching` carries no boost layer — it is a resize, not a velocity
+        // impulse. `keepBoost`/drop operate on a zero boost (a no-op), matching
+        // `Normal`.
+        MovementState::Crouching { .. } => Vec3::ZERO,
     }
 }
 
@@ -1306,12 +1588,18 @@ fn apply_carry(rule: CarryRule, velocity: &mut Vec3, boost: Vec3) {
 ///
 /// Adding a new state means adding one arm here with its own `&mut` live data;
 /// `tick`'s structure and existing intent signatures are untouched.
+// Threads the substrate handles (`collision_world`, the mutable `position`) the
+// `Crouching` intent needs for its stand-up probe and resize; grouping them into
+// a struct would add an abstraction with one caller and no reuse.
+#[allow(clippy::too_many_arguments)]
 fn dispatch_state_intent(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
     jump_edges: JumpEdges,
     gravity: f32,
     dt: f32,
+    collision_world: &CollisionWorld,
+    position: &mut Vec3,
     events: &mut MovementEvents,
 ) -> Option<MovementState> {
     // Resolve the borrow once: move the live state into a local so its data can
@@ -1319,10 +1607,23 @@ fn dispatch_state_intent(
     // placeholder left behind is overwritten below (write-back or transition).
     let mut state = std::mem::replace(&mut component.movement_state, MovementState::Normal);
     let transition = match &mut state {
-        MovementState::Normal => normal_intent(component, input, jump_edges, gravity, dt, events),
+        MovementState::Normal => {
+            normal_intent(component, input, jump_edges, gravity, dt, position, events)
+        }
         MovementState::Dash { elapsed_ms, boost } => {
             dash_intent(component, input, gravity, dt, elapsed_ms, boost)
         }
+        MovementState::Crouching { eye_current } => crouching_intent(
+            component,
+            input,
+            jump_edges,
+            gravity,
+            dt,
+            collision_world,
+            position,
+            events,
+            eye_current,
+        ),
     };
     match transition {
         Some(Transition { next, carry }) => {
@@ -1352,6 +1653,11 @@ pub(crate) fn tick(
 ) -> (Vec3, MovementEvents) {
     let mut events = MovementEvents::default();
     let was_grounded = component.is_grounded;
+    // Mutable working position: a crouch entry/stand-up resize anchors one
+    // capsule extreme and shifts the center by the helper-returned delta, which
+    // the intent applies here BEFORE the substrate integrates from this position
+    // (the resize moves the capsule center, not the planted/anchored extreme).
+    let mut position = position;
 
     // Input forgiveness (D5): derive the grounded-jump and buffered/coyote jump
     // edges ONCE, here, before the intents run. The intents read these derived
@@ -1367,7 +1673,16 @@ pub(crate) fn tick(
     // transition to apply after the substrate resolves collision. The dispatch
     // resolves the component-vs-active-state borrow once and owns the per-state
     // live data, so a new state plugs in without widening this call.
-    let transition = dispatch_state_intent(component, input, jump_edges, gravity, dt, &mut events);
+    let transition = dispatch_state_intent(
+        component,
+        input,
+        jump_edges,
+        gravity,
+        dt,
+        collision_world,
+        &mut position,
+        &mut events,
+    );
 
     // The grounded edge consumed a pending buffer this tick — clear it so the
     // buffered jump fires exactly once on landing, never twice.
@@ -1443,8 +1758,8 @@ pub(crate) fn tick(
 mod tests {
     use super::*;
     use crate::scripting::data_descriptors::{
-        AirParams, CapsuleParams, DashParams, FallParams, ForgivenessParams, GroundParams,
-        PlayerMovementDescriptor, SpeedParams,
+        AirParams, CapsuleParams, CrouchParams, DashParams, FallParams, ForgivenessParams,
+        GroundParams, PlayerMovementDescriptor, SpeedParams,
     };
     use parry3d::math::Isometry;
     use parry3d::shape::TriMesh;
@@ -4666,5 +4981,384 @@ mod tests {
             standing_half_height,
         );
         assert!(clear, "no ceiling geometry must report headroom clear");
+    }
+
+    // ----- `Crouching` state: entry, speed, stand-up, crouch-jump (D2–D10) ---
+
+    /// Canonical descriptor with crouch configured: crouched half-height 0.4
+    /// (standing 0.8), crouched eye 0.2 (standing 0.5), and a transition rate of
+    /// 15/s. Crouch speed tier is the canonical 3.0 (below walk 7.0).
+    fn crouch_descriptor() -> PlayerMovementDescriptor {
+        let mut desc = canonical_descriptor();
+        desc.crouch = Some(CrouchParams {
+            half_height: 0.4,
+            eye_height: 0.2,
+            transition_rate: 15.0,
+        });
+        desc
+    }
+
+    fn crouch_hold_input() -> MovementInput {
+        MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: false,
+            dash_pressed: false,
+            running: false,
+            crouch_intent: true,
+            facing_yaw: 0.0,
+        }
+    }
+
+    fn is_crouching(comp: &PlayerMovementComponent) -> bool {
+        matches!(comp.movement_state, MovementState::Crouching { .. })
+    }
+
+    /// Ground entry (D2): crouch held while grounded enters `Crouching`, the
+    /// collision half-height becomes the crouched value, and the capsule's lowest
+    /// point (the planted feet) is unchanged from standing.
+    #[test]
+    fn crouch_ground_entry_shrinks_capsule_with_feet_planted() {
+        let desc = crouch_descriptor();
+        let world = floor_and_ceiling_world(50.0); // open headroom
+        let (mut comp, mut pos) = settle_player(&desc);
+        run_ticks(&mut comp, &world, &mut pos, 8, &idle_input());
+
+        let bottom_standing = capsule_bottom(&comp, pos);
+        assert!(
+            approx_eq(comp.capsule.half_height, 0.8, POS_EPS),
+            "precondition: standing half-height, got {}",
+            comp.capsule.half_height
+        );
+
+        // One tick of held crouch fires the Normal -> Crouching entry.
+        run_ticks(&mut comp, &world, &mut pos, 1, &crouch_hold_input());
+        assert!(
+            is_crouching(&comp),
+            "crouch held + grounded must enter Crouching"
+        );
+        assert!(
+            approx_eq(comp.capsule.half_height, 0.4, POS_EPS),
+            "collision half-height must be the crouched value, got {}",
+            comp.capsule.half_height
+        );
+        let bottom_crouched = capsule_bottom(&comp, pos);
+        assert!(
+            approx_eq(bottom_crouched, bottom_standing, 0.02),
+            "feet planted: lowest point must be unchanged: standing {bottom_standing}, crouched {bottom_crouched}"
+        );
+    }
+
+    /// Crouched speed (D5): crouch held with full movement input settles at the
+    /// crouch speed tier, strictly below walk.
+    #[test]
+    fn crouch_speed_settles_at_crouch_tier_below_walk() {
+        let desc = crouch_descriptor();
+        let world = floor_and_ceiling_world(50.0);
+        let (mut comp, mut pos) = settle_player(&desc);
+        run_ticks(&mut comp, &world, &mut pos, 8, &idle_input());
+
+        let crouch_move = MovementInput {
+            wish_dir: Vec2::new(1.0, 0.0),
+            jump_pressed: false,
+            dash_pressed: false,
+            running: false,
+            crouch_intent: true,
+            facing_yaw: 0.0,
+        };
+        run_ticks(&mut comp, &world, &mut pos, 40, &crouch_move);
+        assert!(is_crouching(&comp), "should remain Crouching while held");
+        let speed = horiz_speed(&comp);
+        assert!(
+            approx_eq(speed, desc.ground.speed.crouch, 0.1),
+            "crouched steady-state speed should settle at crouch tier {}, got {}",
+            desc.ground.speed.crouch,
+            speed
+        );
+        assert!(
+            speed < desc.ground.speed.walk,
+            "crouch speed {} must be below walk {}",
+            speed,
+            desc.ground.speed.walk
+        );
+    }
+
+    /// Stand-up CLEAR (D7): crouch released with open headroom transitions
+    /// Crouching -> Normal, restores the standing half-height, and keeps the
+    /// lowest point fixed (feet planted, center rises).
+    #[test]
+    fn crouch_release_stands_up_when_headroom_clear() {
+        let desc = crouch_descriptor();
+        let world = floor_and_ceiling_world(50.0);
+        let (mut comp, mut pos) = settle_player(&desc);
+        run_ticks(&mut comp, &world, &mut pos, 8, &idle_input());
+        run_ticks(&mut comp, &world, &mut pos, 5, &crouch_hold_input());
+        assert!(is_crouching(&comp), "precondition: crouched");
+
+        let bottom_crouched = capsule_bottom(&comp, pos);
+
+        // Release: open headroom => stand up this tick.
+        run_ticks(&mut comp, &world, &mut pos, 1, &idle_input());
+        assert!(
+            matches!(comp.movement_state, MovementState::Normal),
+            "crouch released with clear headroom must return to Normal"
+        );
+        assert!(
+            approx_eq(comp.capsule.half_height, 0.8, POS_EPS),
+            "stand-up must restore the standing half-height, got {}",
+            comp.capsule.half_height
+        );
+        let bottom_standing = capsule_bottom(&comp, pos);
+        assert!(
+            approx_eq(bottom_standing, bottom_crouched, 0.02),
+            "feet planted on stand-up: lowest point fixed: crouched {bottom_crouched}, standing {bottom_standing}"
+        );
+    }
+
+    /// Stand-up BLOCKED (D7): crouch released under a low ceiling keeps the
+    /// player crouched (the standing capsule never materializes); removing the
+    /// ceiling on a later tick auto-stands the first clear tick.
+    #[test]
+    fn crouch_release_under_ceiling_stays_crouched_then_stands_when_clear() {
+        let desc = crouch_descriptor();
+        // Enter crouch under open headroom first.
+        let open = floor_and_ceiling_world(50.0);
+        let (mut comp, mut pos) = settle_player(&desc);
+        run_ticks(&mut comp, &open, &mut pos, 8, &idle_input());
+        run_ticks(&mut comp, &open, &mut pos, 5, &crouch_hold_input());
+        assert!(is_crouching(&comp), "precondition: crouched");
+
+        // A ceiling within the head-rise delta of the crouched head. Crouched top
+        // = pos.y + 0.4 + 0.4; head-rise = 2*(0.8-0.4) = 0.8. Ceiling 0.2 above
+        // the crouched top blocks the standing capsule.
+        let crouched_top = capsule_top(&comp, pos);
+        let blocked = floor_and_ceiling_world(crouched_top + 0.2);
+
+        // Release under the ceiling: must stay crouched, standing capsule never
+        // materializes.
+        for _ in 0..5 {
+            run_ticks(&mut comp, &blocked, &mut pos, 1, &idle_input());
+            assert!(
+                is_crouching(&comp),
+                "blocked headroom must keep the player Crouching"
+            );
+            assert!(
+                approx_eq(comp.capsule.half_height, 0.4, POS_EPS),
+                "standing capsule must never materialize under a ceiling, got {}",
+                comp.capsule.half_height
+            );
+        }
+
+        // Remove the ceiling: the very next tick (release still held) auto-stands.
+        run_ticks(&mut comp, &open, &mut pos, 1, &idle_input());
+        assert!(
+            matches!(comp.movement_state, MovementState::Normal),
+            "with the ceiling gone the first clear tick must auto-stand"
+        );
+        assert!(
+            approx_eq(comp.capsule.half_height, 0.8, POS_EPS),
+            "auto-stand must restore the standing half-height, got {}",
+            comp.capsule.half_height
+        );
+    }
+
+    /// Crouch-jump CLEAR (D10): jump while crouched under open headroom stands
+    /// then jumps — transitions to Normal AND launches the jump arc this tick.
+    #[test]
+    fn crouch_jump_under_clear_headroom_stands_then_jumps() {
+        let desc = crouch_descriptor();
+        let world = floor_and_ceiling_world(50.0);
+        let (mut comp, mut pos) = settle_player(&desc);
+        run_ticks(&mut comp, &world, &mut pos, 8, &idle_input());
+        run_ticks(&mut comp, &world, &mut pos, 5, &crouch_hold_input());
+        assert!(is_crouching(&comp), "precondition: crouched");
+
+        let jump_while_crouched = MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: true,
+            dash_pressed: false,
+            running: false,
+            crouch_intent: true, // crouch STILL held during the jump
+            facing_yaw: 0.0,
+        };
+        let events = run_ticks(&mut comp, &world, &mut pos, 1, &jump_while_crouched);
+        assert!(events.jumped, "crouch-jump must launch the jump");
+        assert!(
+            matches!(comp.movement_state, MovementState::Normal),
+            "clear-headroom crouch-jump must stand (exit to Normal)"
+        );
+        assert!(
+            approx_eq(comp.capsule.half_height, 0.8, POS_EPS),
+            "clear-headroom crouch-jump must restore the standing capsule, got {}",
+            comp.capsule.half_height
+        );
+        assert!(
+            approx_eq(comp.velocity.y, desc.air.jump_velocity, VEL_EPS),
+            "crouch-jump must apply the full jump velocity, got {}",
+            comp.velocity.y
+        );
+    }
+
+    /// Crouch-jump BLOCKED (D10): jump while crouched under a blocking ceiling
+    /// still applies the jump and retains the crouched capsule (no dead input).
+    #[test]
+    fn crouch_jump_under_ceiling_jumps_without_standing() {
+        let desc = crouch_descriptor();
+        let open = floor_and_ceiling_world(50.0);
+        let (mut comp, mut pos) = settle_player(&desc);
+        run_ticks(&mut comp, &open, &mut pos, 8, &idle_input());
+        run_ticks(&mut comp, &open, &mut pos, 5, &crouch_hold_input());
+        assert!(is_crouching(&comp), "precondition: crouched");
+
+        let crouched_top = capsule_top(&comp, pos);
+        let blocked = floor_and_ceiling_world(crouched_top + 0.2);
+
+        let jump_while_crouched = MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: true,
+            dash_pressed: false,
+            running: false,
+            crouch_intent: true,
+            facing_yaw: 0.0,
+        };
+        let events = run_ticks(&mut comp, &blocked, &mut pos, 1, &jump_while_crouched);
+        assert!(
+            events.jumped,
+            "blocked crouch-jump must STILL apply the jump (no dead input)"
+        );
+        assert!(
+            is_crouching(&comp),
+            "blocked crouch-jump must retain the Crouching state"
+        );
+        assert!(
+            approx_eq(comp.capsule.half_height, 0.4, POS_EPS),
+            "blocked crouch-jump must retain the crouched capsule, got {}",
+            comp.capsule.half_height
+        );
+        assert!(
+            comp.velocity.y > 0.0,
+            "blocked crouch-jump must still launch an upward arc, got vy {}",
+            comp.velocity.y
+        );
+    }
+
+    /// The `Dash` transition is available from `Crouching` (D10): a dash press
+    /// while crouched exits crouch into the dash burst.
+    #[test]
+    fn crouch_dash_transition_available() {
+        let mut desc = crouch_descriptor();
+        desc.dash = Some(dash_params(12.0, 0.0, 0.0, 50.0, 0.0, 0, false));
+        let world = floor_and_ceiling_world(50.0);
+        let (mut comp, mut pos) = settle_player(&desc);
+        run_ticks(&mut comp, &world, &mut pos, 8, &idle_input());
+        run_ticks(&mut comp, &world, &mut pos, 5, &crouch_hold_input());
+        assert!(is_crouching(&comp), "precondition: crouched");
+
+        let dash_while_crouched = MovementInput {
+            wish_dir: Vec2::new(1.0, 0.0),
+            jump_pressed: false,
+            dash_pressed: true,
+            running: false,
+            crouch_intent: true,
+            facing_yaw: 0.0,
+        };
+        run_ticks(&mut comp, &world, &mut pos, 1, &dash_while_crouched);
+        assert!(
+            matches!(comp.movement_state, MovementState::Dash { .. }),
+            "a dash press from Crouching must enter Dash"
+        );
+    }
+
+    /// Airborne crouch (D4): entering `Crouching` midair anchors the HEAD — the
+    /// capsule's highest point is unchanged (feet rise toward center).
+    #[test]
+    fn crouch_airborne_entry_anchors_head() {
+        let desc = crouch_descriptor();
+        let world = floor_and_ceiling_world(50.0);
+        let mut comp = PlayerMovementComponent::from_descriptor(&desc);
+        // Place the player clearly airborne, no floor contact this tick.
+        let mut pos = Vec3::new(0.0, 10.0, 0.0);
+        comp.is_grounded = false;
+
+        let top_before = capsule_top(&comp, pos);
+        assert!(
+            approx_eq(comp.capsule.half_height, 0.8, POS_EPS),
+            "precondition: standing half-height"
+        );
+
+        run_ticks(&mut comp, &world, &mut pos, 1, &crouch_hold_input());
+        assert!(
+            is_crouching(&comp),
+            "crouch held while airborne must enter Crouching"
+        );
+        assert!(
+            approx_eq(comp.capsule.half_height, 0.4, POS_EPS),
+            "airborne crouch must shrink the collision capsule, got {}",
+            comp.capsule.half_height
+        );
+        let top_after = capsule_top(&comp, pos);
+        assert!(
+            approx_eq(top_after, top_before, 0.02),
+            "head anchored midair: highest point unchanged: before {top_before}, after {top_after}"
+        );
+    }
+
+    /// Absent `crouch` descriptor disables crouch: Normal -> Crouching never
+    /// fires regardless of `crouch_intent`, and no capsule resize occurs.
+    #[test]
+    fn crouch_disabled_when_no_params() {
+        let desc = canonical_descriptor(); // crouch: None
+        let world = floor_and_ceiling_world(50.0);
+        let (mut comp, mut pos) = settle_player(&desc);
+        run_ticks(&mut comp, &world, &mut pos, 8, &idle_input());
+
+        let half_before = comp.capsule.half_height;
+        run_ticks(&mut comp, &world, &mut pos, 10, &crouch_hold_input());
+        assert!(
+            matches!(comp.movement_state, MovementState::Normal),
+            "absent crouch params: Normal -> Crouching must never fire"
+        );
+        assert!(
+            approx_eq(comp.capsule.half_height, half_before, POS_EPS),
+            "absent crouch params: no capsule resize, got {} (was {})",
+            comp.capsule.half_height,
+            half_before
+        );
+    }
+
+    /// Eye smoothing (D3): the camera eye eases toward the crouched target across
+    /// ticks rather than snapping on entry.
+    #[test]
+    fn crouch_eye_height_smooths_toward_target() {
+        let desc = crouch_descriptor();
+        let world = floor_and_ceiling_world(50.0);
+        let (mut comp, mut pos) = settle_player(&desc);
+        run_ticks(&mut comp, &world, &mut pos, 8, &idle_input());
+
+        let standing_eye = comp.capsule.eye_height; // 0.5
+        // Entry tick: the Normal -> Crouching transition fires and the eye is
+        // held at the standing value (no snap to the crouched target). Smoothing
+        // begins the following tick, inside the Crouching intent.
+        run_ticks(&mut comp, &world, &mut pos, 1, &crouch_hold_input());
+        assert!(is_crouching(&comp));
+        assert!(
+            approx_eq(comp.capsule.eye_height, standing_eye, POS_EPS),
+            "entry tick must NOT snap the eye to the crouched target, got {}",
+            comp.capsule.eye_height
+        );
+        // A few smoothing ticks: the eye eases between standing 0.5 and crouched
+        // 0.2 (exponential approach), not snapped to either end.
+        run_ticks(&mut comp, &world, &mut pos, 2, &crouch_hold_input());
+        let eye_mid = comp.capsule.eye_height;
+        assert!(
+            eye_mid < standing_eye && eye_mid > 0.2,
+            "eye should ease (between standing 0.5 and crouched 0.2), got {eye_mid}"
+        );
+        // Many ticks later the eye should have converged near the crouched target.
+        run_ticks(&mut comp, &world, &mut pos, 40, &crouch_hold_input());
+        assert!(
+            approx_eq(comp.capsule.eye_height, 0.2, 0.01),
+            "eye should converge toward the crouched target 0.2, got {}",
+            comp.capsule.eye_height
+        );
     }
 }

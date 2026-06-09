@@ -407,11 +407,21 @@ fn scripted_light_intensity_scalar(premultiplied_color: vec3<f32>, base_color: v
     return premultiplied_channel / color_channel;
 }
 
+// Tunable PCF radius (in shadow-map texels) for runtime shadow-map sampling.
+// The ONE shared softness parameter: the spot path here and the point path
+// (Task 5) both scale their multi-tap kernel by this. NON-ZERO so the kernel
+// samples more than one texel — a 3×3 box of comparison samples spaced
+// `SPOT_SHADOW_PCF_RADIUS` texels apart antialiases the shadow edge rather than
+// stair-stepping a single texel. A module-scope const (not a uniform) keeps the
+// group-0 `Uniforms` 3-way byte contract untouched; the depth BIAS stays
+// per-pool (the depth pipeline's `DepthBiasState`), so only the radius is shared.
+const SPOT_SHADOW_PCF_RADIUS: f32 = 1.0;
+
 // Sample the shadow map for a dynamic spot light. Returns 0.0 (fully shadowed)
 // to 1.0 (fully lit). Fragments outside the shadow map's projection are treated
 // as unshadowed (1.0).
 //
-// `slot_index`: shadow-map slot (0..7) from GpuLight.cone_angles_and_pad.z.
+// `slot_index`: shadow-map slot from GpuLight.cone_angles_and_pad.z.
 fn sample_spot_shadow(slot_index: u32, world_pos: vec3<f32>, light_proj: mat4x4<f32>) -> f32 {
     let light_clip = light_proj * vec4<f32>(world_pos, 1.0);
     // Points behind the light produce negative w; reject to avoid folding the
@@ -429,14 +439,26 @@ fn sample_spot_shadow(slot_index: u32, world_pos: vec3<f32>, light_proj: mat4x4<
         return 1.0; // Unshadowed — outside cone.
     }
 
-    // CompareFunction::Less returns 1.0 when fragment depth < stored depth (lit).
-    return textureSampleCompare(
-        spot_shadow_depth,
-        spot_shadow_compare,
-        uv,
-        i32(slot_index),
-        light_ndc.z
-    );
+    // Tunable-radius PCF: average a 3×3 grid of comparison samples spaced
+    // `SPOT_SHADOW_PCF_RADIUS` texels apart in UV. `textureSampleCompare`
+    // (CompareFunction::Less) returns 1.0 per tap when the fragment is closer
+    // than the stored occluder depth (lit); the mean is the soft visibility.
+    let texel = 1.0 / vec2<f32>(textureDimensions(spot_shadow_depth));
+    let step = texel * SPOT_SHADOW_PCF_RADIUS;
+    var lit = 0.0;
+    for (var dy = -1; dy <= 1; dy = dy + 1) {
+        for (var dx = -1; dx <= 1; dx = dx + 1) {
+            let offset = vec2<f32>(f32(dx), f32(dy)) * step;
+            lit = lit + textureSampleCompare(
+                spot_shadow_depth,
+                spot_shadow_compare,
+                uv + offset,
+                i32(slot_index),
+                light_ndc.z
+            );
+        }
+    }
+    return lit / 9.0;
 }
 
 // The depth-aware octahedral irradiance sampler lives in `sh_sample.wgsl`,

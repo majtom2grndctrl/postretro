@@ -9,9 +9,9 @@
 // the instanced draws. Pure functions here so grouping, base-index assignment,
 // and overflow are unit-testable without a GPU.
 
-use glam::Mat4;
+use glam::{Mat4, Vec4};
 
-use crate::lighting::cone_frustum::Aabb;
+use crate::lighting::cone_frustum::{Aabb, aabb_intersects_frustum};
 use crate::model::ModelHandle;
 
 /// Fixed per-frame bone-palette budget, in `BonePaletteEntry` slots (one slot =
@@ -217,6 +217,25 @@ pub(crate) fn instance_phase(seed: u32, clip_duration: f32) -> f32 {
     frac * clip_duration
 }
 
+/// Whether a planned skinned instance casts into a spot light's shadow slot:
+/// its model's LOCAL-space bound, transformed by the instance's world matrix,
+/// must intersect the slot's cone frustum. Pure CPU data logic (no GPU, no BVH —
+/// entities are not in the world BVH), mirroring the GPU cone-cull convention via
+/// the shared `aabb_intersects_frustum`, so the caster cull provably agrees with
+/// the world cull's frustum test.
+///
+/// The renderer records only instances this returns `true` for into a given
+/// slot's depth layer; an enemy whose transformed bound lies outside the cone is
+/// not drawn into that slot. Drives the per-frame submitted-occluder counter that
+/// verifies the "enemy outside the cone is not drawn" acceptance criterion.
+pub(crate) fn instance_casts_into_cone(
+    instance: &PlannedInstance,
+    cone_planes: &[Vec4; 6],
+) -> bool {
+    let world_bound = instance.bounds.transformed(&instance.transform);
+    aabb_intersects_frustum(&world_bound, cone_planes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,6 +424,124 @@ mod tests {
     #[test]
     fn instance_phase_zero_for_zero_length_clip() {
         assert_eq!(instance_phase(12345, 0.0), 0.0);
+    }
+
+    /// AC#2: the per-light caster cull keeps an instance whose transformed bound
+    /// is inside the cone and drops one whose transformed bound is outside it.
+    /// Pure CPU: builds the cone planes from a spotlight aimed down -Z, then
+    /// places one instance inside the cone and one far off-axis. The LOCAL bound
+    /// is identical for both — only the world transform moves it in/out, proving
+    /// the transform-then-test path culls correctly.
+    #[test]
+    fn caster_cull_keeps_in_cone_drops_out_of_cone() {
+        use crate::lighting::cone_frustum::cone_frustum_planes;
+        use crate::lighting::spot_shadow::light_space_matrix;
+        use crate::prl::{FalloffModel, LightType, MapLight, ShadowType};
+
+        // Spotlight at the origin aimed down -Z, 20 m range — same cone the
+        // cone_frustum tests use.
+        let light = MapLight {
+            origin: [0.0, 0.0, 0.0],
+            light_type: LightType::Spot,
+            intensity: 1.0,
+            color: [1.0, 1.0, 1.0],
+            falloff_model: FalloffModel::Linear,
+            falloff_range: 20.0,
+            cone_angle_inner: 0.3,
+            cone_angle_outer: 0.4,
+            cone_direction: [0.0, 0.0, -1.0],
+            cast_shadows: true,
+            is_dynamic: true,
+            casts_entity_shadows: true,
+            animated_slot: None,
+            tags: vec![],
+            leaf_index: 0,
+            shadow_type: ShadowType::StaticLightMap,
+        };
+        let planes = cone_frustum_planes(&light_space_matrix(&light));
+
+        // A unit-ish local bound (1 m half-extents), like a rigged enemy.
+        let local = Aabb {
+            min: Vec3::new(-0.5, -0.5, -0.5),
+            max: Vec3::new(0.5, 0.5, 0.5),
+        };
+
+        // Inside: 10 m down the cone axis.
+        let inside = PlannedInstance {
+            transform: Mat4::from_translation(Vec3::new(0.0, 0.0, -10.0)),
+            palette_base: 0,
+            phase_seed: 0,
+            bounds: local,
+        };
+        assert!(
+            instance_casts_into_cone(&inside, &planes),
+            "instance inside the cone must cast into the slot"
+        );
+
+        // Outside: far off-axis (+50 m in X) at the same depth — well beyond the
+        // cone's angular spread.
+        let outside = PlannedInstance {
+            transform: Mat4::from_translation(Vec3::new(50.0, 0.0, -10.0)),
+            palette_base: 0,
+            phase_seed: 0,
+            bounds: local,
+        };
+        assert!(
+            !instance_casts_into_cone(&outside, &planes),
+            "instance outside the cone must not cast into the slot"
+        );
+    }
+
+    /// A rotation that swings a long, thin local bound into the cone must be
+    /// enclosed correctly — the transformed-corner method (not a component-wise
+    /// min/max transform) is what makes the rotated box's true extent the test
+    /// input. A bar pointing along local +X, rotated to point down -Z and placed
+    /// on the cone axis, must classify as casting.
+    #[test]
+    fn caster_cull_encloses_rotated_bound() {
+        use crate::lighting::cone_frustum::cone_frustum_planes;
+        use crate::lighting::spot_shadow::light_space_matrix;
+        use crate::prl::{FalloffModel, LightType, MapLight, ShadowType};
+
+        let light = MapLight {
+            origin: [0.0, 0.0, 0.0],
+            light_type: LightType::Spot,
+            intensity: 1.0,
+            color: [1.0, 1.0, 1.0],
+            falloff_model: FalloffModel::Linear,
+            falloff_range: 20.0,
+            cone_angle_inner: 0.3,
+            cone_angle_outer: 0.4,
+            cone_direction: [0.0, 0.0, -1.0],
+            cast_shadows: true,
+            is_dynamic: true,
+            casts_entity_shadows: true,
+            animated_slot: None,
+            tags: vec![],
+            leaf_index: 0,
+            shadow_type: ShadowType::StaticLightMap,
+        };
+        let planes = cone_frustum_planes(&light_space_matrix(&light));
+
+        // Long bar along local X, thin in Y/Z.
+        let bar = Aabb {
+            min: Vec3::new(-4.0, -0.1, -0.1),
+            max: Vec3::new(4.0, 0.1, 0.1),
+        };
+        // Rotate -90° about Y so local +X points to world -Z, then drop it onto
+        // the axis 10 m down the cone.
+        let transform = Mat4::from_translation(Vec3::new(0.0, 0.0, -10.0))
+            * Mat4::from_rotation_y(-std::f32::consts::FRAC_PI_2);
+        let inst = PlannedInstance {
+            transform,
+            palette_base: 0,
+            phase_seed: 0,
+            bounds: bar,
+        };
+        assert!(
+            instance_casts_into_cone(&inst, &planes),
+            "rotated bar on the cone axis must enclose correctly and cast"
+        );
     }
 
     #[test]

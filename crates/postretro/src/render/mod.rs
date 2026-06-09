@@ -1184,6 +1184,14 @@ pub struct Renderer {
     /// drops the excess instances; the warning fires at most once per second.
     mesh_overflow_last_warn: f32,
 
+    /// CPU-side count of skinned ENTITY occluder instances submitted into spot
+    /// shadow slots last frame, summed across slots (each instance counted once
+    /// per slot it casts into). Mirrors `shadow-cone-cull`'s submitted-instance
+    /// counter — no GPU readback. Verifies the "enemy outside the cone is not
+    /// drawn" acceptance criterion: an instance the per-light cone cull rejects
+    /// is never added here. Reset to 0 at the start of the spot-shadow depth loop.
+    spot_entity_occluders_submitted: u32,
+
     /// Instanced UI quad / 9-slice pass for panels and images plus glyphon text.
     /// Built alongside `fog`; records the splash (splash phase) and an empty draw
     /// list on the gameplay path (`render_frame_indirect`). Owns all UI GPU state.
@@ -2527,6 +2535,7 @@ impl Renderer {
             mesh_draws: Vec::new(),
             bone_palette_scratch: Vec::new(),
             mesh_overflow_last_warn: f32::NEG_INFINITY,
+            spot_entity_occluders_submitted: 0,
             ui,
             splash_logo_size: None,
             ui_images: ui::UiImageRegistry::default(),
@@ -3958,20 +3967,28 @@ impl Renderer {
         let mut vertex_uniforms =
             vec![0u8; stride * crate::lighting::spot_shadow::SHADOW_POOL_SIZE];
         // Reset the per-slot cone-matrix stash; reoccupied slots overwrite, the
-        // rest stay `None` so the GPU cone cull skips them this frame.
+        // rest stay `None` so the GPU cone cull skips them this frame. The
+        // entity-occluder gate resets to `false` in lockstep.
         self.spot_shadow_pool.slot_cone_matrices =
             [None; crate::lighting::spot_shadow::SHADOW_POOL_SIZE];
+        self.spot_shadow_pool.slot_entity_eligible =
+            [false; crate::lighting::spot_shadow::SHADOW_POOL_SIZE];
         for (light_idx, &slot) in slot_assignment.iter().enumerate() {
             if slot == crate::lighting::spot_shadow::NO_SHADOW_SLOT {
                 continue;
             }
-            let m = crate::lighting::spot_shadow::light_space_matrix(
-                &self.shadow_candidate_lights[light_idx],
-            );
+            let candidate = &self.shadow_candidate_lights[light_idx];
+            let m = crate::lighting::spot_shadow::light_space_matrix(candidate);
             // Stash the SAME light-space matrix uploaded to bind-group-5 below —
             // the shadow-depth render loop reads it to build this slot's cone
             // cull frustum planes (one source of truth, no recomputation).
             self.spot_shadow_pool.slot_cone_matrices[slot as usize] = Some(m);
+            // Record whether this slot's occupant renders entity occluders. The
+            // shadow-depth loop draws skinned occluders into the slot only when
+            // this is set; an ineligible (e.g. toggle-off dynamic) slot keeps its
+            // world shadow but draws none.
+            self.spot_shadow_pool.slot_entity_eligible[slot as usize] =
+                crate::lighting::entity_occluder_eligible(candidate);
             let cols = m.to_cols_array();
             let mut bytes = [0u8; MAT_BYTES];
             for (i, v) in cols.iter().enumerate() {
@@ -3992,6 +4009,15 @@ impl Renderer {
             .write_buffer(&self.shadow_vs_uniform_buffer, 0, &vertex_uniforms);
 
         self.spot_shadow_pool.slot_assignment = slot_assignment;
+    }
+
+    /// Count of skinned entity occluder instances submitted into spot shadow
+    /// slots last frame (summed across slots). The CPU-side verification for the
+    /// out-of-cone acceptance criterion — an instance the per-light cone cull
+    /// rejects is never tallied here. No GPU readback.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn spot_entity_occluders_submitted(&self) -> u32 {
+        self.spot_entity_occluders_submitted
     }
 
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
@@ -4337,6 +4363,11 @@ impl Renderer {
             used_slots.sort_unstable();
             used_slots.dedup();
 
+            // Reset the per-frame entity-occluder counter; the per-slot cull
+            // tallies into it below. Mirrors `shadow-cone-cull`'s submitted
+            // counter — pure CPU, no GPU readback.
+            self.spot_entity_occluders_submitted = 0;
+
             // Per-slot GPU cone cull: one compute pass loops the occupied slots,
             // dispatching BVH traversal into each slot's indirect sub-region
             // gated by that slot's cone frustum planes. Runs after the camera
@@ -4388,16 +4419,34 @@ impl Renderer {
                 // the cube-ready contract — the pipeline takes the view + matrix
                 // as per-render parameters, with no slot-count or 2D-target
                 // assumption baked in. Reads the already-posed buffers from the
-                // hoist (no rewrite since). Per-light entity caster CULLING is
-                // Task 2: this records ALL planned skinned instances into every
-                // occupied slot for now (see report); the cull narrows it later.
+                // hoist (no rewrite since), so the occluder pose matches the
+                // forward draw with no one-frame lag.
+                //
+                // TWO gates (kept separate from pool-slot eligibility):
+                //   1. `slot_entity_eligible[slot]` — the slot's light passes
+                //      `entity_occluder_eligible` (dynamic + toggle on). An
+                //      ineligible slot keeps its world shadow (already drawn
+                //      above) but draws ZERO entity occluders.
+                //   2. per-instance cone cull inside `record_skinned_depth` —
+                //      only instances whose transformed bound intersects this
+                //      slot's cone are submitted.
                 if let Some(plan) = &mesh_frame_plan {
-                    self.mesh_pass.record_skinned_depth(
-                        &mut pass,
-                        plan,
-                        &self.shadow_vs_bind_group,
-                        slot * stride,
-                    );
+                    if self.spot_shadow_pool.slot_entity_eligible[slot as usize] {
+                        if let Some(cone_matrix) =
+                            self.spot_shadow_pool.slot_cone_matrices[slot as usize]
+                        {
+                            let cone_planes =
+                                crate::lighting::cone_frustum::cone_frustum_planes(&cone_matrix);
+                            self.spot_entity_occluders_submitted +=
+                                self.mesh_pass.record_skinned_depth(
+                                    &mut pass,
+                                    plan,
+                                    &self.shadow_vs_bind_group,
+                                    slot * stride,
+                                    &cone_planes,
+                                );
+                        }
+                    }
                 }
             }
         }

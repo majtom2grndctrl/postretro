@@ -51,7 +51,8 @@ use crate::model::skeleton::{AnimationClip, Skeleton};
 use crate::model::{BonePaletteEntry, ModelHandle};
 use crate::prl::LevelWorld;
 use crate::render::mesh_instances::{
-    JointCounts, MAX_INSTANCES, MAX_PALETTE_ENTRIES, MeshFramePlan, instance_phase,
+    JointCounts, MAX_INSTANCES, MAX_PALETTE_ENTRIES, MeshFramePlan, instance_casts_into_cone,
+    instance_phase,
 };
 use crate::visibility::VisibleCells;
 
@@ -731,27 +732,45 @@ impl MeshPass {
     }
 
     /// Record skinned ENTITY occluders into a shadow map through the
-    /// parameterized depth-only path. `light_space_bind_group` + `dynamic_offset`
-    /// select the per-render light-space matrix at group 0 (the spot path passes
-    /// the renderer's `shadow_vs_bind_group` and the per-slot offset; a cube path
-    /// would pass a per-face uniform) — nothing here assumes one slot per light or
-    /// a 2D target, proving the cube-ready contract.
+    /// parameterized depth-only path, culled per-slot by the slot's cone frustum.
+    /// `light_space_bind_group` + `dynamic_offset` select the per-render
+    /// light-space matrix at group 0 (the spot path passes the renderer's
+    /// `shadow_vs_bind_group` and the per-slot offset; a cube path would pass a
+    /// per-face uniform) — nothing here assumes one slot per light or a 2D target,
+    /// proving the cube-ready contract.
+    ///
+    /// `cone_planes` are the slot's 6 cone-frustum planes (from the slot's
+    /// light-space matrix). Each planned instance's local bound is transformed by
+    /// its world matrix and tested against the cone; only intersecting instances
+    /// are drawn into the slot. Entities are not in the world BVH, so this cull is
+    /// per-instance CPU (distinct from the GPU world cull). Returns the count of
+    /// instances actually submitted into this slot, so the caller can tally the
+    /// per-frame submitted-occluder counter that verifies the out-of-cone
+    /// acceptance criterion — no GPU readback.
     ///
     /// The caller owns the target view (it begins the render pass against the
     /// slot's depth attachment) and supplies the light-space matrix via the bind
     /// group; this method binds the depth pipeline + the SHARED group-3 instance
-    /// data and records one instanced `draw_indexed` per model per submesh from the
-    /// SAME palette/instance buffers [`MeshPass::plan_and_upload`] populated. No
-    /// per-frame buffer writes here — it reads the already-posed data.
+    /// data and records the draws from the SAME palette/instance buffers
+    /// [`MeshPass::plan_and_upload`] populated. No per-frame buffer writes here —
+    /// it reads the already-posed data.
+    ///
+    /// Surviving instances are drawn as per-instance `draw_indexed` calls
+    /// (`instance_index..+1`) because the cone cull selects an arbitrary subset of
+    /// each group's contiguous SSBO range; wave counts are small (a few dozen), so
+    /// per-instance draws stay cheap. The base instance is the absolute index into
+    /// the dense SSBO (the palette base still travels in the SSBO entry, addressed
+    /// by `@builtin(instance_index)` — not through `first_instance`).
     pub fn record_skinned_depth(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         plan: &MeshFramePlan,
         light_space_bind_group: &wgpu::BindGroup,
         dynamic_offset: u32,
-    ) {
+        cone_planes: &[glam::Vec4; 6],
+    ) -> u32 {
         if plan.groups.is_empty() {
-            return;
+            return 0;
         }
 
         pass.set_pipeline(&self.depth_pipeline);
@@ -760,6 +779,7 @@ impl MeshPass {
         // layout forces it to index 3 so the bind group is reusable verbatim.
         pass.set_bind_group(3, &self.instance_bind_group, &[]);
 
+        let mut submitted: u32 = 0;
         for group in &plan.groups {
             let Some(model) = self.models.get(&group.model) else {
                 continue;
@@ -767,20 +787,29 @@ impl MeshPass {
             if model.submeshes.is_empty() {
                 continue;
             }
-            let instance_range =
-                group.instance_offset..group.instance_offset + group.instances.len() as u32;
             pass.set_vertex_buffer(0, model.vertex_buffer.slice(..));
             pass.set_index_buffer(model.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            // Depth-only: one draw per submesh range, no material bind (the depth
-            // layout omits group 1). The whole index buffer would also work, but
-            // iterating submeshes keeps a single code shape with the forward path.
-            for (_material_bind_group, indices) in &model.submeshes {
-                if indices.is_empty() {
+            for (i, inst) in group.instances.iter().enumerate() {
+                // Per-light caster cull: skip instances whose transformed bound
+                // does not intersect this slot's cone. An enemy outside the cone
+                // is not drawn into the slot.
+                if !instance_casts_into_cone(inst, cone_planes) {
                     continue;
                 }
-                pass.draw_indexed(indices.clone(), 0, instance_range.clone());
+                let instance_index = group.instance_offset + i as u32;
+                let instance_range = instance_index..instance_index + 1;
+                // Depth-only: one draw per submesh range, no material bind (the
+                // depth layout omits group 1).
+                for (_material_bind_group, indices) in &model.submeshes {
+                    if indices.is_empty() {
+                        continue;
+                    }
+                    pass.draw_indexed(indices.clone(), 0, instance_range.clone());
+                }
+                submitted += 1;
             }
         }
+        submitted
     }
 }
 

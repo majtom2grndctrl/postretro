@@ -101,6 +101,14 @@ pub struct SpotShadowPool {
     /// buffer — one source of truth, read by the shadow-depth render loop to
     /// build the slot's GPU cone-cull frustum planes. `None` = slot unoccupied.
     pub slot_cone_matrices: [Option<Mat4>; SHADOW_POOL_SIZE],
+    /// Per-slot entity-occluder gate, written alongside `slot_cone_matrices` in
+    /// `update_dynamic_light_slots`. `true` only when the slot's occupant passes
+    /// [`crate::lighting::entity_occluder_eligible`] (`casts_entity_shadows &&
+    /// is_dynamic`). The shadow-depth render loop draws skinned entity occluders
+    /// into a slot ONLY when this is `true`; an ineligible slot keeps its WORLD
+    /// shadow but draws zero entity occluders. Separate from pool-slot
+    /// eligibility (which still admits non-entity dynamic spots to a slot).
+    pub slot_entity_eligible: [bool; SHADOW_POOL_SIZE],
 }
 
 impl SpotShadowPool {
@@ -279,6 +287,7 @@ impl SpotShadowPool {
             bind_group,
             slot_assignment: Vec::new(),
             slot_cone_matrices: [None; SHADOW_POOL_SIZE],
+            slot_entity_eligible: [false; SHADOW_POOL_SIZE],
         }
     }
 
@@ -493,6 +502,43 @@ mod tests {
             light_space_matrices_array_len(FOG_SRC),
             Some(expected_len),
             "fog_volume.wgsl LightSpaceMatrices array length must equal the Rust pool size"
+        );
+    }
+
+    /// Tunable PCF radius wiring (AC, mechanical half): `sample_spot_shadow` must
+    /// carry a single non-zero `SPOT_SHADOW_PCF_RADIUS` const and a multi-tap
+    /// kernel scaled by it. Pins the radius name/location so Task 5 (point path)
+    /// can reuse the same parameter, and guards against a silent revert to a
+    /// single-texel (radius-zero / one-tap) sample.
+    #[test]
+    fn forward_spot_shadow_has_nonzero_pcf_radius_and_multitap_kernel() {
+        const FORWARD_SRC: &str = include_str!("../shaders/forward.wgsl");
+
+        // The shared radius parameter exists, is a const, and parses to non-zero.
+        let marker = "const SPOT_SHADOW_PCF_RADIUS: f32 =";
+        let start = FORWARD_SRC
+            .find(marker)
+            .expect("forward.wgsl must declare SPOT_SHADOW_PCF_RADIUS")
+            + marker.len();
+        let end = FORWARD_SRC[start..]
+            .find(';')
+            .expect("SPOT_SHADOW_PCF_RADIUS declaration must terminate with ';'")
+            + start;
+        let value: f32 = FORWARD_SRC[start..end]
+            .trim()
+            .parse()
+            .expect("SPOT_SHADOW_PCF_RADIUS must be a float literal");
+        assert!(
+            value > 0.0,
+            "PCF radius must be non-zero so the kernel samples more than one texel"
+        );
+
+        // The kernel scales its tap offsets by the radius and averages multiple
+        // comparison samples (3×3 box → 9 taps), so it is not a single-texel
+        // sample. Both the radius use and the 9-tap normalization must be present.
+        assert!(
+            FORWARD_SRC.contains("SPOT_SHADOW_PCF_RADIUS") && FORWARD_SRC.contains("/ 9.0"),
+            "sample_spot_shadow must use the radius and average a multi-tap kernel"
         );
     }
 

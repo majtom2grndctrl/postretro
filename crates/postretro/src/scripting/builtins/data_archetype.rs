@@ -286,7 +286,6 @@ fn attach_descriptor_components(
             cone_angle_inner: None,
             cone_angle_outer: None,
             cone_direction: None,
-            cast_shadows: false,
             is_dynamic: true,
             animated_slot: None,
             animation: None,

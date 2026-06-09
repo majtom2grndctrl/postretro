@@ -956,6 +956,7 @@ mod tests {
     ///   - `last_offset + window <= capacity` (window fits, invariant 2), and
     ///   - `maximum_dynamic_offset = capacity - window >= every placement.offset`
     ///     (every collection's offset is admissible, the exact wgpu-29 gate).
+    ///
     /// Also checks the window itself is 256-aligned (storage size alignment,
     /// invariant 3) so the bound `size` is a legal storage binding size.
     #[test]

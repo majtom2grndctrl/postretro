@@ -508,7 +508,6 @@ fn map_light_to_component(light: &MapLight) -> LightComponent {
         } else {
             None
         },
-        cast_shadows: light.cast_shadows,
         is_dynamic: light.is_dynamic,
         animated_slot: light.animated_slot,
         animation: None,
@@ -543,7 +542,6 @@ fn component_to_map_light(
         cone_angle_inner: component.cone_angle_inner.unwrap_or(0.0),
         cone_angle_outer: component.cone_angle_outer.unwrap_or(0.0),
         cone_direction: component.cone_direction.unwrap_or([0.0, 0.0, 0.0]),
-        cast_shadows: component.cast_shadows,
         is_dynamic,
         // Script-spawned lights have no authoring surface for the
         // shadow-pool opt-in (Task 1b); default `false`. Wired later if a
@@ -730,7 +728,6 @@ mod tests {
             cone_angle_inner: 0.0,
             cone_angle_outer: 0.0,
             cone_direction: [0.0, 0.0, 0.0],
-            cast_shadows: false,
             is_dynamic: false,
             casts_entity_shadows: false,
             animated_slot: None,
@@ -751,7 +748,6 @@ mod tests {
             cone_angle_inner: 0.4,
             cone_angle_outer: 0.8,
             cone_direction: [0.0, -1.0, 0.0],
-            cast_shadows: true,
             is_dynamic: true,
             casts_entity_shadows: true,
             animated_slot: None,
@@ -1033,7 +1029,6 @@ mod tests {
             cone_angle_inner: None,
             cone_angle_outer: None,
             cone_direction: None,
-            cast_shadows: false,
             is_dynamic: true,
             animated_slot: None,
             animation: Some(LightAnimation {
@@ -1142,7 +1137,6 @@ mod tests {
             cone_angle_inner: None,
             cone_angle_outer: None,
             cone_direction: None,
-            cast_shadows: false,
             is_dynamic: true,
             animated_slot: None,
             animation: None,

@@ -87,20 +87,19 @@
         0 : "Off (default)"
         1 : "On — reserve baked weight map; script writes the curve at runtime"
     ]
-    // `_cast_entity_shadows` opts a baked-tier light into the dynamic-entity
-    // (enemy / moving-mesh) shadow-map pool. Default 0 — baked-tier lights are
-    // opt-in. Dynamic-tier lights (`light_dynamic`/`light_dynamic_spot`) are
-    // pool-eligible by default and do NOT need this flag — they cast world
-    // shadows automatically. SDF static-occluder shadows are independent of
-    // this flag (handled separately by the SDF shadow pass).
-    _cast_entity_shadows(choices) : "Cast Entity (Dynamic-Occluder) Shadows" : 0 =
-    [
-        0 : "Off (default)"
-        1 : "On"
-    ]
-    // `_shadow_type` is a baked-tier sub-choice: it decides only how this
-    // (fixed-position, baking) light's DIRECT shadow resolves. The two sets
-    // are disjoint — a light's direct shadow comes from exactly one, so no
+    // Two-axis shadow model — these axes are ORTHOGONAL and live on different
+    // tiers:
+    //   1. static-geo technique (`_shadow_type`, BAKED tier only) — how this
+    //      fixed-position light's shadow from STATIC geometry resolves:
+    //      lightmap or sdf (below).
+    //   2. entity-shadow toggle (`_cast_entity_shadows`, DYNAMIC tier only) —
+    //      whether a runtime light casts shadows from moving ENTITIES. It lives
+    //      on the DynamicLight base, NOT here: a baked light's world shadow is
+    //      frozen in the lightmap, so it can never render a moving occluder.
+    //      Authoring it on a baked light is warn-cleared by the compiler.
+    //
+    // `_shadow_type` is the baked-tier static-geo sub-choice. The two values are
+    // disjoint — a light's direct shadow comes from exactly one, so no
     // contribution is double-counted:
     //   static_light_map — shadow baked into the lightmap (free, fixed). The
     //                      default. Indirect bounce still bakes into SH.
@@ -165,14 +164,16 @@
 //
 // The base deliberately OMITS every bake KVP (`style`, `_phase`, `*_curve`,
 // `period_ms`, `_curve_phase`, `_bake_only`, `_shadow_type`, `_animated`):
-// nothing here bakes, so none of those keys apply. It retains only the shared
+// nothing here bakes, so none of those keys apply. It retains the shared
 // non-bake KVPs — intensity/color/geometry — plus `_tags` (scripts query
-// lights by tag, e.g. the arena script). Dynamic spotlights cast WORLD shadows
-// by default — the spot-shadow depth pass renders static geometry, so a pooled
-// dynamic spot shadows pillars and other occluders with no per-light KVP.
-// Dynamic-only KVPs for light movement (and the enemy/moving-occluder shadow
-// opt-in) are deferred until those features land. The parser sets
-// is_dynamic = true from the CLASSNAME, not a KVP.
+// lights by tag, e.g. the arena script) and `_cast_entity_shadows` (the
+// entity-shadow toggle, valid only on this tier; default on). Dynamic
+// spotlights cast WORLD shadows automatically — the spot-shadow depth pass
+// renders static geometry, so a pooled dynamic spot shadows pillars and other
+// occluders with no per-light KVP; `_cast_entity_shadows` layers MOVING-entity
+// occluders on top of that world shadow. Dynamic-only KVPs for light movement
+// are deferred until that feature lands. The parser sets is_dynamic = true from
+// the CLASSNAME, not a KVP.
 // See context/plans/in-progress/sdf-per-light-shadows/.
 @BaseClass = DynamicLight
 [
@@ -184,6 +185,20 @@
         0 : "Linear"
         1 : "Inverse Distance (1/x)"
         2 : "Inverse Squared (1/x^2)"
+    ]
+    // `_cast_entity_shadows` toggles whether this dynamic light casts shadows
+    // from moving ENTITIES (enemies / moving meshes), drawn as occluders into
+    // the light's shadow-map slot. Default ON — the dynamic tier is the only
+    // path to entity shadows, so it is on by default and authored off to skip
+    // the per-entity occluder cost. Turning it off does NOT remove the light's
+    // WORLD shadow (static occluders like pillars) — that rides the dynamic
+    // tier itself. This toggle is valid ONLY on dynamic lights; on a baked
+    // light it is meaningless (the world shadow is frozen in the lightmap) and
+    // the compiler warn-clears it.
+    _cast_entity_shadows(choices) : "Cast Entity (Moving-Mesh) Shadows" : 1 =
+    [
+        0 : "Off"
+        1 : "On (default)"
     ]
     // Space-delimited list of script tags. An entity matches
     // `world.query({ component: "light", tag: "t" })` when any tag equals

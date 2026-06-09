@@ -258,10 +258,6 @@ pub struct MapLight {
 
     pub animation: Option<LightAnimation>,
 
-    /// All FGD-authored lights cast shadows by default. The flag lets transient
-    /// gameplay lights opt out programmatically.
-    pub cast_shadows: bool,
-
     /// When true, participates only in the SH irradiance bake; excluded from
     /// the runtime direct-lighting path (AlphaLights and LightInfluence PRL
     /// sections). Defaults to false.
@@ -279,13 +275,14 @@ pub struct MapLight {
     /// orthogonal axes.
     pub is_dynamic: bool,
 
-    /// Per-light opt-in for spot-shadow-pool eligibility for dynamic
-    /// entities (enemies / moving meshes). FGD `_cast_entity_shadows`.
-    /// Default `false`. This flag is the only path into the pool for
-    /// **non-dynamic** (baked-tier) lights; dynamic-tier lights are
-    /// pool-eligible by default (`rank_lights` gates on
-    /// `is_dynamic || casts_entity_shadows`), so a dynamic spot with this
-    /// `false` is NOT excluded.
+    /// Whether this light casts shadows from dynamic ENTITIES (enemies /
+    /// moving meshes). FGD `_cast_entity_shadows`. Valid only on dynamic-tier
+    /// lights (`is_dynamic`), where it defaults `true`; the translator
+    /// warn-clears it on any baked-tier light (a baked light's world shadow is
+    /// frozen in the lightmap, so it can never render moving-entity occluders).
+    /// Pool-slot eligibility for the light's own WORLD shadow rides `is_dynamic`
+    /// alone — a dynamic light with this `false` still casts its world shadow,
+    /// it just draws no entity occluders.
     pub casts_entity_shadows: bool,
 
     /// Declarative authoring: the light has **static geometry** but its

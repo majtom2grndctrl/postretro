@@ -39,11 +39,11 @@ pub const SHADOW_SLOT_BYTE_OFFSET: usize = 56;
 ///
 /// This is the SECOND of two separate gates (see
 /// `context/lib/rendering_pipeline.md` §7.1): pool-*slot* eligibility (does the
-/// light get a shadow map for its WORLD shadow) stays `is_dynamic ||
-/// casts_entity_shadows` in `SpotShadowPool::rank_lights`; entity-*occluder*
-/// rendering into that slot is this gate. A dynamic light with
-/// `casts_entity_shadows` off still casts its world shadow but draws no entity
-/// occluders, so the two gates must not be conflated.
+/// light get a shadow map for its WORLD shadow) is `is_dynamic` in
+/// `SpotShadowPool::rank_lights`; entity-*occluder* rendering into that slot is
+/// this gate. A dynamic light with `casts_entity_shadows` off still casts its
+/// world shadow but draws no entity occluders, so the two gates must not be
+/// conflated.
 ///
 /// `casts_entity_shadows && is_dynamic`: only `is_dynamic` lights (the
 /// `light_dynamic`/`light_dynamic_spot` classnames) cast crisp runtime entity
@@ -223,7 +223,6 @@ mod tests {
             cone_angle_inner: 0.0,
             cone_angle_outer: 0.0,
             cone_direction: [0.0, 0.0, 0.0],
-            cast_shadows: false,
             is_dynamic: false,
             casts_entity_shadows: false,
             animated_slot: None,
@@ -244,7 +243,6 @@ mod tests {
             cone_angle_inner: 0.5,
             cone_angle_outer: 0.8,
             cone_direction: [0.0, -1.0, 0.0],
-            cast_shadows: true,
             is_dynamic: false,
             casts_entity_shadows: false,
             animated_slot: None,
@@ -265,7 +263,6 @@ mod tests {
             cone_angle_inner: 0.0,
             cone_angle_outer: 0.0,
             cone_direction: [0.0, -1.0, 0.0],
-            cast_shadows: false,
             is_dynamic: false,
             casts_entity_shadows: false,
             animated_slot: None,

@@ -1232,9 +1232,6 @@ pub(crate) fn soft_visibility(
     full_samples: u32,
     trace: impl Fn(Vec3, Vec3) -> bool,
 ) -> f32 {
-    if !light.cast_shadows {
-        return 1.0;
-    }
     let origin = surface_point + surface_normal * RAY_EPSILON;
 
     // An author's explicit `0` is a hard edge: collapse to the single hard ray so
@@ -1616,7 +1613,6 @@ mod tests {
             cone_angle_outer: None,
             cone_direction: None,
             animation: None,
-            cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
             casts_entity_shadows: false,
@@ -2364,7 +2360,6 @@ mod tests {
             cone_angle_outer: None,
             cone_direction: None,
             animation: None,
-            cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
             casts_entity_shadows: false,
@@ -2615,22 +2610,6 @@ mod tests {
     }
 
     const EPS: f32 = 1.0e-5;
-
-    #[test]
-    fn soft_visibility_no_cast_shadows_returns_fully_visible() {
-        let mut light = soft_point_light(DEFAULT_LIGHT_SIZE);
-        light.cast_shadows = false;
-        // Every ray "blocked", but cast_shadows == false short-circuits first.
-        let v = soft_visibility(
-            Vec3::ZERO,
-            Vec3::Y,
-            &light,
-            7,
-            DEFAULT_AREA_SAMPLE_COUNT,
-            |_, _| false,
-        );
-        assert!((v - 1.0).abs() < EPS, "got {v}");
-    }
 
     #[test]
     fn soft_visibility_zero_light_size_matches_hard_ray() {

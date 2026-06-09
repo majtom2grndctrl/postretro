@@ -231,7 +231,6 @@ The full component state returned in `LightEntity.component`. All fields are rea
 | `coneAngleInner` | `number \| null` | Inner cone half-angle in radians. `null` for non-Spot lights. |
 | `coneAngleOuter` | `number \| null` | Outer cone half-angle in radians. `null` for non-Spot lights. |
 | `coneDirection` | `{ x, y, z } \| null` | Normalized aim vector. `null` for Point lights. |
-| `castShadows` | `boolean` | Whether the light casts shadows. |
 | `isDynamic` | `boolean` | Same as `LightEntity.isDynamic`. |
 | `animation` | `LightAnimation \| null` | Active animation, or `null` if none. Reflects any animation set by `setAnimation` in a previous frame. |
 

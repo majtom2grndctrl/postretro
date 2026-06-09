@@ -656,7 +656,6 @@ mod tests {
             cone_angle_inner: 0.0,
             cone_angle_outer: 0.0,
             cone_direction: [0.0, 0.0, 0.0],
-            cast_shadows: false,
             is_dynamic: dynamic,
             casts_entity_shadows: false,
             animated_slot: None,

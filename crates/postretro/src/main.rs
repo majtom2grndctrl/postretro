@@ -2210,6 +2210,9 @@ impl App {
     /// deduplication). The caller accumulates these across ticks and drains
     /// them after the tick loop so reactions see the fully-settled post-tick
     /// world state.
+    // Threads the per-tick movement inputs (axes + edge/level bits) into the
+    // movement substrate; each is an independent signal, not a bundle worth a struct.
+    #[allow(clippy::too_many_arguments)]
     fn run_movement_tick(
         &mut self,
         forward_axis: f32,

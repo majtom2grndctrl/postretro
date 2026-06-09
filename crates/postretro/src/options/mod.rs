@@ -21,19 +21,14 @@ const SETTINGS_FILENAME: &str = "settings.toml";
 /// Wire format is snake_case (matching the rest of `PlayerOptions`): TOML values
 /// are `"hold"` / `"toggle"`. Defaults to `Hold` — hold-to-crouch is the
 /// boomer-shooter baseline.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CrouchMode {
     /// One press latches crouch on, a second press latches it off (edge-driven).
     Toggle,
     /// Crouch intent is active only while the button is held (level signal).
+    #[default]
     Hold,
-}
-
-impl Default for CrouchMode {
-    fn default() -> Self {
-        CrouchMode::Hold
-    }
 }
 
 /// Per-human runtime preferences, persisted as TOML.

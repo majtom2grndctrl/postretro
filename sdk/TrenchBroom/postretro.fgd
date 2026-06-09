@@ -159,7 +159,7 @@
 
 // Dynamic-tier lights. The primary lighting split is bake participation: these
 // lights bake into NOTHING (no lightmap, no SH) and are evaluated entirely at
-// runtime, rationed by the 12-slot shadow-map pool. They are the only tier that
+// runtime, rationed by the 96-slot shadow-map pool. They are the only tier that
 // can shadow MOVING entities, and the only path for script-driven (gameplay)
 // intensity/color — a script curve can't be baked.
 //

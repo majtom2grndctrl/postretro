@@ -49,7 +49,7 @@ pub fn light_space_matrix(light: &MapLight) -> Mat4 {
 }
 
 /// Number of shadow-map slots in the pool. Re-tunable.
-pub const SHADOW_POOL_SIZE: usize = 64;
+pub const SHADOW_POOL_SIZE: usize = 96;
 
 /// Depth format for shadow maps.
 pub const SHADOW_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -456,6 +456,46 @@ fn build_bind_group(
 mod tests {
     use super::*;
 
+    /// Scan a WGSL source for the `LightSpaceMatrices` array length, i.e. the
+    /// `N` in `array<mat4x4<f32>, N>`. Returns `None` if the declaration is
+    /// absent or unparseable so the test fails loudly rather than silently
+    /// passing on a renamed/removed array.
+    fn light_space_matrices_array_len(shader_src: &str) -> Option<usize> {
+        let marker = "array<mat4x4<f32>,";
+        let start = shader_src.find(marker)? + marker.len();
+        let close = shader_src[start..].find('>')? + start;
+        shader_src[start..close].trim().parse().ok()
+    }
+
+    /// Regression: the WGSL `LightSpaceMatrices` array was hard-coded to 12
+    /// while the Rust pool was 64, so any slot ≥ 12 indexed the light-space
+    /// matrix array out of bounds. Pin both shaders' declared array length to
+    /// `LIGHT_SPACE_MATRICES_SIZE` so neither can silently drift from the pool.
+    #[test]
+    fn light_space_matrices_array_len_matches_pool() {
+        const FORWARD_SRC: &str = include_str!("../shaders/forward.wgsl");
+        const FOG_SRC: &str = include_str!("../shaders/fog_volume.wgsl");
+
+        // `LIGHT_SPACE_MATRICES_SIZE` is the byte size of an
+        // `array<mat4x4<f32>, SHADOW_POOL_SIZE>`: each mat4 is 16 f32 × 4 B.
+        let expected_len = (LIGHT_SPACE_MATRICES_SIZE / (16 * 4)) as usize;
+        assert_eq!(
+            expected_len, SHADOW_POOL_SIZE,
+            "LIGHT_SPACE_MATRICES_SIZE must encode exactly SHADOW_POOL_SIZE mat4x4s"
+        );
+
+        assert_eq!(
+            light_space_matrices_array_len(FORWARD_SRC),
+            Some(expected_len),
+            "forward.wgsl LightSpaceMatrices array length must equal the Rust pool size"
+        );
+        assert_eq!(
+            light_space_matrices_array_len(FOG_SRC),
+            Some(expected_len),
+            "fog_volume.wgsl LightSpaceMatrices array length must equal the Rust pool size"
+        );
+    }
+
     /// Pool eligibility is `is_dynamic || casts_entity_shadows`. `is_dynamic`
     /// here stays `false` so each test isolates the `casts_entity_shadows`
     /// opt-in; the dynamic-tier path is exercised by
@@ -700,7 +740,7 @@ mod tests {
             .count();
         assert_eq!(
             assigned_count, 8,
-            "all 8 visible lights get slots (pool has 64 capacity)"
+            "all 8 visible lights get slots (pool has 96 capacity)"
         );
     }
 

@@ -70,8 +70,11 @@ struct AnimationDescriptor {
 @group(5) @binding(0) var spot_shadow_depth: texture_depth_2d_array;
 @group(5) @binding(1) var spot_shadow_compare: sampler_comparison;
 
+// The array length MUST match `SHADOW_POOL_SIZE` in `lighting/spot_shadow.rs`
+// (pinned by `light_space_matrices_array_len_matches_pool`); 96 × mat4x4<f32>
+// is 6144 bytes, well under the 16 KiB uniform cap.
 struct LightSpaceMatrices {
-    m: array<mat4x4<f32>, 12>,
+    m: array<mat4x4<f32>, 96>,
 }
 @group(5) @binding(2) var<uniform> light_space_matrices: LightSpaceMatrices;
 

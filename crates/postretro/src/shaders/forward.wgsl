@@ -236,9 +236,11 @@ fn sample_lightmap_animated(uv: vec2<f32>) -> vec3<f32> {
 @group(5) @binding(1) var spot_shadow_compare: sampler_comparison;
 // Uniform (not storage) so we stay under `max_storage_buffers_per_shader_stage`
 // (default limit 8 on some adapters — wgpu refuses the pipeline if we add
-// a 9th). 12 × mat4x4<f32> is 768 bytes, well under the 16 KiB uniform cap.
+// a 9th). The array length MUST match `SHADOW_POOL_SIZE` in
+// `lighting/spot_shadow.rs` (pinned by `light_space_matrices_array_len_matches_pool`);
+// 96 × mat4x4<f32> is 6144 bytes, well under the 16 KiB uniform cap.
 struct LightSpaceMatrices {
-    m: array<mat4x4<f32>, 12>,
+    m: array<mat4x4<f32>, 96>,
 };
 @group(5) @binding(2) var<uniform> light_space_matrices: LightSpaceMatrices;
 // SDF static-occluder shadow factor: half-res Rgba8Unorm. The four channels are

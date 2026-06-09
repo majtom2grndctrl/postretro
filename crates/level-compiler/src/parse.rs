@@ -232,7 +232,11 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                  malformed brush-face line (e.g. an unsupported character in a material name); \
                  check the map's material names",
                 geo_map.entities.len(),
-                if geo_map.entities.len() == 1 { "y was" } else { "ies were" }
+                if geo_map.entities.len() == 1 {
+                    "y was"
+                } else {
+                    "ies were"
+                }
             );
         }
         None => anyhow::bail!("no worldspawn entity found in .map file"),

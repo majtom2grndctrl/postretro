@@ -156,6 +156,16 @@ struct VertexOutput {
     @location(0) uv: vec2<f32>,
     @location(1) world_position: vec3<f32>,
     @location(2) opacity: f32,
+    // Full lighting term computed per-vertex: baked indirect + baked static
+    // direct (with the dynamic-direct isolation debug mode applied) PLUS the
+    // multi-source static-specular term and the dynamic-direct diffuse term.
+    // Every lighting input derives from the sprite center
+    // (`world_position`, identical at all four quad corners) and the
+    // camera-facing `N = V`, so this term is constant across the quad —
+    // interpolation reproduces the corner value exactly, matching the prior
+    // per-fragment result with no visible change. The fragment shader does NO
+    // lighting; it only samples the sprite texture and premultiplies.
+    @location(3) lighting: vec3<f32>,
 };
 
 // Corner lookup table: the vertex shader expands each sprite into two triangles
@@ -240,11 +250,136 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
     let u = (f32(frame_idx) + cd.z) / f32(frame_count);
     let v = cd.w;
 
+    // Full lighting, hoisted from the fragment stage (SH indirect + SH direct,
+    // static-specular, and dynamic-light loops). Every input derives from the
+    // sprite center (`sprite_pos`) and the camera-facing normal `N = V`, so the
+    // term is constant across the quad — computing it once per vertex and
+    // interpolating reproduces the prior per-fragment value with no visible
+    // change. The SH reads use `textureSampleLevel`/`textureLoad` and the loops
+    // use only arithmetic / buffer reads (no implicit derivatives), all valid in
+    // the vertex stage. Loop control flow stays uniform: every iteration count
+    // (`chunk_count`, `light_count`) is a uniform value and every `continue`/
+    // `break` predicate is uniform here because the loops run over the
+    // per-sprite center, identical across the (single) invocation's data.
+    let V = normalize(uniforms.camera_position - sprite_pos);
+    let N = V;
+    let sh_ambient = sample_sh_indirect(sprite_pos, N);
+    var sh_direct = vec3<f32>(0.0);
+    if uniforms.has_direct != 0u {
+        sh_direct = uniforms.direct_scale * sample_sh_direct(sprite_pos, N);
+    }
+    // Dynamic-direct isolation over the SH terms (debug instrument):
+    //   0 = combined     → sh_ambient + scale·direct
+    //   1 = direct-only   → scale·direct
+    //   2 = indirect-only → sh_ambient
+    var sh_lighting = sh_ambient + sh_direct;
+    if uniforms.dynamic_direct_isolation == 1u {
+        sh_lighting = sh_direct;
+    } else if uniforms.dynamic_direct_isolation == 2u {
+        sh_lighting = sh_ambient;
+    }
+
+    // Multi-source static specular via the chunk light list, hoisted from the
+    // fragment stage. Evaluated at the sprite center `sprite_pos`.
+    //
+    // Chunk-list fallback: when `has_chunk_grid == 0` (no chunk index built),
+    // fall back to SH + dynamic only. Iterating the full spec buffer here would
+    // be expensive and the spec contribution is a "gravy" term — the acceptance
+    // gate only requires no panic / no black sprites in the fallback, which the
+    // early-skip delivers.
+    var static_specular = vec3<f32>(0.0);
+    let spec_int = max(draw_params.params.y, 0.0);
+    if chunk_grid.has_chunk_grid != 0u && spec_int > 0.0 {
+        let local = sprite_pos - chunk_grid.grid_origin;
+        let cell = vec3<i32>(floor(local / max(chunk_grid.cell_size, 1.0e-6)));
+        let dims = vec3<i32>(chunk_grid.dims);
+        if all(cell >= vec3<i32>(0)) && all(cell < dims) {
+            let ci = u32(cell.z) * chunk_grid.dims.x * chunk_grid.dims.y
+                   + u32(cell.y) * chunk_grid.dims.x
+                   + u32(cell.x);
+            let pair = chunk_offsets[ci];
+            let chunk_offset = pair.x;
+            let chunk_count = pair.y;
+            for (var j: u32 = 0u; j < chunk_count; j = j + 1u) {
+                let light_idx = chunk_indices[chunk_offset + j];
+                let sl = spec_lights[light_idx];
+                let to_light = sl.position_and_range.xyz - sprite_pos;
+                let dist = length(to_light);
+                let range = sl.position_and_range.w;
+                if range > 0.0 && dist > range {
+                    continue;
+                }
+                let L = to_light / max(dist, 0.0001);
+                let atten = select(1.0, max(1.0 - dist / max(range, 0.001), 0.0), range > 0.0);
+                let cone = cone_attenuation_cos(L, sl.cone_dir_and_type.xyz, sl.cone_cos.x, sl.cone_cos.y);
+                // Broad highlight on smoke: low specular exponent.
+                let contribution = blinn_phong(L, V, N, sl.color_and_pad.xyz, 4.0, spec_int) * (atten * cone);
+                static_specular = static_specular + contribution;
+            }
+        }
+    }
+
+    // Dynamic direct (diffuse only — sharp specular highlights on billboards
+    // read as artifact). Hoisted from the fragment stage; iterates a uniform
+    // `light_count`, keeping vertex-stage control flow uniform.
+    var dynamic_diffuse = vec3<f32>(0.0);
+    let light_count = uniforms.light_count;
+    for (var i: u32 = 0u; i < light_count; i = i + 1u) {
+        let influence = light_influence[i];
+        let inf_radius = influence.w;
+        if inf_radius <= 1.0e30 {
+            let dd = sprite_pos - influence.xyz;
+            if dot(dd, dd) > inf_radius * inf_radius {
+                continue;
+            }
+        }
+        let light = lights[i];
+        let light_type = bitcast<u32>(light.position_and_type.w);
+        let falloff_model = bitcast<u32>(light.color_and_falloff_model.w);
+        var L: vec3<f32>;
+        var attenuation: f32;
+        switch light_type {
+            case 0u: {
+                let to_light = light.position_and_type.xyz - sprite_pos;
+                let dist = length(to_light);
+                L = to_light / max(dist, 0.0001);
+                attenuation = falloff(dist, light.direction_and_range.w, falloff_model);
+            }
+            case 1u: {
+                let to_light = light.position_and_type.xyz - sprite_pos;
+                let dist = length(to_light);
+                L = to_light / max(dist, 0.0001);
+                let dist_falloff = falloff(dist, light.direction_and_range.w, falloff_model);
+                let cone = cone_attenuation(
+                    L,
+                    light.direction_and_range.xyz,
+                    light.cone_angles_and_pad.x,
+                    light.cone_angles_and_pad.y,
+                );
+                attenuation = dist_falloff * cone;
+            }
+            default: {
+                L = -light.direction_and_range.xyz;
+                attenuation = 1.0;
+            }
+        }
+        // Diffuse with N = camera forward — sprites treated as a flat disk
+        // facing the viewer, so NdotL reduces to the angle between the light
+        // direction and the view direction.
+        let NdotL = max(dot(N, L), 0.0);
+        dynamic_diffuse = dynamic_diffuse + light.color_and_falloff_model.xyz * attenuation * NdotL;
+    }
+
+    // Fold the SH term together with the static-specular and dynamic-diffuse
+    // terms into the single interpolated lighting output.
+    let lighting = sh_lighting + static_specular + dynamic_diffuse;
+
     var out: VertexOutput;
     out.clip_position = uniforms.view_proj * vec4<f32>(world_pos, 1.0);
     out.uv = vec2<f32>(u, v);
     out.world_position = sprite_pos;
     out.opacity = opacity;
+    out.lighting = lighting;
     return out;
 }
 
@@ -381,124 +516,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let ddy = dpdy(in.uv);
     let sprite_sample = sample_post_retro(sprite_texture, sprite_sampler, in.uv, ddx, ddy);
 
-    // Camera forward points from the fragment toward the camera; we use it
-    // as the normal for Blinn-Phong so sprites respond to lights as if their
-    // "face" always points at the viewer. Matches the billboard aesthetic:
-    // broad, soft highlights, not per-texel shading.
-    let V = normalize(uniforms.camera_position - in.world_position);
-    let N = V;
-
-    // SH ambient (baked indirect) plus the baked static direct SH term. Both use
-    // camera-forward `N = V` (single-normal convention, backface rejection off).
-    // `sh_ambient` IS the billboard's indirect term. The direct term is gated
-    // off (0) when the baked DIRECT section is absent (`has_direct == 0`).
-    let sh_ambient = sample_sh_indirect(in.world_position, N);
-    var sh_direct = vec3<f32>(0.0);
-    if uniforms.has_direct != 0u {
-        sh_direct = uniforms.direct_scale * sample_sh_direct(in.world_position, N);
-    }
-
-    // Multi-source static specular via the chunk light list.
-    //
-    // Chunk-list fallback: when `has_chunk_grid == 0` (no chunk index built),
-    // fall back to SH + dynamic only. Iterating the full spec buffer here
-    // would be expensive and the spec contribution is a "gravy" term — the
-    // acceptance gate only requires no panic / no black sprites in the
-    // fallback, which the early-skip delivers.
-    var static_specular = vec3<f32>(0.0);
-    let spec_int = max(draw_params.params.y, 0.0);
-    if chunk_grid.has_chunk_grid != 0u && spec_int > 0.0 {
-        let local = in.world_position - chunk_grid.grid_origin;
-        let cell = vec3<i32>(floor(local / max(chunk_grid.cell_size, 1.0e-6)));
-        let dims = vec3<i32>(chunk_grid.dims);
-        if all(cell >= vec3<i32>(0)) && all(cell < dims) {
-            let ci = u32(cell.z) * chunk_grid.dims.x * chunk_grid.dims.y
-                   + u32(cell.y) * chunk_grid.dims.x
-                   + u32(cell.x);
-            let pair = chunk_offsets[ci];
-            let chunk_offset = pair.x;
-            let chunk_count = pair.y;
-            for (var j: u32 = 0u; j < chunk_count; j = j + 1u) {
-                let light_idx = chunk_indices[chunk_offset + j];
-                let sl = spec_lights[light_idx];
-                let to_light = sl.position_and_range.xyz - in.world_position;
-                let dist = length(to_light);
-                let range = sl.position_and_range.w;
-                if range > 0.0 && dist > range {
-                    continue;
-                }
-                let L = to_light / max(dist, 0.0001);
-                let atten = select(1.0, max(1.0 - dist / max(range, 0.001), 0.0), range > 0.0);
-                let cone = cone_attenuation_cos(L, sl.cone_dir_and_type.xyz, sl.cone_cos.x, sl.cone_cos.y);
-                // Broad highlight on smoke: low specular exponent.
-                let contribution = blinn_phong(L, V, N, sl.color_and_pad.xyz, 4.0, spec_int) * (atten * cone);
-                static_specular = static_specular + contribution;
-            }
-        }
-    }
-
-    // Dynamic direct (diffuse only — sharp specular highlights on billboards
-    // read as artifact).
-    var dynamic_diffuse = vec3<f32>(0.0);
-    let light_count = uniforms.light_count;
-    for (var i: u32 = 0u; i < light_count; i = i + 1u) {
-        let influence = light_influence[i];
-        let inf_radius = influence.w;
-        if inf_radius <= 1.0e30 {
-            let d = in.world_position - influence.xyz;
-            if dot(d, d) > inf_radius * inf_radius {
-                continue;
-            }
-        }
-        let light = lights[i];
-        let light_type = bitcast<u32>(light.position_and_type.w);
-        let falloff_model = bitcast<u32>(light.color_and_falloff_model.w);
-        var L: vec3<f32>;
-        var attenuation: f32;
-        switch light_type {
-            case 0u: {
-                let to_light = light.position_and_type.xyz - in.world_position;
-                let dist = length(to_light);
-                L = to_light / max(dist, 0.0001);
-                attenuation = falloff(dist, light.direction_and_range.w, falloff_model);
-            }
-            case 1u: {
-                let to_light = light.position_and_type.xyz - in.world_position;
-                let dist = length(to_light);
-                L = to_light / max(dist, 0.0001);
-                let dist_falloff = falloff(dist, light.direction_and_range.w, falloff_model);
-                let cone = cone_attenuation(
-                    L,
-                    light.direction_and_range.xyz,
-                    light.cone_angles_and_pad.x,
-                    light.cone_angles_and_pad.y,
-                );
-                attenuation = dist_falloff * cone;
-            }
-            default: {
-                L = -light.direction_and_range.xyz;
-                attenuation = 1.0;
-            }
-        }
-        // Diffuse with N = camera forward — sprites treated as a flat disk
-        // facing the viewer, so NdotL reduces to the angle between the light
-        // direction and the view direction.
-        let NdotL = max(dot(N, L), 0.0);
-        dynamic_diffuse = dynamic_diffuse + light.color_and_falloff_model.xyz * attenuation * NdotL;
-    }
-
-    // Dynamic-direct isolation over the SH terms (debug instrument):
-    //   0 = combined     → sh_ambient + scale·direct
-    //   1 = direct-only   → scale·direct
-    //   2 = indirect-only → sh_ambient
-    // The dynamic light terms (static specular, dynamic diffuse) ride along.
-    var sh_lighting = sh_ambient + sh_direct;
-    if uniforms.dynamic_direct_isolation == 1u {
-        sh_lighting = sh_direct;
-    } else if uniforms.dynamic_direct_isolation == 2u {
-        sh_lighting = sh_ambient;
-    }
-    let lighting = sh_lighting + static_specular + dynamic_diffuse;
+    // The fragment shader does NO lighting. The full lighting term —
+    // baked indirect + baked static direct + static specular + dynamic diffuse —
+    // is computed per-vertex and arrives interpolated. Every lighting input
+    // derives from the sprite center and the camera-facing `N = V`, so the term
+    // is constant across the quad and the interpolated value equals the prior
+    // per-fragment result. See `vs_main` / `VertexOutput.lighting`.
+    let lighting = in.lighting;
     let rgb = sprite_sample.rgb * lighting * in.opacity;
     // Alpha channel is used as the additive blend factor; driver expects
     // straight color. The pipeline's blend state is set to additive

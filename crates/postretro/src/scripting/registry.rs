@@ -1009,8 +1009,8 @@ mod tests {
             velocity: [0.0, 1.5, 0.0],
             buoyancy: 0.2,
             drag: 0.5,
-            size_over_lifetime: vec![0.3, 1.0, 0.5],
-            opacity_over_lifetime: vec![0.0, 0.8, 0.0],
+            size_over_lifetime: [0.3, 1.0, 0.5].into(),
+            opacity_over_lifetime: [0.0, 0.8, 0.0].into(),
             color: [1.0, 0.6, 0.2],
             sprite: "smoke".into(),
             spin_rate: 1.2,
@@ -1035,8 +1035,8 @@ mod tests {
             lifetime: 2.5,
             buoyancy: -1.0,
             drag: 0.3,
-            size_curve: vec![0.2, 1.0, 0.5],
-            opacity_curve: vec![0.0, 1.0, 0.0],
+            size_curve: [0.2, 1.0, 0.5].into(),
+            opacity_curve: [0.0, 1.0, 0.0].into(),
             emitter: Some(parent),
         };
         reg.set_component(id, value.clone()).unwrap();

@@ -1,13 +1,25 @@
 // Weapon impact effect, routed through one spawn chokepoint.
 // See: context/lib/entity_model.md §5
 
+use std::sync::LazyLock;
+
 use glam::Vec3;
 
+use crate::scripting::components::billboard_emitter::LifetimeCurve;
 use crate::scripting::components::particle::ParticleState;
 use crate::scripting::components::sprite_visual::SpriteVisual;
 use crate::scripting::registry::{EntityRegistry, Transform};
 
 const IMPACT_SPRITE_COLLECTION: &str = "impact";
+
+// Impact curves are identical for every burst particle and every shot. Build
+// each `Arc<[f32]>` once and hand every spawned particle a refcount bump
+// (`LifetimeCurve::clone`) instead of allocating a fresh `Vec` per particle —
+// the same curve-sharing model the emitter/particle hot paths use.
+static IMPACT_SIZE_CURVE: LazyLock<LifetimeCurve> =
+    LazyLock::new(|| LifetimeCurve::from([0.18, 0.12, 0.0]));
+static IMPACT_OPACITY_CURVE: LazyLock<LifetimeCurve> =
+    LazyLock::new(|| LifetimeCurve::from([1.0, 0.7, 0.0]));
 const IMPACT_LIFETIME: f32 = 0.18;
 const IMPACT_PARTICLE_COUNT: usize = 9;
 const SURFACE_OFFSET: f32 = 0.03;
@@ -81,8 +93,8 @@ fn spawn_particle(registry: &mut EntityRegistry, position: Vec3, velocity: Vec3,
         lifetime,
         buoyancy: 0.0,
         drag: 4.0,
-        size_curve: vec![0.18, 0.12, 0.0],
-        opacity_curve: vec![1.0, 0.7, 0.0],
+        size_curve: IMPACT_SIZE_CURVE.clone(),
+        opacity_curve: IMPACT_OPACITY_CURVE.clone(),
         emitter: None,
     };
     let visual = SpriteVisual {
@@ -150,7 +162,13 @@ mod tests {
         let mut registry = EntityRegistry::new();
         spawn_impact_effect_at(&mut registry, Vec3::ZERO, Vec3::Y);
 
-        particle_sim::tick(&mut registry, IMPACT_LIFETIME * 2.0, -9.81);
+        let mut live_counts = std::collections::HashMap::new();
+        particle_sim::tick(
+            &mut registry,
+            IMPACT_LIFETIME * 2.0,
+            -9.81,
+            &mut live_counts,
+        );
 
         assert_eq!(
             count_particles(&registry),

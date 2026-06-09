@@ -185,7 +185,8 @@ const TIMING_PAIR_DEPTH_PREPASS: usize = 2;
 const TIMING_PAIR_SDF_SHADOW: usize = 3;
 const TIMING_PAIR_FORWARD: usize = 4;
 const TIMING_PAIR_SH_COMPOSE: usize = 5;
-const TIMING_PAIR_COUNT: usize = 6;
+const TIMING_PAIR_SMOKE: usize = 6;
+const TIMING_PAIR_COUNT: usize = 7;
 
 // Must match `Uniforms` in forward.wgsl and wireframe.wgsl (both bind the same buffer).
 // std140: vec3<f32> aligns to 16 bytes; camera_position and ambient_floor share a slot.
@@ -785,9 +786,14 @@ fn material_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 5] {
 //          3=ChunkGridInfo, 4=chunk offsets, 5=chunk indices. All buffers, no
 // textures.
 fn lighting_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
+    // Billboard hoists its static-specular and dynamic-light loops into the
+    // vertex stage, so group 2 must be VERTEX-visible too. This is additive —
+    // the forward (FRAGMENT) and fog (COMPUTE) pipelines still bind the same
+    // group; wgpu validates the widened visibility at pipeline creation. The
+    // mesh pipeline reuses only groups 0 and 1, so it is unaffected.
     let storage_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
         binding,
-        visibility: wgpu::ShaderStages::FRAGMENT,
+        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
         ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Storage { read_only: true },
             has_dynamic_offset: false,
@@ -801,7 +807,7 @@ fn lighting_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
         storage_entry(2),
         wgpu::BindGroupLayoutEntry {
             binding: 3,
-            visibility: wgpu::ShaderStages::FRAGMENT,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
                 has_dynamic_offset: false,
@@ -818,8 +824,10 @@ fn lighting_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
 /// for the FRAGMENT stage: `BindingType::Texture` entries whose visibility
 /// includes FRAGMENT. wgpu charges the limit against the BGL *entry* set of a
 /// pipeline layout per stage, not against how many textures a shader actually
-/// samples — so a fragment-visible texture entry counts even if no shader reads
-/// it (e.g. the SH direct atlas, which only billboard samples).
+/// samples — so a fragment-visible texture entry counts even if no fragment
+/// shader reads it. Example: billboard samples the SH direct atlas in the
+/// VERTEX stage, but its BGL entry carries `VERTEX | FRAGMENT` visibility, so
+/// it still counts against the fragment texture budget here.
 #[cfg(debug_assertions)]
 fn fragment_sampled_textures(entries: &[wgpu::BindGroupLayoutEntry]) -> u32 {
     entries
@@ -829,6 +837,54 @@ fn fragment_sampled_textures(entries: &[wgpu::BindGroupLayoutEntry]) -> u32 {
                 && matches!(e.ty, wgpu::BindingType::Texture { .. })
         })
         .count() as u32
+}
+
+/// Count BGL entries that consume a `max_storage_buffers_per_shader_stage` slot
+/// for the VERTEX stage: `BindingType::Buffer { ty: Storage, .. }` entries whose
+/// visibility includes VERTEX. wgpu charges this limit against the BGL *entry* set
+/// of a pipeline layout per stage — a vertex-visible storage entry counts even if
+/// no vertex shader actually reads it (exactly the over-broad-visibility trap that
+/// hoisting billboard lighting into `vs_main` fell into). The downlevel/WebGPU
+/// default ceiling is 8.
+#[cfg(debug_assertions)]
+fn vertex_storage_buffers(entries: &[wgpu::BindGroupLayoutEntry]) -> u32 {
+    entries
+        .iter()
+        .filter(|e| {
+            e.visibility.contains(wgpu::ShaderStages::VERTEX)
+                && matches!(
+                    e.ty,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { .. },
+                        ..
+                    }
+                )
+        })
+        .count() as u32
+}
+
+/// Single source of truth for the billboard pipeline's VERTEX-stage storage-buffer
+/// budget. Sums the vertex-visible storage entries across the exact BGLs that
+/// compose the Billboard Pipeline Layout (see `SmokePass::new` for the matching
+/// group order: 0 camera, 1 sheet, 2 lighting, 3 SH volume, 6 instance). GPU-free,
+/// so it runs in unit tests and `Renderer::new` without a device.
+///
+/// Billboard lighting runs in `vs_main` (per-vertex SH indirect+direct,
+/// static-specular, dynamic-diffuse); the group-6 instance storage buffer is
+/// VERTEX-read. The genuinely vertex-read storage buffers are: group 2's five
+/// (`lights`, `light_influence`, `spec_lights`, `chunk_offsets`, `chunk_indices`)
+/// and group 6's one (`sprites`) — six total. The three group-3 anim/scripted-light
+/// storage buffers are read only in the fragment/compute stages, so they must NOT
+/// carry VERTEX visibility (see `sh_bind_group_layout_entries`); if they did, this
+/// would report 9 and pipeline creation would fail on real GPUs with the
+/// downlevel-default limit of 8.
+#[cfg(debug_assertions)]
+fn billboard_pipeline_vertex_storage_buffer_count() -> u32 {
+    vertex_storage_buffers(&uniform_bind_group_layout_entries())
+        + vertex_storage_buffers(&smoke::sprite_sheet_bind_group_layout_entries())
+        + vertex_storage_buffers(&lighting_bind_group_layout_entries())
+        + vertex_storage_buffers(&sh_volume::sh_bind_group_layout_entries())
+        + vertex_storage_buffers(&smoke::sprite_instance_bind_group_layout_entries())
 }
 
 /// Single source of truth for the forward ("Textured") pipeline's sampled-texture
@@ -1347,7 +1403,10 @@ impl Renderer {
         // pipeline layout, so it can never drift from the real binding count:
         //   Group 1 — material (3): diffuse, specular, normal
         //   Group 3 — SH volume (3): octahedral atlas + depth-moments
-        //                            + direct static-light atlas (billboard samples; forward/fog carry, never sample)
+        //                            + direct static-light atlas (billboard samples it in
+        //                              the VERTEX stage; entry is VERTEX | FRAGMENT so it
+        //                              counts against the fragment budget; forward/fog
+        //                              carry the entry but never sample it)
         //   Group 4 — lightmap (4): static irradiance, static dominant-direction,
         //                           animated-contribution atlas, animated dominant-direction
         //   Group 5 — shadow (3): spot-shadow depth array (binding 0), SDF shadow factor (binding 3), scene depth (binding 4)
@@ -1362,6 +1421,10 @@ impl Renderer {
         // test-only), so overflowing the budget trips here in debug builds.
         // debug-only because CI has no GPU: a release panic at pipeline creation
         // would be uncatchable, and the headless test covers the same invariant.
+        // `#[cfg(debug_assertions)]` on the statement: the count helper is itself
+        // debug-only, so referencing it must vanish from release builds too (a bare
+        // `debug_assert!` still *compiles* its arguments in release).
+        #[cfg(debug_assertions)]
         debug_assert!(
             forward_pipeline_sampled_texture_count() <= REQUIRED_SAMPLED_TEXTURES,
             "forward pipeline sampled-texture count ({}) exceeds the requested \
@@ -1370,6 +1433,31 @@ impl Renderer {
             forward_pipeline_sampled_texture_count(),
             REQUIRED_SAMPLED_TEXTURES
         );
+        // Billboard lighting runs in `vs_main` (per-vertex SH indirect+direct,
+        // static-specular, dynamic-diffuse); the group-6 instance storage buffer is
+        // VERTEX-read (see §7.4). wgpu charges `max_storage_buffers_per_shader_stage` against
+        // the BGL *entry* set per stage — every VERTEX-visible storage entry across the
+        // Billboard Pipeline Layout's groups counts, read or not. The downlevel/WebGPU
+        // default ceiling (we do not raise it — broad hardware compat for a
+        // modder-friendly retro FPS) is 8. Six are genuinely vertex-read; if a shared
+        // BGL re-widens an unused storage entry to VERTEX the count hits 9 and pipeline
+        // creation fails on real GPUs (headless CI never triggers it). debug-only for
+        // the same reason as the texture budget above.
+        // Gated as a block: both the helper and the budget const are debug-only,
+        // so neither is referenced in release (where the helper does not exist).
+        #[cfg(debug_assertions)]
+        {
+            const MAX_VERTEX_STORAGE_BUFFERS: u32 = 8;
+            debug_assert!(
+                billboard_pipeline_vertex_storage_buffer_count() <= MAX_VERTEX_STORAGE_BUFFERS,
+                "billboard pipeline VERTEX-visible storage-buffer count ({}) exceeds the \
+                 downlevel-default max_storage_buffers_per_shader_stage ({}); trim VERTEX \
+                 visibility from storage entries vs_main does not read, or consolidate \
+                 buffers — do NOT raise the device limit (it breaks modest-spec adapters)",
+                billboard_pipeline_vertex_storage_buffer_count(),
+                MAX_VERTEX_STORAGE_BUFFERS
+            );
+        }
         const REQUIRED_STORAGE_TEXTURES: u32 = 4;
         // Stopgap: SH compose's flat delta-probe storage buffer outgrows the
         // WebGPU spec floor (128 MiB) on maps with many animated lights because
@@ -2281,6 +2369,7 @@ impl Renderer {
             pass_labels[TIMING_PAIR_SDF_SHADOW] = "sdf_shadow";
             pass_labels[TIMING_PAIR_FORWARD] = "forward";
             pass_labels[TIMING_PAIR_SH_COMPOSE] = "sh_compose";
+            pass_labels[TIMING_PAIR_SMOKE] = "smoke";
             Some(FrameTiming::new(&device, &queue, pass_labels))
         } else {
             None
@@ -4463,6 +4552,10 @@ impl Renderer {
 
         // After opaque forward, before wireframe. Alpha additive; depth test on, write off.
         if self.smoke_pass.has_any_sheet() && !particle_collections.is_empty() {
+            let smoke_ts = self
+                .frame_timing
+                .as_ref()
+                .map(|t| t.render_pass_writes(TIMING_PAIR_SMOKE));
             let mut smoke_pass_enc = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Billboard Sprite Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -4482,18 +4575,20 @@ impl Renderer {
                     }),
                     stencil_ops: None,
                 }),
+                timestamp_writes: smoke_ts,
                 ..Default::default()
             });
             smoke_pass_enc.set_bind_group(0, &self.uniform_bind_group, &[]);
             smoke_pass_enc.set_bind_group(2, &self.lighting_bind_group, &[]);
             smoke_pass_enc.set_bind_group(3, &self.sh_volume_resources.bind_group, &[]);
-            for (collection, bytes) in particle_collections {
-                if bytes.is_empty() {
-                    continue;
-                }
-                self.smoke_pass
-                    .record_draw(&self.queue, &mut smoke_pass_enc, collection, bytes);
-            }
+            // One shared instance buffer, drawn per collection from its own
+            // 256-byte-aligned dynamic offset.
+            self.smoke_pass.record_draws(
+                &self.device,
+                &self.queue,
+                &mut smoke_pass_enc,
+                particle_collections,
+            );
         }
 
         // Volumetric fog: low-res compute raymarch + additive composite.
@@ -4993,6 +5088,7 @@ mod tests {
     // the pipeline layout is composed from, asserting the actual binding count
     // stays within the 16-texture design budget (the Metal/WebGPU spec floor).
     // Mirrors `sh_volume::group3_shader_bindings_are_represented_by_rust_layout`.
+    #[cfg(debug_assertions)]
     #[test]
     fn forward_pipeline_sampled_texture_request_matches_bgl_definitions() {
         // The forward pipeline layout (see `create_pipeline_layout`) composes
@@ -5025,6 +5121,61 @@ mod tests {
             derived <= 16,
             "forward pipeline sampled-texture count ({derived}) exceeds the Metal/WebGPU spec floor of 16; \
              use bindless (TEXTURE_BINDING_ARRAY) rather than raising this limit"
+        );
+    }
+
+    // Regression: billboard lighting runs in `vs_main` (per-vertex SH indirect+direct,
+    // static-specular, dynamic-diffuse) and the group-6 instance storage buffer is
+    // VERTEX-read. wgpu charges `max_storage_buffers_per_shader_stage`
+    // against the BGL *entry* set per stage — every VERTEX-visible storage entry in
+    // the Billboard Pipeline Layout counts, whether or not vs_main reads it. The hoist
+    // initially left the three group-3 anim/scripted-light storage buffers marked
+    // VERTEX-visible, pushing the count to 9 > the downlevel-default 8 and crashing
+    // `create_pipeline_layout` on real GPUs ("Too many bindings of type StorageBuffers
+    // in Stage VERTEX") — uncatchable in CI, which has no GPU. This re-derives the
+    // count from the same GPU-free BGL builders the layout is composed from and pins
+    // it at <= 8. Mirrors `forward_pipeline_sampled_texture_request_matches_bgl_definitions`.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn billboard_pipeline_vertex_storage_request_matches_bgl_definitions() {
+        // The Billboard Pipeline Layout (see `smoke::SmokePass::new`) composes
+        // exactly these BGLs in this group order: 0 camera, 1 sheet, 2 lighting,
+        // 3 SH volume, 6 instance (groups 4 and 5 are empty `None` slots). Counting
+        // VERTEX-visible storage entries across them is how wgpu charges
+        // `max_storage_buffers_per_shader_stage`.
+        let per_group = [
+            vertex_storage_buffers(&uniform_bind_group_layout_entries()), // group 0
+            vertex_storage_buffers(&smoke::sprite_sheet_bind_group_layout_entries()), // group 1
+            vertex_storage_buffers(&lighting_bind_group_layout_entries()), // group 2
+            vertex_storage_buffers(&sh_volume::sh_bind_group_layout_entries()), // group 3
+            vertex_storage_buffers(&smoke::sprite_instance_bind_group_layout_entries()), // group 6
+        ];
+        // Per-group expectations document the inventory; if a BGL drifts, the failing
+        // index points straight at the group. Group 2 contributes its five storage
+        // light/chunk buffers (lights, light_influence, spec_lights, chunk_offsets,
+        // chunk_indices); group 6 contributes the one sprite instance buffer. Group 3
+        // (SH volume) contributes ZERO — its three anim/scripted-light storage buffers
+        // are FRAGMENT | COMPUTE only, NOT VERTEX, because vs_main never reads them.
+        // If a group-3 storage entry regains VERTEX visibility this index flips to a
+        // nonzero count and the budget assert below fails before a real GPU would.
+        assert_eq!(
+            per_group,
+            [0, 0, 5, 0, 1],
+            "billboard BGL vertex storage-buffer inventory changed"
+        );
+
+        let derived: u32 = per_group.iter().sum();
+        // The aggregation helper must agree with the hand-summed inventory above.
+        assert_eq!(billboard_pipeline_vertex_storage_buffer_count(), derived);
+        // 8 is the downlevel/WebGPU-default ceiling. If the derived count exceeds 8,
+        // trim VERTEX visibility from storage entries vs_main does not read, or
+        // consolidate buffers — do NOT raise max_storage_buffers_per_shader_stage in
+        // the device limit request (it breaks modest-spec adapters the engine targets).
+        assert!(
+            derived <= 8,
+            "billboard pipeline VERTEX-visible storage-buffer count ({derived}) exceeds the \
+             downlevel-default max_storage_buffers_per_shader_stage of 8; trim VERTEX \
+             visibility or consolidate rather than raising the limit"
         );
     }
 

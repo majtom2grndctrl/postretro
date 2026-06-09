@@ -1,6 +1,8 @@
 // CPU particle simulation: integrates ParticleState entities each game-logic tick.
 // See: context/lib/scripting.md
 
+use std::collections::HashMap;
+
 use glam::Vec3;
 
 use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
@@ -26,10 +28,26 @@ use super::eval_curve;
 /// Frame ordering: runs after the emitter bridge and before the light bridge —
 /// ensures newly-spawned particles are integrated at least once before the
 /// render stage reads their state.
-pub(crate) fn tick(registry: &mut EntityRegistry, delta: f32, gravity: f32) {
+///
+/// This walk also produces `live_counts` — the per-emitter count of particles
+/// that *survive* this tick (i.e. excluding ones expiring now). The emitter
+/// bridge consumes that tally on the **next** frame for its per-emitter cap
+/// headroom, so the bridge no longer needs its own separate walk over the
+/// `ParticleState` column. Nothing mutates that column between the end of this
+/// tick and the start of the next bridge update, so the count the bridge reads
+/// is exact, not stale. `live_counts` is cleared and refilled in place each
+/// call (caller owns the buffer, so no per-frame alloc).
+///
+/// ParticleState snapshot clones are cheap: the lifetime curves are shared
+/// `Arc<[f32]>` handles (see [`ParticleState`]), so `clone` only bumps refcounts.
+pub(crate) fn tick(
+    registry: &mut EntityRegistry,
+    delta: f32,
+    gravity: f32,
+    live_counts: &mut HashMap<EntityId, usize>,
+) {
     // Pass 1: gather (id, snapshot) so we drop the immutable iterator borrow
-    // before issuing the mutating writes below. ParticleState clones are
-    // cheap at particle scale (curves are short Vec<f32>).
+    // before issuing the mutating writes below.
     let mut snapshots: Vec<(EntityId, ParticleState)> = Vec::new();
     for (id, value) in registry.iter_with_kind(ComponentKind::ParticleState) {
         let ComponentValue::ParticleState(state) = value else {
@@ -38,6 +56,9 @@ pub(crate) fn tick(registry: &mut EntityRegistry, delta: f32, gravity: f32) {
         snapshots.push((id, state.clone()));
     }
 
+    // Reset the per-emitter survivor tally for this tick (reusing the caller's
+    // buffer capacity — no allocation on the steady-state path).
+    live_counts.clear();
     let mut to_despawn: Vec<EntityId> = Vec::new();
 
     for (id, mut state) in snapshots {
@@ -100,6 +121,14 @@ pub(crate) fn tick(registry: &mut EntityRegistry, delta: f32, gravity: f32) {
         let _ = registry.set_component(id, visual);
 
         let expired = state.age >= state.lifetime;
+
+        // Tally survivors per emitter so next frame's bridge gets an exact
+        // live count without re-walking the column. Expiring particles are
+        // despawned below, so they must not count toward next-frame headroom.
+        if !expired && let Some(parent) = state.emitter {
+            *live_counts.entry(parent).or_insert(0) += 1;
+        }
+
         let _ = registry.set_component(id, state);
 
         if expired {
@@ -116,6 +145,8 @@ pub(crate) fn tick(registry: &mut EntityRegistry, delta: f32, gravity: f32) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
 
@@ -123,6 +154,14 @@ mod tests {
     /// `ScriptCtx::gravity` (seeded from worldspawn `initialGravity` at level
     /// load); the sim itself is gravity-agnostic.
     const TEST_GRAVITY: f32 = -9.81;
+
+    /// Drive one sim tick with a throwaway live-count buffer. Most sim tests do
+    /// not assert on the per-emitter survivor tally — only the integration and
+    /// despawn behavior — so this wrapper hides the `live_counts` out-param.
+    fn tick(registry: &mut EntityRegistry, delta: f32, gravity: f32) {
+        let mut live_counts = HashMap::new();
+        super::tick(registry, delta, gravity, &mut live_counts);
+    }
 
     fn default_emitter_component() -> BillboardEmitterComponent {
         BillboardEmitterComponent {
@@ -133,8 +172,8 @@ mod tests {
             velocity: [0.0, 0.0, 0.0],
             buoyancy: 0.0,
             drag: 0.0,
-            size_over_lifetime: vec![1.0],
-            opacity_over_lifetime: vec![1.0],
+            size_over_lifetime: [1.0].into(),
+            opacity_over_lifetime: [1.0].into(),
             color: [1.0, 1.0, 1.0],
             sprite: "smoke".into(),
             spin_rate: 0.0,
@@ -165,8 +204,8 @@ mod tests {
                     lifetime,
                     buoyancy,
                     drag,
-                    size_curve,
-                    opacity_curve,
+                    size_curve: size_curve.into(),
+                    opacity_curve: opacity_curve.into(),
                     emitter,
                 },
             )
@@ -396,8 +435,11 @@ mod tests {
             );
         }
         let dt = 1.0_f32 / 60.0;
+        // Pre-allocate the live-count buffer outside the timed region, matching
+        // production where the caller reuses one buffer across frames.
+        let mut live_counts = HashMap::new();
         let start = std::time::Instant::now();
-        tick(&mut reg, dt, TEST_GRAVITY);
+        super::tick(&mut reg, dt, TEST_GRAVITY, &mut live_counts);
         let elapsed = start.elapsed();
         assert!(
             elapsed.as_micros() < 500,

@@ -129,8 +129,9 @@ pub struct ShVolumeResources {
     dynamic_direct_params_buffer: wgpu::Buffer,
     /// Whether a usable baked DIRECT SH section is present this level. Drives the
     /// `has_direct` flag the dynamic shaders use to gate the direct sample off
-    /// (direct = 0) when absent. Owned here; the renderer copies it into the
-    /// billboard group-0 tail and the mesh uniform each frame.
+    /// (direct = 0) when absent. Owned here; the renderer embeds it in the camera
+    /// `Uniforms` buffer (billboard reads it from group 0) and writes it into the
+    /// mesh `DynamicDirectParams` uniform each frame.
     pub has_direct: bool,
     #[allow(dead_code)]
     pub present: bool,
@@ -727,9 +728,15 @@ fn mesh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
 
 pub(super) fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
     let mut entries: Vec<wgpu::BindGroupLayoutEntry> = Vec::with_capacity(8);
-    // Shared with the forward pass (fragment) and fog raymarch (compute), so visibility
-    // covers both stages on every entry.
-    let vis = wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE;
+    // Shared with the forward pass (fragment), fog raymarch (compute), and the
+    // billboard pass (vertex + fragment), so visibility covers all three stages on
+    // every entry. VERTEX is required because billboard hoists SH indirect + direct
+    // sampling into `vs_main` (per-vertex lighting); the SH reads use non-derivative
+    // texture ops (`textureSampleLevel`/`textureLoad`), which are vertex-stage valid.
+    // Widening is additive — forward/fog/mesh sharers do not read in the vertex stage,
+    // and carrying extra visibility on a shared layout is valid at pipeline creation.
+    let vis =
+        wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE;
     entries.push(wgpu::BindGroupLayoutEntry {
         binding: BIND_SH_TOTAL_ATLAS,
         visibility: vis,
@@ -759,6 +766,21 @@ pub(super) fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> 
     });
     // Always bound with dummy single-element buffers when no animated lights exist —
     // the bind group layout must not vary with map content.
+    //
+    // These three animated-layer / scripted-light storage buffers are read ONLY in
+    // the fragment stage (forward `fs_main`) and the compute stage (fog raymarch);
+    // the billboard vertex shader declares `anim_descriptors`/`anim_samples` but
+    // never reads them (animated pulses are invisible at one-sample-per-sprite
+    // fidelity — see `billboard.wgsl`) and does not declare the scripted-light
+    // buffer at all. So their visibility deliberately OMITS VERTEX: marking them
+    // VERTEX-visible would have charged three extra storage-buffer bindings against
+    // the VERTEX stage's `max_storage_buffers_per_shader_stage` budget (downlevel
+    // default 8) in the Billboard Pipeline Layout — pushing the billboard's
+    // VERTEX-visible storage count to 9 and failing pipeline creation on real GPUs.
+    // The vertex-read SH storage buffers are group 6 (`sprites`) and group 2's five
+    // light/chunk buffers; none live here. `vertex_storage_buffers` /
+    // `billboard_pipeline_vertex_storage_buffer_count` pin this budget.
+    let anim_vis = wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE;
     for binding in [
         BIND_ANIM_DESCRIPTORS,
         BIND_ANIM_SAMPLES,
@@ -766,7 +788,7 @@ pub(super) fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> 
     ] {
         entries.push(wgpu::BindGroupLayoutEntry {
             binding,
-            visibility: vis,
+            visibility: anim_vis,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Storage { read_only: true },
                 has_dynamic_offset: false,
@@ -786,16 +808,17 @@ pub(super) fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> 
         count: None,
     });
     // Direct static-light atlas. Through this shared group-3 BGL only the
-    // billboard fragment stage samples it; forward/fog carry the entry but
-    // leave binding 15 undeclared, which is valid since a pipeline's BGL may
-    // hold entries a shader doesn't read. The mesh also samples this atlas, but
-    // via the group-4 superset (see `mesh_bind_group_layout_entries`) at the
-    // same binding index. Visibility is FRAGMENT only. `Bc6hRgbUfloat`
-    // hardware-decodes to filterable float, sampled through the shared
+    // billboard pass samples it; forward/fog carry the entry but leave binding 15
+    // undeclared, which is valid since a pipeline's BGL may hold entries a shader
+    // doesn't read. The mesh also samples this atlas, but via the group-4 superset
+    // (see `mesh_bind_group_layout_entries`) at the same binding index. Visibility is
+    // VERTEX | FRAGMENT: billboard now reads the direct atlas in `vs_main` (per-vertex
+    // SH direct), the mesh path still reads it in the fragment stage via its superset.
+    // `Bc6hRgbUfloat` hardware-decodes to filterable float, sampled through the shared
     // `BIND_SH_ATLAS_SAMPLER` linear sampler exactly like the indirect atlas.
     entries.push(wgpu::BindGroupLayoutEntry {
         binding: BIND_SH_DIRECT_ATLAS,
-        visibility: wgpu::ShaderStages::FRAGMENT,
+        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
         ty: wgpu::BindingType::Texture {
             sample_type: wgpu::TextureSampleType::Float { filterable: true },
             view_dimension: wgpu::TextureViewDimension::D2,
@@ -1704,9 +1727,14 @@ mod tests {
             .find(|entry| entry.binding == BIND_SH_DEPTH_MOMENTS)
             .expect("group 3 layout should include SH depth moments");
 
+        // VERTEX is included because the billboard pass hoists its depth-aware SH
+        // sampling into `vs_main` (per-vertex lighting), reading the depth moments
+        // via `textureLoad` (vertex-stage valid). Widening is additive — forward
+        // (fragment) and fog (compute) still read it, and carrying VERTEX on the
+        // shared layout is valid at pipeline creation for the non-vertex sharers.
         assert_eq!(
             entry.visibility,
-            wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE
+            wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE
         );
         assert!(entry.count.is_none());
         match entry.ty {
@@ -1733,8 +1761,13 @@ mod tests {
             .find(|entry| entry.binding == BIND_SH_DIRECT_ATLAS)
             .expect("group 3 layout should include the direct static-light atlas");
 
-        // FRAGMENT-only: only the dynamic fragment stages sample it in v1.
-        assert_eq!(entry.visibility, wgpu::ShaderStages::FRAGMENT);
+        // VERTEX | FRAGMENT: the billboard pass now samples the direct atlas in
+        // `vs_main` (per-vertex SH direct, hoisted from the fragment stage), while
+        // the mesh path still reads it in the fragment stage via its group-4 superset.
+        assert_eq!(
+            entry.visibility,
+            wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT
+        );
         assert!(entry.count.is_none());
         match entry.ty {
             wgpu::BindingType::Texture {

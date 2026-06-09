@@ -1421,6 +1421,10 @@ impl Renderer {
         // test-only), so overflowing the budget trips here in debug builds.
         // debug-only because CI has no GPU: a release panic at pipeline creation
         // would be uncatchable, and the headless test covers the same invariant.
+        // `#[cfg(debug_assertions)]` on the statement: the count helper is itself
+        // debug-only, so referencing it must vanish from release builds too (a bare
+        // `debug_assert!` still *compiles* its arguments in release).
+        #[cfg(debug_assertions)]
         debug_assert!(
             forward_pipeline_sampled_texture_count() <= REQUIRED_SAMPLED_TEXTURES,
             "forward pipeline sampled-texture count ({}) exceeds the requested \
@@ -1439,16 +1443,21 @@ impl Renderer {
         // BGL re-widens an unused storage entry to VERTEX the count hits 9 and pipeline
         // creation fails on real GPUs (headless CI never triggers it). debug-only for
         // the same reason as the texture budget above.
-        const MAX_VERTEX_STORAGE_BUFFERS: u32 = 8;
-        debug_assert!(
-            billboard_pipeline_vertex_storage_buffer_count() <= MAX_VERTEX_STORAGE_BUFFERS,
-            "billboard pipeline VERTEX-visible storage-buffer count ({}) exceeds the \
-             downlevel-default max_storage_buffers_per_shader_stage ({}); trim VERTEX \
-             visibility from storage entries vs_main does not read, or consolidate \
-             buffers — do NOT raise the device limit (it breaks modest-spec adapters)",
-            billboard_pipeline_vertex_storage_buffer_count(),
-            MAX_VERTEX_STORAGE_BUFFERS
-        );
+        // Gated as a block: both the helper and the budget const are debug-only,
+        // so neither is referenced in release (where the helper does not exist).
+        #[cfg(debug_assertions)]
+        {
+            const MAX_VERTEX_STORAGE_BUFFERS: u32 = 8;
+            debug_assert!(
+                billboard_pipeline_vertex_storage_buffer_count() <= MAX_VERTEX_STORAGE_BUFFERS,
+                "billboard pipeline VERTEX-visible storage-buffer count ({}) exceeds the \
+                 downlevel-default max_storage_buffers_per_shader_stage ({}); trim VERTEX \
+                 visibility from storage entries vs_main does not read, or consolidate \
+                 buffers — do NOT raise the device limit (it breaks modest-spec adapters)",
+                billboard_pipeline_vertex_storage_buffer_count(),
+                MAX_VERTEX_STORAGE_BUFFERS
+            );
+        }
         const REQUIRED_STORAGE_TEXTURES: u32 = 4;
         // Stopgap: SH compose's flat delta-probe storage buffer outgrows the
         // WebGPU spec floor (128 MiB) on maps with many animated lights because

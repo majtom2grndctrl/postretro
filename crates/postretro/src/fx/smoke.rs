@@ -12,8 +12,14 @@ use std::path::Path;
 
 // --- Constants ---
 
-/// Maximum live sprites per emitter. Bound enforced by the emitter bridge
-/// (`scripting/systems/emitter_bridge.rs`) when spawning particles.
+/// Soft upper bound on live sprites per emitter, enforced by the emitter
+/// bridge (`scripting/systems/emitter_bridge.rs`) when spawning particles.
+///
+/// This is **not** a render-time cap: the billboard pass sizes its instance
+/// buffer to the frame's total live sprites and draws each collection from its
+/// own dynamic offset, so a single collection may exceed this value without the
+/// silent per-collection truncation that the old fixed 4096-sprite buffer
+/// imposed. It only bounds how many particles one emitter spawns.
 pub const MAX_SPRITES: usize = 4096;
 
 /// GPU-side sprite instance layout. Two `vec4<f32>` slots = 32 bytes.

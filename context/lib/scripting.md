@@ -181,7 +181,9 @@ The SDK ships an `emitter()` component constructor (`sdk/lib/entities/emitters.{
 
 Each live particle is a full ECS entity carrying `Transform`, `ParticleState`, and `SpriteVisual`. The emitter bridge owns spawn and despawn via `EntityRegistry::spawn` / `despawn` — scripts never call these directly.
 
-**Per-emitter cap:** `MAX_SPRITES = 512` concurrent particles per emitter. Overflow is dropped with a rate-limited `log::warn!`.
+`ParticleState.emitter` serves a single role: spin-rate lookup against the parent emitter at each sim tick. It plays **no part in render-collect culling**. Each billboard is culled by the BSP leaf of *its own* world position against the frame's portal-visible cell set — so a puff that has drifted into a visible cell draws even when its emitter sits behind a wall, and a puff that drifted out is culled even when its emitter is on-screen. (An earlier per-emitter decision dropped drifted-in-view particles; that was a correctness bug.) Orphaned particles (emitter despawned) need no special case: a particle always carries its own `Transform`, so it is culled or drawn by its own leaf exactly like any other particle. Orphans complete their lifetime at their last rotation angle.
+
+**Per-emitter spawn cap:** 4096 concurrent live particles per emitter, enforced at spawn time by the emitter bridge. Overflow spawns are dropped with a rate-limited `log::warn!`. This is not a render-time cap — the billboard pass draws all live sprites from a single frame-sized instance buffer with no per-collection truncation.
 
 **Reaction primitives:** `setEmitterRate` sets the continuous spawn rate (`rate = 0` is the inactive state — there is no separate `setEmitterActive`). `setSpinRate` sets the per-emitter rotation rate, with an optional `SpinAnimation` tween. Both are tag-targeted named reaction primitives in the Rust reaction registry.
 

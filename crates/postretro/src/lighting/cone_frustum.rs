@@ -247,16 +247,12 @@ mod tests {
         let aabb = cone_enclosing_aabb(&Mat4::ZERO);
         let eps = 1e-6_f32;
         assert!(
-            aabb.min.x.abs() < eps
-                && aabb.min.y.abs() < eps
-                && aabb.min.z.abs() < eps,
+            aabb.min.x.abs() < eps && aabb.min.y.abs() < eps && aabb.min.z.abs() < eps,
             "degenerate matrix fallback: min should be origin, got {:?}",
             aabb.min
         );
         assert!(
-            aabb.max.x.abs() < eps
-                && aabb.max.y.abs() < eps
-                && aabb.max.z.abs() < eps,
+            aabb.max.x.abs() < eps && aabb.max.y.abs() < eps && aabb.max.z.abs() < eps,
             "degenerate matrix fallback: max should be origin, got {:?}",
             aabb.max
         );

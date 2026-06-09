@@ -5,23 +5,24 @@
 //
 // See: context/lib/entity_model.md §7 (collision/movement)
 //      context/lib/movement.md §4 (state-machine seam)
-//      context/lib/movement.md §6 (input forgiveness — D5)
+//      context/lib/movement.md §6 (input forgiveness)
 
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
 use crate::scripting::data_descriptors::{
-    AirParams, CapsuleParams, DashParams, FallParams, ForgivenessParams, GroundParams,
-    PlayerMovementDescriptor,
+    AirParams, CapsuleParams, CrouchParams, DashParams, FallParams, ForgivenessParams,
+    GroundParams, PlayerMovementDescriptor,
 };
 
 /// The player's active movement state. Mutually-exclusive: exactly one state
 /// owns the per-tick velocity intent at a time. `tick` dispatches to the
 /// active state's intent step, runs the shared collision substrate, then
-/// applies any transition the intent returns. Two states exist today:
-/// `Normal` (walk/run/jump/air-control baseline) and `Dash` (directional
-/// velocity-impulse burst). Later states (crouch, slide, wall-run, vault)
-/// plug in behind the same seam.
+/// applies any transition the intent returns. Three states exist today:
+/// `Normal` (walk/run/jump/air-control baseline), `Dash` (directional
+/// velocity-impulse burst), and `Crouching` (reduced-speed locomotion with
+/// a shrunk collision capsule). Later states (slide, wall-run, vault) plug
+/// in behind the same seam.
 ///
 /// See: context/lib/movement.md §4 (state-machine seam).
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
@@ -41,6 +42,17 @@ pub(crate) enum MovementState {
     /// on top of the retained base velocity — only this layer decays under
     /// `dash_drag`.
     Dash { elapsed_ms: f32, boost: Vec3 },
+    /// Active crouch. The player runs `Normal`-style gravity/locomotion but
+    /// targets the crouch speed tier and holds a shrunk collision capsule.
+    /// `eye_current` is the live smoothing source for the eye-height
+    /// interpolation (D3): each tick it advances exponentially toward the
+    /// crouched eye target and is written into `component.capsule.eye_height`
+    /// for the camera follow to read. It lives on the state (not the component)
+    /// because it is meaningful only while crouched — exactly like `Dash`'s
+    /// `elapsed_ms`/`boost`. The standing reference dimensions the stand-up
+    /// resize/probe need persist on the component (`standing_half_height` /
+    /// `standing_eye_height`), since the live `capsule` is the crouched size.
+    Crouching { eye_current: f32 },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -58,6 +70,19 @@ pub(crate) struct PlayerMovementComponent {
     /// `None` ⇒ dash disabled: the `Normal` → `Dash` transition never fires and
     /// no dash impulse is ever applied.
     pub(crate) dash: Option<DashParams>,
+    /// Optional crouch tuning, materialized from the descriptor's `crouch`
+    /// field. `None` ⇒ crouch disabled.
+    pub(crate) crouch: Option<CrouchParams>,
+    /// Configured STANDING capsule half-height — the reference value the
+    /// stand-up resize/probe grow back to. Seeded from `desc.capsule.half_height`
+    /// at materialization and never mutated. Distinct from the live
+    /// `capsule.half_height`, which the crouch intent shrinks to the crouched
+    /// size; the standing target must come from this fixed reference, never read
+    /// back from the possibly-crouched live capsule.
+    pub(crate) standing_half_height: f32,
+    /// Configured STANDING eye-height — the reference the eye interpolates back
+    /// to when standing. Seeded from `desc.capsule.eye_height`, never mutated.
+    pub(crate) standing_eye_height: f32,
     pub(crate) is_grounded: bool,
     pub(crate) velocity: Vec3,
     pub(crate) air_jumps_remaining: u32,
@@ -148,6 +173,12 @@ impl PlayerMovementComponent {
             air: desc.air.clone(),
             fall: desc.fall.clone(),
             dash: desc.dash.clone(),
+            crouch: desc.crouch.clone(),
+            // Standing reference dimensions: captured from the descriptor's
+            // configured capsule before any crouch shrink mutates the live
+            // `capsule`. The stand-up resize/probe grow back to these.
+            standing_half_height: desc.capsule.half_height,
+            standing_eye_height: desc.capsule.eye_height,
             cos_walkable,
             is_grounded: false,
             velocity: Vec3::ZERO,

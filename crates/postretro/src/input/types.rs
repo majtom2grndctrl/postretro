@@ -16,6 +16,7 @@ pub enum Action {
     Sprint,
     Jump,
     Dash,
+    Crouch,
     Use,
     Shoot,
     AltFire,
@@ -205,6 +206,8 @@ mod tests {
     fn action_is_axis_returns_false_for_button_actions() {
         assert!(!Action::Sprint.is_axis());
         assert!(!Action::Jump.is_axis());
+        assert!(!Action::Dash.is_axis());
+        assert!(!Action::Crouch.is_axis());
         assert!(!Action::Use.is_axis());
         assert!(!Action::Shoot.is_axis());
         assert!(!Action::AltFire.is_axis());

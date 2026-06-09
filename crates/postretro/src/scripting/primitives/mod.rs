@@ -211,7 +211,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("PlayerMovementDescriptor")
-        .doc("Authored player-movement component preset. The four core sub-objects (`capsule`/`ground`/`air`/`fall`) are required when `movement` is present; `dash` is optional. The data-archetype spawn path materializes the runtime movement component from this.")
+        .doc("Authored player-movement component preset. The four core sub-objects (`capsule`/`ground`/`air`/`fall`) are required when `movement` is present; `dash` is optional — its absence disables dash entirely; `crouch` is optional — its absence disables crouch entirely. The data-archetype spawn path materializes the runtime movement component from this.")
         .field("capsule", "CapsuleParams", "Collision capsule shape.")
         .field("ground", "GroundParams", "On-ground locomotion parameters.")
         .field("air", "AirParams", "Mid-air control parameters.")
@@ -225,6 +225,11 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "forgiveness?",
             "ForgivenessParams",
             "Optional input-forgiveness tuning (coyote time + jump buffer). When the whole object is omitted, the documented engine defaults apply (~100ms each). When present, each field is itself optional and falls back to its engine default; 0 disables that grace.",
+        )
+        .field(
+            "crouch?",
+            "CrouchParams",
+            "Optional crouch tuning. When omitted, crouch is disabled. When present, all of its fields are required.",
         )
         .field(
             "stuckStopEnabled?",
@@ -254,9 +259,10 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("SpeedParams")
-        .doc("Walk and run ground speeds in world units/sec. The movement tick uses `run` while sprint is held and `walk` otherwise, applied omnidirectionally. Both required and must be finite and ≥ 0.")
+        .doc("Walk, run, and crouch ground speeds in world units/sec. The movement tick uses `run` while sprint is held, `crouch` while crouched, and `walk` otherwise, applied omnidirectionally. All required and must be finite and ≥ 0.")
         .field("walk", "f32", "Steady-state ground speed when not sprinting.")
         .field("run", "f32", "Steady-state ground speed while the sprint input is held.")
+        .field("crouch", "f32", "Steady-state ground speed while crouched.")
         .finish();
     registry
         .register_type("AirParams")
@@ -288,6 +294,13 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("cooldownMs", "f32", "Cooldown between dashes in milliseconds. Must be finite and ≥ 0.")
         .field("airDashes", "u32", "Number of air dashes allowed before landing.")
         .field("preserveVertical", "bool", "Whether the dash preserves the pre-dash vertical velocity.")
+        .finish();
+    registry
+        .register_type("CrouchParams")
+        .doc("Crouch tuning. Optional on `PlayerMovementDescriptor` — when omitted, crouch is disabled. When present, all fields are required and validated.")
+        .field("halfHeight", "f32", "Crouched capsule half-height in metres. Must be finite > 0.")
+        .field("eyeHeight", "f32", "Crouched camera attachment point measured upward from the capsule center in metres. Must lie in (0, crouched halfHeight + radius].")
+        .field("transitionRate", "f32", "Rate the capsule interpolates between standing and crouched extents, per-sec. Must be finite > 0.")
         .finish();
     registry
         .register_type("ForgivenessParams")

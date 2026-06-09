@@ -260,6 +260,7 @@ fn main() -> Result<()> {
         camera: Camera::new(initial_camera_pos, 0.0, 0.0),
         input_system,
         gameplay_input_latch: input::GameplayInputLatch::new(),
+        crouch_toggle_active: false,
         player_options,
         settings_path,
         input_focus: InputFocus::Gameplay,
@@ -317,6 +318,31 @@ fn window_attributes() -> WindowAttributes {
         .with_inner_size(winit::dpi::LogicalSize::new(1280, 720))
 }
 
+/// Resolve the per-tick crouch intent bit from `crouch_mode` and the current
+/// `Action::Crouch` button state, advancing the persistent toggle `latch`.
+///
+/// This is the input-layer toggle-vs-hold resolution (extracted as a free
+/// function so the latch/edge logic is unit-testable; the call site in the
+/// movement-tick assembly calls it with `&mut self.crouch_toggle_active`):
+///   - `Hold`: the intent tracks the button LEVEL (`Pressed | Held`); the latch
+///     is left untouched and is inert in this mode.
+///   - `Toggle`: a `ButtonState::Pressed` RISING EDGE flips the latch; the
+///     latched value is returned. One press latches on, the next latches off.
+///
+/// The returned bit is the only thing the movement intent ever sees — never the
+/// raw button or the mode (the toggle-vs-hold ownership rule).
+fn resolve_crouch_intent(mode: options::CrouchMode, button: ButtonState, latch: &mut bool) -> bool {
+    match mode {
+        options::CrouchMode::Hold => button.is_active(),
+        options::CrouchMode::Toggle => {
+            if matches!(button, ButtonState::Pressed) {
+                *latch = !*latch;
+            }
+            *latch
+        }
+    }
+}
+
 // --- Application state ---
 
 struct App {
@@ -344,10 +370,17 @@ struct App {
     input_system: input::InputSystem,
     gameplay_input_latch: input::GameplayInputLatch,
 
+    /// Persistent crouch toggle latch for `CrouchMode::Toggle`. Flipped on each
+    /// `Action::Crouch` press rising edge by the input layer; fed into
+    /// `MovementInput::crouch_intent`. Lives on `App` (the input layer), NEVER on
+    /// the movement component. Inert in `CrouchMode::Hold` (hold tracks the
+    /// button level directly). See: context/lib/input.md, context/lib/player_options.md
+    crouch_toggle_active: bool,
+
     /// Per-human runtime preferences loaded at boot. Seeds input look
-    /// preferences during init; held for the M13 settings menu, which has no
-    /// reader yet. See: context/lib/player_options.md
-    #[allow(dead_code)]
+    /// preferences during init; `crouch_mode` is read each input tick by
+    /// `resolve_crouch_intent`. Settings-menu UI (M13) remains future.
+    /// See: context/lib/player_options.md
     player_options: options::PlayerOptions,
 
     /// Resolved `settings.toml` path, or `None` when the platform exposes no
@@ -979,11 +1012,23 @@ impl ApplicationHandler for App {
                         // level signal. See `MovementInput::dash_pressed`.
                         let dash_pressed =
                             matches!(snapshot.button(Action::Dash), ButtonState::Pressed);
+                        // Crouch toggle-vs-hold is resolved HERE, in the input
+                        // layer, from `PlayerOptions.crouch_mode`. The movement
+                        // intent receives only the single resolved bit and never
+                        // sees the raw button or the mode. The toggle latch lives
+                        // on `App` (`crouch_toggle_active`), never on the movement
+                        // component. See `MovementInput::crouch_intent`.
+                        let crouch_intent = resolve_crouch_intent(
+                            self.player_options.crouch_mode,
+                            snapshot.button(Action::Crouch),
+                            &mut self.crouch_toggle_active,
+                        );
                         let movement_events = self.run_movement_tick(
                             forward_axis,
                             right_axis,
                             jump_pressed,
                             dash_pressed,
+                            crouch_intent,
                             sprint,
                             tick_dt,
                         );
@@ -2166,12 +2211,16 @@ impl App {
     /// deduplication). The caller accumulates these across ticks and drains
     /// them after the tick loop so reactions see the fully-settled post-tick
     /// world state.
+    // Threads the per-tick movement inputs (axes + edge/level bits) into the
+    // movement substrate; each is an independent signal, not a bundle worth a struct.
+    #[allow(clippy::too_many_arguments)]
     fn run_movement_tick(
         &mut self,
         forward_axis: f32,
         right_axis: f32,
         jump_pressed: bool,
         dash_pressed: bool,
+        crouch_intent: bool,
         running: bool,
         tick_dt: f32,
     ) -> Vec<&'static str> {
@@ -2205,6 +2254,7 @@ impl App {
             jump_pressed,
             dash_pressed,
             running,
+            crouch_intent,
             facing_yaw: self.camera.yaw,
         };
 
@@ -2384,6 +2434,78 @@ mod tests {
     use super::*;
     use crate::frame_timing::TICK_DURATION;
     use crate::input::{InputSystem, default_bindings};
+    use crate::options::CrouchMode;
+
+    // --- resolve_crouch_intent (input-layer toggle/hold derivation) ---
+
+    #[test]
+    fn crouch_hold_tracks_button_level() {
+        // Hold mode: the resolved bit mirrors the button's active level
+        // (Pressed | Held), and the latch is never consulted/mutated.
+        let mut latch = false;
+        assert!(resolve_crouch_intent(
+            CrouchMode::Hold,
+            ButtonState::Pressed,
+            &mut latch
+        ));
+        assert!(resolve_crouch_intent(
+            CrouchMode::Hold,
+            ButtonState::Held,
+            &mut latch
+        ));
+        assert!(!resolve_crouch_intent(
+            CrouchMode::Hold,
+            ButtonState::Released,
+            &mut latch
+        ));
+        assert!(!resolve_crouch_intent(
+            CrouchMode::Hold,
+            ButtonState::Inactive,
+            &mut latch
+        ));
+        // Latch is inert in hold mode.
+        assert!(!latch);
+    }
+
+    #[test]
+    fn crouch_toggle_flips_on_press_rising_edge() {
+        let mut latch = false;
+        // First press latches ON.
+        assert!(resolve_crouch_intent(
+            CrouchMode::Toggle,
+            ButtonState::Pressed,
+            &mut latch
+        ));
+        // Held does not re-flip — the latch stays ON across the hold.
+        assert!(resolve_crouch_intent(
+            CrouchMode::Toggle,
+            ButtonState::Held,
+            &mut latch
+        ));
+        // Release does not flip either.
+        assert!(resolve_crouch_intent(
+            CrouchMode::Toggle,
+            ButtonState::Released,
+            &mut latch
+        ));
+        assert!(resolve_crouch_intent(
+            CrouchMode::Toggle,
+            ButtonState::Inactive,
+            &mut latch
+        ));
+        // A SECOND press (fresh rising edge) latches OFF.
+        assert!(!resolve_crouch_intent(
+            CrouchMode::Toggle,
+            ButtonState::Pressed,
+            &mut latch
+        ));
+        // ...and stays off while held.
+        assert!(!resolve_crouch_intent(
+            CrouchMode::Toggle,
+            ButtonState::Held,
+            &mut latch
+        ));
+    }
 
     /// Epsilon for angle and matrix-element comparisons. Mouse-driven yaw
     /// deltas at default sensitivity land around 1e-1 radians, so 1e-5 is

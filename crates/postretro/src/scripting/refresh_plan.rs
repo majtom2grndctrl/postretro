@@ -817,6 +817,7 @@ mod tests {
                     speed: SpeedParams {
                         walk: 7.0,
                         run: 11.0,
+                        crouch: 3.0,
                     },
                     accel: 12.0,
                     step_height: 0.35,
@@ -838,6 +839,7 @@ mod tests {
                 stuck_stop_threshold: 0.001,
                 dash: None,
                 forgiveness: None,
+                crouch: None,
             }),
             weapon: None,
         }

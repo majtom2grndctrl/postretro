@@ -6,6 +6,7 @@ Code anchors and external findings behind the spec. Line numbers drift; treat as
 
 **Shadow pool** — `crates/postretro/src/lighting/spot_shadow.rs`
 - `SHADOW_POOL_SIZE = 64` (:52). Docs/old plans saying 12 are stale; `forward.wgsl:412` "(0..7)" comment is stale.
+- **Latent bug (this session):** the `LightSpaceMatrices.m` uniform is hardcoded `array<mat4x4<f32>, 12>` in both `forward.wgsl:241` and `fog_volume.wgsl:74`, while the Rust pool is 64 and `rank_lights` assigns up to 64 slots. Any slot ≥ 12 indexes that array out of bounds → wrong/clamped projection matrix. The 12→64 bump never updated the WGSL. Spec Task 6 raises the pool to 96 and brings both shader arrays to 96 in lockstep, with a const/size pin so they can't drift again.
 - `SpotShadowPool` (:76); `slot_cone_matrices: [Option<Mat4>; SHADOW_POOL_SIZE]` (:103) — already in tree; the per-slot light-space matrix the skinned-depth pass needs.
 - `light_space_matrix(light)` (:19): `perspective_rh(fov_y = 2·cone_outer clamped, aspect 1, SHADOW_NEAR_CLIP, far = falloff_range)`. `SHADOW_NEAR_CLIP = 0.1` (:12).
 - `rank_lights` (:331); eligibility `is_dynamic || casts_entity_shadows` then `LightType::Spot` (:355). Array texture (layers), `Depth32Float`, comparison sampler, group 5.
@@ -50,7 +51,7 @@ Code anchors and external findings behind the spec. Line numbers drift; treat as
 **Cube-array feasibility (wgpu).** `texture_depth_cube_array` + `textureSampleCompareLevel` works on Metal/DX12/Vulkan; gated by `DownlevelFlags::CUBE_ARRAY_TEXTURES` (present on native, absent on GLES/WebGL only). No `unsafe`. Bevy ships exactly this (`shadow_sampling.wgsl`): direction-vector sampling, PCF in an orthonormal basis around the light-local vector, per-face largest-axis depth + normal-offset bias. ~24 MB per 1024² Depth32Float cube. +1 sampled-texture binding (→14/16 Metal).
 - Bevy `crates/bevy_pbr/src/render/shadow_sampling.wgsl`; wgpu `DownlevelFlags`/`TextureViewDimension` docs; gfx-rs/wgpu #1746; WGSL spec depth texture types.
 
-**Atlas/array & VRAM.** 64×1024² Depth32Float spot pool ≈ 256 MB (real on 4 GB Radeon Pro 5500M). One shared pool, not two — sampled-texture budget (13/16, Metal hard 16) and VRAM both argue against a second full pool. Cube-array adds +1 binding; budget point count tightly on 4 GB.
+**Atlas/array & VRAM.** Spot pool is a fixed init-time allocation = `SHADOW_POOL_SIZE × 1024² × 4 B`: 256 MB at 64, **384 MB at 96** (the spec's capacity bump). Measured real on a 4 GB Radeon Pro 5500M at 64. Spot and point cannot share a texture (2D-array vs cube-array sampler dimension), so the cube pool is necessarily separate; the constraint is the sampled-texture binding budget (13/16, Metal hard 16 — cube → 14/16), which caps how many shadow classes can coexist. Size the cube pool to realistic concurrent demand (PVS-culled + ranked), not worst case.
 
 **Static/dynamic split (DOOM model).** Cached-static + recompute-dynamic depth is the canonical many-light technique — but motivated by *moving* lights. Lights are fixed here, so it's an optimization, deferred.
 

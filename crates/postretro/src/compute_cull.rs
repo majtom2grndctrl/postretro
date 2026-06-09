@@ -21,7 +21,7 @@ const _: () = assert!(
     "postretro GPU upload path assumes little-endian; add a byte-swap layer before porting"
 );
 
-const DRAW_INDIRECT_SIZE: u64 = 20;
+pub(crate) const DRAW_INDIRECT_SIZE: u64 = 20;
 
 /// Fixed 128-word (512-byte) bitmask covering up to 4096 cell IDs. Fixed
 /// size removes any resize path from the hot frame loop.
@@ -31,11 +31,11 @@ pub(crate) const MAX_VISIBLE_CELLS: u32 = (VISIBLE_CELLS_WORDS as u32) * 32;
 
 // Rust serializers write matching strides: 40 bytes for `BvhNode`, 48 for
 // `BvhLeaf`. `wgsl_bvh_struct_strides_match_spec` pins the contract against naga.
-const CULL_SHADER_SOURCE: &str = include_str!("shaders/bvh_cull.wgsl");
+pub(crate) const CULL_SHADER_SOURCE: &str = include_str!("shaders/bvh_cull.wgsl");
 
 #[derive(Debug, Clone, Copy)]
-struct CullUniforms {
-    planes: [[f32; 4]; 6],
+pub(crate) struct CullUniforms {
+    pub(crate) planes: [[f32; 4]; 6],
 }
 
 pub struct ComputeCullPipeline {
@@ -336,33 +336,42 @@ impl ComputeCullPipeline {
         render_pass: &mut wgpu::RenderPass<'a>,
         set_texture_fn: Option<&SetTextureFn<'a>>,
     ) {
-        for range in &self.bucket_ranges {
-            if range.leaf_count == 0 {
-                continue;
-            }
-
-            if let Some(f) = set_texture_fn {
-                f(render_pass, range.material_bucket_id);
-            }
-            let byte_offset = (range.first_leaf as u64) * DRAW_INDIRECT_SIZE;
-
-            if self.has_multi_draw_indirect {
-                render_pass.multi_draw_indexed_indirect(
-                    &self.indirect_buffer,
-                    byte_offset,
-                    range.leaf_count,
-                );
-            } else {
-                for i in 0..range.leaf_count {
-                    let offset = byte_offset + (i as u64) * DRAW_INDIRECT_SIZE;
-                    render_pass.draw_indexed_indirect(&self.indirect_buffer, offset);
-                }
-            }
-        }
+        draw_indirect_buckets(
+            render_pass,
+            &self.indirect_buffer,
+            0,
+            &self.bucket_ranges,
+            self.has_multi_draw_indirect,
+            set_texture_fn,
+        );
     }
 
     pub fn cull_status_buffer(&self) -> &wgpu::Buffer {
         &self.cull_status_buffer
+    }
+
+    /// Read-only BVH node storage buffer, uploaded once at level load. The
+    /// shadow cull owner (`ShadowCullPipeline`) binds the SAME buffer rather
+    /// than re-serializing the BVH per slot.
+    pub(crate) fn node_buffer(&self) -> &wgpu::Buffer {
+        &self.node_buffer
+    }
+
+    /// Read-only BVH leaf storage buffer, shared with the shadow cull owner.
+    pub(crate) fn leaf_buffer(&self) -> &wgpu::Buffer {
+        &self.leaf_buffer
+    }
+
+    pub(crate) fn total_leaves(&self) -> u32 {
+        self.total_leaves
+    }
+
+    pub(crate) fn bucket_ranges(&self) -> &[BucketRange] {
+        &self.bucket_ranges
+    }
+
+    pub(crate) fn has_multi_draw_indirect(&self) -> bool {
+        self.has_multi_draw_indirect
     }
 
     pub fn debug_bitmask_fingerprint(&self) -> (u32, u32) {
@@ -376,9 +385,50 @@ impl ComputeCullPipeline {
     }
 }
 
-const CULL_UNIFORMS_SIZE: usize = 96;
+/// Issue one `multi_draw_indexed_indirect` (or a fallback loop of
+/// `draw_indexed_indirect`) per material bucket over a slice of an indirect
+/// buffer. `region_byte_offset` is the byte offset of the slot's per-leaf
+/// region within the indirect buffer (0 for the camera path's single region;
+/// `slot * region_stride_bytes` for the shadow owner's per-slot sub-regions,
+/// where `region_stride_bytes = (total_leaves * DRAW_INDIRECT_SIZE).next_multiple_of(256)`
+/// — padded to 256 bytes to satisfy `min_storage_buffer_offset_alignment`).
+/// The per-bucket `first_leaf`/`leaf_count` layout is identical across regions,
+/// so the bucket-offset table is shared.
+///
+/// `set_texture_fn = None` skips the group-1 material bind (depth-only passes,
+/// including the spot-shadow depth pass, have no group-1 slot).
+pub(crate) fn draw_indirect_buckets<'a>(
+    render_pass: &mut wgpu::RenderPass<'a>,
+    indirect_buffer: &'a wgpu::Buffer,
+    region_byte_offset: u64,
+    bucket_ranges: &[BucketRange],
+    has_multi_draw_indirect: bool,
+    set_texture_fn: Option<&SetTextureFn<'a>>,
+) {
+    for range in bucket_ranges {
+        if range.leaf_count == 0 {
+            continue;
+        }
 
-fn serialize_cull_uniforms(uniforms: &CullUniforms) -> Vec<u8> {
+        if let Some(f) = set_texture_fn {
+            f(render_pass, range.material_bucket_id);
+        }
+        let byte_offset = region_byte_offset + (range.first_leaf as u64) * DRAW_INDIRECT_SIZE;
+
+        if has_multi_draw_indirect {
+            render_pass.multi_draw_indexed_indirect(indirect_buffer, byte_offset, range.leaf_count);
+        } else {
+            for i in 0..range.leaf_count {
+                let offset = byte_offset + (i as u64) * DRAW_INDIRECT_SIZE;
+                render_pass.draw_indexed_indirect(indirect_buffer, offset);
+            }
+        }
+    }
+}
+
+pub(crate) const CULL_UNIFORMS_SIZE: usize = 96;
+
+pub(crate) fn serialize_cull_uniforms(uniforms: &CullUniforms) -> Vec<u8> {
     let mut buf = Vec::with_capacity(CULL_UNIFORMS_SIZE);
     for plane in &uniforms.planes {
         for &v in plane {
@@ -433,7 +483,19 @@ fn serialize_bvh_leaves(leaves: &[crate::geometry::BvhLeaf]) -> Vec<u8> {
     buf
 }
 
-fn extract_frustum_planes_for_gpu(view_proj: &Mat4) -> [[f32; 4]; 6] {
+/// Extract the 6 frustum planes from a combined view-projection matrix in the
+/// layout the cull WGSL (`bvh_cull.wgsl::is_aabb_outside_frustum`) consumes.
+///
+/// Convention (mirrored verbatim by the CPU cone-frustum code in
+/// `lighting::cone_frustum`, so both tests agree): 6 planes from the combined
+/// matrix rows — L,R,B,T,N,F = `r3+r0, r3-r0, r3+r1, r3-r1, r3+r2, r3-r2` —
+/// normalized, emitted as `[nx,ny,nz,d]`. Inside-sign matches the WGSL: a point
+/// `p` is *outside* a plane when `dot(normal, p) + d < 0`.
+///
+/// `pub(crate)` so the lighting module can build a spotlight's cone frustum from
+/// `light_space_matrix()` through this same single implementation rather than
+/// duplicating the row math.
+pub(crate) fn extract_frustum_planes_for_gpu(view_proj: &Mat4) -> [[f32; 4]; 6] {
     let row = |n: usize| -> glam::Vec4 {
         glam::Vec4::new(
             view_proj.col(0)[n],

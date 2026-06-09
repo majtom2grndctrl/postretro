@@ -786,9 +786,14 @@ fn material_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 5] {
 //          3=ChunkGridInfo, 4=chunk offsets, 5=chunk indices. All buffers, no
 // textures.
 fn lighting_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
+    // Slice 2 hoists the billboard static-specular and dynamic-light loops into
+    // the billboard VERTEX stage, so group 2 must be VERTEX-visible too. This is
+    // additive — the forward (FRAGMENT) and fog (COMPUTE) pipelines still bind
+    // the same group; wgpu validates the widened visibility at pipeline creation.
+    // The mesh pipeline reuses only groups 0 and 1, so it is unaffected.
     let storage_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
         binding,
-        visibility: wgpu::ShaderStages::FRAGMENT,
+        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
         ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Storage { read_only: true },
             has_dynamic_offset: false,
@@ -802,7 +807,7 @@ fn lighting_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
         storage_entry(2),
         wgpu::BindGroupLayoutEntry {
             binding: 3,
-            visibility: wgpu::ShaderStages::FRAGMENT,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
                 has_dynamic_offset: false,

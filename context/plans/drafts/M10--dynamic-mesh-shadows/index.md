@@ -7,6 +7,17 @@
 
 Animated entity meshes cast real-time shadows from runtime dynamic lights, grounding enemies that currently read as lit-but-floating. Entities already get crisp lit/dark contrast from baked SH-direct + SH-indirect; the missing piece is the shadow they throw onto the world. Adds a skinned depth-only variant of the mesh pass that renders entity occluders into the shadow pool — spot lights into the existing 2D-array pool, point lights into a new cube-array pool.
 
+## Authoring model — static vs dynamic lights
+
+Authors choose per light whether it is **static** (baked) or **dynamic** (runtime-direct — the `light_dynamic*` classes). For any shadow involving an entity, that choice is the deciding factor, because only a dynamic light has a separable runtime forward term that can be per-light shadowed without double-counting a baked lightmap:
+
+- **Static (baked) light** — its only effect on an entity is the baked SH-direct term: a soft, probe-coarse, occlusion-tested approximation of world→entity shadow. It can neither cast a crisp shadow *from* an entity nor receive one *onto* an entity per-light; its contribution is folded into the all-lights lightmap with no runtime term to attenuate.
+- **Dynamic light** — reach for one whenever you want a *crisp runtime* shadow involving an entity:
+  - **entity → world** (an enemy's shadow on the floor) — **this feature**.
+  - **world → entity** (static geometry's crisp shadow cast onto an enemy) — **deferred** to *Dynamic mesh direct lighting*. Entities are not lit by dynamic lights yet, so the mesh shader has no runtime per-light term to attenuate (group 2 unallocated).
+
+Author's rule of thumb: a dynamic light is what grounds a moving entity in shadow; baked lights give only the soft SH-direct approximation. This feature ships the entity→world half today; the world→entity half follows when meshes gain a runtime light loop. This static/dynamic choice is orthogonal to the two-axis cleanup below (`shadow_type` × `casts_entity_shadows`), which governs *how* a light shadows once dynamic.
+
 ## Scope
 
 ### In scope

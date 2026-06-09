@@ -156,6 +156,14 @@ struct VertexOutput {
     @location(0) uv: vec2<f32>,
     @location(1) world_position: vec3<f32>,
     @location(2) opacity: f32,
+    // SH lighting term (baked indirect + baked static direct, with the
+    // dynamic-direct isolation debug mode already applied) computed per-vertex.
+    // Every lighting input derives from the sprite center (`world_position`,
+    // identical at all four quad corners) and the camera-facing `N = V`, so this
+    // term is constant across the quad — interpolation reproduces the corner
+    // value exactly, matching the prior per-fragment result with no visible
+    // change. The static-specular and dynamic-light loops stay per-fragment.
+    @location(3) sh_lighting: vec3<f32>,
 };
 
 // Corner lookup table: the vertex shader expands each sprite into two triangles
@@ -240,11 +248,37 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
     let u = (f32(frame_idx) + cd.z) / f32(frame_count);
     let v = cd.w;
 
+    // SH lighting, hoisted from the fragment stage. Every input derives from the
+    // sprite center (`sprite_pos`) and the camera-facing normal `N = V`, so the
+    // term is constant across the quad — computing it once per vertex and
+    // interpolating reproduces the prior per-fragment value with no visible change.
+    // The SH reads use `textureSampleLevel`/`textureLoad` (no implicit derivatives),
+    // which are valid in the vertex stage. Static specular and dynamic diffuse stay
+    // per-fragment (Slice 2).
+    let V = normalize(uniforms.camera_position - sprite_pos);
+    let N = V;
+    let sh_ambient = sample_sh_indirect(sprite_pos, N);
+    var sh_direct = vec3<f32>(0.0);
+    if uniforms.has_direct != 0u {
+        sh_direct = uniforms.direct_scale * sample_sh_direct(sprite_pos, N);
+    }
+    // Dynamic-direct isolation over the SH terms (debug instrument):
+    //   0 = combined     → sh_ambient + scale·direct
+    //   1 = direct-only   → scale·direct
+    //   2 = indirect-only → sh_ambient
+    var sh_lighting = sh_ambient + sh_direct;
+    if uniforms.dynamic_direct_isolation == 1u {
+        sh_lighting = sh_direct;
+    } else if uniforms.dynamic_direct_isolation == 2u {
+        sh_lighting = sh_ambient;
+    }
+
     var out: VertexOutput;
     out.clip_position = uniforms.view_proj * vec4<f32>(world_pos, 1.0);
     out.uv = vec2<f32>(u, v);
     out.world_position = sprite_pos;
     out.opacity = opacity;
+    out.sh_lighting = sh_lighting;
     return out;
 }
 
@@ -388,15 +422,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let V = normalize(uniforms.camera_position - in.world_position);
     let N = V;
 
-    // SH ambient (baked indirect) plus the baked static direct SH term. Both use
-    // camera-forward `N = V` (single-normal convention, backface rejection off).
-    // `sh_ambient` IS the billboard's indirect term. The direct term is gated
-    // off (0) when the baked DIRECT section is absent (`has_direct == 0`).
-    let sh_ambient = sample_sh_indirect(in.world_position, N);
-    var sh_direct = vec3<f32>(0.0);
-    if uniforms.has_direct != 0u {
-        sh_direct = uniforms.direct_scale * sample_sh_direct(in.world_position, N);
-    }
+    // SH lighting (baked indirect + baked static direct, with the dynamic-direct
+    // isolation debug mode applied) is computed per-vertex and arrives interpolated.
+    // It is constant across the quad, so the interpolated value equals the prior
+    // per-fragment result. See `vs_main` / `VertexOutput.sh_lighting`.
+    let sh_lighting = in.sh_lighting;
 
     // Multi-source static specular via the chunk light list.
     //
@@ -487,17 +517,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         dynamic_diffuse = dynamic_diffuse + light.color_and_falloff_model.xyz * attenuation * NdotL;
     }
 
-    // Dynamic-direct isolation over the SH terms (debug instrument):
-    //   0 = combined     → sh_ambient + scale·direct
-    //   1 = direct-only   → scale·direct
-    //   2 = indirect-only → sh_ambient
-    // The dynamic light terms (static specular, dynamic diffuse) ride along.
-    var sh_lighting = sh_ambient + sh_direct;
-    if uniforms.dynamic_direct_isolation == 1u {
-        sh_lighting = sh_direct;
-    } else if uniforms.dynamic_direct_isolation == 2u {
-        sh_lighting = sh_ambient;
-    }
+    // SH lighting arrives per-vertex (see above); the dynamic light terms (static
+    // specular, dynamic diffuse) add per-fragment.
     let lighting = sh_lighting + static_specular + dynamic_diffuse;
     let rgb = sprite_sample.rgb * lighting * in.opacity;
     // Alpha channel is used as the additive blend factor; driver expects

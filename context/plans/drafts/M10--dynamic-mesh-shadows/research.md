@@ -16,7 +16,8 @@ Code anchors and external findings behind the spec. Line numbers drift; treat as
 - `palette_buffer` / `instance_buffer` written via `queue.write_buffer` inside `render_frame` (:534, :557) — **after** the shadow passes in frame order.
 - `MAX_PALETTE_ENTRIES = 4096`, `MAX_INSTANCES = MAX_PALETTE_ENTRIES` (mesh_instances.rs:24,37).
 - Pipeline layout: group 0 camera, group 1 material, **group 2 = None (unallocated, reserved for future dynamic-direct light loop)**, group 3 instance SSBO, group 4 SH superset. No group 5 (shadow pool) bound.
-- CPU leaf-cull (`mesh_visible*`), instanced `draw_indexed` per submesh — not in the BVH/indirect path.
+- CPU leaf-cull (`mesh_visible*` :618,632), instanced `draw_indexed` per submesh — not in the BVH/indirect path.
+- **No per-model/instance bound exists.** `SkinnedMesh` (mesh.rs:65) and `UploadedModel` (mesh_pass.rs:99) carry no AABB/radius; `PlannedInstance` (mesh_instances.rs:58) has only `transform`. The per-light entity cone cull needs one → Task 1 adds a load-time local bound (glTF accessor min/max or vertex scan) on the uploaded model, transformed per instance.
 
 **Forward** — `crates/postretro/src/shaders/forward.wgsl`
 - Per-light loop (:913+), influence-sphere early-out, `sample_spot_shadow(slot, world_pos, light_proj)` (:413) multiplies attenuation; slot from `bitcast<u32>(light.cone_angles_and_pad.z)` (:1004); `light_space_matrices` group 5 binding 2 (:243).
@@ -27,7 +28,7 @@ Code anchors and external findings behind the spec. Line numbers drift; treat as
 - Baked SH-direct **is occlusion-tested** through the world BVH (`sh_bake.rs:884` `soft_visibility` + `segment_clear` :517; test `direct_sh_shadowed_probe_is_dimmer_than_lit_probe`, `direct_sh_bake.rs`). Soft (32-sample area), coarse (probe spacing). Only `static_light_map` lights contribute; `sdf` and `is_dynamic` excluded. → baked world→entity already handled.
 
 **Authoring flags** — `sdk/TrenchBroom/postretro.fgd`, `crates/level-compiler/src/format/quake_map.rs`, `map_data.rs`, `crates/postretro/src/prl.rs`
-- `cast_shadows`: hardcoded `true` (`quake_map.rs:525`), no KVP, never read at runtime (only an unreachable bake branch, `lightmap_bake.rs:1235`). **Dead.**
+- `cast_shadows`: hardcoded `true` (`quake_map.rs:525`), no KVP, never read at runtime (only an unreachable bake branch, `lightmap_bake.rs:1235`). **Dead — but wide.** It is on the PRL wire (`level-format/alpha_lights.rs`, `pack.rs:122`, `prl.rs:179/398`), in the bake (`lightmap_bake.rs`, `sh_bake.rs`), runtime light packing (`lighting/mod.rs`), and the **scripting surface contract**: `sdk/types/postretro.d.ts:281` `LightComponent.castShadows` (+ `.d.luau`), `scripting/components/light.rs`, `primitives/light.rs`, `systems/light_bridge.rs`, `refresh_plan.rs`, `builtins/data_archetype.rs`. Retiring it = ~12 files across 3 crates + SDK types + a breaking PRL-record change. Decision (owner): keep it in this plan, fully scoped (Task 3b).
 - `casts_entity_shadows`: from `_cast_entity_shadows` (0/1); currently gates the whole pool (world geometry), misnamed vs behavior.
 - `is_dynamic`: classname-derived (`light_dynamic`/`light_dynamic_spot`), not a KVP.
 - `shadow_type` (`StaticLightMap`/`Sdf`): from `_shadow_type`; disjoint direct-shadow technique for static lights (enforced no-double-count).

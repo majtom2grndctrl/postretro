@@ -181,7 +181,7 @@ The SDK ships an `emitter()` component constructor (`sdk/lib/entities/emitters.{
 
 Each live particle is a full ECS entity carrying `Transform`, `ParticleState`, and `SpriteVisual`. The emitter bridge owns spawn and despawn via `EntityRegistry::spawn` / `despawn` — scripts never call these directly.
 
-**Per-emitter cap:** `MAX_SPRITES = 512` concurrent particles per emitter. Overflow is dropped with a rate-limited `log::warn!`.
+**Per-emitter cap:** `MAX_SPRITES = 4096` concurrent particles per emitter. Overflow is dropped with a rate-limited `log::warn!`.
 
 **Reaction primitives:** `setEmitterRate` sets the continuous spawn rate (`rate = 0` is the inactive state — there is no separate `setEmitterActive`). `setSpinRate` sets the per-emitter rotation rate, with an optional `SpinAnimation` tween. Both are tag-targeted named reaction primitives in the Rust reaction registry.
 

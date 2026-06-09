@@ -1,5 +1,5 @@
 // Script-facing billboard emitter component plus FFI-adapter shape.
-// See: context/lib/scripting.md §11 (Emitter and Particles)
+// See: context/lib/scripting.md §10.1 (Emitter and Particles)
 
 use std::sync::Arc;
 

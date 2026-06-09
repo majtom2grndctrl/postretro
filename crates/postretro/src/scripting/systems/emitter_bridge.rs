@@ -109,7 +109,7 @@ impl EmitterBridge {
     /// clock). Used for rate-limited cap warnings.
     ///
     /// `live_counts` is the per-emitter live-particle tally produced by the
-    /// **previous** frame's `particle_sim::tick` (Slice 4 pass-collapse). The
+    /// **previous** frame's `particle_sim::tick` (see its doc). The
     /// bridge no longer walks the `ParticleState` column itself for cap
     /// headroom — the sim already visits every particle and tallies survivors,
     /// and nothing mutates that column between the end of the sim and the start

@@ -29,14 +29,14 @@ use super::eval_curve;
 /// ensures newly-spawned particles are integrated at least once before the
 /// render stage reads their state.
 ///
-/// **Pass-collapse (Slice 4):** this walk also produces `live_counts` — the
-/// per-emitter count of particles that *survive* this tick (i.e. excluding ones
-/// expiring now). The emitter bridge consumes that tally on the **next** frame
-/// for its per-emitter cap headroom, so the bridge no longer needs its own
-/// separate walk over the `ParticleState` column. Nothing mutates that column
-/// between the end of this tick and the start of the next bridge update, so the
-/// count the bridge reads is exact, not stale. `live_counts` is cleared and
-/// refilled in place each call (caller owns the buffer, so no per-frame alloc).
+/// This walk also produces `live_counts` — the per-emitter count of particles
+/// that *survive* this tick (i.e. excluding ones expiring now). The emitter
+/// bridge consumes that tally on the **next** frame for its per-emitter cap
+/// headroom, so the bridge no longer needs its own separate walk over the
+/// `ParticleState` column. Nothing mutates that column between the end of this
+/// tick and the start of the next bridge update, so the count the bridge reads
+/// is exact, not stale. `live_counts` is cleared and refilled in place each
+/// call (caller owns the buffer, so no per-frame alloc).
 ///
 /// ParticleState snapshot clones are cheap: the lifetime curves are shared
 /// `Arc<[f32]>` handles (see [`ParticleState`]), so `clone` only bumps refcounts.

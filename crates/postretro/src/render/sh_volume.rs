@@ -129,8 +129,9 @@ pub struct ShVolumeResources {
     dynamic_direct_params_buffer: wgpu::Buffer,
     /// Whether a usable baked DIRECT SH section is present this level. Drives the
     /// `has_direct` flag the dynamic shaders use to gate the direct sample off
-    /// (direct = 0) when absent. Owned here; the renderer copies it into the
-    /// billboard group-0 tail and the mesh uniform each frame.
+    /// (direct = 0) when absent. Owned here; the renderer embeds it in the camera
+    /// `Uniforms` buffer (billboard reads it from group 0) and writes it into the
+    /// mesh `DynamicDirectParams` uniform each frame.
     pub has_direct: bool,
     #[allow(dead_code)]
     pub present: bool,

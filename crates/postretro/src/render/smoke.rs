@@ -595,8 +595,12 @@ impl SmokePass {
     /// Each `(collection, packed_bytes)` slice carries
     /// `live_count * SPRITE_INSTANCE_SIZE` bytes (packed by
     /// `scripting::systems::particle_render::pack_particle_instance`). The caller
-    /// batches all emitters sharing a collection into one slice, so a collection
-    /// still issues exactly one draw — N collections produce N draws.
+    /// batches all emitters sharing a collection into one slice — that batching
+    /// happens upstream in `ParticleRenderCollector::collect`
+    /// (`scripting/systems/particle_render.rs`), which buckets particles by
+    /// `SpriteVisual.sprite`; `record_draws` itself is unaware of emitter
+    /// boundaries — so a collection still issues exactly one draw — N collections
+    /// produce N draws.
     ///
     /// **Buffer sizing / growth.** The frame's regions are laid out back-to-back,
     /// each padded up to the 256-byte storage dynamic-offset alignment so its

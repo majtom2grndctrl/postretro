@@ -1,5 +1,5 @@
 // Per-particle simulation state. Carried by each live particle ECS entity.
-// See: context/lib/scripting.md §11 (Emitter and Particles)
+// See: context/lib/scripting.md §10.1 (Emitter and Particles)
 
 use serde::{Deserialize, Serialize};
 
@@ -13,11 +13,12 @@ use crate::scripting::registry::EntityId;
 /// snapshotting it each tick only bump a refcount. Curves are immutable once
 /// authored (a reaction that changes one installs a fresh `Arc`), so a particle
 /// survives unchanged after its emitter despawns; `emitter` is a back-reference
-/// to the parent emitter entity, used both for spin-rate lookup and as the
-/// render collector's cull-grouping key — particles sharing an emitter resolve
-/// one BSP-leaf visibility decision (see `scripting/systems/particle_render.rs`).
-/// When the emitter has despawned, the back-reference is stale (points to a
-/// despawned entity) and the orphaned particle is drawn (never culled).
+/// to the parent emitter entity whose **only** runtime role is spin-rate lookup
+/// in the sim tick — it is **not** consulted for render-collect culling. Each
+/// billboard is culled by the BSP leaf of *its own* world position (see
+/// `scripting/systems/particle_render.rs`). When the emitter has despawned the
+/// back-reference is stale, and the orphaned particle is culled or drawn by its
+/// own leaf exactly like any other particle.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ParticleState {
     pub(crate) velocity: [f32; 3],

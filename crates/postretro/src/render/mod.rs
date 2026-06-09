@@ -869,9 +869,9 @@ fn vertex_storage_buffers(entries: &[wgpu::BindGroupLayoutEntry]) -> u32 {
 /// group order: 0 camera, 1 sheet, 2 lighting, 3 SH volume, 6 instance). GPU-free,
 /// so it runs in unit tests and `Renderer::new` without a device.
 ///
-/// Billboard hoisted SH/static-specular/dynamic-light loops from the fragment
-/// stage into `vs_main` (perf epic Slices 1-2) and Slice 5 added the group-6
-/// instance buffer. The genuinely vertex-read storage buffers are: group 2's five
+/// Billboard lighting runs in `vs_main` (per-vertex SH indirect+direct,
+/// static-specular, dynamic-diffuse); the group-6 instance storage buffer is
+/// VERTEX-read. The genuinely vertex-read storage buffers are: group 2's five
 /// (`lights`, `light_influence`, `spec_lights`, `chunk_offsets`, `chunk_indices`)
 /// and group 6's one (`sprites`) — six total. The three group-3 anim/scripted-light
 /// storage buffers are read only in the fragment/compute stages, so they must NOT
@@ -1433,9 +1433,9 @@ impl Renderer {
             forward_pipeline_sampled_texture_count(),
             REQUIRED_SAMPLED_TEXTURES
         );
-        // Billboard hoisted SH/static-specular/dynamic-light loops into `vs_main`
-        // (perf-billboard-emitter Slices 1-2) and Slice 5 added the group-6 instance
-        // storage buffer. wgpu charges `max_storage_buffers_per_shader_stage` against
+        // Billboard lighting runs in `vs_main` (per-vertex SH indirect+direct,
+        // static-specular, dynamic-diffuse); the group-6 instance storage buffer is
+        // VERTEX-read (see §7.4). wgpu charges `max_storage_buffers_per_shader_stage` against
         // the BGL *entry* set per stage — every VERTEX-visible storage entry across the
         // Billboard Pipeline Layout's groups counts, read or not. The downlevel/WebGPU
         // default ceiling (we do not raise it — broad hardware compat for a
@@ -5124,9 +5124,9 @@ mod tests {
         );
     }
 
-    // Regression: the perf-billboard-emitter epic hoisted the SH/static-specular/
-    // dynamic-light loops into `vs_main` (Slices 1-2) and added a group-6 instance
-    // storage buffer (Slice 5). wgpu charges `max_storage_buffers_per_shader_stage`
+    // Regression: billboard lighting runs in `vs_main` (per-vertex SH indirect+direct,
+    // static-specular, dynamic-diffuse) and the group-6 instance storage buffer is
+    // VERTEX-read. wgpu charges `max_storage_buffers_per_shader_stage`
     // against the BGL *entry* set per stage — every VERTEX-visible storage entry in
     // the Billboard Pipeline Layout counts, whether or not vs_main reads it. The hoist
     // initially left the three group-3 anim/scripted-light storage buffers marked

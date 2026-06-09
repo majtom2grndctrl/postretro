@@ -440,7 +440,7 @@ struct App {
     /// Per-emitter live-particle tally, produced by `particle_sim::tick` and
     /// consumed by the next frame's `emitter_bridge.update` for cap headroom.
     /// Owned here (not re-allocated per frame) so the collapsed pass reuses one
-    /// buffer's capacity across frames. See: context/lib/scripting.md (Slice 4).
+    /// buffer's capacity across frames. See: context/lib/scripting.md §10.1 (Emitter and Particles).
     particle_live_counts: std::collections::HashMap<scripting::registry::EntityId, usize>,
 
     /// World-space static-geometry collider built from PRL static geometry.
@@ -1146,7 +1146,7 @@ impl ApplicationHandler for App {
                     {
                         let mut registry = self.script_ctx.registry.borrow_mut();
                         // Cap headroom comes from the previous frame's sim tally
-                        // (Slice 4 pass-collapse) — the bridge no longer walks the
+                        // (see particle_sim::tick) — the bridge no longer walks the
                         // ParticleState column itself.
                         self.emitter_bridge.update(
                             &mut registry,

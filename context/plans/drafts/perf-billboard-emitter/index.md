@@ -37,6 +37,7 @@ Slice 1 — Per-vertex SH lighting
 - [ ] The billboard fragment shader no longer performs SH indirect or SH direct sampling; SH lighting arrives as an interpolated vertex output.
 - [ ] Smoke-pass GPU time (from Slice 0) drops in a fill-heavy scene versus the Slice 0 baseline.
 - [ ] The billboard WGSL still passes naga validation (parse + uniform control flow); the dynamic-direct isolation debug modes still function.
+- [ ] The forward, fog, and mesh pipelines still create successfully after the shared SH bind-group-layout visibility is widened to include `VERTEX` (no wgpu pipeline-creation validation error).
 - [ ] `cargo test` green; fmt/clippy clean.
 
 Slice 2 — Per-vertex light loops
@@ -44,6 +45,7 @@ Slice 2 — Per-vertex light loops
 - [ ] The fragment shader's remaining work is the sprite-texture sample, alpha, opacity, and the final premultiply — no lighting computation.
 - [ ] Smoke renders with no visible change versus the Slice 1 baseline at normal viewing distances; lit-by-dynamic-light smoke still responds to dynamic lights.
 - [ ] Smoke-pass GPU time drops further versus the Slice 1 baseline in a scene with dynamic lights on smoke.
+- [ ] The forward and fog pipelines still create successfully after the group-0 (camera) and group-2 (lighting) bind-group-layout visibility is widened to include `VERTEX` (no wgpu pipeline-creation validation error).
 - [ ] WGSL still passes naga validation; fmt/clippy clean; `cargo test` green.
 
 Slice 3 — Culling

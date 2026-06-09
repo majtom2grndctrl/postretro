@@ -88,6 +88,15 @@ pub(crate) struct MovementInput {
     /// omnidirectional horizontal speed target; affects strafe and forward
     /// motion equally (standard shooter sprint, not forward-only).
     pub(crate) running: bool,
+    /// Crouch intent active this tick — the single resolved per-tick bit the
+    /// input layer hands down. Toggle-vs-hold is resolved upstream from
+    /// `PlayerOptions.crouch_mode`; the movement intent NEVER sees the raw
+    /// button or the mode. In `hold` mode this tracks the `Action::Crouch`
+    /// level; in `toggle` mode it tracks a latch flipped on each press edge.
+    // Consumed by the `Crouching` intent (a later task); the field and its
+    // threading land first, so there is no reader yet.
+    #[allow(dead_code)]
+    pub(crate) crouch_intent: bool,
     pub(crate) facing_yaw: f32,
 }
 
@@ -1607,6 +1616,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         // Let gravity settle the capsule onto the floor.
@@ -1626,6 +1636,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         let x_phase1_start = pos.x;
@@ -1677,6 +1688,7 @@ mod tests {
             jump_pressed: true,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         // Find a tick where the player is grounded (oscillates per tick during
@@ -1842,6 +1854,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         run_ticks(&mut comp, &world, &mut pos, 5, &idle);
@@ -1851,6 +1864,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         for _ in 0..300 {
@@ -1906,6 +1920,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         run_ticks(&mut comp, &world, &mut pos, 5, &idle);
@@ -1915,6 +1930,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         for _ in 0..300 {
@@ -1931,6 +1947,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         for _ in 0..120 {
@@ -1966,6 +1983,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         run_ticks(&mut comp, &world, &mut pos, 5, &idle);
@@ -1975,6 +1993,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         for _ in 0..300 {
@@ -2110,6 +2129,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         run_ticks(&mut comp, &world, &mut pos, 10, &idle);
@@ -2126,6 +2146,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         let wall_contact_x = 5.0 - desc.capsule.radius - 0.05;
@@ -2168,6 +2189,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         run_ticks(&mut comp, &world, &mut pos, 10, &idle);
@@ -2177,6 +2199,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         // Run 120 ticks; the player reaches the wall well within the first
@@ -2226,6 +2249,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         run_ticks(&mut comp, &world, &mut pos, 5, &idle);
@@ -2235,6 +2259,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
 
@@ -2330,6 +2355,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         run_ticks(comp, world, pos, 10, &idle);
@@ -2341,6 +2367,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         // Approach and reach the corner.
@@ -2451,6 +2478,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         run_ticks(&mut comp, &world, &mut pos, 5, &idle);
@@ -2460,6 +2488,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         for _ in 0..200 {
@@ -2498,6 +2527,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         run_ticks(&mut comp, &world, &mut pos, 10, &idle);
@@ -2507,6 +2537,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         let x_start = pos.x;
@@ -2542,6 +2573,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         run_ticks(&mut comp, &world, &mut pos, 10, &idle);
@@ -2555,6 +2587,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         run_ticks(&mut comp, &world, &mut pos, 60, &mv);
@@ -2604,6 +2637,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         run_ticks(&mut comp, &world, &mut pos, 10, &idle);
@@ -2616,6 +2650,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: true,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         run_ticks(&mut comp, &world, &mut pos, 30, &run);
@@ -2635,6 +2670,7 @@ mod tests {
             jump_pressed: true,
             dash_pressed: false,
             running: true,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         let mut jumped = false;
@@ -2683,6 +2719,7 @@ mod tests {
             jump_pressed: true,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         let idle = MovementInput {
@@ -2690,6 +2727,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         for _ in 0..60 {
@@ -2718,6 +2756,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         run_ticks(&mut comp, &world, &mut pos, 10, &idle);
@@ -2739,6 +2778,7 @@ mod tests {
             jump_pressed: true,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         // While vy is still above the ceiling, holding jump must not consume a
@@ -2800,6 +2840,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         run_ticks(&mut comp, &world, &mut pos, 10, &idle);
@@ -2812,6 +2853,7 @@ mod tests {
             jump_pressed: true,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         for _ in 0..60 {
@@ -2857,6 +2899,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         run_ticks(&mut comp, &world, &mut pos, 10, &idle);
@@ -2867,6 +2910,7 @@ mod tests {
             jump_pressed: true,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
 
@@ -2952,6 +2996,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         }
     }
@@ -2974,6 +3019,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: true,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         run_ticks(&mut comp, world, &mut pos, run_ticks_n, &run);
@@ -2998,6 +3044,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: true,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         let _ = tick(&mut standing, &dash_in_place, &world, GRAVITY, DT, spos);
@@ -3060,6 +3107,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: true,
             running: true,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         let (next, _ev) = tick(&mut comp, &dash_held, &world, GRAVITY, DT, pos);
@@ -3077,6 +3125,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: true,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         // Keep holding the direction and confirm the speed bleeds back to the run
@@ -3122,6 +3171,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: true,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
 
@@ -3174,6 +3224,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         let dash_forward = MovementInput {
@@ -3181,6 +3232,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: true,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
 
@@ -3231,6 +3283,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: true,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
 
@@ -3287,6 +3340,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: true,
             running: true,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         let (next, _ev) = tick(&mut comp, &dash_run, &world, GRAVITY, DT, pos);
@@ -3304,6 +3358,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: true,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         let mut returned = false;
@@ -3339,6 +3394,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: true,
             running: true,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         let (next, _ev) = tick(&mut comp, &dash_run, &world, GRAVITY, DT, pos);
@@ -3353,6 +3409,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: true,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         for i in 0..(max_ticks + 5) {
@@ -3391,6 +3448,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: true,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         let (next, _ev) = tick(&mut comp, &dash, &world, GRAVITY, DT, pos);
@@ -3461,6 +3519,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: true,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         let (next, _ev) = tick(&mut comp, &press, &world, GRAVITY, DT, pos);
@@ -3475,6 +3534,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         let mut redashed = false;
@@ -3544,6 +3604,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: true,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
 
@@ -3638,6 +3699,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: true,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         let (_next, _ev) = tick(&mut comp, &air_dash, &world, GRAVITY, DT, pos);
@@ -3692,6 +3754,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: true,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         let (_next, _ev) = tick(&mut comp, &air_dash, &world, GRAVITY, DT, pos);
@@ -3731,6 +3794,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: true,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         for _ in 0..10 {
@@ -3758,6 +3822,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: true,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
 
@@ -3828,6 +3893,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: false,
             running: true,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         // Walk toward +X until close to the wall but still clear of the capsule
@@ -3861,6 +3927,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: true,
             running: true,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         let (next, _ev) = tick(&mut comp, &dash_into_wall, &world, GRAVITY, DT, pos);
@@ -3918,6 +3985,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: true,
             running: true,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         let (next, _ev) = tick(&mut comp, &dash_diag, &world, GRAVITY, DT, pos);
@@ -3970,6 +4038,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: true,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         let (_next, _ev) = tick(&mut comp, &dash, &world, GRAVITY, DT, pos);
@@ -3998,6 +4067,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: true,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         let (pos, _ev) = tick(&mut comp, &air_dash, &world, GRAVITY, DT, pos);
@@ -4012,6 +4082,7 @@ mod tests {
             jump_pressed: true,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         let vy_before = comp.velocity.y;
@@ -4040,6 +4111,7 @@ mod tests {
             jump_pressed: false,
             dash_pressed: true,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         };
         let (next, _ev) = tick(&mut comp, &air_dash, &world, GRAVITY, DT, pos);
@@ -4102,6 +4174,7 @@ mod tests {
             jump_pressed: true,
             dash_pressed: false,
             running: false,
+            crouch_intent: false,
             facing_yaw: 0.0,
         }
     }

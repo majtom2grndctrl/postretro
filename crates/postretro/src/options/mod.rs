@@ -14,6 +14,28 @@ use crate::input::DEFAULT_MOUSE_SENSITIVITY;
 /// Filename written into the platform config directory.
 const SETTINGS_FILENAME: &str = "settings.toml";
 
+/// How the crouch action is interpreted by the input layer. Resolved upstream
+/// of the movement intent: the movement intent only ever sees the single
+/// resolved per-tick bit (`MovementInput::crouch_intent`), never this mode.
+///
+/// Wire format is snake_case (matching the rest of `PlayerOptions`): TOML values
+/// are `"hold"` / `"toggle"`. Defaults to `Hold` — hold-to-crouch is the
+/// boomer-shooter baseline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CrouchMode {
+    /// One press latches crouch on, a second press latches it off (edge-driven).
+    Toggle,
+    /// Crouch intent is active only while the button is held (level signal).
+    Hold,
+}
+
+impl Default for CrouchMode {
+    fn default() -> Self {
+        CrouchMode::Hold
+    }
+}
+
 /// Per-human runtime preferences, persisted as TOML.
 ///
 /// Wire format is deliberately snake_case (serde default, no `rename_all`):
@@ -37,6 +59,13 @@ pub struct PlayerOptions {
     /// value degrades gracefully.
     #[serde(default = "default_view_feel_scale")]
     pub view_feel_scale: f32,
+
+    /// How the crouch action is interpreted by the input layer (hold vs toggle).
+    /// Defaults to `Hold`; an absent TOML key loads as `Hold` via
+    /// `serde(default)`. Engine-internal config — no SDK type / scripting
+    /// surface (see player_options.md §6).
+    #[serde(default)]
+    pub crouch_mode: CrouchMode,
 }
 
 fn default_mouse_sensitivity() -> f32 {
@@ -57,6 +86,7 @@ impl Default for PlayerOptions {
             mouse_sensitivity: default_mouse_sensitivity(),
             invert_y: default_invert_y(),
             view_feel_scale: default_view_feel_scale(),
+            crouch_mode: CrouchMode::default(),
         }
     }
 }
@@ -169,6 +199,7 @@ mod tests {
             a.view_feel_scale,
             b.view_feel_scale
         );
+        assert_eq!(a.crouch_mode, b.crouch_mode);
     }
 
     #[test]
@@ -177,6 +208,7 @@ mod tests {
             mouse_sensitivity: 0.0035,
             invert_y: true,
             view_feel_scale: 0.5,
+            crouch_mode: CrouchMode::Toggle,
         };
         let serialized = toml::to_string_pretty(&original).unwrap();
         let restored: PlayerOptions = toml::from_str(&serialized).unwrap();
@@ -204,6 +236,7 @@ mod tests {
             mouse_sensitivity: 0.0042,
             invert_y: true,
             view_feel_scale: 0.25,
+            crouch_mode: CrouchMode::Toggle,
         };
         options.save(&path).unwrap();
 
@@ -248,6 +281,7 @@ mod tests {
             mouse_sensitivity: 0.003,
             invert_y: false,
             view_feel_scale: 0.75,
+            crouch_mode: CrouchMode::Toggle,
         };
         options.save(&path).unwrap();
 
@@ -278,5 +312,59 @@ mod tests {
         fs::write(&low, "view_feel_scale = -1.0\n").unwrap();
         let loaded_low = PlayerOptions::load(&low);
         assert!((loaded_low.view_feel_scale - 0.0).abs() < EPSILON);
+    }
+
+    #[test]
+    fn crouch_mode_defaults_to_hold() {
+        assert_eq!(CrouchMode::default(), CrouchMode::Hold);
+        assert_eq!(PlayerOptions::default().crouch_mode, CrouchMode::Hold);
+    }
+
+    #[test]
+    fn crouch_mode_roundtrips_through_toml() {
+        for mode in [CrouchMode::Hold, CrouchMode::Toggle] {
+            let original = PlayerOptions {
+                crouch_mode: mode,
+                ..PlayerOptions::default()
+            };
+            let serialized = toml::to_string_pretty(&original).unwrap();
+            let restored: PlayerOptions = toml::from_str(&serialized).unwrap();
+            assert_eq!(restored.crouch_mode, mode);
+        }
+    }
+
+    #[test]
+    fn crouch_mode_wire_format_is_snake_case() {
+        // The TOML value must be the snake_case `"toggle"`, not `"Toggle"`.
+        let toggle = PlayerOptions {
+            crouch_mode: CrouchMode::Toggle,
+            ..PlayerOptions::default()
+        };
+        let serialized = toml::to_string_pretty(&toggle).unwrap();
+        assert!(
+            serialized.contains("crouch_mode = \"toggle\""),
+            "expected snake_case crouch_mode key/value, got:\n{serialized}"
+        );
+    }
+
+    #[test]
+    fn load_defaults_crouch_mode_to_hold_when_absent() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        // A file with no `crouch_mode` key must load as the `Hold` default.
+        fs::write(&path, "invert_y = true\n").unwrap();
+
+        let loaded = PlayerOptions::load(&path);
+        assert_eq!(loaded.crouch_mode, CrouchMode::Hold);
+    }
+
+    #[test]
+    fn load_applies_explicit_crouch_mode_toggle() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        fs::write(&path, "crouch_mode = \"toggle\"\n").unwrap();
+
+        let loaded = PlayerOptions::load(&path);
+        assert_eq!(loaded.crouch_mode, CrouchMode::Toggle);
     }
 }

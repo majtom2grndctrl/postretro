@@ -107,11 +107,20 @@ Over-engineering is as costly as under-delivering. Both create surface area that
 Adjacent work discovered during implementation gets a follow-up task, not a scope expansion.
 
 - **Robustness gaps** outside the task's scope → file a follow-up with enough context for the next agent.
+- **Speculative optimizations** — no measured bottleneck → file a follow-up. Don't cache or precompute preemptively; *Performance* below carves out the structural choices that are the exception.
 - **Abstractions** without multiple concrete consumers → three similar lines beat a premature helper.
 
-**Performance.** Runtime performance is a first-class project goal. Structural choices that favor it belong in the initial implementation: avoid per-frame allocations, choose cache-friendly data layouts, keep hot paths free of unnecessary indirection. These are design decisions, not speculative tuning — the right time to make them is when writing the code.
+**Performance.** Runtime performance is a first-class goal, and this engine's costs are specific — design for them while writing the code, not later. The choices that matter live in the per-frame hot path (Input → Game logic → Audio → Render → Present); cold paths — level load, the offline bake — favor clarity over speed.
 
-Speculative micro-optimizations are different: changes that trade code clarity for theoretical gains without a measured bottleneck → file a follow-up instead. When profiling confirms a real bottleneck, optimize aggressively — but keep the result clean. An optimization that makes the code so brittle it becomes unwieldy to maintain is not acceptable, even with measurements behind it. Fast *and* clean is the goal; brittleness just moves the cost from runtime to maintenance.
+Three levers carry most of the weight:
+
+- **Bound the work before optimizing the unit.** The engine's measured wins come from visibility and culling — portal vis, PVS, per-region BVH, cone/frustum culls — and from ranking to a fixed budget, then dropping the overflow. Cap how much runs per frame first.
+- **Bake over compute** (architectural invariant — see [Architecture Index](./index.md) §2). Precompute offline — lightmaps, SH irradiance, portal visibility, BVH — so the runtime stays cheap. Reach for a baked input before a per-frame computation.
+- **Spend GPU budgets deliberately.** VRAM sits on a fixed memory floor; per-stage sampled-texture and binding slots are hard, low ceilings — several pinned by regression tests. Init-time allocations (shadow pools, atlases) and binding counts are up-front budget decisions, not later tuning. Treat a new large allocation or a new sampled binding as drawing down a fixed pool.
+
+Inside the hot path the ordinary defaults still hold: avoid per-frame allocations, prefer cache-friendly layouts, keep hot loops free of needless indirection. Design decisions, not speculative tuning.
+
+When per-pass GPU timing (`POSTRETRO_GPU_TIMING=1`) or a profile confirms a real bottleneck, optimize aggressively — but keep the result clean. An optimization that makes the code so brittle it becomes unwieldy to maintain is not acceptable, even with measurements behind it. Fast *and* clean is the goal; brittleness just moves the cost from runtime to maintenance.
 
 Never leave a bare `// TODO: fix later`. Either file a follow-up with context or fix it now.
 

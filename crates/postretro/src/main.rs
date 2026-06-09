@@ -1225,7 +1225,16 @@ impl ApplicationHandler for App {
                         // collection; the collector never touches wgpu directly.
                         {
                             let registry = self.script_ctx.registry.borrow();
-                            self.particle_render.collect(&registry);
+                            // Cull non-visible emitters at render-collect, mirroring
+                            // the mesh path below: thread the level world + this
+                            // frame's visible-cell set so off-screen / adjacent-room
+                            // smoke is never packed for drawing. `visible_cells` is
+                            // still live here (reclaimed after the frame).
+                            self.particle_render.collect(
+                                &registry,
+                                self.level.as_ref(),
+                                &visible_cells,
+                            );
                         }
                         let particle_collections: Vec<(&str, &[u8])> =
                             self.particle_render.iter_collections().collect();

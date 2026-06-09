@@ -8,7 +8,11 @@ use crate::scripting::registry::EntityId;
 /// Per-particle simulation state. The particle simulation reads / writes this
 /// each tick. Curve data and `buoyancy` / `drag` are *copied* from the parent
 /// emitter at spawn so a particle survives unchanged after its emitter
-/// despawns; `emitter` is a back-reference for diagnostics only.
+/// despawns; `emitter` is a back-reference to the parent emitter entity. The
+/// render collector uses it as the cull-grouping key — particles sharing an
+/// emitter resolve one BSP-leaf visibility decision (see
+/// `scripting/systems/particle_render.rs`). When the emitter has despawned, the
+/// reference dangles and the orphaned particle is drawn (never culled).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ParticleState {
     pub(crate) velocity: [f32; 3],

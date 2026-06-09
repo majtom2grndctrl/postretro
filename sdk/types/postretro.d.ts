@@ -135,7 +135,7 @@ declare module "postretro" {
     resolution: ResolutionMode;
   };
 
-  /** Authored player-movement component preset. The four core sub-objects (`capsule`/`ground`/`air`/`fall`) are required when `movement` is present; `dash` is optional. The data-archetype spawn path materializes the runtime movement component from this. */
+  /** Authored player-movement component preset. The four core sub-objects (`capsule`/`ground`/`air`/`fall`) are required when `movement` is present; `dash` is optional — its absence disables dash entirely; `crouch` is optional — its absence disables crouch entirely. The data-archetype spawn path materializes the runtime movement component from this. */
   export type PlayerMovementDescriptor = {
     /** Collision capsule shape. */
     capsule: CapsuleParams;

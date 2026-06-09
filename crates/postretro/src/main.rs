@@ -378,9 +378,9 @@ struct App {
     crouch_toggle_active: bool,
 
     /// Per-human runtime preferences loaded at boot. Seeds input look
-    /// preferences during init; held for the M13 settings menu, which has no
-    /// reader yet. See: context/lib/player_options.md
-    #[allow(dead_code)]
+    /// preferences during init; `crouch_mode` is read each input tick by
+    /// `resolve_crouch_intent`. Settings-menu UI (M13) remains future.
+    /// See: context/lib/player_options.md
     player_options: options::PlayerOptions,
 
     /// Resolved `settings.toml` path, or `None` when the platform exposes no

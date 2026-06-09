@@ -1299,6 +1299,19 @@ fn crouching_intent(
     let crouched_half_height = component.capsule.half_height;
     let standing_half_height = component.standing_half_height;
 
+    // Stand-up anchor, decided from grounded-AT-TICK-START — BEFORE the jump
+    // branch below may clear `is_grounded`. This must mirror the crouch-ENTRY
+    // anchor so an entry→exit cycle nets to no center drift (D4): grounded entry
+    // anchors `Feet`, airborne entry anchors `Head`. A ground-origin crouch-jump
+    // clears `is_grounded` before the stand-up resize runs, so reading the flag
+    // at the call site would wrongly pick `Head` and drive the launching feet into
+    // the floor — hence the snapshot here.
+    let stand_up_anchor = if component.is_grounded {
+        ResizeAnchor::Feet
+    } else {
+        ResizeAnchor::Head
+    };
+
     // 1. Gravity (airborne only) — identical to `Normal`.
     if !component.is_grounded {
         component.velocity.y += gravity * dt;
@@ -1432,7 +1445,7 @@ fn crouching_intent(
             crouched_half_height,
             standing_half_height,
         ) {
-            stand_up_resize(component, position);
+            stand_up_resize(component, position, stand_up_anchor);
             *eye_current = component.capsule.eye_height;
             return Some(stand_up_transition());
         }
@@ -1452,7 +1465,7 @@ fn crouching_intent(
             standing_half_height,
         )
     {
-        stand_up_resize(component, position);
+        stand_up_resize(component, position, stand_up_anchor);
         *eye_current = component.capsule.eye_height;
         return Some(stand_up_transition());
     }
@@ -1461,25 +1474,33 @@ fn crouching_intent(
 }
 
 /// Resize the live capsule from the crouched size back to the configured
-/// STANDING reference (`standing_half_height` / `standing_eye_height`), feet
-/// planted (the grounded anchor; the center rises), and apply the helper-returned
+/// STANDING reference (`standing_half_height` / `standing_eye_height`), keeping
+/// the `anchor`-selected capsule extreme fixed, and apply the helper-returned
 /// center delta to `position`. Used by both stand-up paths (release and
 /// crouch-jump). The eye snaps to the standing target here — the smoothing window
 /// is the descent into crouch; standing back up restores the standing eye
 /// directly (the camera-follow read picks it up next tick). Returns the applied
 /// center delta.
-fn stand_up_resize(component: &mut PlayerMovementComponent, position: &mut Vec3) -> f32 {
+///
+/// The `anchor` MUST mirror the crouch-ENTRY anchor so an entry→exit cycle is a
+/// net no-op on the capsule center (D4). Crouch entry is grounded-vs-airborne
+/// anchored — `Feet` when grounded (feet planted, center drops), `Head` when
+/// airborne (head pinned, feet rise). Stand-up inverts the SAME axis: grounded ⇒
+/// `Feet` (feet planted, center rises back); airborne ⇒ `Head` (head pinned, feet
+/// drop back). A mismatched exit anchor double-applies the half-height delta to
+/// the center — an airborne `Feet` exit after a `Head` entry floats the player up
+/// by `2 × (standing_hh − crouched_hh)` with no ground-stick to mask it. The
+/// caller selects `anchor` from grounded-AT-TICK-START (snapshotted before the
+/// jump branch may clear `is_grounded`), so a ground-origin crouch-jump still
+/// anchors the feet and launches from the planted position.
+fn stand_up_resize(
+    component: &mut PlayerMovementComponent,
+    position: &mut Vec3,
+    anchor: ResizeAnchor,
+) -> f32 {
     let target_half_height = component.standing_half_height;
     let target_eye_height = component.standing_eye_height;
-    // Feet planted on stand-up: the grounded contact point stays put, the center
-    // rises (D2). Airborne stand-up via crouch-jump still anchors the feet so the
-    // launch arc starts from the planted position rather than dropping the head.
-    let delta = resize_capsule(
-        component,
-        target_half_height,
-        target_eye_height,
-        ResizeAnchor::Feet,
-    );
+    let delta = resize_capsule(component, target_half_height, target_eye_height, anchor);
     position.y += delta;
     delta
 }
@@ -5302,6 +5323,66 @@ mod tests {
         assert!(
             approx_eq(top_after, top_before, 0.02),
             "head anchored midair: highest point unchanged: before {top_before}, after {top_after}"
+        );
+    }
+
+    /// Airborne release-stand (D4): entering `Crouching` midair (Head-anchored)
+    /// then releasing crouch with clear headroom must exit Head-anchored too, so a
+    /// crouch→stand cycle nets to NO upward center drift. A `Feet`-anchored exit
+    /// after the `Head`-anchored entry would float the capsule up by
+    /// `2 × (standing_hh − crouched_hh)` with no ground-stick to mask it. Gravity
+    /// lowers the center each tick, so a no-crouch baseline over the identical tick
+    /// count isolates the resize: the crouch path's capsule top must match the
+    /// gravity-only top, not sit above it.
+    #[test]
+    fn crouch_airborne_release_stands_up_head_anchored_no_drift() {
+        let desc = crouch_descriptor();
+        let world = floor_and_ceiling_world(50.0); // open headroom
+
+        // Baseline: stay airborne and standing for the same two ticks the crouch
+        // path uses (one entry tick + one release/stand tick). This captures the
+        // gravity-only descent of the capsule top with no crouch resize.
+        let mut base_comp = PlayerMovementComponent::from_descriptor(&desc);
+        let mut base_pos = Vec3::new(0.0, 10.0, 0.0);
+        base_comp.is_grounded = false;
+        run_ticks(&mut base_comp, &world, &mut base_pos, 2, &idle_input());
+        assert!(
+            !base_comp.is_grounded,
+            "baseline must stay airborne (no floor contact at y≈10)"
+        );
+        let baseline_top = capsule_top(&base_comp, base_pos);
+
+        // Crouch path: same start, enter Crouching midair, then release.
+        let mut comp = PlayerMovementComponent::from_descriptor(&desc);
+        let mut pos = Vec3::new(0.0, 10.0, 0.0);
+        comp.is_grounded = false;
+
+        run_ticks(&mut comp, &world, &mut pos, 1, &crouch_hold_input());
+        assert!(is_crouching(&comp), "precondition: airborne crouch entry");
+        assert!(
+            !comp.is_grounded,
+            "precondition: still airborne while crouched"
+        );
+
+        // Release with clear headroom: the airborne stand-up must fire this tick.
+        run_ticks(&mut comp, &world, &mut pos, 1, &idle_input());
+        assert!(
+            matches!(comp.movement_state, MovementState::Normal),
+            "airborne crouch release with clear headroom must return to Normal"
+        );
+        assert!(
+            approx_eq(comp.capsule.half_height, 0.8, POS_EPS),
+            "airborne stand-up must restore the standing half-height, got {}",
+            comp.capsule.half_height
+        );
+
+        // No drift: the crouch→stand cycle's capsule top equals the gravity-only
+        // baseline. A `Feet`-anchored exit would put it ~0.8 above the baseline.
+        let crouch_top = capsule_top(&comp, pos);
+        assert!(
+            approx_eq(crouch_top, baseline_top, 0.02),
+            "airborne crouch→stand must not float the capsule up: baseline top \
+             {baseline_top}, crouch-cycle top {crouch_top}"
         );
     }
 

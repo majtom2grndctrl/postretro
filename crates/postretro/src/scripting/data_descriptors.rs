@@ -3433,6 +3433,26 @@ mod tests {
     }
 
     #[test]
+    fn lua_movement_crouch_eye_height_zero_is_rejected() {
+        // Exclusive lower bound: 0 is rejected.
+        let src = lua_movement_with_crouch(
+            r#"{ halfHeight = 0.4, eyeHeight = 0.0, transitionRate = 8.0 }"#,
+        );
+        let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_movement_crouch_eye_height_at_capsule_top_is_accepted() {
+        // Inclusive upper bound: halfHeight (0.4) + radius (0.4) = 0.8.
+        let src = lua_movement_with_crouch(
+            r#"{ halfHeight = 0.4, eyeHeight = 0.8, transitionRate = 8.0 }"#,
+        );
+        let d = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap());
+        assert_eq!(d.movement.unwrap().crouch.unwrap().eye_height, 0.8);
+    }
+
+    #[test]
     fn lua_movement_crouch_eye_height_above_capsule_top_is_rejected() {
         let src = lua_movement_with_crouch(
             r#"{ halfHeight = 0.4, eyeHeight = 0.9, transitionRate = 8.0 }"#,

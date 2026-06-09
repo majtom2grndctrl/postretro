@@ -32,8 +32,11 @@ Code anchors and external findings behind the spec. Line numbers drift; treat as
 - `is_dynamic`: classname-derived (`light_dynamic`/`light_dynamic_spot`), not a KVP.
 - `shadow_type` (`StaticLightMap`/`Sdf`): from `_shadow_type`; disjoint direct-shadow technique for static lights (enforced no-double-count).
 
-**In-progress dependency** — `context/plans/in-progress/shadow-cone-cull/`
-- Reshapes the spot depth pass to per-slot GPU cone-culled indirect world draws; adds a cone-frustum AABB-vs-6-plane predicate (Task 1) and a dedicated shadow-cull owner. Explicitly leaves entity/skinned-mesh shadow culling to this milestone. Reuse its predicate for per-light entity culling.
+**Shipped dependency** — `shadow-cone-cull` (code merged; plan folder still in `in-progress/` pending "land the plane")
+- `lighting/cone_frustum.rs`: `cone_frustum_planes(&Mat4) -> [Vec4;6]`, `aabb_intersects_frustum(&Aabb, &[Vec4;6]) -> bool`, `cone_enclosing_aabb(&Mat4) -> Aabb` (all `pub(crate)`). CPU mirror of `bvh_cull.wgsl`'s `is_aabb_outside_frustum`. Reuse for per-light entity culling.
+- `shadow_cull::ShadowCullPipeline` (`crates/postretro/src/shadow_cull.rs`): `dispatch_occupied_slots(...)` (GPU per-slot cone cull of world BVH) + `draw_slot_indirect(pass, slot, None)`. Owned by `Renderer` as `shadow_cull: Option<ShadowCullPipeline>`.
+- Spot depth pass in `render/mod.rs`: `for slot in used_slots` → new "Spot Shadow Depth Pass" render pass per slot → `shadow_cull.draw_slot_indirect`. Entity occluder draws append here. `slot_cone_matrices` populated in `update_dynamic_light_slots`.
+- World occluders are GPU-BVH-culled; entities aren't in the BVH → entity culling is CPU per-instance. No conflict.
 
 ## External findings
 

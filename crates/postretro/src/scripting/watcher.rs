@@ -114,10 +114,16 @@ impl TsCompilerPath {
                     return Self::detect_with(exe_dir.as_deref(), path_var.as_deref());
                 }
                 Ok(status) => {
-                    error!("[Scripting] Failed to compile `scripts-build`: exit code {}", status);
+                    error!(
+                        "[Scripting] Failed to compile `scripts-build`: exit code {}",
+                        status
+                    );
                 }
                 Err(err) => {
-                    error!("[Scripting] Failed to spawn cargo build for `scripts-build`: {}", err);
+                    error!(
+                        "[Scripting] Failed to spawn cargo build for `scripts-build`: {}",
+                        err
+                    );
                 }
             }
         }

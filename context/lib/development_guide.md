@@ -50,6 +50,7 @@ Four crates in a Cargo workspace:
 ## Agent TL;DR
 
 - Optimize for **readability over cleverness**; prefer small, explicit changes.
+- Prefer **runtime performance over development convenience** — when two approaches are equally maintainable, choose the faster one at runtime. See §1.5.
 - Respect **subsystem boundaries**: renderer, audio, input, game logic are distinct modules with explicit contracts.
 - **Deliver the impact defined in specs and tasks.** Specs define what and why; use judgment on how. When the plan doesn't survive contact with the code, adapt — but surface deviations and update the context files. See §1.
 - Do not flatten module structure. See §2.
@@ -111,11 +112,17 @@ Adjacent work discovered during implementation gets a follow-up task, not a scop
 
 Never leave a bare `// TODO: fix later`. Either file a follow-up with context or fix it now.
 
-### 1.5 Documentation lifecycle
+### 1.5 Runtime performance over development convenience
+
+When two implementation paths are equally clean and maintainable, choose the one with lower runtime cost. Convenience abstractions — extra allocations, indirection layers, wrapper types that exist only to smooth authoring — are acceptable only when they impose no measurable cost on the hot path. If the faster path is harder to write, write it anyway.
+
+This is not a license for premature optimization (§1.4). Don't optimize code with no measured problem. But when a real implementation choice exists and both paths are in scope, runtime cost is the tiebreaker.
+
+### 1.6 Documentation lifecycle
 
 See [Context Style Guide](./context_style_guide.md) §Documentation Lifecycle for the full lifecycle rules. In brief: specs are consumed during implementation; after a plan ships, durable knowledge belongs in context files and implementation-level "why" in code comments.
 
-### 1.6 Breaking API changes
+### 1.7 Breaking API changes
 
 This project does not maintain backward compatibility. There are no external consumers, and compatibility shims add maintenance weight with no current benefit.
 

@@ -11,6 +11,7 @@
 
 use glam::Mat4;
 
+use crate::lighting::cone_frustum::Aabb;
 use crate::model::ModelHandle;
 
 /// Fixed per-frame bone-palette budget, in `BonePaletteEntry` slots (one slot =
@@ -51,14 +52,20 @@ pub(crate) struct MeshInstanceInput {
 }
 
 /// One instance's resolved placement in the frame plan: its world transform, the
-/// base index of its contiguous palette run in the shared buffer, and its phase
-/// seed (carried through so the GPU layer can sample its clip into the run at a
-/// per-instance phase).
+/// base index of its contiguous palette run in the shared buffer, its phase seed
+/// (carried through so the GPU layer can sample its clip into the run at a
+/// per-instance phase), and its model's LOCAL-space bound.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PlannedInstance {
     pub(crate) transform: Mat4,
     pub(crate) palette_base: u32,
     pub(crate) phase_seed: u32,
+    /// The instance's model's LOCAL-space AABB (bind-pose bound), stamped from
+    /// the renderer's model cache at plan time. The per-light caster cull
+    /// (Task 2/4) transforms this by `transform` and tests it against a light's
+    /// cone/face frustum to decide whether the instance casts into that light's
+    /// shadow map. Surfaced CPU-side here; the GPU draw never reads it.
+    pub(crate) bounds: Aabb,
 }
 
 /// All instances of one model, batched for a single instanced `draw_indexed` per
@@ -91,12 +98,18 @@ pub(crate) struct MeshFramePlan {
     pub(crate) dropped: u32,
 }
 
-/// Look up a model's joint count by handle. The renderer's model cache provides
-/// this (each `UploadedModel` knows its skeleton's joint count); the planner
-/// only needs the count, keeping it GPU-free. Returns `None` for a handle that
-/// is not in the cache — its instances are skipped (the model never uploaded).
+/// Per-model lookups the GPU-free frame planner needs from the renderer's model
+/// cache: the skeleton's joint count (the palette-run length) and the model's
+/// local-space bound (stamped onto each `PlannedInstance` for the caster cull).
+/// `joint_count` returning `None` means the handle is not in the cache (never
+/// uploaded) — its instances are skipped, not budget-dropped. Keeps the planner
+/// GPU-free: the cache provides plain values, no wgpu reference crosses.
 pub(crate) trait JointCounts {
     fn joint_count(&self, model: &ModelHandle) -> Option<u32>;
+    /// The model's local-space AABB, or a zero box if the handle is uncached
+    /// (those instances are skipped before the bound is read, so the value is a
+    /// harmless default).
+    fn model_bounds(&self, model: &ModelHandle) -> Aabb;
 }
 
 /// Group the surviving instances by model and assign each a contiguous
@@ -152,6 +165,7 @@ pub(crate) fn plan_mesh_frame(
             transform: inst.transform,
             palette_base,
             phase_seed: inst.phase_seed,
+            bounds: joints.model_bounds(&inst.model),
         };
 
         // Append to the existing group for this model, or start a new one.
@@ -210,17 +224,30 @@ mod tests {
     use std::collections::HashMap;
 
     /// Test stand-in for the renderer's model cache: a fixed handle→joint-count
-    /// map. Mirrors what `UploadedModel`'s skeleton length provides at runtime.
-    struct FixedJoints(HashMap<String, u32>);
+    /// map plus an optional handle→bounds map. Mirrors what `UploadedModel`'s
+    /// skeleton length and `model_bounds` provide at runtime. Bounds default to a
+    /// zero box for handles not in the bounds map (matching the runtime default
+    /// for an uncached handle).
+    struct FixedJoints {
+        counts: HashMap<String, u32>,
+        bounds: HashMap<String, Aabb>,
+    }
 
     impl JointCounts for FixedJoints {
         fn joint_count(&self, model: &ModelHandle) -> Option<u32> {
-            self.0.get(model.as_str()).copied()
+            self.counts.get(model.as_str()).copied()
+        }
+
+        fn model_bounds(&self, model: &ModelHandle) -> Aabb {
+            self.bounds.get(model.as_str()).copied().unwrap_or_default()
         }
     }
 
     fn joints(pairs: &[(&str, u32)]) -> FixedJoints {
-        FixedJoints(pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect())
+        FixedJoints {
+            counts: pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+            bounds: HashMap::new(),
+        }
     }
 
     fn instance(model: &str, x: f32, seed: u32) -> MeshInstanceInput {
@@ -378,5 +405,38 @@ mod tests {
     #[test]
     fn instance_phase_zero_for_zero_length_clip() {
         assert_eq!(instance_phase(12345, 0.0), 0.0);
+    }
+
+    #[test]
+    fn plan_stamps_model_local_bounds_onto_planned_instances() {
+        // Each planned instance must carry its model's LOCAL-space bound (the
+        // per-light caster cull transforms it by `transform` at cull time). The
+        // planner stamps it from the model-info lookup, so two distinct models'
+        // instances carry distinct bounds.
+        let model_bounds = Aabb {
+            min: Vec3::new(-1.0, -2.0, -3.0),
+            max: Vec3::new(1.0, 2.0, 3.0),
+        };
+        let mut fixed = joints(&[("grunt", 8), ("drone", 4)]);
+        fixed.bounds.insert("grunt".to_string(), model_bounds);
+        // "drone" intentionally has NO bounds entry → defaults to the zero box.
+
+        let instances = [instance("grunt", 1.0, 0), instance("drone", 2.0, 1)];
+        let plan = plan_mesh_frame(&instances, &fixed);
+
+        let grunt = &plan.groups[0];
+        assert_eq!(grunt.model.as_str(), "grunt");
+        assert_eq!(
+            grunt.instances[0].bounds, model_bounds,
+            "grunt instance carries its model's local bound"
+        );
+
+        let drone = &plan.groups[1];
+        assert_eq!(drone.model.as_str(), "drone");
+        assert_eq!(
+            drone.instances[0].bounds,
+            Aabb::default(),
+            "a model with no bound entry defaults to the zero box"
+        );
     }
 }

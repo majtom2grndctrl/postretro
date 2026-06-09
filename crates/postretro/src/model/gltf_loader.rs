@@ -512,6 +512,10 @@ fn load_mesh(
         });
     }
 
+    // Tight local-space bound over the merged vertex positions, for the per-light
+    // caster cull (a later task transforms it by the instance transform).
+    out.compute_bounds();
+
     Ok((out, submeshes))
 }
 
@@ -880,6 +884,30 @@ mod tests {
     fn multi_primitive_fixture_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/multi_primitive/multi_primitive.gltf")
+    }
+
+    #[test]
+    fn loaded_mesh_bounds_enclose_every_vertex_position() {
+        // The loader populates the local-space AABB from the merged stream.
+        // Every vertex position must fall inside the computed bound (the
+        // per-light caster cull relies on it being a true enclosing box), and
+        // the box must be well-formed (min <= max on every axis).
+        let model = load_model(&multi_primitive_fixture_path())
+            .expect("synthetic multi-primitive fixture loads");
+        let b = model.mesh.bounds;
+        assert!(
+            b.min.x <= b.max.x && b.min.y <= b.max.y && b.min.z <= b.max.z,
+            "bounds must be well-formed (min <= max), got {b:?}"
+        );
+        for v in &model.mesh.vertices {
+            let p = glam::Vec3::from_array(v.position);
+            assert!(
+                p.cmpge(b.min).all() && p.cmple(b.max).all(),
+                "vertex {p:?} lies outside computed bounds {b:?}"
+            );
+        }
+        // A real (non-empty) mesh must not collapse to the zero box.
+        assert_ne!(b.min, b.max, "a non-degenerate mesh has a non-zero bound");
     }
 
     // --- Top-level extras → entity tags ------------------------------------

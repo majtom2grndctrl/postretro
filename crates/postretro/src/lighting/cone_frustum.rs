@@ -3,16 +3,61 @@
 //
 // See: context/lib/rendering_pipeline.md §7.1 · context/plans/in-progress/shadow-cone-cull/
 
+use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3, Vec4};
 
 #[cfg(test)]
 use crate::compute_cull::extract_frustum_planes_for_gpu;
 
-/// Axis-aligned bounding box in world space.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Axis-aligned bounding box. World-space at the cone-cull sites; LOCAL (model)
+/// space when carried as a per-model bound on a skinned mesh (see
+/// `crate::model::mesh::SkinnedMesh::bounds`) — the per-light caster cull
+/// transforms the local box by the instance transform before testing it against
+/// a cone/face frustum, so one `Aabb` type serves the model bound and the
+/// `aabb_intersects_frustum` predicate.
+///
+/// `Pod`/`Zeroable` so it rides on the Pod CPU model struct (glam's `bytemuck`
+/// feature makes `Vec3` Pod). `#[repr(C)]` pins the `min`-then-`max` layout.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Pod, Zeroable)]
 pub(crate) struct Aabb {
     pub min: Vec3,
     pub max: Vec3,
+}
+
+impl Aabb {
+    /// An empty box: `min` at `+inf`, `max` at `-inf`, so the first
+    /// [`Aabb::expand`] adopts that point exactly. Folding over no points leaves
+    /// it inverted (degenerate), which [`Aabb::from_points`] collapses to a zero box.
+    pub(crate) fn empty() -> Self {
+        Self {
+            min: Vec3::splat(f32::INFINITY),
+            max: Vec3::splat(f32::NEG_INFINITY),
+        }
+    }
+
+    /// Grow the box to enclose `point`.
+    pub(crate) fn expand(&mut self, point: Vec3) {
+        self.min = self.min.min(point);
+        self.max = self.max.max(point);
+    }
+
+    /// Build the tight AABB over `points`. An empty iterator yields a zero box
+    /// (`min == max == origin`) rather than the inverted [`Aabb::empty`] sentinel,
+    /// so a points-less mesh has a well-formed (if degenerate) bound.
+    pub(crate) fn from_points(points: impl IntoIterator<Item = Vec3>) -> Self {
+        let mut aabb = Self::empty();
+        for p in points {
+            aabb.expand(p);
+        }
+        if aabb.min.x > aabb.max.x {
+            return Self {
+                min: Vec3::ZERO,
+                max: Vec3::ZERO,
+            };
+        }
+        aabb
+    }
 }
 
 /// Extract the 6 cone-frustum planes from a spotlight's light-space

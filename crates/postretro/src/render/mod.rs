@@ -2387,14 +2387,20 @@ impl Renderer {
 
         // Skinned-mesh pass: reuses the camera (group 0) + material (group 1)
         // layouts. `upload_identity_palette` pre-fills the palette at startup so
-        // an un-sampled run renders in bind pose. Each frame `render_frame`
-        // samples every instance's clip into its palette run before recording.
+        // an un-sampled run renders in bind pose. Each frame `plan_and_upload`
+        // samples every instance's clip into its palette run before the shadow
+        // depth loop; `record_draws` then records the forward draw.
         let mesh_pass = mesh_pass::MeshPass::new(
             &device,
             surface_format,
             DEPTH_FORMAT,
+            // The depth-only skinned pipeline writes the shadow-map depth format
+            // and binds the world spot-shadow `shadow_vs_bgl` at group 0 (the
+            // per-render light-space matrix, dynamic-offset per slot).
+            crate::lighting::spot_shadow::SHADOW_DEPTH_FORMAT,
             &uniform_bind_group_layout,
             &texture_bind_group_layout,
+            &shadow_vs_bgl,
             // Mesh group 4 uses the SUPERSET layout (shared SH entries + the
             // mesh-only dynamic-direct params uniform at binding 16).
             &sh_volume_resources.mesh_bind_group_layout,
@@ -4273,6 +4279,53 @@ impl Renderer {
             light_reachable_leaf_mask,
         );
         self.light_effective_brightness = eff_brightness;
+
+        // --- Skinned-mesh pose/upload HOIST ----------------------------------
+        // Plan + sample + upload the skinned-mesh palette/instance buffers HERE —
+        // after `update_dynamic_light_slots`, BEFORE the spot-shadow depth loop —
+        // so the skinned-depth shadow occluder pass and the forward mesh draw both
+        // read the SAME already-posed buffers. Nothing rewrites `palette_buffer`/
+        // `instance_buffer` between this point and the forward `record_draws`, so
+        // an entity and its shadow are sampled at the identical pose (no one-frame
+        // lag). The plan is held in `mesh_frame_plan` and consumed by both passes.
+        let mesh_frame_plan: Option<mesh_instances::MeshFramePlan> =
+            if self.mesh_pass.has_model() && !self.mesh_draws.is_empty() {
+                // Plan: group instances by model, assign each a contiguous palette
+                // run, drop any overflow past the fixed budget. GPU-free.
+                let plan = mesh_instances::plan_mesh_frame(&self.mesh_draws, &self.mesh_pass);
+
+                // Overflow drops excess instances rather than corrupting the
+                // palette or panicking — rate-limited warning. Covers BOTH the
+                // palette-slot cap and the instance-count cap (the latter is what
+                // fires for rigid / zero-joint props, which consume no slots).
+                if plan.dropped > 0 {
+                    let now = now_seconds as f32;
+                    if now - self.mesh_overflow_last_warn >= 1.0 {
+                        log::warn!(
+                            "[Renderer] skinned-mesh budget exceeded: dropped {} instance(s) \
+                             (budget {} palette slots / {} instances); excess not drawn",
+                            plan.dropped,
+                            mesh_instances::MAX_PALETTE_ENTRIES,
+                            mesh_instances::MAX_INSTANCES,
+                        );
+                        self.mesh_overflow_last_warn = now;
+                    }
+                }
+
+                // Sample every instance's clip into its palette run + write the
+                // per-instance SSBO. The ONLY per-frame write to these buffers —
+                // both the shadow loop and the forward draw read them unchanged.
+                self.mesh_pass.plan_and_upload(
+                    &self.queue,
+                    &plan,
+                    now_seconds as f32,
+                    &mut self.bone_palette_scratch,
+                );
+                (!plan.groups.is_empty()).then_some(plan)
+            } else {
+                None
+            };
+
         if self.has_geometry && self.index_count > 0 {
             let stride = self.shadow_vs_stride;
             let slot_assignment = self.spot_shadow_pool.slot_assignment.clone();
@@ -4326,6 +4379,25 @@ impl Renderer {
                     shadow_cull.draw_slot_indirect(&mut pass, slot, None);
                 } else {
                     pass.draw_indexed(0..self.index_count, 0, 0..1);
+                }
+
+                // Skinned ENTITY occluders into the SAME slot, through the
+                // parameterized depth-only path: target view = this slot's depth
+                // attachment (the `pass` above), light-space matrix = the
+                // per-slot `shadow_vs_bind_group` + dynamic offset. This proves
+                // the cube-ready contract — the pipeline takes the view + matrix
+                // as per-render parameters, with no slot-count or 2D-target
+                // assumption baked in. Reads the already-posed buffers from the
+                // hoist (no rewrite since). Per-light entity caster CULLING is
+                // Task 2: this records ALL planned skinned instances into every
+                // occupied slot for now (see report); the cull narrows it later.
+                if let Some(plan) = &mesh_frame_plan {
+                    self.mesh_pass.record_skinned_depth(
+                        &mut pass,
+                        plan,
+                        &self.shadow_vs_bind_group,
+                        slot * stride,
+                    );
                 }
             }
         }
@@ -4466,88 +4538,47 @@ impl Renderer {
             }
         }
 
-        // Skinned-mesh pass — after the opaque world forward, before billboards.
-        // Its own render pass so it can WRITE depth (the forward pass holds the
-        // depth attachment read-only). Loads the existing color + depth so the
-        // mesh composites over the world and depth-tests (`Less`) against it.
+        // Skinned-mesh forward pass — after the opaque world forward, before
+        // billboards. Its own render pass so it can WRITE depth (the forward pass
+        // holds the depth attachment read-only). Loads the existing color + depth
+        // so the mesh composites over the world and depth-tests (`Less`).
         //
-        // `mesh_draws` is the per-frame instance list, filled by `set_mesh_draws`
-        // from the render-frame mesh collector. Each entry is a FINAL per-instance
-        // (handle, interpolated transform, phase seed) already culled by the
-        // collector (it calls `mesh_pass::mesh_visible` against this frame's
-        // `VisibleCells` + the `LevelWorld` BEFORE the cells are reclaimed in
-        // `main.rs`, which happens after this method returns — so the read is
-        // safe). The renderer GPU pass needs no world reference.
-        if self.mesh_pass.has_model() && !self.mesh_draws.is_empty() {
-            // Plan: group instances by model, assign each a contiguous palette
-            // run, drop any overflow past the fixed budget. Pure data logic —
-            // GPU-free (see `mesh_instances`).
-            let plan = mesh_instances::plan_mesh_frame(&self.mesh_draws, &self.mesh_pass);
-
-            // Overflow drops excess instances rather than corrupting the palette
-            // or panicking — rate-limited warning (mirrors `EmitterBridge`).
-            // Covers BOTH budgets: the palette-slot cap and the instance-count
-            // cap (the latter is what fires for rigid / zero-joint props, which
-            // consume no palette slots).
-            if plan.dropped > 0 {
-                let now = now_seconds as f32;
-                if now - self.mesh_overflow_last_warn >= 1.0 {
-                    log::warn!(
-                        "[Renderer] skinned-mesh budget exceeded: dropped {} instance(s) \
-                         (budget {} palette slots / {} instances); excess not drawn",
-                        plan.dropped,
-                        mesh_instances::MAX_PALETTE_ENTRIES,
-                        mesh_instances::MAX_INSTANCES,
-                    );
-                    self.mesh_overflow_last_warn = now;
-                }
-            }
-
-            if !plan.groups.is_empty() {
-                let mut mesh_enc = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("Skinned Mesh Pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &self.depth_view,
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        }),
-                        stencil_ops: None,
+        // Reads the `mesh_frame_plan` PLANNED + UPLOADED earlier in this frame
+        // (the pose/upload hoist, before the shadow loop). NO re-plan, NO
+        // re-upload here — `record_draws` only records draws against the buffers
+        // the hoist populated, the SAME buffers the skinned-depth shadow pass
+        // read, so an entity and its shadow share one pose (no one-frame lag).
+        if let Some(plan) = &mesh_frame_plan {
+            let mut mesh_enc = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Skinned Mesh Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
                     }),
-                    timestamp_writes: None,
-                    ..Default::default()
-                });
-                mesh_enc.set_bind_group(0, &self.uniform_bind_group, &[]);
-                // Group 4 = SH irradiance volume (baked indirect) + the mesh-only
-                // dynamic-direct params uniform (binding 16). The mesh SUPERSET
-                // bind group: shared SH entries the forward/billboard/fog passes
-                // hold PLUS the dynamic-direct knobs (group 3 = instance data;
-                // group 2 unallocated).
-                mesh_enc.set_bind_group(4, &self.sh_volume_resources.mesh_bind_group, &[]);
-                // The mesh pass writes each instance's SSBO entry + samples its
-                // palette run (per-instance phase from the seed), then records one
-                // instanced draw per model per submesh. `now_seconds` is the
-                // render clock used as animation time — render-rate sampling is
-                // fine for visuals; `sample_clip`'s rem_euclid wrap bounds the
-                // effect over long sessions. Reuses `bone_palette_scratch`, so a
-                // steady-state frame allocates nothing.
-                self.mesh_pass.render_frame(
-                    &self.queue,
-                    &mut mesh_enc,
-                    &plan,
-                    now_seconds as f32,
-                    &mut self.bone_palette_scratch,
-                );
-            }
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                ..Default::default()
+            });
+            mesh_enc.set_bind_group(0, &self.uniform_bind_group, &[]);
+            // Group 4 = SH irradiance volume (baked indirect) + the mesh-only
+            // dynamic-direct params uniform (binding 16). The mesh SUPERSET bind
+            // group: shared SH entries the forward/billboard/fog passes hold PLUS
+            // the dynamic-direct knobs (group 3 = instance data; group 2
+            // unallocated).
+            mesh_enc.set_bind_group(4, &self.sh_volume_resources.mesh_bind_group, &[]);
+            self.mesh_pass.record_draws(&mut mesh_enc, plan);
         }
 
         // After opaque forward, before wireframe. Alpha additive; depth test on, write off.

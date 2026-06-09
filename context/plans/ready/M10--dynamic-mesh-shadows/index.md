@@ -1,6 +1,6 @@
 # Dynamic Mesh Shadow Casting
 
-> **Status:** draft. Milestone 10 render-foundation track. Follows *Mesh render pass + MeshComponent*.
+> **Status:** ready. Milestone 10 render-foundation track. Follows *Mesh render pass + MeshComponent*. Cleared source-anchoring, internal-consistency, performance, and implementability review before promotion.
 > **Related:** `context/lib/rendering_pipeline.md` §4 (lighting), §7.1 (shadow passes), §9 (skinned model pipeline) · `shadow-cone-cull` (shipped: the per-slot cone-culled spot depth pass + `lighting/cone_frustum.rs` predicate this builds on) · `lighting--entity-direct-sh` (the SH-direct term that motivates this) · sibling `research.md` (code anchors + algorithm/feasibility citations).
 
 ## Goal

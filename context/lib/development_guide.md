@@ -110,15 +110,17 @@ Adjacent work discovered during implementation gets a follow-up task, not a scop
 - **Speculative optimizations** — no measured bottleneck → file a follow-up. Don't cache or precompute preemptively; *Performance* below carves out the structural choices that are the exception.
 - **Abstractions** without multiple concrete consumers → three similar lines beat a premature helper.
 
-**Performance.** Runtime performance is a first-class goal, and this engine's costs are specific — design for them while writing the code, not later. The choices that matter live in the per-frame hot path (Input → Game logic → Audio → Render → Present); cold paths — level load, the offline bake — favor clarity over speed.
+**Performance.** Runtime performance is a first-class goal, and this engine's costs are specific — design for them while writing the code, not later. Two domains carry the weight: the per-frame hot path (Input → Game logic → Audio → Render → Present) and build/load iteration time. Neither is an "optimize later" zone — both are where this engine has spent its measured performance effort.
 
-Three levers carry most of the weight:
+In the per-frame hot path, three levers carry most of the weight:
 
 - **Bound the work before optimizing the unit.** The engine's measured wins come from visibility and culling — portal vis, PVS, per-region BVH, cone/frustum culls — and from ranking to a fixed budget, then dropping the overflow. Cap how much runs per frame first.
 - **Bake over compute** (architectural invariant — see [Architecture Index](./index.md) §2). Precompute offline — lightmaps, SH irradiance, portal visibility, BVH — so the runtime stays cheap. Reach for a baked input before a per-frame computation.
 - **Spend GPU budgets deliberately.** VRAM sits on a fixed memory floor; per-stage sampled-texture and binding slots are hard, low ceilings — several pinned by regression tests. Init-time allocations (shadow pools, atlases) and binding counts are up-front budget decisions, not later tuning. Treat a new large allocation or a new sampled binding as drawing down a fixed pool.
 
 Inside the hot path the ordinary defaults still hold: avoid per-frame allocations, prefer cache-friendly layouts, keep hot loops free of needless indirection. Design decisions, not speculative tuning.
+
+**Build and load time is a budget too.** The offline bake dominates compile time — it is the engine's most-optimized CPU path (content-hash stage caching, rayon-parallel SH, incremental per-light bake), and near-instant boot is a product goal. The discipline here is the warm/cold contract: the cold (`--no-cache`) build is the exact ship source of truth and favors correctness; the warm iteration path is cached, parallelized, and may even approximate for author speed. Note the coupling: "Bake over compute" moves cost *into* the bake, so weigh what a new baked input costs the build loop, not just the frame.
 
 When per-pass GPU timing (`POSTRETRO_GPU_TIMING=1`) or a profile confirms a real bottleneck, optimize aggressively — but keep the result clean. An optimization that makes the code so brittle it becomes unwieldy to maintain is not acceptable, even with measurements behind it. Fast *and* clean is the goal; brittleness just moves the cost from runtime to maintenance.
 

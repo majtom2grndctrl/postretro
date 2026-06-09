@@ -281,6 +281,7 @@ fn main() -> Result<()> {
         light_bridge: scripting_systems::light_bridge::LightBridge::new(),
         fog_volume_bridge: scripting_systems::fog_volume_bridge::FogVolumeBridge::new(),
         emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),
+        particle_live_counts: std::collections::HashMap::new(),
         collision_world: collision::CollisionWorld::new(),
         particle_render: scripting_systems::particle_render::ParticleRenderCollector::new(),
         mesh_render: scripting_systems::mesh_render::MeshRenderCollector::new(),
@@ -434,6 +435,12 @@ struct App {
     /// Walks every `BillboardEmitterComponent` after game logic and before
     /// particle sim. See: context/lib/scripting.md
     emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge,
+
+    /// Per-emitter live-particle tally, produced by `particle_sim::tick` and
+    /// consumed by the next frame's `emitter_bridge.update` for cap headroom.
+    /// Owned here (not re-allocated per frame) so the collapsed pass reuses one
+    /// buffer's capacity across frames. See: context/lib/scripting.md (Slice 4).
+    particle_live_counts: std::collections::HashMap<scripting::registry::EntityId, usize>,
 
     /// World-space static-geometry collider built from PRL static geometry.
     /// See: context/lib/entity_model.md §7
@@ -1137,21 +1144,28 @@ impl ApplicationHandler for App {
                     // frame so they don't appear stuck at origin.
                     {
                         let mut registry = self.script_ctx.registry.borrow_mut();
+                        // Cap headroom comes from the previous frame's sim tally
+                        // (Slice 4 pass-collapse) — the bridge no longer walks the
+                        // ParticleState column itself.
                         self.emitter_bridge.update(
                             &mut registry,
                             frame_dt,
                             self.script_time as f32,
+                            &self.particle_live_counts,
                         );
                     }
 
                     // Particle sim — after emitter bridge, before light bridge.
                     // Pure Rust; scripts never observe individual particles.
+                    // Refills `particle_live_counts` with this tick's per-emitter
+                    // survivor count for the next frame's bridge headroom.
                     {
                         let mut registry = self.script_ctx.registry.borrow_mut();
                         scripting_systems::particle_sim::tick(
                             &mut registry,
                             frame_dt,
                             self.script_ctx.gravity.get(),
+                            &mut self.particle_live_counts,
                         );
                     }
 

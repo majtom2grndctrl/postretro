@@ -1,10 +1,19 @@
 // Script-facing billboard emitter component plus FFI-adapter shape.
 // See: context/lib/scripting.md §11 (Emitter and Particles)
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 use crate::scripting::conv::Vec3Lit;
 use crate::scripting::error::ScriptError;
+
+/// Shared lifetime curve (size / opacity over lifetime). `Arc<[f32]>` so the
+/// per-spawn path and the per-tick sim snapshot hand particles a cheap
+/// reference-counted handle instead of deep-cloning the sample `Vec`. Curves are
+/// immutable once authored; reactions that change a curve install a fresh `Arc`
+/// rather than mutating in place, so sharing across many live particles is safe.
+pub(crate) type LifetimeCurve = Arc<[f32]>;
 
 /// Per-emitter spin tween. When attached, the emitter bridge advances elapsed
 /// time and writes interpolated samples from `rate_curve` into
@@ -27,8 +36,8 @@ pub(crate) struct BillboardEmitterComponent {
     pub(crate) velocity: [f32; 3],
     pub(crate) buoyancy: f32,
     pub(crate) drag: f32,
-    pub(crate) size_over_lifetime: Vec<f32>,
-    pub(crate) opacity_over_lifetime: Vec<f32>,
+    pub(crate) size_over_lifetime: LifetimeCurve,
+    pub(crate) opacity_over_lifetime: LifetimeCurve,
     pub(crate) color: [f32; 3],
     pub(crate) sprite: String,
     pub(crate) spin_rate: f32,
@@ -159,8 +168,8 @@ impl BillboardEmitterComponentLit {
             velocity: self.velocity.as_f32_3(),
             buoyancy: self.buoyancy,
             drag: self.drag,
-            size_over_lifetime: self.size_over_lifetime,
-            opacity_over_lifetime: self.opacity_over_lifetime,
+            size_over_lifetime: Arc::from(self.size_over_lifetime),
+            opacity_over_lifetime: Arc::from(self.opacity_over_lifetime),
             color: self.color.as_f32_3(),
             sprite: self.sprite,
             spin_rate: self.spin_rate,
@@ -182,8 +191,8 @@ mod tests {
             velocity: [0.0, 1.5, 0.0],
             buoyancy: 0.2,
             drag: 0.5,
-            size_over_lifetime: vec![0.3, 1.0, 0.5],
-            opacity_over_lifetime: vec![0.0, 0.8, 0.0],
+            size_over_lifetime: [0.3, 1.0, 0.5].into(),
+            opacity_over_lifetime: [0.0, 0.8, 0.0].into(),
             color: [1.0, 0.6, 0.2],
             sprite: "smoke".into(),
             spin_rate: 1.2,

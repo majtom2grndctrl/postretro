@@ -771,8 +771,8 @@ mod tests {
             velocity: [0.0, 1.0, 0.0],
             buoyancy: 0.0,
             drag: 0.1,
-            size_over_lifetime: vec![1.0],
-            opacity_over_lifetime: vec![1.0],
+            size_over_lifetime: [1.0].into(),
+            opacity_over_lifetime: [1.0].into(),
             color: [1.0, 1.0, 1.0],
             sprite: sprite.to_string(),
             spin_rate: 1.0,
@@ -1176,8 +1176,8 @@ mod tests {
             lifetime: 2.0,
             buoyancy: 0.0,
             drag: 0.1,
-            size_curve: vec![1.0, 0.5],
-            opacity_curve: vec![1.0, 0.0],
+            size_curve: [1.0, 0.5].into(),
+            opacity_curve: [1.0, 0.0].into(),
             emitter: Some(emitter_id),
         };
         registry

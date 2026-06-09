@@ -17,7 +17,16 @@ use crate::visibility::VisibleCells;
 /// inside `SmokePass`.
 pub(crate) struct ParticleRenderCollector {
     buffers: HashMap<String, Vec<u8>>,
-    registered: HashSet<String>,
+    /// Pre-built sprite-name → collection-key resolution map. Built once per
+    /// level at `register_sprite` time; read on the per-particle hot path so
+    /// `collect` resolves a sprite to its target buffer key with a single
+    /// borrowed lookup and **zero per-particle heap allocation** (the old
+    /// `resolve_collection` allocated a `String` for every particle). Every
+    /// registered collection maps to itself; the resolution borrows the stored
+    /// key (`&str`) rather than cloning it.
+    sprite_to_collection: HashMap<String, String>,
+    /// First-registered collection key — the fallback target for runtime sprite
+    /// names that were never registered at level load.
     default_collection: Option<String>,
     warned_unregistered: HashSet<String>,
 }
@@ -26,7 +35,7 @@ impl ParticleRenderCollector {
     pub(crate) fn new() -> Self {
         Self {
             buffers: HashMap::new(),
-            registered: HashSet::new(),
+            sprite_to_collection: HashMap::new(),
             default_collection: None,
             warned_unregistered: HashSet::new(),
         }
@@ -38,19 +47,24 @@ impl ParticleRenderCollector {
     /// — this collector only tracks bookkeeping.
     ///
     /// Called at level load for every distinct `BillboardEmitterComponent.sprite`
-    /// value in the registry after classname dispatch.
+    /// value in the registry after classname dispatch. Populates the
+    /// `sprite_to_collection` map so the render-collect hot path never allocates.
     pub(crate) fn register_sprite(&mut self, collection: &str) {
-        if self.registered.insert(collection.to_string()) && self.default_collection.is_none() {
+        let is_new = self
+            .sprite_to_collection
+            .insert(collection.to_string(), collection.to_string())
+            .is_none();
+        if is_new && self.default_collection.is_none() {
             self.default_collection = Some(collection.to_string());
         }
         self.buffers.entry(collection.to_string()).or_default();
     }
 
-    /// Drop all per-level state (registered set, default, warning record).
+    /// Drop all per-level state (resolution map, default, warning record).
     /// Buffers are retained so capacity carries across reloads.
     #[allow(dead_code)]
     pub(crate) fn reset_for_level(&mut self) {
-        self.registered.clear();
+        self.sprite_to_collection.clear();
         self.default_collection = None;
         self.warned_unregistered.clear();
         for buf in self.buffers.values_mut() {
@@ -113,10 +127,22 @@ impl ParticleRenderCollector {
                 continue;
             }
 
-            let Some(target) = self.resolve_collection(&visual.sprite) else {
-                continue;
+            // Resolve the target collection key. The common case (sprite was
+            // registered at level load) is a borrowed map lookup with no
+            // allocation. Only an unregistered runtime sprite takes the cold
+            // fallback branch (which may emit a one-time warning).
+            let target: &str = match self.sprite_to_collection.get(&visual.sprite) {
+                Some(key) => key.as_str(),
+                None => match Self::resolve_fallback(
+                    &self.default_collection,
+                    &mut self.warned_unregistered,
+                    &visual.sprite,
+                ) {
+                    Some(key) => key,
+                    None => continue,
+                },
             };
-            let Some(buf) = self.buffers.get_mut(&target) else {
+            let Some(buf) = self.buffers.get_mut(target) else {
                 continue;
             };
             pack_particle_instance(transform, particle, visual, buf);
@@ -167,22 +193,24 @@ impl ParticleRenderCollector {
         flag
     }
 
-    /// Map a `SpriteVisual.sprite` to the collection key whose buffer should
-    /// receive the packed bytes. Falls back to the default collection (with a
-    /// one-time `log::warn!`) when the sprite name was not pre-registered at
-    /// level load. Returns `None` only when no collections are registered at
-    /// all (no fallback target available).
+    /// Cold-path resolution for a sprite that was **not** pre-registered at
+    /// level load (so it missed the `sprite_to_collection` map). Falls back to
+    /// the default collection, emitting a one-time `log::warn!` per offending
+    /// sprite. Returns the borrowed default key, or `None` when no collections
+    /// are registered at all (no fallback target available).
     ///
-    /// Returns an owned `String` so the caller can re-borrow `self.buffers`
-    /// mutably without aliasing this method's `&mut self`. At particle scale
-    /// the per-call allocation is dwarfed by the pack itself; future profiling
-    /// could pre-cache a `HashMap<sprite -> collection>` if it ever shows up.
-    fn resolve_collection(&mut self, sprite: &str) -> Option<String> {
-        if self.registered.contains(sprite) {
-            return Some(sprite.to_string());
-        }
-        let fallback = self.default_collection.clone()?;
-        if self.warned_unregistered.insert(sprite.to_string()) {
+    /// Takes the two fields it touches by reference (not `&mut self`) so the
+    /// caller's hot path can borrow `self.buffers` and `self.sprite_to_collection`
+    /// disjointly without aliasing. The returned `&str` borrows
+    /// `default_collection`; no per-particle allocation occurs on either path.
+    fn resolve_fallback<'a>(
+        default_collection: &'a Option<String>,
+        warned_unregistered: &mut HashSet<String>,
+        sprite: &str,
+    ) -> Option<&'a str> {
+        let fallback = default_collection.as_deref()?;
+        if !warned_unregistered.contains(sprite) {
+            warned_unregistered.insert(sprite.to_string());
             log::warn!(
                 "[ParticleRender] sprite '{sprite}' was not registered at level load; \
                  falling back to default collection '{fallback}'. \
@@ -318,8 +346,8 @@ mod tests {
                     lifetime: 1.0,
                     buoyancy: 0.0,
                     drag: 0.0,
-                    size_curve: vec![1.0],
-                    opacity_curve: vec![1.0],
+                    size_curve: [1.0].into(),
+                    opacity_curve: [1.0].into(),
                     emitter,
                 },
             )
@@ -623,5 +651,47 @@ mod tests {
         let pairs: Vec<(&str, &[u8])> = collector.iter_collections().collect();
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].1.len(), 2 * SPRITE_INSTANCE_SIZE);
+    }
+
+    /// Sibling bench to `particle_sim::bench_500_particles_one_frame_*`,
+    /// covering the **render-collect** path: 500 particles sharing one emitter
+    /// in a visible cell, so each particle exercises the per-frame cull memo
+    /// lookup and the `sprite_to_collection` resolution (the path that used to
+    /// allocate a `String` per particle). Same 500-particle scale and < 500µs
+    /// budget as the tick bench, so a regression on either hot path is caught.
+    #[test]
+    #[ignore = "release-mode bench; run with `cargo test --release -- --ignored`"]
+    fn bench_500_particles_collect_under_half_a_millisecond() {
+        let mut registry = EntityRegistry::new();
+        let mut collector = ParticleRenderCollector::new();
+        collector.register_sprite("smoke");
+        let world = single_leaf_world();
+        let emitter = spawn_emitter(&mut registry, Vec3::new(1.0, 2.0, 3.0));
+        for i in 0..500 {
+            spawn_particle_for(
+                &mut registry,
+                Vec3::new(i as f32 * 0.01, 1.0, 0.0),
+                "smoke",
+                0.4,
+                Some(emitter),
+            );
+        }
+        // Warm the buffers' capacity so the timed run reuses it (matches
+        // steady-state production where buffers persist across frames).
+        let visible = VisibleCells::Culled(vec![0]);
+        collector.collect(&registry, Some(&world), &visible);
+
+        let start = std::time::Instant::now();
+        collector.collect(&registry, Some(&world), &visible);
+        let elapsed = start.elapsed();
+
+        // Sanity: all 500 packed into the one collection.
+        let pairs: Vec<(&str, &[u8])> = collector.iter_collections().collect();
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].1.len(), 500 * SPRITE_INSTANCE_SIZE);
+        assert!(
+            elapsed.as_micros() < 500,
+            "500-particle collect took {elapsed:?}; expected < 500µs"
+        );
     }
 }

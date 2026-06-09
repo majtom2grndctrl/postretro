@@ -103,8 +103,10 @@ png = "0.18"
 # directly reuses that resolved version.
 percent-encoding = "2"
 
-# Serialization (scripting FFI transit)
-serde = { version = "1", features = ["derive"] }
+# Serialization (scripting FFI transit). `rc` lets `#[derive(Serialize/
+# Deserialize)]` cover `Arc<[f32]>` lifetime curves shared by emitter
+# components and particles (deserializes to a fresh, unshared `Arc`).
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 
 # Player options persistence: human-editable `settings.toml`. `toml` for the

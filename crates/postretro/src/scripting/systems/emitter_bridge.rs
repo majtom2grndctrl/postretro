@@ -107,7 +107,22 @@ impl EmitterBridge {
     ///
     /// `current_time` is seconds since level load (matches the engine frame
     /// clock). Used for rate-limited cap warnings.
-    pub(crate) fn update(&mut self, registry: &mut EntityRegistry, delta: f32, current_time: f32) {
+    ///
+    /// `live_counts` is the per-emitter live-particle tally produced by the
+    /// **previous** frame's `particle_sim::tick` (Slice 4 pass-collapse). The
+    /// bridge no longer walks the `ParticleState` column itself for cap
+    /// headroom — the sim already visits every particle and tallies survivors,
+    /// and nothing mutates that column between the end of the sim and the start
+    /// of this update, so the count is exact (not stale). On the very first
+    /// frame the map is empty → every emitter reads a live count of zero, which
+    /// is correct (no particles exist yet).
+    pub(crate) fn update(
+        &mut self,
+        registry: &mut EntityRegistry,
+        delta: f32,
+        current_time: f32,
+        live_counts: &HashMap<EntityId, usize>,
+    ) {
         if delta <= 0.0 {
             // Defensive: a zero / negative delta should not advance accumulators
             // or animations. Still purge stale entries below.
@@ -117,22 +132,15 @@ impl EmitterBridge {
 
         // --- Pass 1: snapshot per-emitter component + position + live count.
         // Walking the registry while emitting `set_component` / `spawn` calls
-        // would alias the borrow. Snapshot here, then mutate in pass 2.
+        // would alias the borrow. Snapshot here, then mutate in pass 2. The
+        // live-count tally is supplied by the prior sim tick (see above), so
+        // this pass walks only the `BillboardEmitter` column — not the
+        // `ParticleState` column.
         struct Plan {
             id: EntityId,
             component: BillboardEmitterComponent,
             origin: Vec3,
             live_count: usize,
-        }
-
-        // Tally per-emitter live particle counts in one pass.
-        let mut live_counts: HashMap<EntityId, usize> = HashMap::new();
-        for (_pid, value) in registry.iter_with_kind(ComponentKind::ParticleState) {
-            if let ComponentValue::ParticleState(p) = value
-                && let Some(parent) = p.emitter
-            {
-                *live_counts.entry(parent).or_insert(0) += 1;
-            }
         }
 
         let mut plans: Vec<Plan> = Vec::new();
@@ -418,8 +426,33 @@ fn rate_limited_warn(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use crate::scripting::components::billboard_emitter::SpinAnimation;
+
+    /// Drive one bridge update. In production the per-emitter live-count tally
+    /// comes from the prior frame's `particle_sim::tick`; in tests we recompute
+    /// it from the registry's current `ParticleState` column right before the
+    /// update, which is exactly the value the sim would have produced (nothing
+    /// mutates the column between the two stages). This keeps every existing
+    /// cap-headroom assertion valid after the pass-collapse.
+    fn update_bridge(
+        bridge: &mut EmitterBridge,
+        registry: &mut EntityRegistry,
+        delta: f32,
+        current_time: f32,
+    ) {
+        let mut live_counts: HashMap<EntityId, usize> = HashMap::new();
+        for (_pid, value) in registry.iter_with_kind(ComponentKind::ParticleState) {
+            if let ComponentValue::ParticleState(p) = value
+                && let Some(parent) = p.emitter
+            {
+                *live_counts.entry(parent).or_insert(0) += 1;
+            }
+        }
+        bridge.update(registry, delta, current_time, &live_counts);
+    }
 
     fn base_component(rate: f32) -> BillboardEmitterComponent {
         BillboardEmitterComponent {
@@ -430,8 +463,8 @@ mod tests {
             velocity: [0.0, 1.0, 0.0],
             buoyancy: 0.0,
             drag: 0.0,
-            size_over_lifetime: vec![1.0],
-            opacity_over_lifetime: vec![1.0],
+            size_over_lifetime: [1.0].into(),
+            opacity_over_lifetime: [1.0].into(),
             color: [1.0, 1.0, 1.0],
             sprite: "smoke".into(),
             spin_rate: 0.0,
@@ -468,7 +501,7 @@ mod tests {
         let dt = 1.0 / 60.0;
         let steps = (2.0 / dt) as i32;
         for i in 0..steps {
-            bridge.update(&mut registry, dt, i as f32 * dt);
+            update_bridge(&mut bridge, &mut registry, dt, i as f32 * dt);
         }
         let total = count_particles_for(&registry, id);
         assert!(
@@ -485,7 +518,7 @@ mod tests {
         let id = spawn_emitter(&mut registry, comp);
         let mut bridge = EmitterBridge::new();
 
-        bridge.update(&mut registry, 1.0 / 60.0, 0.0);
+        update_bridge(&mut bridge, &mut registry, 1.0 / 60.0, 0.0);
         let total = count_particles_for(&registry, id);
         assert_eq!(total, 20);
         let after = registry
@@ -501,7 +534,7 @@ mod tests {
         let mut bridge = EmitterBridge::new();
 
         for i in 0..120 {
-            bridge.update(&mut registry, 1.0 / 60.0, i as f32 / 60.0);
+            update_bridge(&mut bridge, &mut registry, 1.0 / 60.0, i as f32 / 60.0);
         }
         assert_eq!(count_particles_for(&registry, id), 0);
     }
@@ -514,21 +547,21 @@ mod tests {
 
         // First tick at rate=10, dt=0.07 → accumulator advances to 0.7,
         // sub-1.0 so no spawn. Confirm via internal state.
-        bridge.update(&mut registry, 0.07, 0.0);
+        update_bridge(&mut bridge, &mut registry, 0.07, 0.0);
         assert!(bridge.states[&id].accumulator > 0.5);
         assert_eq!(count_particles_for(&registry, id), 0);
 
         // Drop rate to 0 — accumulator must clear.
         let mut comp = base_component(0.0);
         registry.set_component(id, comp.clone()).unwrap();
-        bridge.update(&mut registry, 0.01, 0.07);
+        update_bridge(&mut bridge, &mut registry, 0.01, 0.07);
         assert_eq!(bridge.states[&id].accumulator, 0.0);
 
         // Restore rate. With dt=0.05 and rate=10, accumulator advances to 0.5
         // — must NOT carry over the previous 0.7 to spawn an immediate particle.
         comp.rate = 10.0;
         registry.set_component(id, comp).unwrap();
-        bridge.update(&mut registry, 0.05, 0.08);
+        update_bridge(&mut bridge, &mut registry, 0.05, 0.08);
         assert_eq!(
             count_particles_for(&registry, id),
             0,
@@ -555,8 +588,8 @@ mod tests {
                         lifetime: 100.0,
                         buoyancy: 0.0,
                         drag: 0.0,
-                        size_curve: vec![1.0],
-                        opacity_curve: vec![1.0],
+                        size_curve: [1.0].into(),
+                        opacity_curve: [1.0].into(),
                         emitter: Some(id),
                     },
                 )
@@ -566,7 +599,7 @@ mod tests {
         let mut comp = base_component(0.0);
         comp.burst = Some(20);
         registry.set_component(id, comp).unwrap();
-        bridge.update(&mut registry, 1.0 / 60.0, 0.0);
+        update_bridge(&mut bridge, &mut registry, 1.0 / 60.0, 0.0);
 
         let total = count_particles_for(&registry, id);
         assert_eq!(total, MAX_SPRITES);
@@ -594,8 +627,8 @@ mod tests {
                         lifetime: 100.0,
                         buoyancy: 0.0,
                         drag: 0.0,
-                        size_curve: vec![1.0],
-                        opacity_curve: vec![1.0],
+                        size_curve: [1.0].into(),
+                        opacity_curve: [1.0].into(),
                         emitter: Some(id),
                     },
                 )
@@ -605,7 +638,7 @@ mod tests {
         let comp = base_component(60.0);
         registry.set_component(id, comp).unwrap();
         for i in 0..30 {
-            bridge.update(&mut registry, 1.0 / 60.0, i as f32 / 60.0);
+            update_bridge(&mut bridge, &mut registry, 1.0 / 60.0, i as f32 / 60.0);
         }
         assert_eq!(count_particles_for(&registry, id), MAX_SPRITES);
     }
@@ -621,7 +654,7 @@ mod tests {
         comp.burst = Some(500);
         let id = spawn_emitter(&mut registry, comp);
         let mut bridge = EmitterBridge::new();
-        bridge.update(&mut registry, 1.0 / 60.0, 0.0);
+        update_bridge(&mut bridge, &mut registry, 1.0 / 60.0, 0.0);
 
         let mut sum = Vec3::ZERO;
         for (_pid, value) in registry.iter_with_kind(ComponentKind::ParticleState) {
@@ -649,7 +682,7 @@ mod tests {
         comp.burst = Some(3);
         let id = spawn_emitter(&mut registry, comp);
         let mut bridge = EmitterBridge::new();
-        bridge.update(&mut registry, 1.0 / 60.0, 0.0);
+        update_bridge(&mut bridge, &mut registry, 1.0 / 60.0, 0.0);
 
         let mut found = 0;
         for (_pid, value) in registry.iter_with_kind(ComponentKind::ParticleState) {
@@ -677,7 +710,7 @@ mod tests {
         let dt = 1.0 / 60.0;
         let mut t = 0.0;
         for _ in 0..60 {
-            bridge.update(&mut registry, dt, t);
+            update_bridge(&mut bridge, &mut registry, dt, t);
             t += dt;
         }
         let after = registry
@@ -709,7 +742,7 @@ mod tests {
         let dt = 1.0 / 60.0;
         let mut t = 0.0;
         for _ in 0..120 {
-            bridge.update(&mut registry, dt, t);
+            update_bridge(&mut bridge, &mut registry, dt, t);
             t += dt;
         }
         let after = registry
@@ -729,11 +762,11 @@ mod tests {
         let id = spawn_emitter(&mut registry, base_component(5.0));
         let mut bridge = EmitterBridge::new();
 
-        bridge.update(&mut registry, 0.1, 0.0);
+        update_bridge(&mut bridge, &mut registry, 0.1, 0.0);
         assert_eq!(bridge.tracked_count(), 1);
 
         registry.despawn(id).unwrap();
-        bridge.update(&mut registry, 0.1, 0.1);
+        update_bridge(&mut bridge, &mut registry, 0.1, 0.1);
         assert_eq!(
             bridge.tracked_count(),
             0,
@@ -746,13 +779,13 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let id = spawn_emitter(&mut registry, base_component(5.0));
         let mut bridge = EmitterBridge::new();
-        bridge.update(&mut registry, 0.1, 0.0);
+        update_bridge(&mut bridge, &mut registry, 0.1, 0.0);
         assert_eq!(bridge.tracked_count(), 1);
 
         registry
             .remove_component::<BillboardEmitterComponent>(id)
             .unwrap();
-        bridge.update(&mut registry, 0.1, 0.1);
+        update_bridge(&mut bridge, &mut registry, 0.1, 0.1);
         assert_eq!(bridge.tracked_count(), 0);
     }
 
@@ -762,9 +795,9 @@ mod tests {
         let mut bridge = EmitterBridge::new();
         for cycle in 0..50 {
             let id = spawn_emitter(&mut registry, base_component(2.0));
-            bridge.update(&mut registry, 0.05, cycle as f32);
+            update_bridge(&mut bridge, &mut registry, 0.05, cycle as f32);
             registry.despawn(id).unwrap();
-            bridge.update(&mut registry, 0.05, cycle as f32 + 0.05);
+            update_bridge(&mut bridge, &mut registry, 0.05, cycle as f32 + 0.05);
         }
         assert_eq!(bridge.tracked_count(), 0);
     }
@@ -806,7 +839,7 @@ mod tests {
         );
 
         let mut bridge = EmitterBridge::new();
-        bridge.update(&mut registry, 0.5, 0.0);
+        update_bridge(&mut bridge, &mut registry, 0.5, 0.0);
 
         let mut found_at_origin = false;
         for (id, value) in registry.iter_with_kind(ComponentKind::ParticleState) {

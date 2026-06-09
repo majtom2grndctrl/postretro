@@ -2,8 +2,9 @@
 //
 // See: context/lib/rendering_pipeline.md §4 (Dynamic direct, spot shadow maps)
 
+use crate::lighting::cone_frustum::{aabb_intersects_frustum, cone_enclosing_aabb};
 use crate::prl::{LightType, MapLight};
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Vec3, Vec4};
 
 /// Near-clip distance used when building a spot light's projection matrix.
 /// Matches the camera near-clip policy — close enough that self-shadowing
@@ -294,10 +295,18 @@ impl SpotShadowPool {
 
     /// Compute the slot-assignment ranking for visible shadow-casting spot lights.
     ///
-    /// Takes the candidate light list and camera position. Identifies spot
-    /// lights that are pool-eligible (`is_dynamic || casts_entity_shadows`)
-    /// and pass visibility + frustum culling, ranks by influence-area
-    /// heuristic, and assigns the top `SHADOW_POOL_SIZE` to slots.
+    /// Takes the candidate light list, camera position, and the camera's
+    /// `view_proj` matrix. Identifies spot lights that are pool-eligible
+    /// (`is_dynamic || casts_entity_shadows`) and whose cone can reach the
+    /// camera's view, ranks by influence-area heuristic, and assigns the top
+    /// `SHADOW_POOL_SIZE` to slots.
+    ///
+    /// Visibility pre-filter: each candidate's cone-enclosing AABB (derived from
+    /// its `light_space_matrix`) is tested against the camera frustum planes. A
+    /// cone whose enclosing AABB does not intersect the camera frustum cannot
+    /// influence anything the camera sees, so it is rejected. This is
+    /// conservative — the enclosing AABB over-approximates the cone, so the test
+    /// can only over-include, never wrongly drop a shadow.
     ///
     /// Task 1b decoupled the candidate set from `level_lights` (which is
     /// `is_dynamic`-filtered, and goes empty under the geometry-vs-intensity
@@ -317,9 +326,14 @@ impl SpotShadowPool {
         camera_position: Vec3,
         camera_near_clip: f32,
         eligible_lights: &[bool],
-        influence_volumes: &[crate::lighting::influence::LightInfluence],
+        camera_view_proj: &Mat4,
     ) -> Vec<u32> {
         let mut slot_assignment = vec![NO_SHADOW_SLOT; lights.len()];
+
+        // Camera frustum planes, shared with the GPU BVH-cull convention.
+        let camera_frustum_planes: [Vec4; 6] =
+            crate::compute_cull::extract_frustum_planes_for_gpu(camera_view_proj)
+                .map(|p| Vec4::new(p[0], p[1], p[2], p[3]));
 
         // Collect visible pool-eligible spot lights with their scores.
         let mut candidates: Vec<(usize, f32)> = lights
@@ -344,17 +358,13 @@ impl SpotShadowPool {
                     return None;
                 }
 
-                // Apply frustum-cull pre-filter via influence volume. If no influence
-                // volumes are available, treat the light as visible.
-                let in_frustum = if idx < influence_volumes.len() {
-                    let inf = &influence_volumes[idx];
-                    inf.is_in_frustum_approx(camera_position)
-                } else {
-                    // No influence volume data; assume visible.
-                    true
-                };
-
-                if !in_frustum {
+                // Cone-frustum pre-filter: can this spotlight's cone reach
+                // anything the camera sees? Build the cone's enclosing AABB from
+                // its light-space matrix and test it against the camera frustum.
+                // Conservative — over-approximated, so it never drops a shadow
+                // that could be visible.
+                let cone_aabb = cone_enclosing_aabb(&light_space_matrix(light));
+                if !aabb_intersects_frustum(&cone_aabb, &camera_frustum_planes) {
                     return None;
                 }
 
@@ -469,9 +479,36 @@ mod tests {
         }
     }
 
+    /// A camera `view_proj` whose frustum contains the whole spread of test
+    /// lights (which sit near z∈[-10, 0] across a wide x-range, cones aimed
+    /// down -Z). Placed far back on +Z looking down -Z with a wide FOV and
+    /// large far plane so every test cone's enclosing AABB intersects the
+    /// frustum — these ranking/tie/capacity tests exercise the score path, not
+    /// the cone-frustum pre-filter, so the camera must not cull them.
+    fn camera_sees_whole_scene() -> Mat4 {
+        let eye = Vec3::new(200.0, 0.0, 500.0);
+        let target = Vec3::new(200.0, 0.0, -500.0);
+        let view = Mat4::look_at_rh(eye, target, Vec3::Y);
+        let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.1, 4096.0);
+        proj * view
+    }
+
+    /// A camera `view_proj` looking down -Z from the origin with a narrow FOV.
+    /// Its frustum is a thin pencil along -Z near x=0, so a cone aimed down -Z
+    /// from far off to the side (large x) does not reach it.
+    fn camera_narrow_down_neg_z() -> Mat4 {
+        let eye = Vec3::new(0.0, 0.0, 0.0);
+        let target = Vec3::new(0.0, 0.0, -1.0);
+        let view = Mat4::look_at_rh(eye, target, Vec3::Y);
+        // ~17° FOV — narrow enough that an off-axis cone falls outside.
+        let proj = Mat4::perspective_rh(0.3, 1.0, 0.1, 100.0);
+        proj * view
+    }
+
     #[test]
     fn empty_light_list_produces_empty_assignment() {
-        let assignment = SpotShadowPool::rank_lights(&[], Vec3::ZERO, 0.1, &[], &[]);
+        let assignment =
+            SpotShadowPool::rank_lights(&[], Vec3::ZERO, 0.1, &[], &camera_sees_whole_scene());
         assert!(assignment.is_empty());
     }
 
@@ -481,7 +518,8 @@ mod tests {
             test_light(0, [0.0, 0.0, 0.0], 10.0, false),
             test_light(1, [10.0, 0.0, 0.0], 10.0, false),
         ];
-        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &[]);
+        let assignment =
+            SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &camera_sees_whole_scene());
         assert_eq!(assignment[0], NO_SHADOW_SLOT);
         assert_eq!(assignment[1], NO_SHADOW_SLOT);
     }
@@ -495,7 +533,8 @@ mod tests {
         let mut light = test_light(0, [0.0, 0.0, 0.0], 10.0, false);
         light.is_dynamic = true;
         let lights = vec![light];
-        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &[]);
+        let assignment =
+            SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &camera_sees_whole_scene());
         assert_ne!(assignment[0], NO_SHADOW_SLOT);
     }
 
@@ -510,7 +549,8 @@ mod tests {
         light.is_dynamic = true;
         light.light_type = LightType::Point;
         let lights = vec![light];
-        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &[]);
+        let assignment =
+            SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &camera_sees_whole_scene());
         assert_eq!(assignment[0], NO_SHADOW_SLOT);
     }
 
@@ -519,7 +559,8 @@ mod tests {
         let mut light = test_light(0, [0.0, 0.0, 0.0], 10.0, true);
         light.light_type = LightType::Point;
         let lights = vec![light];
-        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &[]);
+        let assignment =
+            SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &camera_sees_whole_scene());
         assert_eq!(assignment[0], NO_SHADOW_SLOT);
     }
 
@@ -529,7 +570,8 @@ mod tests {
             test_light(0, [0.0, 0.0, 0.0], 10.0, true),
             test_light(1, [10.0, 0.0, 0.0], 10.0, true),
         ];
-        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &[]);
+        let assignment =
+            SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &camera_sees_whole_scene());
         assert_ne!(assignment[0], NO_SHADOW_SLOT);
         assert_ne!(assignment[1], NO_SHADOW_SLOT);
         // Should be different slots.
@@ -547,7 +589,8 @@ mod tests {
                 true,
             ));
         }
-        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &[]);
+        let assignment =
+            SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &camera_sees_whole_scene());
 
         let assigned_count = assignment.iter().filter(|&&s| s != NO_SHADOW_SLOT).count();
         assert_eq!(assigned_count, 9, "all 9 lights fit within pool capacity");
@@ -563,7 +606,8 @@ mod tests {
             test_light(0, [0.0, 0.0, 0.0], 10.0, true),
             test_light(1, [100.0, 0.0, 0.0], 10.0, true),
         ];
-        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &[]);
+        let assignment =
+            SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &camera_sees_whole_scene());
         // Light 0 should get slot 0 (lower index = higher rank).
         assert_eq!(assignment[0], 0);
         assert_eq!(assignment[1], 1);
@@ -576,7 +620,8 @@ mod tests {
             test_light(0, [0.0, 0.0, -10.0], 20.0, true),
             test_light(1, [0.0, 0.0, -10.0], 10.0, true),
         ];
-        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &[]);
+        let assignment =
+            SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &camera_sees_whole_scene());
         // Light 0 (larger range) should get slot 0.
         assert_eq!(assignment[0], 0);
         assert_eq!(assignment[1], 1);
@@ -589,7 +634,8 @@ mod tests {
             test_light(0, [10.0, 0.0, 0.0], 10.0, true),
             test_light(1, [10.0, 0.0, 0.0], 10.0, true),
         ];
-        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &[]);
+        let assignment =
+            SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &camera_sees_whole_scene());
         // Light 0 (lower index) should get slot 0; light 1 gets slot 1.
         assert_eq!(assignment[0], 0);
         assert_eq!(assignment[1], 1);
@@ -603,7 +649,13 @@ mod tests {
             test_light(2, [20.0, 0.0, -10.0], 10.0, true),
         ];
         let bitmask = [true, false, true];
-        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &bitmask, &[]);
+        let assignment = SpotShadowPool::rank_lights(
+            &lights,
+            Vec3::ZERO,
+            0.1,
+            &bitmask,
+            &camera_sees_whole_scene(),
+        );
         assert_ne!(assignment[0], NO_SHADOW_SLOT);
         assert_eq!(assignment[1], NO_SHADOW_SLOT);
         assert_ne!(assignment[2], NO_SHADOW_SLOT);
@@ -626,7 +678,13 @@ mod tests {
         }
         let mut bitmask = vec![true; 9];
         bitmask[0] = false;
-        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &bitmask, &[]);
+        let assignment = SpotShadowPool::rank_lights(
+            &lights,
+            Vec3::ZERO,
+            0.1,
+            &bitmask,
+            &camera_sees_whole_scene(),
+        );
 
         assert_eq!(assignment[0], NO_SHADOW_SLOT);
         let assigned_count = assignment[1..]
@@ -646,7 +704,8 @@ mod tests {
             test_light(1, [10.0, 0.0, -10.0], 10.0, true),
             test_light(2, [20.0, 0.0, -10.0], 10.0, true),
         ];
-        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &[]);
+        let assignment =
+            SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &camera_sees_whole_scene());
         assert_ne!(assignment[0], NO_SHADOW_SLOT);
         assert_ne!(assignment[1], NO_SHADOW_SLOT);
         assert_ne!(assignment[2], NO_SHADOW_SLOT);
@@ -657,9 +716,45 @@ mod tests {
         // Light very close to camera (distance < near_clip). Heuristic should clamp.
         let lights = vec![test_light(0, [0.001, 0.0, 0.0], 10.0, true)];
         let camera_near_clip = 0.1;
-        let assignment =
-            SpotShadowPool::rank_lights(&lights, Vec3::ZERO, camera_near_clip, &[], &[]);
+        let assignment = SpotShadowPool::rank_lights(
+            &lights,
+            Vec3::ZERO,
+            camera_near_clip,
+            &[],
+            &camera_sees_whole_scene(),
+        );
         // Should still be assigned.
         assert_eq!(assignment[0], 0);
+    }
+
+    /// Cone-frustum pre-filter (positive case): a spotlight whose cone overlaps
+    /// the camera frustum is ranked into a slot. The light sits on the camera
+    /// axis aimed down -Z, so its enclosing AABB clearly intersects the view.
+    #[test]
+    fn cone_overlapping_camera_frustum_is_ranked() {
+        let lights = vec![test_light(0, [0.0, 0.0, -10.0], 10.0, true)];
+        let camera = camera_narrow_down_neg_z();
+        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &camera);
+        assert_ne!(
+            assignment[0], NO_SHADOW_SLOT,
+            "on-axis cone overlapping the view must get a slot"
+        );
+    }
+
+    /// Cone-frustum pre-filter (negative case): a spotlight whose cone lies
+    /// entirely outside the camera frustum is rejected, even though it passes
+    /// pool eligibility and the leaf bitmask. The light is far off to the side
+    /// (large +X) aimed down -Z, so its cone never enters the narrow forward
+    /// pencil the camera sees. This is the behavior that replaced the old
+    /// camera-in-sphere test.
+    #[test]
+    fn cone_outside_camera_frustum_is_rejected() {
+        let lights = vec![test_light(0, [500.0, 0.0, -10.0], 10.0, true)];
+        let camera = camera_narrow_down_neg_z();
+        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &camera);
+        assert_eq!(
+            assignment[0], NO_SHADOW_SLOT,
+            "cone entirely outside the view frustum must be rejected"
+        );
     }
 }

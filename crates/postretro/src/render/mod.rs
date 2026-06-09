@@ -1029,8 +1029,9 @@ pub struct Renderer {
     #[allow(dead_code)]
     level_lights: Vec<MapLight>,
     /// CPU-side cache of per-light influence volumes; parallel to `level_lights`.
-    /// Consumed by `SpotShadowPool::rank_lights` to frustum-cull shadow candidates.
     /// Rebuilt in `Renderer::new` and `reload_geometry` from `filter_dynamic_lights`.
+    /// Retained for SDF/influence paths; shadow ranking now culls by cone frustum
+    /// (`SpotShadowPool::rank_lights`), not by these influence spheres.
     dynamic_light_influences: Vec<LightInfluence>,
     /// Candidate set for the spot-shadow pool — sourced from the FULL level
     /// light set filtered by `is_dynamic || casts_entity_shadows`, NOT from
@@ -1046,6 +1047,9 @@ pub struct Renderer {
     light_effective_brightness: Vec<f32>,
     /// Cached from `update_per_frame_uniforms` so the shadow pass can re-rank lights.
     last_camera_position: Vec3,
+    /// Cached camera `view_proj` from `update_per_frame_uniforms`; the shadow
+    /// pool derives camera frustum planes from it for cone-frustum culling.
+    last_view_proj: Mat4,
     spot_shadow_pool: SpotShadowPool,
     /// Dynamic-offset into a single buffer; offset selects the per-slot light-space matrix.
     shadow_vs_uniform_buffer: wgpu::Buffer,
@@ -2386,6 +2390,7 @@ impl Renderer {
             shadow_candidate_influences,
             light_effective_brightness: Vec::new(),
             last_camera_position: Vec3::ZERO,
+            last_view_proj: Mat4::IDENTITY,
             spot_shadow_pool,
             shadow_vs_uniform_buffer,
             shadow_vs_bind_group,
@@ -3457,6 +3462,7 @@ impl Renderer {
         });
         self.queue.write_buffer(&self.uniform_buffer, 0, &data);
         self.last_camera_position = camera_position;
+        self.last_view_proj = view_proj;
 
         // Mesh dynamic-direct uniform (group 4 binding 16). The mesh path reads
         // a trimmed camera uniform (no group-0 tail), so the scale/isolation/
@@ -3737,7 +3743,6 @@ impl Renderer {
         &mut self,
         camera_position: Vec3,
         camera_near_clip: f32,
-        _light_influences: &[LightInfluence],
         effective_brightness: &[f32],
         light_reachable_leaf_mask: &[bool],
     ) {
@@ -3783,7 +3788,7 @@ impl Renderer {
             camera_position,
             camera_near_clip,
             &visible_lights,
-            &self.shadow_candidate_influences,
+            &self.last_view_proj,
         );
 
         // The GPU lights buffer is keyed on `level_lights`. Translate slot
@@ -4146,18 +4151,14 @@ impl Renderer {
         // blocking `poll(Wait)` below, once the compose submit has retired.
 
         // mem::take avoids a simultaneous borrow of self; returned after call to reuse the allocation.
-        // Both eff_brightness and influences use this pattern for the same reason.
         let eff_brightness = std::mem::take(&mut self.light_effective_brightness);
-        let influences = std::mem::take(&mut self.dynamic_light_influences);
         self.update_dynamic_light_slots(
             self.last_camera_position,
             crate::lighting::spot_shadow::SHADOW_NEAR_CLIP,
-            &influences,
             &eff_brightness,
             light_reachable_leaf_mask,
         );
         self.light_effective_brightness = eff_brightness;
-        self.dynamic_light_influences = influences;
         if self.has_geometry && self.index_count > 0 {
             let stride = self.shadow_vs_stride;
             let slot_assignment = self.spot_shadow_pool.slot_assignment.clone();

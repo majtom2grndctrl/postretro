@@ -28,6 +28,7 @@
 - **Roadmap / implementation phases** → `plans/roadmap.md`
 - **Experimental spikes / build-to-learn specs** → `experimental_spikes.md`
 - **Draft plans / future features** → `plans/drafts/`
+- **Ready plans (reviewed, awaiting implementation)** → `plans/ready/` — promoted out of drafts after review; current design intent.
 - **Shipped plans** → `plans/done/` — historical record, frozen at ship time. May describe stale state. Read only when explicitly referenced.
 - **Research archive** → `research/` — past research, not current design. Do not read unless explicitly instructed. See also: `research/weapon-model.md` for weapon-model / weapon-instance design intent.
 - **3rd party library docs** → use `context7` tool (wgpu, winit, kira, glam).

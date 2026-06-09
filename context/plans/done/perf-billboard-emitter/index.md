@@ -28,51 +28,51 @@ Root cause (see `research.md`): the smoke pass is additive-blended with depth-wr
 ## Acceptance criteria
 
 Epic success — the gate the whole epic answers
-- [ ] In the room-fill smoke repro that motivated this work, frame time recovers materially versus the pre-epic baseline; the scene that previously tanked is playable. Smoke-pass GPU time (via Slice 0) is the primary signal, read alongside overall frame time. Each slice below reports its own delta against this baseline — this criterion is the one that says the user's problem is solved, not any single slice.
+- [x] In the room-fill smoke repro that motivated this work, frame time recovers materially versus the pre-epic baseline; the scene that previously tanked is playable. Smoke-pass GPU time (via Slice 0) is the primary signal, read alongside overall frame time. Each slice below reports its own delta against this baseline — this criterion is the one that says the user's problem is solved, not any single slice. **Confirmed on hardware (AMD Radeon 5500m): the room-fill scene renders smoothly. Headless CI cannot measure GPU time, so this top-level gate is verified on-device rather than by an automated test; the 500-particle collect/tick benches guard the CPU-path regressions.**
 
 Slice 0 — Timing
-- [ ] With `POSTRETRO_GPU_TIMING=1`, the `[gpu-timing]` log includes a labeled smoke/billboard pass line alongside the existing passes.
-- [ ] On frames where no sprites are drawn, the smoke pass produces no timing entry and no false `0.00ms` reading; other passes still report.
-- [ ] `cargo test` green; `cargo fmt --check` and `cargo clippy -- -D warnings` clean.
+- [x] With `POSTRETRO_GPU_TIMING=1`, the `[gpu-timing]` log includes a labeled smoke/billboard pass line alongside the existing passes.
+- [x] On frames where no sprites are drawn, the smoke pass produces no timing entry and no false `0.00ms` reading; other passes still report.
+- [x] `cargo test` green; `cargo fmt --check` and `cargo clippy -- -D warnings` clean.
 
 Slice 1 — Per-vertex SH lighting
-- [ ] Smoke renders with no visible change versus baseline at normal viewing distances (SH now evaluated per sprite, which already matched per-fragment because all quad corners share the sprite center).
-- [ ] The billboard fragment shader no longer performs SH indirect or SH direct sampling; SH lighting arrives as an interpolated vertex output.
-- [ ] Smoke-pass GPU time (from Slice 0) drops in a fill-heavy scene versus the Slice 0 baseline.
-- [ ] The billboard WGSL still passes naga validation (parse + uniform control flow); the dynamic-direct isolation debug modes still function.
-- [ ] The forward, fog, and mesh pipelines still create successfully after the shared SH bind-group-layout visibility is widened to include `VERTEX` (no wgpu pipeline-creation validation error).
-- [ ] `cargo test` green; fmt/clippy clean.
+- [x] Smoke renders with no visible change versus baseline at normal viewing distances (SH now evaluated per sprite, which already matched per-fragment because all quad corners share the sprite center).
+- [x] The billboard fragment shader no longer performs SH indirect or SH direct sampling; SH lighting arrives as an interpolated vertex output.
+- [x] Smoke-pass GPU time (from Slice 0) drops in a fill-heavy scene versus the Slice 0 baseline.
+- [x] The billboard WGSL still passes naga validation (parse + uniform control flow); the dynamic-direct isolation debug modes still function.
+- [x] The forward, fog, and mesh pipelines still create successfully after the shared SH bind-group-layout visibility is widened to include `VERTEX` (no wgpu pipeline-creation validation error).
+- [x] `cargo test` green; fmt/clippy clean.
 
 Slice 2 — Per-vertex light loops
-- [ ] The billboard fragment shader no longer runs the static-specular loop or the dynamic-light loop; their combined contribution arrives as an interpolated vertex output (folded into the Slice 1 lighting term).
-- [ ] The fragment shader's remaining work is the sprite-texture sample, alpha, opacity, and the final premultiply — no lighting computation.
-- [ ] Smoke renders with no visible change versus the Slice 1 baseline (the hoist is numerically identical — see the invariant in the task); lit-by-dynamic-light smoke still responds to dynamic lights.
-- [ ] Smoke-pass GPU time drops further versus the Slice 1 baseline in a scene with dynamic lights on smoke.
-- [ ] The forward and fog pipelines still create successfully after the group-2 (lighting) bind-group-layout visibility is widened to include `VERTEX` (no wgpu pipeline-creation validation error). (Group-0 camera is already `VERTEX`-visible — no change there; the mesh pipeline shares only groups 0 and 1, so it is unaffected.)
-- [ ] WGSL still passes naga validation; fmt/clippy clean; `cargo test` green.
+- [x] The billboard fragment shader no longer runs the static-specular loop or the dynamic-light loop; their combined contribution arrives as an interpolated vertex output (folded into the Slice 1 lighting term).
+- [x] The fragment shader's remaining work is the sprite-texture sample, alpha, opacity, and the final premultiply — no lighting computation.
+- [x] Smoke renders with no visible change versus the Slice 1 baseline (the hoist is numerically identical — see the invariant in the task); lit-by-dynamic-light smoke still responds to dynamic lights.
+- [x] Smoke-pass GPU time drops further versus the Slice 1 baseline in a scene with dynamic lights on smoke.
+- [x] The forward and fog pipelines still create successfully after the group-2 (lighting) bind-group-layout visibility is widened to include `VERTEX` (no wgpu pipeline-creation validation error). (Group-0 camera is already `VERTEX`-visible — no change there; the mesh pipeline shares only groups 0 and 1, so it is unaffected.)
+- [x] WGSL still passes naga validation; fmt/clippy clean; `cargo test` green.
 
-Slice 3 — Culling
-- [ ] Particles whose emitter is in a non-visible cell are not packed for drawing; particles in visible cells are.
-- [ ] When the frame's visibility is "draw all" (no portal culling), all particles draw — no regression.
-- [ ] Orphaned particles (emitter despawned, so its `Transform` is gone) are drawn, not culled — a mid-life puff must not pop when its emitter dies. A test covers the orphaned-particle case.
-- [ ] A test asserts a particle in a non-visible cell is excluded and one in a visible cell is included (mirrors the mesh collector cull tests).
-- [ ] All existing particle-collector tests updated to the new collect signature and green.
-- [ ] `cargo test` green; fmt/clippy clean.
+Slice 3 — Culling **(shipped per-billboard, not per-emitter — see Deviation note below)**
+- [x] Each billboard is culled by its **own** world-position BSP leaf, not its emitter's: a particle whose own leaf is non-visible is not packed; one whose own leaf is visible is packed — even when its emitter is hidden (the drift case the drafted per-emitter design got wrong).
+- [x] When the frame's visibility is "draw all" (no portal culling), all particles draw — no regression.
+- [x] Orphaned particles (emitter despawned) are culled or drawn by their own leaf exactly like any other particle — no special case. A mid-life puff that has drifted out of view is correctly culled, and one still in view stays drawn when its emitter dies. A test covers the orphan case.
+- [x] Tests assert a particle whose own leaf is non-visible is excluded and one whose own leaf is visible is included — including the drift case (a visible particle whose emitter is hidden) and two siblings of one emitter culling independently — mirroring the mesh collector cull tests.
+- [x] All existing particle-collector tests updated to the new collect signature and green.
+- [x] `cargo test` green; fmt/clippy clean.
 
 Slice 4 — CPU cost
-- [ ] No per-particle heap allocation on the render-collect path (sprite→collection resolution uses a pre-built map, not a per-particle `String`).
-- [ ] Lifetime curves are shared, not deep-cloned, on both hot paths: the per-tick sim snapshot and the per-spawn path each take a cheap shared handle (e.g. `Arc`/reference) instead of copying the curve `Vec`s.
-- [ ] Redundant registry passes are collapsed: the emitter/particle path makes fewer passes per frame than before. The before/after pass count is stated in the task notes and confirmed by code inspection (a structural property, not a timed one). The measured win is the path's wall-clock time, not an asserted count.
-- [ ] The 500-particle tick bench stays under its threshold; the bench is extended to also cover the collect path (or a sibling bench is added) with a stated threshold.
-- [ ] All emitter-bridge, particle-sim, and particle-render tests green; snapshot-then-mutate (no mid-walk registry mutation) preserved.
-- [ ] `cargo test` green; fmt/clippy clean.
+- [x] No per-particle heap allocation on the render-collect path (sprite→collection resolution uses a pre-built map, not a per-particle `String`).
+- [x] Lifetime curves are shared, not deep-cloned, on both hot paths: the per-tick sim snapshot and the per-spawn path each take a cheap shared handle (e.g. `Arc`/reference) instead of copying the curve `Vec`s.
+- [x] Redundant registry passes are collapsed: the emitter/particle path makes fewer passes per frame than before. The before/after pass count is stated in the task notes and confirmed by code inspection (a structural property, not a timed one). The measured win is the path's wall-clock time, not an asserted count.
+- [x] The 500-particle tick bench stays under its threshold; the bench is extended to also cover the collect path (or a sibling bench is added) with a stated threshold.
+- [x] All emitter-bridge, particle-sim, and particle-render tests green; snapshot-then-mutate (no mid-walk registry mutation) preserved.
+- [x] `cargo test` green; fmt/clippy clean.
 
 Slice 5 — Instance buffer
-- [ ] A single collection can draw more than 4096 live sprites without silent truncation.
-- [ ] Multiple collections in one frame draw correctly from one instance buffer (no cross-collection corruption), without a separate full re-upload at offset 0 per collection.
-- [ ] Batching behavior preserved: one collection ⇒ one draw call; N collections ⇒ N draw calls.
-- [ ] Per-instance stride stays 32 bytes (the WGSL/CPU stride test stays green); each collection's instance-buffer start offset is 256-byte aligned, satisfying the storage dynamic-offset requirement.
-- [ ] `cargo test` green; fmt/clippy clean.
+- [x] A single collection can draw more than 4096 live sprites without silent truncation.
+- [x] Multiple collections in one frame draw correctly from one instance buffer (no cross-collection corruption), without a separate full re-upload at offset 0 per collection.
+- [x] Batching behavior preserved: one collection ⇒ one draw call; N collections ⇒ N draw calls.
+- [x] Per-instance stride stays 32 bytes (the WGSL/CPU stride test stays green); each collection's instance-buffer start offset is 256-byte aligned, satisfying the storage dynamic-offset requirement.
+- [x] `cargo test` green; fmt/clippy clean.
 
 ## Tasks
 
@@ -128,6 +128,9 @@ None blocking. Decisions locked during drafting:
 Resolved during review (each follows from the engine's billboard design, not a fresh choice):
 - Slice 2 per-vertex lighting is numerically exact, not an approximation: every lighting input derives from the shared sprite-center `world_position` + uniforms (`N = V = camera-forward`); only `in.uv` varies per fragment, and it feeds only the texture sample. So "no visible change" is the right AC, not a relaxed one.
 - Slice 3 resolves emitter visibility via a per-frame `emitter → visible` memo (one `find_leaf` per emitter); orphaned particles (despawned emitter) are drawn, not culled, to avoid mid-life popping.
+
+Deviation discovered during implementation/review (Slice 3):
+- The drafted per-emitter cull (one `find_leaf` per emitter gating all its particles) is a **correctness bug**: smoke particles drift away from their emitter, so a puff that has drifted into a visible cell is wrongly culled whenever its emitter's own leaf is non-visible (emitter behind a wall / in a vent). It shipped as a **per-billboard** cull: each particle is culled by `find_leaf` on its **own** `transform.position` — the exact position packed into the GPU instance. A `HashSet<u32>` of visible leaves is built once per `collect` so the membership test stays O(1) instead of a per-particle linear scan over the visible-cell list (the cost the per-emitter memo was avoiding). `ParticleState.emitter` is consequently **not** a cull key — its only runtime role is spin-rate lookup — and the orphan special-case disappears (a particle's own position is always available, alive emitter or not).
 - Slice 4's walk-count AC was unrealistic as stated (a timing bench can't assert a structural pass count). Relaxed: state the before/after count in notes (code-inspection-verified), measure the wall-clock win via the extended bench. The curve-sharing change covers both the per-tick and per-spawn clones.
 - Slice 5 uses a dynamic-offset bind group (`has_dynamic_offset → true`, 256-byte-aligned per-collection offsets, 32-byte instance stride) — the lean, idiomatic wgpu route the alignment constraint already implied.
 - Added a top-level epic-success criterion (room-fill frame time recovers vs. baseline) so the epic measures whether the user's actual problem is solved, not just per-slice deltas.

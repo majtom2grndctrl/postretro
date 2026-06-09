@@ -107,10 +107,10 @@ Over-engineering is as costly as under-delivering. Both create surface area that
 Adjacent work discovered during implementation gets a follow-up task, not a scope expansion.
 
 - **Robustness gaps** outside the task's scope → file a follow-up with enough context for the next agent.
-- **Speculative optimizations** — no measured bottleneck → file a follow-up. Don't cache or precompute preemptively; *Performance* below carves out the structural choices that are the exception.
+- **Speculative optimizations** — no measured bottleneck → file a follow-up.
 - **Abstractions** without multiple concrete consumers → three similar lines beat a premature helper.
 
-**Performance.** Runtime performance is a first-class goal, and this engine's costs are specific — design for them while writing the code, not later. Two domains carry the weight: the per-frame hot path (Input → Game logic → Audio → Render → Present) and build/load iteration time. Neither is an "optimize later" zone — both are where this engine has spent its measured performance effort.
+**Performance.** Runtime performance is a first-class goal, and this engine's costs are specific — design for them while writing the code, not later. Two domains matter: the per-frame hot path (Input → Game logic → Audio → Render → Present) and build/load iteration time.
 
 In the per-frame hot path, three levers carry most of the weight:
 
@@ -120,9 +120,9 @@ In the per-frame hot path, three levers carry most of the weight:
 
 Inside the hot path the ordinary defaults still hold: avoid per-frame allocations, prefer cache-friendly layouts, keep hot loops free of needless indirection. Design decisions, not speculative tuning.
 
-**Build and load time is a budget too.** The offline bake dominates compile time — it is the engine's most-optimized CPU path (content-hash stage caching, rayon-parallel SH, incremental per-light bake), and near-instant boot is a product goal. The discipline here is the warm/cold contract: the cold (`--no-cache`) build is the exact ship source of truth and favors correctness; the warm iteration path is cached, parallelized, and may even approximate for author speed. Note the coupling: "Bake over compute" moves cost *into* the bake, so weigh what a new baked input costs the build loop, not just the frame.
+**Build and load time is a budget too.** The offline bake dominates compile time — the bake is the engine's most-optimized CPU path (content-hash stage caching, rayon-parallel SH, incremental per-light bake), and near-instant boot is a product goal. The discipline is the warm/cold contract: the cold (`--no-cache`) build is the exact ship source of truth and favors correctness; the warm iteration path is cached, parallelized, and may even approximate for author speed. Coupling: "Bake over compute" moves cost *into* the bake, so weigh what a new baked input costs the build loop, not just the frame.
 
-When per-pass GPU timing (`POSTRETRO_GPU_TIMING=1`) or a profile confirms a real bottleneck, optimize aggressively — but keep the result clean. An optimization that makes the code so brittle it becomes unwieldy to maintain is not acceptable, even with measurements behind it. Fast *and* clean is the goal; brittleness just moves the cost from runtime to maintenance.
+When per-pass GPU timing (`POSTRETRO_GPU_TIMING=1`) or a profile confirms a real bottleneck, optimize aggressively — but keep the result clean. An optimization that makes the code unmaintainable is not acceptable, even with measurements behind it. Fast *and* clean is the goal; brittleness moves the cost from runtime to maintenance.
 
 Never leave a bare `// TODO: fix later`. Either file a follow-up with context or fix it now.
 

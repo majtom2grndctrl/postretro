@@ -433,7 +433,19 @@ fn serialize_bvh_leaves(leaves: &[crate::geometry::BvhLeaf]) -> Vec<u8> {
     buf
 }
 
-fn extract_frustum_planes_for_gpu(view_proj: &Mat4) -> [[f32; 4]; 6] {
+/// Extract the 6 frustum planes from a combined view-projection matrix in the
+/// layout the cull WGSL (`bvh_cull.wgsl::is_aabb_outside_frustum`) consumes.
+///
+/// Convention (mirrored verbatim by the CPU cone-frustum code in
+/// `lighting::cone_frustum`, so both tests agree): 6 planes from the combined
+/// matrix rows — L,R,B,T,N,F = `r3+r0, r3-r0, r3+r1, r3-r1, r3+r2, r3-r2` —
+/// normalized, emitted as `[nx,ny,nz,d]`. Inside-sign matches the WGSL: a point
+/// `p` is *outside* a plane when `dot(normal, p) + d < 0`.
+///
+/// `pub(crate)` so the lighting module can build a spotlight's cone frustum from
+/// `light_space_matrix()` through this same single implementation rather than
+/// duplicating the row math.
+pub(crate) fn extract_frustum_planes_for_gpu(view_proj: &Mat4) -> [[f32; 4]; 6] {
     let row = |n: usize| -> glam::Vec4 {
         glam::Vec4::new(
             view_proj.col(0)[n],

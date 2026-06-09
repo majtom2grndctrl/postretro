@@ -1,5 +1,5 @@
 // Postretro engine entry point, boot state machine, and level-load orchestration.
-// See: context/lib/boot_sequence.md §8 · context/lib/index.md
+// See: context/lib/boot_sequence.md §3 · context/lib/index.md
 
 mod audio;
 mod camera;

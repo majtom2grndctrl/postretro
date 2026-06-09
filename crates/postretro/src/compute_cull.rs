@@ -389,9 +389,11 @@ impl ComputeCullPipeline {
 /// `draw_indexed_indirect`) per material bucket over a slice of an indirect
 /// buffer. `region_byte_offset` is the byte offset of the slot's per-leaf
 /// region within the indirect buffer (0 for the camera path's single region;
-/// `slot * total_leaves * DRAW_INDIRECT_SIZE` for the shadow owner's per-slot
-/// sub-regions). The per-bucket `first_leaf`/`leaf_count` layout is identical
-/// across regions, so the bucket-offset table is shared.
+/// `slot * region_stride_bytes` for the shadow owner's per-slot sub-regions,
+/// where `region_stride_bytes = (total_leaves * DRAW_INDIRECT_SIZE).next_multiple_of(256)`
+/// — padded to 256 bytes to satisfy `min_storage_buffer_offset_alignment`).
+/// The per-bucket `first_leaf`/`leaf_count` layout is identical across regions,
+/// so the bucket-offset table is shared.
 ///
 /// `set_texture_fn = None` skips the group-1 material bind (depth-only passes,
 /// including the spot-shadow depth pass, have no group-1 slot).

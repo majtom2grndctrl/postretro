@@ -106,13 +106,18 @@ pub struct SpotShadowPool {
 impl SpotShadowPool {
     /// Build the bind group layout for `@group(5)` of the forward shader.
     ///
-    /// Task 5 (`sdf-static-occluder-shadows`) extends group 5 with two more
-    /// bindings consumed by the forward shader's bilateral upsample:
-    ///   3 = half-res SDF shadow factor target (Rgba8Unorm; R = static, G = animated)
-    ///   4 = full-res scene depth (Depth32Float; sampled via `textureLoad`)
-    /// The fog volume compute pass also binds group 5 but does not reference
-    /// these slots — unused BGL entries are valid. Visibility is FRAGMENT only
-    /// for the new bindings; if a future pass needs them in compute, widen.
+    /// Group 5 has five entries:
+    ///   0 = shadow depth array (D2Array Depth32Float; FRAGMENT | COMPUTE)
+    ///   1 = comparison sampler (FRAGMENT | COMPUTE)
+    ///   2 = light-space matrix uniform buffer (FRAGMENT | COMPUTE)
+    ///   3 = half-res SDF shadow factor target (Rgba8Unorm; R = static, G = animated; FRAGMENT)
+    ///   4 = full-res scene depth (Depth32Float; sampled via `textureLoad`; FRAGMENT)
+    ///
+    /// Bindings 3 and 4 are owned outside the pool — the SDF shadow pass owns
+    /// the factor target and the renderer owns the scene depth view. Both are
+    /// supplied at construction time and must be re-supplied on resize via
+    /// `rebuild_bind_group`. The fog volume compute pass also binds group 5
+    /// but does not reference slots 3 or 4 — unused BGL entries are valid.
     pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Spot Shadow BGL"),
@@ -183,13 +188,12 @@ impl SpotShadowPool {
     /// along with the sampler, matrix buffer, and bind group that the
     /// forward shader's `@group(5)` layout expects.
     ///
-    /// Task 5 plumbing: the BGL now includes two extra bindings (3 = SDF
-    /// shadow factor, 4 = scene depth) owned outside the pool — the SDF
-    /// shadow pass creates the half-res factor target and the renderer owns
-    /// the scene depth view. The caller passes both in here so the pool can
-    /// build a complete bind group at construction time. Both views must be
-    /// re-supplied on resize (via `rebuild_bind_group`) since both targets
-    /// get re-created when the surface changes size.
+    /// Bindings 3 (SDF shadow factor) and 4 (scene depth) are owned outside
+    /// the pool — the SDF shadow pass owns the half-res factor target and the
+    /// renderer owns the scene depth view. Both are passed in here so the pool
+    /// can build a complete bind group at construction time. Both views must be
+    /// re-supplied on resize via `rebuild_bind_group` since they are
+    /// re-created when the surface changes size.
     pub fn new(
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,
@@ -696,7 +700,7 @@ mod tests {
             .count();
         assert_eq!(
             assigned_count, 8,
-            "all 8 visible lights get slots (pool has 12 capacity)"
+            "all 8 visible lights get slots (pool has 64 capacity)"
         );
     }
 

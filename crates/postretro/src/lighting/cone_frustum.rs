@@ -234,4 +234,94 @@ mod tests {
         };
         assert!(aabb_intersects_frustum(&center, &planes));
     }
+
+    /// A degenerate (non-invertible) light-space matrix must not panic and must
+    /// return the documented fallback: a zero-extent point AABB at the origin.
+    ///
+    /// Mat4::ZERO has determinant 0, so glam's `inverse()` produces NaN/Inf
+    /// entries. The per-corner w-divide guard sets w=1 for near-zero w, but
+    /// the resulting NaN coordinates leave min/max at Inf/−Inf, which are
+    /// non-finite — triggering the explicit fallback to the origin point.
+    #[test]
+    fn cone_enclosing_aabb_degenerate_matrix_returns_origin_point() {
+        let aabb = cone_enclosing_aabb(&Mat4::ZERO);
+        let eps = 1e-6_f32;
+        assert!(
+            aabb.min.x.abs() < eps
+                && aabb.min.y.abs() < eps
+                && aabb.min.z.abs() < eps,
+            "degenerate matrix fallback: min should be origin, got {:?}",
+            aabb.min
+        );
+        assert!(
+            aabb.max.x.abs() < eps
+                && aabb.max.y.abs() < eps
+                && aabb.max.z.abs() < eps,
+            "degenerate matrix fallback: max should be origin, got {:?}",
+            aabb.max
+        );
+    }
+
+    /// An AABB straddling the cone apex (the origin region) must be classified
+    /// as intersecting. The existing inside-tests only cover mid-cone boxes;
+    /// this covers the near-apex boundary where the near-clip plane lives.
+    ///
+    /// The box extends from the apex (z=0) back into the cone volume (z=-2),
+    /// fully on axis. The portion z∈[-2, -0.1] lies inside the near..far
+    /// depth range, so the positive-vertex test must not reject it as "behind
+    /// the near plane".
+    #[test]
+    fn cone_frustum_apex_straddling_aabb_classifies_as_intersecting() {
+        let light = spot_down_neg_z();
+        let m = light_space_matrix(&light);
+        let planes = cone_frustum_planes(&m);
+
+        // Box runs from the apex at z=0 down to z=-2, on axis. Covers the
+        // near-clip transition (near=0.1 in world-space = z=-0.1).
+        let apex_box = Aabb {
+            min: Vec3::new(-0.2, -0.2, -2.0),
+            max: Vec3::new(0.2, 0.2, 0.0),
+        };
+        assert!(
+            aabb_intersects_frustum(&apex_box, &planes),
+            "AABB straddling the cone apex must be classified as intersecting"
+        );
+    }
+
+    /// An AABB that grazes the cone's right side plane from just inside must be
+    /// classified as intersecting; one clearly past the side boundary must not.
+    ///
+    /// The cone half-angle is 0.4 rad; at z=−10 the radius is ~4.23 m. A box
+    /// whose positive vertex (rightmost edge) sits at x≈4.0 is well inside the
+    /// side plane. A box displaced far beyond the radius (x≥10) is definitively
+    /// outside. The positive-vertex selection in `aabb_intersects_frustum` must
+    /// route to the correct AABB corner in both cases.
+    #[test]
+    fn cone_frustum_grazing_side_plane_aabb_classified_correctly() {
+        let light = spot_down_neg_z();
+        let m = light_space_matrix(&light);
+        let planes = cone_frustum_planes(&m);
+
+        // tan(0.4) ≈ 0.4228; cone radius at z=-10 is ~4.23 m.
+        // A box with its right edge at x=4.0 is inside the side plane.
+        let just_inside = Aabb {
+            min: Vec3::new(3.0, -0.5, -10.5),
+            max: Vec3::new(4.0, 0.5, -9.5),
+        };
+        assert!(
+            aabb_intersects_frustum(&just_inside, &planes),
+            "AABB with positive vertex inside the cone side plane must intersect"
+        );
+
+        // A box displaced well beyond the cone radius: positive vertex at x=10
+        // is far outside the side plane (~4.23 m radius at that depth).
+        let clearly_outside = Aabb {
+            min: Vec3::new(9.5, -0.5, -10.5),
+            max: Vec3::new(10.5, 0.5, -9.5),
+        };
+        assert!(
+            !aabb_intersects_frustum(&clearly_outside, &planes),
+            "AABB well outside the cone side plane must not intersect"
+        );
+    }
 }

@@ -5,13 +5,12 @@ use glam::Mat4;
 use wgpu::util::DeviceExt;
 
 use crate::compute_cull::{
-    CULL_SHADER_SOURCE, CullUniforms, DRAW_INDIRECT_SIZE, SetTextureFn, VISIBLE_CELLS_WORDS,
-    draw_indirect_buckets, extract_frustum_planes_for_gpu,
+    CULL_SHADER_SOURCE, CULL_UNIFORMS_SIZE, CullUniforms, DRAW_INDIRECT_SIZE, SetTextureFn,
+    VISIBLE_CELLS_WORDS, draw_indirect_buckets, extract_frustum_planes_for_gpu,
+    serialize_cull_uniforms,
 };
 use crate::geometry::BucketRange;
 use crate::lighting::spot_shadow::SHADOW_POOL_SIZE;
-
-const CULL_UNIFORMS_SIZE: u64 = 96;
 
 /// Persistent, renderer-owned per-slot cone cull for the spot-shadow pool —
 /// sibling to the camera `ComputeCullPipeline`. Built at init/level-load and
@@ -28,7 +27,6 @@ const CULL_UNIFORMS_SIZE: u64 = 96;
 /// "draw all world geometry per slot", so it can never drop a shadow.
 pub struct ShadowCullPipeline {
     pipeline: wgpu::ComputePipeline,
-    bind_group_layout: wgpu::BindGroupLayout,
 
     /// Per-slot frustum-planes uniform. One buffer per slot, no dynamic offset,
     /// no alignment padding — the per-slot bind group binds its own uniform.
@@ -39,9 +37,17 @@ pub struct ShadowCullPipeline {
     slot_bind_groups: Vec<wgpu::BindGroup>,
 
     /// ONE indirect buffer carved into `SHADOW_POOL_SIZE` sub-regions by offset:
-    /// each sub-region is `total_leaves` slots × 20 bytes, matching the camera
-    /// path's per-leaf layout and BVH leaf ordering exactly.
+    /// each sub-region holds the full per-leaf layout (`total_leaves` slots ×
+    /// 20 bytes), matching the camera path's per-leaf layout and BVH leaf
+    /// ordering exactly. Sub-regions are spaced by `region_stride_bytes`, not
+    /// the raw per-leaf size, so each region base is a valid storage-binding
+    /// offset.
     indirect_buffer: wgpu::Buffer,
+    /// 256-byte-aligned stride between adjacent slot sub-regions in
+    /// `indirect_buffer`. Used as the per-slot offset for both the binding-4
+    /// region base (where the slot's cull dispatch writes) and the slot's
+    /// indirect draw region (where the depth pass reads) — they must agree.
+    region_stride_bytes: u64,
     total_leaves: u32,
     bucket_ranges: Vec<BucketRange>,
     has_multi_draw_indirect: bool,
@@ -109,10 +115,23 @@ impl ShadowCullPipeline {
 
         // ONE indirect buffer, `SHADOW_POOL_SIZE` sub-regions of `total_leaves`
         // slots each. Each sub-region holds the full per-leaf layout.
+        //
+        // Each sub-region is bound as a STORAGE buffer (binding 4) at its base
+        // offset, so that offset must satisfy `min_storage_buffer_offset_alignment`
+        // (256 by default; this build does not override device limits). The raw
+        // per-region size `total_leaves * 20` is only a multiple of 256 when
+        // `total_leaves` is a multiple of 64, so we pad the stride up to 256.
+        // (The per-slot frustum *uniform* buffers are separate allocations and
+        // need no such padding — only this shared buffer is sub-divided by offset.)
         let region_slots = total_leaves.max(1) as u64;
+        let region_bytes = region_slots * DRAW_INDIRECT_SIZE;
+        let region_stride_bytes = region_bytes.next_multiple_of(256);
+        // Pool sizing: SHADOW_POOL_SIZE (64) slots × the aligned per-slot region.
+        // A future reader sizing large community maps should expect this 64×
+        // multiplier on top of the padded per-region footprint.
         let indirect_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Shadow Cull Indirect Buffer"),
-            size: SHADOW_POOL_SIZE as u64 * region_slots * DRAW_INDIRECT_SIZE,
+            size: SHADOW_POOL_SIZE as u64 * region_stride_bytes,
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::INDIRECT
                 | wgpu::BufferUsages::COPY_DST,
@@ -134,12 +153,15 @@ impl ShadowCullPipeline {
         for slot in 0..SHADOW_POOL_SIZE {
             let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("Shadow Cull Uniforms"),
-                size: CULL_UNIFORMS_SIZE,
+                size: CULL_UNIFORMS_SIZE as u64,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
 
-            let region_offset = slot as u64 * region_slots * DRAW_INDIRECT_SIZE;
+            // Region base for this slot. The cull dispatch writes leaf indirect
+            // slots relative to this binding-4 offset, and the depth draw reads
+            // from the same base via `region_stride_bytes` — they must match.
+            let region_offset = slot as u64 * region_stride_bytes;
             let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Shadow Cull Bind Group"),
                 layout: &bind_group_layout,
@@ -165,7 +187,7 @@ impl ShadowCullPipeline {
                         resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                             buffer: &indirect_buffer,
                             offset: region_offset,
-                            size: std::num::NonZeroU64::new(region_slots * DRAW_INDIRECT_SIZE),
+                            size: std::num::NonZeroU64::new(region_bytes),
                         }),
                     },
                     wgpu::BindGroupEntry {
@@ -188,10 +210,10 @@ impl ShadowCullPipeline {
 
         Self {
             pipeline,
-            bind_group_layout,
             slot_uniform_buffers,
             slot_bind_groups,
             indirect_buffer,
+            region_stride_bytes,
             total_leaves,
             bucket_ranges,
             has_multi_draw_indirect,
@@ -254,8 +276,16 @@ impl ShadowCullPipeline {
         slot: u32,
         set_texture_fn: Option<&SetTextureFn<'a>>,
     ) {
-        let region_slots = self.total_leaves.max(1) as u64;
-        let region_byte_offset = slot as u64 * region_slots * DRAW_INDIRECT_SIZE;
+        // Read from the SAME region base the slot's cull dispatch wrote to:
+        // both derive their offset from `region_stride_bytes` (256-aligned), so
+        // the binding offset, dispatch output region, and draw region agree.
+        //
+        // Stale/unwritten indirect slots are safe: leaves outside this slot's
+        // cone leave their indirect slots unwritten, but those same leaves clip
+        // out against the slot's light-space projection and contribute no depth.
+        // First-frame/reload safety comes from wgpu zero-initializing the buffer
+        // — the same property that makes the camera draw path correct.
+        let region_byte_offset = slot as u64 * self.region_stride_bytes;
         draw_indirect_buckets(
             render_pass,
             &self.indirect_buffer,
@@ -264,13 +294,6 @@ impl ShadowCullPipeline {
             self.has_multi_draw_indirect,
             set_texture_fn,
         );
-    }
-
-    /// The bind group layout — referenced only via the pipeline; exposed for
-    /// completeness in case a future caller needs to build extra bind groups.
-    #[allow(dead_code)]
-    pub(crate) fn bind_group_layout(&self) -> &wgpu::BindGroupLayout {
-        &self.bind_group_layout
     }
 }
 
@@ -288,16 +311,6 @@ fn storage_or_uniform_entry(
         },
         count: None,
     }
-}
-
-fn serialize_cull_uniforms(uniforms: &CullUniforms) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(CULL_UNIFORMS_SIZE as usize);
-    for plane in &uniforms.planes {
-        for &v in plane {
-            buf.extend_from_slice(&v.to_le_bytes());
-        }
-    }
-    buf
 }
 
 #[cfg(test)]

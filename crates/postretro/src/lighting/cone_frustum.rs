@@ -1,17 +1,11 @@
 // Cone-frustum geometry for spotlight shadow culling: planes + enclosing AABB
 // derived from a spotlight's light-space view-projection matrix.
 //
-// See: context/lib/rendering_pipeline.md §4 · context/plans/in-progress/shadow-cone-cull/
-
-// Shared geometric core for the shadow-cone-cull plan. The consumers land in
-// the next phase: Task 2 (rank-time cull in `spot_shadow.rs`) calls
-// `cone_enclosing_aabb` + `aabb_intersects_frustum`; Task 3 (per-slot GPU cull)
-// calls `cone_frustum_planes`. The `#[test]` module exercises all three now, so
-// these are verified — not unused — ahead of those call sites.
-#![allow(dead_code)]
+// See: context/lib/rendering_pipeline.md §7.1 · context/plans/in-progress/shadow-cone-cull/
 
 use glam::{Mat4, Vec3, Vec4};
 
+#[cfg(test)]
 use crate::compute_cull::extract_frustum_planes_for_gpu;
 
 /// Axis-aligned bounding box in world space.
@@ -32,6 +26,7 @@ pub(crate) struct Aabb {
 /// L,R,B,T,N,F = `r3+r0, r3-r0, r3+r1, r3-r1, r3+r2, r3-r2` — normalized,
 /// emitted as `[nx,ny,nz,d]`; a point `p` is *outside* a plane when
 /// `dot(normal, p) + d < 0`.
+#[cfg(test)]
 pub(crate) fn cone_frustum_planes(light_space_matrix: &Mat4) -> [Vec4; 6] {
     let raw = extract_frustum_planes_for_gpu(light_space_matrix);
     raw.map(|p| Vec4::new(p[0], p[1], p[2], p[3]))

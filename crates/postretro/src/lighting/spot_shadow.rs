@@ -315,16 +315,12 @@ impl SpotShadowPool {
     /// conservative — the enclosing AABB over-approximates the cone, so the test
     /// can only over-include, never wrongly drop a shadow.
     ///
-    /// Task 1b decoupled the candidate set from `level_lights` (which is
-    /// `is_dynamic`-filtered, and goes empty under the geometry-vs-intensity
-    /// reclassification of Task 2c). The caller now hands the full-level light
-    /// slice filtered by `is_dynamic || casts_entity_shadows`; the gate below
+    /// The caller passes the full-level light slice; the pool-eligibility gate
     /// is `(is_dynamic || casts_entity_shadows) && Spot`. Dynamic-tier
     /// spotlights are pool-eligible by default — the shadow depth pass renders
     /// WORLD geometry, so a pooled dynamic spot shadows static occluders (e.g.
-    /// pillars) with no per-light opt-in, the behavior the dynamic tier was
-    /// designed for. `casts_entity_shadows` stays the opt-in for non-dynamic
-    /// lights (future enemy / moving-occluder shadows).
+    /// pillars) with no per-light opt-in. `casts_entity_shadows` is the
+    /// explicit opt-in for non-dynamic lights.
     ///
     /// Returns a Vec indexed by light index (into the slice the caller
     /// passes): entry is the slot index (`0..SHADOW_POOL_SIZE`) or NO_SHADOW_SLOT.

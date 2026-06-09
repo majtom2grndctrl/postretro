@@ -424,9 +424,9 @@ pub(crate) fn draw_indirect_buckets<'a>(
     }
 }
 
-const CULL_UNIFORMS_SIZE: usize = 96;
+pub(crate) const CULL_UNIFORMS_SIZE: usize = 96;
 
-fn serialize_cull_uniforms(uniforms: &CullUniforms) -> Vec<u8> {
+pub(crate) fn serialize_cull_uniforms(uniforms: &CullUniforms) -> Vec<u8> {
     let mut buf = Vec::with_capacity(CULL_UNIFORMS_SIZE);
     for plane in &uniforms.planes {
         for &v in plane {

@@ -50,7 +50,7 @@ Four crates in a Cargo workspace:
 ## Agent TL;DR
 
 - Optimize for **readability over cleverness**; prefer small, explicit changes.
-- Prefer **runtime performance over development convenience** — when two approaches are equally maintainable, choose the faster one at runtime. See §1.5.
+- **Runtime performance is a first-class goal** — structural choices that favor it belong in the initial implementation. See §1.4.
 - Respect **subsystem boundaries**: renderer, audio, input, game logic are distinct modules with explicit contracts.
 - **Deliver the impact defined in specs and tasks.** Specs define what and why; use judgment on how. When the plan doesn't survive contact with the code, adapt — but surface deviations and update the context files. See §1.
 - Do not flatten module structure. See §2.
@@ -107,22 +107,19 @@ Over-engineering is as costly as under-delivering. Both create surface area that
 Adjacent work discovered during implementation gets a follow-up task, not a scope expansion.
 
 - **Robustness gaps** outside the task's scope → file a follow-up with enough context for the next agent.
-- **Optimizations** with no current performance problem → file a follow-up, don't cache preemptively.
 - **Abstractions** without multiple concrete consumers → three similar lines beat a premature helper.
+
+**Performance.** Runtime performance is a first-class project goal. Structural choices that favor it belong in the initial implementation: avoid per-frame allocations, choose cache-friendly data layouts, keep hot paths free of unnecessary indirection. These are design decisions, not speculative tuning — the right time to make them is when writing the code.
+
+Speculative micro-optimizations are different: changes that trade code clarity for theoretical gains without a measured bottleneck → file a follow-up instead. When profiling confirms a real bottleneck, optimize aggressively — but keep the result clean. An optimization that makes the code so brittle it becomes unwieldy to maintain is not acceptable, even with measurements behind it. Fast *and* clean is the goal; brittleness just moves the cost from runtime to maintenance.
 
 Never leave a bare `// TODO: fix later`. Either file a follow-up with context or fix it now.
 
-### 1.5 Runtime performance over development convenience
-
-When two implementation paths are equally clean and maintainable, choose the one with lower runtime cost. Convenience abstractions — extra allocations, indirection layers, wrapper types that exist only to smooth authoring — are acceptable only when they impose no measurable cost on the hot path. If the faster path is harder to write, write it anyway.
-
-This is not a license for premature optimization (§1.4). Don't optimize code with no measured problem. But when a real implementation choice exists and both paths are in scope, runtime cost is the tiebreaker.
-
-### 1.6 Documentation lifecycle
+### 1.5 Documentation lifecycle
 
 See [Context Style Guide](./context_style_guide.md) §Documentation Lifecycle for the full lifecycle rules. In brief: specs are consumed during implementation; after a plan ships, durable knowledge belongs in context files and implementation-level "why" in code comments.
 
-### 1.7 Breaking API changes
+### 1.6 Breaking API changes
 
 This project does not maintain backward compatibility. There are no external consumers, and compatibility shims add maintenance weight with no current benefit.
 

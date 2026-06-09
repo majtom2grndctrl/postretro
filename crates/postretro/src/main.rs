@@ -20,6 +20,7 @@ mod portal_vis;
 mod prl;
 mod render;
 mod scripting;
+mod shadow_cull;
 mod startup;
 mod ui_texture;
 mod visibility;

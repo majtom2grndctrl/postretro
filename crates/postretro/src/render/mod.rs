@@ -1065,6 +1065,10 @@ pub struct Renderer {
     bvh_leaves: Vec<crate::geometry::BvhLeaf>,
     /// `None` for maps with no BVH.
     compute_cull: Option<ComputeCullPipeline>,
+    /// Per-slot cone cull for the spot-shadow depth passes. Sibling to
+    /// `compute_cull`, sharing its read-only BVH node/leaf buffers. `None` for
+    /// maps with no BVH (kept in lockstep with `compute_cull`).
+    shadow_cull: Option<crate::shadow_cull::ShadowCullPipeline>,
 
     wireframe_pipeline: wgpu::RenderPipeline,
     wireframe_index_buffer: wgpu::Buffer,
@@ -1795,6 +1799,18 @@ impl Renderer {
         let compute_cull = geometry
             .filter(|g| !g.bvh.leaves.is_empty())
             .map(|g| ComputeCullPipeline::new(&device, g.bvh, has_multi_draw_indirect));
+        // Sibling shadow cull owner shares the camera cull's read-only BVH
+        // node/leaf buffers (uploaded once). Built/rebuilt in lockstep with it.
+        let shadow_cull = compute_cull.as_ref().map(|c| {
+            crate::shadow_cull::ShadowCullPipeline::new(
+                &device,
+                c.node_buffer(),
+                c.leaf_buffer(),
+                c.total_leaves(),
+                c.bucket_ranges().to_vec(),
+                c.has_multi_draw_indirect(),
+            )
+        });
 
         let (_depth_texture, depth_view) =
             create_depth_texture(&device, surface_config.width, surface_config.height);
@@ -2400,6 +2416,7 @@ impl Renderer {
             gpu_textures,
             bvh_leaves,
             compute_cull,
+            shadow_cull,
             wireframe_pipeline,
             wireframe_index_buffer,
             wireframe_index_count,
@@ -2737,6 +2754,19 @@ impl Renderer {
         } else {
             None
         };
+        // Rebuild the shadow cull owner against the freshly-uploaded BVH
+        // buffers — its per-slot bind groups reference the camera cull's
+        // node/leaf storage, so a stale reference would point at the old BVH.
+        self.shadow_cull = self.compute_cull.as_ref().map(|c| {
+            crate::shadow_cull::ShadowCullPipeline::new(
+                &self.device,
+                c.node_buffer(),
+                c.leaf_buffer(),
+                c.total_leaves(),
+                c.bucket_ranges().to_vec(),
+                c.has_multi_draw_indirect(),
+            )
+        });
 
         self.has_geometry = has_geometry;
         self.last_lights_upload.clear();
@@ -3845,6 +3875,10 @@ impl Renderer {
             vec![0u8; MAT_BYTES * crate::lighting::spot_shadow::SHADOW_POOL_SIZE];
         let mut vertex_uniforms =
             vec![0u8; stride * crate::lighting::spot_shadow::SHADOW_POOL_SIZE];
+        // Reset the per-slot cone-matrix stash; reoccupied slots overwrite, the
+        // rest stay `None` so the GPU cone cull skips them this frame.
+        self.spot_shadow_pool.slot_cone_matrices =
+            [None; crate::lighting::spot_shadow::SHADOW_POOL_SIZE];
         for (light_idx, &slot) in slot_assignment.iter().enumerate() {
             if slot == crate::lighting::spot_shadow::NO_SHADOW_SLOT {
                 continue;
@@ -3852,6 +3886,10 @@ impl Renderer {
             let m = crate::lighting::spot_shadow::light_space_matrix(
                 &self.shadow_candidate_lights[light_idx],
             );
+            // Stash the SAME light-space matrix uploaded to bind-group-5 below —
+            // the shadow-depth render loop reads it to build this slot's cone
+            // cull frustum planes (one source of truth, no recomputation).
+            self.spot_shadow_pool.slot_cone_matrices[slot as usize] = Some(m);
             let cols = m.to_cols_array();
             let mut bytes = [0u8; MAT_BYTES];
             for (i, v) in cols.iter().enumerate() {
@@ -4169,6 +4207,20 @@ impl Renderer {
                 .collect();
             used_slots.sort_unstable();
             used_slots.dedup();
+
+            // Per-slot GPU cone cull: one compute pass loops the occupied slots,
+            // dispatching BVH traversal into each slot's indirect sub-region
+            // gated by that slot's cone frustum planes. Runs after the camera
+            // BVH cull and before the per-slot depth render passes below, so the
+            // sub-regions are populated when each slot draws indirect.
+            if let Some(shadow_cull) = &self.shadow_cull {
+                shadow_cull.dispatch_occupied_slots(
+                    &self.queue,
+                    &mut encoder,
+                    &self.spot_shadow_pool.slot_cone_matrices,
+                );
+            }
+
             for slot in used_slots {
                 let view = &self.spot_shadow_pool.views[slot as usize];
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -4189,7 +4241,16 @@ impl Renderer {
                 pass.set_bind_group(0, &self.shadow_vs_bind_group, &[slot * stride]);
                 pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..self.index_count, 0, 0..1);
+                // Indirect cone-culled draw from this slot's sub-region. The
+                // depth-only shadow pipeline has no group-1 material slot, so
+                // `None` skips the texture bind (matching the depth pre-pass).
+                // Fall back to the full unconditional draw if the shadow cull
+                // owner is absent (no BVH).
+                if let Some(shadow_cull) = &self.shadow_cull {
+                    shadow_cull.draw_slot_indirect(&mut pass, slot, None);
+                } else {
+                    pass.draw_indexed(0..self.index_count, 0, 0..1);
+                }
             }
         }
 

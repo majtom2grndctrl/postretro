@@ -95,6 +95,12 @@ pub struct SpotShadowPool {
     pub bind_group: wgpu::BindGroup,
     /// Per-frame slot assignment: slot_assignment[light_index] = slot (0..SHADOW_POOL_SIZE) or NO_SHADOW_SLOT.
     pub slot_assignment: Vec<u32>,
+    /// Per-slot light-space matrix for the occupant of each shadow slot, written
+    /// during `update_dynamic_light_slots`. This is the SAME
+    /// `light_space_matrix(candidate)` value uploaded to bind-group-5's matrices
+    /// buffer — one source of truth, read by the shadow-depth render loop to
+    /// build the slot's GPU cone-cull frustum planes. `None` = slot unoccupied.
+    pub slot_cone_matrices: [Option<Mat4>; SHADOW_POOL_SIZE],
 }
 
 impl SpotShadowPool {
@@ -268,6 +274,7 @@ impl SpotShadowPool {
             matrices_buffer,
             bind_group,
             slot_assignment: Vec::new(),
+            slot_cone_matrices: [None; SHADOW_POOL_SIZE],
         }
     }
 

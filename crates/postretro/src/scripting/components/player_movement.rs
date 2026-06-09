@@ -11,8 +11,8 @@ use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
 use crate::scripting::data_descriptors::{
-    AirParams, CapsuleParams, DashParams, FallParams, ForgivenessParams, GroundParams,
-    PlayerMovementDescriptor,
+    AirParams, CapsuleParams, CrouchParams, DashParams, FallParams, ForgivenessParams,
+    GroundParams, PlayerMovementDescriptor,
 };
 
 /// The player's active movement state. Mutually-exclusive: exactly one state
@@ -58,6 +58,9 @@ pub(crate) struct PlayerMovementComponent {
     /// `None` ⇒ dash disabled: the `Normal` → `Dash` transition never fires and
     /// no dash impulse is ever applied.
     pub(crate) dash: Option<DashParams>,
+    /// Optional crouch tuning, materialized from the descriptor's `crouch`
+    /// field. `None` ⇒ crouch disabled.
+    pub(crate) crouch: Option<CrouchParams>,
     pub(crate) is_grounded: bool,
     pub(crate) velocity: Vec3,
     pub(crate) air_jumps_remaining: u32,
@@ -148,6 +151,7 @@ impl PlayerMovementComponent {
             air: desc.air.clone(),
             fall: desc.fall.clone(),
             dash: desc.dash.clone(),
+            crouch: desc.crouch.clone(),
             cos_walkable,
             is_grounded: false,
             velocity: Vec3::ZERO,

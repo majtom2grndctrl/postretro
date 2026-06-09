@@ -1457,6 +1457,7 @@ mod tests {
                 speed: SpeedParams {
                     walk: 7.0,
                     run: 11.0,
+                    crouch: 3.0,
                 },
                 accel: 10.0,
                 step_height: 0.3,
@@ -1485,6 +1486,7 @@ mod tests {
                 coyote_ms: 0.0,
                 jump_buffer_ms: 0.0,
             }),
+            crouch: None,
         }
     }
 

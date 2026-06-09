@@ -218,6 +218,10 @@ pub(crate) struct PlayerMovementDescriptor {
     /// the documented engine defaults apply (both ~100 ms). Per-field zero
     /// disables that grace independently. See `ForgivenessParams`.
     pub(crate) forgiveness: Option<ForgivenessParams>,
+    /// Optional crouch tuning. Absent ⇒ crouch disabled (no `CrouchParams`
+    /// materialized). When present, all of its fields are required, matching
+    /// the present-then-all-required discipline of `dash`.
+    pub(crate) crouch: Option<CrouchParams>,
 }
 
 impl PlayerMovementDescriptor {
@@ -291,15 +295,17 @@ pub(crate) struct GroundParams {
     pub(crate) max_slope: f32,
 }
 
-/// Walk/run ground speeds. The movement tick selects `run` while the sprint
-/// input is held and `walk` otherwise; the chosen value is the omnidirectional
-/// horizontal speed target (and airborne speed cap), not a forward-only bonus.
-/// Both fields are required when `ground` is present and validated non-negative
-/// finite, matching the old flat `speed` contract.
+/// Walk/run/crouch ground speeds. The movement tick selects `run` while the
+/// sprint input is held, `crouch` while crouched, and `walk` otherwise; the
+/// chosen value is the omnidirectional horizontal speed target (and airborne
+/// speed cap), not a forward-only bonus. All three fields are required when
+/// `ground` is present and validated non-negative finite, matching the old flat
+/// `speed` contract. `crouch` is in world-units/sec.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct SpeedParams {
     pub(crate) walk: f32,
     pub(crate) run: f32,
+    pub(crate) crouch: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -338,6 +344,24 @@ pub(crate) struct DashParams {
     pub(crate) air_dashes: u32,
     /// Whether the dash preserves the pre-dash vertical velocity.
     pub(crate) preserve_vertical: bool,
+}
+
+/// Crouch tuning. Optional on [`PlayerMovementDescriptor`] (absent disables
+/// crouch); when present, all fields are required and validated. Field names are
+/// camelCase on the wire (`halfHeight`, `eyeHeight`, `transitionRate`) and
+/// snake_case in Rust. Stored later by `PlayerMovementComponent` as
+/// `Option<CrouchParams>`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct CrouchParams {
+    /// Crouched capsule half-height, in metres. Must be finite > 0.
+    pub(crate) half_height: f32,
+    /// Crouched camera attachment point measured upward from the capsule
+    /// center, in metres. Must lie in `(0, crouched half_height + radius]` —
+    /// the upper bound is the top of the crouched capsule.
+    pub(crate) eye_height: f32,
+    /// Rate at which the capsule interpolates between standing and crouched
+    /// extents, per-sec. Must be finite > 0.
+    pub(crate) transition_rate: f32,
 }
 
 /// The full bundle returned by a level's `setupLevel(ctx)` export.
@@ -751,6 +775,10 @@ fn movement_descriptor_from_js<'js>(
             get_required_f32_js(&speed_obj, "run")?,
             "movement.ground.speed.run",
         )?,
+        crouch: validate_non_negative_finite(
+            get_required_f32_js(&speed_obj, "crouch")?,
+            "movement.ground.speed.crouch",
+        )?,
     };
     let ground = GroundParams {
         speed,
@@ -865,6 +893,24 @@ fn movement_descriptor_from_js<'js>(
         None
     };
 
+    // `crouch` is optional: absence disables crouch. When present, every field
+    // is required and validated. The crouched `eyeHeight` bound is computed
+    // against the crouched capsule extent (`crouch.halfHeight + capsule.radius`).
+    let crouch = if obj.contains_key("crouch").map_err(js_err)? {
+        let raw: JsValue = obj.get("crouch").map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            None
+        } else {
+            let crouch_obj =
+                Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
+                    reason: "`movement.crouch` must be an object".to_string(),
+                })?;
+            Some(crouch_params_from_js(&crouch_obj, radius)?)
+        }
+    } else {
+        None
+    };
+
     Ok(PlayerMovementDescriptor {
         capsule,
         ground,
@@ -874,6 +920,7 @@ fn movement_descriptor_from_js<'js>(
         stuck_stop_threshold,
         dash,
         forgiveness,
+        crouch,
     })
 }
 
@@ -937,6 +984,34 @@ fn dash_params_from_js<'js>(obj: &Object<'js>) -> Result<DashParams, DescriptorE
         cooldown_ms,
         air_dashes,
         preserve_vertical,
+    })
+}
+
+/// Parse a `crouch` sub-object. `radius` is the standing capsule radius, used to
+/// bound the crouched `eyeHeight` against the crouched capsule extent
+/// (`half_height + radius`), mirroring how the standing `eyeHeight` is bounded.
+fn crouch_params_from_js<'js>(
+    obj: &Object<'js>,
+    radius: f32,
+) -> Result<CrouchParams, DescriptorError> {
+    let half_height = validate_positive_finite(
+        get_required_f32_js(obj, "halfHeight")?,
+        "movement.crouch.halfHeight",
+    )?;
+    let eye_height = validate_in_range_finite_exclusive_min(
+        get_required_f32_js(obj, "eyeHeight")?,
+        0.0,
+        half_height + radius,
+        "movement.crouch.eyeHeight",
+    )?;
+    let transition_rate = validate_positive_finite(
+        get_required_f32_js(obj, "transitionRate")?,
+        "movement.crouch.transitionRate",
+    )?;
+    Ok(CrouchParams {
+        half_height,
+        eye_height,
+        transition_rate,
     })
 }
 
@@ -1449,6 +1524,10 @@ fn movement_descriptor_from_lua(
             get_required_f32_lua(&speed_table, "run")?,
             "movement.ground.speed.run",
         )?,
+        crouch: validate_non_negative_finite(
+            get_required_f32_lua(&speed_table, "crouch")?,
+            "movement.ground.speed.crouch",
+        )?,
     };
     let ground = GroundParams {
         speed,
@@ -1557,6 +1636,28 @@ fn movement_descriptor_from_lua(
         None
     };
 
+    // `crouch` is optional: absence disables crouch. When present, every field
+    // is required and validated, mirroring the JS path. The crouched `eyeHeight`
+    // bound is computed against the crouched capsule extent
+    // (`crouch.halfHeight + capsule.radius`).
+    let crouch = if table.contains_key("crouch").map_err(lua_err)? {
+        let raw: LuaValue = table.get("crouch").map_err(lua_err)?;
+        match raw {
+            LuaValue::Nil => None,
+            LuaValue::Table(t) => Some(crouch_params_from_lua(&t, radius)?),
+            other => {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`movement.crouch` must be a table, got {}",
+                        other.type_name()
+                    ),
+                });
+            }
+        }
+    } else {
+        None
+    };
+
     Ok(PlayerMovementDescriptor {
         capsule,
         ground,
@@ -1566,6 +1667,7 @@ fn movement_descriptor_from_lua(
         stuck_stop_threshold,
         dash,
         forgiveness,
+        crouch,
     })
 }
 
@@ -1619,6 +1721,31 @@ fn dash_params_from_lua(table: &Table) -> Result<DashParams, DescriptorError> {
         cooldown_ms,
         air_dashes,
         preserve_vertical,
+    })
+}
+
+/// Mirror of [`crouch_params_from_js`] for Luau tables. `radius` is the standing
+/// capsule radius, used to bound the crouched `eyeHeight` against the crouched
+/// capsule extent (`half_height + radius`).
+fn crouch_params_from_lua(table: &Table, radius: f32) -> Result<CrouchParams, DescriptorError> {
+    let half_height = validate_positive_finite(
+        get_required_f32_lua(table, "halfHeight")?,
+        "movement.crouch.halfHeight",
+    )?;
+    let eye_height = validate_in_range_finite_exclusive_min(
+        get_required_f32_lua(table, "eyeHeight")?,
+        0.0,
+        half_height + radius,
+        "movement.crouch.eyeHeight",
+    )?;
+    let transition_rate = validate_positive_finite(
+        get_required_f32_lua(table, "transitionRate")?,
+        "movement.crouch.transitionRate",
+    )?;
+    Ok(CrouchParams {
+        half_height,
+        eye_height,
+        transition_rate,
     })
 }
 
@@ -2223,7 +2350,7 @@ mod tests {
         components: {
             movement: {
                 capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
-                ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                ground: { speed: { walk: 7.0, run: 11.0, crouch: 3.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
                 air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
                 fall: { terminalVelocity: 40.0 }
             }
@@ -2241,6 +2368,7 @@ mod tests {
         assert_eq!(m.capsule.eye_height, 0.5);
         assert_eq!(m.ground.speed.walk, 7.0);
         assert_eq!(m.ground.speed.run, 11.0);
+        assert_eq!(m.ground.speed.crouch, 3.0);
         assert_eq!(m.ground.max_slope, 45.0);
         assert_eq!(m.air.forward_steer, 0.0);
         assert!(!m.air.bunny_hop);
@@ -2301,6 +2429,93 @@ mod tests {
     }
 
     #[test]
+    fn js_movement_speed_missing_crouch_reports_missing_field() {
+        // `ground.speed.crouch` is required when `ground.speed` is present.
+        let src = r#"({
+            canonicalName: "player",
+            components: {
+                movement: {
+                    capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
+                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
+                    fall: { terminalVelocity: 40.0 }
+                }
+            }
+        })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert_eq!(err, DescriptorError::MissingField { field: "crouch" });
+    }
+
+    #[test]
+    fn lua_movement_speed_missing_crouch_reports_missing_field() {
+        let src = r#"return {
+            canonicalName = "player",
+            components = {
+                movement = {
+                    capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 },
+                    ground = { speed = { walk = 7.0, run = 11.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
+                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpVelocity = 5.5, jumpCeiling = 0.0 },
+                    fall = { terminalVelocity = 40.0 }
+                }
+            }
+        }"#;
+        let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert_eq!(err, DescriptorError::MissingField { field: "crouch" });
+    }
+
+    #[test]
+    fn js_movement_speed_negative_crouch_is_rejected() {
+        let src = r#"({
+            canonicalName: "player",
+            components: {
+                movement: {
+                    capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
+                    ground: { speed: { walk: 7.0, run: 11.0, crouch: -1.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
+                    fall: { terminalVelocity: 40.0 }
+                }
+            }
+        })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_movement_speed_negative_crouch_is_rejected() {
+        let src = r#"return {
+            canonicalName = "player",
+            components = {
+                movement = {
+                    capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 },
+                    ground = { speed = { walk = 7.0, run = 11.0, crouch = -1.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
+                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpVelocity = 5.5, jumpCeiling = 0.0 },
+                    fall = { terminalVelocity = 40.0 }
+                }
+            }
+        }"#;
+        let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_speed_zero_crouch_is_accepted() {
+        // Zero crouch speed is legitimate (non-negative finite).
+        let src = r#"({
+            canonicalName: "player",
+            components: {
+                movement: {
+                    capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
+                    ground: { speed: { walk: 7.0, run: 11.0, crouch: 0.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
+                    fall: { terminalVelocity: 40.0 }
+                }
+            }
+        })"#;
+        let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+        assert_eq!(d.movement.unwrap().ground.speed.crouch, 0.0);
+    }
+
+    #[test]
     fn js_movement_missing_air_field_reports_missing_field() {
         // `bunnyHop` removed from `air`.
         let src = r#"({
@@ -2308,7 +2523,7 @@ mod tests {
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
-                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    ground: { speed: { walk: 7.0, run: 11.0, crouch: 3.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
                     air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
                     fall: { terminalVelocity: 40.0 }
                 }
@@ -2325,7 +2540,7 @@ mod tests {
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
-                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    ground: { speed: { walk: 7.0, run: 11.0, crouch: 3.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
                     air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 2, jumpVelocity: 5.5 },
                     fall: { terminalVelocity: 40.0 }
                 }
@@ -2347,7 +2562,7 @@ mod tests {
             components: {
                 movement: {
                     capsule: { radius: 0.0, halfHeight: 0.8 },
-                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    ground: { speed: { walk: 7.0, run: 11.0, crouch: 3.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
                     air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
                     fall: { terminalVelocity: 40.0 }
                 }
@@ -2364,7 +2579,7 @@ mod tests {
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
-                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 95.0 },
+                    ground: { speed: { walk: 7.0, run: 11.0, crouch: 3.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 95.0 },
                     air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
                     fall: { terminalVelocity: 40.0 }
                 }
@@ -2381,7 +2596,7 @@ mod tests {
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
-                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    ground: { speed: { walk: 7.0, run: 11.0, crouch: 3.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
                     air: { forwardSteer: 1.5, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
                     fall: { terminalVelocity: 40.0 }
                 }
@@ -2398,7 +2613,7 @@ mod tests {
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
-                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    ground: { speed: { walk: 7.0, run: 11.0, crouch: 3.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
                     air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
                     fall: { terminalVelocity: 0.0 }
                 }
@@ -2417,7 +2632,7 @@ mod tests {
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.0 },
-                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    ground: { speed: { walk: 7.0, run: 11.0, crouch: 3.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
                     air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
                     fall: { terminalVelocity: 40.0 }
                 }
@@ -2435,7 +2650,7 @@ mod tests {
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 1.5 },
-                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    ground: { speed: { walk: 7.0, run: 11.0, crouch: 3.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
                     air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
                     fall: { terminalVelocity: 40.0 }
                 }
@@ -2453,7 +2668,7 @@ mod tests {
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 1.2 },
-                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    ground: { speed: { walk: 7.0, run: 11.0, crouch: 3.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
                     air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
                     fall: { terminalVelocity: 40.0 }
                 }
@@ -2470,7 +2685,7 @@ mod tests {
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8 },
-                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    ground: { speed: { walk: 7.0, run: 11.0, crouch: 3.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
                     air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
                     fall: { terminalVelocity: 40.0 }
                 }
@@ -2487,7 +2702,7 @@ mod tests {
             components = {
                 movement = {
                     capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 },
-                    ground = { speed = { walk = 7.0, run = 11.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
+                    ground = { speed = { walk = 7.0, run = 11.0, crouch = 3.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
                     air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpVelocity = 5.5, jumpCeiling = 0.0 },
                     fall = { terminalVelocity = 40.0 }
                 }
@@ -2508,7 +2723,7 @@ mod tests {
             components = {
                 movement = {
                     capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 1.5 },
-                    ground = { speed = { walk = 7.0, run = 11.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
+                    ground = { speed = { walk = 7.0, run = 11.0, crouch = 3.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
                     air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpVelocity = 5.5, jumpCeiling = 0.0 },
                     fall = { terminalVelocity = 40.0 }
                 }
@@ -2525,7 +2740,7 @@ mod tests {
             components = {
                 movement = {
                     capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 },
-                    ground = { speed = { walk = 7.0, run = 11.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
+                    ground = { speed = { walk = 7.0, run = 11.0, crouch = 3.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
                     air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 2, jumpVelocity = 5.5 },
                     fall = { terminalVelocity = 40.0 }
                 }
@@ -2546,7 +2761,7 @@ mod tests {
             canonicalName = "player",
             components = {
                 movement = {
-                    ground = { speed = { walk = 7.0, run = 11.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
+                    ground = { speed = { walk = 7.0, run = 11.0, crouch = 3.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
                     air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpVelocity = 5.5, jumpCeiling = 0.0 },
                     fall = { terminalVelocity = 40.0 }
                 }
@@ -2565,7 +2780,7 @@ mod tests {
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
-                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    ground: { speed: { walk: 7.0, run: 11.0, crouch: 3.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
                     air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5 },
                     fall: { terminalVelocity: 40.0 }
                 }
@@ -2586,7 +2801,7 @@ mod tests {
             components = {
                 movement = {
                     capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 },
-                    ground = { speed = { walk = 7.0, run = 11.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
+                    ground = { speed = { walk = 7.0, run = 11.0, crouch = 3.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
                     air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpVelocity = 5.5 },
                     fall = { terminalVelocity = 40.0 }
                 }
@@ -2619,7 +2834,7 @@ mod tests {
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
-                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    ground: { speed: { walk: 7.0, run: 11.0, crouch: 3.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
                     air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
                     fall: { terminalVelocity: 40.0 },
                     stuckStopEnabled: false,
@@ -2640,7 +2855,7 @@ mod tests {
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
-                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    ground: { speed: { walk: 7.0, run: 11.0, crouch: 3.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
                     air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
                     fall: { terminalVelocity: 40.0 },
                     stuckStopThreshold: -0.1
@@ -2658,7 +2873,7 @@ mod tests {
             components: {
                 movement: {
                     capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 },
-                    ground: { speed: { walk: 7.0, run: 11.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
+                    ground: { speed: { walk: 7.0, run: 11.0, crouch: 3.0 }, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 },
                     air: { forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 },
                     fall: { terminalVelocity: 40.0 },
                     stuckStopEnabled: "yes"
@@ -2676,7 +2891,7 @@ mod tests {
             components = {
                 movement = {
                     capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 },
-                    ground = { speed = { walk = 7.0, run = 11.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
+                    ground = { speed = { walk = 7.0, run = 11.0, crouch = 3.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
                     air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpVelocity = 5.5, jumpCeiling = 0.0 },
                     fall = { terminalVelocity = 40.0 }
                 }
@@ -2695,7 +2910,7 @@ mod tests {
             components = {
                 movement = {
                     capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 },
-                    ground = { speed = { walk = 7.0, run = 11.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
+                    ground = { speed = { walk = 7.0, run = 11.0, crouch = 3.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
                     air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpVelocity = 5.5, jumpCeiling = 0.0 },
                     fall = { terminalVelocity = 40.0 },
                     stuckStopEnabled = false,
@@ -2716,7 +2931,7 @@ mod tests {
             components = {
                 movement = {
                     capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 },
-                    ground = { speed = { walk = 7.0, run = 11.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
+                    ground = { speed = { walk = 7.0, run = 11.0, crouch = 3.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
                     air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpVelocity = 5.5, jumpCeiling = 0.0 },
                     fall = { terminalVelocity = 40.0 },
                     stuckStopThreshold = -0.1
@@ -2738,7 +2953,7 @@ mod tests {
                 components: {{
                     movement: {{
                         capsule: {{ radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 }},
-                        ground: {{ speed: {{ walk: 7.0, run: 11.0 }}, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 }},
+                        ground: {{ speed: {{ walk: 7.0, run: 11.0, crouch: 3.0 }}, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 }},
                         air: {{ forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 }},
                         fall: {{ terminalVelocity: 40.0 }},
                         dash: {dash_body}
@@ -2756,7 +2971,7 @@ mod tests {
                 components = {{
                     movement = {{
                         capsule = {{ radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 }},
-                        ground = {{ speed = {{ walk = 7.0, run = 11.0 }}, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 }},
+                        ground = {{ speed = {{ walk = 7.0, run = 11.0, crouch = 3.0 }}, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 }},
                         air = {{ forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpVelocity = 5.5, jumpCeiling = 0.0 }},
                         fall = {{ terminalVelocity = 40.0 }},
                         dash = {dash_body}
@@ -2784,7 +2999,7 @@ mod tests {
             components = {
                 movement = {
                     capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 },
-                    ground = { speed = { walk = 7.0, run = 11.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
+                    ground = { speed = { walk = 7.0, run = 11.0, crouch = 3.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
                     air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpVelocity = 5.5, jumpCeiling = 0.0 },
                     fall = { terminalVelocity = 40.0 }
                 }
@@ -3023,6 +3238,216 @@ mod tests {
         );
     }
 
+    // --- CrouchParams parsing ----------------------------------------------
+
+    /// JS movement block with a `crouch` sub-object spliced into the `movement`
+    /// object. `crouch_body` is the inner `{ ... }` text (no `crouch:` key).
+    /// Capsule radius is 0.4 so the crouched `eyeHeight` upper bound is
+    /// `crouch.halfHeight + 0.4`.
+    fn js_movement_with_crouch(crouch_body: &str) -> String {
+        format!(
+            r#"({{
+                canonicalName: "player",
+                components: {{
+                    movement: {{
+                        capsule: {{ radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 }},
+                        ground: {{ speed: {{ walk: 7.0, run: 11.0, crouch: 3.0 }}, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 }},
+                        air: {{ forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 }},
+                        fall: {{ terminalVelocity: 40.0 }},
+                        crouch: {crouch_body}
+                    }}
+                }}
+            }})"#
+        )
+    }
+
+    /// Luau movement block with a `crouch` sub-table spliced in.
+    fn lua_movement_with_crouch(crouch_body: &str) -> String {
+        format!(
+            r#"return {{
+                canonicalName = "player",
+                components = {{
+                    movement = {{
+                        capsule = {{ radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 }},
+                        ground = {{ speed = {{ walk = 7.0, run = 11.0, crouch = 3.0 }}, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 }},
+                        air = {{ forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpVelocity = 5.5, jumpCeiling = 0.0 }},
+                        fall = {{ terminalVelocity = 40.0 }},
+                        crouch = {crouch_body}
+                    }}
+                }}
+            }}"#
+        )
+    }
+
+    const JS_CROUCH_FULL: &str = r#"{ halfHeight: 0.4, eyeHeight: 0.3, transitionRate: 8.0 }"#;
+    const LUA_CROUCH_FULL: &str = r#"{ halfHeight = 0.4, eyeHeight = 0.3, transitionRate = 8.0 }"#;
+
+    #[test]
+    fn js_movement_crouch_absent_is_valid_and_disabled() {
+        let d = eval_js(JS_PLAYER_MOVEMENT, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap()
+        });
+        assert!(d.movement.expect("movement present").crouch.is_none());
+    }
+
+    #[test]
+    fn lua_movement_crouch_absent_is_valid_and_disabled() {
+        let src = r#"return {
+            canonicalName = "player",
+            components = {
+                movement = {
+                    capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 },
+                    ground = { speed = { walk = 7.0, run = 11.0, crouch = 3.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
+                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpVelocity = 5.5, jumpCeiling = 0.0 },
+                    fall = { terminalVelocity = 40.0 }
+                }
+            }
+        }"#;
+        let d = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap());
+        assert!(d.movement.expect("movement present").crouch.is_none());
+    }
+
+    #[test]
+    fn js_movement_crouch_full_shape_parses() {
+        let src = js_movement_with_crouch(JS_CROUCH_FULL);
+        let d = eval_js(&src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+        let crouch = d.movement.unwrap().crouch.expect("crouch present");
+        assert_eq!(crouch.half_height, 0.4);
+        assert_eq!(crouch.eye_height, 0.3);
+        assert_eq!(crouch.transition_rate, 8.0);
+    }
+
+    #[test]
+    fn lua_movement_crouch_full_shape_parses() {
+        let src = lua_movement_with_crouch(LUA_CROUCH_FULL);
+        let d = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap());
+        let crouch = d.movement.unwrap().crouch.expect("crouch present");
+        assert_eq!(crouch.half_height, 0.4);
+        assert_eq!(crouch.eye_height, 0.3);
+        assert_eq!(crouch.transition_rate, 8.0);
+    }
+
+    #[test]
+    fn js_movement_crouch_eye_height_at_capsule_top_is_accepted() {
+        // Inclusive upper bound: halfHeight (0.4) + radius (0.4) = 0.8.
+        let src =
+            js_movement_with_crouch(r#"{ halfHeight: 0.4, eyeHeight: 0.8, transitionRate: 8.0 }"#);
+        let d = eval_js(&src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+        assert_eq!(d.movement.unwrap().crouch.unwrap().eye_height, 0.8);
+    }
+
+    #[test]
+    fn js_movement_crouch_half_height_zero_is_rejected() {
+        let src =
+            js_movement_with_crouch(r#"{ halfHeight: 0.0, eyeHeight: 0.3, transitionRate: 8.0 }"#);
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_crouch_half_height_negative_is_rejected() {
+        let src =
+            js_movement_with_crouch(r#"{ halfHeight: -0.4, eyeHeight: 0.3, transitionRate: 8.0 }"#);
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_crouch_eye_height_zero_is_rejected() {
+        // Exclusive lower bound: 0 is rejected.
+        let src =
+            js_movement_with_crouch(r#"{ halfHeight: 0.4, eyeHeight: 0.0, transitionRate: 8.0 }"#);
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_crouch_eye_height_above_capsule_top_is_rejected() {
+        // halfHeight (0.4) + radius (0.4) = 0.8; 0.9 exceeds the crouched top.
+        let src =
+            js_movement_with_crouch(r#"{ halfHeight: 0.4, eyeHeight: 0.9, transitionRate: 8.0 }"#);
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_crouch_transition_rate_zero_is_rejected() {
+        let src =
+            js_movement_with_crouch(r#"{ halfHeight: 0.4, eyeHeight: 0.3, transitionRate: 0.0 }"#);
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_crouch_transition_rate_negative_is_rejected() {
+        let src =
+            js_movement_with_crouch(r#"{ halfHeight: 0.4, eyeHeight: 0.3, transitionRate: -1.0 }"#);
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_crouch_missing_field_reports_missing_field() {
+        // transitionRate omitted.
+        let src = js_movement_with_crouch(r#"{ halfHeight: 0.4, eyeHeight: 0.3 }"#);
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert_eq!(
+            err,
+            DescriptorError::MissingField {
+                field: "transitionRate",
+            }
+        );
+    }
+
+    #[test]
+    fn lua_movement_crouch_half_height_zero_is_rejected() {
+        let src = lua_movement_with_crouch(
+            r#"{ halfHeight = 0.0, eyeHeight = 0.3, transitionRate = 8.0 }"#,
+        );
+        let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_movement_crouch_eye_height_above_capsule_top_is_rejected() {
+        let src = lua_movement_with_crouch(
+            r#"{ halfHeight = 0.4, eyeHeight = 0.9, transitionRate = 8.0 }"#,
+        );
+        let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_movement_crouch_transition_rate_zero_is_rejected() {
+        let src = lua_movement_with_crouch(
+            r#"{ halfHeight = 0.4, eyeHeight = 0.3, transitionRate = 0.0 }"#,
+        );
+        let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_movement_crouch_missing_field_reports_missing_field() {
+        // eyeHeight omitted.
+        let src = lua_movement_with_crouch(r#"{ halfHeight = 0.4, transitionRate = 8.0 }"#);
+        let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert_eq!(err, DescriptorError::MissingField { field: "eyeHeight" });
+    }
+
     // --- ForgivenessParams parsing -----------------------------------------
 
     /// JS movement block with a `forgiveness` sub-object spliced in. `body` is
@@ -3034,7 +3459,7 @@ mod tests {
                 components: {{
                     movement: {{
                         capsule: {{ radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 }},
-                        ground: {{ speed: {{ walk: 7.0, run: 11.0 }}, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 }},
+                        ground: {{ speed: {{ walk: 7.0, run: 11.0, crouch: 3.0 }}, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 }},
                         air: {{ forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 }},
                         fall: {{ terminalVelocity: 40.0 }},
                         forgiveness: {body}
@@ -3052,7 +3477,7 @@ mod tests {
                 components = {{
                     movement = {{
                         capsule = {{ radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 }},
-                        ground = {{ speed = {{ walk = 7.0, run = 11.0 }}, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 }},
+                        ground = {{ speed = {{ walk = 7.0, run = 11.0, crouch = 3.0 }}, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 }},
                         air = {{ forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpVelocity = 5.5, jumpCeiling = 0.0 }},
                         fall = {{ terminalVelocity = 40.0 }},
                         forgiveness = {body}

@@ -122,6 +122,7 @@ fn rust_to_ts(ty_name: &str) -> String {
         "AirParams" => "AirParams".to_string(),
         "FallParams" => "FallParams".to_string(),
         "DashParams" => "DashParams".to_string(),
+        "CrouchParams" => "CrouchParams".to_string(),
         "ForgivenessParams" => "ForgivenessParams".to_string(),
         "FogAnimation" => "FogAnimation".to_string(),
         "FogVolumeComponent" => "FogVolumeComponent".to_string(),
@@ -217,6 +218,7 @@ fn rust_to_luau(ty_name: &str) -> String {
         "AirParams" => "AirParams".to_string(),
         "FallParams" => "FallParams".to_string(),
         "DashParams" => "DashParams".to_string(),
+        "CrouchParams" => "CrouchParams".to_string(),
         "ForgivenessParams" => "ForgivenessParams".to_string(),
         "FogAnimation" => "FogAnimation".to_string(),
         "FogVolumeComponent" => "FogVolumeComponent".to_string(),
@@ -1289,6 +1291,8 @@ declare module \"postretro\" {
     dash?: DashParams;
     /** Optional input-forgiveness tuning (coyote time + jump buffer). When the whole object is omitted, the documented engine defaults apply (~100ms each). When present, each field is itself optional and falls back to its engine default; 0 disables that grace. */
     forgiveness?: ForgivenessParams;
+    /** Optional crouch tuning. When omitted, crouch is disabled. When present, all of its fields are required. */
+    crouch?: CrouchParams;
     /** Optional. Stuck-stop deadzone enable flag. When true (default), the slide loop zeroes horizontal velocity and rolls back XZ position when contradictory wall normals (≥60° apart) are seen within the same tick AND net horizontal displacement is below `stuckStopThreshold`. Suppresses orbital jitter in interior corners. Default true. */
     stuckStopEnabled?: boolean;
     /** Optional. Horizontal-displacement threshold in metres that gates the deadzone. Must be finite and ≥ 0. Default 1.0e-3. */
@@ -1317,12 +1321,14 @@ declare module \"postretro\" {
     maxSlope: number;
   };
 
-  /** Walk and run ground speeds in world units/sec. The movement tick uses `run` while sprint is held and `walk` otherwise, applied omnidirectionally. Both required and must be finite and ≥ 0. */
+  /** Walk, run, and crouch ground speeds in world units/sec. The movement tick uses `run` while sprint is held, `crouch` while crouched, and `walk` otherwise, applied omnidirectionally. All required and must be finite and ≥ 0. */
   export type SpeedParams = {
     /** Steady-state ground speed when not sprinting. */
     walk: number;
     /** Steady-state ground speed while the sprint input is held. */
     run: number;
+    /** Steady-state ground speed while crouched. */
+    crouch: number;
   };
 
   /** Mid-air control parameters. `forwardSteer` blends forward steering authority between 0 (pure strafe-only Quake air control) and 1 (full forward authority). `jumpCeiling` is required when `jumps > 0`. */
@@ -1365,6 +1371,16 @@ declare module \"postretro\" {
     airDashes: number;
     /** Whether the dash preserves the pre-dash vertical velocity. */
     preserveVertical: boolean;
+  };
+
+  /** Crouch tuning. Optional on `PlayerMovementDescriptor` — when omitted, crouch is disabled. When present, all fields are required and validated. */
+  export type CrouchParams = {
+    /** Crouched capsule half-height in metres. Must be finite > 0. */
+    halfHeight: number;
+    /** Crouched camera attachment point measured upward from the capsule center in metres. Must lie in (0, crouched halfHeight + radius]. */
+    eyeHeight: number;
+    /** Rate the capsule interpolates between standing and crouched extents, per-sec. Must be finite > 0. */
+    transitionRate: number;
   };
 
   /** Input-forgiveness tuning (coyote time + jump buffering). Optional on `PlayerMovementDescriptor` — when the whole `forgiveness` object is omitted, the documented engine defaults apply. When present, each field is itself optional and falls back to its engine default; an explicit 0 disables that grace independently. Both windows are in milliseconds. */
@@ -1539,6 +1555,8 @@ export type PlayerMovementDescriptor = {
   dash: DashParams?,
   --- Optional input-forgiveness tuning (coyote time + jump buffer). When the whole object is omitted, the documented engine defaults apply (~100ms each). When present, each field is itself optional and falls back to its engine default; 0 disables that grace.
   forgiveness: ForgivenessParams?,
+  --- Optional crouch tuning. When omitted, crouch is disabled. When present, all of its fields are required.
+  crouch: CrouchParams?,
   --- Optional. Stuck-stop deadzone enable flag. When true (default), the slide loop zeroes horizontal velocity and rolls back XZ position when contradictory wall normals (≥60° apart) are seen within the same tick AND net horizontal displacement is below `stuckStopThreshold`. Suppresses orbital jitter in interior corners. Default true.
   stuckStopEnabled: boolean?,
   --- Optional. Horizontal-displacement threshold in metres that gates the deadzone. Must be finite and ≥ 0. Default 1.0e-3.
@@ -1567,12 +1585,14 @@ export type GroundParams = {
   maxSlope: number,
 }
 
---- Walk and run ground speeds in world units/sec. The movement tick uses `run` while sprint is held and `walk` otherwise, applied omnidirectionally. Both required and must be finite and ≥ 0.
+--- Walk, run, and crouch ground speeds in world units/sec. The movement tick uses `run` while sprint is held, `crouch` while crouched, and `walk` otherwise, applied omnidirectionally. All required and must be finite and ≥ 0.
 export type SpeedParams = {
   --- Steady-state ground speed when not sprinting.
   walk: number,
   --- Steady-state ground speed while the sprint input is held.
   run: number,
+  --- Steady-state ground speed while crouched.
+  crouch: number,
 }
 
 --- Mid-air control parameters. `forwardSteer` blends forward steering authority between 0 (pure strafe-only Quake air control) and 1 (full forward authority). `jumpCeiling` is required when `jumps > 0`.
@@ -1615,6 +1635,16 @@ export type DashParams = {
   airDashes: number,
   --- Whether the dash preserves the pre-dash vertical velocity.
   preserveVertical: boolean,
+}
+
+--- Crouch tuning. Optional on `PlayerMovementDescriptor` — when omitted, crouch is disabled. When present, all fields are required and validated.
+export type CrouchParams = {
+  --- Crouched capsule half-height in metres. Must be finite > 0.
+  halfHeight: number,
+  --- Crouched camera attachment point measured upward from the capsule center in metres. Must lie in (0, crouched halfHeight + radius].
+  eyeHeight: number,
+  --- Rate the capsule interpolates between standing and crouched extents, per-sec. Must be finite > 0.
+  transitionRate: number,
 }
 
 --- Input-forgiveness tuning (coyote time + jump buffering). Optional on `PlayerMovementDescriptor` — when the whole `forgiveness` object is omitted, the documented engine defaults apply. When present, each field is itself optional and falls back to its engine default; an explicit 0 disables that grace independently. Both windows are in milliseconds.

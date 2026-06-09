@@ -839,6 +839,54 @@ fn fragment_sampled_textures(entries: &[wgpu::BindGroupLayoutEntry]) -> u32 {
         .count() as u32
 }
 
+/// Count BGL entries that consume a `max_storage_buffers_per_shader_stage` slot
+/// for the VERTEX stage: `BindingType::Buffer { ty: Storage, .. }` entries whose
+/// visibility includes VERTEX. wgpu charges this limit against the BGL *entry* set
+/// of a pipeline layout per stage — a vertex-visible storage entry counts even if
+/// no vertex shader actually reads it (exactly the over-broad-visibility trap that
+/// hoisting billboard lighting into `vs_main` fell into). The downlevel/WebGPU
+/// default ceiling is 8.
+#[cfg(debug_assertions)]
+fn vertex_storage_buffers(entries: &[wgpu::BindGroupLayoutEntry]) -> u32 {
+    entries
+        .iter()
+        .filter(|e| {
+            e.visibility.contains(wgpu::ShaderStages::VERTEX)
+                && matches!(
+                    e.ty,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { .. },
+                        ..
+                    }
+                )
+        })
+        .count() as u32
+}
+
+/// Single source of truth for the billboard pipeline's VERTEX-stage storage-buffer
+/// budget. Sums the vertex-visible storage entries across the exact BGLs that
+/// compose the Billboard Pipeline Layout (see `SmokePass::new` for the matching
+/// group order: 0 camera, 1 sheet, 2 lighting, 3 SH volume, 6 instance). GPU-free,
+/// so it runs in unit tests and `Renderer::new` without a device.
+///
+/// Billboard hoisted SH/static-specular/dynamic-light loops from the fragment
+/// stage into `vs_main` (perf epic Slices 1-2) and Slice 5 added the group-6
+/// instance buffer. The genuinely vertex-read storage buffers are: group 2's five
+/// (`lights`, `light_influence`, `spec_lights`, `chunk_offsets`, `chunk_indices`)
+/// and group 6's one (`sprites`) — six total. The three group-3 anim/scripted-light
+/// storage buffers are read only in the fragment/compute stages, so they must NOT
+/// carry VERTEX visibility (see `sh_bind_group_layout_entries`); if they did, this
+/// would report 9 and pipeline creation would fail on real GPUs with the
+/// downlevel-default limit of 8.
+#[cfg(debug_assertions)]
+fn billboard_pipeline_vertex_storage_buffer_count() -> u32 {
+    vertex_storage_buffers(&uniform_bind_group_layout_entries())
+        + vertex_storage_buffers(&smoke::sprite_sheet_bind_group_layout_entries())
+        + vertex_storage_buffers(&lighting_bind_group_layout_entries())
+        + vertex_storage_buffers(&sh_volume::sh_bind_group_layout_entries())
+        + vertex_storage_buffers(&smoke::sprite_instance_bind_group_layout_entries())
+}
+
 /// Single source of truth for the forward ("Textured") pipeline's sampled-texture
 /// budget. Sums the fragment-visible texture entries across the exact BGLs that
 /// compose the forward pipeline layout (see `create_pipeline_layout` for the
@@ -1380,6 +1428,26 @@ impl Renderer {
              raising the limit (16 is Metal's hard ceiling)",
             forward_pipeline_sampled_texture_count(),
             REQUIRED_SAMPLED_TEXTURES
+        );
+        // Billboard hoisted SH/static-specular/dynamic-light loops into `vs_main`
+        // (perf-billboard-emitter Slices 1-2) and Slice 5 added the group-6 instance
+        // storage buffer. wgpu charges `max_storage_buffers_per_shader_stage` against
+        // the BGL *entry* set per stage — every VERTEX-visible storage entry across the
+        // Billboard Pipeline Layout's groups counts, read or not. The downlevel/WebGPU
+        // default ceiling (we do not raise it — broad hardware compat for a
+        // modder-friendly retro FPS) is 8. Six are genuinely vertex-read; if a shared
+        // BGL re-widens an unused storage entry to VERTEX the count hits 9 and pipeline
+        // creation fails on real GPUs (headless CI never triggers it). debug-only for
+        // the same reason as the texture budget above.
+        const MAX_VERTEX_STORAGE_BUFFERS: u32 = 8;
+        debug_assert!(
+            billboard_pipeline_vertex_storage_buffer_count() <= MAX_VERTEX_STORAGE_BUFFERS,
+            "billboard pipeline VERTEX-visible storage-buffer count ({}) exceeds the \
+             downlevel-default max_storage_buffers_per_shader_stage ({}); trim VERTEX \
+             visibility from storage entries vs_main does not read, or consolidate \
+             buffers — do NOT raise the device limit (it breaks modest-spec adapters)",
+            billboard_pipeline_vertex_storage_buffer_count(),
+            MAX_VERTEX_STORAGE_BUFFERS
         );
         const REQUIRED_STORAGE_TEXTURES: u32 = 4;
         // Stopgap: SH compose's flat delta-probe storage buffer outgrows the
@@ -5044,6 +5112,61 @@ mod tests {
             derived <= 16,
             "forward pipeline sampled-texture count ({derived}) exceeds the Metal/WebGPU spec floor of 16; \
              use bindless (TEXTURE_BINDING_ARRAY) rather than raising this limit"
+        );
+    }
+
+    // Regression: the perf-billboard-emitter epic hoisted the SH/static-specular/
+    // dynamic-light loops into `vs_main` (Slices 1-2) and added a group-6 instance
+    // storage buffer (Slice 5). wgpu charges `max_storage_buffers_per_shader_stage`
+    // against the BGL *entry* set per stage — every VERTEX-visible storage entry in
+    // the Billboard Pipeline Layout counts, whether or not vs_main reads it. The hoist
+    // initially left the three group-3 anim/scripted-light storage buffers marked
+    // VERTEX-visible, pushing the count to 9 > the downlevel-default 8 and crashing
+    // `create_pipeline_layout` on real GPUs ("Too many bindings of type StorageBuffers
+    // in Stage VERTEX") — uncatchable in CI, which has no GPU. This re-derives the
+    // count from the same GPU-free BGL builders the layout is composed from and pins
+    // it at <= 8. Mirrors `forward_pipeline_sampled_texture_request_matches_bgl_definitions`.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn billboard_pipeline_vertex_storage_request_matches_bgl_definitions() {
+        // The Billboard Pipeline Layout (see `smoke::SmokePass::new`) composes
+        // exactly these BGLs in this group order: 0 camera, 1 sheet, 2 lighting,
+        // 3 SH volume, 6 instance (groups 4 and 5 are empty `None` slots). Counting
+        // VERTEX-visible storage entries across them is how wgpu charges
+        // `max_storage_buffers_per_shader_stage`.
+        let per_group = [
+            vertex_storage_buffers(&uniform_bind_group_layout_entries()), // group 0
+            vertex_storage_buffers(&smoke::sprite_sheet_bind_group_layout_entries()), // group 1
+            vertex_storage_buffers(&lighting_bind_group_layout_entries()), // group 2
+            vertex_storage_buffers(&sh_volume::sh_bind_group_layout_entries()), // group 3
+            vertex_storage_buffers(&smoke::sprite_instance_bind_group_layout_entries()), // group 6
+        ];
+        // Per-group expectations document the inventory; if a BGL drifts, the failing
+        // index points straight at the group. Group 2 contributes its five storage
+        // light/chunk buffers (lights, light_influence, spec_lights, chunk_offsets,
+        // chunk_indices); group 6 contributes the one sprite instance buffer. Group 3
+        // (SH volume) contributes ZERO — its three anim/scripted-light storage buffers
+        // are FRAGMENT | COMPUTE only, NOT VERTEX, because vs_main never reads them.
+        // If a group-3 storage entry regains VERTEX visibility this index flips to a
+        // nonzero count and the budget assert below fails before a real GPU would.
+        assert_eq!(
+            per_group,
+            [0, 0, 5, 0, 1],
+            "billboard BGL vertex storage-buffer inventory changed"
+        );
+
+        let derived: u32 = per_group.iter().sum();
+        // The aggregation helper must agree with the hand-summed inventory above.
+        assert_eq!(billboard_pipeline_vertex_storage_buffer_count(), derived);
+        // 8 is the downlevel/WebGPU-default ceiling. If the derived count exceeds 8,
+        // trim VERTEX visibility from storage entries vs_main does not read, or
+        // consolidate buffers — do NOT raise max_storage_buffers_per_shader_stage in
+        // the device limit request (it breaks modest-spec adapters the engine targets).
+        assert!(
+            derived <= 8,
+            "billboard pipeline VERTEX-visible storage-buffer count ({derived}) exceeds the \
+             downlevel-default max_storage_buffers_per_shader_stage of 8; trim VERTEX \
+             visibility or consolidate rather than raising the limit"
         );
     }
 

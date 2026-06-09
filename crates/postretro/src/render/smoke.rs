@@ -260,6 +260,60 @@ pub struct SmokePass {
     sampler: wgpu::Sampler,
 }
 
+/// Group 1 (sprite sheet) BGL entries: sprite texture (binding 0, FRAGMENT) +
+/// sampler (binding 1, FRAGMENT) + draw-params uniform (binding 2,
+/// VERTEX | FRAGMENT — `vs_main` reads `draw_params` for frame count / lifetime
+/// and the spec-intensity term). No storage buffers here. GPU-free so the
+/// billboard vertex storage-buffer budget can sum it without a device.
+pub(super) fn sprite_sheet_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 3] {
+    [
+        wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 1,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 2,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        },
+    ]
+}
+
+/// Group 6 (sprite instance) BGL entry: the single shared per-sprite instance
+/// storage buffer, read by `vs_main` (`sprites[sprite_index]`). This is the only
+/// group-6 storage buffer and one of the six genuinely VERTEX-read storage buffers
+/// in the Billboard Pipeline Layout (the other five live in group 2). `VERTEX`-only
+/// visibility: the fragment stage never reads instances. GPU-free for the budget sum.
+pub(super) fn sprite_instance_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 1] {
+    [wgpu::BindGroupLayoutEntry {
+        binding: 0,
+        visibility: wgpu::ShaderStages::VERTEX,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: true,
+            min_binding_size: NonZeroU64::new(SPRITE_INSTANCE_SIZE as u64),
+        },
+        count: None,
+    }]
+}
+
 impl SmokePass {
     /// Build the billboard pipeline. `bgls` carries the renderer-owned bind
     /// group layouts shared with the forward pass (camera, lighting, SH volume).
@@ -278,38 +332,14 @@ impl SmokePass {
         });
 
         // Group 1: sprite texture (binding 0) + sampler (binding 1)
-        // + draw-params uniform (binding 2).
+        // + draw-params uniform (binding 2). Entries built from the GPU-free
+        // `sprite_sheet_bind_group_layout_entries` so the billboard vertex
+        // storage-buffer budget (`billboard_pipeline_vertex_storage_buffer_count`)
+        // reads from the same source of truth this layout is created from.
         let sheet_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Sprite Sheet BGL"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
+                entries: &sprite_sheet_bind_group_layout_entries(),
             });
 
         // Group 6: sprite instance storage buffer. `has_dynamic_offset: true`
@@ -336,16 +366,7 @@ impl SmokePass {
         let instance_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Sprite Instance BGL"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: true,
-                        min_binding_size: NonZeroU64::new(SPRITE_INSTANCE_SIZE as u64),
-                    },
-                    count: None,
-                }],
+                entries: &sprite_instance_bind_group_layout_entries(),
             });
 
         // Pipeline layout: group 0 (camera), 1 (sheet), 2 (lighting),

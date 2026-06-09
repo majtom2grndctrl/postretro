@@ -765,6 +765,21 @@ pub(super) fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> 
     });
     // Always bound with dummy single-element buffers when no animated lights exist —
     // the bind group layout must not vary with map content.
+    //
+    // These three animated-layer / scripted-light storage buffers are read ONLY in
+    // the fragment stage (forward `fs_main`) and the compute stage (fog raymarch);
+    // the billboard vertex shader declares `anim_descriptors`/`anim_samples` but
+    // never reads them (animated pulses are invisible at one-sample-per-sprite
+    // fidelity — see `billboard.wgsl`) and does not declare the scripted-light
+    // buffer at all. So their visibility deliberately OMITS VERTEX: marking them
+    // VERTEX-visible would have charged three extra storage-buffer bindings against
+    // the VERTEX stage's `max_storage_buffers_per_shader_stage` budget (downlevel
+    // default 8) in the Billboard Pipeline Layout — pushing the billboard's
+    // VERTEX-visible storage count to 9 and failing pipeline creation on real GPUs.
+    // The vertex-read SH storage buffers are group 6 (`sprites`) and group 2's five
+    // light/chunk buffers; none live here. `vertex_storage_buffers` /
+    // `billboard_pipeline_vertex_storage_buffer_count` pin this budget.
+    let anim_vis = wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE;
     for binding in [
         BIND_ANIM_DESCRIPTORS,
         BIND_ANIM_SAMPLES,
@@ -772,7 +787,7 @@ pub(super) fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> 
     ] {
         entries.push(wgpu::BindGroupLayoutEntry {
             binding,
-            visibility: vis,
+            visibility: anim_vis,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Storage { read_only: true },
                 has_dynamic_offset: false,

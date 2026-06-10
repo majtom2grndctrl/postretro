@@ -1,14 +1,5 @@
-// Engine-side static UI proxy: the stand-in producer that writes HUD store
-// slots until real game logic (M10 entity health) feeds them. It owns a clone
-// of `App`'s `ScriptCtx` and, each frame, writes the engine-owned `player.*`
-// slots and a level-load-timed `intro.flashColor` through the store's engine
-// write path (`write_store_slot`).
-//
-// This is the producer half of the Goal C UI-decoupling seam: HUD widgets bind
-// to store slots like `player.health`; this proxy publishes demo values into
-// those slots with no compile-time dependency on the widget side, and real
-// game logic replaces it later without touching the widgets.
-//
+// Temporary stand-in slot producer: writes engine-owned `player.*` and demo
+// `intro.flashColor` each frame until M10 entity-health replaces it.
 // See: context/lib/scripting.md §5 "Durable State Store"
 
 use crate::scripting::ctx::ScriptCtx;

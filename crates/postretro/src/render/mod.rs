@@ -1198,7 +1198,7 @@ pub struct Renderer {
     /// install, and after level handoff) records no splash quads.
     splash_logo_size: Option<[f32; 2]>,
 
-    /// Key→bind-group registry for `image` widget assets (Goal B: only the
+    /// Key→bind-group registry for `image` widget assets (only the
     /// pre-registered splash logo key). `install_splash_from_loaded` registers
     /// the uploaded logo PNG under `splash::SPLASH_LOGO_ASSET`; the UI pass
     /// resolves image batches' asset keys through it. Cleared by `clear_splash`.
@@ -4741,7 +4741,7 @@ impl Renderer {
         // unconditionally for its frame-0 black clear (see `record_splash_ui`).
         let ui_viewport = [self.surface_config.width, self.surface_config.height];
         if let Some(tree) = self.ui_snapshot.gameplay_tree.clone() {
-            // Gameplay has no image producer yet (Goal B), so no image sizes are
+            // The demo gameplay HUD has no `image` nodes, so no image sizes are
             // threaded; any `image` node would measure to zero. The splash path
             // supplies the logo size in `record_splash_ui`.
             // Bound text/panel nodes resolve against the snapshot's slot values

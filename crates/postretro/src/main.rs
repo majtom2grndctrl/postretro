@@ -135,9 +135,8 @@ fn reload_summary_requires_mod_init(summary: ReloadSummary) -> bool {
 }
 
 /// Version/tagline line the boot splash's shaped-text element renders. Sourced
-/// from the build's `CARGO_PKG_VERSION` (the simpler of the two options the plan
-/// leaves open) so the read-handle snapshot carries a real value. Flows through
-/// the `UiReadSnapshot`; the descriptor seam stays intact for Goal B/G1.
+/// from the build's `CARGO_PKG_VERSION` so the read-handle snapshot carries a
+/// real value. Flows through `UiReadSnapshot::version_line`.
 fn splash_version_line() -> String {
     format!("postretro v{}", env!("CARGO_PKG_VERSION"))
 }
@@ -437,12 +436,13 @@ struct App {
     /// light state. See: context/lib/scripting.md
     script_ctx: ScriptCtx,
 
-    /// Engine-side stand-in producer for the HUD store slots (Goal C). Holds a
-    /// clone of `script_ctx`; each frame it republishes `player.health` /
-    /// `player.ammo` and a level-load-timed `intro.flashColor` through the
-    /// store's engine write path. Real game logic (M10) replaces it later with
-    /// no change to the binding side. Its flash timer resets on each level load.
-    /// See: context/lib/scripting.md §5
+    /// Temporary engine-side stand-in producer for the HUD store. Writes the
+    /// engine-owned `player.*` slots (`player.health`, `player.ammo`) and the
+    /// demo `intro.flashColor` through the store's engine write path each
+    /// frame. The M10 entity-health work will replace it with real game-logic
+    /// producers; the binding side is unaffected by that swap. Its flash timer
+    /// resets on each level load. See: context/lib/scripting.md §5 for the
+    /// store contract.
     ui_proxy: scripting_systems::ui_proxy::StaticUiProxy,
 
     /// Gates the one-time persistence overlay and clean-exit save.

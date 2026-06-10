@@ -2,7 +2,6 @@
 // `taffy::TaffyTree`, computes flex/grid layout, and reads the laid-out rects
 // back into the device-pixel `UiDrawList` + shaped-text draw entries through the
 // `layout` projection path. taffy/layout lives entirely here (renderer-owns-GPU).
-// See: context/plans/in-progress/M13--descriptor-tree-layout
 
 use std::collections::HashMap;
 
@@ -229,15 +228,13 @@ impl UiTree {
     /// change leaves the cache empty) or when `device_size` differs from the
     /// viewport the cached layout was computed against. On an unchanged frame —
     /// same tree, same viewport — no `compute_layout_with_measure` call is made;
-    /// the cached `taffy::Layout` rects are read back unchanged. The draw-list
-    /// production below always runs, so the cached path still yields draw data.
+    /// the cached `taffy::Layout` rects are read back unchanged. Draw-list
+    /// production (via `collect_draw_data`) always runs after the layout gate.
     ///
-    /// The gate only pays off when the same `UiTree` survives across frames. The
-    /// renderer rebuilds a fresh `UiTree` every frame today (see
-    /// `UiPass::layout_tree`), so a fresh tree is always dirty and the gate never
-    /// short-circuits in production yet — the no-recompute path is exercised by the
-    /// recompute-counter tests below, and fires for real once a retained tree
-    /// lands. See the plan's Follow-ups note.
+    /// This is the splash/fresh path: a fresh `UiTree` is always dirty, so the
+    /// gate never short-circuits here. The gameplay path uses
+    /// `build_draw_data_retained`, which retains the tree across frames and
+    /// benefits from the gate.
     ///
     /// `slot_values` is the frame's resolved state-store read snapshot (cloned
     /// out of the live `SlotTable`, keyed by dotted slot name). Bound text/panel

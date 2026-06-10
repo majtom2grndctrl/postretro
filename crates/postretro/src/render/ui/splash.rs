@@ -121,6 +121,7 @@ pub(crate) fn build_splash_descriptor(version_line: &str) -> SplashDescriptor {
         content: version_line.to_string(),
         font_size: TEXT_LOGICAL_FONT_SIZE,
         color: TEXT_COLOR,
+        bind: None,
     });
     let inner = Widget::VStack(ContainerWidget {
         gap: LOGO_TEXT_GAP,
@@ -226,7 +227,8 @@ mod tests {
         let desc = build_splash_descriptor("postretro v0.1.0");
         let mut ui = UiTree::from_descriptor(desc.tree());
         let mut fs = font_system();
-        let data = ui.build_draw_data([1280, 720], &mut fs, &logo_image_sizes());
+        let slots = std::collections::HashMap::new();
+        let data = ui.build_draw_data([1280, 720], &mut fs, &logo_image_sizes(), &slots);
 
         // Outer border + inner fill containers are backdrop quads (white-texel
         // batch).

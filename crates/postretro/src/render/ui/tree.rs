@@ -12,10 +12,11 @@ use taffy::prelude::{
 };
 
 use super::descriptor::{
-    Align, AnchoredTree, Border, ContainerWidget, GridWidget, ImageWidget, PanelWidget, TextWidget,
-    Widget,
+    Align, AnchoredTree, Border, ContainerWidget, GridWidget, ImageWidget, PanelBind, PanelWidget,
+    TextBind, TextWidget, Widget,
 };
 use super::layout::{Anchor, REFERENCE_HEIGHT, REFERENCE_WIDTH};
+use crate::scripting::slot_table::SlotValue;
 use glyphon::FontSystem;
 
 use super::text::{UiText, measure_run};
@@ -35,19 +36,30 @@ enum NodeContext {
     /// Shaped-text run. `color` is linear RGBA from the descriptor; the draw-list
     /// build converts it to glyphon's `[u8; 4]` sRGB. Carries its own `font_size`
     /// (device-scaled at draw time) since taffy does not retain it.
+    ///
+    /// `bind` carries the optional state-binding: when `Some`, `content` is the
+    /// fallback and the drawn string is resolved from the frame's slot values at
+    /// `collect_node` time. The measure seam still measures the literal `content`
+    /// (layout reflects the unbound text); resolution only swaps the drawn string.
     Text {
         content: String,
         font_size: f32,
         color: [f32; 4],
+        bind: Option<TextBind>,
     },
     /// Solid-fill panel quad, optionally framed by a 9-slice `border`. `fill`
     /// stays linear `[f32; 4]` — no sRGB conversion on the quad path. Carried by
     /// `panel` leaf nodes AND by container nodes that declare a backdrop (the
     /// container's `fill`/`border`); a container draws its backdrop quad beneath
     /// its children in painter's order (see `collect_node`).
+    ///
+    /// `bind` carries the optional state-binding: when `Some`, `fill` is the
+    /// fallback and the drawn color is resolved from the frame's slot values at
+    /// `collect_node` time. Container backdrops never bind, so they carry `None`.
     Panel {
         fill: [f32; 4],
         border: Option<Border>,
+        bind: Option<PanelBind>,
     },
     /// Textured image quad. `asset` is the texture key the renderer binds; the
     /// rect comes from layout. The image sizes from the asset's natural reference
@@ -174,11 +186,19 @@ impl UiTree {
     /// short-circuits in production yet — the no-recompute path is exercised by the
     /// recompute-counter tests below, and fires for real once a retained tree
     /// lands. See the plan's Follow-ups note.
+    ///
+    /// `slot_values` is the frame's resolved state-store read snapshot (cloned
+    /// out of the live `SlotTable`, keyed by dotted slot name). Bound text/panel
+    /// nodes resolve their drawn string/color against it at `collect_node` time;
+    /// an absent slot falls back to the literal descriptor value. Layout never
+    /// depends on it — only the drawn payload does — so binding never re-triggers
+    /// a recompute.
     pub(crate) fn build_draw_data(
         &mut self,
         device_size: [u32; 2],
         font_system: &mut FontSystem,
         image_sizes: &ImageSizes,
+        slot_values: &HashMap<String, SlotValue>,
     ) -> UiDrawData {
         // Gate: recompute only on a structural change (taffy's root cache is
         // empty after a rebuild) or a viewport change. taffy caches computed
@@ -236,7 +256,14 @@ impl UiTree {
         let canvas_origin = canvas_origin(device_size, scale);
 
         let mut data = UiDrawData::default();
-        self.collect_node(self.root, root_origin, canvas_origin, scale, &mut data);
+        self.collect_node(
+            self.root,
+            root_origin,
+            canvas_origin,
+            scale,
+            slot_values,
+            &mut data,
+        );
         data
     }
 
@@ -249,19 +276,23 @@ impl UiTree {
         ref_origin: [f32; 2],
         canvas_origin: [f32; 2],
         scale: f32,
+        slot_values: &HashMap<String, SlotValue>,
         data: &mut UiDrawData,
     ) {
         let layout = self.taffy.layout(node).expect("node has computed layout");
         let context = self.taffy.get_node_context(node);
 
         match context {
-            Some(NodeContext::Panel { fill, border }) => {
+            Some(NodeContext::Panel { fill, border, bind }) => {
+                // A bound panel resolves its fill from the slot snapshot; an
+                // absent/malformed slot falls back to the literal `fill`.
+                let fill = resolve_panel_fill(bind.as_ref(), *fill, slot_values);
                 data.quads.push(project_quad(
                     ref_origin,
                     layout,
                     scale,
                     canvas_origin,
-                    *fill,
+                    fill,
                     border.as_ref(),
                 ));
             }
@@ -277,14 +308,21 @@ impl UiTree {
                 content,
                 font_size,
                 color,
+                bind,
             }) => {
+                // A bound text node resolves its drawn string from the slot
+                // snapshot (through the optional `{}` format template); an absent
+                // slot falls back to the literal `content`. Layout already used
+                // the literal `content` for measurement (see `measure_node`), so
+                // resolution only swaps the rendered string, never the geometry.
+                let resolved = resolve_text(bind.as_ref(), content, slot_values);
                 // Device-pixel top-left + device-scaled font size; color converts
                 // linear RGBA -> sRGB [u8; 4] at draw-list build time. The run is
                 // laid out in flow (its container's `align` centers it on the
                 // measured run width), so no per-node centering shift is applied.
                 let rect = project_rect(ref_origin, layout, scale, canvas_origin);
                 data.texts.push(UiText::new(
-                    content.clone(),
+                    resolved,
                     [rect[0], rect[1]],
                     font_size * scale,
                     linear_rgba_to_srgb_u8(*color),
@@ -301,7 +339,7 @@ impl UiTree {
                 ref_origin[0] + child_layout.location.x,
                 ref_origin[1] + child_layout.location.y,
             ];
-            self.collect_node(child, child_origin, canvas_origin, scale, data);
+            self.collect_node(child, child_origin, canvas_origin, scale, slot_values, data);
         }
     }
 }
@@ -355,10 +393,12 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget) -> NodeId {
             content,
             font_size,
             color,
+            bind,
         }) => {
             // Text nodes are sized by the measure closure in `build_draw_data`,
             // which shapes `content` at `font_size` through glyphon and returns
             // the real shaped-run extent. The node carries no explicit style size.
+            // `bind` rides along for draw-time resolution (layout uses `content`).
             taffy
                 .new_leaf_with_context(
                     Style::default(),
@@ -366,19 +406,22 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget) -> NodeId {
                         content: content.clone(),
                         font_size: *font_size,
                         color: *color,
+                        bind: bind.clone(),
                     },
                 )
                 .expect("taffy leaf creation must succeed")
         }
-        Widget::Panel(PanelWidget { fill, border }) => {
+        Widget::Panel(PanelWidget { fill, border, bind }) => {
             // A panel leaf sizes to fill its flex/grid slot (it has no intrinsic
             // size). Container backdrops are expressed on the container instead.
+            // `bind` rides along for draw-time fill resolution.
             taffy
                 .new_leaf_with_context(
                     Style::default(),
                     NodeContext::Panel {
                         fill: *fill,
                         border: border.clone(),
+                        bind: bind.clone(),
                     },
                 )
                 .expect("taffy leaf creation must succeed")
@@ -422,6 +465,8 @@ fn container_backdrop(fill: Option<[f32; 4]>, border: Option<&Border>) -> Option
         (fill, border) => Some(NodeContext::Panel {
             fill: fill.unwrap_or([0.0; 4]),
             border: border.cloned(),
+            // Container backdrops never bind — only `panel` leaves carry a bind.
+            bind: None,
         }),
     }
 }
@@ -590,6 +635,87 @@ fn canvas_origin(device_size: [u32; 2], scale: f32) -> [f32; 2] {
     ]
 }
 
+/// Resolve a bound text node's drawn string from the frame's slot snapshot.
+/// Unbound (`bind == None`) returns the literal `fallback`. Bound: look up
+/// `bind.slot`; if the slot is absent from the snapshot, fall back to the literal
+/// `fallback` (no panic, no warn — absence is the normal "slot not written this
+/// frame" case). Present: format the value to a string and, if `bind.format` is
+/// `Some(template)`, substitute its single `{}` with that string; with no format,
+/// the value's bare string is drawn.
+fn resolve_text(
+    bind: Option<&TextBind>,
+    fallback: &str,
+    slot_values: &HashMap<String, SlotValue>,
+) -> String {
+    let Some(bind) = bind else {
+        return fallback.to_string();
+    };
+    let Some(value) = slot_values.get(&bind.slot) else {
+        return fallback.to_string();
+    };
+    let rendered = slot_value_string(value);
+    match &bind.format {
+        // Single-placeholder substitution; multi-value templates are out of
+        // scope, so only the first `{}` is replaced.
+        Some(template) => template.replacen("{}", &rendered, 1),
+        None => rendered,
+    }
+}
+
+/// A `SlotValue`'s natural string form for text binding. `Number` formats
+/// cleanly: an integral value prints with no decimals (`42`, not `42.0`), a
+/// fractional value keeps its default float form (`12.5`). `Boolean`/`String`/
+/// `Enum` print their natural representation. `Array` has no text rendering (it
+/// is the panel-color shape), so it formats to an empty string — a text widget
+/// should not bind an array slot.
+fn slot_value_string(value: &SlotValue) -> String {
+    match value {
+        SlotValue::Number(n) => {
+            if n.fract() == 0.0 && n.is_finite() {
+                format!("{}", *n as i64)
+            } else {
+                n.to_string()
+            }
+        }
+        SlotValue::Boolean(b) => b.to_string(),
+        SlotValue::String(s) => s.clone(),
+        SlotValue::Enum(e) => e.clone(),
+        SlotValue::Array(_) => String::new(),
+    }
+}
+
+/// Resolve a bound panel's fill from the frame's slot snapshot. Unbound returns
+/// the literal `fallback`. Bound: look up `bind.slot`; a `SlotValue::Array` of
+/// exactly 4 f32 is used as the linear `[r, g, b, a]` fill. An absent slot falls
+/// back silently (the normal "not written this frame" case). A present-but-
+/// malformed value (wrong variant, or an array whose length is not 4) falls back
+/// to the literal `fallback` with a single `log::warn!` — a per-build authoring
+/// error, not per-frame spam (a fresh tree builds once per frame today, so the
+/// warn fires at most once per frame for a genuinely mis-typed slot).
+fn resolve_panel_fill(
+    bind: Option<&PanelBind>,
+    fallback: [f32; 4],
+    slot_values: &HashMap<String, SlotValue>,
+) -> [f32; 4] {
+    let Some(bind) = bind else {
+        return fallback;
+    };
+    match slot_values.get(&bind.slot) {
+        Some(SlotValue::Array(rgba)) if rgba.len() == 4 => [rgba[0], rgba[1], rgba[2], rgba[3]],
+        // Absent slot: silent fallback — the slot simply was not written this
+        // frame, which is expected for an optional binding.
+        None => fallback,
+        // Present but the wrong shape: an authoring error worth one warn.
+        Some(_) => {
+            log::warn!(
+                "[Renderer] panel bind slot '{}' is not a length-4 array; using literal fill",
+                bind.slot,
+            );
+            fallback
+        }
+    }
+}
+
 /// Convert a linear-RGBA `[f32; 4]` color to glyphon's sRGB-encoded `[u8; 4]`.
 /// RGB channels go through the sRGB transfer function; alpha is linear (stays a
 /// straight 0..1 → 0..255 scale). Matches the `UiText` color contract.
@@ -636,6 +762,12 @@ mod tests {
         ImageSizes::new()
     }
 
+    /// An empty slot-value map — most layout tests have no bound widgets, so
+    /// resolution always takes the literal-fallback path.
+    fn no_slots() -> HashMap<String, SlotValue> {
+        HashMap::new()
+    }
+
     fn spacer(flex_grow: f32) -> Widget {
         Widget::Spacer(SpacerWidget { flex_grow })
     }
@@ -672,6 +804,7 @@ mod tests {
             content: content.into(),
             font_size,
             color: [1.0, 1.0, 1.0, 1.0],
+            bind: None,
         })
     }
 
@@ -698,7 +831,7 @@ mod tests {
         };
         let mut ui = UiTree::from_descriptor(&tree);
         let mut fs = font_system();
-        let data = ui.build_draw_data([1280, 720], &mut fs, &no_images());
+        let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
 
         let children: Vec<_> = ui.taffy.children(ui.root).unwrap();
         let c0 = *ui.taffy.layout(children[0]).unwrap();
@@ -750,7 +883,7 @@ mod tests {
         };
         let mut ui = UiTree::from_descriptor(&tree);
         let mut fs = font_system();
-        ui.build_draw_data([1280, 720], &mut fs, &no_images());
+        ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
 
         let row = ui.taffy.children(ui.root).unwrap()[0];
         let cells: Vec<_> = ui.taffy.children(row).unwrap();
@@ -792,7 +925,7 @@ mod tests {
         };
         let mut ui = UiTree::from_descriptor(&tree);
         let mut fs = font_system();
-        let data = ui.build_draw_data([1280, 720], &mut fs, &no_images());
+        let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
 
         let cells: Vec<_> = ui.taffy.children(ui.root).unwrap();
         let x = *ui.taffy.layout(cells[0]).unwrap();
@@ -831,9 +964,9 @@ mod tests {
         };
         let mut fs = font_system();
         let mut ui_ref = UiTree::from_descriptor(&tree);
-        let data_ref = ui_ref.build_draw_data([1280, 720], &mut fs, &no_images());
+        let data_ref = ui_ref.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
         let mut ui_4k = UiTree::from_descriptor(&tree);
-        let data_4k = ui_4k.build_draw_data([3840, 2160], &mut fs, &no_images());
+        let data_4k = ui_4k.build_draw_data([3840, 2160], &mut fs, &no_images(), &no_slots());
 
         assert_eq!(data_ref.texts.len(), 2);
         assert_eq!(data_4k.texts.len(), 2);
@@ -865,6 +998,7 @@ mod tests {
                 content: "XX".into(),
                 font_size: 10.0,
                 color: [1.0; 4],
+                bind: None,
             })
         };
         let tree = AnchoredTree {
@@ -880,7 +1014,7 @@ mod tests {
         };
         let mut ui = UiTree::from_descriptor(&tree);
         let mut fs = font_system();
-        ui.build_draw_data([1280, 720], &mut fs, &no_images());
+        ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
         let cells: Vec<_> = ui.taffy.children(ui.root).unwrap();
         assert_eq!(cells.len(), 4);
         let l = |n: NodeId| {
@@ -922,11 +1056,12 @@ mod tests {
                 content: "ABCDEFGH".into(),
                 font_size: 40.0,
                 color: [1.0, 1.0, 1.0, 1.0],
+                bind: None,
             }),
         };
         let mut ui = UiTree::from_descriptor(&tree);
         let mut fs = font_system();
-        let data = ui.build_draw_data([1280, 1440], &mut fs, &no_images());
+        let data = ui.build_draw_data([1280, 1440], &mut fs, &no_images(), &no_slots());
         // Read back the root's measured size and recompute the centered top-left
         // in the 1280x720 canvas, then apply the +360 vertical letterbox offset.
         // Scale is 1.0 here, so device px == reference px. `project_rect` snaps
@@ -971,7 +1106,7 @@ mod tests {
         let mut ui = UiTree::from_descriptor(&tree);
         let mut fs = font_system();
         // Fractional scale: 1281x721 -> scale ~1.00078.
-        let data = ui.build_draw_data([1281, 721], &mut fs, &no_images());
+        let data = ui.build_draw_data([1281, 721], &mut fs, &no_images(), &no_slots());
         assert!(!data.quads.is_empty(), "container backdrop produced a quad");
         for q in &data.quads.instances {
             for v in q.rect {
@@ -1003,7 +1138,7 @@ mod tests {
         };
         let mut ui = UiTree::from_descriptor(&tree);
         let mut fs = font_system();
-        let data = ui.build_draw_data([1280, 720], &mut fs, &no_images());
+        let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
 
         // Exactly one backdrop quad (the container), one text run on top.
         assert_eq!(data.quads.len(), 1, "one container backdrop quad");
@@ -1047,7 +1182,7 @@ mod tests {
         };
         let mut ui = UiTree::from_descriptor(&tree);
         let mut fs = font_system();
-        ui.build_draw_data([1280, 720], &mut fs, &no_images());
+        ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
         ui.taffy.layout(ui.root).unwrap().size
     }
 
@@ -1141,10 +1276,10 @@ mod tests {
         let mut ui = UiTree::from_descriptor(&gating_tree());
         let mut fs = font_system();
 
-        ui.build_draw_data([1280, 720], &mut fs, &no_images());
+        ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
         assert_eq!(ui.recompute_count(), 1, "first layout computes once");
 
-        ui.build_draw_data([1280, 720], &mut fs, &no_images());
+        ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
         assert_eq!(
             ui.recompute_count(),
             1,
@@ -1159,10 +1294,10 @@ mod tests {
         let mut ui = UiTree::from_descriptor(&gating_tree());
         let mut fs = font_system();
 
-        ui.build_draw_data([1280, 720], &mut fs, &no_images());
+        ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
         assert_eq!(ui.recompute_count(), 1);
 
-        ui.build_draw_data([3840, 2160], &mut fs, &no_images());
+        ui.build_draw_data([3840, 2160], &mut fs, &no_images(), &no_slots());
         assert_eq!(
             ui.recompute_count(),
             2,
@@ -1178,8 +1313,8 @@ mod tests {
         let mut fs = font_system();
 
         let mut first = UiTree::from_descriptor(&gating_tree());
-        first.build_draw_data([1280, 720], &mut fs, &no_images());
-        first.build_draw_data([1280, 720], &mut fs, &no_images());
+        first.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+        first.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
         assert_eq!(first.recompute_count(), 1, "cached after the first layout");
 
         // Reshape: a structurally different descriptor yields a new tree, which
@@ -1195,7 +1330,7 @@ mod tests {
             ),
         };
         let mut second = UiTree::from_descriptor(&reshaped);
-        second.build_draw_data([1280, 720], &mut fs, &no_images());
+        second.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
         assert_eq!(
             second.recompute_count(),
             1,
@@ -1211,8 +1346,8 @@ mod tests {
         let mut ui = UiTree::from_descriptor(&gating_tree());
         let mut fs = font_system();
 
-        let computed = ui.build_draw_data([1280, 720], &mut fs, &no_images());
-        let cached = ui.build_draw_data([1280, 720], &mut fs, &no_images());
+        let computed = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+        let cached = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
         // Confirm the second call really took the cached path.
         assert_eq!(ui.recompute_count(), 1, "second frame did not recompute");
 
@@ -1233,5 +1368,184 @@ mod tests {
             );
             assert_eq!(a.content, b.content, "cached text content differs");
         }
+    }
+
+    /// A bound text leaf, fallback `content` plus a `bind` slot and optional
+    /// format template.
+    fn bound_text(content: &str, slot: &str, format: Option<&str>) -> Widget {
+        Widget::Text(TextWidget {
+            content: content.into(),
+            font_size: 20.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+            bind: Some(TextBind {
+                slot: slot.into(),
+                format: format.map(str::to_string),
+            }),
+        })
+    }
+
+    /// A bound panel leaf, fallback `fill` plus a `bind` slot. Wrapped in a
+    /// stretch container so the panel leaf gets a non-zero laid-out rect (a bare
+    /// panel has no intrinsic size).
+    fn bound_panel_in_stack(fill: [f32; 4], slot: &str) -> Widget {
+        Widget::VStack(ContainerWidget {
+            gap: 0.0,
+            padding: 0.0,
+            align: Align::Stretch,
+            fill: Some([0.0, 0.0, 0.0, 1.0]),
+            border: None,
+            children: vec![Widget::Panel(PanelWidget {
+                fill,
+                border: None,
+                bind: Some(PanelBind { slot: slot.into() }),
+            })],
+        })
+    }
+
+    #[test]
+    fn bound_text_resolves_slot_value_through_format_template() {
+        // A text node bound to `player.health` with a "HP {}" template renders the
+        // slot's numeric value substituted into the template. The integral Number
+        // 87 formats without a trailing ".0".
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: bound_text("0", "player.health", Some("HP {}")),
+        };
+        let mut slots = HashMap::new();
+        slots.insert("player.health".to_string(), SlotValue::Number(87.0));
+
+        let mut ui = UiTree::from_descriptor(&tree);
+        let mut fs = font_system();
+        let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &slots);
+
+        assert_eq!(data.texts.len(), 1);
+        assert_eq!(
+            data.texts[0].content, "HP 87",
+            "slot resolved into template"
+        );
+    }
+
+    #[test]
+    fn bound_text_without_format_renders_bare_value() {
+        // No template: the resolved value's bare string form is drawn. A
+        // fractional Number keeps its decimals.
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: bound_text("0", "player.ammo", None),
+        };
+        let mut slots = HashMap::new();
+        slots.insert("player.ammo".to_string(), SlotValue::Number(12.5));
+
+        let mut ui = UiTree::from_descriptor(&tree);
+        let mut fs = font_system();
+        let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &slots);
+
+        assert_eq!(data.texts[0].content, "12.5");
+    }
+
+    #[test]
+    fn bound_text_falls_back_to_literal_when_slot_absent() {
+        // The slot is not present in the snapshot (not written this frame): the
+        // node renders its literal `content` fallback rather than panicking.
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: bound_text("fallback", "player.health", Some("HP {}")),
+        };
+        let mut ui = UiTree::from_descriptor(&tree);
+        let mut fs = font_system();
+        let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+
+        assert_eq!(
+            data.texts[0].content, "fallback",
+            "absent slot falls back to literal content, not the template",
+        );
+    }
+
+    #[test]
+    fn bound_panel_resolves_color_slot_into_fill() {
+        // A panel whose fill is bound to `intro.flashColor` (a length-4 linear
+        // RGBA array) draws that color, overriding its literal fallback fill.
+        let resolved = [0.25, 0.5, 0.75, 1.0];
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: bound_panel_in_stack([0.0, 0.0, 0.0, 1.0], "intro.flashColor"),
+        };
+        let mut slots = HashMap::new();
+        slots.insert(
+            "intro.flashColor".to_string(),
+            SlotValue::Array(resolved.to_vec()),
+        );
+
+        let mut ui = UiTree::from_descriptor(&tree);
+        let mut fs = font_system();
+        let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &slots);
+
+        // Two quads: the container backdrop, then the bound panel leaf. Find the
+        // one carrying the resolved color.
+        let found = data.quads.instances.iter().any(|q| {
+            q.color
+                .iter()
+                .zip(resolved.iter())
+                .all(|(a, b)| approx(*a, *b))
+        });
+        assert!(found, "a panel quad carries the resolved flash color");
+    }
+
+    #[test]
+    fn bound_panel_falls_back_on_malformed_array_length() {
+        // A present slot of the wrong shape (a length-3 array) is malformed: the
+        // panel falls back to its literal fill (and warns once — not asserted).
+        let fallback = [0.9, 0.1, 0.2, 1.0];
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: bound_panel_in_stack(fallback, "intro.flashColor"),
+        };
+        let mut slots = HashMap::new();
+        slots.insert(
+            "intro.flashColor".to_string(),
+            SlotValue::Array(vec![0.1, 0.2, 0.3]),
+        );
+
+        let mut ui = UiTree::from_descriptor(&tree);
+        let mut fs = font_system();
+        let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &slots);
+
+        let found = data.quads.instances.iter().any(|q| {
+            q.color
+                .iter()
+                .zip(fallback.iter())
+                .all(|(a, b)| approx(*a, *b))
+        });
+        assert!(
+            found,
+            "malformed-length array falls back to the literal fill"
+        );
+    }
+
+    #[test]
+    fn bound_panel_falls_back_when_slot_absent() {
+        // No slot written: the panel draws its literal fill, silently (no warn).
+        let fallback = [0.3, 0.6, 0.9, 1.0];
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: bound_panel_in_stack(fallback, "intro.flashColor"),
+        };
+        let mut ui = UiTree::from_descriptor(&tree);
+        let mut fs = font_system();
+        let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+
+        let found = data.quads.instances.iter().any(|q| {
+            q.color
+                .iter()
+                .zip(fallback.iter())
+                .all(|(a, b)| approx(*a, *b))
+        });
+        assert!(found, "absent slot falls back to the literal fill");
     }
 }

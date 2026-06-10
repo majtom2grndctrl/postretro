@@ -41,6 +41,12 @@ fn icon_sizes() -> ImageSizes {
     sizes
 }
 
+/// The gate-fixture trees carry no state bindings, so they resolve against an
+/// empty slot map (the splash-style unbound path).
+fn no_slots() -> std::collections::HashMap<String, crate::scripting::slot_table::SlotValue> {
+    std::collections::HashMap::new()
+}
+
 /// Reproduce the renderer's gameplay decision: lay `tree` out (when present) and
 /// return the draw data only if it is non-empty — `None` is the early-out signal
 /// (no `begin_render_pass`). Mirrors `render_frame_indirect`'s
@@ -49,7 +55,7 @@ fn gameplay_draw(tree: Option<&AnchoredTree>, device_size: [u32; 2]) -> Option<U
     let tree = tree?;
     let mut ui = UiTree::from_descriptor(tree);
     let mut fs = font_system();
-    let draw = ui.build_draw_data(device_size, &mut fs, &icon_sizes());
+    let draw = ui.build_draw_data(device_size, &mut fs, &icon_sizes(), &no_slots());
     if draw.is_empty() { None } else { Some(draw) }
 }
 
@@ -58,6 +64,7 @@ fn text(content: &str, font_size: f32) -> Widget {
         content: content.into(),
         font_size,
         color: [1.0, 1.0, 1.0, 1.0],
+        bind: None,
     })
 }
 
@@ -191,7 +198,7 @@ fn empty_gameplay_tree_early_outs_the_ui_pass() {
     let draw_empty = {
         let mut ui = UiTree::from_descriptor(&empty);
         let mut fs = font_system();
-        ui.build_draw_data([1280, 720], &mut fs, &icon_sizes())
+        ui.build_draw_data([1280, 720], &mut fs, &icon_sizes(), &no_slots())
     };
     assert!(
         draw_empty.is_empty(),

@@ -3251,7 +3251,12 @@ impl Renderer {
             // via the measure seam — thread it in keyed by the splash logo asset.
             let mut image_sizes = ui::tree::ImageSizes::new();
             image_sizes.insert(ui::splash::SPLASH_LOGO_ASSET.to_string(), logo_size);
-            draw = self.ui.layout_tree(desc.tree(), viewport, &image_sizes);
+            // The splash tree carries no state bindings, so it resolves against
+            // an empty slot map — behavior unchanged from before binding landed.
+            let empty_slots = std::collections::HashMap::new();
+            draw = self
+                .ui
+                .layout_tree(desc.tree(), viewport, &image_sizes, &empty_slots);
         }
 
         // The tree's panel quads (border + fill) draw behind the logo/text, in
@@ -4739,9 +4744,15 @@ impl Renderer {
             // Gameplay has no image producer yet (Goal B), so no image sizes are
             // threaded; any `image` node would measure to zero. The splash path
             // supplies the logo size in `record_splash_ui`.
-            let draw = self
-                .ui
-                .layout_tree(&tree, ui_viewport, &ui::tree::ImageSizes::new());
+            // Bound text/panel nodes resolve against the snapshot's slot values
+            // (disjoint field borrow from `&mut self.ui`). The cloned `tree`
+            // above already released the snapshot, so this borrow is clean.
+            let draw = self.ui.layout_tree(
+                &tree,
+                ui_viewport,
+                &ui::tree::ImageSizes::new(),
+                &self.ui_snapshot.slot_values,
+            );
             if !draw.is_empty() {
                 let white_bg = self.ui.white_bind_group().clone();
                 let mut batches: Vec<ui::UiBatch> = Vec::new();

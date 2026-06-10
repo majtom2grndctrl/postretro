@@ -593,14 +593,25 @@ impl UiPass {
     /// reference size; the measure seam sizes image nodes from it (content-driven,
     /// like text). Callers pass the sizes for the keys their tree references (the
     /// splash logo; gameplay has no image producer yet).
+    /// `slot_values` is the frame's resolved state-store read snapshot, keyed by
+    /// dotted slot name. Bound text/panel nodes resolve their drawn string/color
+    /// against it at draw-data build time; an absent slot falls back to the literal
+    /// descriptor value. The splash passes an empty map (its tree has no binds);
+    /// gameplay passes the snapshot's `slot_values`.
     pub fn layout_tree(
         &mut self,
         tree: &descriptor::AnchoredTree,
         viewport: [u32; 2],
         image_sizes: &tree::ImageSizes,
+        slot_values: &std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
     ) -> tree::UiDrawData {
         let mut ui_tree = tree::UiTree::from_descriptor(tree);
-        ui_tree.build_draw_data(viewport, self.text.font_system_mut(), image_sizes)
+        ui_tree.build_draw_data(
+            viewport,
+            self.text.font_system_mut(),
+            image_sizes,
+            slot_values,
+        )
     }
 
     /// Record the UI batches and shaped-text lines into `view`. Single color

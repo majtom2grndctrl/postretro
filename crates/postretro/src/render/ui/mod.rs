@@ -40,6 +40,13 @@ pub(crate) use self::text::UiText;
 /// renderer lays out via `UiTree`; G1 later swaps the body for script ingestion.
 pub(crate) mod splash;
 
+/// Hardcoded demo gameplay HUD descriptor (M13 Goal C state-binding demo) behind
+/// the `demo::build_demo_descriptor` seam. The FIRST gameplay UI producer:
+/// `main.rs` publishes its `AnchoredTree` on the per-frame read snapshot and the
+/// renderer drives it through the retained gameplay path. Two `text` nodes bind
+/// `player.health`/`player.ammo`; one `panel` binds `intro.flashColor`.
+pub(crate) mod demo;
+
 /// Hard-gate CPU draw-list / layout assertion for the splash: pins the
 /// device-pixel quad rects (anchor, scale, snap, 9-slice corners) the splash
 /// projects to. Pure CPU — no GPU adapter.
@@ -58,6 +65,14 @@ mod splash_golden_test;
 /// layout + early-out decision the renderer's gameplay path makes, without a GPU.
 #[cfg(test)]
 mod gameplay_ui_gate_test;
+
+/// Hard-gate CPU assertion for the demo gameplay HUD (`demo::build_demo_descriptor`):
+/// drives the real demo descriptor through the retained gameplay tree and asserts
+/// bind resolution, the appearance-only-vs-content-change relayout split, the
+/// post-settle no-recompute frame, and the subscriber-aware unbound-slot no-op.
+/// Pure CPU — no GPU adapter.
+#[cfg(test)]
+mod demo_ui_gate_test;
 
 /// Headless regression for the multi-batch instance-buffer clobber: encodes two
 /// non-empty batches into disjoint screen regions and asserts each region keeps
@@ -242,9 +257,13 @@ impl UiReadSnapshot {
         }
     }
 
-    /// Attach the frame's resolved slot-value snapshot. Lets the gameplay path
-    /// build the snapshot from the tree-less default (no gameplay UI producer
-    /// yet) while still carrying slot values through the existing setter.
+    /// Attach the frame's resolved slot-value snapshot to a tree-less snapshot.
+    /// The original tree-less gameplay path used this; Task 5 made the demo
+    /// descriptor the gameplay producer, so the live path now goes through
+    /// `with_gameplay_tree` (tree + slot values together) and this setter is no
+    /// longer on a production call path — kept as the slot-only seam for a future
+    /// no-tree producer, mirroring `with_gameplay_tree`'s dead-code allowance.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn with_slot_values(
         mut self,
         slot_values: std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,

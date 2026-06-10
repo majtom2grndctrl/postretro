@@ -1414,13 +1414,21 @@ impl ApplicationHandler for App {
                         // audio have already run this frame, so the slot snapshot
                         // freezes the settled store state (frame order: Input →
                         // Game logic → Audio → Render). The renderer reads these
-                        // cloned values, never the live `SlotTable`. No gameplay UI
-                        // producer yet, so the tree-less default carries the map.
+                        // cloned values, never the live `SlotTable`. The demo HUD
+                        // descriptor is the gameplay UI producer: it is published as
+                        // the gameplay tree alongside the slot values, and the
+                        // renderer's retained gameplay path (Task 4) lays it out and
+                        // resolves its `player.health`/`player.ammo`/`intro.flashColor`
+                        // binds against the snapshot. The descriptor is structurally
+                        // identical every frame, so the retained tree reuses it and
+                        // only the bound values drive the diff.
                         let slot_values =
                             Self::build_ui_slot_snapshot(&self.script_ctx.slot_table.borrow());
-                        renderer.set_ui_snapshot(
-                            render::ui::UiReadSnapshot::default().with_slot_values(slot_values),
-                        );
+                        let demo_tree = render::ui::demo::build_demo_descriptor();
+                        renderer.set_ui_snapshot(render::ui::UiReadSnapshot::with_gameplay_tree(
+                            demo_tree,
+                            slot_values,
+                        ));
 
                         let surface_texture = match renderer.render_frame_indirect(
                             &visible_cells,

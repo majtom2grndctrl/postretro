@@ -111,10 +111,10 @@
     // authored as their own entities (light_dynamic / light_dynamic_spot),
     // which set is_dynamic by classname.
     // See context/plans/in-progress/sdf-per-light-shadows/.
-    _shadow_type(choices) : "Shadow Type" : "static_light_map" =
+    _shadow_type(choices) : "Static-geometry shadow technique — how this baked light's shadow from STATIC world geometry resolves. Lightmap = baked, soft, cheap (the default for almost everything). SDF = runtime-traced, sharper, tweakable without a re-bake, but costs runtime work. This axis is independent of _cast_entity_shadows (the moving-entity toggle on dynamic lights), which is why a baked light has no entity-shadow setting here." : "static_light_map" =
     [
-        "static_light_map" : "Static Lightmap (baked; default)"
-        "sdf"              : "SDF (runtime-traced static shadow)"
+        "static_light_map" : "Static Lightmap — shadow baked into the lightmap. Soft, free at runtime, fixed at bake time. The default; use it for nearly all static lights."
+        "sdf"              : "SDF (runtime-traced) — sharper static-geometry shadow traced each frame against the baked occluder atlas. Excluded from the direct lightmap bake; tweak without re-baking. Reach for it when a key light needs crisper edges than the lightmap gives and the runtime cost is worth it."
     ]
     // Space-delimited list of script tags. An entity matches
     // `world.query({ component: "light", tag: "t" })` when any tag equals

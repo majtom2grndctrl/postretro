@@ -166,6 +166,7 @@ impl FogPass {
         camera_bgl: &wgpu::BindGroupLayout,
         sh_bgl: &wgpu::BindGroupLayout,
         spot_shadow_bgl: &wgpu::BindGroupLayout,
+        cube_array_supported: bool,
     ) -> Self {
         let pixel_scale = clamp_fog_pixel_scale(pixel_scale);
         let scatter_dims = scatter_dims_for(surface_width, surface_height, pixel_scale);
@@ -311,9 +312,18 @@ impl FogPass {
         );
 
         // --- Raymarch compute pipeline ---
+        // Without CUBE_ARRAY_TEXTURES the shared group-5 BGL omits binding 5, so
+        // the fog shader must not declare `point_shadow_cube`. Derive the no-cube
+        // variant from the SAME transform the forward shader uses (fog never
+        // samples the cube, so only the binding declaration is stripped).
+        let fog_source: std::borrow::Cow<str> = if cube_array_supported {
+            FOG_SHADER_SOURCE.into()
+        } else {
+            super::strip_point_shadow_cube(FOG_SHADER_SOURCE).into()
+        };
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Fog Raymarch Shader"),
-            source: wgpu::ShaderSource::Wgsl(FOG_SHADER_SOURCE.into()),
+            source: wgpu::ShaderSource::Wgsl(fog_source),
         });
         let raymarch_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Fog Raymarch Pipeline Layout"),
@@ -1192,6 +1202,31 @@ mod tests {
         )
         .validate(&module)
         .expect("fog shader must pass naga validation");
+    }
+
+    /// The no-`CUBE_ARRAY_TEXTURES` fog variant, derived via the same
+    /// `strip_point_shadow_cube` transform the forward shader uses, must drop the
+    /// `point_shadow_cube` binding (fog never sampled it, so only the declaration
+    /// is removed) and still parse + validate. This is what ships on an adapter
+    /// without the feature so the shared group-5 BGL can omit binding 5.
+    #[test]
+    fn fog_volume_wgsl_no_cube_variant_strips_binding_and_validates() {
+        let stripped = super::super::strip_point_shadow_cube(FOG_SHADER_SOURCE);
+        // The binding DECLARATION is gone (prose mentions of the name in comments
+        // are harmless; naga validation below proves no dangling reference).
+        assert!(
+            !stripped.contains("var point_shadow_cube:"),
+            "no-cube fog variant must not declare the point_shadow_cube binding"
+        );
+        assert!(FOG_SHADER_SOURCE.contains("var point_shadow_cube:"));
+        let module = naga::front::wgsl::parse_str(&stripped)
+            .expect("no-cube fog variant must parse as WGSL");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("no-cube fog variant must pass naga validation");
     }
 
     /// The fog composite shader must parse and declare fullscreen vertex +

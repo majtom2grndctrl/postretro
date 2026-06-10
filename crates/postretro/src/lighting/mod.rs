@@ -5,6 +5,7 @@
 
 pub mod chunk_list;
 pub(crate) mod cone_frustum;
+pub mod cube_shadow;
 pub mod influence;
 pub mod lightmap;
 pub mod spec_buffer;
@@ -19,7 +20,7 @@ use crate::prl::{FalloffModel, LightType, MapLight};
 ///   0: position_and_type        (xyz = world position, w = bitcast<f32>(light_type))
 ///   1: color_and_falloff_model  (xyz = linear RGB × intensity, w = bitcast<f32>(falloff_model))
 ///   2: direction_and_range      (xyz = aim direction, w = falloff_range meters)
-///   3: cone_angles_and_pad      (x = inner angle rad, y = outer angle rad, z = shadow-slot index (bitcast u32), w = pad)
+///   3: cone_angles_and_pad      (x = inner angle rad, y = outer angle rad, z = spot shadow-slot index (bitcast u32), w = cube point shadow-slot index (bitcast u32))
 ///
 /// Each vec4<f32> is 16 bytes; the struct has only vec4 members so its
 /// alignment is 16 and the array stride is an exact multiple of 16.
@@ -32,6 +33,33 @@ pub const GPU_LIGHT_SIZE: usize = 64;
 /// owns this slot field, and a full re-pack from either side would clobber
 /// the other.
 pub const SHADOW_SLOT_BYTE_OFFSET: usize = 56;
+
+/// Byte offset of the dynamic POINT-light cube-shadow slot within a packed
+/// `GpuLight` (`cone_angles_and_pad.w`, bytes 60..64 — the former reserved pad).
+/// Patched independently of the spot slot (which rides `.z` at byte 56): a point
+/// light reads ONLY `.w` for its cube slot, a spot reads ONLY `.z`, so the two
+/// shadow paths never alias. Sentinel `0xFFFFFFFF` = not ranked into the cube
+/// pool (the forward point case then does unshadowed attenuation).
+pub const CUBE_SLOT_BYTE_OFFSET: usize = 60;
+
+/// Whether a runtime light renders animated ENTITY meshes as occluders into its
+/// shadow slot. The single shared predicate for the entity-occluder gate, called
+/// by both the spot path and the cube (point-light) path.
+///
+/// This is the SECOND of two separate gates (see
+/// `context/lib/rendering_pipeline.md` §7.1): pool-*slot* eligibility (does the
+/// light get a shadow map for its WORLD shadow) is `is_dynamic` in
+/// `SpotShadowPool::rank_lights`; entity-*occluder* rendering into that slot is
+/// this gate. A dynamic light with `casts_entity_shadows` off still casts its
+/// world shadow but draws no entity occluders, so the two gates must not be
+/// conflated.
+///
+/// `casts_entity_shadows && is_dynamic`: only `is_dynamic` lights (the
+/// `light_dynamic`/`light_dynamic_spot` classnames) cast crisp runtime entity
+/// shadows, and the per-light `casts_entity_shadows` toggle opts that in.
+pub fn entity_occluder_eligible(light: &MapLight) -> bool {
+    light.casts_entity_shadows && light.is_dynamic
+}
 
 /// Encode the `LightType` discriminant the way the shader expects it:
 /// a `u32` bit-cast into the `w` slot of the `position_and_type` vec4.
@@ -97,10 +125,17 @@ pub fn pack_light_with_slot(light: &MapLight, slot_index: u32) -> [u8; GPU_LIGHT
     // slot 3: cone_angles_and_pad — inner + outer cone angles (radians) + shadow slot index
     write_f32(&mut bytes, 48, light.cone_angle_inner);
     write_f32(&mut bytes, 52, light.cone_angle_outer);
-    // bytes 56..60 hold the shadow slot index (0..8 or 0xFFFFFFFF for no slot).
+    // bytes 56..60 hold the shadow slot index (0..SHADOW_POOL_SIZE or 0xFFFFFFFF for no slot).
     // Shader reads as f32 then bitcasts back to u32; round-trip preserves bit patterns.
     write_u32_as_f32(&mut bytes, SHADOW_SLOT_BYTE_OFFSET, slot_index);
-    // bytes 60..64 stay zero — reserved pad.
+    // bytes 60..64 hold the cube (point) shadow slot. Default to the sentinel so
+    // an un-ranked point light does unshadowed attenuation; the cube ranker
+    // patches the live slot via `patch_cube_slots` after this base pack.
+    write_u32_as_f32(
+        &mut bytes,
+        CUBE_SLOT_BYTE_OFFSET,
+        crate::lighting::spot_shadow::NO_SHADOW_SLOT,
+    );
 
     bytes
 }
@@ -128,7 +163,7 @@ pub fn pack_lights(lights: &[MapLight]) -> Vec<u8> {
 /// against a previous frame's bytes to skip a redundant `queue.write_buffer`.
 ///
 /// `slot_indices` must have the same length as `lights`.
-/// Each entry is a slot index (0..8) or `NO_SHADOW_SLOT` for unshadowed.
+/// Each entry is a slot index (0..SHADOW_POOL_SIZE) or `NO_SHADOW_SLOT` for unshadowed.
 pub fn pack_lights_with_slots_into(bytes: &mut Vec<u8>, lights: &[MapLight], slot_indices: &[u32]) {
     debug_assert_eq!(
         lights.len(),
@@ -174,6 +209,33 @@ pub fn patch_shadow_slots(buffer: &mut [u8], slots: &[u32]) -> bool {
     changed
 }
 
+/// Overwrite only the cube (point) shadow-slot field of each already-packed
+/// light in `buffer` with the corresponding entry in `slots`, leaving every
+/// other byte (the spot slot and the animated base data) untouched. Returns
+/// `true` if any byte changed, so the caller can skip a redundant GPU upload.
+///
+/// The cube and spot slot fields live in disjoint bytes of the same
+/// `cone_angles_and_pad` row (cube `.w` = bytes 60..64, spot `.z` = bytes
+/// 56..60), so `patch_cube_slots` and `patch_shadow_slots` compose without
+/// clobbering each other. `buffer` must already hold `slots.len()` packed
+/// `GpuLight` records.
+pub fn patch_cube_slots(buffer: &mut [u8], slots: &[u32]) -> bool {
+    debug_assert!(buffer.len() >= slots.len() * GPU_LIGHT_SIZE);
+    let mut changed = false;
+    for (i, &slot) in slots.iter().enumerate() {
+        let off = i * GPU_LIGHT_SIZE + CUBE_SLOT_BYTE_OFFSET;
+        let Some(field) = buffer.get_mut(off..off + 4) else {
+            continue;
+        };
+        let new = slot.to_ne_bytes();
+        if *field != new {
+            field.copy_from_slice(&new);
+            changed = true;
+        }
+    }
+    changed
+}
+
 #[inline]
 fn write_f32(dst: &mut [u8], offset: usize, value: f32) {
     dst[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
@@ -204,7 +266,6 @@ mod tests {
             cone_angle_inner: 0.0,
             cone_angle_outer: 0.0,
             cone_direction: [0.0, 0.0, 0.0],
-            cast_shadows: false,
             is_dynamic: false,
             casts_entity_shadows: false,
             animated_slot: None,
@@ -225,7 +286,6 @@ mod tests {
             cone_angle_inner: 0.5,
             cone_angle_outer: 0.8,
             cone_direction: [0.0, -1.0, 0.0],
-            cast_shadows: true,
             is_dynamic: false,
             casts_entity_shadows: false,
             animated_slot: None,
@@ -246,7 +306,6 @@ mod tests {
             cone_angle_inner: 0.0,
             cone_angle_outer: 0.0,
             cone_direction: [0.0, -1.0, 0.0],
-            cast_shadows: false,
             is_dynamic: false,
             casts_entity_shadows: false,
             animated_slot: None,
@@ -262,6 +321,39 @@ mod tests {
 
     fn read_u32(src: &[u8], offset: usize) -> u32 {
         u32::from_ne_bytes(src[offset..offset + 4].try_into().unwrap())
+    }
+
+    /// The entity-occluder gate is `casts_entity_shadows && is_dynamic`: a
+    /// dynamic light with the toggle on draws entity occluders; the toggle off,
+    /// or a non-dynamic light, draws none (it may still cast a world shadow).
+    /// This is the predicate Task 3 builds the FGD/compiler semantics around.
+    #[test]
+    fn entity_occluder_gate_requires_dynamic_and_toggle() {
+        let mut light = sample_spot();
+
+        // Dynamic + toggle on → eligible.
+        light.is_dynamic = true;
+        light.casts_entity_shadows = true;
+        assert!(
+            entity_occluder_eligible(&light),
+            "dynamic light with casts_entity_shadows on must render entity occluders"
+        );
+
+        // Dynamic + toggle off → not eligible (world shadow only).
+        light.casts_entity_shadows = false;
+        assert!(
+            !entity_occluder_eligible(&light),
+            "dynamic light with the toggle off casts no entity shadow"
+        );
+
+        // Non-dynamic + toggle on → not eligible (only is_dynamic lights cast
+        // crisp runtime entity shadows).
+        light.is_dynamic = false;
+        light.casts_entity_shadows = true;
+        assert!(
+            !entity_occluder_eligible(&light),
+            "a non-dynamic light never renders entity occluders, even toggled on"
+        );
     }
 
     #[test]
@@ -347,16 +439,18 @@ mod tests {
     }
 
     #[test]
-    fn cone_pad_is_zeroed_for_point_light() {
+    fn cone_slots_default_to_sentinel_for_point_light() {
         let bytes = pack_light(&sample_point());
-        // cone_angles_and_pad slot, z = shadow slot index, w = pad = bytes 60..64
+        // cone_angles_and_pad: z (byte 56) = spot slot, w (byte 60) = cube slot.
+        // Both default to the no-slot sentinel for an un-ranked light.
         assert_eq!(
             read_u32(&bytes, 56),
             crate::lighting::spot_shadow::NO_SHADOW_SLOT
         );
-        for &b in &bytes[60..64] {
-            assert_eq!(b, 0);
-        }
+        assert_eq!(
+            read_u32(&bytes, CUBE_SLOT_BYTE_OFFSET),
+            crate::lighting::spot_shadow::NO_SHADOW_SLOT
+        );
     }
 
     #[test]
@@ -436,6 +530,82 @@ mod tests {
         pack_lights_with_slots_into(&mut bytes, &lights, &[3u32, 1u32]);
         // Patching the same slots back is a no-op — caller skips the GPU upload.
         assert!(!patch_shadow_slots(&mut bytes, &[3u32, 1u32]));
+    }
+
+    /// A freshly packed light defaults its cube (point) slot to the sentinel, so
+    /// an un-ranked point light does unshadowed attenuation in the forward pass.
+    #[test]
+    fn pack_defaults_cube_slot_to_sentinel() {
+        let bytes = pack_light_with_slot(&sample_point(), 0u32);
+        assert_eq!(
+            read_u32(&bytes, CUBE_SLOT_BYTE_OFFSET),
+            crate::lighting::spot_shadow::NO_SHADOW_SLOT,
+            "cube slot must default to the sentinel"
+        );
+    }
+
+    /// `patch_cube_slots` writes only the cube slot field (`.w`, byte 60) and
+    /// leaves every other byte untouched.
+    #[test]
+    fn patch_cube_slots_sets_slot_and_preserves_base_bytes() {
+        let lights = vec![sample_point(), sample_point()];
+        let sentinel = crate::lighting::spot_shadow::NO_SHADOW_SLOT;
+        let mut bytes = Vec::new();
+        pack_lights_with_slots_into(&mut bytes, &lights, &[sentinel, sentinel]);
+        let base_before = bytes.clone();
+
+        let changed = patch_cube_slots(&mut bytes, &[sentinel, 2u32]);
+        assert!(
+            changed,
+            "patching a sentinel to a real cube slot reports change"
+        );
+        assert_eq!(read_u32(&bytes, CUBE_SLOT_BYTE_OFFSET), sentinel);
+        assert_eq!(read_u32(&bytes, GPU_LIGHT_SIZE + CUBE_SLOT_BYTE_OFFSET), 2);
+
+        for (i, (a, b)) in base_before.iter().zip(bytes.iter()).enumerate() {
+            let in_patched = (GPU_LIGHT_SIZE + CUBE_SLOT_BYTE_OFFSET
+                ..GPU_LIGHT_SIZE + CUBE_SLOT_BYTE_OFFSET + 4)
+                .contains(&i);
+            if !in_patched {
+                assert_eq!(a, b, "base byte {i} must be preserved");
+            }
+        }
+    }
+
+    /// The spot slot (`.z`, byte 56) and cube slot (`.w`, byte 60) live in
+    /// disjoint bytes of the same row, so the two patches compose without one
+    /// clobbering the other — a single light can carry both a spot and a cube
+    /// slot independently (the shader reads only the field for its light type).
+    #[test]
+    fn patch_spot_and_cube_slots_are_disjoint() {
+        let lights = vec![sample_point()];
+        let sentinel = crate::lighting::spot_shadow::NO_SHADOW_SLOT;
+        let mut bytes = Vec::new();
+        pack_lights_with_slots_into(&mut bytes, &lights, &[sentinel]);
+
+        patch_shadow_slots(&mut bytes, &[7u32]);
+        patch_cube_slots(&mut bytes, &[3u32]);
+
+        assert_eq!(
+            read_u32(&bytes, SHADOW_SLOT_BYTE_OFFSET),
+            7,
+            "spot slot intact"
+        );
+        assert_eq!(
+            read_u32(&bytes, CUBE_SLOT_BYTE_OFFSET),
+            3,
+            "cube slot intact"
+        );
+    }
+
+    #[test]
+    fn patch_cube_slots_no_change_reports_false() {
+        let lights = vec![sample_point(), sample_point()];
+        let mut bytes = Vec::new();
+        pack_lights_with_slots_into(&mut bytes, &lights, &[0u32, 0u32]);
+        patch_cube_slots(&mut bytes, &[4u32, 1u32]);
+        // Patching the same cube slots back is a no-op.
+        assert!(!patch_cube_slots(&mut bytes, &[4u32, 1u32]));
     }
 
     #[test]

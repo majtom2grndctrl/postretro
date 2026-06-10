@@ -701,7 +701,6 @@ mod tests {
                 direction: None,
                 start_active: true,
             }),
-            cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
             is_animated: false,

@@ -64,7 +64,7 @@ pub(crate) struct LightAnimation {
 }
 
 /// Script-visible state of a map light. Fields that do not vary at runtime
-/// (`light_type`, `falloff_model`, `cast_shadows`, cone config) are populated
+/// (`light_type`, `falloff_model`, cone config) are populated
 /// from the source `MapLight` at level load and never mutated thereafter —
 /// scripts can read them through an entity handle but there is no setter.
 ///
@@ -83,7 +83,6 @@ pub(crate) struct LightComponent {
     pub(crate) cone_angle_inner: Option<f32>,
     pub(crate) cone_angle_outer: Option<f32>,
     pub(crate) cone_direction: Option<[f32; 3]>,
-    pub(crate) cast_shadows: bool,
     /// Whether the source `MapLight.is_dynamic` flag was set. Script handles
     /// read this as `isDynamic` to gate `color` animation: color animation on
     /// a baked light would produce a direct/indirect mismatch (SH indirect was
@@ -122,7 +121,6 @@ mod tests {
             cone_angle_inner: Some(0.2),
             cone_angle_outer: Some(0.5),
             cone_direction: Some([0.0, -1.0, 0.0]),
-            cast_shadows: true,
             is_dynamic: true,
             animated_slot: None,
             animation: Some(LightAnimation {

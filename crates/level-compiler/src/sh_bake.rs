@@ -1182,7 +1182,6 @@ mod tests {
             cone_angle_outer: None,
             cone_direction: None,
             animation: None,
-            cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
             casts_entity_shadows: false,
@@ -1586,7 +1585,6 @@ mod tests {
             cone_angle_outer: None,
             cone_direction: None,
             animation: None,
-            cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
             casts_entity_shadows: false,
@@ -1764,7 +1762,6 @@ mod tests {
             cone_angle_outer: None,
             cone_direction: None,
             animation: None,
-            cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
             casts_entity_shadows: false,
@@ -1828,7 +1825,6 @@ mod tests {
                 cone_angle_outer: None,
                 cone_direction: None,
                 animation: None,
-                cast_shadows: true,
                 bake_only: false,
                 is_dynamic: false,
                 casts_entity_shadows: false,
@@ -1849,7 +1845,6 @@ mod tests {
                 cone_angle_outer: None,
                 cone_direction: None,
                 animation: None,
-                cast_shadows: true,
                 bake_only: false,
                 is_dynamic: false,
                 casts_entity_shadows: false,
@@ -1899,7 +1894,6 @@ mod tests {
             cone_angle_outer: None,
             cone_direction: None,
             animation: None,
-            cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
             casts_entity_shadows: false,
@@ -1941,10 +1935,17 @@ mod tests {
         let soft_light = soft_point_light(DVec3::new(0.0, 5.0, 0.0), 2.0);
         let soft = sample_radiance_rgb(&ctx, probe, dir, &[&soft_light], None, far, 0, 0).0;
 
-        // Reference: same light with shadows disabled → fully-clear bounce (v = 1).
-        let mut clear_light = soft_light.clone();
-        clear_light.cast_shadows = false;
-        let clear = sample_radiance_rgb(&ctx, probe, dir, &[&clear_light], None, far, 0, 0).0;
+        // Reference: the same light over the floor with NO occluder → fully-clear
+        // bounce (v = 1). Tracing against floor-only geometry is the clean way to
+        // pin the unoccluded result now that every light always casts a shadow.
+        let clear_geo = multi_triangle_geometry(&[floor_a, floor_b]);
+        let (clear_bvh, clear_prims, _) = build_bvh(&clear_geo).unwrap();
+        let clear_ctx = RaytracingCtx {
+            bvh: &clear_bvh,
+            primitives: &clear_prims,
+            geometry: &clear_geo,
+        };
+        let clear = sample_radiance_rgb(&clear_ctx, probe, dir, &[&soft_light], None, far, 0, 0).0;
 
         // Fractional, not binary: strictly dimmer than fully-clear yet nonzero.
         assert!(clear.length() > 0.0, "reference clear bounce should be lit");
@@ -2171,7 +2172,6 @@ mod tests {
                 direction: None,
                 start_active: true,
             }),
-            cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
             casts_entity_shadows: false,
@@ -2232,7 +2232,6 @@ mod tests {
                 direction: None,
                 start_active: true,
             }),
-            cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
             casts_entity_shadows: false,
@@ -2475,7 +2474,6 @@ mod tests {
             cone_angle_outer: None,
             cone_direction: None,
             animation: None,
-            cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
             casts_entity_shadows: false,
@@ -2558,7 +2556,6 @@ mod tests {
             cone_angle_outer: None,
             cone_direction: None,
             animation: None,
-            cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
             casts_entity_shadows: false,

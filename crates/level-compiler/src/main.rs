@@ -2169,7 +2169,6 @@ mod tests {
             cone_angle_outer: None,
             cone_direction: None,
             animation: None,
-            cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
             casts_entity_shadows: false,

@@ -327,13 +327,18 @@ pub fn translate_light(
         }
     };
 
-    // Per-light opt-in for spot-shadow-pool eligibility for dynamic entities
-    // (enemies / moving meshes). Default `false`. This is the opt-in path for
-    // non-dynamic lights; dynamic-tier lights are pool-eligible by default
-    // regardless of this field (runtime gate: `is_dynamic || casts_entity_shadows`).
-    let casts_entity_shadows = match parse_optional_int(props, "_cast_entity_shadows")? {
-        None | Some(0) => false,
-        Some(1) => true,
+    // `_cast_entity_shadows` controls whether this light casts shadows from
+    // dynamic ENTITIES (enemies / moving meshes). It is valid ONLY on
+    // dynamic-tier lights, where it defaults ON: a baked light's world shadow is
+    // frozen in the lightmap and can never render a moving occluder, so the
+    // toggle is physically meaningless there. Authoring it on a non-dynamic
+    // light is a soft error — warn and CLEAR it rather than carrying a value
+    // that can never take effect. The light's own WORLD-shadow pool eligibility
+    // rides `is_dynamic` alone (see `SpotShadowPool::rank_lights`).
+    let authored_entity_shadows = match parse_optional_int(props, "_cast_entity_shadows")? {
+        Some(0) => Some(false),
+        Some(1) => Some(true),
+        None => None,
         Some(other) => {
             return Err(TranslateError::InvalidProperty {
                 key: "_cast_entity_shadows",
@@ -341,6 +346,20 @@ pub fn translate_light(
                 reason: "expected 0 (off) or 1 (on)",
             });
         }
+    };
+    let casts_entity_shadows = if is_dynamic {
+        // Dynamic tier: default ON, honour an explicit author toggle.
+        authored_entity_shadows.unwrap_or(true)
+    } else {
+        if authored_entity_shadows == Some(true) {
+            log::warn!(
+                "light {}: '_cast_entity_shadows' is only valid on dynamic-tier lights \
+                 (light_dynamic / light_dynamic_spot); a baked light's world shadow is frozen \
+                 in the lightmap. Clearing the flag.",
+                format_light_ref(classname, origin),
+            );
+        }
+        false
     };
 
     // Curves resample to uniform samples at compile time. When both `style` and
@@ -522,7 +541,6 @@ pub fn translate_light(
         cone_angle_outer,
         cone_direction,
         animation,
-        cast_shadows: true,
         bake_only,
         is_dynamic,
         casts_entity_shadows,
@@ -1006,7 +1024,6 @@ mod tests {
         assert!(light.cone_angle_inner.is_none());
         assert!(light.cone_direction.is_none());
         assert!(light.animation.is_none());
-        assert!(light.cast_shadows);
     }
 
     #[test]
@@ -1047,6 +1064,66 @@ mod tests {
         // -45 pitch, yaw 0 → engine (-qf_y, qf_z, -qf_x) = (0, -0.707, -0.707).
         let dir = light.cone_direction.expect("directional dir");
         assert_vec_close(dir, [0.0, -0.70710677, -0.70710677], 1e-4, "directional");
+    }
+
+    /// `_cast_entity_shadows` is only valid on dynamic-tier lights. Authored
+    /// `on` for a baked (non-`is_dynamic`) light is rejected at compile time —
+    /// the value is cleared so it can never reach the runtime occluder gate.
+    #[test]
+    fn cast_entity_shadows_cleared_on_baked_light() {
+        let p = props(&[
+            ("light", "300"),
+            ("_falloff_range", "2048"),
+            ("_cast_entity_shadows", "1"),
+        ]);
+        let light = translate_light(&p, DVec3::ZERO, "light")
+            .expect("baked point light should still translate");
+        assert!(!light.is_dynamic, "a `light` is baked-tier");
+        assert!(
+            !light.casts_entity_shadows,
+            "_cast_entity_shadows must be warn-cleared on a baked-tier light"
+        );
+    }
+
+    /// On a dynamic-tier light `_cast_entity_shadows` toggles entity-shadow
+    /// casting: it defaults ON, an explicit `0` turns it off, an explicit `1`
+    /// keeps it on.
+    #[test]
+    fn cast_entity_shadows_toggles_on_dynamic_light() {
+        // Default (key absent) → on.
+        let p = props(&[("light", "300"), ("_falloff_range", "2048")]);
+        let default_light = translate_light(&p, DVec3::ZERO, "light_dynamic")
+            .expect("dynamic light should translate");
+        assert!(default_light.is_dynamic);
+        assert!(
+            default_light.casts_entity_shadows,
+            "dynamic lights default to casting entity shadows"
+        );
+
+        // Explicit off.
+        let p_off = props(&[
+            ("light", "300"),
+            ("_falloff_range", "2048"),
+            ("_cast_entity_shadows", "0"),
+        ]);
+        let off_light = translate_light(&p_off, DVec3::ZERO, "light_dynamic")
+            .expect("dynamic light should translate");
+        assert!(
+            !off_light.casts_entity_shadows,
+            "explicit _cast_entity_shadows 0 turns entity shadows off"
+        );
+
+        // Explicit on.
+        let p_on = props(&[
+            ("light", "300"),
+            ("_falloff_range", "2048"),
+            ("angles", "-90 0 0"),
+            ("_cast_entity_shadows", "1"),
+        ]);
+        let on_light = translate_light(&p_on, DVec3::ZERO, "light_dynamic_spot")
+            .expect("dynamic spot should translate");
+        assert!(on_light.is_dynamic);
+        assert!(on_light.casts_entity_shadows);
     }
 
     #[test]
@@ -1526,13 +1603,15 @@ mod tests {
 
     #[test]
     fn cast_entity_shadows_one_is_true() {
+        // `_cast_entity_shadows` is valid only on dynamic-tier lights; an
+        // explicit `1` there keeps entity-shadow casting on.
         let p = props(&[
             ("light", "300"),
             ("_color", "255 255 255"),
             ("_falloff_range", "1024"),
             ("_cast_entity_shadows", "1"),
         ]);
-        let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
+        let light = translate_light(&p, DVec3::ZERO, "light_dynamic").expect("should translate");
         assert!(light.casts_entity_shadows);
     }
 

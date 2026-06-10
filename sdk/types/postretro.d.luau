@@ -277,7 +277,7 @@ export type LightAnimation = {
   direction: {Vec3}?,
 }
 
-export type LightComponent = { origin: Vec3, lightType: LightKind, intensity: number, color: Vec3, falloffModel: FalloffKind, falloffRange: number, coneAngleInner: number?, coneAngleOuter: number?, coneDirection: Vec3?, castShadows: boolean, isDynamic: boolean, animation: LightAnimation? }
+export type LightComponent = { origin: Vec3, lightType: LightKind, intensity: number, color: Vec3, falloffModel: FalloffKind, falloffRange: number, coneAngleInner: number?, coneAngleOuter: number?, coneDirection: Vec3?, isDynamic: boolean, animation: LightAnimation? }
 
 --- Component-name literals accepted by `worldQuery` and the `world.query` SDK wrapper. New queryable component types extend this union.
 export type WorldQueryComponent =

@@ -1,18 +1,85 @@
-// Cone-frustum geometry for spotlight shadow culling: planes + enclosing AABB
-// derived from a spotlight's light-space view-projection matrix.
+// Cone-frustum geometry for spotlight shadow culling (planes + enclosing AABB
+// from a spotlight's light-space view-projection matrix) and world-space Aabb
+// utilities: transformed enclosure, from_points, empty/expand, Pod/Zeroable —
+// shared by both the cone-cull and entity bind-pose cull paths.
 //
 // See: context/lib/rendering_pipeline.md §7.1 · context/plans/in-progress/shadow-cone-cull/
 
+use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3, Vec4};
 
-#[cfg(test)]
 use crate::compute_cull::extract_frustum_planes_for_gpu;
 
-/// Axis-aligned bounding box in world space.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Axis-aligned bounding box. World-space at the cone-cull sites; LOCAL (model)
+/// space when carried as a per-model bound on a skinned mesh (see
+/// `crate::model::mesh::SkinnedMesh::bounds`) — the per-light caster cull
+/// transforms the local box by the instance transform before testing it against
+/// a cone/face frustum, so one `Aabb` type serves the model bound and the
+/// `aabb_intersects_frustum` predicate.
+///
+/// `Pod`/`Zeroable` so it rides on the Pod CPU model struct (glam's `bytemuck`
+/// feature makes `Vec3` Pod). `#[repr(C)]` pins the `min`-then-`max` layout.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Pod, Zeroable)]
 pub(crate) struct Aabb {
     pub min: Vec3,
     pub max: Vec3,
+}
+
+impl Aabb {
+    /// An empty box: `min` at `+inf`, `max` at `-inf`, so the first
+    /// [`Aabb::expand`] adopts that point exactly. Folding over no points leaves
+    /// it inverted (degenerate), which [`Aabb::from_points`] collapses to a zero box.
+    pub(crate) fn empty() -> Self {
+        Self {
+            min: Vec3::splat(f32::INFINITY),
+            max: Vec3::splat(f32::NEG_INFINITY),
+        }
+    }
+
+    /// Grow the box to enclose `point`.
+    pub(crate) fn expand(&mut self, point: Vec3) {
+        self.min = self.min.min(point);
+        self.max = self.max.max(point);
+    }
+
+    /// Enclose this box after `transform` is applied to it, returning the tight
+    /// world-space AABB. Transforms all 8 local corners and takes their min/max,
+    /// so an arbitrary rotation (or shear/scale) produces a correct axis-aligned
+    /// enclosure rather than the wrong box a component-wise transform of just
+    /// `min`/`max` would give. Used by the per-light entity caster cull: the
+    /// instance's local (bind-pose) model bound is transformed by its world
+    /// matrix before testing against a cone frustum.
+    pub(crate) fn transformed(&self, transform: &Mat4) -> Aabb {
+        let corners = [
+            Vec3::new(self.min.x, self.min.y, self.min.z),
+            Vec3::new(self.max.x, self.min.y, self.min.z),
+            Vec3::new(self.min.x, self.max.y, self.min.z),
+            Vec3::new(self.max.x, self.max.y, self.min.z),
+            Vec3::new(self.min.x, self.min.y, self.max.z),
+            Vec3::new(self.max.x, self.min.y, self.max.z),
+            Vec3::new(self.min.x, self.max.y, self.max.z),
+            Vec3::new(self.max.x, self.max.y, self.max.z),
+        ];
+        Self::from_points(corners.iter().map(|&c| transform.transform_point3(c)))
+    }
+
+    /// Build the tight AABB over `points`. An empty iterator yields a zero box
+    /// (`min == max == origin`) rather than the inverted [`Aabb::empty`] sentinel,
+    /// so a points-less mesh has a well-formed (if degenerate) bound.
+    pub(crate) fn from_points(points: impl IntoIterator<Item = Vec3>) -> Self {
+        let mut aabb = Self::empty();
+        for p in points {
+            aabb.expand(p);
+        }
+        if aabb.min.x > aabb.max.x {
+            return Self {
+                min: Vec3::ZERO,
+                max: Vec3::ZERO,
+            };
+        }
+        aabb
+    }
 }
 
 /// Extract the 6 cone-frustum planes from a spotlight's light-space
@@ -26,7 +93,6 @@ pub(crate) struct Aabb {
 /// L,R,B,T,N,F = `r3+r0, r3-r0, r3+r1, r3-r1, r3+r2, r3-r2` — normalized,
 /// emitted as `[nx,ny,nz,d]`; a point `p` is *outside* a plane when
 /// `dot(normal, p) + d < 0`.
-#[cfg(test)]
 pub(crate) fn cone_frustum_planes(light_space_matrix: &Mat4) -> [Vec4; 6] {
     let raw = extract_frustum_planes_for_gpu(light_space_matrix);
     raw.map(|p| Vec4::new(p[0], p[1], p[2], p[3]))
@@ -141,7 +207,6 @@ mod tests {
             cone_angle_inner: 0.3,
             cone_angle_outer: 0.4,
             cone_direction: [0.0, 0.0, -1.0],
-            cast_shadows: true,
             is_dynamic: true,
             casts_entity_shadows: false,
             animated_slot: None,
@@ -233,6 +298,52 @@ mod tests {
             max: Vec3::new(0.1, 0.1, -9.9),
         };
         assert!(aabb_intersects_frustum(&center, &planes));
+    }
+
+    /// Transforming a local AABB by a 90° rotation must produce a correct
+    /// world-space enclosure — the 8-corner method, not a component-wise
+    /// transform of `min`/`max`. A box thin in X and tall in Y, rotated 90° about
+    /// Z, must come back tall in X and thin in Y (extents swapped), with the box
+    /// still centered at the origin.
+    #[test]
+    fn aabb_transformed_encloses_rotation() {
+        let local = Aabb {
+            min: Vec3::new(-1.0, -3.0, -0.5),
+            max: Vec3::new(1.0, 3.0, 0.5),
+        };
+        let rot = Mat4::from_rotation_z(std::f32::consts::FRAC_PI_2);
+        let world = local.transformed(&rot);
+
+        let eps = 1e-5_f32;
+        // X half-extent now ~3 (was the Y half-extent), Y half-extent now ~1.
+        assert!(
+            (world.max.x - 3.0).abs() < eps && (world.min.x + 3.0).abs() < eps,
+            "rotated box X extent should be ±3, got [{}, {}]",
+            world.min.x,
+            world.max.x
+        );
+        assert!(
+            (world.max.y - 1.0).abs() < eps && (world.min.y + 1.0).abs() < eps,
+            "rotated box Y extent should be ±1, got [{}, {}]",
+            world.min.y,
+            world.max.y
+        );
+        // Z is unaffected by a Z rotation.
+        assert!((world.max.z - 0.5).abs() < eps && (world.min.z + 0.5).abs() < eps);
+    }
+
+    /// A translation must shift both corners by the same offset (no rotation, so
+    /// the enclosure is exact).
+    #[test]
+    fn aabb_transformed_translates() {
+        let local = Aabb {
+            min: Vec3::new(-1.0, -1.0, -1.0),
+            max: Vec3::new(1.0, 1.0, 1.0),
+        };
+        let world = local.transformed(&Mat4::from_translation(Vec3::new(10.0, -5.0, 2.0)));
+        let eps = 1e-5_f32;
+        assert!((world.min - Vec3::new(9.0, -6.0, 1.0)).length() < eps);
+        assert!((world.max - Vec3::new(11.0, -4.0, 3.0)).length() < eps);
     }
 
     /// A degenerate (non-invertible) light-space matrix must not panic and must

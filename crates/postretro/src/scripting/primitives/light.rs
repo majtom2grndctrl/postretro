@@ -276,7 +276,6 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("coneAngleInner", "Option<f32>", "")
         .field("coneAngleOuter", "Option<f32>", "")
         .field("coneDirection", "Option<Vec3>", "")
-        .field("castShadows", "bool", "")
         .field("isDynamic", "bool", "")
         .field("animation", "Option<LightAnimation>", "")
         .finish();
@@ -374,7 +373,6 @@ mod tests {
                     cone_angle_inner: None,
                     cone_angle_outer: None,
                     cone_direction: None,
-                    cast_shadows: true,
                     is_dynamic,
                     animated_slot: None,
                     animation: None,
@@ -435,7 +433,6 @@ mod tests {
                     cone_angle_inner: None,
                     cone_angle_outer: None,
                     cone_direction: None,
-                    cast_shadows: false,
                     is_dynamic: true,
                     animated_slot: None,
                     animation: None,
@@ -571,25 +568,25 @@ mod tests {
                         lightType: c.lightType,
                         falloffModel: c.falloffModel,
                         falloffRange: c.falloffRange,
-                        castShadows: c.castShadows,
+                        isDynamic: c.isDynamic,
                     })
                     "#,
                 )
                 .unwrap();
             assert_eq!(
                 json,
-                r#"{"lightType":"Point","falloffModel":"InverseSquared","falloffRange":10,"castShadows":true}"#
+                r#"{"lightType":"Point","falloffModel":"InverseSquared","falloffRange":10,"isDynamic":true}"#
             );
         });
 
         let lua = mlua::Lua::new();
         install_all_lua(&r, &lua);
-        let (light_type, falloff_model, falloff_range, cast_shadows): (String, String, f64, bool) =
+        let (light_type, falloff_model, falloff_range, is_dynamic): (String, String, f64, bool) =
             lua.load(
                 r#"
                 local hs = worldQuery({ component = "light", tag = "alpha" })
                 local c = hs[1].component
-                return c.lightType, c.falloffModel, c.falloffRange, c.castShadows
+                return c.lightType, c.falloffModel, c.falloffRange, c.isDynamic
                 "#,
             )
             .eval()
@@ -597,7 +594,7 @@ mod tests {
         assert_eq!(light_type, "Point");
         assert_eq!(falloff_model, "InverseSquared");
         assert!((falloff_range - 10.0).abs() < 1e-5);
-        assert!(cast_shadows);
+        assert!(is_dynamic);
     }
 
     #[test]
@@ -660,7 +657,6 @@ mod tests {
                     cone_angle_inner: None,
                     cone_angle_outer: None,
                     cone_direction: None,
-                    cast_shadows: false,
                     is_dynamic: true,
                     animated_slot: None,
                     animation: None,

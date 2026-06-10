@@ -236,9 +236,11 @@ fn sample_lightmap_animated(uv: vec2<f32>) -> vec3<f32> {
 @group(5) @binding(1) var spot_shadow_compare: sampler_comparison;
 // Uniform (not storage) so we stay under `max_storage_buffers_per_shader_stage`
 // (default limit 8 on some adapters — wgpu refuses the pipeline if we add
-// a 9th). 12 × mat4x4<f32> is 768 bytes, well under the 16 KiB uniform cap.
+// a 9th). The array length MUST match `SHADOW_POOL_SIZE` in
+// `lighting/spot_shadow.rs` (pinned by `light_space_matrices_array_len_matches_pool`);
+// 96 × mat4x4<f32> is 6144 bytes, well under the 16 KiB uniform cap.
 struct LightSpaceMatrices {
-    m: array<mat4x4<f32>, 12>,
+    m: array<mat4x4<f32>, 96>,
 };
 @group(5) @binding(2) var<uniform> light_space_matrices: LightSpaceMatrices;
 // SDF static-occluder shadow factor: half-res Rgba8Unorm. The four channels are
@@ -254,6 +256,19 @@ struct LightSpaceMatrices {
 // the geometry. The forward render pass binds the depth attachment as
 // read-only (`depth_ops: None`) so this binding is legal alongside it.
 @group(5) @binding(4) var sdf_shadow_depth: texture_depth_2d;
+// Dynamic POINT-light cube-array shadow depth (Depth32Float, `CUBE_COUNT × 6`
+// layers, `slot*6 + face`). Sampled by world-direction vector via
+// `textureSampleCompareLevel` with `spot_shadow_compare` (the same `Less`
+// comparison sampler — the cube path reuses it). Bound but NOT sampled by the
+// fog volume pass (shared group-5 BGL stays layout-identical). See
+// `lighting/cube_shadow.rs` and context/lib/rendering_pipeline.md §7.1.
+//
+// The `// CUBE_SHADOW_BINDING` tag marks this line for the no-cube shader
+// variant: on an adapter without `CUBE_ARRAY_TEXTURES` the renderer strips this
+// declaration (and neutralizes `sample_point_shadow` via the body markers below)
+// before pipeline creation, so the shared group-5 BGL can omit binding 5. See
+// `render::strip_point_shadow_cube`.
+@group(5) @binding(5) var point_shadow_cube: texture_depth_cube_array; // CUBE_SHADOW_BINDING
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -405,11 +420,21 @@ fn scripted_light_intensity_scalar(premultiplied_color: vec3<f32>, base_color: v
     return premultiplied_channel / color_channel;
 }
 
+// Tunable PCF radius (in shadow-map texels) for runtime shadow-map sampling.
+// The ONE shared softness parameter: the spot path here and the point path
+// (Task 5) both scale their multi-tap kernel by this. NON-ZERO so the kernel
+// samples more than one texel — a 3×3 box of comparison samples spaced
+// `SPOT_SHADOW_PCF_RADIUS` texels apart antialiases the shadow edge rather than
+// stair-stepping a single texel. A module-scope const (not a uniform) keeps the
+// group-0 `Uniforms` 3-way byte contract untouched; the depth BIAS stays
+// per-pool (the depth pipeline's `DepthBiasState`), so only the radius is shared.
+const SPOT_SHADOW_PCF_RADIUS: f32 = 1.0;
+
 // Sample the shadow map for a dynamic spot light. Returns 0.0 (fully shadowed)
 // to 1.0 (fully lit). Fragments outside the shadow map's projection are treated
 // as unshadowed (1.0).
 //
-// `slot_index`: shadow-map slot (0..7) from GpuLight.cone_angles_and_pad.z.
+// `slot_index`: shadow-map slot from GpuLight.cone_angles_and_pad.z.
 fn sample_spot_shadow(slot_index: u32, world_pos: vec3<f32>, light_proj: mat4x4<f32>) -> f32 {
     let light_clip = light_proj * vec4<f32>(world_pos, 1.0);
     // Points behind the light produce negative w; reject to avoid folding the
@@ -427,14 +452,131 @@ fn sample_spot_shadow(slot_index: u32, world_pos: vec3<f32>, light_proj: mat4x4<
         return 1.0; // Unshadowed — outside cone.
     }
 
-    // CompareFunction::Less returns 1.0 when fragment depth < stored depth (lit).
-    return textureSampleCompare(
-        spot_shadow_depth,
-        spot_shadow_compare,
-        uv,
-        i32(slot_index),
-        light_ndc.z
-    );
+    // Tunable-radius PCF: average a 3×3 grid of comparison samples spaced
+    // `SPOT_SHADOW_PCF_RADIUS` texels apart in UV. `textureSampleCompare`
+    // (CompareFunction::Less) returns 1.0 per tap when the fragment is closer
+    // than the stored occluder depth (lit); the mean is the soft visibility.
+    let texel = 1.0 / vec2<f32>(textureDimensions(spot_shadow_depth));
+    let step = texel * SPOT_SHADOW_PCF_RADIUS;
+    var lit = 0.0;
+    for (var dy = -1; dy <= 1; dy = dy + 1) {
+        for (var dx = -1; dx <= 1; dx = dx + 1) {
+            let offset = vec2<f32>(f32(dx), f32(dy)) * step;
+            lit = lit + textureSampleCompare(
+                spot_shadow_depth,
+                spot_shadow_compare,
+                uv + offset,
+                i32(slot_index),
+                light_ndc.z
+            );
+        }
+    }
+    return lit / 9.0;
+}
+
+// Near-clip distance for a cube face's perspective projection. MUST match
+// `CUBE_NEAR_CLIP` in `lighting/cube_shadow.rs` — the cube depth pass projects
+// each face with this near plane, so the NDC-depth reconstruction below must use
+// the same value to compare against the stored depth.
+const CUBE_NEAR_CLIP: f32 = 0.1;
+
+// Per-side resolution of each cube face, mirroring `CUBE_FACE_RESOLUTION` in
+// `lighting/cube_shadow.rs` (pinned by `forward_cube_sampling_constants_match_pool`).
+// Drives the PCF tap spacing below: one cube-face texel subtends `90° / this`.
+const CUBE_FACE_RESOLUTION: f32 = 512.0;
+
+// Per-face depth bias for the POINT cube path, in world units (subtracted from
+// the light→fragment distance BEFORE projecting to NDC). Tuned SEPARATELY from
+// the spot path's depth bias: the spot path applies its bias as the skinned-depth
+// pipeline's hardware `DepthBiasState` (a slope/constant offset baked into the
+// stored occluder depth at the depth-write stage), while this is a receiver-side
+// world-unit offset applied here at sample time. The two act at DIFFERENT
+// pipeline stages on DIFFERENT values, so they never double-count on one
+// fragment. (The cube depth pass also carries the same hardware `DepthBiasState`
+// on its entity occluders; this receiver-side bias is added on top, by design —
+// cube faces are 512² vs spot 1024² and perspective-depth acne is worst near the
+// far plane, so the acne/peter-panning trade-off needs its own knob.)
+const POINT_SHADOW_DEPTH_BIAS: f32 = 0.08;
+
+// Project a light-local linear depth (distance along the dominant cube-face
+// axis, i.e. the largest-magnitude component of the light→fragment vector) into
+// the perspective NDC depth [0,1] the cube depth pass stored. The cube faces are
+// rendered with `Mat4::perspective_rh(90°, 1.0, near, far)` (wgpu z ∈ [0,1]), so
+// for a view-space depth `d` (= dominant axis magnitude = -view_z) the stored
+// NDC z is `far/(far-near) - (near*far)/((far-near)*d)`. Matching this exactly
+// is why a plain linear-distance compare would mis-shadow.
+fn cube_face_ndc_depth(d: f32, near: f32, far: f32) -> f32 {
+    let a = far / (far - near);
+    return a - (near * far) / ((far - near) * d);
+}
+
+// Sample the cube-array shadow map for a dynamic point light. Returns 0.0 (fully
+// shadowed) to 1.0 (fully lit). The cube face is selected by hardware from the
+// `light→fragment` direction vector, so there is no per-face seam to handle and
+// every direction is covered.
+//
+// `slot_index`: cube slot from `GpuLight.cone_angles_and_pad.w`. `light_pos`:
+// the light world position; `world_pos`: the shaded fragment; `far_range`: the
+// light's falloff range (the cube faces' far plane). The comparison reference is
+// the fragment's PERSPECTIVE NDC depth on its cube face (reconstructed from the
+// dominant axis), matching what the depth pass wrote.
+fn sample_point_shadow(
+    slot_index: u32,
+    light_pos: vec3<f32>,
+    world_pos: vec3<f32>,
+    far_range: f32,
+) -> f32 {
+    // CUBE_SHADOW_BODY_BEGIN — on a no-`CUBE_ARRAY_TEXTURES` adapter the renderer
+    // replaces everything up to CUBE_SHADOW_BODY_END with `return 1.0;`, so this
+    // function references no `point_shadow_cube` binding (which is stripped). The
+    // point-light call site is still compiled but always reads "unshadowed".
+    let to_frag = world_pos - light_pos;
+    let dist = length(to_frag);
+    // The depth pass clamps the far plane to >= 0.5 (`falloff_range.max(0.5)`);
+    // mirror that so the NDC reconstruction uses the same far plane.
+    let far = max(far_range, 0.5);
+    if dist < 1e-4 {
+        return 1.0;
+    }
+    // Direction from light toward the fragment — the cube lookup vector.
+    let dir = to_frag / dist;
+    // Dominant-axis magnitude = the view-space depth on the selected face. Apply
+    // the world-space bias here (pull the receiver toward the light) before
+    // projecting, then convert to the stored NDC depth. `textureSampleCompareLevel`
+    // (CompareFunction::Less) returns 1.0 per tap when the fragment is nearer
+    // than the stored occluder depth (lit). Clamp the biased depth to the near
+    // plane so a fragment closer than near never produces a negative reference.
+    let axis_depth = max(abs(dir.x), max(abs(dir.y), abs(dir.z))) * dist;
+    let biased_depth = max(axis_depth - POINT_SHADOW_DEPTH_BIAS, CUBE_NEAR_CLIP);
+    let reference = clamp(cube_face_ndc_depth(biased_depth, CUBE_NEAR_CLIP, far), 0.0, 1.0);
+
+    // Build an orthonormal basis around `dir` so the PCF taps offset the lookup
+    // vector perpendicular to it (Bevy's cube PCF pattern). `up` is chosen to
+    // avoid degeneracy when `dir` is near the Y axis.
+    let up = select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(dir.y) > 0.99);
+    let tangent = normalize(cross(up, dir));
+    let bitangent = cross(dir, tangent);
+    // Angular tap spacing: scale `SPOT_SHADOW_PCF_RADIUS` by one cube-face texel
+    // angle (face FOV 90° over the face resolution) so the shared radius reads as
+    // "texels" on the cube faces too.
+    let texel_angle = SPOT_SHADOW_PCF_RADIUS * (1.5707963 / CUBE_FACE_RESOLUTION);
+
+    var lit = 0.0;
+    for (var dy = -1; dy <= 1; dy = dy + 1) {
+        for (var dx = -1; dx <= 1; dx = dx + 1) {
+            let offset = (tangent * f32(dx) + bitangent * f32(dy)) * texel_angle;
+            let sample_dir = normalize(dir + offset);
+            lit = lit + textureSampleCompareLevel(
+                point_shadow_cube,
+                spot_shadow_compare,
+                sample_dir,
+                i32(slot_index),
+                reference
+            );
+        }
+    }
+    return lit / 9.0;
+    // CUBE_SHADOW_BODY_END
 }
 
 // The depth-aware octahedral irradiance sampler lives in `sh_sample.wgsl`,
@@ -987,6 +1129,24 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 let dist = length(to_light);
                 L = to_light / max(dist, 0.0001);
                 attenuation = falloff(dist, light.direction_and_range.w, falloff_model);
+
+                // Dynamic point-light cube shadow. The cube slot rides in
+                // `cone_angles_and_pad.w` (sentinel 0xFFFFFFFF = no slot, i.e.
+                // the light was not ranked into the cube pool). A point light
+                // without a slot keeps its normal unshadowed attenuation. The
+                // multiply lives ONLY here in the world light loop — no lightmap
+                // is touched, so a dynamic point light's direct term is shadowed
+                // exactly once (same construction as the spot path).
+                let cube_slot = bitcast<u32>(light.cone_angles_and_pad.w);
+                if cube_slot != 0xFFFFFFFFu {
+                    let shadow = sample_point_shadow(
+                        cube_slot,
+                        light.position_and_type.xyz,
+                        in.world_position,
+                        light.direction_and_range.w
+                    );
+                    attenuation = attenuation * shadow;
+                }
             }
             case 1u: {
                 let to_light = light.position_and_type.xyz - in.world_position;

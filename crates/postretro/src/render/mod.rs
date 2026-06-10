@@ -4239,6 +4239,12 @@ impl Renderer {
     /// SHARED scoring/drop ranking core, so cube and spot slot assignment cannot
     /// drift. Cube faces are ENTITY-ONLY in v1 — `slot_entity_eligible` decides
     /// whether the depth loop draws anything into a slot at all.
+    ///
+    /// The RETURNED (shader-facing) assignment masks any light that owns a ranked
+    /// slot but is not `entity_occluder_eligible` back to the sentinel: its cube
+    /// faces are never cleared/rendered (the depth loop skips `None` matrices), so
+    /// the shader must not sample that slot. See `cube_shadow::shader_facing_cube_slot`.
+    /// The pool's internal `slot_assignment` keeps the raw rank for diagnostics.
     fn update_cube_light_slots(
         &mut self,
         camera_position: Vec3,
@@ -4258,6 +4264,13 @@ impl Renderer {
             camera_near_clip,
             visible_lights,
         );
+
+        // Shader-facing slot assignment, returned to the caller and patched into
+        // each point light's `cone_angles_and_pad.w`. It DIVERGES from the
+        // internal `slot_assignment` for ineligible lights: see the per-light
+        // masking below. Starts as a copy of the rank and is downgraded to the
+        // sentinel for any light whose cube faces will not be rendered.
+        let mut shader_slot_assignment = slot_assignment.clone();
 
         // Reset per-face matrices + per-slot entity gate; reoccupied faces
         // overwrite, the rest stay `None`/`false` so the render loop skips them.
@@ -4279,6 +4292,18 @@ impl Renderer {
             // nothing, so it needs no per-face matrices either.
             let eligible = crate::lighting::entity_occluder_eligible(candidate);
             pool.slot_entity_eligible[slot as usize] = eligible;
+            // CRITICAL: a cube slot's faces are only CLEARED + rendered when the
+            // light is entity-eligible (the depth loop skips `None` face matrices).
+            // An ineligible slot's faces hold stale/uninitialized depth, so the
+            // shader must NOT sample them — `shader_facing_cube_slot` downgrades
+            // those to the sentinel (unshadowed). Unlike the spot path, where every
+            // occupied slot always renders a Clear(1.0)+world-depth baseline, a cube
+            // face carries no world geometry and no clear, so sampling an
+            // occluder-free face would read garbage (often fully shadowed) and ZERO
+            // the light when its origin is on-screen (slots are only assigned to
+            // visible lights — hence the view-dependence of the original bug).
+            shader_slot_assignment[light_idx] =
+                cube_shadow::shader_facing_cube_slot(slot, eligible);
             if !eligible {
                 continue;
             }
@@ -4296,8 +4321,11 @@ impl Renderer {
         self.queue
             .write_buffer(&self.cube_shadow_vs_uniform_buffer, 0, &vertex_uniforms);
 
-        pool.slot_assignment = slot_assignment.clone();
-        slot_assignment
+        pool.slot_assignment = slot_assignment;
+        // Return the SHADER-facing assignment (ineligible lights masked to the
+        // sentinel), not the raw rank — the caller patches this into the light
+        // buffer, and only slots with rendered occluders may be sampled.
+        shader_slot_assignment
     }
 
     /// Count of skinned entity occluder instances submitted into spot shadow

@@ -262,6 +262,30 @@ pub fn cube_pool_enabled(cube_array_supported: bool) -> bool {
     cube_array_supported
 }
 
+/// The SHADER-facing cube slot for a light that owns a ranked pool slot.
+///
+/// Cube faces are ENTITY-ONLY in v1: a slot is only ever CLEARED + rendered when
+/// its light is [`crate::lighting::entity_occluder_eligible`] (the depth loop
+/// skips slots with no per-face matrices). A point light that owns a ranked slot
+/// but is NOT entity-eligible therefore has cube faces holding stale/uninitialized
+/// depth — sampling them reads garbage (frequently fully shadowed), which would
+/// ZERO the light. (The spot path avoids this because every occupied spot slot
+/// always renders a Clear(1.0)+world-depth baseline; cube faces carry no world
+/// geometry and no clear.)
+///
+/// So the forward shader must only sample a slot that actually contains a
+/// rendered occluder. For an ineligible light this returns the
+/// [`crate::lighting::spot_shadow::NO_SHADOW_SLOT`] sentinel (unshadowed,
+/// shadow factor 1.0) — matching the off-camera (no-slot) path; for an eligible
+/// light it returns the ranked `slot` unchanged.
+pub fn shader_facing_cube_slot(slot: u32, entity_eligible: bool) -> u32 {
+    if entity_eligible {
+        slot
+    } else {
+        crate::lighting::spot_shadow::NO_SHADOW_SLOT
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -483,6 +507,36 @@ mod tests {
         assert!(
             cube_pool_enabled(true),
             "CUBE_ARRAY_TEXTURES present → pool enabled"
+        );
+    }
+
+    /// Regression (branch `claude/dynamic-mesh-shadows-jvl96j`): a dynamic point
+    /// light that owns a ranked cube slot but does NOT cast entity shadows must be
+    /// handed the SENTINEL to the shader, not its slot. Cube faces are entity-only
+    /// and are never cleared/rendered for an ineligible light, so sampling that
+    /// slot reads stale depth and zeros the light when its origin is on-screen.
+    /// Masking to the sentinel makes an occluder-free cube a no-op (shadow 1.0),
+    /// matching the off-camera path and how the spot path stays correct.
+    #[test]
+    fn occluder_free_cube_slot_reads_as_sentinel() {
+        // Eligible light keeps its slot (faces ARE rendered).
+        assert_eq!(
+            shader_facing_cube_slot(3, true),
+            3,
+            "entity-eligible light keeps its ranked cube slot"
+        );
+        // Ineligible light (e.g. an animated `light_dynamic` with
+        // casts_entity_shadows off) must downgrade to the sentinel so the forward
+        // shader takes the unshadowed path instead of sampling an uncleared cube.
+        assert_eq!(
+            shader_facing_cube_slot(0, false),
+            NO_SHADOW_SLOT,
+            "occluder-free (entity-ineligible) cube slot must read as sentinel (full light)"
+        );
+        assert_eq!(
+            shader_facing_cube_slot(5, false),
+            NO_SHADOW_SLOT,
+            "ineligibility masks regardless of which slot was ranked"
         );
     }
 

@@ -78,6 +78,14 @@ struct LightSpaceMatrices {
 }
 @group(5) @binding(2) var<uniform> light_space_matrices: LightSpaceMatrices;
 
+// Dynamic POINT-light cube-array shadow depth. The fog pass shares group 5's
+// BGL with the forward pass, so this binding is declared to keep the layout
+// self-documenting; it is BOUND but NOT sampled in v1 (a future point-light
+// beam-scattering extension would read it). Declared but unreferenced bindings
+// are valid — wgpu only rejects a shader that references a binding absent from
+// the BGL, not a BGL entry the shader omits.
+@group(5) @binding(5) var point_shadow_cube: texture_depth_cube_array;
+
 // Maximum number of fog volumes the shader can process per frame.
 // Must match MAX_FOG_VOLUMES in the Rust fog_volume module.
 const MAX_FOG_VOLUMES: u32 = 16u;

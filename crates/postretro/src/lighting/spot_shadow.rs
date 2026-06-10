@@ -149,18 +149,20 @@ pub struct SpotShadowPool {
 impl SpotShadowPool {
     /// Build the bind group layout for `@group(5)` of the forward shader.
     ///
-    /// Group 5 has five entries:
+    /// Group 5 has six entries:
     ///   0 = shadow depth array (D2Array Depth32Float; FRAGMENT | COMPUTE)
-    ///   1 = comparison sampler (FRAGMENT | COMPUTE)
+    ///   1 = comparison sampler (FRAGMENT | COMPUTE) — reused by the cube path
     ///   2 = light-space matrix uniform buffer (FRAGMENT | COMPUTE)
     ///   3 = half-res SDF shadow factor target (Rgba8Unorm; R = static, G = animated; FRAGMENT)
     ///   4 = full-res scene depth (Depth32Float; sampled via `textureLoad`; FRAGMENT)
+    ///   5 = dynamic point-light cube-array shadow depth (CubeArray Depth32Float; FRAGMENT)
     ///
-    /// Bindings 3 and 4 are owned outside the pool — the SDF shadow pass owns
-    /// the factor target and the renderer owns the scene depth view. Both are
-    /// supplied at construction time and must be re-supplied on resize via
-    /// `rebuild_bind_group`. The fog volume compute pass also binds group 5
-    /// but does not reference slots 3 or 4 — unused BGL entries are valid.
+    /// Bindings 3, 4, and 5 are owned outside the pool — the SDF shadow pass owns
+    /// the factor target, the renderer owns the scene depth view, and the cube
+    /// shadow pool owns the cube sampling view. All are supplied at construction
+    /// time and must be re-supplied on resize via `rebuild_bind_group`. The fog
+    /// volume compute pass also binds group 5 but does not reference slots 3, 4,
+    /// or 5 — unused BGL entries are valid.
     pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Spot Shadow BGL"),
@@ -171,7 +173,7 @@ impl SpotShadowPool {
     /// CPU-only entry list backing `bind_group_layout`. Split out so the forward
     /// pipeline's sampled-texture budget can be re-derived from the real BGL
     /// definitions without a GPU device (see `render::mod.rs`).
-    pub fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 5] {
+    pub fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
         [
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
@@ -221,6 +223,21 @@ impl SpotShadowPool {
                 },
                 count: None,
             },
+            // Binding 5: dynamic POINT-light cube-array shadow depth
+            // (`CubeShadowPool::sampling_view`). Sampled by the forward pass via
+            // `textureSampleCompareLevel` (reusing the binding-1 comparison
+            // sampler); BOUND but not sampled by the fog pass. FRAGMENT only —
+            // the COMPUTE-visible shadow consumers (cone cull) never read it.
+            wgpu::BindGroupLayoutEntry {
+                binding: 5,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::CubeArray,
+                    multisampled: false,
+                },
+                count: None,
+            },
         ]
     }
 
@@ -242,6 +259,7 @@ impl SpotShadowPool {
         layout: &wgpu::BindGroupLayout,
         sdf_shadow_factor_view: &wgpu::TextureView,
         scene_depth_view: &wgpu::TextureView,
+        point_cube_view: &wgpu::TextureView,
     ) -> Self {
         let array_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Spot Shadow Map Array"),
@@ -311,6 +329,7 @@ impl SpotShadowPool {
             &matrices_buffer,
             sdf_shadow_factor_view,
             scene_depth_view,
+            point_cube_view,
         );
 
         Self {
@@ -336,6 +355,7 @@ impl SpotShadowPool {
         layout: &wgpu::BindGroupLayout,
         sdf_shadow_factor_view: &wgpu::TextureView,
         scene_depth_view: &wgpu::TextureView,
+        point_cube_view: &wgpu::TextureView,
     ) {
         self.bind_group = build_bind_group(
             device,
@@ -345,6 +365,7 @@ impl SpotShadowPool {
             &self.matrices_buffer,
             sdf_shadow_factor_view,
             scene_depth_view,
+            point_cube_view,
         );
     }
 
@@ -447,6 +468,9 @@ impl SpotShadowPool {
     }
 }
 
+// Thin GPU plumbing: one positional arg per group-5 binding resource. Splitting
+// into a struct would only rename the same six resources.
+#[allow(clippy::too_many_arguments)]
 fn build_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
@@ -455,6 +479,7 @@ fn build_bind_group(
     matrices_buffer: &wgpu::Buffer,
     sdf_shadow_factor_view: &wgpu::TextureView,
     scene_depth_view: &wgpu::TextureView,
+    point_cube_view: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Spot Shadow Bind Group"),
@@ -479,6 +504,10 @@ fn build_bind_group(
             wgpu::BindGroupEntry {
                 binding: 4,
                 resource: wgpu::BindingResource::TextureView(scene_depth_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: wgpu::BindingResource::TextureView(point_cube_view),
             },
         ],
     })

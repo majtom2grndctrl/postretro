@@ -160,9 +160,9 @@ pub struct CubeShadowPool {
     /// access goes through the views below.
     #[allow(dead_code)]
     pub array_texture: wgpu::Texture,
-    /// `CubeArray` view for sampling in the forward pass. Held for ownership now;
-    /// Task 5 binds it into forward group 5. `#[allow(dead_code)]` until then.
-    #[allow(dead_code)]
+    /// `CubeArray` view for sampling in the forward pass — bound into the shared
+    /// group-5 BGL at binding 5 (`render/mod.rs`), sampled by the point-light
+    /// case of the forward light loop.
     pub sampling_view: wgpu::TextureView,
     /// Per-face `D2Array` render-attachment views, indexed `slot*6 + face`.
     pub face_views: Vec<wgpu::TextureView>,
@@ -255,6 +255,37 @@ impl CubeShadowPool {
 /// iff the adapter reports `CUBE_ARRAY_TEXTURES`.
 pub fn cube_pool_enabled(cube_array_supported: bool) -> bool {
     cube_array_supported
+}
+
+/// Minimal 1-slot (6-layer) cube-array depth view backing the forward group-5
+/// cube binding when the ranking pool is absent (no dynamic point lights ranked,
+/// or the pool is otherwise disabled). The forward shader gates every cube
+/// sample on a per-light cube slot (sentinel `NO_SHADOW_SLOT`), so a bound dummy
+/// is never sampled — it only satisfies the static BGL layout. Like the real
+/// pool, this needs `CUBE_ARRAY_TEXTURES`; the renderer creates it on the same
+/// adapter-capability gate.
+pub fn dummy_cube_sampling_view(device: &wgpu::Device) -> wgpu::TextureView {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Cube Shadow Dummy"),
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: CUBE_FACES as u32,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: SHADOW_DEPTH_FORMAT,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("Cube Shadow Dummy View"),
+        dimension: Some(wgpu::TextureViewDimension::CubeArray),
+        base_array_layer: 0,
+        array_layer_count: Some(CUBE_FACES as u32),
+        ..Default::default()
+    })
 }
 
 #[cfg(test)]
@@ -487,5 +518,43 @@ mod tests {
         assert_eq!(CubeShadowPool::face_layer(0, 5), 5);
         assert_eq!(CubeShadowPool::face_layer(1, 0), 6);
         assert_eq!(CubeShadowPool::face_layer(2, 3), 15);
+    }
+
+    // --- WGSL/Rust constant sync (forward cube sampling) ---------------------
+
+    /// The forward shader reconstructs each cube fragment's NDC depth from the
+    /// SAME near plane and face resolution the depth pass projected with. Pin the
+    /// WGSL literals against the Rust source of truth so a change to one without
+    /// the other (which would silently mis-shadow or break the PCF spacing) fails
+    /// here rather than only on a live GPU.
+    #[test]
+    fn forward_cube_sampling_constants_match_pool() {
+        const FORWARD_SRC: &str = include_str!("../shaders/forward.wgsl");
+
+        // CUBE_NEAR_CLIP must match `cube_face_matrices`' near plane.
+        let near_marker = "const CUBE_NEAR_CLIP: f32 = ";
+        let near = FORWARD_SRC
+            .find(near_marker)
+            .map(|i| i + near_marker.len())
+            .and_then(|start| {
+                let end = FORWARD_SRC[start..].find(';')? + start;
+                FORWARD_SRC[start..end].trim().parse::<f32>().ok()
+            })
+            .expect("forward.wgsl must declare CUBE_NEAR_CLIP");
+        assert_eq!(
+            near, CUBE_NEAR_CLIP,
+            "forward.wgsl CUBE_NEAR_CLIP must match cube_shadow::CUBE_NEAR_CLIP"
+        );
+
+        // The PCF tap spacing divides by the cube face resolution (512.0). If the
+        // resolution changes, the WGSL literal must follow.
+        assert_eq!(
+            CUBE_FACE_RESOLUTION, 512,
+            "forward.wgsl PCF spacing hard-codes 512.0; update it if the resolution changes"
+        );
+        assert!(
+            FORWARD_SRC.contains("/ 512.0)"),
+            "forward.wgsl must scale the PCF tap by the cube face resolution (512.0)"
+        );
     }
 }

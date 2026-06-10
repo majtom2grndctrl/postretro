@@ -1102,6 +1102,10 @@ pub struct Renderer {
     /// Dynamic point-light cube-array shadow pool. `None` when the adapter lacks
     /// `CUBE_ARRAY_TEXTURES` — point shadows then cleanly off, spot unaffected.
     cube_shadow_pool: Option<crate::lighting::cube_shadow::CubeShadowPool>,
+    /// Minimal 1-slot cube-array depth view that backs the forward group-5 cube
+    /// binding when `cube_shadow_pool` is `None`. Held so the resize bind-group
+    /// rebuild can re-reference it. Never sampled (slot sentinel gates it).
+    cube_dummy_sampling_view: wgpu::TextureView,
     /// Per-(cube slot, face) light-space matrix uniforms, dynamic-offset like
     /// `shadow_vs_uniform_buffer`. Slot `slot*6 + face` carries that face's
     /// matrix; the skinned-depth pass selects it by dynamic offset.
@@ -2032,14 +2036,31 @@ impl Renderer {
             surface_config.height,
         );
 
+        // Cube point-shadow pool — built before the spot pool because the
+        // spot-shadow bind group (the shared group-5 BGL) references the cube
+        // sampling view at binding 5. Disabled (None) when the adapter lacks
+        // CUBE_ARRAY_TEXTURES; the dummy 1-slot cube view then backs the binding
+        // and the forward shader gates every cube sample on a per-light slot
+        // sentinel so the dummy is never sampled.
+        let cube_shadow_pool =
+            crate::lighting::cube_shadow::CubeShadowPool::new(&device, cube_array_supported);
+        let cube_dummy_sampling_view =
+            crate::lighting::cube_shadow::dummy_cube_sampling_view(&device);
+        let cube_sampling_view = cube_shadow_pool
+            .as_ref()
+            .map(|p| &p.sampling_view)
+            .unwrap_or(&cube_dummy_sampling_view);
+
         // Now that the SDF shadow factor target + scene depth view both
         // exist, build the spot-shadow pool — its bind group references
-        // both targets at bindings 3/4. See `SpotShadowPool::new` docs.
+        // both targets at bindings 3/4 and the cube sampling view at binding 5.
+        // See `SpotShadowPool::new` docs.
         let spot_shadow_pool = SpotShadowPool::new(
             &device,
             &spot_shadow_bgl,
             &sdf_shadow_pass.shadow_view,
             &depth_view,
+            cube_sampling_view,
         );
         log::info!(
             "[Renderer] Spot shadow pool initialized (8 × 1024×1024 Depth32Float = 32 MiB VRAM)"
@@ -2399,14 +2420,13 @@ impl Renderer {
             }],
         });
 
-        // --- Cube point-shadow pool ------------------------------------------
-        // Disabled (None) when the adapter lacks CUBE_ARRAY_TEXTURES. Its
-        // per-face light-space matrices ride a dynamic-offset uniform buffer
-        // shaped exactly like `shadow_vs_*` (reusing `shadow_vs_bgl`), one slot
-        // per `(cube slot, face)` pair. The skinned-depth pipeline binds it at
-        // group 0 just like the spot path, proving the cube-ready contract.
-        let cube_shadow_pool =
-            crate::lighting::cube_shadow::CubeShadowPool::new(&device, cube_array_supported);
+        // --- Cube point-shadow VS uniforms -----------------------------------
+        // The cube pool itself was built earlier (its sampling view feeds the
+        // group-5 BGL). Its per-face light-space matrices ride a dynamic-offset
+        // uniform buffer shaped exactly like `shadow_vs_*` (reusing
+        // `shadow_vs_bgl`), one slot per `(cube slot, face)` pair. The
+        // skinned-depth pipeline binds it at group 0 just like the spot path,
+        // proving the cube-ready contract.
         let cube_face_count =
             crate::lighting::cube_shadow::CUBE_COUNT * crate::lighting::cube_shadow::CUBE_FACES;
         let cube_shadow_vs_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -2562,6 +2582,7 @@ impl Renderer {
             last_view_proj: Mat4::IDENTITY,
             spot_shadow_pool,
             cube_shadow_pool,
+            cube_dummy_sampling_view,
             cube_shadow_vs_uniform_buffer,
             cube_shadow_vs_bind_group,
             shadow_vs_uniform_buffer,
@@ -3578,11 +3599,20 @@ impl Renderer {
         // Group-5 bind group references both the SDF shadow factor target
         // and the scene depth — both just got recreated, so rebuild.
         let spot_shadow_bgl = SpotShadowPool::bind_group_layout(&self.device);
+        // The cube sampling view is surface-size-independent, but the group-5
+        // bind group is fully rebuilt here, so re-reference it (pool view when
+        // present, else the dummy that backs the binding).
+        let cube_sampling_view = self
+            .cube_shadow_pool
+            .as_ref()
+            .map(|p| &p.sampling_view)
+            .unwrap_or(&self.cube_dummy_sampling_view);
         self.spot_shadow_pool.rebuild_bind_group(
             &self.device,
             &spot_shadow_bgl,
             &self.sdf_shadow_pass.shadow_view,
             &self.depth_view,
+            cube_sampling_view,
         );
         // The UI pass derives its device scale from `surface_config` at encode
         // time, so the splash needs no per-resize hook — it re-projects against
@@ -3976,28 +4006,57 @@ impl Renderer {
             &self.last_view_proj,
         );
 
+        // Rank dynamic POINT lights into the cube pool and upload their per-face
+        // matrices. Returns the candidate-indexed cube slot assignment (empty
+        // when the pool is disabled), which is patched into the light buffer
+        // below alongside the spot slots. Runs before the patch block so both
+        // slot fields land in one upload.
+        let stride = self.shadow_vs_stride as usize;
+        let cube_slot_assignment = self.update_cube_light_slots(
+            camera_position,
+            camera_near_clip,
+            &visible_lights,
+            stride,
+        );
+
         // The GPU lights buffer is keyed on `level_lights`. Translate slot
         // assignments from candidate-index space into `level_lights`-index
         // space by identity-matching (origin + light_type). Both sets are
         // `is_dynamic`-filtered snapshots of `world.lights`, so every candidate
-        // is in `level_lights` and receives its slot normally.
+        // is in `level_lights` and receives its slot normally. The cube
+        // assignment is re-keyed the same way (empty → all-sentinel).
         let level_slots = slot_assignment_for_level_lights(
             &self.level_lights,
             &self.shadow_candidate_lights,
             &slot_assignment,
         );
+        let level_cube_slots = if cube_slot_assignment.is_empty() {
+            vec![crate::lighting::spot_shadow::NO_SHADOW_SLOT; self.level_lights.len()]
+        } else {
+            slot_assignment_for_level_lights(
+                &self.level_lights,
+                &self.shadow_candidate_lights,
+                &cube_slot_assignment,
+            )
+        };
 
-        // Patch the per-light shadow slot field onto the CPU mirror of the
-        // light buffer, then re-upload only if a slot changed. The mirror holds
-        // whatever was last uploaded — the animated bridge's base bytes once it
-        // has run, otherwise this fn's static pack. Patching (rather than
-        // re-packing static `level_lights`) is what lets the slot and the
-        // bridge's animated base data coexist: the two writers share one buffer,
-        // so a full re-pack here would clobber the animation, and the bridge's
-        // sentinel slot would clobber the shadow. See `upload_bridge_lights`.
+        // Patch the per-light spot AND cube shadow-slot fields onto the CPU
+        // mirror of the light buffer, then re-upload only if a slot changed. The
+        // mirror holds whatever was last uploaded — the animated bridge's base
+        // bytes once it has run, otherwise this fn's static pack. Patching
+        // (rather than re-packing static `level_lights`) is what lets the slots
+        // and the bridge's animated base data coexist: the two writers share one
+        // buffer, so a full re-pack here would clobber the animation, and the
+        // bridge's sentinel slot would clobber the shadow. The spot slot rides
+        // `cone_angles_and_pad.z` and the cube slot rides `.w` — disjoint bytes,
+        // so the two patches compose. See `upload_bridge_lights`.
         let expected_len = self.level_lights.len() * crate::lighting::GPU_LIGHT_SIZE;
         if self.last_lights_upload.len() == expected_len {
-            if crate::lighting::patch_shadow_slots(&mut self.last_lights_upload, &level_slots) {
+            let spot_changed =
+                crate::lighting::patch_shadow_slots(&mut self.last_lights_upload, &level_slots);
+            let cube_changed =
+                crate::lighting::patch_cube_slots(&mut self.last_lights_upload, &level_cube_slots);
+            if spot_changed || cube_changed {
                 self.queue
                     .write_buffer(&self.lights_buffer, 0, &self.last_lights_upload);
             }
@@ -4007,6 +4066,7 @@ impl Renderer {
             // frame-zero still uploads valid lights + slots and seeds the mirror.
             let mut scratch = std::mem::take(&mut self.lights_pack_scratch);
             pack_lights_with_slots_into(&mut scratch, &self.level_lights, &level_slots);
+            crate::lighting::patch_cube_slots(&mut scratch, &level_cube_slots);
             if scratch != self.last_lights_upload {
                 self.queue.write_buffer(&self.lights_buffer, 0, &scratch);
                 self.last_lights_upload.clear();
@@ -4020,7 +4080,6 @@ impl Renderer {
         // the candidate list — that's the index space `slot_assignment` is
         // keyed on.
         const MAT_BYTES: usize = 64;
-        let stride = self.shadow_vs_stride as usize;
         let mut fragment_matrices =
             vec![0u8; MAT_BYTES * crate::lighting::spot_shadow::SHADOW_POOL_SIZE];
         let mut vertex_uniforms =
@@ -4068,13 +4127,15 @@ impl Renderer {
             .write_buffer(&self.shadow_vs_uniform_buffer, 0, &vertex_uniforms);
 
         self.spot_shadow_pool.slot_assignment = slot_assignment;
-
-        self.update_cube_light_slots(camera_position, camera_near_clip, &visible_lights, stride);
     }
 
     /// Rank dynamic POINT lights into the cube pool and write each occupied
     /// slot's 6 per-face light-space matrices into the cube VS uniform buffer.
-    /// No-op when the pool is disabled (adapter lacks `CUBE_ARRAY_TEXTURES`).
+    /// Returns the candidate-indexed cube slot assignment so the caller can
+    /// patch each point light's cube slot into the forward light buffer
+    /// (`cone_angles_and_pad.w`). An EMPTY return means the pool is disabled
+    /// (adapter lacks `CUBE_ARRAY_TEXTURES`) — every point light then keeps the
+    /// sentinel and does unshadowed attenuation.
     ///
     /// Shares the spot path's per-light eligibility (`visible_lights`) and the
     /// SHARED scoring/drop ranking core, so cube and spot slot assignment cannot
@@ -4086,11 +4147,11 @@ impl Renderer {
         camera_near_clip: f32,
         visible_lights: &[bool],
         stride: usize,
-    ) {
+    ) -> Vec<u32> {
         use crate::lighting::cube_shadow;
 
         let Some(pool) = self.cube_shadow_pool.as_mut() else {
-            return;
+            return Vec::new();
         };
 
         let slot_assignment = cube_shadow::rank_point_lights(
@@ -4137,7 +4198,8 @@ impl Renderer {
         self.queue
             .write_buffer(&self.cube_shadow_vs_uniform_buffer, 0, &vertex_uniforms);
 
-        pool.slot_assignment = slot_assignment;
+        pool.slot_assignment = slot_assignment.clone();
+        slot_assignment
     }
 
     /// Count of skinned entity occluder instances submitted into spot shadow
@@ -5366,9 +5428,13 @@ mod tests {
         ];
         // Per-group expectations document the inventory; if a BGL changes, the
         // failing index points straight at the group that drifted.
+        // Group 5 carries 4 sampled textures: spot depth array (b0), SDF shadow
+        // factor (b3), SDF scene depth (b4), and the dynamic point-light cube
+        // depth (b5). The comparison sampler (b1) and matrix uniform (b2) are not
+        // textures. Total forward sampled textures: 14 (≤ 16 Metal/WebGPU floor).
         assert_eq!(
             per_group,
-            [0, 3, 0, 3, 4, 3],
+            [0, 3, 0, 3, 4, 4],
             "forward BGL texture inventory changed"
         );
 

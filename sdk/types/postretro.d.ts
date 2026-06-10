@@ -278,7 +278,7 @@ declare module "postretro" {
     direction: ReadonlyArray<Vec3> | null;
   };
 
-  export type LightComponent = { origin: Vec3; lightType: LightKind; intensity: number; color: Vec3; falloffModel: FalloffKind; falloffRange: number; coneAngleInner: number | null; coneAngleOuter: number | null; coneDirection: Vec3 | null; castShadows: boolean; isDynamic: boolean; animation: LightAnimation | null };
+  export type LightComponent = { origin: Vec3; lightType: LightKind; intensity: number; color: Vec3; falloffModel: FalloffKind; falloffRange: number; coneAngleInner: number | null; coneAngleOuter: number | null; coneDirection: Vec3 | null; isDynamic: boolean; animation: LightAnimation | null };
 
   /** Component-name literals accepted by `worldQuery` and the `world.query` SDK wrapper. New queryable component types extend this union. */
   export type WorldQueryComponent =

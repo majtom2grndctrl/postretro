@@ -175,21 +175,20 @@ pub struct MapLight {
     pub cone_angle_inner: f32,
     pub cone_angle_outer: f32,
     pub cone_direction: [f32; 3],
-    /// Shadow-map support not yet wired; shader's `shadow_info` slot is zeroed at upload.
-    pub cast_shadows: bool,
     /// Internal/seam-only flag for the geometry-moving light class
     /// (position/aim animation). v1 has no authoring surface — every
     /// authored light parses `false`. Intensity-only animation lives on
     /// the animated-baked path (Task 2c), not here. Legacy PRLs retain
     /// their stored value on parse.
     pub is_dynamic: bool,
-    /// Per-light opt-in for spot-shadow-pool eligibility for dynamic entities
-    /// (enemies / moving meshes). Mirrors FGD `_cast_entity_shadows`. Default
-    /// `false`. This flag is the opt-in path for **non-dynamic** lights;
-    /// dynamic-tier lights (`is_dynamic == true`) are pool-eligible by default
-    /// via `is_dynamic || casts_entity_shadows`, so a `light_dynamic_spot` with
-    /// this `false` still casts world shadows. Legacy PRLs without this field
-    /// deserialize as `false`.
+    /// Whether this light casts shadows from dynamic ENTITIES (enemies / moving
+    /// meshes). Mirrors FGD `_cast_entity_shadows`. Only ever `true` on
+    /// dynamic-tier lights (`is_dynamic`) — the compiler warn-clears it on baked
+    /// lights — so it is the second half of the entity-occluder gate
+    /// (`entity_occluder_eligible` ≡ `casts_entity_shadows && is_dynamic`). The
+    /// light's own WORLD-shadow pool eligibility rides `is_dynamic` alone, so a
+    /// dynamic light with this `false` still casts its world shadow, it just
+    /// draws no entity occluders.
     pub casts_entity_shadows: bool,
     /// Slot into the SH-volume animated-light descriptor table when the
     /// compiler reserved one for this map light, else `None`. Resolved once
@@ -395,7 +394,6 @@ fn convert_alpha_lights(section: AlphaLightsSection) -> Vec<MapLight> {
                 cone_angle_inner: r.cone_angle_inner,
                 cone_angle_outer: r.cone_angle_outer,
                 cone_direction: r.cone_direction,
-                cast_shadows: r.cast_shadows,
                 is_dynamic: r.is_dynamic,
                 casts_entity_shadows: r.casts_entity_shadows,
                 animated_slot: None, // populated from ShVolume slot table later in load
@@ -1852,7 +1850,6 @@ mod tests {
                     cone_angle_inner: 0.0,
                     cone_angle_outer: 0.0,
                     cone_direction: [0.0, 0.0, 0.0],
-                    cast_shadows: true,
                     is_dynamic: false,
                     casts_entity_shadows: false,
                     leaf_index: 0,
@@ -1868,7 +1865,6 @@ mod tests {
                     cone_angle_inner: std::f32::consts::FRAC_PI_6,
                     cone_angle_outer: std::f32::consts::FRAC_PI_4,
                     cone_direction: [0.0, -1.0, 0.0],
-                    cast_shadows: false,
                     is_dynamic: true,
                     casts_entity_shadows: true,
                     leaf_index: 1,
@@ -1884,7 +1880,6 @@ mod tests {
                     cone_angle_inner: 0.0,
                     cone_angle_outer: 0.0,
                     cone_direction: [0.0, -0.70710677, -0.70710677],
-                    cast_shadows: true,
                     is_dynamic: false,
                     casts_entity_shadows: false,
                     leaf_index: 2,
@@ -1930,7 +1925,6 @@ mod tests {
         assert_eq!(world.lights[0].intensity, 300.0);
         assert_eq!(world.lights[0].falloff_model, FalloffModel::InverseSquared);
         assert!((world.lights[0].falloff_range - 50.0).abs() < 1e-5);
-        assert!(world.lights[0].cast_shadows);
         assert_eq!(world.lights[0].leaf_index, 0);
 
         assert_eq!(world.lights[1].light_type, LightType::Spot);
@@ -1938,7 +1932,6 @@ mod tests {
         assert!((world.lights[1].cone_angle_inner - std::f32::consts::FRAC_PI_6).abs() < 1e-4);
         assert!((world.lights[1].cone_angle_outer - std::f32::consts::FRAC_PI_4).abs() < 1e-4);
         assert_eq!(world.lights[1].cone_direction, [0.0, -1.0, 0.0]);
-        assert!(!world.lights[1].cast_shadows);
         assert_eq!(world.lights[1].leaf_index, 1);
 
         assert_eq!(world.lights[2].light_type, LightType::Directional);

@@ -51,7 +51,8 @@ use crate::model::skeleton::{AnimationClip, Skeleton};
 use crate::model::{BonePaletteEntry, ModelHandle};
 use crate::prl::LevelWorld;
 use crate::render::mesh_instances::{
-    JointCounts, MAX_INSTANCES, MAX_PALETTE_ENTRIES, MeshFramePlan, instance_phase,
+    JointCounts, MAX_INSTANCES, MAX_PALETTE_ENTRIES, MeshFramePlan, instance_casts_into_cone,
+    instance_phase,
 };
 use crate::visibility::VisibleCells;
 
@@ -91,6 +92,12 @@ const SKINNED_MESH_SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/sh_sample.wgsl"),
 );
 
+/// Depth-only skinned shader: position + joints + weights, skinned by the shared
+/// `skin_matrix` kernel and projected by a per-render light-space matrix (group
+/// 0). Renders animated entity occluders into a shadow map. Standalone (no
+/// helper append) — it declares only the buffers it reads.
+const SKINNED_DEPTH_SHADER_SOURCE: &str = include_str!("../shaders/skinned_depth.wgsl");
+
 /// One uploaded skinned model: GPU vertex + index buffers, its per-submesh
 /// material bind groups, and the CPU-side animation data (skeleton + first clip)
 /// the per-frame palette is sampled from. A single-material model has one
@@ -115,6 +122,21 @@ struct UploadedModel {
 pub struct MeshPass {
     pipeline: wgpu::RenderPipeline,
 
+    /// Depth-only skinned pipeline (shadow occluders). Skins vertices with the
+    /// same `skin_matrix` kernel and projects by a per-render light-space matrix
+    /// (group 0) supplied by the caller — one pipeline for both spot slots and
+    /// cube faces. Shares group 3 (palette + instances) with `pipeline`,
+    /// so it reads the SAME per-frame posed buffers with no extra upload.
+    /// That "no extra upload" guarantee rests on an ordering invariant enforced
+    /// OUTSIDE this struct: the pose/palette/instance buffers are written once per
+    /// frame by the palette hoist (`plan_and_upload`, called from `render/mod.rs`'s
+    /// frame loop after `update_dynamic_light_slots`) BEFORE the shadow depth loop
+    /// reads them, and nothing rewrites them between the hoist and the forward draw.
+    /// A future agent inserting a buffer-writing step between the hoist and the
+    /// depth passes would silently break this — keep the hoist immediately ahead of
+    /// every shadow pass that binds group 3.
+    depth_pipeline: wgpu::RenderPipeline,
+
     /// Shared bone-palette storage buffer, sized for `MAX_PALETTE_ENTRIES`
     /// entries. Each instance's contiguous run of joints is written at its
     /// planned base index before the draw is recorded.
@@ -134,6 +156,13 @@ pub struct MeshPass {
     /// One entry per distinct model; mirrors `SmokePass::sheets`. The level-load
     /// step (Task D) populates this via [`MeshPass::insert_model`].
     models: HashMap<ModelHandle, UploadedModel>,
+
+    /// Per-model LOCAL-space AABB, keyed by handle, populated at `insert_model`
+    /// from the CPU `SkinnedMesh::bounds`. Kept on the cache (not in
+    /// `UploadedModel`, which stays GPU-only) so the GPU-free frame planner can
+    /// stamp each `PlannedInstance` with its model's bound for the CPU per-light
+    /// caster cull — the renderer's GPU draw never reads it.
+    model_bounds: HashMap<ModelHandle, crate::lighting::cone_frustum::Aabb>,
 
     /// Optional per-frame pose-sampling measurement. `Some` only when
     /// `POSTRETRO_GPU_TIMING=1` (cached at construction so the hot path never
@@ -202,15 +231,24 @@ impl PoseSampleStats {
 }
 
 impl MeshPass {
-    /// Build the skinned-mesh pipeline. `camera_bgl` and `material_bgl` are the
-    /// renderer-owned layouts shared with the forward pass (group 0 = camera
-    /// uniform, group 1 = material). Mirrors `SmokePass::new`'s shape.
+    /// Build the skinned-mesh pipelines (forward + depth-only). `camera_bgl` and
+    /// `material_bgl` are the renderer-owned layouts shared with the forward pass
+    /// (group 0 = camera uniform, group 1 = material). `light_space_bgl` is the
+    /// renderer-owned light-space-matrix BGL (a 64-byte mat4x4 dynamic-offset
+    /// uniform — the same `shadow_vs_bgl` the world spot-shadow depth pipeline
+    /// uses); the depth-only pipeline binds it at group 0 so spot slots (and later
+    /// cube faces) supply the per-render light-space matrix. `shadow_depth_format`
+    /// is the shadow-map depth format the depth pipeline writes. Mirrors
+    /// `SmokePass::new`'s shape.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &wgpu::Device,
         surface_format: wgpu::TextureFormat,
         depth_format: wgpu::TextureFormat,
+        shadow_depth_format: wgpu::TextureFormat,
         camera_bgl: &wgpu::BindGroupLayout,
         material_bgl: &wgpu::BindGroupLayout,
+        light_space_bgl: &wgpu::BindGroupLayout,
         sh_volume_bgl: &wgpu::BindGroupLayout,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -365,6 +403,88 @@ impl MeshPass {
             cache: None,
         });
 
+        // --- Depth-only skinned pipeline (shadow occluders) ------------------
+        // Its OWN layout: group 0 = the per-render light-space matrix BGL
+        // (dynamic-offset 64-byte mat4x4, shared with the world spot-shadow
+        // depth pipeline), group 3 = the SAME instance BGL as the forward pass
+        // (palette + per-instance SSBO). Groups 1, 2, 4 are omitted — depth-only
+        // reads no material, lighting, or SH. Forcing group 3 to index 3 keeps
+        // the forward pass's group-3 bind group reusable here without re-upload.
+        let depth_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Skinned Depth Shader"),
+            source: wgpu::ShaderSource::Wgsl(SKINNED_DEPTH_SHADER_SOURCE.into()),
+        });
+        let depth_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Skinned Depth Pipeline Layout"),
+                bind_group_layouts: &[
+                    Some(light_space_bgl),
+                    None,
+                    None,
+                    Some(&instance_bind_group_layout),
+                ],
+                immediate_size: 0,
+            });
+        let depth_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Skinned Depth Pipeline"),
+            layout: Some(&depth_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &depth_shader,
+                entry_point: Some("vs_main"),
+                // Position (loc 0) + joints (loc 4) + weights (loc 5) only — the
+                // color attributes are dropped. Offsets match the forward layout
+                // so the SAME vertex buffer binds: joints at byte 24, weights at
+                // 28; stride is the full `SkinnedVertex` (the skipped attributes
+                // still occupy the stride, they are simply not declared).
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<crate::model::mesh::SkinnedVertex>()
+                        as wgpu::BufferAddress,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            offset: 0,
+                            shader_location: 0,
+                            format: wgpu::VertexFormat::Float32x3,
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 24,
+                            shader_location: 4,
+                            format: wgpu::VertexFormat::Uint8x4,
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 28,
+                            shader_location: 5,
+                            format: wgpu::VertexFormat::Unorm8x4,
+                        },
+                    ],
+                }],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            // Depth-only into the shadow map: write depth, no color target, with
+            // the same acne-suppressing bias the world spot-shadow pass uses.
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: shadow_depth_format,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState {
+                    constant: 2,
+                    slope_scale: 1.5,
+                    clamp: 0.0,
+                },
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: None,
+            multiview_mask: None,
+            cache: None,
+        });
+
         // Shared bone-palette storage buffer, sized for the full per-frame
         // budget. Default-filled to identity (bind pose) below so an
         // un-sampled run still renders.
@@ -408,10 +528,12 @@ impl MeshPass {
 
         Self {
             pipeline,
+            depth_pipeline,
             palette_buffer,
             instance_buffer,
             instance_bind_group,
             models: HashMap::new(),
+            model_bounds: HashMap::new(),
             pose_sample_stats,
         }
     }
@@ -445,6 +567,10 @@ impl MeshPass {
             contents: bytemuck::cast_slice(&mesh.indices),
             usage: wgpu::BufferUsages::INDEX,
         });
+        // Stash the CPU-side local bound for the planner (drives the per-light
+        // caster cull). Lives on the cache, NOT in `UploadedModel` — the GPU draw
+        // never reads it.
+        self.model_bounds.insert(handle.clone(), mesh.bounds);
         self.models.insert(
             handle,
             UploadedModel {
@@ -474,28 +600,31 @@ impl MeshPass {
         queue.write_buffer(&self.palette_buffer, 0, bytemuck::cast_slice(&entries));
     }
 
-    /// Write this frame's per-instance SSBO + bone-palette runs from `plan`, then
-    /// record one instanced `draw_indexed` per model per submesh.
+    /// Plan-sample-upload step: write this frame's per-instance SSBO entries and
+    /// sample every instance's clip into its bone-palette run. NO draws recorded.
+    ///
+    /// This is the pose/upload HOIST: the renderer runs it AFTER
+    /// `update_dynamic_light_slots` and BEFORE the spot-shadow depth loop, so the
+    /// skinned-depth pass (shadow occluders) and the forward mesh draw both read
+    /// the SAME already-posed `palette_buffer`/`instance_buffer`. Nothing rewrites
+    /// these buffers between the shadow loop and the forward draw, so there is no
+    /// one-frame pose lag between an entity and its shadow.
     ///
     /// For each planned instance: pack its SSBO entry (model matrix + palette
     /// base) and sample its model's clip into the palette at that base, at a
     /// per-instance phase derived from the instance's seed (so a wave is not
     /// lock-step). `now_seconds` is the render clock; `scratch` is the renderer's
-    /// reusable pose buffer (kept off the GPU pass so a steady-state frame
-    /// allocates nothing). Group 0 (camera) and group 4 (SH irradiance volume)
-    /// must be set by the caller before recording — the renderer owns the camera
-    /// and `ShVolumeResources` bind groups (camera is shared across passes; SH
-    /// uses the mesh-superset `mesh_bind_group` here, not the base bind group).
+    /// reusable pose buffer (kept off any GPU pass so a steady-state frame
+    /// allocates nothing).
     ///
     /// Cull is the caller's job — see [`mesh_visible`]; the plan already holds
     /// only surviving, in-budget instances.
     ///
     /// Takes `&mut self` only for the optional pose-sampling measurement
-    /// (`POSTRETRO_GPU_TIMING=1`); the GPU work itself reads the cache immutably.
-    pub fn render_frame(
+    /// (`POSTRETRO_GPU_TIMING=1`); the cache itself is read immutably.
+    pub fn plan_and_upload(
         &mut self,
         queue: &wgpu::Queue,
-        pass: &mut wgpu::RenderPass<'_>,
         plan: &MeshFramePlan,
         now_seconds: f32,
         scratch: &mut Vec<BonePaletteEntry>,
@@ -503,12 +632,6 @@ impl MeshPass {
         if plan.groups.is_empty() {
             return;
         }
-
-        pass.set_pipeline(&self.pipeline);
-        // Group 3 (palette + instance SSBO) is shared across every group/submesh
-        // this frame — set once. The shader selects each instance's run via
-        // `@builtin(instance_index)` against the densely-packed SSBO.
-        pass.set_bind_group(3, &self.instance_bind_group, &[]);
 
         // Per-frame pose-sampling tallies, folded into `pose_sample_stats` after
         // the loop (only when the gate is on, so an unmeasured frame pays only
@@ -523,9 +646,6 @@ impl MeshPass {
                 // Planner only emits groups for cached models, but guard anyway.
                 continue;
             };
-            if model.submeshes.is_empty() {
-                continue;
-            }
 
             // Write each instance's SSBO entry + sample its palette run.
             for (i, inst) in group.instances.iter().enumerate() {
@@ -562,6 +682,43 @@ impl MeshPass {
                     }
                 }
             }
+        }
+
+        // Fold this frame's pose-sampling tallies in and flush the rate-limited
+        // line when the interval elapses. Only `Some` under POSTRETRO_GPU_TIMING.
+        if let Some(stats) = self.pose_sample_stats.as_mut() {
+            stats.record_frame(sampled_instances, sample_elapsed);
+        }
+    }
+
+    /// Record the forward skinned-mesh draws from the already-uploaded buffers.
+    ///
+    /// Must run AFTER [`MeshPass::plan_and_upload`] has populated the palette +
+    /// instance buffers for this `plan` — this method records draws only, it does
+    /// NOT touch the buffers, so the data it draws is the identical posed data the
+    /// shadow loop read. One instanced `draw_indexed` per model per submesh.
+    ///
+    /// Group 0 (camera) and group 4 (SH irradiance volume) must be set by the
+    /// caller before recording — the renderer owns those bind groups (camera is
+    /// shared across passes; SH uses the mesh-superset `mesh_bind_group`).
+    pub fn record_draws(&self, pass: &mut wgpu::RenderPass<'_>, plan: &MeshFramePlan) {
+        if plan.groups.is_empty() {
+            return;
+        }
+
+        pass.set_pipeline(&self.pipeline);
+        // Group 3 (palette + instance SSBO) is shared across every group/submesh
+        // this frame — set once. The shader selects each instance's run via
+        // `@builtin(instance_index)` against the densely-packed SSBO.
+        pass.set_bind_group(3, &self.instance_bind_group, &[]);
+
+        for group in &plan.groups {
+            let Some(model) = self.models.get(&group.model) else {
+                continue;
+            };
+            if model.submeshes.is_empty() {
+                continue;
+            }
 
             // One instanced draw per submesh over this group's contiguous
             // instance range. The base instance stays 0 — the palette base
@@ -580,12 +737,105 @@ impl MeshPass {
                 pass.draw_indexed(indices.clone(), 0, instance_range.clone());
             }
         }
+    }
 
-        // Fold this frame's pose-sampling tallies in and flush the rate-limited
-        // line when the interval elapses. Only `Some` under POSTRETRO_GPU_TIMING.
-        if let Some(stats) = self.pose_sample_stats.as_mut() {
-            stats.record_frame(sampled_instances, sample_elapsed);
+    /// Record skinned ENTITY occluders into a shadow map through the
+    /// parameterized depth-only path, culled per-slot by the slot's cone frustum.
+    /// `light_space_bind_group` + `dynamic_offset` select the per-render
+    /// light-space matrix at group 0 (the spot path passes the renderer's
+    /// `shadow_vs_bind_group` and the per-slot offset; a cube path would pass a
+    /// per-face uniform) — nothing here assumes one slot per light or a 2D target,
+    /// proving the cube-ready contract.
+    ///
+    /// `cone_planes` are the slot's 6 cone-frustum planes (from the slot's
+    /// light-space matrix). Each planned instance's local bound is transformed by
+    /// its world matrix and tested against the cone; only intersecting instances
+    /// are drawn into the slot. Entities are not in the world BVH, so this cull is
+    /// per-instance CPU (distinct from the GPU world cull). Returns the count of
+    /// instances actually submitted into this slot, so the caller can tally the
+    /// per-frame submitted-occluder counter that verifies the out-of-cone
+    /// acceptance criterion — no GPU readback.
+    ///
+    /// The caller owns the target view (it begins the render pass against the
+    /// slot's depth attachment) and supplies the light-space matrix via the bind
+    /// group; this method binds the depth pipeline + the SHARED group-3 instance
+    /// data and records the draws from the SAME palette/instance buffers
+    /// [`MeshPass::plan_and_upload`] populated. No per-frame buffer writes here —
+    /// it reads the already-posed data.
+    ///
+    /// Surviving instances are drawn as per-instance `draw_indexed` calls
+    /// (`instance_index..+1`) because the cone cull selects an arbitrary subset of
+    /// each group's contiguous SSBO range; wave counts are small (a few dozen), so
+    /// per-instance draws stay cheap. The base instance is the absolute index into
+    /// the dense SSBO, so `@builtin(instance_index)` selects this occluder's entry —
+    /// the SAME `first_instance`-borne addressing the forward path uses, with the
+    /// SAME documented DX12 exposure (gfx-rs/wgpu#2471). See the per-draw comment at
+    /// the `draw_indexed` site below; the per-instance palette base still travels in
+    /// the SSBO entry, never in `first_instance`.
+    pub fn record_skinned_depth(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        plan: &MeshFramePlan,
+        light_space_bind_group: &wgpu::BindGroup,
+        dynamic_offset: u32,
+        cone_planes: &[glam::Vec4; 6],
+    ) -> u32 {
+        if plan.groups.is_empty() {
+            return 0;
         }
+
+        pass.set_pipeline(&self.depth_pipeline);
+        pass.set_bind_group(0, light_space_bind_group, &[dynamic_offset]);
+        // Same shared group-3 instance data as the forward pass — the depth
+        // layout forces it to index 3 so the bind group is reusable verbatim.
+        pass.set_bind_group(3, &self.instance_bind_group, &[]);
+
+        let mut submitted: u32 = 0;
+        for group in &plan.groups {
+            let Some(model) = self.models.get(&group.model) else {
+                continue;
+            };
+            if model.submeshes.is_empty() {
+                continue;
+            }
+            pass.set_vertex_buffer(0, model.vertex_buffer.slice(..));
+            pass.set_index_buffer(model.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            for (i, inst) in group.instances.iter().enumerate() {
+                // Per-light caster cull: skip instances whose transformed bound
+                // does not intersect this slot's cone. An enemy outside the cone
+                // is not drawn into the slot.
+                if !instance_casts_into_cone(inst, cone_planes) {
+                    continue;
+                }
+                let instance_index = group.instance_offset + i as u32;
+                let instance_range = instance_index..instance_index + 1;
+                // The draw's `first_instance` is the absolute SSBO index, so the
+                // shader reads `instances[instance_index]` / `bone_palette[base]`
+                // for THIS occluder via `@builtin(instance_index)`. This shares the
+                // forward path's `@builtin(instance_index)` assumption (record_draws
+                // above, file header §"Per-instance addressing"): the SSBO ENTRY is
+                // selected through `first_instance`, and a backend that zeroes it
+                // (the documented DX12 quirk, gfx-rs/wgpu#2471 — we do not assume
+                // `INDIRECT_FIRST_INSTANCE`) would read entry 0 for every occluder,
+                // projecting all of them with the first instance's pose. Known DX12
+                // exposure, correct on Vulkan/Metal; it is NOT unique to the depth
+                // path — both paths route the entry index through `first_instance`
+                // identically, so a future DX12-robust fix (per-instance index via a
+                // vertex-stepped buffer or per-draw dynamic offset) must change both
+                // in lock-step, not just here. Only the per-instance palette BASE
+                // (`base_and_pad.x`) is kept out of `first_instance` today.
+                // Depth-only: one draw per submesh range, no material bind (the
+                // depth layout omits group 1).
+                for (_material_bind_group, indices) in &model.submeshes {
+                    if indices.is_empty() {
+                        continue;
+                    }
+                    pass.draw_indexed(indices.clone(), 0, instance_range.clone());
+                }
+                submitted += 1;
+            }
+        }
+        submitted
     }
 }
 
@@ -598,6 +848,10 @@ impl JointCounts for MeshPass {
         self.models
             .get(model)
             .map(|m| m.skeleton.joints.len() as u32)
+    }
+
+    fn model_bounds(&self, model: &ModelHandle) -> crate::lighting::cone_frustum::Aabb {
+        self.model_bounds.get(model).copied().unwrap_or_default()
     }
 }
 
@@ -699,6 +953,92 @@ mod tests {
         )
         .validate(&module)
         .expect("skinned_mesh.wgsl must pass naga validation");
+    }
+
+    #[test]
+    fn skinned_depth_wgsl_parses_and_is_vertex_only() {
+        // The depth-only skinned shader must parse, export `@vertex vs_main`, and
+        // carry NO fragment stage (depth-only) — mirroring depth_prepass.wgsl's
+        // relationship to forward.wgsl.
+        let module = naga::front::wgsl::parse_str(SKINNED_DEPTH_SHADER_SOURCE)
+            .expect("skinned_depth.wgsl should parse as WGSL");
+        let has_vs = module
+            .entry_points
+            .iter()
+            .any(|ep| ep.name == "vs_main" && ep.stage == naga::ShaderStage::Vertex);
+        assert!(has_vs, "skinned_depth.wgsl must export @vertex vs_main");
+        let has_fs = module
+            .entry_points
+            .iter()
+            .any(|ep| ep.stage == naga::ShaderStage::Fragment);
+        assert!(
+            !has_fs,
+            "skinned_depth.wgsl is depth-only — it must declare no fragment stage"
+        );
+    }
+
+    #[test]
+    fn skinned_depth_wgsl_passes_naga_validation() {
+        let module = naga::front::wgsl::parse_str(SKINNED_DEPTH_SHADER_SOURCE)
+            .expect("skinned_depth.wgsl must parse");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("skinned_depth.wgsl must pass naga validation");
+    }
+
+    /// The `skin_matrix` function is duplicated verbatim from `skinned_mesh.wgsl`
+    /// into `skinned_depth.wgsl` because WGSL cannot share a function that reads
+    /// module-scope buffers across two separate shader sources. This test extracts
+    /// the function body from both shaders and asserts byte-identical equality,
+    /// so any divergence between the forward-pass and depth-pass copies fails CI
+    /// rather than only mis-skinning shadows at runtime.
+    #[test]
+    fn skin_matrix_body_matches_across_skinned_shaders() {
+        // Extract `fn skin_matrix(` … matching `}` by brace counting. Returns the
+        // slice from the `fn` keyword through the closing brace (inclusive).
+        fn extract_skin_matrix(src: &str) -> &str {
+            let marker = "fn skin_matrix(";
+            let fn_start = src
+                .find(marker)
+                .expect("shader must declare fn skin_matrix(");
+            // Find the opening `{` of the function body.
+            let body_open = fn_start
+                + src[fn_start..]
+                    .find('{')
+                    .expect("skin_matrix must have an opening brace");
+            // Walk forward, counting braces to find the matching close.
+            let mut depth = 0usize;
+            let mut close = body_open;
+            for (i, ch) in src[body_open..].char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = body_open + i;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            &src[fn_start..=close]
+        }
+
+        // `SKINNED_MESH_SHADER_SOURCE` is a concat of skinned_mesh.wgsl + sh_sample.wgsl.
+        // `skin_matrix` is declared in the skinned_mesh.wgsl portion.
+        // `SKINNED_DEPTH_SHADER_SOURCE` is skinned_depth.wgsl directly.
+        let mesh_body = extract_skin_matrix(SKINNED_MESH_SHADER_SOURCE);
+        let depth_body = extract_skin_matrix(SKINNED_DEPTH_SHADER_SOURCE);
+
+        assert_eq!(
+            mesh_body, depth_body,
+            "skin_matrix body in skinned_depth.wgsl must be byte-identical to the copy \
+             in skinned_mesh.wgsl — update both when changing the skinning kernel",
+        );
     }
 
     #[test]

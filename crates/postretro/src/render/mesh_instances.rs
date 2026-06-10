@@ -9,8 +9,9 @@
 // the instanced draws. Pure functions here so grouping, base-index assignment,
 // and overflow are unit-testable without a GPU.
 
-use glam::Mat4;
+use glam::{Mat4, Vec4};
 
+use crate::lighting::cone_frustum::{Aabb, aabb_intersects_frustum};
 use crate::model::ModelHandle;
 
 /// Fixed per-frame bone-palette budget, in `BonePaletteEntry` slots (one slot =
@@ -51,14 +52,20 @@ pub(crate) struct MeshInstanceInput {
 }
 
 /// One instance's resolved placement in the frame plan: its world transform, the
-/// base index of its contiguous palette run in the shared buffer, and its phase
-/// seed (carried through so the GPU layer can sample its clip into the run at a
-/// per-instance phase).
+/// base index of its contiguous palette run in the shared buffer, its phase seed
+/// (carried through so the GPU layer can sample its clip into the run at a
+/// per-instance phase), and its model's LOCAL-space bound.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PlannedInstance {
     pub(crate) transform: Mat4,
     pub(crate) palette_base: u32,
     pub(crate) phase_seed: u32,
+    /// The instance's model's LOCAL-space AABB (bind-pose bound), stamped from
+    /// the renderer's model cache at plan time. The per-light caster cull
+    /// (Task 2/4) transforms this by `transform` and tests it against a light's
+    /// cone/face frustum to decide whether the instance casts into that light's
+    /// shadow map. Surfaced CPU-side here; the GPU draw never reads it.
+    pub(crate) bounds: Aabb,
 }
 
 /// All instances of one model, batched for a single instanced `draw_indexed` per
@@ -91,12 +98,18 @@ pub(crate) struct MeshFramePlan {
     pub(crate) dropped: u32,
 }
 
-/// Look up a model's joint count by handle. The renderer's model cache provides
-/// this (each `UploadedModel` knows its skeleton's joint count); the planner
-/// only needs the count, keeping it GPU-free. Returns `None` for a handle that
-/// is not in the cache — its instances are skipped (the model never uploaded).
+/// Per-model lookups the GPU-free frame planner needs from the renderer's model
+/// cache: the skeleton's joint count (the palette-run length) and the model's
+/// local-space bound (stamped onto each `PlannedInstance` for the caster cull).
+/// `joint_count` returning `None` means the handle is not in the cache (never
+/// uploaded) — its instances are skipped, not budget-dropped. Keeps the planner
+/// GPU-free: the cache provides plain values, no wgpu reference crosses.
 pub(crate) trait JointCounts {
     fn joint_count(&self, model: &ModelHandle) -> Option<u32>;
+    /// The model's local-space AABB, or a zero box if the handle is uncached
+    /// (those instances are skipped before the bound is read, so the value is a
+    /// harmless default).
+    fn model_bounds(&self, model: &ModelHandle) -> Aabb;
 }
 
 /// Group the surviving instances by model and assign each a contiguous
@@ -152,6 +165,7 @@ pub(crate) fn plan_mesh_frame(
             transform: inst.transform,
             palette_base,
             phase_seed: inst.phase_seed,
+            bounds: joints.model_bounds(&inst.model),
         };
 
         // Append to the existing group for this model, or start a new one.
@@ -203,6 +217,25 @@ pub(crate) fn instance_phase(seed: u32, clip_duration: f32) -> f32 {
     frac * clip_duration
 }
 
+/// Whether a planned skinned instance casts into a spot light's shadow slot:
+/// its model's LOCAL-space bound, transformed by the instance's world matrix,
+/// must intersect the slot's cone frustum. Pure CPU data logic (no GPU, no BVH —
+/// entities are not in the world BVH), mirroring the GPU cone-cull convention via
+/// the shared `aabb_intersects_frustum`, so the caster cull provably agrees with
+/// the world cull's frustum test.
+///
+/// The renderer records only instances this returns `true` for into a given
+/// slot's depth layer; an enemy whose transformed bound lies outside the cone is
+/// not drawn into that slot. Drives the per-frame submitted-occluder counter that
+/// verifies the "enemy outside the cone is not drawn" acceptance criterion.
+pub(crate) fn instance_casts_into_cone(
+    instance: &PlannedInstance,
+    cone_planes: &[Vec4; 6],
+) -> bool {
+    let world_bound = instance.bounds.transformed(&instance.transform);
+    aabb_intersects_frustum(&world_bound, cone_planes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,17 +243,30 @@ mod tests {
     use std::collections::HashMap;
 
     /// Test stand-in for the renderer's model cache: a fixed handle→joint-count
-    /// map. Mirrors what `UploadedModel`'s skeleton length provides at runtime.
-    struct FixedJoints(HashMap<String, u32>);
+    /// map plus an optional handle→bounds map. Mirrors what `UploadedModel`'s
+    /// skeleton length and `model_bounds` provide at runtime. Bounds default to a
+    /// zero box for handles not in the bounds map (matching the runtime default
+    /// for an uncached handle).
+    struct FixedJoints {
+        counts: HashMap<String, u32>,
+        bounds: HashMap<String, Aabb>,
+    }
 
     impl JointCounts for FixedJoints {
         fn joint_count(&self, model: &ModelHandle) -> Option<u32> {
-            self.0.get(model.as_str()).copied()
+            self.counts.get(model.as_str()).copied()
+        }
+
+        fn model_bounds(&self, model: &ModelHandle) -> Aabb {
+            self.bounds.get(model.as_str()).copied().unwrap_or_default()
         }
     }
 
     fn joints(pairs: &[(&str, u32)]) -> FixedJoints {
-        FixedJoints(pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect())
+        FixedJoints {
+            counts: pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+            bounds: HashMap::new(),
+        }
     }
 
     fn instance(model: &str, x: f32, seed: u32) -> MeshInstanceInput {
@@ -378,5 +424,154 @@ mod tests {
     #[test]
     fn instance_phase_zero_for_zero_length_clip() {
         assert_eq!(instance_phase(12345, 0.0), 0.0);
+    }
+
+    /// AC#2: the per-light caster cull keeps an instance whose transformed bound
+    /// is inside the cone and drops one whose transformed bound is outside it.
+    /// Pure CPU: builds the cone planes from a spotlight aimed down -Z, then
+    /// places one instance inside the cone and one far off-axis. The LOCAL bound
+    /// is identical for both — only the world transform moves it in/out, proving
+    /// the transform-then-test path culls correctly.
+    #[test]
+    fn caster_cull_keeps_in_cone_drops_out_of_cone() {
+        use crate::lighting::cone_frustum::cone_frustum_planes;
+        use crate::lighting::spot_shadow::light_space_matrix;
+        use crate::prl::{FalloffModel, LightType, MapLight, ShadowType};
+
+        // Spotlight at the origin aimed down -Z, 20 m range — same cone the
+        // cone_frustum tests use.
+        let light = MapLight {
+            origin: [0.0, 0.0, 0.0],
+            light_type: LightType::Spot,
+            intensity: 1.0,
+            color: [1.0, 1.0, 1.0],
+            falloff_model: FalloffModel::Linear,
+            falloff_range: 20.0,
+            cone_angle_inner: 0.3,
+            cone_angle_outer: 0.4,
+            cone_direction: [0.0, 0.0, -1.0],
+            is_dynamic: true,
+            casts_entity_shadows: true,
+            animated_slot: None,
+            tags: vec![],
+            leaf_index: 0,
+            shadow_type: ShadowType::StaticLightMap,
+        };
+        let planes = cone_frustum_planes(&light_space_matrix(&light));
+
+        // A unit-ish local bound (1 m half-extents), like a rigged enemy.
+        let local = Aabb {
+            min: Vec3::new(-0.5, -0.5, -0.5),
+            max: Vec3::new(0.5, 0.5, 0.5),
+        };
+
+        // Inside: 10 m down the cone axis.
+        let inside = PlannedInstance {
+            transform: Mat4::from_translation(Vec3::new(0.0, 0.0, -10.0)),
+            palette_base: 0,
+            phase_seed: 0,
+            bounds: local,
+        };
+        assert!(
+            instance_casts_into_cone(&inside, &planes),
+            "instance inside the cone must cast into the slot"
+        );
+
+        // Outside: far off-axis (+50 m in X) at the same depth — well beyond the
+        // cone's angular spread.
+        let outside = PlannedInstance {
+            transform: Mat4::from_translation(Vec3::new(50.0, 0.0, -10.0)),
+            palette_base: 0,
+            phase_seed: 0,
+            bounds: local,
+        };
+        assert!(
+            !instance_casts_into_cone(&outside, &planes),
+            "instance outside the cone must not cast into the slot"
+        );
+    }
+
+    /// A rotation that swings a long, thin local bound into the cone must be
+    /// enclosed correctly — the transformed-corner method (not a component-wise
+    /// min/max transform) is what makes the rotated box's true extent the test
+    /// input. A bar pointing along local +X, rotated to point down -Z and placed
+    /// on the cone axis, must classify as casting.
+    #[test]
+    fn caster_cull_encloses_rotated_bound() {
+        use crate::lighting::cone_frustum::cone_frustum_planes;
+        use crate::lighting::spot_shadow::light_space_matrix;
+        use crate::prl::{FalloffModel, LightType, MapLight, ShadowType};
+
+        let light = MapLight {
+            origin: [0.0, 0.0, 0.0],
+            light_type: LightType::Spot,
+            intensity: 1.0,
+            color: [1.0, 1.0, 1.0],
+            falloff_model: FalloffModel::Linear,
+            falloff_range: 20.0,
+            cone_angle_inner: 0.3,
+            cone_angle_outer: 0.4,
+            cone_direction: [0.0, 0.0, -1.0],
+            is_dynamic: true,
+            casts_entity_shadows: true,
+            animated_slot: None,
+            tags: vec![],
+            leaf_index: 0,
+            shadow_type: ShadowType::StaticLightMap,
+        };
+        let planes = cone_frustum_planes(&light_space_matrix(&light));
+
+        // Long bar along local X, thin in Y/Z.
+        let bar = Aabb {
+            min: Vec3::new(-4.0, -0.1, -0.1),
+            max: Vec3::new(4.0, 0.1, 0.1),
+        };
+        // Rotate -90° about Y so local +X points to world -Z, then drop it onto
+        // the axis 10 m down the cone.
+        let transform = Mat4::from_translation(Vec3::new(0.0, 0.0, -10.0))
+            * Mat4::from_rotation_y(-std::f32::consts::FRAC_PI_2);
+        let inst = PlannedInstance {
+            transform,
+            palette_base: 0,
+            phase_seed: 0,
+            bounds: bar,
+        };
+        assert!(
+            instance_casts_into_cone(&inst, &planes),
+            "rotated bar on the cone axis must enclose correctly and cast"
+        );
+    }
+
+    #[test]
+    fn plan_stamps_model_local_bounds_onto_planned_instances() {
+        // Each planned instance must carry its model's LOCAL-space bound (the
+        // per-light caster cull transforms it by `transform` at cull time). The
+        // planner stamps it from the model-info lookup, so two distinct models'
+        // instances carry distinct bounds.
+        let model_bounds = Aabb {
+            min: Vec3::new(-1.0, -2.0, -3.0),
+            max: Vec3::new(1.0, 2.0, 3.0),
+        };
+        let mut fixed = joints(&[("grunt", 8), ("drone", 4)]);
+        fixed.bounds.insert("grunt".to_string(), model_bounds);
+        // "drone" intentionally has NO bounds entry → defaults to the zero box.
+
+        let instances = [instance("grunt", 1.0, 0), instance("drone", 2.0, 1)];
+        let plan = plan_mesh_frame(&instances, &fixed);
+
+        let grunt = &plan.groups[0];
+        assert_eq!(grunt.model.as_str(), "grunt");
+        assert_eq!(
+            grunt.instances[0].bounds, model_bounds,
+            "grunt instance carries its model's local bound"
+        );
+
+        let drone = &plan.groups[1];
+        assert_eq!(drone.model.as_str(), "drone");
+        assert_eq!(
+            drone.instances[0].bounds,
+            Aabb::default(),
+            "a model with no bound entry defaults to the zero box"
+        );
     }
 }

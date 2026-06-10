@@ -383,7 +383,6 @@ mod tests {
                 direction: None,
                 start_active: true,
             }),
-            cast_shadows: true,
             bake_only: false,
             is_dynamic: false,
             casts_entity_shadows: false,

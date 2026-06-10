@@ -167,6 +167,66 @@ const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/sdf_light_select.wgsl"),
 );
 
+/// Derive the no-`CUBE_ARRAY_TEXTURES` variant of a group-5 shader (forward or
+/// fog) from its single canonical source, so there is no second hand-maintained
+/// copy to drift. Two localized edits, both keyed off marker comments embedded in
+/// the WGSL:
+///
+/// 1. Strip the `point_shadow_cube` binding-5 declaration (the line tagged
+///    `// CUBE_SHADOW_BINDING`), so the shader matches a group-5 BGL that omits
+///    binding 5 — required, since a `CubeArray` BGL entry needs the feature.
+/// 2. Neutralize `sample_point_shadow`: replace its body (delimited by
+///    `// CUBE_SHADOW_BODY_BEGIN` / `// CUBE_SHADOW_BODY_END`) with `return 1.0;`
+///    so the function references no stripped binding and every point light reads
+///    as unshadowed. The fog shader has no such body (it never samples the cube),
+///    so the body transform is a no-op there.
+///
+/// Panics (init-time, acceptable per the panic policy) if the binding marker is
+/// absent — that means the shader and this transform have drifted, which must
+/// fail loudly rather than ship a mis-bound pipeline. The body markers are
+/// optional (fog omits them). `pub(super)` so the fog pass (`fog_pass.rs`) derives
+/// its own no-cube variant from the SAME transform.
+pub(super) fn strip_point_shadow_cube(source: &str) -> String {
+    // 1. Drop the marked binding-5 declaration line.
+    let without_binding: String = {
+        let kept: Vec<&str> = source
+            .lines()
+            .filter(|line| !line.contains("// CUBE_SHADOW_BINDING"))
+            .collect();
+        assert!(
+            kept.len() < source.lines().count(),
+            "strip_point_shadow_cube: no `// CUBE_SHADOW_BINDING` line found — \
+             shader and transform have drifted"
+        );
+        kept.join("\n")
+    };
+
+    // 2. Replace the cube-sampling function body with a no-shadow constant.
+    const BEGIN: &str = "// CUBE_SHADOW_BODY_BEGIN";
+    const END: &str = "// CUBE_SHADOW_BODY_END";
+    match (without_binding.find(BEGIN), without_binding.find(END)) {
+        (Some(begin), Some(end)) => {
+            // `end` indexes the start of the END marker; include the marker line
+            // itself in the replaced span so it does not linger.
+            let end_line_end = without_binding[end..]
+                .find('\n')
+                .map(|n| end + n)
+                .unwrap_or(without_binding.len());
+            let mut out = String::with_capacity(without_binding.len());
+            out.push_str(&without_binding[..begin]);
+            out.push_str("return 1.0;");
+            out.push_str(&without_binding[end_line_end..]);
+            out
+        }
+        // Fog: no body markers, declaration strip alone suffices.
+        (None, None) => without_binding,
+        _ => panic!(
+            "strip_point_shadow_cube: exactly one of the CUBE_SHADOW_BODY markers \
+             is present — shader and transform have drifted"
+        ),
+    }
+}
+
 const WIREFRAME_SHADER_SOURCE: &str = include_str!("../shaders/wireframe.wgsl");
 
 // Depth pre-pass: writes depth only (enables Equal depth compare → zero shading
@@ -897,15 +957,19 @@ fn billboard_pipeline_vertex_storage_buffer_count() -> u32 {
 /// `Renderer::new` and the
 /// `forward_pipeline_sampled_texture_request_matches_bgl_definitions` test.
 #[cfg(debug_assertions)]
-fn forward_pipeline_sampled_texture_count() -> u32 {
+fn forward_pipeline_sampled_texture_count(cube_array_supported: bool) -> u32 {
     // Groups 0 (uniform) and 2 (lighting) carry no textures, but include them so
-    // adding a texture entry to either BGL is caught here automatically.
+    // adding a texture entry to either BGL is caught here automatically. Group 5's
+    // count is feature-conditional: the cube-array point-shadow texture (binding 5)
+    // is present only when `cube_array_supported` (14 total with it, 13 without).
     fragment_sampled_textures(&uniform_bind_group_layout_entries())
         + fragment_sampled_textures(&material_bind_group_layout_entries())
         + fragment_sampled_textures(&lighting_bind_group_layout_entries())
         + fragment_sampled_textures(&sh_volume::sh_bind_group_layout_entries())
         + fragment_sampled_textures(&crate::lighting::lightmap::bind_group_layout_entries())
-        + fragment_sampled_textures(&SpotShadowPool::bind_group_layout_entries())
+        + fragment_sampled_textures(&SpotShadowPool::bind_group_layout_entries(
+            cube_array_supported,
+        ))
 }
 
 pub struct LevelGeometry<'a> {
@@ -1085,11 +1149,11 @@ pub struct Renderer {
     #[allow(dead_code)]
     level_lights: Vec<MapLight>,
     /// Candidate set for the spot-shadow pool — sourced from the FULL level
-    /// light set filtered by `is_dynamic || casts_entity_shadows`, NOT from
-    /// `level_lights`. Dynamic-tier lights (`light_dynamic`/`light_dynamic_spot`)
-    /// are pool-eligible by default so dynamic spotlights shadow static world
-    /// occluders (pillars); `casts_entity_shadows` (FGD `_cast_entity_shadows`)
-    /// is the per-light opt-in for non-dynamic lights (future moving-mesh shadows).
+    /// light set filtered by `is_dynamic`. Dynamic-tier lights
+    /// (`light_dynamic`/`light_dynamic_spot`) are pool-eligible so dynamic
+    /// spotlights shadow static world occluders (pillars). The per-light
+    /// `casts_entity_shadows` toggle (FGD `_cast_entity_shadows`) gates only
+    /// whether moving-ENTITY occluders draw into the slot, not slot allocation.
     shadow_candidate_lights: Vec<MapLight>,
     /// Lights near zero are excluded from shadow slot ranking. Empty = no suppression.
     light_effective_brightness: Vec<f32>,
@@ -1099,6 +1163,16 @@ pub struct Renderer {
     /// pool derives camera frustum planes from it for cone-frustum culling.
     last_view_proj: Mat4,
     spot_shadow_pool: SpotShadowPool,
+    /// Dynamic point-light cube-array shadow pool. `None` when the adapter lacks
+    /// `CUBE_ARRAY_TEXTURES` — point shadows then cleanly off, spot unaffected.
+    /// `Some` iff `cube_array_supported`, so its presence mirrors group-5 binding
+    /// 5's presence in the shared BGL.
+    cube_shadow_pool: Option<crate::lighting::cube_shadow::CubeShadowPool>,
+    /// Per-(cube slot, face) light-space matrix uniforms, dynamic-offset like
+    /// `shadow_vs_uniform_buffer`. Slot `slot*6 + face` carries that face's
+    /// matrix; the skinned-depth pass selects it by dynamic offset.
+    cube_shadow_vs_uniform_buffer: wgpu::Buffer,
+    cube_shadow_vs_bind_group: wgpu::BindGroup,
     /// Dynamic-offset into a single buffer; offset selects the per-slot light-space matrix.
     shadow_vs_uniform_buffer: wgpu::Buffer,
     shadow_vs_bind_group: wgpu::BindGroup,
@@ -1183,6 +1257,23 @@ pub struct Renderer {
     /// for rate-limiting (mirrors `EmitterBridge`'s `last_warn_time`). Overflow
     /// drops the excess instances; the warning fires at most once per second.
     mesh_overflow_last_warn: f32,
+
+    /// CPU-side count of skinned ENTITY occluder instances submitted into spot
+    /// shadow slots last frame, summed across slots (each instance counted once
+    /// per slot it casts into). Mirrors `shadow-cone-cull`'s submitted-instance
+    /// counter — no GPU readback. Verifies the "enemy outside the cone is not
+    /// drawn" acceptance criterion: an instance the per-light cone cull rejects
+    /// is never added here. Reset to 0 at the start of the spot-shadow depth loop.
+    spot_entity_occluders_submitted: u32,
+
+    /// CPU-side count of skinned ENTITY occluder instances submitted into CUBE
+    /// (point-light) shadow faces last frame, summed across all occupied slots ×
+    /// 6 faces (each instance counted once per face it casts into). Mirrors
+    /// `spot_entity_occluders_submitted` — no GPU readback. Verifies that
+    /// entity occluders render only for `entity_occluder_eligible` point lights
+    /// and only when their bound intersects a face frustum. Reset to 0 at the
+    /// start of the cube-shadow depth loop.
+    cube_entity_occluders_submitted: u32,
 
     /// Instanced UI quad / 9-slice pass for panels and images plus glyphon text.
     /// Built alongside `fog`; records the splash (splash phase) and an empty draw
@@ -1374,6 +1465,20 @@ impl Renderer {
             );
         }
 
+        // Cube-array support gates the dynamic point-light shadow pool. Absent →
+        // the cube pool is disabled (None) and point shadows are cleanly off; the
+        // spot path is entirely unaffected (no panic, no validation error).
+        let cube_array_supported = downlevel
+            .flags
+            .contains(wgpu::DownlevelFlags::CUBE_ARRAY_TEXTURES);
+        if cube_array_supported {
+            log::info!("[Renderer] Cube-array textures supported (dynamic point shadows enabled)");
+        } else {
+            log::info!(
+                "[Renderer] Cube-array textures unsupported — dynamic point-light shadows disabled"
+            );
+        }
+
         // FrameTiming=None → zero runtime cost when timing isn't requested or supported.
         let adapter_features = adapter.features();
         let gpu_timing_requested =
@@ -1399,8 +1504,9 @@ impl Renderer {
         // every targeted backend reports far higher (Metal/AMD = 128) — the
         // adapter pre-check below confirms the granted maximum still covers it.
         //
-        // Derived (currently 13) from the actual BGLs that compose the forward
-        // pipeline layout, so it can never drift from the real binding count:
+        // Derived (14 when CUBE_ARRAY is supported, 13 without) from the actual
+        // BGLs that compose the forward pipeline layout, so it can never drift from
+        // the real binding count:
         //   Group 1 — material (3): diffuse, specular, normal
         //   Group 3 — SH volume (3): octahedral atlas + depth-moments
         //                            + direct static-light atlas (billboard samples it in
@@ -1409,7 +1515,10 @@ impl Renderer {
         //                              carry the entry but never sample it)
         //   Group 4 — lightmap (4): static irradiance, static dominant-direction,
         //                           animated-contribution atlas, animated dominant-direction
-        //   Group 5 — shadow (3): spot-shadow depth array (binding 0), SDF shadow factor (binding 3), scene depth (binding 4)
+        //   Group 5 — shadow (4 with CUBE_ARRAY, else 3): spot-shadow depth array (binding 0),
+        //                           SDF shadow factor (binding 3), scene depth (binding 4),
+        //                           point-light cube-array depth (binding 5; present only when
+        //                           CUBE_ARRAY_TEXTURES is supported)
         // 16 is the WebGPU spec floor and wgpu's `Limits::default()` value; it is
         // also the hard ceiling on Metal (macOS) and is universally supported on
         // all desktop adapters. We use it as a fixed design budget rather than
@@ -1426,11 +1535,12 @@ impl Renderer {
         // `debug_assert!` still *compiles* its arguments in release).
         #[cfg(debug_assertions)]
         debug_assert!(
-            forward_pipeline_sampled_texture_count() <= REQUIRED_SAMPLED_TEXTURES,
+            forward_pipeline_sampled_texture_count(cube_array_supported)
+                <= REQUIRED_SAMPLED_TEXTURES,
             "forward pipeline sampled-texture count ({}) exceeds the requested \
              budget ({}); switch to bindless (TEXTURE_BINDING_ARRAY) rather than \
              raising the limit (16 is Metal's hard ceiling)",
-            forward_pipeline_sampled_texture_count(),
+            forward_pipeline_sampled_texture_count(cube_array_supported),
             REQUIRED_SAMPLED_TEXTURES
         );
         // Billboard lighting runs in `vs_main` (per-vertex SH indirect+direct,
@@ -1747,11 +1857,13 @@ impl Renderer {
         });
 
         // BGL owned here so forward pipeline layout and shadow pool bind group share it.
-        // Task 5 extended the BGL with bindings 3 (SDF shadow factor) and 4
-        // (scene depth) — both owned outside the pool. The pool itself is
-        // built later (after depth_view + sdf_shadow_pass exist) so its bind
-        // group can reference those targets directly at construction.
-        let spot_shadow_bgl = SpotShadowPool::bind_group_layout(&device);
+        // The BGL carries bindings 3 (SDF shadow factor) and 4 (scene depth) — both
+        // owned outside the pool. Binding 5 (point-light cube-array depth) is present
+        // only when `cube_array_supported`; the shared BGL, the forward + fog
+        // pipelines, and the shader variants all key off the same flag. The pool
+        // itself is built later (after depth_view + sdf_shadow_pass exist) so its
+        // bind group can reference those targets directly at construction.
+        let spot_shadow_bgl = SpotShadowPool::bind_group_layout(&device, cube_array_supported);
 
         // Influence volume buffer — same dummy strategy as lights.
         let influence_data = if !dynamic_influences.is_empty() {
@@ -1993,18 +2105,48 @@ impl Renderer {
             surface_config.height,
         );
 
+        // Cube point-shadow pool — built before the spot pool because the
+        // spot-shadow bind group (the shared group-5 BGL) references the cube
+        // sampling view at binding 5. Disabled (None) when the adapter lacks
+        // CUBE_ARRAY_TEXTURES — in that case binding 5 is omitted from the BGL and
+        // NO cube view (not even a dummy) is created, since a `CubeArray` view
+        // itself requires the feature. `cube_shadow_pool.is_some()` therefore
+        // mirrors `cube_array_supported` exactly.
+        let cube_shadow_pool =
+            crate::lighting::cube_shadow::CubeShadowPool::new(&device, cube_array_supported);
+        let cube_sampling_view = cube_shadow_pool.as_ref().map(|p| &p.sampling_view);
+
         // Now that the SDF shadow factor target + scene depth view both
         // exist, build the spot-shadow pool — its bind group references
-        // both targets at bindings 3/4. See `SpotShadowPool::new` docs.
+        // both targets at bindings 3/4 and (when present) the cube sampling view
+        // at binding 5. See `SpotShadowPool::new` docs.
         let spot_shadow_pool = SpotShadowPool::new(
             &device,
             &spot_shadow_bgl,
             &sdf_shadow_pass.shadow_view,
             &depth_view,
+            cube_sampling_view,
         );
-        log::info!(
-            "[Renderer] Spot shadow pool initialized (8 × 1024×1024 Depth32Float = 32 MiB VRAM)"
-        );
+        {
+            use crate::lighting::spot_shadow::{
+                SHADOW_DEPTH_FORMAT, SHADOW_MAP_RESOLUTION, SHADOW_POOL_SIZE,
+            };
+            // Depth32Float = 4 B/texel; MiB = bytes >> 20. Derived from the consts
+            // so the log can't drift from the actual pool size (was a stale literal).
+            let vram_mib = (SHADOW_POOL_SIZE as u64
+                * SHADOW_MAP_RESOLUTION as u64
+                * SHADOW_MAP_RESOLUTION as u64
+                * 4)
+                >> 20;
+            log::info!(
+                "[Renderer] Spot shadow pool initialized ({} × {}×{} {:?} = {} MiB VRAM)",
+                SHADOW_POOL_SIZE,
+                SHADOW_MAP_RESOLUTION,
+                SHADOW_MAP_RESOLUTION,
+                SHADOW_DEPTH_FORMAT,
+                vram_mib,
+            );
+        }
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Textured Pipeline Layout"),
@@ -2019,9 +2161,20 @@ impl Renderer {
             immediate_size: 0,
         });
 
+        // On an adapter without CUBE_ARRAY_TEXTURES the shared group-5 BGL omits
+        // binding 5, so the forward shader must not declare or sample the
+        // `point_shadow_cube` binding. Derive that variant from the one source via
+        // `strip_point_shadow_cube` (strips the binding decl, neutralizes
+        // `sample_point_shadow` to a no-shadow constant) rather than maintaining a
+        // second copy. When supported, the source is used verbatim.
+        let forward_source: std::borrow::Cow<str> = if cube_array_supported {
+            SHADER_SOURCE.into()
+        } else {
+            strip_point_shadow_cube(SHADER_SOURCE).into()
+        };
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Textured Shader"),
-            source: wgpu::ShaderSource::Wgsl(SHADER_SOURCE.into()),
+            source: wgpu::ShaderSource::Wgsl(forward_source),
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -2271,7 +2424,7 @@ impl Renderer {
                 cache: None,
             });
 
-        // Spot shadow pipeline: shared across all 8 slots via dynamic-offset uniform.
+        // Spot shadow pipeline: shared across all SHADOW_POOL_SIZE slots via dynamic-offset uniform.
         // Depth bias (constant=2, slope=1.5) suppresses acne without Peter-Panning.
         let shadow_vs_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Shadow VS BGL"),
@@ -2360,6 +2513,39 @@ impl Renderer {
             }],
         });
 
+        // --- Cube point-shadow VS uniforms -----------------------------------
+        // The cube pool itself was built earlier (its sampling view feeds the
+        // group-5 BGL). Its per-face light-space matrices ride a dynamic-offset
+        // uniform buffer shaped exactly like `shadow_vs_*` (reusing
+        // `shadow_vs_bgl`), one slot per `(cube slot, face)` pair. The
+        // skinned-depth pipeline binds it at group 0 just like the spot path,
+        // proving the cube-ready contract.
+        //
+        // Total capacity = `shadow_vs_stride × CUBE_COUNT × CUBE_FACES` (every face
+        // of every slot gets its own dynamic-offset slot). A render selects a face
+        // via dynamic offset = `layer * shadow_vs_stride`, where the layer index is
+        // `slot * CUBE_FACES + face` (matching `CubeShadowPool::face_layer`).
+        let cube_face_count =
+            crate::lighting::cube_shadow::CUBE_COUNT * crate::lighting::cube_shadow::CUBE_FACES;
+        let cube_shadow_vs_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Cube Shadow VS Uniforms"),
+            size: (shadow_vs_stride as u64) * (cube_face_count as u64),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let cube_shadow_vs_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Cube Shadow VS Bind Group"),
+            layout: &shadow_vs_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &cube_shadow_vs_uniform_buffer,
+                    offset: 0,
+                    size: std::num::NonZeroU64::new(64),
+                }),
+            }],
+        });
+
         let frame_timing = if enable_gpu_timing {
             log::info!("[Renderer] GPU timing enabled (POSTRETRO_GPU_TIMING=1)");
             let mut pass_labels = vec![""; TIMING_PAIR_COUNT];
@@ -2387,14 +2573,20 @@ impl Renderer {
 
         // Skinned-mesh pass: reuses the camera (group 0) + material (group 1)
         // layouts. `upload_identity_palette` pre-fills the palette at startup so
-        // an un-sampled run renders in bind pose. Each frame `render_frame`
-        // samples every instance's clip into its palette run before recording.
+        // an un-sampled run renders in bind pose. Each frame `plan_and_upload`
+        // samples every instance's clip into its palette run before the shadow
+        // depth loop; `record_draws` then records the forward draw.
         let mesh_pass = mesh_pass::MeshPass::new(
             &device,
             surface_format,
             DEPTH_FORMAT,
+            // The depth-only skinned pipeline writes the shadow-map depth format
+            // and binds the world spot-shadow `shadow_vs_bgl` at group 0 (the
+            // per-render light-space matrix, dynamic-offset per slot).
+            crate::lighting::spot_shadow::SHADOW_DEPTH_FORMAT,
             &uniform_bind_group_layout,
             &texture_bind_group_layout,
+            &shadow_vs_bgl,
             // Mesh group 4 uses the SUPERSET layout (shared SH entries + the
             // mesh-only dynamic-direct params uniform at binding 16).
             &sh_volume_resources.mesh_bind_group_layout,
@@ -2415,6 +2607,7 @@ impl Renderer {
             &uniform_bind_group_layout,
             &sh_volume_resources.bind_group_layout,
             &spot_shadow_bgl,
+            cube_array_supported,
         );
         // Swapchain may differ from the hardcoded Rgba8UnormSrgb default.
         fog.rebuild_composite_for_format(&device, surface_format);
@@ -2487,6 +2680,9 @@ impl Renderer {
             last_camera_position: Vec3::ZERO,
             last_view_proj: Mat4::IDENTITY,
             spot_shadow_pool,
+            cube_shadow_pool,
+            cube_shadow_vs_uniform_buffer,
+            cube_shadow_vs_bind_group,
             shadow_vs_uniform_buffer,
             shadow_vs_bind_group,
             shadow_depth_pipeline,
@@ -2521,6 +2717,8 @@ impl Renderer {
             mesh_draws: Vec::new(),
             bone_palette_scratch: Vec::new(),
             mesh_overflow_last_warn: f32::NEG_INFINITY,
+            spot_entity_occluders_submitted: 0,
+            cube_entity_occluders_submitted: 0,
             ui,
             splash_logo_size: None,
             ui_images: ui::UiImageRegistry::default(),
@@ -3502,13 +3700,22 @@ impl Renderer {
         self.sdf_shadow_pass
             .resize(&self.device, &self.depth_view, width, height);
         // Group-5 bind group references both the SDF shadow factor target
-        // and the scene depth — both just got recreated, so rebuild.
-        let spot_shadow_bgl = SpotShadowPool::bind_group_layout(&self.device);
+        // and the scene depth — both just got recreated, so rebuild. The cube
+        // binding's presence is fixed for the renderer's lifetime: the pool is
+        // `Some` iff the adapter supports CUBE_ARRAY_TEXTURES, so rebuild the BGL
+        // with the same flag (its presence mirrors the pool's).
+        let cube_array_supported = self.cube_shadow_pool.is_some();
+        let spot_shadow_bgl = SpotShadowPool::bind_group_layout(&self.device, cube_array_supported);
+        // The cube sampling view is surface-size-independent, but the group-5
+        // bind group is fully rebuilt here, so re-reference it (`Some` when the
+        // pool is present, `None` omits binding 5 to match the BGL).
+        let cube_sampling_view = self.cube_shadow_pool.as_ref().map(|p| &p.sampling_view);
         self.spot_shadow_pool.rebuild_bind_group(
             &self.device,
             &spot_shadow_bgl,
             &self.sdf_shadow_pass.shadow_view,
             &self.depth_view,
+            cube_sampling_view,
         );
         // The UI pass derives its device scale from `surface_config` at encode
         // time, so the splash needs no per-resize hook — it re-projects against
@@ -3845,8 +4052,8 @@ impl Renderer {
     /// face-visible set — lights in empty reachable leaves stay eligible.
     ///
     /// The **candidate set** is `self.shadow_candidate_lights`
-    /// (full level lights filtered by `is_dynamic || casts_entity_shadows`),
-    /// NOT `self.level_lights` (the `is_dynamic`-filtered forward set).
+    /// (full level lights filtered by `is_dynamic`), which is the same set as
+    /// `self.level_lights` (also `is_dynamic`-filtered) modulo ordering.
     /// `effective_brightness` is keyed on `level_lights` indices though, so
     /// we re-key the per-candidate eligibility into the candidate index
     /// space below.
@@ -3857,9 +4064,9 @@ impl Renderer {
         effective_brightness: &[f32],
         light_reachable_leaf_mask: &[bool],
     ) {
-        // Candidate set is `is_dynamic || casts_entity_shadows`-filtered; if
-        // the map has no dynamic spots and no opted-in lights, the pool stays
-        // empty — early-return without disturbing previous slots.
+        // Candidate set is `is_dynamic`-filtered; if the map has no dynamic
+        // lights the pool stays empty — early-return without disturbing
+        // previous slots.
         if self.shadow_candidate_lights.is_empty() {
             return;
         }
@@ -3902,33 +4109,57 @@ impl Renderer {
             &self.last_view_proj,
         );
 
+        // Rank dynamic POINT lights into the cube pool and upload their per-face
+        // matrices. Returns the candidate-indexed cube slot assignment (empty
+        // when the pool is disabled), which is patched into the light buffer
+        // below alongside the spot slots. Runs before the patch block so both
+        // slot fields land in one upload.
+        let stride = self.shadow_vs_stride as usize;
+        let cube_slot_assignment = self.update_cube_light_slots(
+            camera_position,
+            camera_near_clip,
+            &visible_lights,
+            stride,
+        );
+
         // The GPU lights buffer is keyed on `level_lights`. Translate slot
         // assignments from candidate-index space into `level_lights`-index
-        // space by identity-matching (origin + light_type). Candidates not
-        // in `level_lights` (the uncommon case: opted-in static lights via
-        // `casts_entity_shadows`) get no per-light forward-shader slot —
-        // dynamic-tier spots (the common pool-eligible case) ARE in
-        // `level_lights` and receive their slot normally. Opted-in static
-        // lights still drive shadow-map render targets below via the
-        // candidate-indexed matrix upload, but the forward shader cannot
-        // sample their shadow until a separate forward/shadow bridge lands.
+        // space by identity-matching (origin + light_type). Both sets are
+        // `is_dynamic`-filtered snapshots of `world.lights`, so every candidate
+        // is in `level_lights` and receives its slot normally. The cube
+        // assignment is re-keyed the same way (empty → all-sentinel).
         let level_slots = slot_assignment_for_level_lights(
             &self.level_lights,
             &self.shadow_candidate_lights,
             &slot_assignment,
         );
+        let level_cube_slots = if cube_slot_assignment.is_empty() {
+            vec![crate::lighting::spot_shadow::NO_SHADOW_SLOT; self.level_lights.len()]
+        } else {
+            slot_assignment_for_level_lights(
+                &self.level_lights,
+                &self.shadow_candidate_lights,
+                &cube_slot_assignment,
+            )
+        };
 
-        // Patch the per-light shadow slot field onto the CPU mirror of the
-        // light buffer, then re-upload only if a slot changed. The mirror holds
-        // whatever was last uploaded — the animated bridge's base bytes once it
-        // has run, otherwise this fn's static pack. Patching (rather than
-        // re-packing static `level_lights`) is what lets the slot and the
-        // bridge's animated base data coexist: the two writers share one buffer,
-        // so a full re-pack here would clobber the animation, and the bridge's
-        // sentinel slot would clobber the shadow. See `upload_bridge_lights`.
+        // Patch the per-light spot AND cube shadow-slot fields onto the CPU
+        // mirror of the light buffer, then re-upload only if a slot changed. The
+        // mirror holds whatever was last uploaded — the animated bridge's base
+        // bytes once it has run, otherwise this fn's static pack. Patching
+        // (rather than re-packing static `level_lights`) is what lets the slots
+        // and the bridge's animated base data coexist: the two writers share one
+        // buffer, so a full re-pack here would clobber the animation, and the
+        // bridge's sentinel slot would clobber the shadow. The spot slot rides
+        // `cone_angles_and_pad.z` and the cube slot rides `.w` — disjoint bytes,
+        // so the two patches compose. See `upload_bridge_lights`.
         let expected_len = self.level_lights.len() * crate::lighting::GPU_LIGHT_SIZE;
         if self.last_lights_upload.len() == expected_len {
-            if crate::lighting::patch_shadow_slots(&mut self.last_lights_upload, &level_slots) {
+            let spot_changed =
+                crate::lighting::patch_shadow_slots(&mut self.last_lights_upload, &level_slots);
+            let cube_changed =
+                crate::lighting::patch_cube_slots(&mut self.last_lights_upload, &level_cube_slots);
+            if spot_changed || cube_changed {
                 self.queue
                     .write_buffer(&self.lights_buffer, 0, &self.last_lights_upload);
             }
@@ -3938,6 +4169,7 @@ impl Renderer {
             // frame-zero still uploads valid lights + slots and seeds the mirror.
             let mut scratch = std::mem::take(&mut self.lights_pack_scratch);
             pack_lights_with_slots_into(&mut scratch, &self.level_lights, &level_slots);
+            crate::lighting::patch_cube_slots(&mut scratch, &level_cube_slots);
             if scratch != self.last_lights_upload {
                 self.queue.write_buffer(&self.lights_buffer, 0, &scratch);
                 self.last_lights_upload.clear();
@@ -3951,26 +4183,33 @@ impl Renderer {
         // the candidate list — that's the index space `slot_assignment` is
         // keyed on.
         const MAT_BYTES: usize = 64;
-        let stride = self.shadow_vs_stride as usize;
         let mut fragment_matrices =
             vec![0u8; MAT_BYTES * crate::lighting::spot_shadow::SHADOW_POOL_SIZE];
         let mut vertex_uniforms =
             vec![0u8; stride * crate::lighting::spot_shadow::SHADOW_POOL_SIZE];
         // Reset the per-slot cone-matrix stash; reoccupied slots overwrite, the
-        // rest stay `None` so the GPU cone cull skips them this frame.
+        // rest stay `None` so the GPU cone cull skips them this frame. The
+        // entity-occluder gate resets to `false` in lockstep.
         self.spot_shadow_pool.slot_cone_matrices =
             [None; crate::lighting::spot_shadow::SHADOW_POOL_SIZE];
+        self.spot_shadow_pool.slot_entity_eligible =
+            [false; crate::lighting::spot_shadow::SHADOW_POOL_SIZE];
         for (light_idx, &slot) in slot_assignment.iter().enumerate() {
             if slot == crate::lighting::spot_shadow::NO_SHADOW_SLOT {
                 continue;
             }
-            let m = crate::lighting::spot_shadow::light_space_matrix(
-                &self.shadow_candidate_lights[light_idx],
-            );
+            let candidate = &self.shadow_candidate_lights[light_idx];
+            let m = crate::lighting::spot_shadow::light_space_matrix(candidate);
             // Stash the SAME light-space matrix uploaded to bind-group-5 below —
             // the shadow-depth render loop reads it to build this slot's cone
             // cull frustum planes (one source of truth, no recomputation).
             self.spot_shadow_pool.slot_cone_matrices[slot as usize] = Some(m);
+            // Record whether this slot's occupant renders entity occluders. The
+            // shadow-depth loop draws skinned occluders into the slot only when
+            // this is set; an ineligible (e.g. toggle-off dynamic) slot keeps its
+            // world shadow but draws none.
+            self.spot_shadow_pool.slot_entity_eligible[slot as usize] =
+                crate::lighting::entity_occluder_eligible(candidate);
             let cols = m.to_cols_array();
             let mut bytes = [0u8; MAT_BYTES];
             for (i, v) in cols.iter().enumerate() {
@@ -3991,6 +4230,125 @@ impl Renderer {
             .write_buffer(&self.shadow_vs_uniform_buffer, 0, &vertex_uniforms);
 
         self.spot_shadow_pool.slot_assignment = slot_assignment;
+    }
+
+    /// Rank dynamic POINT lights into the cube pool and write each occupied
+    /// slot's 6 per-face light-space matrices into the cube VS uniform buffer.
+    /// Returns the candidate-indexed cube slot assignment so the caller can
+    /// patch each point light's cube slot into the forward light buffer
+    /// (`cone_angles_and_pad.w`). An EMPTY return means the pool is disabled
+    /// (adapter lacks `CUBE_ARRAY_TEXTURES`) — every point light then keeps the
+    /// sentinel and does unshadowed attenuation.
+    ///
+    /// Shares the spot path's per-light eligibility (`visible_lights`) and the
+    /// SHARED scoring/drop ranking core, so cube and spot slot assignment cannot
+    /// drift. Cube faces are ENTITY-ONLY in v1 — `slot_entity_eligible` decides
+    /// whether the depth loop draws anything into a slot at all.
+    ///
+    /// The RETURNED (shader-facing) assignment masks any light that owns a ranked
+    /// slot but is not `entity_occluder_eligible` back to the sentinel: its cube
+    /// faces are never cleared/rendered (the depth loop skips `None` matrices), so
+    /// the shader must not sample that slot. See `cube_shadow::shader_facing_cube_slot`.
+    /// The pool's internal `slot_assignment` keeps the raw rank for diagnostics.
+    fn update_cube_light_slots(
+        &mut self,
+        camera_position: Vec3,
+        camera_near_clip: f32,
+        visible_lights: &[bool],
+        stride: usize,
+    ) -> Vec<u32> {
+        use crate::lighting::cube_shadow;
+
+        let Some(pool) = self.cube_shadow_pool.as_mut() else {
+            return Vec::new();
+        };
+
+        let slot_assignment = cube_shadow::rank_point_lights(
+            &self.shadow_candidate_lights,
+            camera_position,
+            camera_near_clip,
+            visible_lights,
+        );
+
+        // Shader-facing slot assignment, returned to the caller and patched into
+        // each point light's `cone_angles_and_pad.w`. It DIVERGES from the
+        // internal `slot_assignment` for ineligible lights: see the per-light
+        // masking below. Starts as a copy of the rank and is downgraded to the
+        // sentinel for any light whose cube faces will not be rendered.
+        let mut shader_slot_assignment = slot_assignment.clone();
+
+        // Reset per-face matrices + per-slot entity gate; reoccupied faces
+        // overwrite, the rest stay `None`/`false` so the render loop skips them.
+        let face_count = cube_shadow::CUBE_COUNT * cube_shadow::CUBE_FACES;
+        for m in pool.face_matrices.iter_mut() {
+            *m = None;
+        }
+        for e in pool.slot_entity_eligible.iter_mut() {
+            *e = false;
+        }
+
+        let mut vertex_uniforms = vec![0u8; stride * face_count];
+        for (light_idx, &slot) in slot_assignment.iter().enumerate() {
+            if slot == crate::lighting::spot_shadow::NO_SHADOW_SLOT {
+                continue;
+            }
+            let candidate = &self.shadow_candidate_lights[light_idx];
+            // Cube faces are entity-only: an ineligible point light draws
+            // nothing, so it needs no per-face matrices either.
+            let eligible = crate::lighting::entity_occluder_eligible(candidate);
+            pool.slot_entity_eligible[slot as usize] = eligible;
+            // CRITICAL: a cube slot's faces are only CLEARED + rendered when the
+            // light is entity-eligible (the depth loop skips `None` face matrices).
+            // An ineligible slot's faces hold stale/uninitialized depth, so the
+            // shader must NOT sample them — `shader_facing_cube_slot` downgrades
+            // those to the sentinel (unshadowed). Unlike the spot path, where every
+            // occupied slot always renders a Clear(1.0)+world-depth baseline, a cube
+            // face carries no world geometry and no clear, so sampling an
+            // occluder-free face would read garbage (often fully shadowed) and ZERO
+            // the light when its origin is on-screen (slots are only assigned to
+            // visible lights — hence the view-dependence of the original bug).
+            shader_slot_assignment[light_idx] =
+                cube_shadow::shader_facing_cube_slot(slot, eligible);
+            if !eligible {
+                continue;
+            }
+            let face_mats = cube_shadow::cube_face_matrices(candidate);
+            for (face, m) in face_mats.iter().enumerate() {
+                let layer = cube_shadow::CubeShadowPool::face_layer(slot, face);
+                pool.face_matrices[layer] = Some(*m);
+                let cols = m.to_cols_array();
+                let off = layer * stride;
+                for (i, v) in cols.iter().enumerate() {
+                    vertex_uniforms[off + i * 4..off + i * 4 + 4].copy_from_slice(&v.to_ne_bytes());
+                }
+            }
+        }
+        self.queue
+            .write_buffer(&self.cube_shadow_vs_uniform_buffer, 0, &vertex_uniforms);
+
+        pool.slot_assignment = slot_assignment;
+        // Return the SHADER-facing assignment (ineligible lights masked to the
+        // sentinel), not the raw rank — the caller patches this into the light
+        // buffer, and only slots with rendered occluders may be sampled.
+        shader_slot_assignment
+    }
+
+    /// Count of skinned entity occluder instances submitted into spot shadow
+    /// slots last frame (summed across slots). The CPU-side verification for the
+    /// out-of-cone acceptance criterion — an instance the per-light cone cull
+    /// rejects is never tallied here. No GPU readback.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn spot_entity_occluders_submitted(&self) -> u32 {
+        self.spot_entity_occluders_submitted
+    }
+
+    /// Count of skinned entity occluder instances submitted into CUBE point-light
+    /// shadow faces last frame (summed across occupied slots × 6 faces). The
+    /// CPU-side verification that entity occluders render only for eligible point
+    /// lights and only inside a face frustum. No GPU readback.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn cube_entity_occluders_submitted(&self) -> u32 {
+        self.cube_entity_occluders_submitted
     }
 
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
@@ -4278,6 +4636,53 @@ impl Renderer {
             light_reachable_leaf_mask,
         );
         self.light_effective_brightness = eff_brightness;
+
+        // --- Skinned-mesh pose/upload HOIST ----------------------------------
+        // Plan + sample + upload the skinned-mesh palette/instance buffers HERE —
+        // after `update_dynamic_light_slots`, BEFORE the spot-shadow depth loop —
+        // so the skinned-depth shadow occluder pass and the forward mesh draw both
+        // read the SAME already-posed buffers. Nothing rewrites `palette_buffer`/
+        // `instance_buffer` between this point and the forward `record_draws`, so
+        // an entity and its shadow are sampled at the identical pose (no one-frame
+        // lag). The plan is held in `mesh_frame_plan` and consumed by both passes.
+        let mesh_frame_plan: Option<mesh_instances::MeshFramePlan> =
+            if self.mesh_pass.has_model() && !self.mesh_draws.is_empty() {
+                // Plan: group instances by model, assign each a contiguous palette
+                // run, drop any overflow past the fixed budget. GPU-free.
+                let plan = mesh_instances::plan_mesh_frame(&self.mesh_draws, &self.mesh_pass);
+
+                // Overflow drops excess instances rather than corrupting the
+                // palette or panicking — rate-limited warning. Covers BOTH the
+                // palette-slot cap and the instance-count cap (the latter is what
+                // fires for rigid / zero-joint props, which consume no slots).
+                if plan.dropped > 0 {
+                    let now = now_seconds as f32;
+                    if now - self.mesh_overflow_last_warn >= 1.0 {
+                        log::warn!(
+                            "[Renderer] skinned-mesh budget exceeded: dropped {} instance(s) \
+                             (budget {} palette slots / {} instances); excess not drawn",
+                            plan.dropped,
+                            mesh_instances::MAX_PALETTE_ENTRIES,
+                            mesh_instances::MAX_INSTANCES,
+                        );
+                        self.mesh_overflow_last_warn = now;
+                    }
+                }
+
+                // Sample every instance's clip into its palette run + write the
+                // per-instance SSBO. The ONLY per-frame write to these buffers —
+                // both the shadow loop and the forward draw read them unchanged.
+                self.mesh_pass.plan_and_upload(
+                    &self.queue,
+                    &plan,
+                    now_seconds as f32,
+                    &mut self.bone_palette_scratch,
+                );
+                (!plan.groups.is_empty()).then_some(plan)
+            } else {
+                None
+            };
+
         if self.has_geometry && self.index_count > 0 {
             let stride = self.shadow_vs_stride;
             let slot_assignment = self.spot_shadow_pool.slot_assignment.clone();
@@ -4288,6 +4693,11 @@ impl Renderer {
                 .collect();
             used_slots.sort_unstable();
             used_slots.dedup();
+
+            // Reset the per-frame entity-occluder counter; the per-slot cull
+            // tallies into it below. Mirrors `shadow-cone-cull`'s submitted
+            // counter — pure CPU, no GPU readback.
+            self.spot_entity_occluders_submitted = 0;
 
             // Per-slot GPU cone cull: one compute pass loops the occupied slots,
             // dispatching BVH traversal into each slot's indirect sub-region
@@ -4331,6 +4741,117 @@ impl Renderer {
                     shadow_cull.draw_slot_indirect(&mut pass, slot, None);
                 } else {
                     pass.draw_indexed(0..self.index_count, 0, 0..1);
+                }
+
+                // Skinned ENTITY occluders into the SAME slot, through the
+                // parameterized depth-only path: target view = this slot's depth
+                // attachment (the `pass` above), light-space matrix = the
+                // per-slot `shadow_vs_bind_group` + dynamic offset. This proves
+                // the cube-ready contract — the pipeline takes the view + matrix
+                // as per-render parameters, with no slot-count or 2D-target
+                // assumption baked in. Reads the already-posed buffers from the
+                // hoist (no rewrite since), so the occluder pose matches the
+                // forward draw with no one-frame lag.
+                //
+                // TWO gates (kept separate from pool-slot eligibility):
+                //   1. `slot_entity_eligible[slot]` — the slot's light passes
+                //      `entity_occluder_eligible` (dynamic + toggle on). An
+                //      ineligible slot keeps its world shadow (already drawn
+                //      above) but draws ZERO entity occluders.
+                //   2. per-instance cone cull inside `record_skinned_depth` —
+                //      only instances whose transformed bound intersects this
+                //      slot's cone are submitted.
+                if let Some(plan) = &mesh_frame_plan {
+                    if self.spot_shadow_pool.slot_entity_eligible[slot as usize] {
+                        if let Some(cone_matrix) =
+                            self.spot_shadow_pool.slot_cone_matrices[slot as usize]
+                        {
+                            let cone_planes =
+                                crate::lighting::cone_frustum::cone_frustum_planes(&cone_matrix);
+                            self.spot_entity_occluders_submitted +=
+                                self.mesh_pass.record_skinned_depth(
+                                    &mut pass,
+                                    plan,
+                                    &self.shadow_vs_bind_group,
+                                    slot * stride,
+                                    &cone_planes,
+                                );
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Cube point-light shadow depth loop (entity-only) ----------------
+        // For each occupied cube slot whose light is `entity_occluder_eligible`,
+        // CLEAR all 6 faces to the far plane (1.0) and render entity occluders
+        // into them. Cube faces carry NO world geometry in v1, so this loop is
+        // independent of `has_geometry`; an ineligible point light (which has no
+        // per-face matrices) is skipped entirely. Per face: a depth render pass
+        // into the `slot*6 + face` D2Array view, projecting by that face's
+        // light-space matrix (group 0, dynamic offset into the cube VS uniform
+        // buffer), with the per-instance cone cull inside `record_skinned_depth`
+        // testing each bound against the face's 90° frustum planes. Reuses the
+        // SAME cube-ready depth pipeline as the spot path.
+        //
+        // CRITICAL: the per-face Clear(1.0) baseline must run for EVERY occupied
+        // eligible face regardless of whether any skinned-mesh occluders exist
+        // this frame. Gating the whole loop on `mesh_frame_plan` being `Some`
+        // (the prior bug) meant that when no mesh entity was in the PVS — e.g. a
+        // combat arena whose meshes are all off-screen — the occupied faces were
+        // NEVER cleared and held stale/uninitialized depth (~0.0). An on-screen
+        // eligible point light then sampled that garbage and read fully shadowed
+        // (CompareFunction::Less: reference >= 0 is never < 0), zeroing its world
+        // illumination. Off-screen lights own no slot (sentinel), so they stayed
+        // lit — the view-dependent symptom. The clear is now unconditional and
+        // the occluder draw is the only mesh-plan-gated step, mirroring the spot
+        // path's "every occupied slot gets a Clear(1.0) baseline" invariant.
+        self.cube_entity_occluders_submitted = 0;
+        if let Some(pool) = &self.cube_shadow_pool {
+            let stride = self.shadow_vs_stride;
+            for layer in 0..pool.face_matrices.len() {
+                let face_matrix_opt = pool.face_matrices[layer];
+                // Only occupied faces are touched; an occupied face ALWAYS gets
+                // its Clear(1.0) far-plane baseline this frame, mesh plan or not
+                // (the occluder draw below is the only mesh-plan-gated step). See
+                // `cube_shadow::cube_face_needs_clear` for why the clear must not
+                // be gated on the plan.
+                if !crate::lighting::cube_shadow::cube_face_needs_clear(face_matrix_opt.is_some()) {
+                    continue;
+                }
+                let face_matrix = face_matrix_opt.expect("face_needs_clear implies occupied");
+                let view = &pool.face_views[layer];
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Cube Shadow Depth Pass"),
+                    color_attachments: &[],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    ..Default::default()
+                });
+                // Occluders are entity-only: submit skinned meshes ONLY when a
+                // mesh frame plan exists. With no plan the face still receives its
+                // Clear(1.0) far-plane baseline above, so an occluder-free eligible
+                // cube reads as fully lit (shadow factor 1.0) — matching the spot
+                // path and the off-camera (no-slot) path.
+                if let Some(plan) = &mesh_frame_plan {
+                    // Face frustum planes from the same matrix uploaded to the cube
+                    // VS uniform buffer — one source of truth for cull + projection.
+                    let face_planes =
+                        crate::lighting::cone_frustum::cone_frustum_planes(&face_matrix);
+                    self.cube_entity_occluders_submitted += self.mesh_pass.record_skinned_depth(
+                        &mut pass,
+                        plan,
+                        &self.cube_shadow_vs_bind_group,
+                        layer as u32 * stride,
+                        &face_planes,
+                    );
                 }
             }
         }
@@ -4471,88 +4992,47 @@ impl Renderer {
             }
         }
 
-        // Skinned-mesh pass — after the opaque world forward, before billboards.
-        // Its own render pass so it can WRITE depth (the forward pass holds the
-        // depth attachment read-only). Loads the existing color + depth so the
-        // mesh composites over the world and depth-tests (`Less`) against it.
+        // Skinned-mesh forward pass — after the opaque world forward, before
+        // billboards. Its own render pass so it can WRITE depth (the forward pass
+        // holds the depth attachment read-only). Loads the existing color + depth
+        // so the mesh composites over the world and depth-tests (`Less`).
         //
-        // `mesh_draws` is the per-frame instance list, filled by `set_mesh_draws`
-        // from the render-frame mesh collector. Each entry is a FINAL per-instance
-        // (handle, interpolated transform, phase seed) already culled by the
-        // collector (it calls `mesh_pass::mesh_visible` against this frame's
-        // `VisibleCells` + the `LevelWorld` BEFORE the cells are reclaimed in
-        // `main.rs`, which happens after this method returns — so the read is
-        // safe). The renderer GPU pass needs no world reference.
-        if self.mesh_pass.has_model() && !self.mesh_draws.is_empty() {
-            // Plan: group instances by model, assign each a contiguous palette
-            // run, drop any overflow past the fixed budget. Pure data logic —
-            // GPU-free (see `mesh_instances`).
-            let plan = mesh_instances::plan_mesh_frame(&self.mesh_draws, &self.mesh_pass);
-
-            // Overflow drops excess instances rather than corrupting the palette
-            // or panicking — rate-limited warning (mirrors `EmitterBridge`).
-            // Covers BOTH budgets: the palette-slot cap and the instance-count
-            // cap (the latter is what fires for rigid / zero-joint props, which
-            // consume no palette slots).
-            if plan.dropped > 0 {
-                let now = now_seconds as f32;
-                if now - self.mesh_overflow_last_warn >= 1.0 {
-                    log::warn!(
-                        "[Renderer] skinned-mesh budget exceeded: dropped {} instance(s) \
-                         (budget {} palette slots / {} instances); excess not drawn",
-                        plan.dropped,
-                        mesh_instances::MAX_PALETTE_ENTRIES,
-                        mesh_instances::MAX_INSTANCES,
-                    );
-                    self.mesh_overflow_last_warn = now;
-                }
-            }
-
-            if !plan.groups.is_empty() {
-                let mut mesh_enc = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("Skinned Mesh Pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &self.depth_view,
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        }),
-                        stencil_ops: None,
+        // Reads the `mesh_frame_plan` PLANNED + UPLOADED earlier in this frame
+        // (the pose/upload hoist, before the shadow loop). NO re-plan, NO
+        // re-upload here — `record_draws` only records draws against the buffers
+        // the hoist populated, the SAME buffers the skinned-depth shadow pass
+        // read, so an entity and its shadow share one pose (no one-frame lag).
+        if let Some(plan) = &mesh_frame_plan {
+            let mut mesh_enc = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Skinned Mesh Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
                     }),
-                    timestamp_writes: None,
-                    ..Default::default()
-                });
-                mesh_enc.set_bind_group(0, &self.uniform_bind_group, &[]);
-                // Group 4 = SH irradiance volume (baked indirect) + the mesh-only
-                // dynamic-direct params uniform (binding 16). The mesh SUPERSET
-                // bind group: shared SH entries the forward/billboard/fog passes
-                // hold PLUS the dynamic-direct knobs (group 3 = instance data;
-                // group 2 unallocated).
-                mesh_enc.set_bind_group(4, &self.sh_volume_resources.mesh_bind_group, &[]);
-                // The mesh pass writes each instance's SSBO entry + samples its
-                // palette run (per-instance phase from the seed), then records one
-                // instanced draw per model per submesh. `now_seconds` is the
-                // render clock used as animation time — render-rate sampling is
-                // fine for visuals; `sample_clip`'s rem_euclid wrap bounds the
-                // effect over long sessions. Reuses `bone_palette_scratch`, so a
-                // steady-state frame allocates nothing.
-                self.mesh_pass.render_frame(
-                    &self.queue,
-                    &mut mesh_enc,
-                    &plan,
-                    now_seconds as f32,
-                    &mut self.bone_palette_scratch,
-                );
-            }
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                ..Default::default()
+            });
+            mesh_enc.set_bind_group(0, &self.uniform_bind_group, &[]);
+            // Group 4 = SH irradiance volume (baked indirect) + the mesh-only
+            // dynamic-direct params uniform (binding 16). The mesh SUPERSET bind
+            // group: shared SH entries the forward/billboard/fog passes hold PLUS
+            // the dynamic-direct knobs (group 3 = instance data; group 2
+            // unallocated).
+            mesh_enc.set_bind_group(4, &self.sh_volume_resources.mesh_bind_group, &[]);
+            self.mesh_pass.record_draws(&mut mesh_enc, plan);
         }
 
         // After opaque forward, before wireframe. Alpha additive; depth test on, write off.
@@ -4963,22 +5443,19 @@ fn filter_dynamic_lights(
 }
 
 /// Pull the spot-shadow pool's candidate set from the **full** level light
-/// list: every dynamic-tier light (`is_dynamic`) plus any light that opts
-/// into entity shadows via `casts_entity_shadows` (FGD `_cast_entity_shadows`).
+/// list: every dynamic-tier light (`is_dynamic`). A baked light's world shadow
+/// is frozen in the lightmap, so it never needs a pool slot; only dynamic-tier
+/// lights qualify.
 ///
-/// Dynamic-tier spotlights cast world shadows by default — the shadow depth
-/// pass renders static world geometry, so a pooled dynamic spot shadows
-/// pillars and other occluders without a per-light flag, the behavior the
-/// dynamic tier was designed for. `casts_entity_shadows` remains the opt-in
-/// for non-dynamic lights (future enemy / moving-occluder shadows).
+/// Dynamic-tier spotlights cast world shadows through the shadow depth pass
+/// (which renders static world geometry), so a pooled dynamic spot shadows
+/// pillars and other occluders. The per-light `casts_entity_shadows` toggle
+/// (FGD `_cast_entity_shadows`) is orthogonal to slot allocation — it gates
+/// whether moving-ENTITY occluders are drawn into the already-allocated slot
+/// (`entity_occluder_eligible`), not whether the slot exists.
 ///
-/// This candidate set is intentionally decoupled from the
-/// `is_dynamic`-filtered `level_lights` used by the forward direct-light
-/// loop. `level_lights` keeps only the dynamic tier; ranking the shadow pool
-/// from the candidate set (rather than `level_lights`) keeps the
-/// `casts_entity_shadows` opt-in path independent. Ranking is layered on top
-/// of the existing `eligible_lights` visibility/brightness slice in
-/// `rank_lights`.
+/// Ranking is layered on top of the existing `eligible_lights`
+/// visibility/brightness slice in `rank_lights`.
 fn filter_entity_shadow_candidates(
     lights: &[MapLight],
     influences: &[LightInfluence],
@@ -4986,7 +5463,7 @@ fn filter_entity_shadow_candidates(
     lights
         .iter()
         .enumerate()
-        .filter(|(_, l)| l.is_dynamic || l.casts_entity_shadows)
+        .filter(|(_, l)| l.is_dynamic)
         .map(|(i, l)| {
             let inf = influences.get(i).cloned().unwrap_or(LightInfluence {
                 center: Vec3::ZERO,
@@ -5000,10 +5477,10 @@ fn filter_entity_shadow_candidates(
 /// Identity-match a shadow candidate against the `level_lights` slice
 /// (origin + light_type) and return that level-light's per-frame
 /// effective brightness. Returns `None` when the candidate isn't in
-/// `level_lights` (the uncommon case: opted-in static lights via
-/// `casts_entity_shadows` that aren't in the `is_dynamic`-filtered
-/// forward set; dynamic-tier spots ARE in `level_lights` and are the
-/// common candidate).
+/// `level_lights`. Both sets are `is_dynamic`-filtered snapshots of the same
+/// `world.lights` source, so today every candidate is present and this returns
+/// `Some`; the `None` arm is the defensive path for once light-movement
+/// re-keying lands.
 fn level_brightness_for_candidate(
     level_lights: &[MapLight],
     candidate: &MapLight,
@@ -5105,32 +5582,82 @@ mod tests {
         // The forward pipeline layout (see `create_pipeline_layout`) composes
         // exactly these six BGLs in this group order. Counting fragment-visible
         // texture entries across them is how wgpu charges
-        // `max_sampled_textures_per_shader_stage`.
-        let per_group = [
-            fragment_sampled_textures(&uniform_bind_group_layout_entries()), // group 0
-            fragment_sampled_textures(&material_bind_group_layout_entries()), // group 1
-            fragment_sampled_textures(&lighting_bind_group_layout_entries()), // group 2
-            fragment_sampled_textures(&sh_volume::sh_bind_group_layout_entries()), // group 3
-            fragment_sampled_textures(&crate::lighting::lightmap::bind_group_layout_entries()), // group 4
-            fragment_sampled_textures(&SpotShadowPool::bind_group_layout_entries()), // group 5
-        ];
-        // Per-group expectations document the inventory; if a BGL changes, the
-        // failing index points straight at the group that drifted.
+        // `max_sampled_textures_per_shader_stage`. Group 5's count is
+        // feature-conditional, so check both variants from the same builders.
+        //
+        // `cube_array_supported = true`: Group 5 carries 4 sampled textures — spot
+        // depth array (b0), SDF shadow factor (b3), SDF scene depth (b4), and the
+        // dynamic point-light cube depth (b5). Total forward sampled textures: 14.
+        //
+        // `cube_array_supported = false`: binding 5 is omitted, so Group 5 carries
+        // 3 and the total is 13. The forward + fog pipelines then build from a
+        // group-5 BGL WITHOUT the cube entry (the no-cube shader variants drop the
+        // matching declaration), so point shadows disable cleanly with no panic.
+        let per_group = |cube_array_supported: bool| {
+            [
+                fragment_sampled_textures(&uniform_bind_group_layout_entries()), // group 0
+                fragment_sampled_textures(&material_bind_group_layout_entries()), // group 1
+                fragment_sampled_textures(&lighting_bind_group_layout_entries()), // group 2
+                fragment_sampled_textures(&sh_volume::sh_bind_group_layout_entries()), // group 3
+                fragment_sampled_textures(&crate::lighting::lightmap::bind_group_layout_entries()), // group 4
+                fragment_sampled_textures(&SpotShadowPool::bind_group_layout_entries(
+                    cube_array_supported,
+                )), // group 5
+            ]
+        };
+
+        // Supported: Group 5 = 4, total = 14.
+        let supported = per_group(true);
         assert_eq!(
-            per_group,
-            [0, 3, 0, 3, 4, 3],
-            "forward BGL texture inventory changed"
+            supported,
+            [0, 3, 0, 3, 4, 4],
+            "forward BGL texture inventory changed (CUBE_ARRAY supported)"
+        );
+        let derived_supported: u32 = supported.iter().sum();
+        assert_eq!(derived_supported, 14);
+        assert_eq!(
+            forward_pipeline_sampled_texture_count(true),
+            derived_supported
         );
 
-        let derived: u32 = per_group.iter().sum();
-        // The aggregation helper must agree with the hand-summed inventory above.
-        assert_eq!(forward_pipeline_sampled_texture_count(), derived);
+        // Unsupported: Group 5 = 3 (no cube entry), total = 13. The group-5 BGL
+        // builder must omit binding 5 — pin both the count and the absence.
+        let unsupported = per_group(false);
+        assert_eq!(
+            unsupported,
+            [0, 3, 0, 3, 4, 3],
+            "forward BGL texture inventory changed (CUBE_ARRAY absent)"
+        );
+        let derived_unsupported: u32 = unsupported.iter().sum();
+        assert_eq!(derived_unsupported, 13);
+        assert_eq!(
+            forward_pipeline_sampled_texture_count(false),
+            derived_unsupported
+        );
+        let no_cube_entries = SpotShadowPool::bind_group_layout_entries(false);
+        assert!(
+            no_cube_entries.iter().all(|e| e.binding != 5),
+            "no-CUBE_ARRAY group-5 BGL must omit binding 5 (the CubeArray cube depth)"
+        );
+        assert_eq!(
+            no_cube_entries.len(),
+            5,
+            "no-CUBE_ARRAY group-5 BGL must carry exactly 5 entries (bindings 0..=4)"
+        );
+        // And the supported variant DOES carry binding 5.
+        assert!(
+            SpotShadowPool::bind_group_layout_entries(true)
+                .iter()
+                .any(|e| e.binding == 5),
+            "CUBE_ARRAY group-5 BGL must include binding 5 (the CubeArray cube depth)"
+        );
+
         // 16 is the design budget: the WebGPU spec floor and Metal's hard ceiling.
         // If the derived count exceeds 16, switch to bindless (TEXTURE_BINDING_ARRAY)
         // rather than raising REQUIRED_SAMPLED_TEXTURES in the device limit request.
         assert!(
-            derived <= 16,
-            "forward pipeline sampled-texture count ({derived}) exceeds the Metal/WebGPU spec floor of 16; \
+            derived_supported <= 16,
+            "forward pipeline sampled-texture count ({derived_supported}) exceeds the Metal/WebGPU spec floor of 16; \
              use bindless (TEXTURE_BINDING_ARRAY) rather than raising this limit"
         );
     }
@@ -6057,6 +6584,43 @@ mod tests {
         .expect("forward.wgsl must pass naga validation (control-flow uniformity)");
     }
 
+    /// The no-`CUBE_ARRAY_TEXTURES` variant of the forward shader, derived from the
+    /// single source via `strip_point_shadow_cube`, must (1) drop the
+    /// `point_shadow_cube` binding entirely so it matches a group-5 BGL that omits
+    /// binding 5, and (2) still parse + pass naga validation. This is what ships on
+    /// an adapter without the feature — point shadows cleanly off, no panic.
+    #[test]
+    fn forward_wgsl_no_cube_variant_strips_binding_and_validates() {
+        let stripped = strip_point_shadow_cube(SHADER_SOURCE);
+        // The `point_shadow_cube` binding DECLARATION is gone (comments mentioning
+        // the name in prose are harmless; naga validation below proves there is no
+        // dangling code reference).
+        assert!(
+            !stripped.contains("var point_shadow_cube:"),
+            "no-cube forward variant must not declare the point_shadow_cube binding"
+        );
+        // The body markers (and everything between them, including the cube
+        // sample) are gone, replaced by the no-shadow constant. naga validation
+        // below is the real guarantee that no code references the absent binding.
+        assert!(
+            !stripped.contains("CUBE_SHADOW_BODY_BEGIN")
+                && !stripped.contains("CUBE_SHADOW_BODY_END"),
+            "no-cube forward variant must consume the sample_point_shadow body markers"
+        );
+        // The supported variant keeps the declaration (sanity that the transform
+        // actually removed something).
+        assert!(SHADER_SOURCE.contains("var point_shadow_cube:"));
+
+        let module =
+            naga::front::wgsl::parse_str(&stripped).expect("no-cube forward variant must parse");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("no-cube forward variant must pass naga validation");
+    }
+
     /// The depth pre-pass shader must parse as valid WGSL and declare
     /// the same `Uniforms` struct binding as `forward.wgsl` (only the
     /// leading `view_proj` field is referenced, but the shader still
@@ -6250,7 +6814,6 @@ mod tests {
                 cone_angle_inner: 0.0,
                 cone_angle_outer: 0.0,
                 cone_direction: [0.0, 0.0, -1.0],
-                cast_shadows: false,
                 is_dynamic,
                 casts_entity_shadows: false,
                 animated_slot: None,

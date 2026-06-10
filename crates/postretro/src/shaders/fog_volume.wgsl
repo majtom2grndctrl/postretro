@@ -70,10 +70,27 @@ struct AnimationDescriptor {
 @group(5) @binding(0) var spot_shadow_depth: texture_depth_2d_array;
 @group(5) @binding(1) var spot_shadow_compare: sampler_comparison;
 
+// The array length MUST match `SHADOW_POOL_SIZE` in `lighting/spot_shadow.rs`
+// (pinned by `light_space_matrices_array_len_matches_pool`); 96 × mat4x4<f32>
+// is 6144 bytes, well under the 16 KiB uniform cap.
 struct LightSpaceMatrices {
-    m: array<mat4x4<f32>, 12>,
+    m: array<mat4x4<f32>, 96>,
 }
 @group(5) @binding(2) var<uniform> light_space_matrices: LightSpaceMatrices;
+
+// Dynamic POINT-light cube-array shadow depth. The fog pass shares group 5's
+// BGL with the forward pass, so this binding is declared to keep the layout
+// self-documenting; it is BOUND but NOT sampled in v1 (a future point-light
+// beam-scattering extension would read it). Declared but unreferenced bindings
+// are valid — wgpu only rejects a shader that references a binding absent from
+// the BGL, not a BGL entry the shader omits.
+//
+// The `// CUBE_SHADOW_BINDING` tag marks this line for the no-cube variant: on an
+// adapter without `CUBE_ARRAY_TEXTURES` the renderer strips it so the shared
+// group-5 BGL can omit binding 5. Fog never references the binding, so stripping
+// the declaration alone suffices (no body to neutralize). See
+// `render::strip_point_shadow_cube`.
+@group(5) @binding(5) var point_shadow_cube: texture_depth_cube_array; // CUBE_SHADOW_BINDING
 
 // Maximum number of fog volumes the shader can process per frame.
 // Must match MAX_FOG_VOLUMES in the Rust fog_volume module.

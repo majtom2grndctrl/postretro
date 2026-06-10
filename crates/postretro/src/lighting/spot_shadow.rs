@@ -49,7 +49,42 @@ pub fn light_space_matrix(light: &MapLight) -> Mat4 {
 }
 
 /// Number of shadow-map slots in the pool. Re-tunable.
-pub const SHADOW_POOL_SIZE: usize = 64;
+pub const SHADOW_POOL_SIZE: usize = 96;
+
+/// Shared scoring/drop core for the shadow-slot rankers (spot pool here, cube
+/// point pool in `cube_shadow.rs`). Takes pre-filtered, pre-scored candidates
+/// — each `(light_index, influence_score)` — plus the pool `capacity` and the
+/// total light count, and returns a `slot_assignment` Vec indexed by light
+/// index: each entry is a slot (`0..capacity`) or [`NO_SHADOW_SLOT`].
+///
+/// Sorts by score descending, breaking ties by ascending light index for
+/// determinism, then assigns the top `capacity` to dense slots `0..capacity`;
+/// every lower-ranked candidate keeps `NO_SHADOW_SLOT` (dropped gracefully —
+/// no panic). Spot and point rankers supply their own light-type filter and
+/// influence score but MUST share this drop policy so the two cannot drift.
+///
+/// `candidates` is taken by value (mutated in place by the sort) so the caller
+/// does not pay a clone.
+pub fn assign_ranked_slots(
+    mut candidates: Vec<(usize, f32)>,
+    capacity: usize,
+    light_count: usize,
+) -> Vec<u32> {
+    let mut slot_assignment = vec![NO_SHADOW_SLOT; light_count];
+
+    // Sort by score (descending), then by index (ascending) for determinism.
+    candidates.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.0.cmp(&b.0))
+    });
+
+    for (slot, (light_idx, _score)) in candidates.iter().take(capacity).enumerate() {
+        slot_assignment[*light_idx] = slot as u32;
+    }
+
+    slot_assignment
+}
 
 /// Depth format for shadow maps.
 pub const SHADOW_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -101,35 +136,58 @@ pub struct SpotShadowPool {
     /// buffer — one source of truth, read by the shadow-depth render loop to
     /// build the slot's GPU cone-cull frustum planes. `None` = slot unoccupied.
     pub slot_cone_matrices: [Option<Mat4>; SHADOW_POOL_SIZE],
+    /// Per-slot entity-occluder gate, written alongside `slot_cone_matrices` in
+    /// `update_dynamic_light_slots`. `true` only when the slot's occupant passes
+    /// [`crate::lighting::entity_occluder_eligible`] (`casts_entity_shadows &&
+    /// is_dynamic`). The shadow-depth render loop draws skinned entity occluders
+    /// into a slot ONLY when this is `true`; an ineligible slot keeps its WORLD
+    /// shadow but draws zero entity occluders. Separate from pool-slot
+    /// eligibility (which still admits non-entity dynamic spots to a slot).
+    pub slot_entity_eligible: [bool; SHADOW_POOL_SIZE],
 }
 
 impl SpotShadowPool {
     /// Build the bind group layout for `@group(5)` of the forward shader.
     ///
-    /// Group 5 has five entries:
+    /// Group 5 has five or six entries depending on `cube_array_supported`:
     ///   0 = shadow depth array (D2Array Depth32Float; FRAGMENT | COMPUTE)
-    ///   1 = comparison sampler (FRAGMENT | COMPUTE)
+    ///   1 = comparison sampler (FRAGMENT | COMPUTE) — reused by the cube path
     ///   2 = light-space matrix uniform buffer (FRAGMENT | COMPUTE)
     ///   3 = half-res SDF shadow factor target (Rgba8Unorm; R = static, G = animated; FRAGMENT)
     ///   4 = full-res scene depth (Depth32Float; sampled via `textureLoad`; FRAGMENT)
+    ///   5 = dynamic point-light cube-array shadow depth (CubeArray Depth32Float;
+    ///       FRAGMENT) — present ONLY when `cube_array_supported`. A `CubeArray`
+    ///       view requires `DownlevelFlags::CUBE_ARRAY_TEXTURES`, so on an adapter
+    ///       without it this entry is omitted and the forward/fog pipelines build
+    ///       from the no-cube shader variants (point shadows cleanly off).
     ///
-    /// Bindings 3 and 4 are owned outside the pool — the SDF shadow pass owns
-    /// the factor target and the renderer owns the scene depth view. Both are
-    /// supplied at construction time and must be re-supplied on resize via
-    /// `rebuild_bind_group`. The fog volume compute pass also binds group 5
-    /// but does not reference slots 3 or 4 — unused BGL entries are valid.
-    pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    /// Bindings 3, 4, and 5 are owned outside the pool — the SDF shadow pass owns
+    /// the factor target, the renderer owns the scene depth view, and the cube
+    /// shadow pool owns the cube sampling view. All are supplied at construction
+    /// time and must be re-supplied on resize via `rebuild_bind_group`. The fog
+    /// volume compute pass also binds group 5 but does not reference slots 3, 4,
+    /// or 5 — unused BGL entries are valid.
+    pub fn bind_group_layout(
+        device: &wgpu::Device,
+        cube_array_supported: bool,
+    ) -> wgpu::BindGroupLayout {
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Spot Shadow BGL"),
-            entries: &Self::bind_group_layout_entries(),
+            entries: &Self::bind_group_layout_entries(cube_array_supported),
         })
     }
 
     /// CPU-only entry list backing `bind_group_layout`. Split out so the forward
     /// pipeline's sampled-texture budget can be re-derived from the real BGL
     /// definitions without a GPU device (see `render::mod.rs`).
-    pub fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 5] {
-        [
+    ///
+    /// Binding 5 (the `CubeArray` point-shadow depth) is included only when
+    /// `cube_array_supported` — both forward and fog share this BGL, so each
+    /// variant stays layout-identical between the two pipelines.
+    pub fn bind_group_layout_entries(
+        cube_array_supported: bool,
+    ) -> Vec<wgpu::BindGroupLayoutEntry> {
+        let mut entries = vec![
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
@@ -178,7 +236,31 @@ impl SpotShadowPool {
                 },
                 count: None,
             },
-        ]
+        ];
+        // Binding 5: dynamic POINT-light cube-array shadow depth
+        // (`CubeShadowPool::sampling_view`). Sampled by the forward pass via
+        // `textureSampleCompareLevel` (reusing the binding-1 comparison
+        // sampler); BOUND but not sampled by the fog pass. FRAGMENT only —
+        // the COMPUTE-visible shadow consumers (cone cull) never read it.
+        //
+        // Present ONLY when `cube_array_supported`: a `CubeArray` BGL entry
+        // requires `DownlevelFlags::CUBE_ARRAY_TEXTURES`, so omitting it lets the
+        // forward + fog pipelines build on adapters without the feature (point
+        // shadows then cleanly off; the no-cube shader variants omit the matching
+        // declaration). When present, the inventory is identical to before.
+        if cube_array_supported {
+            entries.push(wgpu::BindGroupLayoutEntry {
+                binding: 5,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::CubeArray,
+                    multisampled: false,
+                },
+                count: None,
+            });
+        }
+        entries
     }
 
     /// Allocate the shadow-map pool at renderer init.
@@ -194,11 +276,17 @@ impl SpotShadowPool {
     /// can build a complete bind group at construction time. Both views must be
     /// re-supplied on resize via `rebuild_bind_group` since they are
     /// re-created when the surface changes size.
+    ///
+    /// `point_cube_view` is `Some` only when the adapter supports
+    /// `CUBE_ARRAY_TEXTURES` — it must be `Some` iff `layout` was built with
+    /// `cube_array_supported = true`, since the bind group's entry set must match
+    /// the BGL exactly. `None` omits binding 5 (point shadows off).
     pub fn new(
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,
         sdf_shadow_factor_view: &wgpu::TextureView,
         scene_depth_view: &wgpu::TextureView,
+        point_cube_view: Option<&wgpu::TextureView>,
     ) -> Self {
         let array_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Spot Shadow Map Array"),
@@ -268,6 +356,7 @@ impl SpotShadowPool {
             &matrices_buffer,
             sdf_shadow_factor_view,
             scene_depth_view,
+            point_cube_view,
         );
 
         Self {
@@ -279,6 +368,7 @@ impl SpotShadowPool {
             bind_group,
             slot_assignment: Vec::new(),
             slot_cone_matrices: [None; SHADOW_POOL_SIZE],
+            slot_entity_eligible: [false; SHADOW_POOL_SIZE],
         }
     }
 
@@ -292,6 +382,7 @@ impl SpotShadowPool {
         layout: &wgpu::BindGroupLayout,
         sdf_shadow_factor_view: &wgpu::TextureView,
         scene_depth_view: &wgpu::TextureView,
+        point_cube_view: Option<&wgpu::TextureView>,
     ) {
         self.bind_group = build_bind_group(
             device,
@@ -301,6 +392,7 @@ impl SpotShadowPool {
             &self.matrices_buffer,
             sdf_shadow_factor_view,
             scene_depth_view,
+            point_cube_view,
         );
     }
 
@@ -308,9 +400,8 @@ impl SpotShadowPool {
     ///
     /// Takes the candidate light list, camera position, and the camera's
     /// `view_proj` matrix. Identifies spot lights that are pool-eligible
-    /// (`is_dynamic || casts_entity_shadows`) and whose cone can reach the
-    /// camera's view, ranks by influence-area heuristic, and assigns the top
-    /// `SHADOW_POOL_SIZE` to slots.
+    /// (`is_dynamic`) and whose cone can reach the camera's view, ranks by
+    /// influence-area heuristic, and assigns the top `SHADOW_POOL_SIZE` to slots.
     ///
     /// Visibility pre-filter: each candidate's cone-enclosing AABB (derived from
     /// its `light_space_matrix`) is tested against the camera frustum planes. A
@@ -320,11 +411,12 @@ impl SpotShadowPool {
     /// can only over-include, never wrongly drop a shadow.
     ///
     /// The caller passes the full-level light slice; the pool-eligibility gate
-    /// is `(is_dynamic || casts_entity_shadows) && Spot`. Dynamic-tier
-    /// spotlights are pool-eligible by default — the shadow depth pass renders
-    /// WORLD geometry, so a pooled dynamic spot shadows static occluders (e.g.
-    /// pillars) with no per-light opt-in. `casts_entity_shadows` is the
-    /// explicit opt-in for non-dynamic lights.
+    /// is `is_dynamic && Spot`. Only dynamic-tier spotlights get a shadow slot —
+    /// the shadow depth pass renders WORLD geometry, so a pooled dynamic spot
+    /// shadows static occluders (e.g. pillars) regardless of the per-light
+    /// `casts_entity_shadows` toggle (which only gates moving-ENTITY occluders,
+    /// drawn into the same slot by `entity_occluder_eligible`). A baked light's
+    /// world shadow is frozen in the lightmap, so it never needs a slot.
     ///
     /// Returns a Vec indexed by light index (into the slice the caller
     /// passes): entry is the slot index (`0..SHADOW_POOL_SIZE`) or NO_SHADOW_SLOT.
@@ -335,25 +427,23 @@ impl SpotShadowPool {
         eligible_lights: &[bool],
         camera_view_proj: &Mat4,
     ) -> Vec<u32> {
-        let mut slot_assignment = vec![NO_SHADOW_SLOT; lights.len()];
-
         // Camera frustum planes, shared with the GPU BVH-cull convention.
         let camera_frustum_planes: [Vec4; 6] =
             crate::compute_cull::extract_frustum_planes_for_gpu(camera_view_proj)
                 .map(|p| Vec4::new(p[0], p[1], p[2], p[3]));
 
         // Collect visible pool-eligible spot lights with their scores.
-        let mut candidates: Vec<(usize, f32)> = lights
+        let candidates: Vec<(usize, f32)> = lights
             .iter()
             .enumerate()
             .filter_map(|(idx, light)| {
-                // Pool eligibility: dynamic-tier spotlights cast world shadows
-                // by default; non-dynamic lights opt in via `casts_entity_shadows`
-                // (default `false`). The shadow depth pass renders WORLD geometry,
-                // so a pooled dynamic spot shadows static occluders (pillars) with
-                // no per-light flag.
-                let pool_eligible = light.is_dynamic || light.casts_entity_shadows;
-                if !pool_eligible || light.light_type != LightType::Spot {
+                // Pool eligibility: only dynamic-tier spotlights get a shadow
+                // slot. The shadow depth pass renders WORLD geometry, so a pooled
+                // dynamic spot shadows static occluders (pillars) regardless of
+                // the `casts_entity_shadows` toggle (which gates moving-ENTITY
+                // occluders into the same slot, not slot allocation). Baked lights
+                // bake their world shadow into the lightmap and need no slot.
+                if !light.is_dynamic || light.light_type != LightType::Spot {
                     return None;
                 }
 
@@ -389,19 +479,6 @@ impl SpotShadowPool {
             })
             .collect();
 
-        // Sort by score (descending), then by index (ascending) for determinism.
-        candidates.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.0.cmp(&b.0))
-        });
-
-        // Assign top SHADOW_POOL_SIZE to slots.
-        for (slot, (light_idx, _score)) in candidates.iter().take(SHADOW_POOL_SIZE).enumerate() {
-            slot_assignment[*light_idx] = slot as u32;
-            log::debug!("[ShadowPool] light {} → slot {}", light_idx, slot);
-        }
-
         if candidates.len() > SHADOW_POOL_SIZE {
             log::debug!(
                 "[ShadowPool] {} pool-eligible spot lights visible; {} assigned to slots, {} unshadowed",
@@ -411,10 +488,18 @@ impl SpotShadowPool {
             );
         }
 
-        slot_assignment
+        // Shared scoring/drop core: sort by score, assign top SHADOW_POOL_SIZE
+        // to slots, drop the rest. The cube point-pool ranker calls the SAME
+        // core so the two cannot drift.
+        assign_ranked_slots(candidates, SHADOW_POOL_SIZE, lights.len())
     }
 }
 
+// Thin GPU plumbing: one positional arg per group-5 binding resource. Splitting
+// into a struct would only rename the same resources. `point_cube_view` is
+// `Some` iff the layout carries binding 5 (cube-array support present); the bind
+// group's entry set must match the BGL exactly.
+#[allow(clippy::too_many_arguments)]
 fn build_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
@@ -423,32 +508,41 @@ fn build_bind_group(
     matrices_buffer: &wgpu::Buffer,
     sdf_shadow_factor_view: &wgpu::TextureView,
     scene_depth_view: &wgpu::TextureView,
+    point_cube_view: Option<&wgpu::TextureView>,
 ) -> wgpu::BindGroup {
+    let mut entries = vec![
+        wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(array_view),
+        },
+        wgpu::BindGroupEntry {
+            binding: 1,
+            resource: wgpu::BindingResource::Sampler(compare_sampler),
+        },
+        wgpu::BindGroupEntry {
+            binding: 2,
+            resource: matrices_buffer.as_entire_binding(),
+        },
+        wgpu::BindGroupEntry {
+            binding: 3,
+            resource: wgpu::BindingResource::TextureView(sdf_shadow_factor_view),
+        },
+        wgpu::BindGroupEntry {
+            binding: 4,
+            resource: wgpu::BindingResource::TextureView(scene_depth_view),
+        },
+    ];
+    // Binding 5 only when the BGL carries it (cube-array support present).
+    if let Some(cube_view) = point_cube_view {
+        entries.push(wgpu::BindGroupEntry {
+            binding: 5,
+            resource: wgpu::BindingResource::TextureView(cube_view),
+        });
+    }
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Spot Shadow Bind Group"),
         layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(array_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::Sampler(compare_sampler),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: matrices_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: wgpu::BindingResource::TextureView(sdf_shadow_factor_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 4,
-                resource: wgpu::BindingResource::TextureView(scene_depth_view),
-            },
-        ],
+        entries: &entries,
     })
 }
 
@@ -456,16 +550,88 @@ fn build_bind_group(
 mod tests {
     use super::*;
 
-    /// Pool eligibility is `is_dynamic || casts_entity_shadows`. `is_dynamic`
-    /// here stays `false` so each test isolates the `casts_entity_shadows`
-    /// opt-in; the dynamic-tier path is exercised by
-    /// `dynamic_spot_qualifies_for_pool` which flips `is_dynamic` on.
-    fn test_light(
-        _idx: u32,
-        origin: [f64; 3],
-        falloff_range: f32,
-        casts_entity_shadows: bool,
-    ) -> MapLight {
+    /// Scan a WGSL source for the `LightSpaceMatrices` array length, i.e. the
+    /// `N` in `array<mat4x4<f32>, N>`. Returns `None` if the declaration is
+    /// absent or unparseable so the test fails loudly rather than silently
+    /// passing on a renamed/removed array.
+    fn light_space_matrices_array_len(shader_src: &str) -> Option<usize> {
+        let marker = "array<mat4x4<f32>,";
+        let start = shader_src.find(marker)? + marker.len();
+        let close = shader_src[start..].find('>')? + start;
+        shader_src[start..close].trim().parse().ok()
+    }
+
+    /// Regression: the WGSL `LightSpaceMatrices` array was hard-coded to 12
+    /// while the Rust pool was 64, so any slot ≥ 12 indexed the light-space
+    /// matrix array out of bounds. Pin both shaders' declared array length to
+    /// `LIGHT_SPACE_MATRICES_SIZE` so neither can silently drift from the pool.
+    #[test]
+    fn light_space_matrices_array_len_matches_pool() {
+        const FORWARD_SRC: &str = include_str!("../shaders/forward.wgsl");
+        const FOG_SRC: &str = include_str!("../shaders/fog_volume.wgsl");
+
+        // `LIGHT_SPACE_MATRICES_SIZE` is the byte size of an
+        // `array<mat4x4<f32>, SHADOW_POOL_SIZE>`: each mat4 is 16 f32 × 4 B.
+        let expected_len = (LIGHT_SPACE_MATRICES_SIZE / (16 * 4)) as usize;
+        assert_eq!(
+            expected_len, SHADOW_POOL_SIZE,
+            "LIGHT_SPACE_MATRICES_SIZE must encode exactly SHADOW_POOL_SIZE mat4x4s"
+        );
+
+        assert_eq!(
+            light_space_matrices_array_len(FORWARD_SRC),
+            Some(expected_len),
+            "forward.wgsl LightSpaceMatrices array length must equal the Rust pool size"
+        );
+        assert_eq!(
+            light_space_matrices_array_len(FOG_SRC),
+            Some(expected_len),
+            "fog_volume.wgsl LightSpaceMatrices array length must equal the Rust pool size"
+        );
+    }
+
+    /// Tunable PCF radius wiring (AC, mechanical half): `sample_spot_shadow` must
+    /// carry a single non-zero `SPOT_SHADOW_PCF_RADIUS` const and a multi-tap
+    /// kernel scaled by it. Pins the shared radius constant already used by both
+    /// `sample_spot_shadow` and `sample_point_shadow`, and guards against a silent
+    /// revert to a single-texel (radius-zero / one-tap) sample.
+    #[test]
+    fn forward_spot_shadow_has_nonzero_pcf_radius_and_multitap_kernel() {
+        const FORWARD_SRC: &str = include_str!("../shaders/forward.wgsl");
+
+        // The shared radius parameter exists, is a const, and parses to non-zero.
+        let marker = "const SPOT_SHADOW_PCF_RADIUS: f32 =";
+        let start = FORWARD_SRC
+            .find(marker)
+            .expect("forward.wgsl must declare SPOT_SHADOW_PCF_RADIUS")
+            + marker.len();
+        let end = FORWARD_SRC[start..]
+            .find(';')
+            .expect("SPOT_SHADOW_PCF_RADIUS declaration must terminate with ';'")
+            + start;
+        let value: f32 = FORWARD_SRC[start..end]
+            .trim()
+            .parse()
+            .expect("SPOT_SHADOW_PCF_RADIUS must be a float literal");
+        assert!(
+            value > 0.0,
+            "PCF radius must be non-zero so the kernel samples more than one texel"
+        );
+
+        // The kernel scales its tap offsets by the radius and averages multiple
+        // comparison samples (3×3 box → 9 taps), so it is not a single-texel
+        // sample. Both the radius use and the 9-tap normalization must be present.
+        assert!(
+            FORWARD_SRC.contains("SPOT_SHADOW_PCF_RADIUS") && FORWARD_SRC.contains("/ 9.0"),
+            "sample_spot_shadow must use the radius and average a multi-tap kernel"
+        );
+    }
+
+    /// Pool eligibility is `is_dynamic` (a baked light's world shadow is frozen
+    /// in the lightmap, so only dynamic lights get a slot). The bool param sets
+    /// `is_dynamic`; `casts_entity_shadows` stays `false` here because it gates
+    /// moving-ENTITY occluders into the slot, not slot allocation itself.
+    fn test_light(_idx: u32, origin: [f64; 3], falloff_range: f32, is_dynamic: bool) -> MapLight {
         MapLight {
             origin,
             light_type: LightType::Spot,
@@ -476,9 +642,8 @@ mod tests {
             cone_angle_inner: 0.3,
             cone_angle_outer: 0.6,
             cone_direction: [0.0, 0.0, -1.0],
-            cast_shadows: true,
-            is_dynamic: false,
-            casts_entity_shadows,
+            is_dynamic,
+            casts_entity_shadows: false,
             animated_slot: None,
             tags: vec![],
             leaf_index: 0,
@@ -520,7 +685,9 @@ mod tests {
     }
 
     #[test]
-    fn lights_without_cast_entity_shadows_opt_in_are_not_assigned() {
+    fn baked_spots_are_not_assigned() {
+        // Non-dynamic (baked-tier) spotlights never get a slot: their world
+        // shadow is frozen in the lightmap.
         let lights = vec![
             test_light(0, [0.0, 0.0, 0.0], 10.0, false),
             test_light(1, [10.0, 0.0, 0.0], 10.0, false),
@@ -531,15 +698,13 @@ mod tests {
         assert_eq!(assignment[1], NO_SHADOW_SLOT);
     }
 
-    /// Dynamic-tier spotlights are pool-eligible by default — they shadow
-    /// static world occluders (e.g. pillars) through the world-geometry depth
-    /// pass without any `_cast_entity_shadows` opt-in. A `is_dynamic` spot
-    /// with `casts_entity_shadows == false` must land in a pool slot.
+    /// Dynamic-tier spotlights are pool-eligible — they shadow static world
+    /// occluders (e.g. pillars) through the world-geometry depth pass. A dynamic
+    /// spot lands in a pool slot regardless of the `casts_entity_shadows` toggle
+    /// (which only gates moving-ENTITY occluders into that slot).
     #[test]
     fn dynamic_spot_qualifies_for_pool() {
-        let mut light = test_light(0, [0.0, 0.0, 0.0], 10.0, false);
-        light.is_dynamic = true;
-        let lights = vec![light];
+        let lights = vec![test_light(0, [0.0, 0.0, 0.0], 10.0, true)];
         let assignment =
             SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[], &camera_sees_whole_scene());
         assert_ne!(assignment[0], NO_SHADOW_SLOT);
@@ -552,8 +717,7 @@ mod tests {
     /// lights, so cover the exclusion explicitly.
     #[test]
     fn dynamic_point_light_is_not_assigned() {
-        let mut light = test_light(0, [0.0, 0.0, 0.0], 10.0, false);
-        light.is_dynamic = true;
+        let mut light = test_light(0, [0.0, 0.0, 0.0], 10.0, true);
         light.light_type = LightType::Point;
         let lights = vec![light];
         let assignment =
@@ -572,7 +736,7 @@ mod tests {
     }
 
     #[test]
-    fn two_entity_shadow_spots_both_assigned() {
+    fn two_dynamic_spots_both_assigned() {
         let lights = vec![
             test_light(0, [0.0, 0.0, 0.0], 10.0, true),
             test_light(1, [10.0, 0.0, 0.0], 10.0, true),
@@ -700,7 +864,7 @@ mod tests {
             .count();
         assert_eq!(
             assigned_count, 8,
-            "all 8 visible lights get slots (pool has 64 capacity)"
+            "all 8 visible lights get slots (pool has 96 capacity)"
         );
     }
 

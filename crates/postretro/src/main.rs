@@ -274,6 +274,7 @@ fn main() -> Result<()> {
         title_buffer: String::with_capacity(256),
         last_title_update: Instant::now(),
         script_runtime,
+        ui_proxy: scripting_systems::ui_proxy::StaticUiProxy::new(script_ctx.clone()),
         script_ctx,
         state_store_lifecycle: StateStoreLifecycle::default(),
         sequence_registry,
@@ -435,6 +436,14 @@ struct App {
     /// runtime. Outlives the renderer so device resets preserve scripted
     /// light state. See: context/lib/scripting.md
     script_ctx: ScriptCtx,
+
+    /// Engine-side stand-in producer for the HUD store slots (Goal C). Holds a
+    /// clone of `script_ctx`; each frame it republishes `player.health` /
+    /// `player.ammo` and a level-load-timed `intro.flashColor` through the
+    /// store's engine write path. Real game logic (M10) replaces it later with
+    /// no change to the binding side. Its flash timer resets on each level load.
+    /// See: context/lib/scripting.md §5
+    ui_proxy: scripting_systems::ui_proxy::StaticUiProxy,
 
     /// Gates the one-time persistence overlay and clean-exit save.
     state_store_lifecycle: StateStoreLifecycle,
@@ -1080,6 +1089,14 @@ impl ApplicationHandler for App {
                 for event_name in &pending_weapon_events {
                     let _ = fire_named_event(event_name, &self.script_ctx.data_registry.borrow());
                 }
+
+                // Static UI proxy (Goal C): republish the HUD store slots from
+                // the engine side. Runs AFTER game logic settles the store and
+                // BEFORE the UI read-snapshot build below, so the snapshot
+                // freezes the proxy's values this same frame. Delta-driven from
+                // `frame_dt` (not wall-clock) so the flash animation is
+                // deterministic. See: context/lib/scripting.md §5.
+                self.ui_proxy.tick(frame_dt);
 
                 // Audio step — third in frame order (Input → Game logic →
                 // Audio → Render → Present, development_guide.md §4.3). Runs after
@@ -1918,6 +1935,9 @@ impl App {
         // before the data script runs, so any `world.getGravity()` call
         // inside `setupLevel` / `levelLoad` reactions sees the new value.
         self.script_ctx.gravity.set(world.initial_gravity);
+        // Restart the static UI proxy's flash timer so `intro.flashColor`
+        // replays its level-load pulse from the start on this fresh level.
+        self.ui_proxy.reset_timer();
         self.active_wieldable = None;
         self.active_wieldable_descriptor = None;
 

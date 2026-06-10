@@ -11,6 +11,7 @@ pub(crate) mod light_bridge;
 pub(crate) mod mesh_render;
 pub(crate) mod particle_render;
 pub(crate) mod particle_sim;
+pub(crate) mod ui_proxy;
 
 /// Linear-interpolated curve evaluation over `[0, 1]`. Shared by the emitter
 /// bridge (spin animation) and the particle sim (size/opacity curves). Empty

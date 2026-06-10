@@ -33,12 +33,12 @@ M10 shadow casting made entities throw shadows; the direct-lighting sibling make
 
 ## Acceptance criteria
 
-- [ ] A skinned mesh standing behind static geometry relative to a dynamic spot light reads shadowed in that light's term (world→entity), with the shadow edge consistent with the world-surface shadow from the same light.
-- [ ] With two entities under a dynamic spot or point light with `casts_entity_shadows` enabled, one entity's shadow falls visibly across the other (entity→entity).
-- [ ] A dynamic light without a shadow slot (sentinel) lights meshes unshadowed — identical to the sibling spec's output.
-- [ ] On adapters without cube-array support, point lights light meshes unshadowed and the mesh pipeline builds without error (mirrors forward's fallback).
-- [ ] No visible self-shadow acne on the dev skinned models at gameplay distance under both spot and point shadowed lights.
-- [ ] Forward-pass world rendering byte-identical after the helper extraction.
+- [ ] *(Human visual check)* A skinned mesh standing behind static geometry relative to a dynamic spot light reads shadowed in that light's term (world→entity), with the shadow edge consistent with the world-surface shadow from the same light.
+- [ ] *(Human visual check)* With two entities under a dynamic spot or point light with `casts_entity_shadows` enabled, one entity's shadow falls visibly across the other (entity→entity).
+- [ ] A dynamic light without a shadow slot (sentinel) lights meshes unshadowed — identical to the sibling spec's output (structural: the sentinel path multiplies by 1.0).
+- [ ] On adapters without cube-array support, point lights light meshes unshadowed and the mesh pipeline builds without error — verified by a naga-validation test on the STRIPPED mesh shader variant (mirroring forward's no-cube validation), not only at runtime.
+- [ ] *(Human visual check — gates Task 4's tuning)* No visible self-shadow acne on the dev skinned models at gameplay distance under both spot and point shadowed lights.
+- [ ] Helper extraction does not change forward behavior: extracted helper bodies textually unchanged, `forward.wgsl` still passes naga validation, and no bias/offset edit lands inside the shared snippet.
 - [ ] Mesh pipeline bind-group assertions extended; matrices-array-length test covers the mesh shader; sampled-texture counts recorded for the mesh pipeline (both cube-support variants).
 
 ## Tasks
@@ -47,13 +47,13 @@ M10 shadow casting made entities throw shadows; the direct-lighting sibling make
 Extract `sample_spot_shadow`, `sample_point_shadow`, and their helpers (PCF kernels, `cube_face_ndc_depth`, bias constants) from `forward.wgsl` into a shared snippet appended at pipeline creation; consumers declare the depth textures / sampler / matrices buffer at their own (group, binding) before the snippet (the `sh_sample.wgsl` precedent). Forward consumes it; output byte-identical.
 
 ### Task 2: Mesh shadow bindings
-Extend the mesh group-2 BGL + bind group with spot depth array, comparison sampler, light-space matrices (uniform, not storage — see sketch), and the conditional cube-array entry at the binding slots the sibling spec reserves (b5–b8); plumb adapter capability through mesh pipeline creation via the same `strip_point_shadow_cube` marker mechanism forward uses. Renderer rebinds when pool textures are recreated.
+Extend the mesh group-2 BGL + bind group with spot depth array, comparison sampler, light-space matrices (uniform, not storage — see sketch), and the conditional cube-array entry at the binding slots the sibling spec reserves (b5–b8); plumb adapter capability through mesh pipeline creation via the same `strip_point_shadow_cube` marker mechanism forward uses. The mesh BGL builder must be parameterized on cube support exactly as forward's (`bind_group_layout_entries(cube_array_supported)` precedent), producing a matching layout/bind-group VARIANT PAIR — the cube view is passed `Some` iff the layout carries the entry (the `Some`-iff-layout invariant `spot_shadow.rs` documents). A single unconditional BGL crashes on no-cube adapters. Renderer rebinds when pool textures are recreated.
 
 ### Task 3: Attenuate the mesh loop
 In `skinned_mesh.wgsl`'s dynamic-light loop, read both slot fields from the light record, sample via the Task 1 helpers, multiply into per-light attenuation — replacing the sibling spec's hardwired 1.0. Sentinel and bounds behavior identical to forward.
 
 ### Task 4: Bias validation + tests
-Visual pass for self-shadow acne on skinned models (tune bias / normal-offset as needed, keeping world-surface shadows unchanged); extend layout/budget/regression tests per AC.
+Visual pass for self-shadow acne on skinned models — this is a HUMAN-IN-THE-LOOP checkpoint, not autonomously completable: the agent prepares the scene and candidate tunings, a human judges acne at gameplay distance. Pin: any bias or normal-offset change lands at the MESH CALL SITE only, never inside the shared `sample_spot_shadow` / `sample_point_shadow` snippet — editing the shared helpers breaks the forward no-behavior-change AC and risks peter-panning world shadows. Extend layout/budget/regression tests per AC.
 
 ## Sequencing
 

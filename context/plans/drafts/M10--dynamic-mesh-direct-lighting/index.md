@@ -32,12 +32,12 @@ Dynamic-tier lights light the world and billboards, and (after M10 shadow castin
 
 ## Acceptance criteria
 
-- [ ] A dynamic point or spot light visibly brightens a skinned mesh; brightness and falloff read consistent with adjacent world surfaces lit by the same light (visual check on a dev map).
-- [ ] A scripted animated light (brightness or color curves) modulates the mesh in phase and in hue with the world surfaces it lights — same frame, same curve values.
-- [ ] An animated spot with aim curves sweeps across a mesh coherently with its world cone.
-- [ ] Static (`static_light_map` / sdf) lights produce zero change in mesh lighting — the baked direct atlas remains the sole static-direct source on movers (no double-count).
-- [ ] With zero dynamic lights in the level, mesh output is unchanged from pre-change rendering.
-- [ ] Forward-pass world rendering is byte-identical after the helper extraction (no behavior change to `forward.wgsl` output).
+- [ ] *(Human visual check)* A dynamic point or spot light visibly brightens a skinned mesh; brightness and falloff read consistent with adjacent world surfaces lit by the same light, on a dev map.
+- [ ] *(Human visual check)* A scripted animated light (brightness or color curves) modulates the mesh in phase and in hue with the world surfaces it lights — same frame, same curve values.
+- [ ] *(Human visual check)* An animated spot with aim curves sweeps across a mesh coherently with its world cone.
+- [ ] Static (`static_light_map` / sdf) lights produce zero change in mesh lighting — verified structurally: the buffer bound to the mesh loop is the `filter_dynamic_lights` output, so static lights are excluded by construction (the baked direct atlas remains the sole static-direct source on movers; no double-count).
+- [ ] With zero dynamic lights, the mesh loop contributes nothing — output reduces to the existing `indirect + direct` composition (structural/CPU assertion).
+- [ ] Helper extraction does not change forward behavior: extracted helper bodies are textually unchanged, `forward.wgsl` still passes naga validation, and no behavioral edit lands inside a moved helper.
 - [ ] Lighting-isolation debug modes gate the mesh dynamic term exactly as they gate the world dynamic term.
 - [ ] Existing render tests pass; a mesh group-2 bind-group-layout assertion is added (none exists today — model it on the billboard pipeline's storage-count guard).
 
@@ -47,13 +47,13 @@ Dynamic-tier lights light the world and billboards, and (after M10 shadow castin
 Extract the per-light evaluation helpers from `forward.wgsl` — `falloff`, `cone_attenuation` (the angle form the dynamic loop calls; `cone_attenuation_cos` is the static-path variant and stays in forward unless extraction is free), the scripted-descriptor evaluation (Catmull-Rom brightness/color/aim sampling, `scripted_light_intensity_scalar`) — into a binding-agnostic shared snippet appended at pipeline creation (the `sh_sample.wgsl` precedent). Helpers take buffer values as parameters or reference consumer-declared names; declare no bindings themselves. Forward.wgsl consumes the snippet; output byte-identical.
 
 ### Task 2: Mesh group 2 bind group
-Define the group-2 BGL + bind group in `render/mesh_pass.rs` and thread it through pipeline layout and per-frame binding. Entries: the renderer's existing dynamic-light storage buffer (the `is_dynamic`-filtered set), the influence-volume buffer, the scripted-descriptor + animation-sample buffers, and a new small uniform (light count, time, dynamic-direct debug gate). Pin: the uniform's `time` is written from the same render-clock value the renderer uploads to forward `Uniforms.time` that frame — phase coherence of animated curves depends on it. The renderer owns the buffers already — this task adds only the mesh-side layout, bind group creation, and per-frame rebind on buffer reallocation. Also append `curve_eval.wgsl` to the skinned-mesh shader source (`SKINNED_MESH_SHADER_SOURCE` currently excludes it with a "mesh never evaluates animated layers" comment — that comment becomes false here; update it): the Catmull-Rom samplers the scripted evaluation calls live there, not in `forward.wgsl`.
+Define the group-2 BGL + bind group in `render/mesh_pass.rs` and thread it through pipeline layout and per-frame binding. Entries: the renderer's existing dynamic-light storage buffer (the `is_dynamic`-filtered set), the influence-volume buffer, the scripted-descriptor + animation-sample buffers (these are forward GROUP-3 resources — b13 descriptors, b12 `anim_samples` — re-bound at new mesh-side (group, binding) slots over the same underlying GPU buffers), and a new small uniform (light count, time, dynamic-direct debug gate). Pin: the uniform's `time` is written from the same render-clock value the renderer uploads to forward `Uniforms.time` that frame — phase coherence of animated curves depends on it. The renderer owns the buffers already — this task adds only the mesh-side layout, bind group creation, and per-frame rebind on buffer reallocation. Also append `curve_eval.wgsl` to the skinned-mesh shader source (`SKINNED_MESH_SHADER_SOURCE` currently excludes it with a "mesh never evaluates animated layers" comment — that comment becomes false here; update it): the Catmull-Rom samplers the scripted evaluation calls live there, not in `forward.wgsl`.
 
 ### Task 3: Mesh shader loop
 Add the dynamic-light loop to `skinned_mesh.wgsl`'s fragment stage using the Task 1 helpers and Task 2 bindings: influence early-out, type dispatch, scripted animation, Lambert against the interpolated normal, per-light visibility hardwired 1.0 (the receipt spec replaces this). Sum into the existing `indirect + direct` composition before the albedo multiply.
 
 ### Task 4: Debug gating + tests
-Wire the isolation gating through the group-2 uniform; add the mesh group-2 BGL assertion test; add the static-light no-change and zero-light no-change checks; visual pass on a dev map with animated lights.
+Wire the isolation gating through the group-2 uniform; add the mesh group-2 BGL assertion test. The no-change checks are STRUCTURAL/CPU tests, not pixel tests (no headless render-compare harness exists): assert the buffer bound at group-2 b0 is fed by `filter_dynamic_lights` output (static lights excluded by construction), and assert the loop contributes nothing when the uniform's light count is zero. The visual pass on a dev map with animated lights is a HUMAN checkpoint, not agent-verifiable.
 
 ## Sequencing
 

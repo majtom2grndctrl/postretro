@@ -49,12 +49,32 @@ pub enum Widget {
 /// Leaf text run. `content` is the literal string; `font_size` is logical px;
 /// `color` is linear RGBA. The run is sized by the glyphon measure seam and laid
 /// out in its container's flow.
+///
+/// `bind` is the optional state-binding (Goal C): when present, the rendered
+/// string is resolved from a store slot at draw-data build time and `content`
+/// serves only as the fallback for an absent slot (see `tree::resolve_text`).
+/// Absent on every static widget, so unbound text round-trips unchanged.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TextWidget {
     pub content: String,
     pub font_size: f32,
     pub color: [f32; 4],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind: Option<TextBind>,
+}
+
+/// State binding for a `text` widget. `slot` is a dotted slot name (e.g.
+/// `"player.health"`) read from the frame's snapshot; `format` is an optional
+/// template with a single `{}` placeholder substituted by the resolved value's
+/// string form. With `format` absent, the value's default string form is drawn.
+/// Multi-value templates are out of scope — one `{}` max.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextBind {
+    pub slot: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
 }
 
 /// Solid-fill panel with an optional 9-slice border. `fill` is linear RGBA. The
@@ -62,11 +82,29 @@ pub struct TextWidget {
 /// backdrops (the splash's framed panel) are expressed as a `ContainerWidget`
 /// `fill`/`border` instead — a parent drawing its own backdrop beneath flowed
 /// children — so an overlapping composition needs no standalone sized panel.
+///
+/// `bind` is the optional state-binding (Goal C): when present, the panel `fill`
+/// is resolved from a store slot holding a length-4 linear-RGBA array at
+/// draw-data build time, with the literal `fill` serving as the fallback for an
+/// absent or malformed slot (see `tree::resolve_panel_fill`). Absent on static
+/// panels, so unbound panels round-trip unchanged.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PanelWidget {
     pub fill: [f32; 4],
     pub border: Option<Border>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind: Option<PanelBind>,
+}
+
+/// State binding for a `panel` widget. `slot` is a dotted slot name whose value
+/// must be a `SlotValue::Array` of exactly 4 f32 (linear `[r, g, b, a]`); it
+/// replaces the literal `fill`. A wrong variant, wrong length, or absent slot
+/// falls back to the literal `fill` (see `tree::resolve_panel_fill`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PanelBind {
+    pub slot: String,
 }
 
 /// Leaf image referencing a texture asset by key. The image has no wire-level
@@ -211,6 +249,55 @@ mod tests {
             serde_json::to_string(&Align::Stretch).unwrap(),
             r#""stretch""#
         );
+    }
+
+    #[test]
+    fn bound_text_round_trips_with_slot_and_format() {
+        // A `text` node carrying a `bind` with both `slot` and `format` keeps its
+        // camelCase wire form byte-for-byte. Field order: content, fontSize,
+        // color, then the nested bind { slot, format }.
+        let json = r#"{"kind":"text","content":"0","fontSize":18.0,"color":[1.0,1.0,1.0,1.0],"bind":{"slot":"player.health","format":"HP {}"}}"#;
+        let widget: Widget = serde_json::from_str(json).expect("must deserialize");
+        let reserialized = serde_json::to_string(&widget).expect("must serialize");
+        assert_eq!(reserialized, json);
+    }
+
+    #[test]
+    fn bound_text_round_trips_with_format_absent() {
+        // A `bind` with no `format` omits the field entirely (skip_serializing_if).
+        let json = r#"{"kind":"text","content":"0","fontSize":18.0,"color":[1.0,1.0,1.0,1.0],"bind":{"slot":"player.ammo"}}"#;
+        let widget: Widget = serde_json::from_str(json).expect("must deserialize");
+        let reserialized = serde_json::to_string(&widget).expect("must serialize");
+        assert_eq!(reserialized, json);
+    }
+
+    #[test]
+    fn unbound_text_serializes_without_a_bind_field() {
+        // An unbound text widget must not emit a `bind` key — static widgets keep
+        // their pre-binding wire form so old descriptors round-trip unchanged.
+        let json = r#"{"kind":"text","content":"hello","fontSize":12.0,"color":[1.0,1.0,1.0,1.0]}"#;
+        let widget: Widget = serde_json::from_str(json).expect("must deserialize");
+        let reserialized = serde_json::to_string(&widget).expect("must serialize");
+        assert_eq!(reserialized, json);
+    }
+
+    #[test]
+    fn bound_panel_round_trips_with_slot() {
+        // A `panel` node binding its `fill` to a color slot keeps its wire form.
+        // Field order: fill, border (null when absent), then bind { slot }.
+        let json = r#"{"kind":"panel","fill":[0.0,0.0,0.0,1.0],"border":null,"bind":{"slot":"intro.flashColor"}}"#;
+        let widget: Widget = serde_json::from_str(json).expect("must deserialize");
+        let reserialized = serde_json::to_string(&widget).expect("must serialize");
+        assert_eq!(reserialized, json);
+    }
+
+    #[test]
+    fn unbound_panel_serializes_without_a_bind_field() {
+        // An unbound panel must not emit a `bind` key.
+        let json = r#"{"kind":"panel","fill":[0.1,0.2,0.3,1.0],"border":null}"#;
+        let widget: Widget = serde_json::from_str(json).expect("must deserialize");
+        let reserialized = serde_json::to_string(&widget).expect("must serialize");
+        assert_eq!(reserialized, json);
     }
 
     #[test]

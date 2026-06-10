@@ -1198,7 +1198,7 @@ pub struct Renderer {
     /// install, and after level handoff) records no splash quads.
     splash_logo_size: Option<[f32; 2]>,
 
-    /// Key→bind-group registry for `image` widget assets (Goal B: only the
+    /// Key→bind-group registry for `image` widget assets (only the
     /// pre-registered splash logo key). `install_splash_from_loaded` registers
     /// the uploaded logo PNG under `splash::SPLASH_LOGO_ASSET`; the UI pass
     /// resolves image batches' asset keys through it. Cleared by `clear_splash`.
@@ -3251,7 +3251,12 @@ impl Renderer {
             // via the measure seam — thread it in keyed by the splash logo asset.
             let mut image_sizes = ui::tree::ImageSizes::new();
             image_sizes.insert(ui::splash::SPLASH_LOGO_ASSET.to_string(), logo_size);
-            draw = self.ui.layout_tree(desc.tree(), viewport, &image_sizes);
+            // The splash tree carries no state bindings, so it resolves against
+            // an empty slot map — behavior unchanged from before binding landed.
+            let empty_slots = std::collections::HashMap::new();
+            draw = self
+                .ui
+                .layout_tree(desc.tree(), viewport, &image_sizes, &empty_slots);
         }
 
         // The tree's panel quads (border + fill) draw behind the logo/text, in
@@ -4736,12 +4741,18 @@ impl Renderer {
         // unconditionally for its frame-0 black clear (see `record_splash_ui`).
         let ui_viewport = [self.surface_config.width, self.surface_config.height];
         if let Some(tree) = self.ui_snapshot.gameplay_tree.clone() {
-            // Gameplay has no image producer yet (Goal B), so no image sizes are
+            // The demo gameplay HUD has no `image` nodes, so no image sizes are
             // threaded; any `image` node would measure to zero. The splash path
             // supplies the logo size in `record_splash_ui`.
-            let draw = self
-                .ui
-                .layout_tree(&tree, ui_viewport, &ui::tree::ImageSizes::new());
+            // Bound text/panel nodes resolve against the snapshot's slot values
+            // (disjoint field borrow from `&mut self.ui`). The cloned `tree`
+            // above already released the snapshot, so this borrow is clean.
+            let draw = self.ui.layout_gameplay_tree(
+                &tree,
+                ui_viewport,
+                &ui::tree::ImageSizes::new(),
+                &self.ui_snapshot.slot_values,
+            );
             if !draw.is_empty() {
                 let white_bg = self.ui.white_bind_group().clone();
                 let mut batches: Vec<ui::UiBatch> = Vec::new();

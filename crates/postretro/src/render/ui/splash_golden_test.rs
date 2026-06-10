@@ -138,7 +138,9 @@ fn render_splash_offscreen(ctx: &GpuCtx) -> Readback {
         super::splash::SPLASH_LOGO_ASSET.to_string(),
         super::splash::splash_logo_reference_size([2028, 582]),
     );
-    let draw = pass.layout_tree(desc.tree(), viewport, &image_sizes);
+    // The splash tree has no state bindings, so it resolves against empty slots.
+    let slots = std::collections::HashMap::new();
+    let draw = pass.layout_tree(desc.tree(), viewport, &image_sizes, &slots);
     panel_list
         .instances
         .extend_from_slice(&draw.quads.instances);

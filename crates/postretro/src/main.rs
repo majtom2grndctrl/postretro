@@ -135,9 +135,8 @@ fn reload_summary_requires_mod_init(summary: ReloadSummary) -> bool {
 }
 
 /// Version/tagline line the boot splash's shaped-text element renders. Sourced
-/// from the build's `CARGO_PKG_VERSION` (the simpler of the two options the plan
-/// leaves open) so the read-handle snapshot carries a real value. Flows through
-/// the `UiReadSnapshot`; the descriptor seam stays intact for Goal B/G1.
+/// from the build's `CARGO_PKG_VERSION` so the read-handle snapshot carries a
+/// real value. Flows through `UiReadSnapshot::version_line`.
 fn splash_version_line() -> String {
     format!("postretro v{}", env!("CARGO_PKG_VERSION"))
 }
@@ -274,6 +273,7 @@ fn main() -> Result<()> {
         title_buffer: String::with_capacity(256),
         last_title_update: Instant::now(),
         script_runtime,
+        ui_proxy: scripting_systems::ui_proxy::StaticUiProxy::new(script_ctx.clone()),
         script_ctx,
         state_store_lifecycle: StateStoreLifecycle::default(),
         sequence_registry,
@@ -435,6 +435,15 @@ struct App {
     /// runtime. Outlives the renderer so device resets preserve scripted
     /// light state. See: context/lib/scripting.md
     script_ctx: ScriptCtx,
+
+    /// Temporary engine-side stand-in producer for the HUD store. Writes the
+    /// engine-owned `player.*` slots (`player.health`, `player.ammo`) and the
+    /// demo `intro.flashColor` through the store's engine write path each
+    /// frame. The M10 entity-health work will replace it with real game-logic
+    /// producers; the binding side is unaffected by that swap. Its flash timer
+    /// resets on each level load. See: context/lib/scripting.md §5 for the
+    /// store contract.
+    ui_proxy: scripting_systems::ui_proxy::StaticUiProxy,
 
     /// Gates the one-time persistence overlay and clean-exit save.
     state_store_lifecycle: StateStoreLifecycle,
@@ -1081,6 +1090,14 @@ impl ApplicationHandler for App {
                     let _ = fire_named_event(event_name, &self.script_ctx.data_registry.borrow());
                 }
 
+                // Static UI proxy (Goal C): republish the HUD store slots from
+                // the engine side. Runs AFTER game logic settles the store and
+                // BEFORE the UI read-snapshot build below, so the snapshot
+                // freezes the proxy's values this same frame. Delta-driven from
+                // `frame_dt` (not wall-clock) so the flash animation is
+                // deterministic. See: context/lib/scripting.md §5.
+                self.ui_proxy.tick(frame_dt);
+
                 // Audio step — third in frame order (Input → Game logic →
                 // Audio → Render → Present, development_guide.md §4.3). Runs after
                 // game logic settles every entity and before render. Convert the
@@ -1393,10 +1410,25 @@ impl ApplicationHandler for App {
 
                         // Publish the once-per-frame read snapshot just before
                         // the gameplay render call, mirroring the splash path so
-                        // the once-per-frame contract holds on both. Plumbing-only
-                        // in Goal A: the gameplay UI draw list is empty and the
-                        // snapshot has no consumer until B/BIS.
-                        renderer.set_ui_snapshot(render::ui::UiReadSnapshot::default());
+                        // the once-per-frame contract holds on both. Game logic and
+                        // audio have already run this frame, so the slot snapshot
+                        // freezes the settled store state (frame order: Input →
+                        // Game logic → Audio → Render). The renderer reads these
+                        // cloned values, never the live `SlotTable`. The demo HUD
+                        // descriptor is the gameplay UI producer: it is published as
+                        // the gameplay tree alongside the slot values, and the
+                        // renderer's retained gameplay path (Task 4) lays it out and
+                        // resolves its `player.health`/`player.ammo`/`intro.flashColor`
+                        // binds against the snapshot. The descriptor is structurally
+                        // identical every frame, so the retained tree reuses it and
+                        // only the bound values drive the diff.
+                        let slot_values =
+                            Self::build_ui_slot_snapshot(&self.script_ctx.slot_table.borrow());
+                        let demo_tree = render::ui::demo::build_demo_descriptor();
+                        renderer.set_ui_snapshot(render::ui::UiReadSnapshot::with_gameplay_tree(
+                            demo_tree,
+                            slot_values,
+                        ));
 
                         let surface_texture = match renderer.render_frame_indirect(
                             &visible_cells,
@@ -1871,6 +1903,28 @@ impl App {
         }
     }
 
+    /// Snapshot the live slot table into a frozen dotted-name → value map for the
+    /// frame's UI read snapshot. Cloning here decouples the renderer from the live
+    /// `SlotTable`: game logic mutates the store, the renderer reads this copy, so
+    /// the renderer never borrows engine-side state (renderer/game-logic boundary).
+    /// Built once per frame after game logic and before render. Slots without a
+    /// current value are skipped, so every entry carries a resolved value.
+    ///
+    /// Takes the table directly rather than `&self`: the call site holds a mutable
+    /// borrow of `self.renderer`, and a `&self` receiver here would conflict with
+    /// it. Borrowing only `self.script_ctx.slot_table` keeps the two field borrows
+    /// disjoint.
+    fn build_ui_slot_snapshot(
+        slot_table: &scripting::slot_table::SlotTable,
+    ) -> std::collections::HashMap<String, scripting::slot_table::SlotValue> {
+        slot_table
+            .iter()
+            .filter_map(|(name, record)| {
+                record.value.clone().map(|value| (name.to_string(), value))
+            })
+            .collect()
+    }
+
     /// Install a delivered level payload on the main thread: GPU texture
     /// upload (from baked `.prm` mip sidecars), UV normalization, GPU geometry
     /// upload, bridge / fog / collision populate, classname dispatch, data
@@ -1889,6 +1943,9 @@ impl App {
         // before the data script runs, so any `world.getGravity()` call
         // inside `setupLevel` / `levelLoad` reactions sees the new value.
         self.script_ctx.gravity.set(world.initial_gravity);
+        // Restart the static UI proxy's flash timer so `intro.flashColor`
+        // replays its level-load pulse from the start on this fresh level.
+        self.ui_proxy.reset_timer();
         self.active_wieldable = None;
         self.active_wieldable_descriptor = None;
 
@@ -2800,6 +2857,38 @@ mod tests {
         assert!(
             crate::model::gltf_loader::load_model(bad).is_err(),
             "loading a missing glTF must return Err, never panic",
+        );
+    }
+
+    // --- build_ui_slot_snapshot (state-store → UI read-snapshot boundary) ---
+
+    #[test]
+    fn ui_slot_snapshot_clones_present_values_and_skips_valueless_slots() {
+        use crate::scripting::slot_table::SlotValue;
+
+        // The default table carries engine `player.*` slots with `None` values.
+        // Setting one slot is enough to assert the boundary contract: the
+        // snapshot clones value-bearing slots and omits value-less ones, so the
+        // renderer reads a present key only when it carries a resolved value.
+        let mut table = crate::scripting::slot_table::SlotTable::new();
+        table
+            .get_mut("player.health")
+            .expect("default table declares player.health")
+            .value = Some(SlotValue::Number(75.0));
+
+        let snapshot = App::build_ui_slot_snapshot(&table);
+
+        assert_eq!(
+            snapshot.get("player.health"),
+            Some(&SlotValue::Number(75.0)),
+            "value-bearing slot is cloned into the snapshot",
+        );
+        // Every other default slot starts value-less and must be excluded, so
+        // the only present key is the one we set.
+        assert_eq!(
+            snapshot.len(),
+            1,
+            "value-less slots are skipped; only the set slot appears",
         );
     }
 }

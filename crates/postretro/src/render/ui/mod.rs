@@ -3,7 +3,6 @@
 // margin); the vertex stage expands each instance into 9 regions. All wgpu lives
 // here per renderer-owns-GPU. Shaped text is glyphon's own pipeline, owned by
 // the `text` submodule and recorded into this same pass after the quads.
-// See: context/plans/in-progress/M13--descriptor-tree-layout
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
@@ -40,6 +39,13 @@ pub(crate) use self::text::UiText;
 /// renderer lays out via `UiTree`; G1 later swaps the body for script ingestion.
 pub(crate) mod splash;
 
+/// Hardcoded demo gameplay HUD descriptor (M13 Goal C state-binding demo) behind
+/// the `demo::build_demo_descriptor` seam. The FIRST gameplay UI producer:
+/// `main.rs` publishes its `AnchoredTree` on the per-frame read snapshot and the
+/// renderer drives it through the retained gameplay path. Two `text` nodes bind
+/// `player.health`/`player.ammo`; one `panel` binds `intro.flashColor`.
+pub(crate) mod demo;
+
 /// Hard-gate CPU draw-list / layout assertion for the splash: pins the
 /// device-pixel quad rects (anchor, scale, snap, 9-slice corners) the splash
 /// projects to. Pure CPU — no GPU adapter.
@@ -58,6 +64,14 @@ mod splash_golden_test;
 /// layout + early-out decision the renderer's gameplay path makes, without a GPU.
 #[cfg(test)]
 mod gameplay_ui_gate_test;
+
+/// Hard-gate CPU assertion for the demo gameplay HUD (`demo::build_demo_descriptor`):
+/// drives the real demo descriptor through the retained gameplay tree and asserts
+/// bind resolution, the appearance-only-vs-content-change relayout split, the
+/// post-settle no-recompute frame, and the subscriber-aware unbound-slot no-op.
+/// Pure CPU — no GPU adapter.
+#[cfg(test)]
+mod demo_ui_gate_test;
 
 /// Headless regression for the multi-batch instance-buffer clobber: encodes two
 /// non-empty batches into disjoint screen regions and asserts each region keeps
@@ -184,12 +198,14 @@ impl UiDrawList {
 /// call — NOT threaded as a render parameter, so both render signatures stay
 /// stable.
 ///
-/// Goal B widens this from a bare `version_line` to carry the frame's descriptor
-/// tree (`gameplay_tree`) — the content side of the game-logic→render contract.
-/// The renderer lays the tree out (taffy/glyphon live in the renderer per
-/// renderer-owns-GPU); the snapshot carries the descriptor, never laid-out rects.
-/// `version_line` stays for the splash path, whose tree the renderer assembles
-/// from this line plus the renderer-owned logo binding (see `record_splash_ui`).
+/// Carries three things: the splash version/tagline line, the gameplay descriptor
+/// tree for the current frame, and the frame's resolved slot values. The renderer
+/// reads `version_line` on the splash path and `gameplay_tree`/`slot_values` on
+/// the gameplay path. The descriptor is carried here — never laid-out rects;
+/// taffy/glyphon live in the renderer per renderer-owns-GPU. Slot values are
+/// cloned out of the live `SlotTable` once per frame so the renderer never borrows
+/// the live store — preserving the renderer/game-logic boundary. Value-less slots
+/// are omitted; a present key always carries a resolved value.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct UiReadSnapshot {
     /// Version/tagline string the splash's shaped-text line renders. Read only on
@@ -197,43 +213,55 @@ pub(crate) struct UiReadSnapshot {
     pub version_line: String,
     /// The gameplay-path descriptor tree to lay out and draw this frame. `None`
     /// (the default) on the splash path and whenever gameplay publishes no UI —
-    /// the renderer's UI pass then early-outs with no `begin_render_pass`. Goal B
-    /// has no gameplay UI producer yet; the field locks the content contract and
-    /// the test gate feeds it a fixture tree.
+    /// the renderer's UI pass then early-outs with no `begin_render_pass`. The
+    /// current gameplay UI producer is `demo::build_demo_descriptor`, published
+    /// by `main.rs` each frame; the test gate feeds a fixture tree.
     pub gameplay_tree: Option<descriptor::AnchoredTree>,
+    /// Resolved state-store values for this frame, keyed by dotted slot name.
+    /// Cloned out of the live `SlotTable` once per frame (see the type doc).
+    /// Only slots that currently hold a value appear; value-less slots are
+    /// skipped. Empty on the splash path.
+    pub slot_values: std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
 }
 
 impl UiReadSnapshot {
-    /// Snapshot carrying the splash version/tagline line (splash path).
+    /// Snapshot carrying the splash version/tagline line (splash path). The
+    /// slot-value map stays empty — the splash has no store-bound widgets.
     pub fn with_version_line(version_line: impl Into<String>) -> Self {
         Self {
             version_line: version_line.into(),
             gameplay_tree: None,
+            slot_values: std::collections::HashMap::new(),
         }
     }
 
-    /// Snapshot carrying a gameplay-path descriptor tree (the content side). The
-    /// renderer lays it out into the UI draw list.
+    /// Snapshot carrying a gameplay-path descriptor tree (the content side) plus
+    /// the frame's resolved slot-value snapshot. The renderer lays the tree out
+    /// into the UI draw list and resolves `bind` slots against `slot_values`.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn with_gameplay_tree(tree: descriptor::AnchoredTree) -> Self {
+    pub fn with_gameplay_tree(
+        tree: descriptor::AnchoredTree,
+        slot_values: std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
+    ) -> Self {
         Self {
             version_line: String::new(),
             gameplay_tree: Some(tree),
+            slot_values,
         }
     }
 }
 
 /// Small key→bind-group registry for `image` widget assets. The descriptor's
 /// `image` nodes reference a texture by string key; the renderer pre-registers
-/// the known keys (Goal B: only the splash logo) and resolves each image batch's
-/// key through this map to the bind group the draw binds.
+/// the known keys and resolves each image batch's key through this map to the
+/// bind group the draw binds.
 ///
-/// Scope is deliberately tiny (Goal B out-of-scope: dynamic asset streaming):
-/// only pre-registered keys resolve. An unknown key is skipped-with-warn at draw
-/// time — the image batch simply does not draw, and a single warning names the
-/// missing key (logged once per resolve, not per frame, since gameplay has no
-/// image producer yet). Each entry owns its texture so the bind group's view
-/// stays valid for the registry's lifetime.
+/// Only pre-registered keys resolve — dynamic asset streaming is out of scope.
+/// Only the splash logo key is pre-registered; the current demo gameplay HUD has
+/// no `image` nodes. An unknown key is skipped-with-warn at draw time — the
+/// image batch simply does not draw, and a single warning names the missing key.
+/// Each entry owns its texture so the bind group's view stays valid for the
+/// registry's lifetime.
 #[derive(Default)]
 pub(crate) struct UiImageRegistry {
     entries: std::collections::HashMap<String, UiImageEntry>,
@@ -311,6 +339,26 @@ pub(crate) struct UiPass {
     /// glyphon shaped-text half of the pass. Owns its own pipeline/atlas; its
     /// draw records into this same render pass, after the quads. See `text`.
     text: UiTextRenderer,
+
+    /// The retained gameplay tree, held across frames so the dirty-gate and the
+    /// bound-value diff actually pay off (a fresh tree is always dirty). `None`
+    /// until the first gameplay frame installs one. The splash deliberately does
+    /// NOT use this — it stays on the stateless `layout_tree` fresh-build path.
+    gameplay_tree: Option<RetainedGameplayTree>,
+}
+
+/// One retained gameplay UI tree plus the descriptor it was built from. The
+/// descriptor is kept so the next frame can detect a structural change (the
+/// snapshot delivered a different tree) by `!=` comparison — `AnchoredTree`
+/// derives `PartialEq` — and rebuild only then. The cached draw list lives inside
+/// the `UiTree` itself (see `UiTree::cached_draw_data`).
+struct RetainedGameplayTree {
+    /// The descriptor the retained `tree` was built from. Compared against the
+    /// incoming descriptor each frame; a difference forces a rebuild.
+    descriptor: descriptor::AnchoredTree,
+    /// The retained taffy-backed tree, carrying its layout cache, last viewport,
+    /// per-bound-node last-resolved values, and cached draw list across frames.
+    tree: tree::UiTree,
 }
 
 /// One instanced draw: a draw list plus the bind group for its bound texture.
@@ -508,6 +556,7 @@ impl UiPass {
             white_view,
             white_bind_group,
             text,
+            gameplay_tree: None,
         }
     }
 
@@ -546,30 +595,89 @@ impl UiPass {
 
     /// Lay a descriptor tree out into device-pixel draw data, threading the
     /// pass's glyphon `FontSystem` so text nodes size from real shaped-run
-    /// metrics (the taffy↔glyphon measure seam). The renderer calls this for both
-    /// the splash and gameplay descriptor trees, then turns the draw data into
+    /// metrics (the taffy↔glyphon measure seam). SPLASH path only — the gameplay
+    /// path uses the retained `layout_gameplay_tree`. Turns the draw data into
     /// `UiBatch`es. Layout (taffy) runs on the CPU here — no `wgpu` call — so the
     /// GPU stays untouched until `encode`.
     ///
-    /// This builds a FRESH `UiTree` every call, so today the tree is rebuilt per
-    /// frame: the gameplay tree arrives in the per-frame snapshot, and the splash
-    /// re-derives its descriptor each frame. A fresh tree is always dirty, so
-    /// `UiTree`'s dirty-gating never short-circuits in production right now — it is
-    /// verified at the tree level by `tree.rs`'s recompute-counter tests and
-    /// becomes a real runtime optimization only once a persistent (retained-across-
-    /// frames) `UiTree` lands. See the plan's Follow-ups note.
+    /// Builds a FRESH `UiTree` every call: the splash re-derives its descriptor
+    /// each frame, is transient, and carries no bindings — so the dirty-gate never
+    /// fires on this path and retaining it would only add bookkeeping. The
+    /// gameplay path retains its tree across frames via `layout_gameplay_tree`,
+    /// where the dirty-gate and bound-value diff pay off.
+    ///
     /// `image_sizes` maps each referenced `image` asset key to its natural
     /// reference size; the measure seam sizes image nodes from it (content-driven,
-    /// like text). Callers pass the sizes for the keys their tree references (the
-    /// splash logo; gameplay has no image producer yet).
+    /// like text). The splash passes the logo's size; the gameplay path passes an
+    /// empty map (the demo HUD has no image nodes).
+    ///
+    /// `slot_values` is the frame's resolved state-store read snapshot, keyed by
+    /// dotted slot name. Bound text/panel nodes resolve their drawn string/color
+    /// against it at draw-data build time; an absent slot falls back to the literal
+    /// descriptor value. The splash passes an empty map (its tree has no binds);
+    /// gameplay passes the snapshot's `slot_values`.
     pub fn layout_tree(
         &mut self,
         tree: &descriptor::AnchoredTree,
         viewport: [u32; 2],
         image_sizes: &tree::ImageSizes,
+        slot_values: &std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
     ) -> tree::UiDrawData {
         let mut ui_tree = tree::UiTree::from_descriptor(tree);
-        ui_tree.build_draw_data(viewport, self.text.font_system_mut(), image_sizes)
+        ui_tree.build_draw_data(
+            viewport,
+            self.text.font_system_mut(),
+            image_sizes,
+            slot_values,
+        )
+    }
+
+    /// Lay out the gameplay descriptor tree through the RETAINED `UiTree` held on
+    /// the pass, so layout and the draw list only rebuild when their inputs change
+    /// across frames (the runtime perf win this task delivers).
+    ///
+    /// Reuse vs rebuild: the retained tree is reused while the incoming
+    /// `descriptor` equals the one it was built from. A different descriptor (the
+    /// snapshot delivered a structurally new tree) rebuilds it from scratch via
+    /// `UiTree::from_descriptor`. Once reused, `build_draw_data_retained` runs the
+    /// subscriber-aware bound-value diff and the relayout/redraw split:
+    /// - an appearance-only bound change (the panel flash color) rebuilds the
+    ///   draw list WITHOUT a taffy relayout,
+    /// - a bound text-content change re-measures and relays out,
+    /// - a no-change frame returns the cached draw list and recomputes nothing.
+    ///
+    /// The splash stays on `layout_tree` (fresh build per frame) — it is transient
+    /// and carries no bindings, so retaining it would only add bookkeeping.
+    pub fn layout_gameplay_tree(
+        &mut self,
+        tree: &descriptor::AnchoredTree,
+        viewport: [u32; 2],
+        image_sizes: &tree::ImageSizes,
+        slot_values: &std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
+    ) -> tree::UiDrawData {
+        // Rebuild the retained tree when there is none yet, or when the incoming
+        // descriptor differs from the one it was built from (a structural change).
+        let needs_build = match &self.gameplay_tree {
+            Some(retained) => retained.descriptor != *tree,
+            None => true,
+        };
+        if needs_build {
+            self.gameplay_tree = Some(RetainedGameplayTree {
+                descriptor: tree.clone(),
+                tree: tree::UiTree::from_descriptor(tree),
+            });
+        }
+
+        let retained = self
+            .gameplay_tree
+            .as_mut()
+            .expect("retained gameplay tree set above");
+        retained.tree.build_draw_data_retained(
+            viewport,
+            self.text.font_system_mut(),
+            image_sizes,
+            slot_values,
+        )
     }
 
     /// Record the UI batches and shaped-text lines into `view`. Single color

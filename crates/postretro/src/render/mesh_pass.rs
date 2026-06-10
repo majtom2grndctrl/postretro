@@ -127,6 +127,14 @@ pub struct MeshPass {
     /// (group 0) supplied by the caller — one pipeline for both spot slots and
     /// cube faces. Shares group 3 (palette + instances) with `pipeline`,
     /// so it reads the SAME per-frame posed buffers with no extra upload.
+    /// That "no extra upload" guarantee rests on an ordering invariant enforced
+    /// OUTSIDE this struct: the pose/palette/instance buffers are written once per
+    /// frame by the palette hoist (`plan_and_upload`, called from `render/mod.rs`'s
+    /// frame loop after `update_dynamic_light_slots`) BEFORE the shadow depth loop
+    /// reads them, and nothing rewrites them between the hoist and the forward draw.
+    /// A future agent inserting a buffer-writing step between the hoist and the
+    /// depth passes would silently break this — keep the hoist immediately ahead of
+    /// every shadow pass that binds group 3.
     depth_pipeline: wgpu::RenderPipeline,
 
     /// Shared bone-palette storage buffer, sized for `MAX_PALETTE_ENTRIES`
@@ -759,8 +767,11 @@ impl MeshPass {
     /// (`instance_index..+1`) because the cone cull selects an arbitrary subset of
     /// each group's contiguous SSBO range; wave counts are small (a few dozen), so
     /// per-instance draws stay cheap. The base instance is the absolute index into
-    /// the dense SSBO (the palette base still travels in the SSBO entry, addressed
-    /// by `@builtin(instance_index)` — not through `first_instance`).
+    /// the dense SSBO, so `@builtin(instance_index)` selects this occluder's entry —
+    /// the SAME `first_instance`-borne addressing the forward path uses, with the
+    /// SAME documented DX12 exposure (gfx-rs/wgpu#2471). See the per-draw comment at
+    /// the `draw_indexed` site below; the per-instance palette base still travels in
+    /// the SSBO entry, never in `first_instance`.
     pub fn record_skinned_depth(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -798,6 +809,21 @@ impl MeshPass {
                 }
                 let instance_index = group.instance_offset + i as u32;
                 let instance_range = instance_index..instance_index + 1;
+                // The draw's `first_instance` is the absolute SSBO index, so the
+                // shader reads `instances[instance_index]` / `bone_palette[base]`
+                // for THIS occluder via `@builtin(instance_index)`. This shares the
+                // forward path's `@builtin(instance_index)` assumption (record_draws
+                // above, file header §"Per-instance addressing"): the SSBO ENTRY is
+                // selected through `first_instance`, and a backend that zeroes it
+                // (the documented DX12 quirk, gfx-rs/wgpu#2471 — we do not assume
+                // `INDIRECT_FIRST_INSTANCE`) would read entry 0 for every occluder,
+                // projecting all of them with the first instance's pose. Known DX12
+                // exposure, correct on Vulkan/Metal; it is NOT unique to the depth
+                // path — both paths route the entry index through `first_instance`
+                // identically, so a future DX12-robust fix (per-instance index via a
+                // vertex-stepped buffer or per-draw dynamic offset) must change both
+                // in lock-step, not just here. Only the per-instance palette BASE
+                // (`base_and_pad.x`) is kept out of `first_instance` today.
                 // Depth-only: one draw per submesh range, no material bind (the
                 // depth layout omits group 1).
                 for (_material_bind_group, indices) in &model.submeshes {
@@ -961,6 +987,58 @@ mod tests {
         )
         .validate(&module)
         .expect("skinned_depth.wgsl must pass naga validation");
+    }
+
+    /// The `skin_matrix` function is duplicated verbatim from `skinned_mesh.wgsl`
+    /// into `skinned_depth.wgsl` because WGSL cannot share a function that reads
+    /// module-scope buffers across two separate shader sources. This test extracts
+    /// the function body from both shaders and asserts byte-identical equality,
+    /// so any divergence between the forward-pass and depth-pass copies fails CI
+    /// rather than only mis-skinning shadows at runtime.
+    #[test]
+    fn skin_matrix_body_matches_across_skinned_shaders() {
+        // Extract `fn skin_matrix(` … matching `}` by brace counting. Returns the
+        // slice from the `fn` keyword through the closing brace (inclusive).
+        fn extract_skin_matrix(src: &str) -> &str {
+            let marker = "fn skin_matrix(";
+            let fn_start = src
+                .find(marker)
+                .expect("shader must declare fn skin_matrix(");
+            // Find the opening `{` of the function body.
+            let body_open = fn_start
+                + src[fn_start..]
+                    .find('{')
+                    .expect("skin_matrix must have an opening brace");
+            // Walk forward, counting braces to find the matching close.
+            let mut depth = 0usize;
+            let mut close = body_open;
+            for (i, ch) in src[body_open..].char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = body_open + i;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            &src[fn_start..=close]
+        }
+
+        // `SKINNED_MESH_SHADER_SOURCE` is a concat of skinned_mesh.wgsl + sh_sample.wgsl.
+        // `skin_matrix` is declared in the skinned_mesh.wgsl portion.
+        // `SKINNED_DEPTH_SHADER_SOURCE` is skinned_depth.wgsl directly.
+        let mesh_body = extract_skin_matrix(SKINNED_MESH_SHADER_SOURCE);
+        let depth_body = extract_skin_matrix(SKINNED_DEPTH_SHADER_SOURCE);
+
+        assert_eq!(
+            mesh_body, depth_body,
+            "skin_matrix body in skinned_depth.wgsl must be byte-identical to the copy \
+             in skinned_mesh.wgsl — update both when changing the skinning kernel",
+        );
     }
 
     #[test]

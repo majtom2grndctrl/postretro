@@ -1,5 +1,7 @@
-// Cone-frustum geometry for spotlight shadow culling: planes + enclosing AABB
-// derived from a spotlight's light-space view-projection matrix.
+// Cone-frustum geometry for spotlight shadow culling (planes + enclosing AABB
+// from a spotlight's light-space view-projection matrix) and world-space Aabb
+// utilities: transformed enclosure, from_points, empty/expand, Pod/Zeroable —
+// shared by both the cone-cull and entity bind-pose cull paths.
 //
 // See: context/lib/rendering_pipeline.md §7.1 · context/plans/in-progress/shadow-cone-cull/
 

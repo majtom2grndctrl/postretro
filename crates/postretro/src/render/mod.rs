@@ -2424,7 +2424,7 @@ impl Renderer {
                 cache: None,
             });
 
-        // Spot shadow pipeline: shared across all 8 slots via dynamic-offset uniform.
+        // Spot shadow pipeline: shared across all SHADOW_POOL_SIZE slots via dynamic-offset uniform.
         // Depth bias (constant=2, slope=1.5) suppresses acne without Peter-Panning.
         let shadow_vs_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Shadow VS BGL"),

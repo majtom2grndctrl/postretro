@@ -44,7 +44,7 @@ pub const CUBE_SLOT_BYTE_OFFSET: usize = 60;
 
 /// Whether a runtime light renders animated ENTITY meshes as occluders into its
 /// shadow slot. The single shared predicate for the entity-occluder gate, called
-/// called by both the spot path and the cube (point-light) path.
+/// by both the spot path and the cube (point-light) path.
 ///
 /// This is the SECOND of two separate gates (see
 /// `context/lib/rendering_pipeline.md` §7.1): pool-*slot* eligibility (does the
@@ -125,7 +125,7 @@ pub fn pack_light_with_slot(light: &MapLight, slot_index: u32) -> [u8; GPU_LIGHT
     // slot 3: cone_angles_and_pad — inner + outer cone angles (radians) + shadow slot index
     write_f32(&mut bytes, 48, light.cone_angle_inner);
     write_f32(&mut bytes, 52, light.cone_angle_outer);
-    // bytes 56..60 hold the shadow slot index (0..8 or 0xFFFFFFFF for no slot).
+    // bytes 56..60 hold the shadow slot index (0..SHADOW_POOL_SIZE or 0xFFFFFFFF for no slot).
     // Shader reads as f32 then bitcasts back to u32; round-trip preserves bit patterns.
     write_u32_as_f32(&mut bytes, SHADOW_SLOT_BYTE_OFFSET, slot_index);
     // bytes 60..64 hold the cube (point) shadow slot. Default to the sentinel so
@@ -163,7 +163,7 @@ pub fn pack_lights(lights: &[MapLight]) -> Vec<u8> {
 /// against a previous frame's bytes to skip a redundant `queue.write_buffer`.
 ///
 /// `slot_indices` must have the same length as `lights`.
-/// Each entry is a slot index (0..8) or `NO_SHADOW_SLOT` for unshadowed.
+/// Each entry is a slot index (0..SHADOW_POOL_SIZE) or `NO_SHADOW_SLOT` for unshadowed.
 pub fn pack_lights_with_slots_into(bytes: &mut Vec<u8>, lights: &[MapLight], slot_indices: &[u32]) {
     debug_assert_eq!(
         lights.len(),

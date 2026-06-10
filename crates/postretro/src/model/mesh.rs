@@ -74,7 +74,7 @@ pub struct SkinnedMesh {
     /// vertex slightly past it, which the cull treats conservatively (a missed
     /// caster only loses a sliver of its own shadow at the silhouette). The
     /// renderer-side uploaded model needs no copy — the cull reads this CPU side.
-    pub bounds: Aabb,
+    pub(crate) bounds: Aabb,
 }
 
 impl SkinnedMesh {

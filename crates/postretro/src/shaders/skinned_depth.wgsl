@@ -10,9 +10,8 @@
 // The light-space matrix is a PER-RENDER parameter (group 0), so one pipeline
 // serves both spot slots (the existing per-slot `shadow_vs_bind_group` +
 // dynamic offset) and cube faces (per-face dynamic offset into the cube shadow
-// VS uniform buffer). Nothing here
-// assumes a 2D target or one slot per light — the target view + matrix are
-// supplied by the orchestration per render.
+// VS uniform buffer). Nothing in this pipeline assumes a 2D target or one slot
+// per light — the target view + matrix are supplied by the orchestration per render.
 //
 // Group 3 (palette + per-instance SSBO) is the SAME bind group the forward
 // skinned-mesh pass binds (`render/mesh_pass.rs` builds it). Forced to index 3

@@ -3,7 +3,7 @@
 > **Status:** draft.
 > **Track:** Lighting / M10 render foundation — roadmap "Dynamic mesh shadow receipt" (bullet added on the M10 shadows branch).
 > **Related:** `context/lib/rendering_pipeline.md` §4, §8, §9 · sibling spec `M10--dynamic-mesh-direct-lighting` (hard dependency — supplies the per-light term this spec attenuates) · `context/plans/ready/M10--dynamic-mesh-shadows/` (supplies the pools).
-> **Orchestrator note:** phase 2 of a combined run with `M10--dynamic-mesh-direct-lighting`. Anchors below cite the unmerged branch `origin/claude/dynamic-mesh-shadows-jvl96j`; verify against main once merged.
+> **Orchestrator note:** phase 2 of a combined run with `M10--dynamic-mesh-direct-lighting`.
 
 ## Goal
 
@@ -11,7 +11,7 @@ M10 shadow casting made entities throw shadows; the direct-lighting sibling make
 
 ## Prerequisites (hard)
 
-- **`M10--dynamic-mesh-shadows` merged to main.** The pools this spec samples — 96-slot spot 2D-array, 6-slot point cube-array, the dual slot indices in the light record — exist only on `origin/claude/dynamic-mesh-shadows-jvl96j` today. Do not start this spec against a tree without them.
+- **`M10--dynamic-mesh-shadows` merged to main.** SATISFIED (2026-06, PR #114): the 96-slot spot 2D-array, 6-slot point cube-array, and the dual slot indices in the light record are in-tree. Note its Task 7 (static-depth caching) was cut at landing.
 - **`M10--dynamic-mesh-direct-lighting` complete.** There is no per-light term on the mesh to attenuate until group 2 exists; that spec hardwires per-light visibility to 1.0 as the seam this spec fills.
 
 ## Scope
@@ -29,7 +29,7 @@ M10 shadow casting made entities throw shadows; the direct-lighting sibling make
 - **World→entity shadows from point lights.** The cube pool is entity-only in v1 (no world geometry in cube faces), so point-light receipt yields entity→entity only. Worlded cube faces are a future pool change, not this spec.
 - **Any pool or casting-side change.** Slot ranking, pool capacities, the skinned-depth pass, and `entity_occluder_eligible` gating are untouched; this spec is a pure consumer.
 - **Shadow receipt for billboards** and for the baked/static light tiers (static direct on movers stays the soft SH-direct term by design).
-- **Static-depth caching (M10 Task 7)** — remains measurement-gated, orthogonal to receipt.
+- **Static-depth caching (M10 Task 7)** — cut at M10 landing (per-frame world-depth re-render is the baseline); orthogonal to receipt either way.
 
 ## Acceptance criteria
 
@@ -63,8 +63,6 @@ Visual pass for self-shadow acne on skinned models (tune bias / normal-offset as
 **Phase 4 (sequential):** Task 4 — verifies the assembled feature.
 
 ## Rough sketch
-
-(Anchors from `origin/claude/dynamic-mesh-shadows-jvl96j`.)
 
 - Light record slots: `GpuLight.cone_angles_and_pad.z` = spot slot, `.w` = cube slot; sentinel `NO_SHADOW_SLOT = 0xFFFFFFFF` (`lighting/spot_shadow.rs`).
 - Pools: spot `SHADOW_POOL_SIZE = 96` slots, 1024² `Depth32Float` 2D-array; cube `CUBE_COUNT = 6` slots × `CUBE_FACES = 6` faces at `CUBE_FACE_RESOLUTION = 512`, sampled as `texture_depth_cube_array`; shared `compare_sampler`. Cube projection constants the mesh sampler must reproduce: `CUBE_NEAR_CLIP = 0.1`, far = `falloff_range.max(0.5)`.

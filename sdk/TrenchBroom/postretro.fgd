@@ -94,9 +94,11 @@
     //      lightmap or sdf (below).
     //   2. entity-shadow toggle (`_cast_entity_shadows`, DYNAMIC tier only) —
     //      whether a runtime light casts shadows from moving ENTITIES. It lives
-    //      on the DynamicLight base, NOT here: a baked light's world shadow is
-    //      frozen in the lightmap, so it can never render a moving occluder.
+    //      on the DynamicLight base, NOT here: a baked light's contribution is
+    //      summed into the monolithic lightmap with no separable runtime term,
+    //      so entity shadows are not possible without changing its storage.
     //      Authoring it on a baked light is warn-cleared by the compiler.
+    //      (Feasibility analysis: context/plans/drafts/baked-entity-shadow-lighting-handoff.md)
     //
     // `_shadow_type` is the baked-tier static-geo sub-choice. The two values are
     // disjoint — a light's direct shadow comes from exactly one, so no
@@ -192,8 +194,9 @@
     // the per-entity occluder cost. Turning it off does NOT remove the light's
     // WORLD shadow (static occluders like pillars) — that rides the dynamic
     // tier itself. This toggle is valid ONLY on dynamic lights; on a baked
-    // light it is meaningless (the world shadow is frozen in the lightmap) and
-    // the compiler warn-clears it.
+    // light the compiler warn-clears it (the summed lightmap has no separable
+    // runtime term to multiply by a shadow factor - not possible without storage
+    // changes; see context/plans/drafts/baked-entity-shadow-lighting-handoff.md).
     _cast_entity_shadows(choices) : "Cast Entity (Moving-Mesh) Shadows" : 1 =
     [
         0 : "Off"

@@ -1,8 +1,8 @@
 # Dynamic Mesh Shadow Receipt
 
 > **Status:** draft.
-> **Track:** Lighting / M10 render foundation — roadmap "Dynamic mesh shadow receipt" (bullet added on the M10 shadows branch).
-> **Related:** `context/lib/rendering_pipeline.md` §4, §8, §9 · sibling spec `M10--dynamic-mesh-direct-lighting` (hard dependency — supplies the per-light term this spec attenuates) · `context/plans/ready/M10--dynamic-mesh-shadows/` (supplies the pools).
+> **Track:** Lighting / M10 render foundation — roadmap "Dynamic mesh shadow receipt."
+> **Related:** `context/lib/rendering_pipeline.md` §4, §8, §9 · sibling spec `M10--dynamic-mesh-direct-lighting` (hard dependency — supplies the per-light term this spec attenuates) · `context/plans/done/M10--dynamic-mesh-shadows/` (supplies the pools).
 > **Orchestrator note:** phase 2 of a combined run with `M10--dynamic-mesh-direct-lighting`.
 
 ## Goal
@@ -66,7 +66,7 @@ Visual pass for self-shadow acne on skinned models (tune bias / normal-offset as
 
 - Light record slots: `GpuLight.cone_angles_and_pad.z` = spot slot, `.w` = cube slot; sentinel `NO_SHADOW_SLOT = 0xFFFFFFFF` (`lighting/spot_shadow.rs`).
 - Pools: spot `SHADOW_POOL_SIZE = 96` slots, 1024² `Depth32Float` 2D-array; cube `CUBE_COUNT = 6` slots × `CUBE_FACES = 6` faces at `CUBE_FACE_RESOLUTION = 512`, sampled as `texture_depth_cube_array`; shared `compare_sampler`. Cube projection constants the mesh sampler must reproduce: `CUBE_NEAR_CLIP = 0.1`, far = `falloff_range.max(0.5)`.
-- Forward sampling today: group 5 — b0 spot depth array, b1 comparison sampler, b2 `light_space_matrices` as `var<uniform> LightSpaceMatrices { m: array<mat4x4<f32>, 96> }` (a UNIFORM, deliberately not a storage buffer — stays under `max_storage_buffers_per_shader_stage` (default 8); the mesh declaration must do the same), b5 cube array (conditional). PCF: `SPOT_SHADOW_PCF_RADIUS = 1.0`, 9 taps both paths; point bias `POINT_SHADOW_DEPTH_BIAS = 0.08`.
+- Forward sampling today: group 5 — b0 spot depth array, b1 comparison sampler, b2 `light_space_matrices` as `var<uniform> LightSpaceMatrices { m: array<mat4x4<f32>, 96> }` (a UNIFORM, deliberately not a storage buffer — stays under `max_storage_buffers_per_shader_stage` (default 8); the mesh declaration must do the same — note `spot_shadow.rs`'s `LIGHT_SPACE_MATRICES_SIZE` doc-comment says "storage buffer" loosely; the GPU binding is a uniform), b5 cube array (conditional). PCF: `SPOT_SHADOW_PCF_RADIUS = 1.0`, 9 taps both paths; point bias `POINT_SHADOW_DEPTH_BIAS = 0.08`.
 - No-cube gating mechanism (mirror it exactly): `render::strip_point_shadow_cube` text-strips the `// CUBE_SHADOW_BINDING`-tagged declaration and replaces the `sample_point_shadow` body between the `CUBE_SHADOW_BODY_BEGIN`/`CUBE_SHADOW_BODY_END` markers with `return 1.0;`. The Task 1 shared snippet must preserve these markers, and the mesh pipeline applies the same strip on no-cube adapters.
 - Mesh bindings ride group 2 at the slots the sibling spec reserves (b5 spot depth array, b6 comparison sampler, b7 light-space matrices, b8 conditional cube array — a mesh-specific layout over the same resources) rather than importing forward's group-5 BGL — that layout carries SDF factor + scene depth entries the mesh shader must not sample.
 - Self-shadow note: the receiving fragment's own depth is in the map (entity occluders render via `record_skinned_depth`). Spot path has no slope-scale bias today; if acne appears on curved skinned surfaces, prefer a sample-site normal-offset (world-space, normal-scaled) over raising the global bias, to avoid peter-panning the world's shadows.

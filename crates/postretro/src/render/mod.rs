@@ -167,6 +167,66 @@ const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/sdf_light_select.wgsl"),
 );
 
+/// Derive the no-`CUBE_ARRAY_TEXTURES` variant of a group-5 shader (forward or
+/// fog) from its single canonical source, so there is no second hand-maintained
+/// copy to drift. Two localized edits, both keyed off marker comments embedded in
+/// the WGSL:
+///
+/// 1. Strip the `point_shadow_cube` binding-5 declaration (the line tagged
+///    `// CUBE_SHADOW_BINDING`), so the shader matches a group-5 BGL that omits
+///    binding 5 — required, since a `CubeArray` BGL entry needs the feature.
+/// 2. Neutralize `sample_point_shadow`: replace its body (delimited by
+///    `// CUBE_SHADOW_BODY_BEGIN` / `// CUBE_SHADOW_BODY_END`) with `return 1.0;`
+///    so the function references no stripped binding and every point light reads
+///    as unshadowed. The fog shader has no such body (it never samples the cube),
+///    so the body transform is a no-op there.
+///
+/// Panics (init-time, acceptable per the panic policy) if the binding marker is
+/// absent — that means the shader and this transform have drifted, which must
+/// fail loudly rather than ship a mis-bound pipeline. The body markers are
+/// optional (fog omits them). `pub(super)` so the fog pass (`fog_pass.rs`) derives
+/// its own no-cube variant from the SAME transform.
+pub(super) fn strip_point_shadow_cube(source: &str) -> String {
+    // 1. Drop the marked binding-5 declaration line.
+    let without_binding: String = {
+        let kept: Vec<&str> = source
+            .lines()
+            .filter(|line| !line.contains("// CUBE_SHADOW_BINDING"))
+            .collect();
+        assert!(
+            kept.len() < source.lines().count(),
+            "strip_point_shadow_cube: no `// CUBE_SHADOW_BINDING` line found — \
+             shader and transform have drifted"
+        );
+        kept.join("\n")
+    };
+
+    // 2. Replace the cube-sampling function body with a no-shadow constant.
+    const BEGIN: &str = "// CUBE_SHADOW_BODY_BEGIN";
+    const END: &str = "// CUBE_SHADOW_BODY_END";
+    match (without_binding.find(BEGIN), without_binding.find(END)) {
+        (Some(begin), Some(end)) => {
+            // `end` indexes the start of the END marker; include the marker line
+            // itself in the replaced span so it does not linger.
+            let end_line_end = without_binding[end..]
+                .find('\n')
+                .map(|n| end + n)
+                .unwrap_or(without_binding.len());
+            let mut out = String::with_capacity(without_binding.len());
+            out.push_str(&without_binding[..begin]);
+            out.push_str("return 1.0;");
+            out.push_str(&without_binding[end_line_end..]);
+            out
+        }
+        // Fog: no body markers, declaration strip alone suffices.
+        (None, None) => without_binding,
+        _ => panic!(
+            "strip_point_shadow_cube: exactly one of the CUBE_SHADOW_BODY markers \
+             is present — shader and transform have drifted"
+        ),
+    }
+}
+
 const WIREFRAME_SHADER_SOURCE: &str = include_str!("../shaders/wireframe.wgsl");
 
 // Depth pre-pass: writes depth only (enables Equal depth compare → zero shading
@@ -897,15 +957,19 @@ fn billboard_pipeline_vertex_storage_buffer_count() -> u32 {
 /// `Renderer::new` and the
 /// `forward_pipeline_sampled_texture_request_matches_bgl_definitions` test.
 #[cfg(debug_assertions)]
-fn forward_pipeline_sampled_texture_count() -> u32 {
+fn forward_pipeline_sampled_texture_count(cube_array_supported: bool) -> u32 {
     // Groups 0 (uniform) and 2 (lighting) carry no textures, but include them so
-    // adding a texture entry to either BGL is caught here automatically.
+    // adding a texture entry to either BGL is caught here automatically. Group 5's
+    // count is feature-conditional: the cube-array point-shadow texture (binding 5)
+    // is present only when `cube_array_supported` (14 total with it, 13 without).
     fragment_sampled_textures(&uniform_bind_group_layout_entries())
         + fragment_sampled_textures(&material_bind_group_layout_entries())
         + fragment_sampled_textures(&lighting_bind_group_layout_entries())
         + fragment_sampled_textures(&sh_volume::sh_bind_group_layout_entries())
         + fragment_sampled_textures(&crate::lighting::lightmap::bind_group_layout_entries())
-        + fragment_sampled_textures(&SpotShadowPool::bind_group_layout_entries())
+        + fragment_sampled_textures(&SpotShadowPool::bind_group_layout_entries(
+            cube_array_supported,
+        ))
 }
 
 pub struct LevelGeometry<'a> {
@@ -1101,11 +1165,9 @@ pub struct Renderer {
     spot_shadow_pool: SpotShadowPool,
     /// Dynamic point-light cube-array shadow pool. `None` when the adapter lacks
     /// `CUBE_ARRAY_TEXTURES` — point shadows then cleanly off, spot unaffected.
+    /// `Some` iff `cube_array_supported`, so its presence mirrors group-5 binding
+    /// 5's presence in the shared BGL.
     cube_shadow_pool: Option<crate::lighting::cube_shadow::CubeShadowPool>,
-    /// Minimal 1-slot cube-array depth view that backs the forward group-5 cube
-    /// binding when `cube_shadow_pool` is `None`. Held so the resize bind-group
-    /// rebuild can re-reference it. Never sampled (slot sentinel gates it).
-    cube_dummy_sampling_view: wgpu::TextureView,
     /// Per-(cube slot, face) light-space matrix uniforms, dynamic-offset like
     /// `shadow_vs_uniform_buffer`. Slot `slot*6 + face` carries that face's
     /// matrix; the skinned-depth pass selects it by dynamic offset.
@@ -1442,8 +1504,9 @@ impl Renderer {
         // every targeted backend reports far higher (Metal/AMD = 128) — the
         // adapter pre-check below confirms the granted maximum still covers it.
         //
-        // Derived (currently 13) from the actual BGLs that compose the forward
-        // pipeline layout, so it can never drift from the real binding count:
+        // Derived (14 when CUBE_ARRAY is supported, 13 without) from the actual
+        // BGLs that compose the forward pipeline layout, so it can never drift from
+        // the real binding count:
         //   Group 1 — material (3): diffuse, specular, normal
         //   Group 3 — SH volume (3): octahedral atlas + depth-moments
         //                            + direct static-light atlas (billboard samples it in
@@ -1452,7 +1515,10 @@ impl Renderer {
         //                              carry the entry but never sample it)
         //   Group 4 — lightmap (4): static irradiance, static dominant-direction,
         //                           animated-contribution atlas, animated dominant-direction
-        //   Group 5 — shadow (3): spot-shadow depth array (binding 0), SDF shadow factor (binding 3), scene depth (binding 4)
+        //   Group 5 — shadow (4 with CUBE_ARRAY, else 3): spot-shadow depth array (binding 0),
+        //                           SDF shadow factor (binding 3), scene depth (binding 4),
+        //                           point-light cube-array depth (binding 5; present only when
+        //                           CUBE_ARRAY_TEXTURES is supported)
         // 16 is the WebGPU spec floor and wgpu's `Limits::default()` value; it is
         // also the hard ceiling on Metal (macOS) and is universally supported on
         // all desktop adapters. We use it as a fixed design budget rather than
@@ -1469,11 +1535,12 @@ impl Renderer {
         // `debug_assert!` still *compiles* its arguments in release).
         #[cfg(debug_assertions)]
         debug_assert!(
-            forward_pipeline_sampled_texture_count() <= REQUIRED_SAMPLED_TEXTURES,
+            forward_pipeline_sampled_texture_count(cube_array_supported)
+                <= REQUIRED_SAMPLED_TEXTURES,
             "forward pipeline sampled-texture count ({}) exceeds the requested \
              budget ({}); switch to bindless (TEXTURE_BINDING_ARRAY) rather than \
              raising the limit (16 is Metal's hard ceiling)",
-            forward_pipeline_sampled_texture_count(),
+            forward_pipeline_sampled_texture_count(cube_array_supported),
             REQUIRED_SAMPLED_TEXTURES
         );
         // Billboard lighting runs in `vs_main` (per-vertex SH indirect+direct,
@@ -1790,11 +1857,13 @@ impl Renderer {
         });
 
         // BGL owned here so forward pipeline layout and shadow pool bind group share it.
-        // Task 5 extended the BGL with bindings 3 (SDF shadow factor) and 4
-        // (scene depth) — both owned outside the pool. The pool itself is
-        // built later (after depth_view + sdf_shadow_pass exist) so its bind
-        // group can reference those targets directly at construction.
-        let spot_shadow_bgl = SpotShadowPool::bind_group_layout(&device);
+        // The BGL carries bindings 3 (SDF shadow factor) and 4 (scene depth) — both
+        // owned outside the pool. Binding 5 (point-light cube-array depth) is present
+        // only when `cube_array_supported`; the shared BGL, the forward + fog
+        // pipelines, and the shader variants all key off the same flag. The pool
+        // itself is built later (after depth_view + sdf_shadow_pass exist) so its
+        // bind group can reference those targets directly at construction.
+        let spot_shadow_bgl = SpotShadowPool::bind_group_layout(&device, cube_array_supported);
 
         // Influence volume buffer — same dummy strategy as lights.
         let influence_data = if !dynamic_influences.is_empty() {
@@ -2039,22 +2108,18 @@ impl Renderer {
         // Cube point-shadow pool — built before the spot pool because the
         // spot-shadow bind group (the shared group-5 BGL) references the cube
         // sampling view at binding 5. Disabled (None) when the adapter lacks
-        // CUBE_ARRAY_TEXTURES; the dummy 1-slot cube view then backs the binding
-        // and the forward shader gates every cube sample on a per-light slot
-        // sentinel so the dummy is never sampled.
+        // CUBE_ARRAY_TEXTURES — in that case binding 5 is omitted from the BGL and
+        // NO cube view (not even a dummy) is created, since a `CubeArray` view
+        // itself requires the feature. `cube_shadow_pool.is_some()` therefore
+        // mirrors `cube_array_supported` exactly.
         let cube_shadow_pool =
             crate::lighting::cube_shadow::CubeShadowPool::new(&device, cube_array_supported);
-        let cube_dummy_sampling_view =
-            crate::lighting::cube_shadow::dummy_cube_sampling_view(&device);
-        let cube_sampling_view = cube_shadow_pool
-            .as_ref()
-            .map(|p| &p.sampling_view)
-            .unwrap_or(&cube_dummy_sampling_view);
+        let cube_sampling_view = cube_shadow_pool.as_ref().map(|p| &p.sampling_view);
 
         // Now that the SDF shadow factor target + scene depth view both
         // exist, build the spot-shadow pool — its bind group references
-        // both targets at bindings 3/4 and the cube sampling view at binding 5.
-        // See `SpotShadowPool::new` docs.
+        // both targets at bindings 3/4 and (when present) the cube sampling view
+        // at binding 5. See `SpotShadowPool::new` docs.
         let spot_shadow_pool = SpotShadowPool::new(
             &device,
             &spot_shadow_bgl,
@@ -2062,9 +2127,26 @@ impl Renderer {
             &depth_view,
             cube_sampling_view,
         );
-        log::info!(
-            "[Renderer] Spot shadow pool initialized (8 × 1024×1024 Depth32Float = 32 MiB VRAM)"
-        );
+        {
+            use crate::lighting::spot_shadow::{
+                SHADOW_DEPTH_FORMAT, SHADOW_MAP_RESOLUTION, SHADOW_POOL_SIZE,
+            };
+            // Depth32Float = 4 B/texel; MiB = bytes >> 20. Derived from the consts
+            // so the log can't drift from the actual pool size (was a stale literal).
+            let vram_mib = (SHADOW_POOL_SIZE as u64
+                * SHADOW_MAP_RESOLUTION as u64
+                * SHADOW_MAP_RESOLUTION as u64
+                * 4)
+                >> 20;
+            log::info!(
+                "[Renderer] Spot shadow pool initialized ({} × {}×{} {:?} = {} MiB VRAM)",
+                SHADOW_POOL_SIZE,
+                SHADOW_MAP_RESOLUTION,
+                SHADOW_MAP_RESOLUTION,
+                SHADOW_DEPTH_FORMAT,
+                vram_mib,
+            );
+        }
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Textured Pipeline Layout"),
@@ -2079,9 +2161,20 @@ impl Renderer {
             immediate_size: 0,
         });
 
+        // On an adapter without CUBE_ARRAY_TEXTURES the shared group-5 BGL omits
+        // binding 5, so the forward shader must not declare or sample the
+        // `point_shadow_cube` binding. Derive that variant from the one source via
+        // `strip_point_shadow_cube` (strips the binding decl, neutralizes
+        // `sample_point_shadow` to a no-shadow constant) rather than maintaining a
+        // second copy. When supported, the source is used verbatim.
+        let forward_source: std::borrow::Cow<str> = if cube_array_supported {
+            SHADER_SOURCE.into()
+        } else {
+            strip_point_shadow_cube(SHADER_SOURCE).into()
+        };
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Textured Shader"),
-            source: wgpu::ShaderSource::Wgsl(SHADER_SOURCE.into()),
+            source: wgpu::ShaderSource::Wgsl(forward_source),
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -2427,6 +2520,11 @@ impl Renderer {
         // `shadow_vs_bgl`), one slot per `(cube slot, face)` pair. The
         // skinned-depth pipeline binds it at group 0 just like the spot path,
         // proving the cube-ready contract.
+        //
+        // Total capacity = `shadow_vs_stride × CUBE_COUNT × CUBE_FACES` (every face
+        // of every slot gets its own dynamic-offset slot). A render selects a face
+        // via dynamic offset = `layer * shadow_vs_stride`, where the layer index is
+        // `slot * CUBE_FACES + face` (matching `CubeShadowPool::face_layer`).
         let cube_face_count =
             crate::lighting::cube_shadow::CUBE_COUNT * crate::lighting::cube_shadow::CUBE_FACES;
         let cube_shadow_vs_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -2509,6 +2607,7 @@ impl Renderer {
             &uniform_bind_group_layout,
             &sh_volume_resources.bind_group_layout,
             &spot_shadow_bgl,
+            cube_array_supported,
         );
         // Swapchain may differ from the hardcoded Rgba8UnormSrgb default.
         fog.rebuild_composite_for_format(&device, surface_format);
@@ -2582,7 +2681,6 @@ impl Renderer {
             last_view_proj: Mat4::IDENTITY,
             spot_shadow_pool,
             cube_shadow_pool,
-            cube_dummy_sampling_view,
             cube_shadow_vs_uniform_buffer,
             cube_shadow_vs_bind_group,
             shadow_vs_uniform_buffer,
@@ -3597,16 +3695,16 @@ impl Renderer {
         self.sdf_shadow_pass
             .resize(&self.device, &self.depth_view, width, height);
         // Group-5 bind group references both the SDF shadow factor target
-        // and the scene depth — both just got recreated, so rebuild.
-        let spot_shadow_bgl = SpotShadowPool::bind_group_layout(&self.device);
+        // and the scene depth — both just got recreated, so rebuild. The cube
+        // binding's presence is fixed for the renderer's lifetime: the pool is
+        // `Some` iff the adapter supports CUBE_ARRAY_TEXTURES, so rebuild the BGL
+        // with the same flag (its presence mirrors the pool's).
+        let cube_array_supported = self.cube_shadow_pool.is_some();
+        let spot_shadow_bgl = SpotShadowPool::bind_group_layout(&self.device, cube_array_supported);
         // The cube sampling view is surface-size-independent, but the group-5
-        // bind group is fully rebuilt here, so re-reference it (pool view when
-        // present, else the dummy that backs the binding).
-        let cube_sampling_view = self
-            .cube_shadow_pool
-            .as_ref()
-            .map(|p| &p.sampling_view)
-            .unwrap_or(&self.cube_dummy_sampling_view);
+        // bind group is fully rebuilt here, so re-reference it (`Some` when the
+        // pool is present, `None` omits binding 5 to match the BGL).
+        let cube_sampling_view = self.cube_shadow_pool.as_ref().map(|p| &p.sampling_view);
         self.spot_shadow_pool.rebuild_bind_group(
             &self.device,
             &spot_shadow_bgl,
@@ -5417,36 +5515,82 @@ mod tests {
         // The forward pipeline layout (see `create_pipeline_layout`) composes
         // exactly these six BGLs in this group order. Counting fragment-visible
         // texture entries across them is how wgpu charges
-        // `max_sampled_textures_per_shader_stage`.
-        let per_group = [
-            fragment_sampled_textures(&uniform_bind_group_layout_entries()), // group 0
-            fragment_sampled_textures(&material_bind_group_layout_entries()), // group 1
-            fragment_sampled_textures(&lighting_bind_group_layout_entries()), // group 2
-            fragment_sampled_textures(&sh_volume::sh_bind_group_layout_entries()), // group 3
-            fragment_sampled_textures(&crate::lighting::lightmap::bind_group_layout_entries()), // group 4
-            fragment_sampled_textures(&SpotShadowPool::bind_group_layout_entries()), // group 5
-        ];
-        // Per-group expectations document the inventory; if a BGL changes, the
-        // failing index points straight at the group that drifted.
-        // Group 5 carries 4 sampled textures: spot depth array (b0), SDF shadow
-        // factor (b3), SDF scene depth (b4), and the dynamic point-light cube
-        // depth (b5). The comparison sampler (b1) and matrix uniform (b2) are not
-        // textures. Total forward sampled textures: 14 (≤ 16 Metal/WebGPU floor).
+        // `max_sampled_textures_per_shader_stage`. Group 5's count is
+        // feature-conditional, so check both variants from the same builders.
+        //
+        // `cube_array_supported = true`: Group 5 carries 4 sampled textures — spot
+        // depth array (b0), SDF shadow factor (b3), SDF scene depth (b4), and the
+        // dynamic point-light cube depth (b5). Total forward sampled textures: 14.
+        //
+        // `cube_array_supported = false`: binding 5 is omitted, so Group 5 carries
+        // 3 and the total is 13. The forward + fog pipelines then build from a
+        // group-5 BGL WITHOUT the cube entry (the no-cube shader variants drop the
+        // matching declaration), so point shadows disable cleanly with no panic.
+        let per_group = |cube_array_supported: bool| {
+            [
+                fragment_sampled_textures(&uniform_bind_group_layout_entries()), // group 0
+                fragment_sampled_textures(&material_bind_group_layout_entries()), // group 1
+                fragment_sampled_textures(&lighting_bind_group_layout_entries()), // group 2
+                fragment_sampled_textures(&sh_volume::sh_bind_group_layout_entries()), // group 3
+                fragment_sampled_textures(&crate::lighting::lightmap::bind_group_layout_entries()), // group 4
+                fragment_sampled_textures(&SpotShadowPool::bind_group_layout_entries(
+                    cube_array_supported,
+                )), // group 5
+            ]
+        };
+
+        // Supported: Group 5 = 4, total = 14.
+        let supported = per_group(true);
         assert_eq!(
-            per_group,
+            supported,
             [0, 3, 0, 3, 4, 4],
-            "forward BGL texture inventory changed"
+            "forward BGL texture inventory changed (CUBE_ARRAY supported)"
+        );
+        let derived_supported: u32 = supported.iter().sum();
+        assert_eq!(derived_supported, 14);
+        assert_eq!(
+            forward_pipeline_sampled_texture_count(true),
+            derived_supported
         );
 
-        let derived: u32 = per_group.iter().sum();
-        // The aggregation helper must agree with the hand-summed inventory above.
-        assert_eq!(forward_pipeline_sampled_texture_count(), derived);
+        // Unsupported: Group 5 = 3 (no cube entry), total = 13. The group-5 BGL
+        // builder must omit binding 5 — pin both the count and the absence.
+        let unsupported = per_group(false);
+        assert_eq!(
+            unsupported,
+            [0, 3, 0, 3, 4, 3],
+            "forward BGL texture inventory changed (CUBE_ARRAY absent)"
+        );
+        let derived_unsupported: u32 = unsupported.iter().sum();
+        assert_eq!(derived_unsupported, 13);
+        assert_eq!(
+            forward_pipeline_sampled_texture_count(false),
+            derived_unsupported
+        );
+        let no_cube_entries = SpotShadowPool::bind_group_layout_entries(false);
+        assert!(
+            no_cube_entries.iter().all(|e| e.binding != 5),
+            "no-CUBE_ARRAY group-5 BGL must omit binding 5 (the CubeArray cube depth)"
+        );
+        assert_eq!(
+            no_cube_entries.len(),
+            5,
+            "no-CUBE_ARRAY group-5 BGL must carry exactly 5 entries (bindings 0..=4)"
+        );
+        // And the supported variant DOES carry binding 5.
+        assert!(
+            SpotShadowPool::bind_group_layout_entries(true)
+                .iter()
+                .any(|e| e.binding == 5),
+            "CUBE_ARRAY group-5 BGL must include binding 5 (the CubeArray cube depth)"
+        );
+
         // 16 is the design budget: the WebGPU spec floor and Metal's hard ceiling.
         // If the derived count exceeds 16, switch to bindless (TEXTURE_BINDING_ARRAY)
         // rather than raising REQUIRED_SAMPLED_TEXTURES in the device limit request.
         assert!(
-            derived <= 16,
-            "forward pipeline sampled-texture count ({derived}) exceeds the Metal/WebGPU spec floor of 16; \
+            derived_supported <= 16,
+            "forward pipeline sampled-texture count ({derived_supported}) exceeds the Metal/WebGPU spec floor of 16; \
              use bindless (TEXTURE_BINDING_ARRAY) rather than raising this limit"
         );
     }
@@ -6371,6 +6515,43 @@ mod tests {
         )
         .validate(&module)
         .expect("forward.wgsl must pass naga validation (control-flow uniformity)");
+    }
+
+    /// The no-`CUBE_ARRAY_TEXTURES` variant of the forward shader, derived from the
+    /// single source via `strip_point_shadow_cube`, must (1) drop the
+    /// `point_shadow_cube` binding entirely so it matches a group-5 BGL that omits
+    /// binding 5, and (2) still parse + pass naga validation. This is what ships on
+    /// an adapter without the feature — point shadows cleanly off, no panic.
+    #[test]
+    fn forward_wgsl_no_cube_variant_strips_binding_and_validates() {
+        let stripped = strip_point_shadow_cube(SHADER_SOURCE);
+        // The `point_shadow_cube` binding DECLARATION is gone (comments mentioning
+        // the name in prose are harmless; naga validation below proves there is no
+        // dangling code reference).
+        assert!(
+            !stripped.contains("var point_shadow_cube:"),
+            "no-cube forward variant must not declare the point_shadow_cube binding"
+        );
+        // The body markers (and everything between them, including the cube
+        // sample) are gone, replaced by the no-shadow constant. naga validation
+        // below is the real guarantee that no code references the absent binding.
+        assert!(
+            !stripped.contains("CUBE_SHADOW_BODY_BEGIN")
+                && !stripped.contains("CUBE_SHADOW_BODY_END"),
+            "no-cube forward variant must consume the sample_point_shadow body markers"
+        );
+        // The supported variant keeps the declaration (sanity that the transform
+        // actually removed something).
+        assert!(SHADER_SOURCE.contains("var point_shadow_cube:"));
+
+        let module =
+            naga::front::wgsl::parse_str(&stripped).expect("no-cube forward variant must parse");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("no-cube forward variant must pass naga validation");
     }
 
     /// The depth pre-pass shader must parse as valid WGSL and declare

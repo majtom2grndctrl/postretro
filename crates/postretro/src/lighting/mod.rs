@@ -44,7 +44,7 @@ pub const CUBE_SLOT_BYTE_OFFSET: usize = 60;
 
 /// Whether a runtime light renders animated ENTITY meshes as occluders into its
 /// shadow slot. The single shared predicate for the entity-occluder gate, called
-/// by the spot path (now) and the future cube path (Task 5).
+/// called by both the spot path and the cube (point-light) path.
 ///
 /// This is the SECOND of two separate gates (see
 /// `context/lib/rendering_pipeline.md` §7.1): pool-*slot* eligibility (does the

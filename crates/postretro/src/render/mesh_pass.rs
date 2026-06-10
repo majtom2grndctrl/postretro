@@ -124,8 +124,8 @@ pub struct MeshPass {
 
     /// Depth-only skinned pipeline (shadow occluders). Skins vertices with the
     /// same `skin_matrix` kernel and projects by a per-render light-space matrix
-    /// (group 0) supplied by the caller — one pipeline for spot slots now and
-    /// cube faces later. Shares group 3 (palette + instances) with `pipeline`,
+    /// (group 0) supplied by the caller — one pipeline for both spot slots and
+    /// cube faces. Shares group 3 (palette + instances) with `pipeline`,
     /// so it reads the SAME per-frame posed buffers with no extra upload.
     depth_pipeline: wgpu::RenderPipeline,
 

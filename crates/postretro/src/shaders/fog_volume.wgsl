@@ -84,7 +84,13 @@ struct LightSpaceMatrices {
 // beam-scattering extension would read it). Declared but unreferenced bindings
 // are valid — wgpu only rejects a shader that references a binding absent from
 // the BGL, not a BGL entry the shader omits.
-@group(5) @binding(5) var point_shadow_cube: texture_depth_cube_array;
+//
+// The `// CUBE_SHADOW_BINDING` tag marks this line for the no-cube variant: on an
+// adapter without `CUBE_ARRAY_TEXTURES` the renderer strips it so the shared
+// group-5 BGL can omit binding 5. Fog never references the binding, so stripping
+// the declaration alone suffices (no body to neutralize). See
+// `render::strip_point_shadow_cube`.
+@group(5) @binding(5) var point_shadow_cube: texture_depth_cube_array; // CUBE_SHADOW_BINDING
 
 // Maximum number of fog volumes the shader can process per frame.
 // Must match MAX_FOG_VOLUMES in the Rust fog_volume module.

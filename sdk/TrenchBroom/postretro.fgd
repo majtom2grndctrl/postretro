@@ -174,7 +174,6 @@
 // occluders on top of that world shadow. Dynamic-only KVPs for light movement
 // are deferred until that feature lands. The parser sets is_dynamic = true from
 // the CLASSNAME, not a KVP.
-// See context/plans/in-progress/sdf-per-light-shadows/.
 @BaseClass = DynamicLight
 [
     light(integer) : "Intensity" : 300

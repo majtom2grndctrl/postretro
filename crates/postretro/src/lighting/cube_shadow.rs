@@ -2,6 +2,11 @@
 // depth, ranked into a fixed-capacity cube-array. Entity occluders ONLY in v1
 // (no world geometry rendered into cube faces).
 //
+// WHY entity-only v1: rendering world geometry into cube faces costs 6 face-passes
+// × world-BVH traversal depth per point light — prohibitive at the budget. Entity
+// occluders alone deliver the visible impact (monsters/movers self- and
+// cross-shadowing under a point light) at a predictable, far smaller cost.
+//
 // See: context/lib/rendering_pipeline.md §7.1 (shadow passes), §4 (lighting)
 
 use crate::lighting::spot_shadow::{SHADOW_DEPTH_FORMAT, assign_ranked_slots};
@@ -37,8 +42,8 @@ pub const CUBE_FACES: usize = 6;
 
 /// The 6 cube-face directions in the canonical wgpu/D3D cube-map face order:
 /// +X, -X, +Y, -Y, +Z, -Z. A sampling layer index `slot*6 + face` follows this
-/// order so the forward sample path (Task 5) can map a world direction to a face
-/// with the standard major-axis selection.
+/// order so the forward sample path maps a world direction to a face with the
+/// standard major-axis selection.
 const CUBE_FACE_DIRS: [Vec3; CUBE_FACES] = [
     Vec3::new(1.0, 0.0, 0.0),  // +X
     Vec3::new(-1.0, 0.0, 0.0), // -X
@@ -149,7 +154,7 @@ pub fn rank_point_lights(
 
 /// Renderer-owned cube-array point-shadow pool. A single `Depth32Float`
 /// cube-array texture allocated once, with:
-///   * one `CubeArray` view for the forward sample path (Task 5 binds it),
+///   * one `CubeArray` view bound into the forward pass's group-5 sample path,
 ///   * per-face `D2Array` render views at `baseArrayLayer = slot*6 + face`.
 ///
 /// Disabled (constructed via [`CubeShadowPool::new`] returning `None`) when the
@@ -255,37 +260,6 @@ impl CubeShadowPool {
 /// iff the adapter reports `CUBE_ARRAY_TEXTURES`.
 pub fn cube_pool_enabled(cube_array_supported: bool) -> bool {
     cube_array_supported
-}
-
-/// Minimal 1-slot (6-layer) cube-array depth view backing the forward group-5
-/// cube binding when the ranking pool is absent (no dynamic point lights ranked,
-/// or the pool is otherwise disabled). The forward shader gates every cube
-/// sample on a per-light cube slot (sentinel `NO_SHADOW_SLOT`), so a bound dummy
-/// is never sampled — it only satisfies the static BGL layout. Like the real
-/// pool, this needs `CUBE_ARRAY_TEXTURES`; the renderer creates it on the same
-/// adapter-capability gate.
-pub fn dummy_cube_sampling_view(device: &wgpu::Device) -> wgpu::TextureView {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("Cube Shadow Dummy"),
-        size: wgpu::Extent3d {
-            width: 1,
-            height: 1,
-            depth_or_array_layers: CUBE_FACES as u32,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: SHADOW_DEPTH_FORMAT,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
-    });
-    texture.create_view(&wgpu::TextureViewDescriptor {
-        label: Some("Cube Shadow Dummy View"),
-        dimension: Some(wgpu::TextureViewDimension::CubeArray),
-        base_array_layer: 0,
-        array_layer_count: Some(CUBE_FACES as u32),
-        ..Default::default()
-    })
 }
 
 #[cfg(test)]
@@ -546,15 +520,26 @@ mod tests {
             "forward.wgsl CUBE_NEAR_CLIP must match cube_shadow::CUBE_NEAR_CLIP"
         );
 
-        // The PCF tap spacing divides by the cube face resolution (512.0). If the
-        // resolution changes, the WGSL literal must follow.
+        // The PCF tap spacing divides by the named `CUBE_FACE_RESOLUTION` const,
+        // which must equal the Rust `CUBE_FACE_RESOLUTION`. Pin the WGSL const's
+        // value so the two cannot drift, and confirm the tap spacing actually uses
+        // the named const (not a re-introduced bare literal).
+        let res_marker = "const CUBE_FACE_RESOLUTION: f32 = ";
+        let res = FORWARD_SRC
+            .find(res_marker)
+            .map(|i| i + res_marker.len())
+            .and_then(|start| {
+                let end = FORWARD_SRC[start..].find(';')? + start;
+                FORWARD_SRC[start..end].trim().parse::<f32>().ok()
+            })
+            .expect("forward.wgsl must declare CUBE_FACE_RESOLUTION");
         assert_eq!(
-            CUBE_FACE_RESOLUTION, 512,
-            "forward.wgsl PCF spacing hard-codes 512.0; update it if the resolution changes"
+            res, CUBE_FACE_RESOLUTION as f32,
+            "forward.wgsl CUBE_FACE_RESOLUTION must match cube_shadow::CUBE_FACE_RESOLUTION"
         );
         assert!(
-            FORWARD_SRC.contains("/ 512.0)"),
-            "forward.wgsl must scale the PCF tap by the cube face resolution (512.0)"
+            FORWARD_SRC.contains("/ CUBE_FACE_RESOLUTION)"),
+            "forward.wgsl must scale the PCF tap by the named CUBE_FACE_RESOLUTION const"
         );
     }
 }

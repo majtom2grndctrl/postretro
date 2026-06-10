@@ -262,7 +262,13 @@ struct LightSpaceMatrices {
 // comparison sampler — the cube path reuses it). Bound but NOT sampled by the
 // fog volume pass (shared group-5 BGL stays layout-identical). See
 // `lighting/cube_shadow.rs` and context/lib/rendering_pipeline.md §7.1.
-@group(5) @binding(5) var point_shadow_cube: texture_depth_cube_array;
+//
+// The `// CUBE_SHADOW_BINDING` tag marks this line for the no-cube shader
+// variant: on an adapter without `CUBE_ARRAY_TEXTURES` the renderer strips this
+// declaration (and neutralizes `sample_point_shadow` via the body markers below)
+// before pipeline creation, so the shared group-5 BGL can omit binding 5. See
+// `render::strip_point_shadow_cube`.
+@group(5) @binding(5) var point_shadow_cube: texture_depth_cube_array; // CUBE_SHADOW_BINDING
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -474,12 +480,22 @@ fn sample_spot_shadow(slot_index: u32, world_pos: vec3<f32>, light_proj: mat4x4<
 // the same value to compare against the stored depth.
 const CUBE_NEAR_CLIP: f32 = 0.1;
 
+// Per-side resolution of each cube face, mirroring `CUBE_FACE_RESOLUTION` in
+// `lighting/cube_shadow.rs` (pinned by `forward_cube_sampling_constants_match_pool`).
+// Drives the PCF tap spacing below: one cube-face texel subtends `90° / this`.
+const CUBE_FACE_RESOLUTION: f32 = 512.0;
+
 // Per-face depth bias for the POINT cube path, in world units (subtracted from
 // the light→fragment distance BEFORE projecting to NDC). Tuned SEPARATELY from
-// the spot path's depth bias (which rides the spot depth pipeline's
-// `DepthBiasState`): cube faces are 512² (vs spot 1024²) and a perspective-depth
-// comparison's acne is worst near the far plane, so the acne/peter-panning
-// trade-off is its own knob. NOT a generalization of the spot bias.
+// the spot path's depth bias: the spot path applies its bias as the skinned-depth
+// pipeline's hardware `DepthBiasState` (a slope/constant offset baked into the
+// stored occluder depth at the depth-write stage), while this is a receiver-side
+// world-unit offset applied here at sample time. The two act at DIFFERENT
+// pipeline stages on DIFFERENT values, so they never double-count on one
+// fragment. (The cube depth pass also carries the same hardware `DepthBiasState`
+// on its entity occluders; this receiver-side bias is added on top, by design —
+// cube faces are 512² vs spot 1024² and perspective-depth acne is worst near the
+// far plane, so the acne/peter-panning trade-off needs its own knob.)
 const POINT_SHADOW_DEPTH_BIAS: f32 = 0.08;
 
 // Project a light-local linear depth (distance along the dominant cube-face
@@ -510,6 +526,10 @@ fn sample_point_shadow(
     world_pos: vec3<f32>,
     far_range: f32,
 ) -> f32 {
+    // CUBE_SHADOW_BODY_BEGIN — on a no-`CUBE_ARRAY_TEXTURES` adapter the renderer
+    // replaces everything up to CUBE_SHADOW_BODY_END with `return 1.0;`, so this
+    // function references no `point_shadow_cube` binding (which is stripped). The
+    // point-light call site is still compiled but always reads "unshadowed".
     let to_frag = world_pos - light_pos;
     let dist = length(to_frag);
     // The depth pass clamps the far plane to >= 0.5 (`falloff_range.max(0.5)`);
@@ -539,7 +559,7 @@ fn sample_point_shadow(
     // Angular tap spacing: scale `SPOT_SHADOW_PCF_RADIUS` by one cube-face texel
     // angle (face FOV 90° over the face resolution) so the shared radius reads as
     // "texels" on the cube faces too.
-    let texel_angle = SPOT_SHADOW_PCF_RADIUS * (1.5707963 / 512.0);
+    let texel_angle = SPOT_SHADOW_PCF_RADIUS * (1.5707963 / CUBE_FACE_RESOLUTION);
 
     var lit = 0.0;
     for (var dy = -1; dy <= 1; dy = dy + 1) {
@@ -556,6 +576,7 @@ fn sample_point_shadow(
         }
     }
     return lit / 9.0;
+    // CUBE_SHADOW_BODY_END
 }
 
 // The depth-aware octahedral irradiance sampler lives in `sh_sample.wgsl`,

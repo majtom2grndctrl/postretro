@@ -9,7 +9,8 @@
 //
 // The light-space matrix is a PER-RENDER parameter (group 0), so one pipeline
 // serves both spot slots (the existing per-slot `shadow_vs_bind_group` +
-// dynamic offset) and, later, cube faces (a per-face uniform). Nothing here
+// dynamic offset) and cube faces (per-face dynamic offset into the cube shadow
+// VS uniform buffer). Nothing here
 // assumes a 2D target or one slot per light — the target view + matrix are
 // supplied by the orchestration per render.
 //

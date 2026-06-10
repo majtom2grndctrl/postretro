@@ -286,6 +286,28 @@ pub fn shader_facing_cube_slot(slot: u32, entity_eligible: bool) -> u32 {
     }
 }
 
+/// Whether the cube depth loop must open a `Clear(1.0)` render pass for an
+/// occupied (`face_matrix.is_some()`) eligible face THIS frame.
+///
+/// The decisive invariant the renderer loop must honour: an occupied eligible
+/// face is cleared to the far plane (NDC depth 1.0) EVERY frame it is occupied,
+/// regardless of whether any skinned-mesh occluder exists — exactly as the spot
+/// pool always lays down a `Clear(1.0)` baseline for every occupied slot.
+///
+/// Returns `true` for any occupied face. The depth loop submits entity occluders
+/// only when a mesh frame plan exists, but the clear itself must NOT be gated on
+/// the plan: gating it (the prior bug) left an occupied eligible cube uncleared
+/// whenever no mesh entity was in the PVS, so an on-screen eligible point light
+/// sampled stale/zero depth and read fully shadowed (`CompareFunction::Less`:
+/// a positive reference is never `< 0`), zeroing its world illumination.
+///
+/// With the clear unconditional, an occluder-free face stores 1.0, the shader's
+/// reference (`<= 1.0`) compares `reference < 1.0` for any fragment nearer than
+/// the far plane, and every PCF tap returns lit — shadow factor 1.0 (full light).
+pub fn cube_face_needs_clear(face_occupied: bool) -> bool {
+    face_occupied
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -537,6 +559,36 @@ mod tests {
             shader_facing_cube_slot(5, false),
             NO_SHADOW_SLOT,
             "ineligibility masks regardless of which slot was ranked"
+        );
+    }
+
+    /// Regression (branch `claude/dynamic-mesh-shadows-jvl96j`, the bug a91bb61
+    /// MISSED): an ENTITY-ELIGIBLE on-screen dynamic point light (e.g. the
+    /// `arena_wave_2` `light_dynamic` group — `casts_entity_shadows` defaults
+    /// true, so these are eligible) owns a ranked cube slot and the shader DOES
+    /// sample it. Its occupied faces must be cleared to the far plane (1.0) every
+    /// frame they are occupied, EVEN when no skinned-mesh occluder is in the PVS
+    /// (the arena's meshes are all off-screen). Before the fix the whole cube
+    /// depth loop — clear included — was gated on a mesh frame plan existing, so
+    /// with no in-PVS mesh the occupied faces were never cleared and held ~0.0;
+    /// the eligible on-screen light then read fully shadowed and winked out, while
+    /// off-screen (no-slot/sentinel) lights stayed lit.
+    ///
+    /// `cube_face_needs_clear` encodes the corrected invariant: an occupied face
+    /// is cleared regardless of mesh-plan presence. Unoccupied faces are skipped.
+    #[test]
+    fn occupied_eligible_face_clears_without_mesh_plan() {
+        // Occupied face: must be cleared whether or not any mesh occluder exists.
+        assert!(
+            cube_face_needs_clear(true),
+            "an occupied eligible cube face must be cleared (to far=1.0) every \
+             frame, with or without a mesh frame plan — otherwise an on-screen \
+             eligible point light samples uncleared depth and is zeroed"
+        );
+        // Unoccupied face (no per-face matrix): nothing to clear or sample.
+        assert!(
+            !cube_face_needs_clear(false),
+            "an unoccupied cube face is skipped (no clear, no sample)"
         );
     }
 

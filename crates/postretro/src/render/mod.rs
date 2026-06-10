@@ -4747,7 +4747,7 @@ impl Renderer {
             // Bound text/panel nodes resolve against the snapshot's slot values
             // (disjoint field borrow from `&mut self.ui`). The cloned `tree`
             // above already released the snapshot, so this borrow is clean.
-            let draw = self.ui.layout_tree(
+            let draw = self.ui.layout_gameplay_tree(
                 &tree,
                 ui_viewport,
                 &ui::tree::ImageSizes::new(),

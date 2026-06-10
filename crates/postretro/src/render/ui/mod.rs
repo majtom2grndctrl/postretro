@@ -342,6 +342,26 @@ pub(crate) struct UiPass {
     /// glyphon shaped-text half of the pass. Owns its own pipeline/atlas; its
     /// draw records into this same render pass, after the quads. See `text`.
     text: UiTextRenderer,
+
+    /// The retained gameplay tree, held across frames so the dirty-gate and the
+    /// bound-value diff actually pay off (a fresh tree is always dirty). `None`
+    /// until the first gameplay frame installs one. The splash deliberately does
+    /// NOT use this — it stays on the stateless `layout_tree` fresh-build path.
+    gameplay_tree: Option<RetainedGameplayTree>,
+}
+
+/// One retained gameplay UI tree plus the descriptor it was built from. The
+/// descriptor is kept so the next frame can detect a structural change (the
+/// snapshot delivered a different tree) by `!=` comparison — `AnchoredTree`
+/// derives `PartialEq` — and rebuild only then. The cached draw list lives inside
+/// the `UiTree` itself (see `UiTree::cached_draw_data`).
+struct RetainedGameplayTree {
+    /// The descriptor the retained `tree` was built from. Compared against the
+    /// incoming descriptor each frame; a difference forces a rebuild.
+    descriptor: descriptor::AnchoredTree,
+    /// The retained taffy-backed tree, carrying its layout cache, last viewport,
+    /// per-bound-node last-resolved values, and cached draw list across frames.
+    tree: tree::UiTree,
 }
 
 /// One instanced draw: a draw list plus the bind group for its bound texture.
@@ -539,6 +559,7 @@ impl UiPass {
             white_view,
             white_bind_group,
             text,
+            gameplay_tree: None,
         }
     }
 
@@ -607,6 +628,54 @@ impl UiPass {
     ) -> tree::UiDrawData {
         let mut ui_tree = tree::UiTree::from_descriptor(tree);
         ui_tree.build_draw_data(
+            viewport,
+            self.text.font_system_mut(),
+            image_sizes,
+            slot_values,
+        )
+    }
+
+    /// Lay out the gameplay descriptor tree through the RETAINED `UiTree` held on
+    /// the pass, so layout and the draw list only rebuild when their inputs change
+    /// across frames (the runtime perf win this task delivers).
+    ///
+    /// Reuse vs rebuild: the retained tree is reused while the incoming
+    /// `descriptor` equals the one it was built from. A different descriptor (the
+    /// snapshot delivered a structurally new tree) rebuilds it from scratch via
+    /// `UiTree::from_descriptor`. Once reused, `build_draw_data_retained` runs the
+    /// subscriber-aware bound-value diff and the relayout/redraw split:
+    /// - an appearance-only bound change (the panel flash color) rebuilds the
+    ///   draw list WITHOUT a taffy relayout,
+    /// - a bound text-content change re-measures and relays out,
+    /// - a no-change frame returns the cached draw list and recomputes nothing.
+    ///
+    /// The splash stays on `layout_tree` (fresh build per frame) — it is transient
+    /// and carries no bindings, so retaining it would only add bookkeeping.
+    pub fn layout_gameplay_tree(
+        &mut self,
+        tree: &descriptor::AnchoredTree,
+        viewport: [u32; 2],
+        image_sizes: &tree::ImageSizes,
+        slot_values: &std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
+    ) -> tree::UiDrawData {
+        // Rebuild the retained tree when there is none yet, or when the incoming
+        // descriptor differs from the one it was built from (a structural change).
+        let needs_build = match &self.gameplay_tree {
+            Some(retained) => retained.descriptor != *tree,
+            None => true,
+        };
+        if needs_build {
+            self.gameplay_tree = Some(RetainedGameplayTree {
+                descriptor: tree.clone(),
+                tree: tree::UiTree::from_descriptor(tree),
+            });
+        }
+
+        let retained = self
+            .gameplay_tree
+            .as_mut()
+            .expect("retained gameplay tree set above");
+        retained.tree.build_draw_data_retained(
             viewport,
             self.text.font_system_mut(),
             image_sizes,

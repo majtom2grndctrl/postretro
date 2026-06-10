@@ -1393,10 +1393,17 @@ impl ApplicationHandler for App {
 
                         // Publish the once-per-frame read snapshot just before
                         // the gameplay render call, mirroring the splash path so
-                        // the once-per-frame contract holds on both. Plumbing-only
-                        // in Goal A: the gameplay UI draw list is empty and the
-                        // snapshot has no consumer until B/BIS.
-                        renderer.set_ui_snapshot(render::ui::UiReadSnapshot::default());
+                        // the once-per-frame contract holds on both. Game logic and
+                        // audio have already run this frame, so the slot snapshot
+                        // freezes the settled store state (frame order: Input →
+                        // Game logic → Audio → Render). The renderer reads these
+                        // cloned values, never the live `SlotTable`. No gameplay UI
+                        // producer yet, so the tree-less default carries the map.
+                        let slot_values =
+                            Self::build_ui_slot_snapshot(&self.script_ctx.slot_table.borrow());
+                        renderer.set_ui_snapshot(
+                            render::ui::UiReadSnapshot::default().with_slot_values(slot_values),
+                        );
 
                         let surface_texture = match renderer.render_frame_indirect(
                             &visible_cells,
@@ -1869,6 +1876,28 @@ impl App {
         if let Some(ws) = self.window_state.as_ref() {
             ws.window.request_redraw();
         }
+    }
+
+    /// Snapshot the live slot table into a frozen dotted-name → value map for the
+    /// frame's UI read snapshot. Cloning here decouples the renderer from the live
+    /// `SlotTable`: game logic mutates the store, the renderer reads this copy, so
+    /// the renderer never borrows engine-side state (renderer/game-logic boundary).
+    /// Built once per frame after game logic and before render. Slots without a
+    /// current value are skipped, so every entry carries a resolved value.
+    ///
+    /// Takes the table directly rather than `&self`: the call site holds a mutable
+    /// borrow of `self.renderer`, and a `&self` receiver here would conflict with
+    /// it. Borrowing only `self.script_ctx.slot_table` keeps the two field borrows
+    /// disjoint.
+    fn build_ui_slot_snapshot(
+        slot_table: &scripting::slot_table::SlotTable,
+    ) -> std::collections::HashMap<String, scripting::slot_table::SlotValue> {
+        slot_table
+            .iter()
+            .filter_map(|(name, record)| {
+                record.value.clone().map(|value| (name.to_string(), value))
+            })
+            .collect()
     }
 
     /// Install a delivered level payload on the main thread: GPU texture
@@ -2800,6 +2829,38 @@ mod tests {
         assert!(
             crate::model::gltf_loader::load_model(bad).is_err(),
             "loading a missing glTF must return Err, never panic",
+        );
+    }
+
+    // --- build_ui_slot_snapshot (state-store → UI read-snapshot boundary) ---
+
+    #[test]
+    fn ui_slot_snapshot_clones_present_values_and_skips_valueless_slots() {
+        use crate::scripting::slot_table::SlotValue;
+
+        // The default table carries engine `player.*` slots with `None` values.
+        // Setting one slot is enough to assert the boundary contract: the
+        // snapshot clones value-bearing slots and omits value-less ones, so the
+        // renderer reads a present key only when it carries a resolved value.
+        let mut table = crate::scripting::slot_table::SlotTable::new();
+        table
+            .get_mut("player.health")
+            .expect("default table declares player.health")
+            .value = Some(SlotValue::Number(75.0));
+
+        let snapshot = App::build_ui_slot_snapshot(&table);
+
+        assert_eq!(
+            snapshot.get("player.health"),
+            Some(&SlotValue::Number(75.0)),
+            "value-bearing slot is cloned into the snapshot",
+        );
+        // Every other default slot starts value-less and must be excluded, so
+        // the only present key is the one we set.
+        assert_eq!(
+            snapshot.len(),
+            1,
+            "value-less slots are skipped; only the set slot appears",
         );
     }
 }

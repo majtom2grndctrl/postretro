@@ -154,7 +154,8 @@ fn snapshot_carries_gameplay_tree_as_the_content_contract() {
     let default = UiReadSnapshot::default();
     assert!(default.gameplay_tree.is_none(), "default carries no tree");
 
-    let snapshot = UiReadSnapshot::with_gameplay_tree(composite_fixture());
+    let snapshot =
+        UiReadSnapshot::with_gameplay_tree(composite_fixture(), std::collections::HashMap::new());
     let tree = snapshot
         .gameplay_tree
         .as_ref()

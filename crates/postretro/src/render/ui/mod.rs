@@ -190,6 +190,14 @@ impl UiDrawList {
 /// renderer-owns-GPU); the snapshot carries the descriptor, never laid-out rects.
 /// `version_line` stays for the splash path, whose tree the renderer assembles
 /// from this line plus the renderer-owned logo binding (see `record_splash_ui`).
+///
+/// Goal C adds `slot_values`: the frame's resolved state-store read snapshot.
+/// `App` builds it once per frame after game logic; later tasks resolve widget
+/// `bind` slots against it. It holds **cloned** values keyed by dotted name so
+/// the renderer never borrows the live `SlotTable` — preserving the
+/// renderer/game-logic boundary (the store mutates during game logic, the
+/// renderer reads a frozen copy). Value-less slots are omitted, so a present key
+/// always carries a resolved value.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct UiReadSnapshot {
     /// Version/tagline string the splash's shaped-text line renders. Read only on
@@ -201,25 +209,48 @@ pub(crate) struct UiReadSnapshot {
     /// has no gameplay UI producer yet; the field locks the content contract and
     /// the test gate feeds it a fixture tree.
     pub gameplay_tree: Option<descriptor::AnchoredTree>,
+    /// Resolved state-store values for this frame, keyed by dotted slot name.
+    /// Cloned out of the live `SlotTable` once per frame (see the type doc).
+    /// Only slots that currently hold a value appear; value-less slots are
+    /// skipped. Empty on the splash path.
+    pub slot_values: std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
 }
 
 impl UiReadSnapshot {
-    /// Snapshot carrying the splash version/tagline line (splash path).
+    /// Snapshot carrying the splash version/tagline line (splash path). The
+    /// slot-value map stays empty — the splash has no store-bound widgets.
     pub fn with_version_line(version_line: impl Into<String>) -> Self {
         Self {
             version_line: version_line.into(),
             gameplay_tree: None,
+            slot_values: std::collections::HashMap::new(),
         }
     }
 
-    /// Snapshot carrying a gameplay-path descriptor tree (the content side). The
-    /// renderer lays it out into the UI draw list.
+    /// Snapshot carrying a gameplay-path descriptor tree (the content side) plus
+    /// the frame's resolved slot-value snapshot. The renderer lays the tree out
+    /// into the UI draw list and resolves `bind` slots against `slot_values`.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn with_gameplay_tree(tree: descriptor::AnchoredTree) -> Self {
+    pub fn with_gameplay_tree(
+        tree: descriptor::AnchoredTree,
+        slot_values: std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
+    ) -> Self {
         Self {
             version_line: String::new(),
             gameplay_tree: Some(tree),
+            slot_values,
         }
+    }
+
+    /// Attach the frame's resolved slot-value snapshot. Lets the gameplay path
+    /// build the snapshot from the tree-less default (no gameplay UI producer
+    /// yet) while still carrying slot values through the existing setter.
+    pub fn with_slot_values(
+        mut self,
+        slot_values: std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
+    ) -> Self {
+        self.slot_values = slot_values;
+        self
     }
 }
 

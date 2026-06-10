@@ -7,7 +7,7 @@
 
 ## Goal
 
-Dynamic-tier lights light the world and (after M10 shadow casting) receive entity shadows — but they do not light the entities themselves. A skinned mesh standing under a dynamic light reads flat: it is lit only by baked SH (indirect + static-direct atlas). Fill the mesh pipeline's reserved bind group 2 with the forward pass's runtime-light resources and evaluate the same per-fragment dynamic-light loop in the skinned-mesh shader, so dynamic light lands on meshes coherently with the surfaces around them.
+Dynamic-tier lights light the world and billboards, and (after M10 shadow casting) receive entity shadows — but they do not light skinned meshes. A mesh standing under a dynamic light reads flat: it is lit only by baked SH (indirect + static-direct atlas). Fill the mesh pipeline's reserved bind group 2 with the forward pass's runtime-light resources and evaluate the same per-fragment dynamic-light loop in the skinned-mesh shader, so dynamic light lands on meshes coherently with the surfaces around them.
 
 ## Prerequisites
 
@@ -27,7 +27,7 @@ Dynamic-tier lights light the world and (after M10 shadow casting) receive entit
 - **Shadow receipt.** The per-light shadow-slot index in the light record is ignored here (per-light visibility = 1.0). The sibling spec `M10--dynamic-mesh-shadow-receipt` adds shadow-map sampling on top of this loop.
 - **Static-tier light terms.** `spec_lights` / sdf diffuse and specular stay forward-only. Static direct for movers is owned exclusively by the baked direct SH atlas (`lighting--entity-direct-sh` D10) — this loop evaluates the `is_dynamic`-filtered light set ONLY.
 - **Specular / normal-mapped response on meshes.** The mesh path has neither specular maps nor normal maps; diffuse-only response against the vertex normal.
-- **Billboards.** `billboard.wgsl` stays SH-only; a billboard dynamic-direct term is a separate future task.
+- **Billboards.** `billboard.wgsl` already runs its own dynamic-direct diffuse loop with its own copies of `falloff` / `cone_attenuation`. No billboard changes here; consolidating those copies onto the Task 1 snippet is explicitly out of scope. Constraint: the snippet's helper names must not collide if it is ever appended to the billboard pipeline.
 - **Per-chunk light lists for meshes.** The world's chunk-grid light index is world-geometry-keyed; meshes use the flat loop + influence early-out (same as the world's fallback path). Revisit only against a measured cost at wave scale.
 
 ## Acceptance criteria
@@ -39,7 +39,7 @@ Dynamic-tier lights light the world and (after M10 shadow casting) receive entit
 - [ ] With zero dynamic lights in the level, mesh output is unchanged from pre-change rendering.
 - [ ] Forward-pass world rendering is byte-identical after the helper extraction (no behavior change to `forward.wgsl` output).
 - [ ] Lighting-isolation debug modes gate the mesh dynamic term exactly as they gate the world dynamic term.
-- [ ] Existing render tests pass; bind-group-layout assertions extended to cover mesh group 2.
+- [ ] Existing render tests pass; a mesh group-2 bind-group-layout assertion is added (none exists today — model it on the billboard pipeline's storage-count guard).
 
 ## Tasks
 
@@ -47,13 +47,13 @@ Dynamic-tier lights light the world and (after M10 shadow casting) receive entit
 Extract the per-light evaluation helpers from `forward.wgsl` — `falloff`, `cone_attenuation`, the scripted-descriptor evaluation (Catmull-Rom brightness/color/aim sampling, `scripted_light_intensity_scalar`) — into a binding-agnostic shared snippet appended at pipeline creation (the `sh_sample.wgsl` precedent). Helpers take buffer values as parameters or reference consumer-declared names; declare no bindings themselves. Forward.wgsl consumes the snippet; output byte-identical.
 
 ### Task 2: Mesh group 2 bind group
-Define the group-2 BGL + bind group in `render/mesh_pass.rs` and thread it through pipeline layout and per-frame binding. Entries: the renderer's existing dynamic-light storage buffer (the `is_dynamic`-filtered set), the influence-volume buffer, the scripted-descriptor + animation-sample buffers, and a new small uniform (light count, time, dynamic-direct debug gate). The renderer owns the buffers already — this task adds only the mesh-side layout, bind group creation, and per-frame rebind on buffer reallocation.
+Define the group-2 BGL + bind group in `render/mesh_pass.rs` and thread it through pipeline layout and per-frame binding. Entries: the renderer's existing dynamic-light storage buffer (the `is_dynamic`-filtered set), the influence-volume buffer, the scripted-descriptor + animation-sample buffers, and a new small uniform (light count, time, dynamic-direct debug gate). Pin: the uniform's `time` is written from the same render-clock value the renderer uploads to forward `Uniforms.time` that frame — phase coherence of animated curves depends on it. The renderer owns the buffers already — this task adds only the mesh-side layout, bind group creation, and per-frame rebind on buffer reallocation. Also append `curve_eval.wgsl` to the skinned-mesh shader source (`SKINNED_MESH_SHADER_SOURCE` currently excludes it with a "mesh never evaluates animated layers" comment — that comment becomes false here; update it): the Catmull-Rom samplers the scripted evaluation calls live there, not in `forward.wgsl`.
 
 ### Task 3: Mesh shader loop
 Add the dynamic-light loop to `skinned_mesh.wgsl`'s fragment stage using the Task 1 helpers and Task 2 bindings: influence early-out, type dispatch, scripted animation, Lambert against the interpolated normal, per-light visibility hardwired 1.0 (the receipt spec replaces this). Sum into the existing `indirect + direct` composition before the albedo multiply.
 
 ### Task 4: Debug gating + tests
-Wire the isolation gating through the group-2 uniform; extend bind-group/layout tests; add the static-light no-change and zero-light no-change checks; visual pass on a dev map with animated lights.
+Wire the isolation gating through the group-2 uniform; add the mesh group-2 BGL assertion test; add the static-light no-change and zero-light no-change checks; visual pass on a dev map with animated lights.
 
 ## Sequencing
 
@@ -64,12 +64,11 @@ Wire the isolation gating through the group-2 uniform; extend bind-group/layout 
 
 ## Rough sketch
 
-- Light record: `GpuLight` (4×vec4; type in `position_and_type.w`, falloff model in `color_and_falloff_model.w`, shadow slot in `cone_angles_and_pad.z` — ignored in this spec). Rust packing: `lighting/mod.rs` `pack_light_with_slot`.
+- Light record: `GpuLight` (4×vec4; type in `position_and_type.w`, falloff model in `color_and_falloff_model.w`, spot shadow slot in `cone_angles_and_pad.z` — ignored in this spec; `.w` reserved, becomes the cube shadow slot once `M10--dynamic-mesh-shadows` merges). Rust packing: `lighting/mod.rs` `pack_light_with_slot`.
 - The forward set is built from level lights filtered by `is_dynamic` (`render/mod.rs` ~4954) — binding the same buffer is what makes the D10 tier split hold by construction. Do NOT bind the shadow-candidate set (`is_dynamic || casts_entity_shadows`-filtered) — that set exists for pool assignment, not for lighting.
 - Forward loop being mirrored: `forward.wgsl` ~912–1020. Scripted descriptors: `scripted_light_descriptors` (forward group 3 b13) + Catmull-Rom sample buffer; evaluation ~932–979.
-- Mesh group-2 binding plan (suggested, settle at implementation): b0 lights, b1 influence, b2 descriptors, b3 anim samples, b4 params uniform. Group indices 0/1/3/4 are pinned by `rendering_pipeline.md` §9 — only group 2 is free.
+- Mesh group-2 binding map (PINNED across both specs — the receipt spec extends this layout, not the params uniform): this spec owns b0 lights, b1 influence, b2 descriptors, b3 anim samples, b4 params uniform; b5–b8 are reserved for the receipt spec's shadow entries (spot depth array, comparison sampler, light-space matrices, conditional cube array). Group indices 0/1/3/4 are pinned by `rendering_pipeline.md` §9 — only group 2 is free.
 - Mesh fragment normal: interpolated skinned normal (`skinned_mesh.wgsl` vertex output); no `N_bump` on this path.
-- Reserve room in the params uniform (or document the seam) for the receipt spec's needs — it adds shadow resources, not loop changes.
 
 ## Open questions
 

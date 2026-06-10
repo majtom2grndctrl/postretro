@@ -47,7 +47,7 @@ M10 shadow casting made entities throw shadows; the direct-lighting sibling make
 Extract `sample_spot_shadow`, `sample_point_shadow`, and their helpers (PCF kernels, `cube_face_ndc_depth`, bias constants) from `forward.wgsl` into a shared snippet appended at pipeline creation; consumers declare the depth textures / sampler / matrices buffer at their own (group, binding) before the snippet (the `sh_sample.wgsl` precedent). Forward consumes it; output byte-identical.
 
 ### Task 2: Mesh shadow bindings
-Extend the mesh group-2 BGL + bind group with spot depth array, comparison sampler, light-space matrices, and the conditional cube-array entry; plumb adapter capability through mesh pipeline creation the way forward does (shader-variant gate on the cube binding). Renderer rebinds when pool textures are recreated.
+Extend the mesh group-2 BGL + bind group with spot depth array, comparison sampler, light-space matrices (uniform, not storage — see sketch), and the conditional cube-array entry at the binding slots the sibling spec reserves (b5–b8); plumb adapter capability through mesh pipeline creation via the same `strip_point_shadow_cube` marker mechanism forward uses. Renderer rebinds when pool textures are recreated.
 
 ### Task 3: Attenuate the mesh loop
 In `skinned_mesh.wgsl`'s dynamic-light loop, read both slot fields from the light record, sample via the Task 1 helpers, multiply into per-light attenuation — replacing the sibling spec's hardwired 1.0. Sentinel and bounds behavior identical to forward.
@@ -67,9 +67,10 @@ Visual pass for self-shadow acne on skinned models (tune bias / normal-offset as
 (Anchors from `origin/claude/dynamic-mesh-shadows-jvl96j`.)
 
 - Light record slots: `GpuLight.cone_angles_and_pad.z` = spot slot, `.w` = cube slot; sentinel `NO_SHADOW_SLOT = 0xFFFFFFFF` (`lighting/spot_shadow.rs`).
-- Pools: spot `SHADOW_POOL_SIZE = 96`, 1024² `Depth32Float` 2D-array; cube `CUBE_COUNT = 6` × 6 faces at 512², sampled as `texture_depth_cube_array`; shared `compare_sampler`.
-- Forward sampling today: group 5 — b0 spot depth array, b1 comparison sampler, b2 `light_space_matrices: array<mat4x4<f32>, 96>`, b5 cube array (conditional, `CUBE_SHADOW_BINDING` guard). PCF: `SPOT_SHADOW_PCF_RADIUS = 1.0`, 9 taps both paths; point bias `POINT_SHADOW_DEPTH_BIAS = 0.08`.
-- Mesh bindings ride group 2 (mesh-specific layout over the same resources) rather than importing forward's group-5 BGL — that layout carries SDF factor + scene depth entries the mesh shader must not sample.
+- Pools: spot `SHADOW_POOL_SIZE = 96` slots, 1024² `Depth32Float` 2D-array; cube `CUBE_COUNT = 6` slots × `CUBE_FACES = 6` faces at `CUBE_FACE_RESOLUTION = 512`, sampled as `texture_depth_cube_array`; shared `compare_sampler`. Cube projection constants the mesh sampler must reproduce: `CUBE_NEAR_CLIP = 0.1`, far = `falloff_range.max(0.5)`.
+- Forward sampling today: group 5 — b0 spot depth array, b1 comparison sampler, b2 `light_space_matrices` as `var<uniform> LightSpaceMatrices { m: array<mat4x4<f32>, 96> }` (a UNIFORM, deliberately not a storage buffer — stays under `max_storage_buffers_per_shader_stage` (default 8); the mesh declaration must do the same), b5 cube array (conditional). PCF: `SPOT_SHADOW_PCF_RADIUS = 1.0`, 9 taps both paths; point bias `POINT_SHADOW_DEPTH_BIAS = 0.08`.
+- No-cube gating mechanism (mirror it exactly): `render::strip_point_shadow_cube` text-strips the `// CUBE_SHADOW_BINDING`-tagged declaration and replaces the `sample_point_shadow` body between the `CUBE_SHADOW_BODY_BEGIN`/`CUBE_SHADOW_BODY_END` markers with `return 1.0;`. The Task 1 shared snippet must preserve these markers, and the mesh pipeline applies the same strip on no-cube adapters.
+- Mesh bindings ride group 2 at the slots the sibling spec reserves (b5 spot depth array, b6 comparison sampler, b7 light-space matrices, b8 conditional cube array — a mesh-specific layout over the same resources) rather than importing forward's group-5 BGL — that layout carries SDF factor + scene depth entries the mesh shader must not sample.
 - Self-shadow note: the receiving fragment's own depth is in the map (entity occluders render via `record_skinned_depth`). Spot path has no slope-scale bias today; if acne appears on curved skinned surfaces, prefer a sample-site normal-offset (world-space, normal-scaled) over raising the global bias, to avoid peter-panning the world's shadows.
 
 ## Open questions

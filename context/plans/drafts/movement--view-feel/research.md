@@ -44,4 +44,4 @@ For this engine: the *author* surface (descriptor) sets per-class feel and can d
 
 ## Why render-rate, not tick-rate
 
-Existing pattern (`frame_timing.rs`, `main.rs:848-856`): camera *position* is tick-state interpolated; yaw/pitch are applied render-rate so mouse motion is never lost on zero-tick frames. View feel is most naturally render-rate too — spring and phase advance by `frame_dt`, reading the pawn's latest velocity as an input. This keeps the tick state minimal (no bob/roll added to `InterpolableState`/`push_state`) and matches how look angles are already handled.
+Existing pattern (`frame_timing.rs`, `main.rs:1143-1151`): camera *position* is tick-state interpolated; yaw/pitch are applied render-rate so mouse motion is never lost on zero-tick frames. View feel is most naturally render-rate too — spring and phase advance by `frame_dt`, reading the pawn's latest velocity as an input. This keeps the tick state minimal (no bob/roll added to `InterpolableState`/`push_state`) and matches how look angles are already handled.

@@ -223,7 +223,10 @@ mod tests {
         // wire form, merges into the resolved theme, and is retrievable.
         let json = r#"{"colors":{"cyan.500":[0.1,0.55,0.62,1.0]}}"#;
         let desc: ThemeDescriptor = serde_json::from_str(json).expect("must deserialize");
-        assert!(colors_close(desc.colors["cyan.500"], [0.1, 0.55, 0.62, 1.0]));
+        assert!(colors_close(
+            desc.colors["cyan.500"],
+            [0.1, 0.55, 0.62, 1.0]
+        ));
 
         let merged = UiTheme::engine_default().with_override(&desc);
         // The extra token is retrievable...

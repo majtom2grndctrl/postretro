@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, Once};
 
 use super::descriptor::{
-    AnchoredTree, Align, ColorValue, ContainerWidget, SpacingValue, TextWidget, Widget,
+    Align, AnchoredTree, ColorValue, ContainerWidget, SpacingValue, TextWidget, Widget,
 };
 use super::layout::Anchor;
 use super::theme::{ThemeDescriptor, UiTheme};
@@ -117,7 +117,9 @@ fn srgb_of(linear: [f32; 4]) -> [u8; 4] {
     };
     let mut ui = UiTree::from_descriptor(&tree, &UiTheme::engine_default());
     let mut fs = font_system();
-    ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots()).texts[0].color
+    ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots())
+        .texts[0]
+        .color
 }
 
 #[test]

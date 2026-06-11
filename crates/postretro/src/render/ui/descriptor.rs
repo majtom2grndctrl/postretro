@@ -386,8 +386,7 @@ mod tests {
     fn text_font_token_round_trips_and_absent_font_omits_the_field() {
         // A `font` token round-trips byte-identically; an absent font omits the key
         // entirely (skip_serializing_if), so pre-theming fontless text is unchanged.
-        let with_font =
-            r#"{"kind":"text","content":"x","fontSize":12.0,"color":[1.0,1.0,1.0,1.0],"font":"mono"}"#;
+        let with_font = r#"{"kind":"text","content":"x","fontSize":12.0,"color":[1.0,1.0,1.0,1.0],"font":"mono"}"#;
         let widget: Widget = serde_json::from_str(with_font).expect("must deserialize");
         assert_eq!(serde_json::to_string(&widget).unwrap(), with_font);
 

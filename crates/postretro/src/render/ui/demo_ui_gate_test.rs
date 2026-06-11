@@ -340,7 +340,9 @@ fn demo_hud_text_resolves_the_ok_token_color() {
     // `player.health` run carries the `ok` token's RGBA (sRGB-encoded), and that
     // color differs from the pre-token literal the demo used to carry.
     let theme = UiTheme::engine_default();
-    let ok = theme.color("ok").expect("engine default has the `ok` token");
+    let ok = theme
+        .color("ok")
+        .expect("engine default has the `ok` token");
     let tree = build_demo_descriptor();
     let mut ui = UiTree::from_descriptor(&tree, &theme);
     let mut fs = font_system();
@@ -423,7 +425,10 @@ fn demo_descriptor_round_trips_token_color_and_mono_font_on_the_wire() {
     let json = serde_json::to_string(&tree).expect("demo descriptor serializes");
     let roundtripped: AnchoredTree =
         serde_json::from_str(&json).expect("demo descriptor deserializes");
-    assert_eq!(roundtripped, tree, "demo descriptor round-trips identically");
+    assert_eq!(
+        roundtripped, tree,
+        "demo descriptor round-trips identically"
+    );
 
     // Color token serializes as a bare string, font token as `"mono"`.
     assert!(

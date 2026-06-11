@@ -38,9 +38,7 @@ fn resolve_color(value: &ColorValue, theme: &UiTheme) -> [f32; 4] {
     match value {
         ColorValue::Literal(rgba) => *rgba,
         ColorValue::Token(name) => theme.color(name).unwrap_or_else(|| {
-            log::warn!(
-                "[UI] unknown color token '{name}' — using opaque magenta fallback"
-            );
+            log::warn!("[UI] unknown color token '{name}' — using opaque magenta fallback");
             UNKNOWN_COLOR_FALLBACK
         }),
     }
@@ -2129,8 +2127,8 @@ mod tests {
 
     // --- Theme-token resolution at tree build (Task 4) -----------------------
 
-    use super::super::theme::{ThemeDescriptor, UiTheme};
     use super::super::text::{UI_FONT_FAMILY, UI_MONO_FONT_FAMILY};
+    use super::super::theme::{ThemeDescriptor, UiTheme};
     use std::collections::HashMap as StdHashMap;
 
     /// A `UiText`-colored quad's sRGB-decoded approximate linear color is hard to
@@ -2282,7 +2280,10 @@ mod tests {
         let tree = themed_text(ColorValue::Literal([1.0; 4]), None);
         let ui = UiTree::from_descriptor(&tree, &theme);
         if let Some(NodeContext::Text { family, .. }) = ui.taffy.get_node_context(ui.root) {
-            assert_eq!(family, UI_FONT_FAMILY, "absent font selects the body family");
+            assert_eq!(
+                family, UI_FONT_FAMILY,
+                "absent font selects the body family"
+            );
         } else {
             panic!("root must be a text node");
         }

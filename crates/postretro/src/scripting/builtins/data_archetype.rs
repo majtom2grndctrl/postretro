@@ -19,6 +19,7 @@ use glam::Vec3;
 use super::MapEntity;
 use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
 use crate::scripting::components::light::{FalloffKind, LightComponent, LightKind};
+use crate::scripting::components::mesh::{MeshAnimation, MeshComponent};
 use crate::scripting::components::player_movement::PlayerMovementComponent;
 use crate::scripting::components::weapon::WeaponComponent;
 use crate::scripting::data_descriptors::{EntityTypeDescriptor, LightDescriptor};
@@ -231,7 +232,10 @@ fn find_descriptor<'a>(
 }
 
 fn is_directly_map_placeable(descriptor: &EntityTypeDescriptor) -> bool {
-    descriptor.light.is_some() || descriptor.emitter.is_some() || descriptor.movement.is_some()
+    descriptor.light.is_some()
+        || descriptor.emitter.is_some()
+        || descriptor.movement.is_some()
+        || descriptor.mesh.is_some()
 }
 
 /// Attach descriptor components to an already-spawned entity. `initial_*` KVP
@@ -298,6 +302,26 @@ fn attach_descriptor_components(
         let component = PlayerMovementComponent::from_descriptor(movement_desc);
         let _ = registry.set_component(id, component);
         owned_components.insert(DescriptorComponentKind::Movement);
+    }
+
+    if let Some(mesh_desc) = descriptor.mesh.as_ref() {
+        // No `animations` block ⇒ stateless mesh (model handle only). Otherwise
+        // copy the declared state map in via `MeshAnimation::new`: current =
+        // default state, entry stamp pending (filled by the resolve pass), no
+        // active fade. Parse-time validation (Task 3) guarantees `default_state`
+        // is `Some` exactly when the map is non-empty and names a declared state.
+        let component = match &mesh_desc.default_state {
+            Some(default_state) => MeshComponent {
+                model: mesh_desc.model.clone(),
+                animation: Some(MeshAnimation::new(
+                    mesh_desc.animations.clone(),
+                    default_state.clone(),
+                )),
+            },
+            None => MeshComponent::stateless(mesh_desc.model.clone()),
+        };
+        let _ = registry.set_component(id, component);
+        owned_components.insert(DescriptorComponentKind::Mesh);
     }
 
     if attach_weapon {
@@ -602,7 +626,128 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: None,
+            mesh: None,
         }
+    }
+
+    /// Build an `EntityTypeDescriptor` carrying only a mesh component. `animated`
+    /// selects between a stateless mesh (model only) and a two-state animated
+    /// mesh (`idle` default + `attack`), mirroring the descriptor shape Task 3's
+    /// parser produces.
+    fn mesh_descriptor(classname: &str, animated: bool) -> EntityTypeDescriptor {
+        use crate::scripting::components::mesh::{AnimationState, InterruptPolicy};
+
+        let (animations, default_state) = if animated {
+            let mut states = HashMap::new();
+            states.insert(
+                "idle".to_string(),
+                AnimationState {
+                    clip: "idle_clip".to_string(),
+                    looping: true,
+                    crossfade_ms: 150.0,
+                    interrupt: InterruptPolicy::Smooth,
+                    clip_index: None,
+                },
+            );
+            states.insert(
+                "attack".to_string(),
+                AnimationState {
+                    clip: "attack_clip".to_string(),
+                    looping: false,
+                    crossfade_ms: 0.0,
+                    interrupt: InterruptPolicy::Snap,
+                    clip_index: None,
+                },
+            );
+            (states, Some("idle".to_string()))
+        } else {
+            (HashMap::new(), None)
+        };
+
+        EntityTypeDescriptor {
+            canonical_name: Some(classname.to_string()),
+            default_weapon: None,
+            light: None,
+            emitter: None,
+            movement: None,
+            weapon: None,
+            mesh: Some(crate::scripting::data_descriptors::MeshDescriptor {
+                model: "decraniated".to_string(),
+                animations,
+                default_state,
+            }),
+        }
+    }
+
+    #[test]
+    fn descriptor_spawn_attaches_stateless_mesh_component() {
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![mesh_descriptor("prop", false)];
+        let placements = vec![placement("prop", &[])];
+        let handled =
+            apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+        assert_eq!(handled.len(), 1, "mesh-only descriptor is map-placeable");
+
+        let (id, _) = reg
+            .iter_with_kind(crate::scripting::registry::ComponentKind::Mesh)
+            .next()
+            .expect("mesh component spawned");
+        let mesh = reg.get_component::<MeshComponent>(id).unwrap();
+        assert_eq!(mesh.model, "decraniated");
+        assert!(
+            mesh.animation.is_none(),
+            "descriptor with no `animations` block yields a stateless mesh"
+        );
+
+        let provenance = reg.get_component::<DescriptorProvenance>(id).unwrap();
+        assert!(provenance.owns(DescriptorComponentKind::Mesh));
+    }
+
+    #[test]
+    fn descriptor_spawn_attaches_animated_mesh_with_default_state() {
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![mesh_descriptor("decraniated_mob", true)];
+        let placements = vec![placement("decraniated_mob", &[])];
+        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+
+        let (id, _) = reg
+            .iter_with_kind(crate::scripting::registry::ComponentKind::Mesh)
+            .next()
+            .expect("animated mesh spawned");
+        let mesh = reg.get_component::<MeshComponent>(id).unwrap();
+        assert_eq!(mesh.model, "decraniated");
+        let anim = mesh.animation.as_ref().expect("animation block attached");
+        // Declared state map copied in; current = default; entry stamp pending.
+        assert_eq!(anim.default_state, "idle");
+        assert_eq!(anim.current_state, "idle");
+        assert!(anim.entered_at.is_none(), "spawn entry stamp is pending");
+        assert!(anim.previous_state.is_none(), "no fade active at spawn");
+        assert_eq!(anim.states.len(), 2);
+        assert!(anim.states.contains_key("idle"));
+        assert!(anim.states.contains_key("attack"));
+    }
+
+    #[test]
+    fn descriptor_animated_mesh_exposes_model_to_distinct_model_sweep() {
+        // The level-load model sweep (`distinct_mesh_models` in main.rs) keys off
+        // the mesh component's `model` field via `ComponentKind::Mesh` iteration.
+        // Guard the same contract from the registry side for a descriptor-spawned
+        // animated mesh.
+        use crate::scripting::registry::{ComponentKind, ComponentValue};
+
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![mesh_descriptor("mob", true)];
+        let placements = vec![placement("mob", &[])];
+        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+
+        let model = reg
+            .iter_with_kind(ComponentKind::Mesh)
+            .find_map(|(_, value)| match value {
+                ComponentValue::Mesh(m) => Some(m.model.clone()),
+                _ => None,
+            })
+            .expect("descriptor-spawned mesh exposes its model to the sweep");
+        assert_eq!(model, "decraniated");
     }
 
     #[test]
@@ -948,6 +1093,7 @@ mod tests {
             }),
             movement: None,
             weapon: None,
+            mesh: None,
         }];
         let placements = vec![placement(
             "campfire",
@@ -989,6 +1135,7 @@ mod tests {
             }),
             movement: None,
             weapon: None,
+            mesh: None,
         }];
         let placements = vec![placement("campfire", &[("velocity", "9.0 9.0 9.0")])];
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
@@ -1027,6 +1174,7 @@ mod tests {
             }),
             movement: None,
             weapon: None,
+            mesh: None,
         }];
         let placements = vec![placement("campfire", &[("initial_rate", "20.5")])];
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
@@ -1062,6 +1210,7 @@ mod tests {
             }),
             movement: None,
             weapon: None,
+            mesh: None,
         }];
         let placements = vec![placement("burstfire", &[("initial_burst", "24")])];
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
@@ -1099,6 +1248,7 @@ mod tests {
             }),
             movement: None,
             weapon: None,
+            mesh: None,
         }];
         let placements = vec![placement(
             "smolder",
@@ -1146,6 +1296,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: None,
+            mesh: None,
         }];
 
         let placements = vec![placement("billboard_emitter", &[])];
@@ -1205,6 +1356,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: None,
+            mesh: None,
         }];
         let placements = vec![placement("ghost", &[]), placement("ghost", &[])];
         let handled =
@@ -1301,6 +1453,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: None,
+            mesh: None,
         }
     }
 
@@ -1318,6 +1471,7 @@ mod tests {
                 fire_mode: FireMode::Semi,
                 resolution: ResolutionMode::Hitscan,
             }),
+            mesh: None,
         }
     }
 
@@ -1329,6 +1483,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: None,
+            mesh: None,
         }
     }
 

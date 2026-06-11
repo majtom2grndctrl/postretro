@@ -75,6 +75,41 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         )
         .finish();
     registry
+        .register_enum("InterruptPolicy")
+        .doc("How a fade *into* an animation state takes over when another fade is already in flight. Absent in a descriptor defaults to `\"smooth\"`.")
+        .variant(
+            "smooth",
+            "Capture the in-flight blended pose once and blend the new fade from it — no discontinuity.",
+        )
+        .variant(
+            "snap",
+            "Blend the new fade from the interrupted state's clip; the in-flight blend drops — a deliberate, fade-window-bounded pop.",
+        )
+        .finish();
+    registry
+        .register_type("AnimationStateDescriptor")
+        .doc("One declared animation state: a named clip plus loop and crossfade policy. `clip` is resolved against the model's clip metadata at level load.")
+        .field("clip", "String", "Clip name this state plays. Must be non-empty; resolved against the model's clips at level load.")
+        .field("loop?", "bool", "Whether the clip loops. Optional; defaults to false.")
+        .field("crossfadeMs?", "f32", "Crossfade duration into this state, in milliseconds. Optional; must be finite and >= 0. Defaults to the engine crossfade default.")
+        .field("interrupt?", "InterruptPolicy", "How a fade into this state takes over an in-flight fade. Optional; defaults to \"smooth\".")
+        .finish();
+    registry
+        .register_type("MeshDescriptor")
+        .doc("Authored mesh component preset attached to `EntityTypeDescriptor.components.mesh`. A descriptor carrying `components.mesh` is directly map-placeable via `canonicalName`. `model` is the skinned-model handle; `animations` declares the per-entity logical animation-state map (state name → clip + loop + crossfade + interrupt). When `animations` is present it must be non-empty and `defaultState` must name a declared state; omit both for a stateless mesh.")
+        .field("model", "String", "Skinned-model handle this entity renders. Must be non-empty.")
+        .field(
+            "animations?",
+            "MeshAnimationStates",
+            "Declared animation states keyed by author-defined state name (e.g. idle/locomotion/attack/death). Optional; when present, must be non-empty and accompanied by a `defaultState` naming one of these states. Omit for a stateless mesh.",
+        )
+        .field(
+            "defaultState?",
+            "String",
+            "The state entered at spawn. Required exactly when `animations` is present; must name a declared state.",
+        )
+        .finish();
+    registry
         .register_type("EntityTypeDescriptor")
         .doc("Entity-type registration carried on `ModManifest.entities` from `setupMod()`. `components` is an optional sub-object carrying typed component presets.")
         .field("canonicalName?", "String", "Canonical descriptor name. Map placement also requires a placeable component; weapon-only descriptors use this name as equip targets.")
@@ -187,6 +222,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("emitter?", "Option<BillboardEmitterComponent>", "")
         .field("movement?", "Option<PlayerMovementDescriptor>", "")
         .field("weapon?", "Option<WeaponDescriptor>", "")
+        .field("mesh?", "Option<MeshDescriptor>", "")
         .finish();
     registry
         .register_enum("FireMode")

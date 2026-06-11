@@ -8,9 +8,12 @@ use rquickjs::{Array, Ctx, Object, Value as JsValue};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use std::collections::HashMap;
+
 use super::components::billboard_emitter::{
     BillboardEmitterComponent, BillboardEmitterComponentLit,
 };
+use super::components::mesh::{AnimationState, InterruptPolicy};
 use super::registry::EntityId;
 
 /// Variants of a single reaction's behavior body. The `name` lives on the
@@ -106,6 +109,144 @@ impl LightDescriptor {
     }
 }
 
+/// Authored mesh component preset attached to an [`EntityTypeDescriptor`].
+/// Carries the model handle a skinned-model entity renders plus an optional
+/// declared animation-state surface. The data-archetype spawn path materializes
+/// this into a [`super::components::mesh::MeshComponent`]: a descriptor with no
+/// `animations` block yields a stateless component, otherwise the declared state
+/// map is copied in via `MeshAnimation::new` with current = `default_state` and
+/// a pending entry stamp.
+///
+/// Validation (at parse time): `model` non-empty; each state's `clip` non-empty;
+/// `crossfade_ms` finite ≥ 0; `interrupt` (when present on the wire) one of
+/// `"smooth"`/`"snap"`. When `animations` is present it must be non-empty and
+/// `default_state` must be present and name a declared state. Clip resolution
+/// against the model's clip metadata is deferred to Task 5 (level load), so
+/// `AnimationState::clip_index` stays `None` here.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct MeshDescriptor {
+    pub(crate) model: String,
+    /// Declared state map: state name → clip + loop + crossfade + interrupt.
+    /// Empty when the descriptor declared no `animations` block (stateless).
+    pub(crate) animations: HashMap<String, AnimationState>,
+    /// The default/spawn state name. `Some` exactly when `animations` is
+    /// non-empty; parse validation rejects animations-without-default and a
+    /// default that does not name a declared state.
+    pub(crate) default_state: Option<String>,
+}
+
+/// One parsed-but-unvalidated animation-state entry, as gathered from the wire
+/// by either FFI path. `interrupt` is the raw string when present (`None` =
+/// absent ⇒ defaults to `"smooth"`); validation maps it to [`InterruptPolicy`].
+struct RawAnimationState {
+    name: String,
+    clip: String,
+    looping: bool,
+    crossfade_ms: f32,
+    interrupt: Option<String>,
+}
+
+impl MeshDescriptor {
+    /// Build and validate a [`MeshDescriptor`] from the raw fields gathered by
+    /// the JS / Luau parsers. Shared so both FFI paths enforce identical rules:
+    /// non-empty `model`/`clip`, finite ≥ 0 `crossfadeMs`, `interrupt` in
+    /// {smooth, snap}, and — when any state is declared — a present
+    /// `defaultState` that names a declared state. An empty-but-present
+    /// `animations` block is rejected; a wholly absent one yields a stateless
+    /// descriptor (`animations` empty, `default_state` None).
+    fn build(
+        model: String,
+        states: Vec<RawAnimationState>,
+        default_state: Option<String>,
+        animations_present: bool,
+    ) -> Result<Self, DescriptorError> {
+        if model.is_empty() {
+            return Err(DescriptorError::InvalidShape {
+                reason: "`components.mesh.model` must be a non-empty string".to_string(),
+            });
+        }
+
+        // A present-but-empty `animations` object is rejected: the author meant
+        // to declare states but declared none. (A wholly absent block ⇒
+        // stateless, handled by `animations_present == false`.)
+        if animations_present && states.is_empty() {
+            return Err(DescriptorError::InvalidShape {
+                reason:
+                    "`components.mesh.animations` is present but empty; omit it for a stateless mesh"
+                        .to_string(),
+            });
+        }
+
+        let mut animations = HashMap::with_capacity(states.len());
+        for raw in states {
+            if raw.clip.is_empty() {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.mesh.animations.{}.clip` must be a non-empty string",
+                        raw.name
+                    ),
+                });
+            }
+            if !raw.crossfade_ms.is_finite() || raw.crossfade_ms < 0.0 {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.mesh.animations.{}.crossfadeMs` must be a finite value >= 0.0, got {}",
+                        raw.name, raw.crossfade_ms
+                    ),
+                });
+            }
+            let interrupt = match raw.interrupt.as_deref() {
+                None | Some("smooth") => InterruptPolicy::Smooth,
+                Some("snap") => InterruptPolicy::Snap,
+                Some(other) => {
+                    return Err(DescriptorError::InvalidShape {
+                        reason: format!(
+                            "`components.mesh.animations.{}.interrupt` must be \"smooth\" or \"snap\", got \"{}\"",
+                            raw.name, other
+                        ),
+                    });
+                }
+            };
+            animations.insert(
+                raw.name,
+                AnimationState {
+                    clip: raw.clip,
+                    looping: raw.looping,
+                    crossfade_ms: raw.crossfade_ms,
+                    interrupt,
+                    // Resolved against the model's clip metadata at level load
+                    // (Task 5); unresolved here.
+                    clip_index: None,
+                },
+            );
+        }
+
+        // `defaultState` is required exactly when states are declared, and must
+        // name one of them. With no states declared it must be absent.
+        let default_state = if animations.is_empty() {
+            None
+        } else {
+            let default = default_state.ok_or(DescriptorError::MissingField {
+                field: "defaultState",
+            })?;
+            if !animations.contains_key(&default) {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.mesh.defaultState` (\"{default}\") does not name a declared animation state"
+                    ),
+                });
+            }
+            Some(default)
+        };
+
+        Ok(MeshDescriptor {
+            model,
+            animations,
+            default_state,
+        })
+    }
+}
+
 /// Author-side description of an entity type. Carried on `ModManifest.entities`
 /// and drained into `DataRegistry` after `setupMod()` returns.
 ///
@@ -131,6 +272,7 @@ pub(crate) struct EntityTypeDescriptor {
     pub(crate) emitter: Option<BillboardEmitterComponent>,
     pub(crate) movement: Option<PlayerMovementDescriptor>,
     pub(crate) weapon: Option<WeaponDescriptor>,
+    pub(crate) mesh: Option<MeshDescriptor>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -757,6 +899,7 @@ pub(crate) fn entity_descriptor_from_js<'js>(
     let mut emitter = None;
     let mut movement = None;
     let mut weapon = None;
+    let mut mesh = None;
 
     if obj.contains_key("components").map_err(js_err)? {
         let components_val: JsValue = obj.get("components").map_err(js_err)?;
@@ -765,6 +908,16 @@ pub(crate) fn entity_descriptor_from_js<'js>(
                 Object::from_value(components_val).map_err(|_| DescriptorError::InvalidShape {
                     reason: "`components` must be an object".to_string(),
                 })?;
+            if components_obj.contains_key("mesh").map_err(js_err)? {
+                let raw: JsValue = components_obj.get("mesh").map_err(js_err)?;
+                if !raw.is_null() && !raw.is_undefined() {
+                    let mesh_obj =
+                        Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
+                            reason: "`components.mesh` must be an object".to_string(),
+                        })?;
+                    mesh = Some(mesh_descriptor_from_js(&mesh_obj)?);
+                }
+            }
             if components_obj.contains_key("movement").map_err(js_err)? {
                 let raw: JsValue = components_obj.get("movement").map_err(js_err)?;
                 if !raw.is_null() && !raw.is_undefined() {
@@ -829,6 +982,80 @@ pub(crate) fn entity_descriptor_from_js<'js>(
         emitter,
         movement,
         weapon,
+        mesh,
+    })
+}
+
+/// Parse a `components.mesh` object (JS). Shape:
+/// `{ model: string, animations?: { [state]: { clip, loop?, crossfadeMs?, interrupt? } }, defaultState?: string }`.
+/// Gathers raw fields and delegates validation to [`MeshDescriptor::build`] so
+/// both FFI paths share identical rules.
+fn mesh_descriptor_from_js<'js>(obj: &Object<'js>) -> Result<MeshDescriptor, DescriptorError> {
+    let model = get_required_string_js(obj, "model")?;
+
+    let mut animations_present = false;
+    let mut states = Vec::new();
+    if obj.contains_key("animations").map_err(js_err)? {
+        let raw: JsValue = obj.get("animations").map_err(js_err)?;
+        if !raw.is_null() && !raw.is_undefined() {
+            animations_present = true;
+            let anim_obj = Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
+                reason: "`components.mesh.animations` must be an object".to_string(),
+            })?;
+            // Iterate the map's own (name → state-object) entries.
+            for entry in anim_obj.props::<String, JsValue>() {
+                let (name, value) = entry.map_err(js_err)?;
+                let state_obj =
+                    Object::from_value(value).map_err(|_| DescriptorError::InvalidShape {
+                        reason: format!("`components.mesh.animations.{name}` must be an object"),
+                    })?;
+                states.push(raw_animation_state_from_js(&name, &state_obj)?);
+            }
+        }
+    }
+
+    let default_state = if obj.contains_key("defaultState").map_err(js_err)? {
+        let raw: JsValue = obj.get("defaultState").map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            None
+        } else {
+            Some(String::from_js_value_required(raw, "defaultState")?)
+        }
+    } else {
+        None
+    };
+
+    MeshDescriptor::build(model, states, default_state, animations_present)
+}
+
+/// Gather one animation-state entry from a JS object. `loop` defaults to
+/// `false`, `crossfadeMs` to [`super::components::mesh::DEFAULT_CROSSFADE_MS`],
+/// `interrupt` is read raw (absent ⇒ `None`). Validation is deferred to
+/// [`MeshDescriptor::build`].
+fn raw_animation_state_from_js<'js>(
+    name: &str,
+    obj: &Object<'js>,
+) -> Result<RawAnimationState, DescriptorError> {
+    let clip = get_required_string_js(obj, "clip")?;
+    let looping = get_optional_bool_js(obj, "loop")?.unwrap_or(false);
+    let crossfade_ms = get_optional_f32_js(obj, "crossfadeMs")?
+        .unwrap_or(super::components::mesh::DEFAULT_CROSSFADE_MS);
+    let interrupt = if obj.contains_key("interrupt").map_err(js_err)? {
+        let raw: JsValue = obj.get("interrupt").map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            None
+        } else {
+            Some(String::from_js_value_required(raw, "interrupt")?)
+        }
+    } else {
+        None
+    };
+    Ok(RawAnimationState {
+        name: name.to_string(),
+        clip,
+        looping,
+        crossfade_ms,
+        interrupt,
     })
 }
 
@@ -1634,6 +1861,7 @@ pub(crate) fn entity_descriptor_from_lua(
     let mut emitter = None;
     let mut movement = None;
     let mut weapon = None;
+    let mut mesh = None;
 
     if table.contains_key("components").map_err(lua_err)? {
         let raw: LuaValue = table.get("components").map_err(lua_err)?;
@@ -1646,6 +1874,23 @@ pub(crate) fn entity_descriptor_from_lua(
                     });
                 }
             };
+            if components_table.contains_key("mesh").map_err(lua_err)? {
+                let raw: LuaValue = components_table.get("mesh").map_err(lua_err)?;
+                if !matches!(raw, LuaValue::Nil) {
+                    let mesh_table = match raw {
+                        LuaValue::Table(t) => t,
+                        other => {
+                            return Err(DescriptorError::InvalidShape {
+                                reason: format!(
+                                    "`components.mesh` must be a table, got {}",
+                                    other.type_name()
+                                ),
+                            });
+                        }
+                    };
+                    mesh = Some(mesh_descriptor_from_lua(&mesh_table)?);
+                }
+            }
             if components_table.contains_key("movement").map_err(lua_err)? {
                 let raw: LuaValue = components_table.get("movement").map_err(lua_err)?;
                 if !matches!(raw, LuaValue::Nil) {
@@ -1717,6 +1962,100 @@ pub(crate) fn entity_descriptor_from_lua(
         emitter,
         movement,
         weapon,
+        mesh,
+    })
+}
+
+/// Mirror of [`mesh_descriptor_from_js`] for Luau tables. Gathers raw fields
+/// and delegates validation to [`MeshDescriptor::build`].
+fn mesh_descriptor_from_lua(table: &Table) -> Result<MeshDescriptor, DescriptorError> {
+    let model = get_required_string_lua(table, "model")?;
+
+    let mut animations_present = false;
+    let mut states = Vec::new();
+    if table.contains_key("animations").map_err(lua_err)? {
+        let raw: LuaValue = table.get("animations").map_err(lua_err)?;
+        if !matches!(raw, LuaValue::Nil) {
+            animations_present = true;
+            let anim_table = match raw {
+                LuaValue::Table(t) => t,
+                other => {
+                    return Err(DescriptorError::InvalidShape {
+                        reason: format!(
+                            "`components.mesh.animations` must be a table, got {}",
+                            other.type_name()
+                        ),
+                    });
+                }
+            };
+            // Iterate the map's (name → state-table) pairs.
+            for pair in anim_table.pairs::<String, LuaValue>() {
+                let (name, value) = pair.map_err(lua_err)?;
+                let state_table = match value {
+                    LuaValue::Table(t) => t,
+                    other => {
+                        return Err(DescriptorError::InvalidShape {
+                            reason: format!(
+                                "`components.mesh.animations.{name}` must be a table, got {}",
+                                other.type_name()
+                            ),
+                        });
+                    }
+                };
+                states.push(raw_animation_state_from_lua(&name, &state_table)?);
+            }
+        }
+    }
+
+    let default_state = if table.contains_key("defaultState").map_err(lua_err)? {
+        let raw: LuaValue = table.get("defaultState").map_err(lua_err)?;
+        match raw {
+            LuaValue::Nil => None,
+            LuaValue::String(s) => Some(s.to_str().map_err(lua_err)?.to_string()),
+            other => {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!("'defaultState' must be a string, got {}", other.type_name()),
+                });
+            }
+        }
+    } else {
+        None
+    };
+
+    MeshDescriptor::build(model, states, default_state, animations_present)
+}
+
+/// Gather one animation-state entry from a Luau table. Mirrors
+/// [`raw_animation_state_from_js`]: `loop` defaults to `false`, `crossfadeMs`
+/// to [`super::components::mesh::DEFAULT_CROSSFADE_MS`], `interrupt` read raw.
+fn raw_animation_state_from_lua(
+    name: &str,
+    table: &Table,
+) -> Result<RawAnimationState, DescriptorError> {
+    let clip = get_required_string_lua(table, "clip")?;
+    let looping = get_optional_bool_lua(table, "loop")?.unwrap_or(false);
+    let crossfade_ms = get_optional_f32_lua(table, "crossfadeMs")?
+        .unwrap_or(super::components::mesh::DEFAULT_CROSSFADE_MS);
+    let interrupt = if table.contains_key("interrupt").map_err(lua_err)? {
+        let raw: LuaValue = table.get("interrupt").map_err(lua_err)?;
+        match raw {
+            LuaValue::Nil => None,
+            LuaValue::String(s) => Some(s.to_str().map_err(lua_err)?.to_string()),
+            other => {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!("'interrupt' must be a string, got {}", other.type_name()),
+                });
+            }
+        }
+    } else {
+        None
+    };
+    Ok(RawAnimationState {
+        name: name.to_string(),
+        clip,
+        looping,
+        crossfade_ms,
+        interrupt,
     })
 }
 
@@ -4344,6 +4683,229 @@ mod tests {
     fn lua_movement_view_feel_sway_not_a_table_is_rejected() {
         let src = lua_movement_with_view_feel(r#"{ sway = 3 }"#);
         let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    // --- components.mesh (Task 3) -------------------------------------------
+
+    #[test]
+    fn js_mesh_stateless_parses_model_only() {
+        let src = r#"({ components: { mesh: { model: "decraniated" } } })"#;
+        let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+        let mesh = d.mesh.expect("mesh descriptor parsed");
+        assert_eq!(mesh.model, "decraniated");
+        assert!(
+            mesh.animations.is_empty() && mesh.default_state.is_none(),
+            "no animations block ⇒ stateless"
+        );
+    }
+
+    #[test]
+    fn js_mesh_animated_parses_states_and_default() {
+        let src = r#"({ components: { mesh: {
+            model: "decraniated",
+            defaultState: "idle",
+            animations: {
+                idle:   { clip: "idle_clip", loop: true, crossfadeMs: 120, interrupt: "smooth" },
+                attack: { clip: "attack_clip", loop: false }
+            }
+        } } })"#;
+        let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+        let mesh = d.mesh.expect("mesh descriptor parsed");
+        assert_eq!(mesh.default_state.as_deref(), Some("idle"));
+        assert_eq!(mesh.animations.len(), 2);
+        let idle = &mesh.animations["idle"];
+        assert_eq!(idle.clip, "idle_clip");
+        assert!(idle.looping);
+        assert_eq!(idle.crossfade_ms, 120.0);
+        assert_eq!(idle.interrupt, InterruptPolicy::Smooth);
+        assert!(idle.clip_index.is_none(), "clip_index unresolved at parse");
+        // Absent `crossfadeMs`/`interrupt` default; absent `loop` ⇒ false.
+        let attack = &mesh.animations["attack"];
+        assert!(!attack.looping);
+        assert_eq!(
+            attack.crossfade_ms,
+            crate::scripting::components::mesh::DEFAULT_CROSSFADE_MS
+        );
+        assert_eq!(attack.interrupt, InterruptPolicy::Smooth);
+    }
+
+    #[test]
+    fn js_mesh_interrupt_snap_parses() {
+        let src = r#"({ components: { mesh: {
+            model: "m", defaultState: "die",
+            animations: { die: { clip: "death", interrupt: "snap" } }
+        } } })"#;
+        let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+        assert_eq!(
+            d.mesh.unwrap().animations["die"].interrupt,
+            InterruptPolicy::Snap
+        );
+    }
+
+    #[test]
+    fn js_mesh_empty_model_is_rejected() {
+        let src = r#"({ components: { mesh: { model: "" } } })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_mesh_empty_clip_is_rejected() {
+        let src = r#"({ components: { mesh: {
+            model: "m", defaultState: "idle",
+            animations: { idle: { clip: "" } }
+        } } })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_mesh_negative_crossfade_is_rejected() {
+        let src = r#"({ components: { mesh: {
+            model: "m", defaultState: "idle",
+            animations: { idle: { clip: "c", crossfadeMs: -1 } }
+        } } })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_mesh_unknown_interrupt_is_rejected() {
+        let src = r#"({ components: { mesh: {
+            model: "m", defaultState: "idle",
+            animations: { idle: { clip: "c", interrupt: "instant" } }
+        } } })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_mesh_animations_without_default_state_is_rejected() {
+        let src = r#"({ components: { mesh: {
+            model: "m",
+            animations: { idle: { clip: "c" } }
+        } } })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert_eq!(
+            err,
+            DescriptorError::MissingField {
+                field: "defaultState"
+            }
+        );
+    }
+
+    #[test]
+    fn js_mesh_default_state_not_declared_is_rejected() {
+        let src = r#"({ components: { mesh: {
+            model: "m", defaultState: "nope",
+            animations: { idle: { clip: "c" } }
+        } } })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_mesh_present_empty_animations_is_rejected() {
+        let src = r#"({ components: { mesh: { model: "m", animations: {} } } })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_mesh_stateless_parses_model_only() {
+        let src = r#"return { components = { mesh = { model = "decraniated" } } }"#;
+        let d = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap());
+        let mesh = d.mesh.expect("mesh descriptor parsed");
+        assert_eq!(mesh.model, "decraniated");
+        assert!(mesh.animations.is_empty() && mesh.default_state.is_none());
+    }
+
+    #[test]
+    fn lua_mesh_animated_parses_states_and_default() {
+        let src = r#"return { components = { mesh = {
+            model = "decraniated",
+            defaultState = "idle",
+            animations = {
+                idle = { clip = "idle_clip", loop = true, crossfadeMs = 120, interrupt = "snap" },
+                attack = { clip = "attack_clip" }
+            }
+        } } }"#;
+        let d = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap());
+        let mesh = d.mesh.expect("mesh descriptor parsed");
+        assert_eq!(mesh.default_state.as_deref(), Some("idle"));
+        assert_eq!(mesh.animations.len(), 2);
+        assert_eq!(mesh.animations["idle"].interrupt, InterruptPolicy::Snap);
+        assert!(mesh.animations["idle"].looping);
+        // Absent `loop` ⇒ false; absent `crossfadeMs`/`interrupt` ⇒ defaults.
+        let attack = &mesh.animations["attack"];
+        assert!(!attack.looping);
+        assert_eq!(attack.interrupt, InterruptPolicy::Smooth);
+        assert_eq!(
+            attack.crossfade_ms,
+            crate::scripting::components::mesh::DEFAULT_CROSSFADE_MS
+        );
+    }
+
+    #[test]
+    fn lua_mesh_empty_model_is_rejected() {
+        let src = r#"return { components = { mesh = { model = "" } } }"#;
+        let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_mesh_animations_without_default_state_is_rejected() {
+        let src = r#"return { components = { mesh = {
+            model = "m",
+            animations = { idle = { clip = "c" } }
+        } } }"#;
+        let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert_eq!(
+            err,
+            DescriptorError::MissingField {
+                field: "defaultState"
+            }
+        );
+    }
+
+    #[test]
+    fn lua_mesh_default_state_not_declared_is_rejected() {
+        let src = r#"return { components = { mesh = {
+            model = "m", defaultState = "nope",
+            animations = { idle = { clip = "c" } }
+        } } }"#;
+        let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_mesh_present_empty_animations_is_rejected() {
+        // A present-but-empty `animations` table is rejected: the table value
+        // IS present, so `animations_present` is true and the empty map is
+        // rejected.
+        let src = r#"return { components = { mesh = { model = "m", animations = {} } } }"#;
+        let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_mesh_unknown_interrupt_is_rejected() {
+        let src = r#"return { components = { mesh = {
+            model = "m", defaultState = "idle",
+            animations = { idle = { clip = "c", interrupt = "instant" } }
+        } } }"#;
+        let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_mesh_negative_crossfade_is_rejected() {
+        let src = r#"return { components = { mesh = {
+            model = "m", defaultState = "idle",
+            animations = { idle = { clip = "c", crossfadeMs = -2.0 } }
+        } } }"#;
+        let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
         assert!(matches!(err, DescriptorError::InvalidShape { .. }));
     }
 }

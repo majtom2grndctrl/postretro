@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
 use crate::scripting::components::light::{FalloffKind, LightComponent, LightKind};
+use crate::scripting::components::mesh::MeshComponent;
 use crate::scripting::components::player_movement::{MovementState, PlayerMovementComponent};
 use crate::scripting::components::weapon::WeaponComponent;
 use crate::scripting::data_descriptors::{EntityTypeDescriptor, LightDescriptor};
@@ -364,6 +365,7 @@ fn descriptor_declares(
         DescriptorComponentKind::Movement => descriptor.movement.is_some(),
         DescriptorComponentKind::Light => descriptor.light.is_some(),
         DescriptorComponentKind::Emitter => descriptor.emitter.is_some(),
+        DescriptorComponentKind::Mesh => descriptor.mesh.is_some(),
     }
 }
 
@@ -383,6 +385,7 @@ fn live_component_exists(
         DescriptorComponentKind::Emitter => registry
             .get_component::<BillboardEmitterComponent>(entity)
             .is_ok(),
+        DescriptorComponentKind::Mesh => registry.get_component::<MeshComponent>(entity).is_ok(),
     }
 }
 
@@ -405,6 +408,14 @@ fn plan_component_replace(
         DescriptorComponentKind::Emitter => {
             plan_emitter_replace(entity, provenance, new_descriptor, registry)
         }
+        // Mesh component hot-reload refresh is out of scope for the M10 mesh
+        // descriptor surface (Task 3): the per-entity animation runtime carries
+        // live state (current state, entry stamps, in-flight fades) that an
+        // in-place field copy would clobber. Refresh is declined here, so the
+        // planner keeps the existing live component (no replace action). A
+        // dedicated mesh-refresh path can land later if hot-reload of the
+        // animation surface is needed.
+        DescriptorComponentKind::Mesh => Err("mesh component refresh is not supported".to_string()),
     };
 
     match result {
@@ -748,6 +759,7 @@ mod tests {
                 fire_mode: FireMode::Semi,
                 resolution: ResolutionMode::Hitscan,
             }),
+            mesh: None,
         }
     }
 
@@ -764,6 +776,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: None,
+            mesh: None,
         }
     }
 
@@ -793,6 +806,7 @@ mod tests {
             emitter: Some(emitter_component(sprite, rate)),
             movement: None,
             weapon: None,
+            mesh: None,
         }
     }
 
@@ -848,6 +862,7 @@ mod tests {
                 view_feel: None,
             }),
             weapon: None,
+            mesh: None,
         }
     }
 

@@ -85,6 +85,13 @@ pub(crate) fn register_emitter_reaction_primitives(registry: &mut ReactionPrimit
         let parsed = super::set_spin_rate::SetSpinRateArgs::from_json(args)?;
         super::set_spin_rate::dispatch(reg, targets, &parsed)
     });
+    registry.register("setAnimationState", |reg, targets, args| {
+        let parsed: super::set_animation_state::SetAnimationStateArgs =
+            serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
+                reason: format!("setAnimationState: failed to deserialize args: {e}"),
+            })?;
+        super::set_animation_state::dispatch(reg, targets, &parsed)
+    });
 }
 
 pub(crate) fn register_fog_reaction_primitives(registry: &mut ReactionPrimitiveRegistry) {
@@ -224,6 +231,7 @@ mod tests {
         register_emitter_reaction_primitives(&mut r);
         assert!(r.contains("setEmitterRate"));
         assert!(r.contains("setSpinRate"));
+        assert!(r.contains("setAnimationState"));
         assert!(!r.contains("setLightAnimation"));
     }
 

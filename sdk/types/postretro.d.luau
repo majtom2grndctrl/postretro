@@ -25,6 +25,35 @@ export type LightDescriptor = {
   is_dynamic: boolean,
 }
 
+--- How a fade *into* an animation state takes over when another fade is already in flight. Absent in a descriptor defaults to `"smooth"`.
+export type InterruptPolicy =
+  --- Capture the in-flight blended pose once and blend the new fade from it — no discontinuity.
+  "smooth"
+  --- Blend the new fade from the interrupted state's clip; the in-flight blend drops — a deliberate, fade-window-bounded pop.
+  | "snap"
+
+--- One declared animation state: a named clip plus loop and crossfade policy. `clip` is resolved against the model's clip metadata at level load.
+export type AnimationStateDescriptor = {
+  --- Clip name this state plays. Must be non-empty; resolved against the model's clips at level load.
+  clip: string,
+  --- Whether the clip loops. Optional; defaults to false.
+  loop: boolean?,
+  --- Crossfade duration into this state, in milliseconds. Optional; must be finite and >= 0. Defaults to the engine crossfade default.
+  crossfadeMs: number?,
+  --- How a fade into this state takes over an in-flight fade. Optional; defaults to "smooth".
+  interrupt: InterruptPolicy?,
+}
+
+--- Authored mesh component preset attached to `EntityTypeDescriptor.components.mesh`. A descriptor carrying `components.mesh` is directly map-placeable via `canonicalName`. `model` is the skinned-model handle; `animations` declares the per-entity logical animation-state map (state name → clip + loop + crossfade + interrupt). When `animations` is present it must be non-empty and `defaultState` must name a declared state; omit both for a stateless mesh.
+export type MeshDescriptor = {
+  --- Skinned-model handle this entity renders. Must be non-empty.
+  model: string,
+  --- Declared animation states keyed by author-defined state name (e.g. idle/locomotion/attack/death). Optional; when present, must be non-empty and accompanied by a `defaultState` naming one of these states. Omit for a stateless mesh.
+  animations: { [string]: AnimationStateDescriptor }?,
+  --- The state entered at spawn. Required exactly when `animations` is present; must name a declared state.
+  defaultState: string?,
+}
+
 --- Entity-type registration carried on `ModManifest.entities` from `setupMod()`. `components` is an optional sub-object carrying typed component presets.
 export type EntityTypeDescriptor = {
   --- Canonical descriptor name. Map placement also requires a placeable component; weapon-only descriptors use this name as equip targets.
@@ -108,7 +137,7 @@ export type FogVolumeEntity = {
 }
 
 --- Optional bag of component presets carried by `EntityTypeDescriptor.components`.
-export type EntityTypeComponents = { light: LightDescriptor?, emitter: BillboardEmitterComponent?, movement: PlayerMovementDescriptor?, weapon: WeaponDescriptor? }
+export type EntityTypeComponents = { light: LightDescriptor?, emitter: BillboardEmitterComponent?, movement: PlayerMovementDescriptor?, weapon: WeaponDescriptor?, mesh: MeshDescriptor? }
 
 export type FireMode =
   --- One shot per press.
@@ -518,7 +547,7 @@ export type ProgressReactionDescriptor = {
 --- Primitive reaction body: invokes the named Rust primitive on entities
 --- tagged `tag`, optionally firing `onComplete` when it finishes. `args`
 --- carries the primitive's typed payload (e.g. `{ rate = 0 }` for
---- `setEmitterRate`).
+--- `setEmitterRate`, `{ state = "attack" }` for `setAnimationState`).
 export type PrimitiveReactionDescriptor = {
   primitive: string,
   tag: string,

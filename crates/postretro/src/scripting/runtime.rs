@@ -1673,6 +1673,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: None,
+            mesh: None,
         }
     }
 

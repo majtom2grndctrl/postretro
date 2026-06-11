@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::scripting::data_descriptors::{
     AirParams, CapsuleParams, CrouchParams, DashParams, FallParams, ForgivenessParams,
-    GroundParams, PlayerMovementDescriptor,
+    GroundParams, PlayerMovementDescriptor, ViewFeelParams,
 };
 
 /// The player's active movement state. Mutually-exclusive: exactly one state
@@ -73,6 +73,11 @@ pub(crate) struct PlayerMovementComponent {
     /// Optional crouch tuning, materialized from the descriptor's `crouch`
     /// field. `None` ⇒ crouch disabled.
     pub(crate) crouch: Option<CrouchParams>,
+    /// Optional first-person view-feel tuning (head bob, strafe tilt, ambient
+    /// sway), materialized from the descriptor's `view_feel` field. `None` ⇒
+    /// view feel disabled. A render-only camera effect consumed by the
+    /// render-side evaluator (other tasks); movement logic never reads it.
+    pub(crate) view_feel: Option<ViewFeelParams>,
     /// Configured STANDING capsule half-height — the reference value the
     /// stand-up resize/probe grow back to. Seeded from `desc.capsule.half_height`
     /// at materialization and never mutated. Distinct from the live
@@ -174,6 +179,9 @@ impl PlayerMovementComponent {
             fall: desc.fall.clone(),
             dash: desc.dash.clone(),
             crouch: desc.crouch.clone(),
+            // View feel is a render-only camera effect: clone the descriptor's
+            // tuning verbatim (no transform), mirroring ground/air/fall.
+            view_feel: desc.view_feel.clone(),
             // Standing reference dimensions: captured from the descriptor's
             // configured capsule before any crouch shrink mutates the live
             // `capsule`. The stand-up resize/probe grow back to these.

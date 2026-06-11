@@ -232,6 +232,11 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "Optional crouch tuning. When omitted, crouch is disabled. When present, all of its fields are required.",
         )
         .field(
+            "viewFeel?",
+            "ViewFeelParams",
+            "Optional first-person view-feel tuning (head bob, strafe tilt, ambient sway). A render-only camera effect. When omitted, view feel is disabled. When present, each of `bob`/`tilt`/`sway` is independently optional.",
+        )
+        .field(
             "stuckStopEnabled?",
             "bool",
             "Optional. Stuck-stop deadzone enable flag. When true (default), the slide loop zeroes horizontal velocity and rolls back XZ position when contradictory wall normals (≥60° apart) are seen within the same tick AND net horizontal displacement is below `stuckStopThreshold`. Suppresses orbital jitter in interior corners. Default true.",
@@ -301,6 +306,38 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("halfHeight", "f32", "Crouched capsule half-height in metres. Must be finite > 0.")
         .field("eyeHeight", "f32", "Crouched camera attachment point measured upward from the capsule center in metres. Must lie in (0, crouched halfHeight + radius].")
         .field("transitionRate", "f32", "Rate the capsule interpolates between standing and crouched extents, per-sec. Must be finite > 0.")
+        .finish();
+    registry
+        .register_type("ViewFeelParams")
+        .doc("First-person view-feel tuning: a render-only camera effect bundle (head bob, strafe tilt, ambient sway). Optional on `PlayerMovementDescriptor` — when omitted, view feel is disabled. When present, each of `bob`/`tilt`/`sway` is independently optional; an absent sub-object disables that motion.")
+        .field("bob?", "BobParams", "Optional head-bob tuning. When omitted, head bob is disabled. When present, all of its fields are required except `groundedOnly`.")
+        .field("tilt?", "TiltParams", "Optional strafe-tilt tuning. When omitted, strafe tilt is disabled. When present, all of its fields are required except `groundedOnly`.")
+        .field("sway?", "SwayParams", "Optional ambient-sway tuning. When omitted, ambient sway is disabled. When present, all of its fields are required except `groundedOnly`.")
+        .finish();
+    registry
+        .register_type("BobParams")
+        .doc("Head-bob tuning. When present on `viewFeel`, all fields are required and validated except `groundedOnly`, which is optional and defaults to true.")
+        .field("frequency", "f32", "Bob cycles per metre travelled. Must be finite > 0.")
+        .field("verticalAmplitude", "f32", "Vertical bob amplitude. Must be finite and ≥ 0.")
+        .field("lateralAmplitude", "f32", "Lateral bob amplitude. Must be finite and ≥ 0.")
+        .field("speedThreshold", "f32", "Horizontal speed below which bob is suppressed. Must be finite and ≥ 0.")
+        .field("groundedOnly?", "bool", "Whether bob applies only while grounded. Optional; defaults to true.")
+        .finish();
+    registry
+        .register_type("TiltParams")
+        .doc("Strafe-tilt tuning. When present on `viewFeel`, all fields are required and validated except `groundedOnly`, which is optional and defaults to true.")
+        .field("maxAngle", "f32", "Maximum tilt angle in degrees. Must be finite in [0, 90].")
+        .field("speedReference", "f32", "Lateral speed at which the tilt reaches its reference. Must be finite > 0.")
+        .field("tension", "f32", "Spring tension governing how quickly tilt tracks lateral motion. Must be finite > 0.")
+        .field("groundedOnly?", "bool", "Whether tilt applies only while grounded. Optional; defaults to true.")
+        .finish();
+    registry
+        .register_type("SwayParams")
+        .doc("Ambient-sway tuning. When present on `viewFeel`, all fields are required and validated except `groundedOnly`, which is optional and defaults to false.")
+        .field("amplitude", "f32", "Sway amplitude in degrees. Must be finite and ≥ 0.")
+        .field("frequency", "f32", "Sway oscillation frequency in Hz. Must be finite > 0.")
+        .field("speedScale", "f32", "Scales how much movement speed modulates sway. Must be finite and ≥ 0.")
+        .field("groundedOnly?", "bool", "Whether sway applies only while grounded. Optional; defaults to false.")
         .finish();
     registry
         .register_type("ForgivenessParams")

@@ -1144,10 +1144,14 @@ impl ApplicationHandler for App {
                 // `self.camera` directly so zero-tick frames still see this
                 // frame's look rotation.
                 let interp = self.frame_timing.interpolated_state();
+                // Roll and eye offset are no-ops here; Task 4 wires the real
+                // head-bob/strafe-tilt/sway values from the view-feel effect.
                 let view_proj = interp.view_projection(
                     self.camera.aspect(),
                     self.camera.yaw,
                     self.camera.pitch,
+                    0.0,
+                    Vec3::ZERO,
                 );
 
                 let capture_portal_walk = std::mem::take(&mut self.capture_portal_walk_next_frame);
@@ -2640,8 +2644,9 @@ mod tests {
         // cases, so any element-wise difference must come from the rotation.
         let render_state = InterpolableState::new(Vec3::ZERO);
         let aspect = camera.aspect();
-        let baseline = render_state.view_projection(aspect, 0.0, 0.0);
-        let rotated = render_state.view_projection(aspect, camera.yaw, camera.pitch);
+        let baseline = render_state.view_projection(aspect, 0.0, 0.0, 0.0, Vec3::ZERO);
+        let rotated =
+            render_state.view_projection(aspect, camera.yaw, camera.pitch, 0.0, Vec3::ZERO);
 
         let baseline_cols = baseline.to_cols_array();
         let rotated_cols = rotated.to_cols_array();

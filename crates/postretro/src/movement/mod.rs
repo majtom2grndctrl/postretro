@@ -1782,8 +1782,9 @@ pub(crate) fn tick(
 mod tests {
     use super::*;
     use crate::scripting::data_descriptors::{
-        AirParams, CapsuleParams, CrouchParams, DashParams, FallParams, ForgivenessParams,
-        GroundParams, PlayerMovementDescriptor, SpeedParams,
+        AirParams, BobParams, CapsuleParams, CrouchParams, DashParams, FallParams,
+        ForgivenessParams, GroundParams, PlayerMovementDescriptor, SpeedParams, SwayParams,
+        TiltParams, ViewFeelParams,
     };
     use parry3d::math::Isometry;
     use parry3d::shape::TriMesh;
@@ -1835,7 +1836,45 @@ mod tests {
                 jump_buffer_ms: 0.0,
             }),
             crouch: None,
+            view_feel: None,
         }
+    }
+
+    #[test]
+    fn from_descriptor_materializes_view_feel_verbatim() {
+        // View feel is a render-only camera effect: `from_descriptor` clones the
+        // descriptor's tuning onto the component with no transform.
+        let mut desc = canonical_descriptor();
+        let view_feel = ViewFeelParams {
+            bob: Some(BobParams {
+                frequency: 1.8,
+                vertical_amplitude: 0.06,
+                lateral_amplitude: 0.04,
+                speed_threshold: 0.5,
+                grounded_only: true,
+            }),
+            tilt: Some(TiltParams {
+                max_angle: 3.0,
+                speed_reference: 8.0,
+                tension: 12.0,
+                grounded_only: true,
+            }),
+            sway: Some(SwayParams {
+                amplitude: 0.5,
+                frequency: 0.4,
+                speed_scale: 0.2,
+                grounded_only: false,
+            }),
+        };
+        desc.view_feel = Some(view_feel.clone());
+        let comp = PlayerMovementComponent::from_descriptor(&desc);
+        assert_eq!(comp.view_feel, Some(view_feel));
+    }
+
+    #[test]
+    fn from_descriptor_view_feel_absent_yields_none() {
+        let comp = PlayerMovementComponent::from_descriptor(&canonical_descriptor());
+        assert!(comp.view_feel.is_none());
     }
 
     /// Descriptor with the air-jump (double-jump) budget enabled: one air

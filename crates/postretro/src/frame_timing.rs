@@ -35,20 +35,54 @@ impl InterpolableState {
     /// (not the tick-state) so mouse motion is never lost on zero-tick frames.
     /// We recompute the matrix from scratch rather than interpolating matrices
     /// (which doesn't produce correct results).
-    /// Build the view matrix from position plus view angles. Retained for
-    /// future passes that may need view-space depth.
-    pub fn view_matrix(&self, yaw: f32, pitch: f32) -> Mat4 {
+    /// Build the view matrix from position plus view angles, with an optional
+    /// render-only camera effect: a `roll` angle (radians) about the look
+    /// direction and a world-space `eye_offset` applied to the camera position.
+    /// Retained for future passes that may need view-space depth.
+    ///
+    /// `roll` rolls the up vector around the look direction (head-bob/strafe
+    /// tilt); `eye_offset` translates the eye without changing where it looks
+    /// (the offset is added to both eye and target, so the forward direction is
+    /// preserved).
+    ///
+    /// No-regression pin: when `roll == 0.0 && eye_offset == Vec3::ZERO` this
+    /// takes the original code path and produces a bit-identical matrix to the
+    /// pre-effect implementation. The zero case is exact, not tolerance-based —
+    /// do not route it through the roll/offset math.
+    pub fn view_matrix(&self, yaw: f32, pitch: f32, roll: f32, eye_offset: Vec3) -> Mat4 {
         let look_dir = Vec3::new(
             -yaw.sin() * pitch.cos(),
             pitch.sin(),
             -yaw.cos() * pitch.cos(),
         );
-        let target = self.position + look_dir;
-        Mat4::look_at_rh(self.position, target, Vec3::Y)
+
+        // Original path: no effect applied, bit-identical to the pre-effect
+        // matrix. The branch is the contract — keep the zero case off the
+        // roll/offset math.
+        if roll == 0.0 && eye_offset == Vec3::ZERO {
+            let target = self.position + look_dir;
+            return Mat4::look_at_rh(self.position, target, Vec3::Y);
+        }
+
+        // Roll the up vector around the look direction. Quat rotation about a
+        // normalized axis; look_dir is unit-length by construction above.
+        let up = glam::Quat::from_axis_angle(look_dir, roll) * Vec3::Y;
+        // Translate the eye, keeping the look direction unchanged by shifting
+        // the target by the same offset.
+        let eye = self.position + eye_offset;
+        let target = eye + look_dir;
+        Mat4::look_at_rh(eye, target, up)
     }
 
-    pub fn view_projection(&self, aspect: f32, yaw: f32, pitch: f32) -> Mat4 {
-        let view = self.view_matrix(yaw, pitch);
+    pub fn view_projection(
+        &self,
+        aspect: f32,
+        yaw: f32,
+        pitch: f32,
+        roll: f32,
+        eye_offset: Vec3,
+    ) -> Mat4 {
+        let view = self.view_matrix(yaw, pitch, roll, eye_offset);
 
         // Clamp aspect to avoid degenerate projection (near-zero aspect produces
         // vfov near PI, which makes tan(vfov/2) explode).
@@ -540,7 +574,7 @@ mod tests {
     #[test]
     fn view_projection_produces_finite_matrix() {
         let state = InterpolableState::new(Vec3::new(0.0, 200.0, 500.0));
-        let vp = state.view_projection(16.0 / 9.0, 0.0, 0.0);
+        let vp = state.view_projection(16.0 / 9.0, 0.0, 0.0, 0.0, Vec3::ZERO);
         for (i, val) in vp.to_cols_array().iter().enumerate() {
             assert!(val.is_finite(), "view_proj[{i}] is not finite: {val}");
         }
@@ -549,9 +583,126 @@ mod tests {
     #[test]
     fn view_projection_handles_zero_aspect_without_nan() {
         let state = InterpolableState::new(Vec3::ZERO);
-        let vp = state.view_projection(0.0, 0.0, 0.0);
+        let vp = state.view_projection(0.0, 0.0, 0.0, 0.0, Vec3::ZERO);
         for (i, val) in vp.to_cols_array().iter().enumerate() {
             assert!(!val.is_nan(), "view_proj[{i}] with zero aspect is NaN");
+        }
+    }
+
+    // The roll/eye-offset extension must leave the no-effect case untouched:
+    // when roll == 0 and offset == ZERO the matrix is bit-identical to the
+    // pre-effect implementation, which built the view straight from
+    // `look_at_rh(position, position + look_dir, Vec3::Y)`. Exact equality is
+    // the contract here, so we reconstruct that exact expression and compare
+    // element-wise without an epsilon.
+    #[test]
+    fn view_matrix_zero_effect_matches_original_path_bit_exact() {
+        let state = InterpolableState::new(Vec3::new(3.0, 200.0, -42.0));
+        let yaw: f32 = 0.7;
+        let pitch: f32 = -0.3;
+
+        let look_dir = Vec3::new(
+            -yaw.sin() * pitch.cos(),
+            pitch.sin(),
+            -yaw.cos() * pitch.cos(),
+        );
+        let expected = Mat4::look_at_rh(state.position, state.position + look_dir, Vec3::Y);
+
+        let actual = state.view_matrix(yaw, pitch, 0.0, Vec3::ZERO);
+
+        // Bit-exact: the no-effect branch must not reorder or re-derive math.
+        assert_eq!(
+            actual.to_cols_array(),
+            expected.to_cols_array(),
+            "zero-effect view_matrix must equal the original look_at_rh output",
+        );
+    }
+
+    #[test]
+    fn view_projection_zero_effect_matches_no_offset_no_roll_bit_exact() {
+        let state = InterpolableState::new(Vec3::new(0.0, 200.0, 500.0));
+        let aspect = 16.0 / 9.0;
+        let yaw = 0.4;
+        let pitch = 0.1;
+
+        // Two calls with the no-op effect args must be identical, and the
+        // projection composition must not perturb the bit-exact view.
+        let a = state.view_projection(aspect, yaw, pitch, 0.0, Vec3::ZERO);
+        let b = state.view_projection(aspect, yaw, pitch, 0.0, Vec3::ZERO);
+        assert_eq!(a.to_cols_array(), b.to_cols_array());
+    }
+
+    #[test]
+    fn view_matrix_nonzero_roll_differs_from_zero_roll() {
+        let state = InterpolableState::new(Vec3::new(0.0, 200.0, 500.0));
+        let yaw = 0.4;
+        let pitch = 0.1;
+
+        let level = state.view_matrix(yaw, pitch, 0.0, Vec3::ZERO);
+        let rolled = state.view_matrix(yaw, pitch, 0.15, Vec3::ZERO);
+
+        let any_differs = level
+            .to_cols_array()
+            .iter()
+            .zip(rolled.to_cols_array().iter())
+            .any(|(a, b)| (a - b).abs() > EPSILON);
+        assert!(any_differs, "a nonzero roll must change the view matrix",);
+    }
+
+    #[test]
+    fn view_matrix_eye_offset_shifts_camera_position() {
+        // The view matrix transforms world points into eye space; its
+        // translation column encodes the eye position. A world-space eye
+        // offset must move that, so a world point that was at the eye origin
+        // before the offset must no longer map to the eye-space origin.
+        let state = InterpolableState::new(Vec3::new(0.0, 200.0, 500.0));
+        let yaw = 0.0;
+        let pitch = 0.0;
+        let offset = Vec3::new(5.0, 0.0, 0.0);
+
+        let no_offset = state.view_matrix(yaw, pitch, 0.0, Vec3::ZERO);
+        let offset_view = state.view_matrix(yaw, pitch, 0.0, offset);
+
+        // The original eye position maps to the eye-space origin only when the
+        // camera has not been translated.
+        let eye_in_no_offset = no_offset.transform_point3(state.position);
+        let eye_in_offset = offset_view.transform_point3(state.position);
+
+        assert_approx(eye_in_no_offset.x, 0.0, "unoffset eye maps to origin x");
+        assert_approx(eye_in_no_offset.y, 0.0, "unoffset eye maps to origin y");
+        assert_approx(eye_in_no_offset.z, 0.0, "unoffset eye maps to origin z");
+
+        // After offsetting the eye by +5 in world X (yaw/pitch zero ⇒ camera
+        // right axis is +X), the old eye position is 5 units to the camera's
+        // left, i.e. eye-space x ≈ -5.
+        assert_approx(
+            eye_in_offset.x,
+            -offset.x,
+            "offsetting the eye shifts the camera in eye space",
+        );
+    }
+
+    #[test]
+    fn view_matrix_eye_offset_preserves_forward_direction() {
+        // Translating the eye must not rotate the camera: the forward axis of
+        // the view (third row of the rotation) must be unchanged by an offset.
+        let state = InterpolableState::new(Vec3::new(0.0, 200.0, 500.0));
+        let yaw = 0.4;
+        let pitch = 0.1;
+
+        let no_offset = state.view_matrix(yaw, pitch, 0.0, Vec3::ZERO);
+        let offset_view = state.view_matrix(yaw, pitch, 0.0, Vec3::new(2.0, -3.0, 1.0));
+
+        // Compare the rotation (direction) columns; only translation should
+        // change. Each basis-vector component must match within epsilon.
+        for col in 0..3 {
+            for row in 0..3 {
+                assert_approx(
+                    offset_view.col(col)[row],
+                    no_offset.col(col)[row],
+                    "eye offset must not rotate the view basis",
+                );
+            }
         }
     }
 

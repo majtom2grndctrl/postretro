@@ -597,19 +597,23 @@ mod tests {
     /// revert to a single-texel (radius-zero / one-tap) sample.
     #[test]
     fn forward_spot_shadow_has_nonzero_pcf_radius_and_multitap_kernel() {
-        const FORWARD_SRC: &str = include_str!("../shaders/forward.wgsl");
+        // `SPOT_SHADOW_PCF_RADIUS` and the `sample_spot_shadow` kernel live in the
+        // shared `shadow_sample.wgsl` snippet (extracted from forward.wgsl so the
+        // skinned-mesh pass can reuse them), concatenated into the forward module
+        // at pipeline build.
+        const SHADOW_SRC: &str = include_str!("../shaders/shadow_sample.wgsl");
 
         // The shared radius parameter exists, is a const, and parses to non-zero.
         let marker = "const SPOT_SHADOW_PCF_RADIUS: f32 =";
-        let start = FORWARD_SRC
+        let start = SHADOW_SRC
             .find(marker)
-            .expect("forward.wgsl must declare SPOT_SHADOW_PCF_RADIUS")
+            .expect("shadow_sample.wgsl must declare SPOT_SHADOW_PCF_RADIUS")
             + marker.len();
-        let end = FORWARD_SRC[start..]
+        let end = SHADOW_SRC[start..]
             .find(';')
             .expect("SPOT_SHADOW_PCF_RADIUS declaration must terminate with ';'")
             + start;
-        let value: f32 = FORWARD_SRC[start..end]
+        let value: f32 = SHADOW_SRC[start..end]
             .trim()
             .parse()
             .expect("SPOT_SHADOW_PCF_RADIUS must be a float literal");
@@ -622,7 +626,7 @@ mod tests {
         // comparison samples (3×3 box → 9 taps), so it is not a single-texel
         // sample. Both the radius use and the 9-tap normalization must be present.
         assert!(
-            FORWARD_SRC.contains("SPOT_SHADOW_PCF_RADIUS") && FORWARD_SRC.contains("/ 9.0"),
+            SHADOW_SRC.contains("SPOT_SHADOW_PCF_RADIUS") && SHADOW_SRC.contains("/ 9.0"),
             "sample_spot_shadow must use the radius and average a multi-tap kernel"
         );
     }

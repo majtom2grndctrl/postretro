@@ -1852,6 +1852,11 @@ mod tests {
             // (`light_eval_*`), so the composed source mirrors the runtime
             // `SHADER_SOURCE` and stays parseable.
             include_str!("../shaders/light_eval.wgsl"),
+            "\n",
+            // M10 mesh shadow receipt Task 1: forward calls the shared shadow-map
+            // samplers (`sample_spot_shadow`/`sample_point_shadow`), so the
+            // composed source mirrors the runtime `SHADER_SOURCE`.
+            include_str!("../shaders/shadow_sample.wgsl"),
         );
         const BILLBOARD_SHADER_SOURCE: &str = concat!(
             include_str!("../shaders/billboard.wgsl"),

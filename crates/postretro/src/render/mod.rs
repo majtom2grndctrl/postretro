@@ -167,6 +167,19 @@ fn sphere_intersects_any_fog_aabb(center: Vec3, radius: f32, aabbs: &[(Vec3, Vec
 // `sample_color_catmull_rom` from `curve_eval.wgsl`, so the consumer must also
 // append curve_eval (forward does, above). WGSL resolves module-scope names
 // regardless of textual order, so the relative order of these two is free.
+//
+// `shadow_sample.wgsl` owns the runtime shadow-map samplers (`sample_spot_shadow`
+// spot 2D-array PCF, `sample_point_shadow` point cube-array PCF) plus their
+// bias/resolution constants and `cube_face_ndc_depth` — extracted so the
+// skinned-mesh pass can mirror the same calls against its own group-2 b5–b8
+// shadow bindings. It declares no bindings: it reads the group-5
+// `spot_shadow_depth`, `spot_shadow_compare`, `light_space_matrices`, and
+// `point_shadow_cube` declared in `forward.wgsl` by lexical name. The
+// `// CUBE_SHADOW_BODY_BEGIN` / `// CUBE_SHADOW_BODY_END` markers around
+// `sample_point_shadow`'s body travel WITH the body into this snippet, so
+// `strip_point_shadow_cube` still neutralizes the cube path in the composed
+// no-`CUBE_ARRAY_TEXTURES` source; the `// CUBE_SHADOW_BINDING` binding
+// declaration stays with the consumer in `forward.wgsl`.
 const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/forward.wgsl"),
     "\n",
@@ -177,6 +190,8 @@ const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/sdf_light_select.wgsl"),
     "\n",
     include_str!("../shaders/light_eval.wgsl"),
+    "\n",
+    include_str!("../shaders/shadow_sample.wgsl"),
 );
 
 /// Derive the no-`CUBE_ARRAY_TEXTURES` variant of a group-5 shader (forward or

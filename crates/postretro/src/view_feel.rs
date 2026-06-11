@@ -5,6 +5,8 @@
 
 use std::f32::consts::TAU;
 
+use glam::Vec3;
+
 use crate::scripting::data_descriptors::{BobParams, SwayParams, TiltParams, ViewFeelParams};
 
 /// Speed band (m/s) above `speed_threshold` over which bob eases in from 0 to
@@ -24,6 +26,12 @@ const TILT_DAMPING_RATIO: f32 = 0.8;
 /// frequency so the motion never visibly repeats (the alternative to Perlin
 /// noise). The ratios are engine constants, not authored fields. Chosen near
 /// irrational (√2, √3, golden-ratio neighbours) to avoid commensurate beats.
+///
+/// `approx_constant` is allowed deliberately: these are fixed decorrelation
+/// ratios that happen to sit near √2/√3, not approximations *of* them — the
+/// literal values are the contract, so we must NOT swap in `f32::consts::SQRT_2`
+/// (which would change the value and reintroduce a commensurate beat).
+#[allow(clippy::approx_constant)]
 const SWAY_YAW_RATIOS: [f32; 3] = [1.0, 1.414_213_6, 2.236_068];
 const SWAY_PITCH_RATIOS: [f32; 3] = [1.103_516_6, 1.732_050_8, 2.645_751_3];
 const SWAY_ROLL_RATIOS: [f32; 3] = [0.870_551, 1.618_034, 2.094_395_2];
@@ -146,6 +154,50 @@ pub(crate) fn evaluate(
         return ViewFeelOutput::ZERO;
     }
     output
+}
+
+/// Derive the evaluator's two velocity-space inputs from the pawn velocity and
+/// the camera RIGHT vector, so the basis projection is testable apart from the
+/// render loop (the evaluator itself never sees the basis).
+///
+/// - `horizontal_speed`: magnitude of the velocity with the world-up (Y)
+///   component dropped — bob and sway read pawn speed in the ground plane, not
+///   vertical fall/jump speed.
+/// - `lateral_velocity`: SIGNED projection of velocity onto `camera_right`. A
+///   right-strafe (velocity aligned with the camera's right) is positive, which
+///   the tilt spring turns into the expected roll direction.
+///
+/// `camera_right` is expected to be the horizontal (Y-free), unit-length right
+/// vector the view uses (`Camera::right`); the dot product is the signed lateral
+/// speed regardless, but a non-unit basis would scale it.
+pub(crate) fn view_feel_inputs(velocity: Vec3, camera_right: Vec3) -> (f32, f32) {
+    let horizontal_speed = Vec3::new(velocity.x, 0.0, velocity.z).length();
+    let lateral_velocity = velocity.dot(camera_right);
+    (horizontal_speed, lateral_velocity)
+}
+
+/// Map a [`ViewFeelOutput`] onto the camera basis, producing the arguments the
+/// render chokepoint (`InterpolableState::view_projection`) consumes. Kept pure
+/// and separate from the render loop so the angle conversions, channel sums, and
+/// offset basis mapping are unit-testable.
+///
+/// Returns `(roll, yaw_offset, pitch_offset, eye_offset)`:
+/// - `roll` (radians): tilt's velocity-driven roll summed with sway's ambient
+///   roll, both descriptor degrees converted to radians.
+/// - `yaw_offset` / `pitch_offset` (radians): sway's look-angle channels, folded
+///   into the caller's yaw/pitch.
+/// - `eye_offset` (world-space metres): `bob_vertical` along world up (Y) plus
+///   `bob_lateral` along `camera_right`. Bob channels are already metres — no
+///   unit conversion.
+pub(crate) fn map_output_to_camera(
+    output: &ViewFeelOutput,
+    camera_right: Vec3,
+) -> (f32, f32, f32, Vec3) {
+    let roll = (output.tilt_roll + output.sway_roll).to_radians();
+    let yaw_offset = output.sway_yaw.to_radians();
+    let pitch_offset = output.sway_pitch.to_radians();
+    let eye_offset = Vec3::Y * output.bob_vertical + camera_right * output.bob_lateral;
+    (roll, yaw_offset, pitch_offset, eye_offset)
 }
 
 /// Head bob: a distance-phased oscillator that self-gates below a speed
@@ -879,5 +931,96 @@ mod tests {
         assert!(approx_eq(state.sway_clock, 0.0), "sway clock untouched");
         assert!(bob_peak > 0.0, "bob still active");
         assert!(out.tilt_roll.abs() > 0.0, "tilt still active");
+    }
+
+    // --- Camera-basis helpers ----------------------------------------------
+
+    #[test]
+    fn view_feel_inputs_horizontal_speed_drops_vertical_component() {
+        // A pure-vertical velocity has zero horizontal speed; a mixed velocity
+        // reports only its XZ magnitude.
+        let (h_up, _) = view_feel_inputs(Vec3::new(0.0, 9.0, 0.0), Vec3::X);
+        assert!(approx_eq(h_up, 0.0), "vertical-only velocity is zero speed");
+
+        // 3-4-5 in XZ, plus arbitrary vertical that must not contribute.
+        let (h_mixed, _) = view_feel_inputs(Vec3::new(3.0, 100.0, 4.0), Vec3::X);
+        assert!(
+            approx_eq(h_mixed, 5.0),
+            "horizontal speed is the XZ magnitude"
+        );
+    }
+
+    #[test]
+    fn view_feel_inputs_lateral_is_signed_projection_onto_right() {
+        // Right-strafe (velocity along +right) is positive; left-strafe negative;
+        // purely forward motion (perpendicular to right) projects to zero.
+        let right = Vec3::new(1.0, 0.0, 0.0);
+        let (_, strafe_right) = view_feel_inputs(Vec3::new(4.0, 0.0, 0.0), right);
+        assert!(strafe_right > 0.0, "right-strafe is positive lateral");
+
+        let (_, strafe_left) = view_feel_inputs(Vec3::new(-4.0, 0.0, 0.0), right);
+        assert!(strafe_left < 0.0, "left-strafe is negative lateral");
+        assert!(approx_eq(strafe_right, -strafe_left), "sign symmetric");
+
+        let (_, forward) = view_feel_inputs(Vec3::new(0.0, 0.0, -6.0), right);
+        assert!(
+            approx_eq(forward, 0.0),
+            "forward motion has no lateral component"
+        );
+    }
+
+    #[test]
+    fn map_output_roll_sums_tilt_and_sway_in_radians() {
+        let out = ViewFeelOutput {
+            tilt_roll: 6.0,
+            sway_roll: 4.0,
+            ..ViewFeelOutput::ZERO
+        };
+        let (roll, _, _, _) = map_output_to_camera(&out, Vec3::X);
+        assert!(
+            approx_eq(roll, 10.0_f32.to_radians()),
+            "roll is the degree sum in radians"
+        );
+    }
+
+    #[test]
+    fn map_output_folds_sway_yaw_pitch_as_radians() {
+        let out = ViewFeelOutput {
+            sway_yaw: 2.0,
+            sway_pitch: -1.5,
+            ..ViewFeelOutput::ZERO
+        };
+        let (_, yaw_offset, pitch_offset, _) = map_output_to_camera(&out, Vec3::X);
+        assert!(approx_eq(yaw_offset, 2.0_f32.to_radians()));
+        assert!(approx_eq(pitch_offset, (-1.5_f32).to_radians()));
+    }
+
+    #[test]
+    fn map_output_eye_offset_maps_bob_onto_up_and_right() {
+        // bob_vertical along world up (Y); bob_lateral along the supplied right.
+        // Use a yaw-rotated right vector to confirm the lateral term follows the
+        // basis, not world X.
+        let right = Vec3::new(0.0, 0.0, -1.0); // camera right at yaw = +90deg
+        let out = ViewFeelOutput {
+            bob_vertical: 0.1,
+            bob_lateral: 0.05,
+            ..ViewFeelOutput::ZERO
+        };
+        let (_, _, _, eye) = map_output_to_camera(&out, right);
+        assert!(approx_eq(eye.x, 0.0), "no world-X component for this basis");
+        assert!(approx_eq(eye.y, 0.1), "bob_vertical along world up");
+        assert!(approx_eq(eye.z, -0.05), "bob_lateral along camera right");
+    }
+
+    #[test]
+    fn map_output_zero_produces_zero_roll_and_offset() {
+        // The pass-through invariant in helper terms: a zeroed output maps to
+        // zero roll/yaw/pitch and a zero eye offset regardless of basis.
+        let (roll, yaw_offset, pitch_offset, eye) =
+            map_output_to_camera(&ViewFeelOutput::ZERO, Vec3::new(0.3, 0.0, -0.7));
+        assert!(approx_eq(roll, 0.0));
+        assert!(approx_eq(yaw_offset, 0.0));
+        assert!(approx_eq(pitch_offset, 0.0));
+        assert_eq!(eye, Vec3::ZERO);
     }
 }

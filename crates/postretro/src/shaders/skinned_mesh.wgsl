@@ -30,8 +30,9 @@
 // Entities follow the BILLBOARD precedent, not forward's static-surface variant:
 // `reject_backface = false` (a moving skinned entity is not a static world
 // surface) with Chebyshev probe-occlusion on. Baked static direct is computed
-// here via `sample_sh_direct`; group 2 stays UNALLOCATED, reserved for the
-// future dynamic-direct light loop (runtime dynamic-tier lights, plan D10).
+// here via `sample_sh_direct`; group 2 now carries the dynamic-direct light
+// resources (M10 Task 2) — declared but not yet read; the per-fragment runtime
+// dynamic-tier light loop (plan D10) lands in Task 3.
 //
 // Design note (non-binding): the skinning vertex stage is kept separable so a
 // future position-only depth-only skinned variant (the shadow task) can share
@@ -55,13 +56,68 @@ struct CameraUniforms {
 @group(1) @binding(0) var base_texture: texture_2d<f32>;
 @group(1) @binding(5) var aniso_sampler: sampler;
 
-// --- Group 3: skinned instance data ------------------------------------------
-// Group 2 is intentionally left UNALLOCATED. It is reserved for the future
-// dynamic-direct light loop (runtime dynamic-tier lights, plan D10) — distinct
-// from the baked static-direct term, which already landed in group 4 (binding
-// 15). The pipeline layout passes `None` for group 2; D10 inserts a slot here
-// rather than renumbering existing groups.
+// --- Group 2: dynamic direct lighting ----------------------------------------
+// Filled by M10 Task 2. Binding map PINNED across both M10 mesh specs (the BGL
+// in render/mesh_pass.rs is authoritative): b0 dynamic-light records (the
+// renderer's `is_dynamic`-filtered set — the dynamic tier only; static-tier
+// direct for movers is the group-4 baked atlas, so no double-count), b1 per-light
+// influence volumes, b2 scripted-animation descriptors (forward's group-3 b13
+// `scripted_light_descriptors`, SAME buffer), b3 scripted-animation curve samples
+// (forward's group-3 b12 `anim_samples`, SAME buffer), b4 the mesh-side params
+// uniform. b5–b8 are RESERVED for the shadow-receipt spec — not declared here.
 //
+// These bindings are DECLARED but not yet READ: the per-fragment dynamic-light
+// loop is Task 3. They exist now so the appended shared helpers resolve their
+// module-scope names — `curve_eval.wgsl` reads `anim_samples` (b3) and
+// `light_eval.wgsl` reads the `AnimationDescriptor` type (declared below) — and
+// so the BGL and shader agree. Unused bindings/functions are legal in WGSL, so
+// the shader still passes naga validation. `GpuLight` / `AnimationDescriptor`
+// mirror forward.wgsl's same-named structs (the underlying buffers are the same).
+struct GpuLight {
+    position_and_type: vec4<f32>,
+    color_and_falloff_model: vec4<f32>,
+    direction_and_range: vec4<f32>,
+    cone_angles_and_pad: vec4<f32>,
+};
+@group(2) @binding(0) var<storage, read> lights: array<GpuLight>;
+// Per-light influence volume: xyz = sphere center, w = radius.
+@group(2) @binding(1) var<storage, read> light_influence: array<vec4<f32>>;
+
+// Per-light scripted-animation descriptor — mirrors forward.wgsl's
+// `AnimationDescriptor` (48 B; see render/sh_volume.rs ANIMATION_DESCRIPTOR_SIZE).
+// Consumed by the appended `light_eval.wgsl` helpers (e.g.
+// `light_eval_animated_direction`) when the Task-3 loop lands.
+struct AnimationDescriptor {
+    period: f32,
+    phase: f32,
+    brightness_offset: u32,
+    brightness_count: u32,
+    base_color: vec3<f32>,
+    color_offset: u32,
+    color_count: u32,
+    is_active: u32,
+    direction_offset: u32,
+    direction_count: u32,
+};
+@group(2) @binding(2) var<storage, read> scripted_light_descriptors: array<AnimationDescriptor>;
+// Scripted-animation curve samples (packed f32). `curve_eval.wgsl` (appended to
+// this source) reads `anim_samples` by lexical name; this declaration satisfies
+// that reference. Same buffer forward binds at its group-3 b12.
+@group(2) @binding(3) var<storage, read> anim_samples: array<f32>;
+
+// Mesh-side group-2 params uniform: dynamic-light count, the frame's render-clock
+// `time` (the SAME value the renderer writes to forward `Uniforms.time` that
+// frame, so the scripted curves stay phase-coherent), and a dynamic-direct debug
+// gate. Mirrors `MeshLightParams` in render/mesh_pass.rs. std140-padded to 16 B.
+struct MeshLightParams {
+    light_count: u32,
+    time: f32,
+    debug_gate: u32,
+    _pad: u32,
+};
+@group(2) @binding(4) var<uniform> mesh_light_params: MeshLightParams;
+
+// --- Group 3: skinned instance data ------------------------------------------
 // `bone_palette` is the SHARED palette storage buffer; every instance's run of
 // `BonePaletteEntry` (one mat4 per joint) is appended into it. Each instance's
 // `Instance.base_index` selects its run; `Instance.model` is its per-instance

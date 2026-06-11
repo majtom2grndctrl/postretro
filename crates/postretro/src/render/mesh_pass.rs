@@ -84,13 +84,49 @@ fn build_instance_entry(model: glam::Mat4, base_index: u32) -> [u8; INSTANCE_ENT
 // calls (`sample_sh_indirect_corners_depth_aware`). WGSL resolves module-scope
 // names regardless of textual order, so appending the helper after is safe —
 // the same string-concat mechanism `render/mod.rs::SHADER_SOURCE` uses to
-// assemble forward.wgsl. The mesh path never evaluates animated layers, so
-// `curve_eval.wgsl` is NOT appended (unlike the forward composition).
+// assemble forward.wgsl.
+//
+// The mesh path NOW carries the dynamic-direct light scaffolding: `skinned_mesh.wgsl`
+// declares the group-2 bindings (lights, influence volumes, scripted descriptors,
+// `anim_samples`, params uniform) the future runtime light loop (Task 3) will read,
+// so the shared `light_eval.wgsl` per-light helpers and the `curve_eval.wgsl`
+// Catmull-Rom samplers they call are appended here — mirroring the forward
+// composition (`render/mod.rs::SHADER_SOURCE`). `curve_eval.wgsl` reads
+// `anim_samples` (declared at group 2 binding 3 below) and `light_eval.wgsl`'s
+// `light_eval_animated_direction` calls `sample_color_catmull_rom` from
+// curve_eval, so both must be present together; WGSL resolves module-scope names
+// regardless of textual order so the relative append order of these two is free.
+// (The prior "mesh never evaluates animated layers" note is no longer true: the
+// scripted-light direction/intensity curves are evaluated against group 2.)
 const SKINNED_MESH_SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/skinned_mesh.wgsl"),
     "\n",
     include_str!("../shaders/sh_sample.wgsl"),
+    "\n",
+    include_str!("../shaders/curve_eval.wgsl"),
+    "\n",
+    include_str!("../shaders/light_eval.wgsl"),
 );
+
+/// Mesh-side group-2 params uniform (binding 4): dynamic-light count, the frame's
+/// render-clock time, and a dynamic-direct debug gate. `time` is the SAME
+/// render-clock value the renderer uploads to forward `Uniforms.time` that frame
+/// (the renderer caches it and threads it in), so the scripted-light animated
+/// curves the mesh loop evaluates stay phase-coherent with the forward pass and
+/// the CPU light bridge. std140-padded to 16 bytes (the WGSL `MeshLightParams`
+/// struct mirrors this layout: `light_count: u32`, `time: f32`, `debug_gate: u32`,
+/// `_pad: u32`).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct MeshLightParams {
+    light_count: u32,
+    time: f32,
+    debug_gate: u32,
+    _pad: u32,
+}
+
+/// Byte size of the group-2 params uniform (`MeshLightParams`, 16 B).
+const MESH_LIGHT_PARAMS_SIZE: u64 = std::mem::size_of::<MeshLightParams>() as u64;
 
 /// Depth-only skinned shader: position + joints + weights, skinned by the shared
 /// `skin_matrix` kernel and projected by a per-render light-space matrix (group
@@ -151,6 +187,27 @@ pub struct MeshPass {
     /// (binding 1). Both buffers are fixed-size and reused every frame, so the
     /// bind group is built once at init.
     instance_bind_group: wgpu::BindGroup,
+
+    /// Group 2 BGL (dynamic direct lighting). Pinned binding map (see
+    /// [`MeshPass::new`]): b0 dynamic-light records, b1 per-light influence
+    /// volumes, b2 scripted-animation descriptors, b3 scripted-animation curve
+    /// samples, b4 the mesh-side params uniform. b0–b3 alias the SAME
+    /// renderer-owned GPU buffers forward binds; b4 is owned here. Retained so
+    /// the bind group can be rebuilt on buffer reallocation (level load).
+    light_bind_group_layout: wgpu::BindGroupLayout,
+
+    /// Group 2 bind group. `None` until the renderer first calls
+    /// [`MeshPass::rebuild_light_bind_group`] with the runtime light buffers, and
+    /// rebuilt whenever those buffers are reallocated (level load). The forward
+    /// mesh draw sets it at group 2; b0–b3 alias renderer-owned buffers, b4 is
+    /// [`MeshPass::light_params_buffer`].
+    light_bind_group: Option<wgpu::BindGroup>,
+
+    /// Group 2 binding 4 params uniform (`MeshLightParams`): light count, the
+    /// frame's forward `time`, and a debug gate. Fixed-size, owned here, written
+    /// per frame by [`MeshPass::write_light_params`]; rebound by reference into
+    /// every rebuilt group-2 bind group.
+    light_params_buffer: wgpu::Buffer,
 
     /// Uploaded models keyed by handle (the raw `MeshComponent.model` string).
     /// One entry per distinct model; mirrors `SmokePass::sheets`. The level-load
@@ -284,10 +341,88 @@ impl MeshPass {
                 ],
             });
 
-        // Pipeline layout: group 0 (camera), 1 (material), 2 LEFT OPEN
-        // (provisional dynamic-DIRECT lighting slot — `None`, like SmokePass
-        // leaves unused slots; the dynamic-direct task adds group 2 rather than
-        // renumbering), 3 (skinned instance data), 4 (SH irradiance volume —
+        // Group 2: dynamic direct lighting. Binding map PINNED across both M10
+        // mesh specs — b0 dynamic-light records (the renderer's `is_dynamic`-
+        // filtered set, NOT the shadow-candidate set, so the lighting-tier split
+        // holds by construction — plan D10: the mesh dynamic loop evaluates the
+        // dynamic tier only, static-tier direct for movers is the group-4 baked
+        // atlas), b1 per-light influence volumes, b2 scripted-animation
+        // descriptors (forward's group-3 b13 `scripted_light_descriptors`, the
+        // SAME buffer rebound here), b3 scripted-animation curve samples
+        // (forward's group-3 b12 `anim_samples`, same buffer), b4 the NEW
+        // mesh-side params uniform (light count, frame time, debug gate). b5–b8
+        // are RESERVED for the sibling shadow-receipt spec — NOT allocated here.
+        //
+        // All four storage entries are FRAGMENT-only: the mesh dynamic-light loop
+        // runs in the fragment stage (Task 3). This is the mesh fragment stage's
+        // FIRST storage-buffer use (group 3's palette + instance SSBO are
+        // VERTEX-stage), so the fragment stage sits at FOUR storage buffers here —
+        // well under the per-stage ceiling of 8 (rendering_pipeline.md §10).
+        let light_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Skinned Mesh Light BGL (group 2)"),
+                entries: &[
+                    // b0: dynamic-light records (is_dynamic-filtered set).
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // b1: per-light influence volumes.
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // b2: scripted-animation descriptors (forward group-3 b13).
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // b3: scripted-animation curve samples (forward group-3 b12).
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // b4: mesh-side params uniform (light count, time, debug gate).
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        // Pipeline layout: group 0 (camera), 1 (material), 2 (dynamic direct
+        // lighting — the group-2 BGL above; was `None` before M10 Task 2),
+        // 3 (skinned instance data), 4 (SH irradiance volume —
         // `ShVolumeResources.mesh_bind_group_layout`, the SUPERSET layout that
         // extends the shared SH entries with the direct-atlas texture at binding
         // 15 and the `DynamicDirectParams` uniform at binding 16; forward/
@@ -299,7 +434,7 @@ impl MeshPass {
             bind_group_layouts: &[
                 Some(camera_bgl),
                 Some(material_bgl),
-                None,
+                Some(&light_bind_group_layout),
                 Some(&instance_bind_group_layout),
                 Some(sh_volume_bgl),
             ],
@@ -520,6 +655,19 @@ impl MeshPass {
             ],
         });
 
+        // Group 2 binding 4 params uniform (`MeshLightParams`). Fixed-size, owned
+        // here, written per frame; rebound by reference into every rebuilt group-2
+        // bind group. The group-2 bind group itself is left `None` until the
+        // renderer calls `rebuild_light_bind_group` with the runtime light buffers
+        // (after geometry installs) — the draw path skips the mesh pass when no
+        // model is uploaded, so no frame draws meshes before that wiring lands.
+        let light_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Skinned Mesh Light Params Uniform"),
+            size: MESH_LIGHT_PARAMS_SIZE,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         // Cache the gate once at construction so the per-frame sampling loop
         // never re-reads the environment. Same flag the GPU-timing path uses.
         let pose_sample_stats = (std::env::var("POSTRETRO_GPU_TIMING").ok().as_deref()
@@ -532,10 +680,92 @@ impl MeshPass {
             palette_buffer,
             instance_buffer,
             instance_bind_group,
+            light_bind_group_layout,
+            light_bind_group: None,
+            light_params_buffer,
             models: HashMap::new(),
             model_bounds: HashMap::new(),
             pose_sample_stats,
         }
+    }
+
+    /// (Re)build the group-2 dynamic-direct light bind group over the renderer's
+    /// runtime light buffers. Called once after geometry installs and again on any
+    /// reallocation of these buffers (level load), mirroring how the renderer
+    /// rebuilds its forward `lighting_bind_group`. The buffers are owned by the
+    /// renderer and bound here by reference; b4 is this pass's own
+    /// `light_params_buffer`.
+    ///
+    /// `lights` MUST be the `is_dynamic`-FILTERED dynamic-light set (the renderer's
+    /// `filter_dynamic_lights` output / `lights_buffer`), NOT the shadow-candidate
+    /// set — binding the filtered set is what makes the lighting-tier split hold by
+    /// construction (plan D10). `influence` is the per-light influence-volume
+    /// buffer. `scripted_descriptors` is forward's group-3 b13
+    /// `scripted_light_descriptors`; `anim_samples` is forward's group-3 b12
+    /// `anim_samples` — the SAME GPU buffers, rebound at mesh group 2 b2/b3.
+    pub fn rebuild_light_bind_group(
+        &mut self,
+        device: &wgpu::Device,
+        lights: &wgpu::Buffer,
+        influence: &wgpu::Buffer,
+        scripted_descriptors: &wgpu::Buffer,
+        anim_samples: &wgpu::Buffer,
+    ) {
+        self.light_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Skinned Mesh Light Bind Group (group 2)"),
+            layout: &self.light_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: lights.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: influence.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: scripted_descriptors.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: anim_samples.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.light_params_buffer.as_entire_binding(),
+                },
+            ],
+        }));
+    }
+
+    /// Write this frame's group-2 params uniform (binding 4): the dynamic-light
+    /// `light_count`, the frame's render-clock `time`, and a `debug_gate`. `time`
+    /// MUST be the SAME value the renderer wrote to forward `Uniforms.time` this
+    /// frame (the renderer caches it in `update_per_frame_uniforms` and threads it
+    /// here), so the scripted-light curves the mesh loop (Task 3) evaluates stay
+    /// phase-coherent with the forward pass.
+    pub fn write_light_params(
+        &self,
+        queue: &wgpu::Queue,
+        light_count: u32,
+        time: f32,
+        debug_gate: u32,
+    ) {
+        let params = MeshLightParams {
+            light_count,
+            time,
+            debug_gate,
+            _pad: 0,
+        };
+        let bytes = [
+            params.light_count.to_ne_bytes(),
+            params.time.to_ne_bytes(),
+            params.debug_gate.to_ne_bytes(),
+            params._pad.to_ne_bytes(),
+        ]
+        .concat();
+        queue.write_buffer(&self.light_params_buffer, 0, &bytes);
     }
 
     /// Insert (or replace) an uploaded skinned model keyed by `handle`. Uploads
@@ -707,6 +937,18 @@ impl MeshPass {
         }
 
         pass.set_pipeline(&self.pipeline);
+        // Group 2 (dynamic direct lighting): the runtime light buffers + the
+        // per-frame params uniform. Set once for the frame. The pipeline layout
+        // declares group 2, so the bind group MUST be present before any mesh
+        // draw — the renderer wires it (`rebuild_light_bind_group`) once geometry
+        // installs, and the draw path is skipped until a model is uploaded, so
+        // this is `Some` on every frame a mesh actually draws. The expect guards
+        // against a future caller reordering that wiring after the draw.
+        let light_bind_group = self
+            .light_bind_group
+            .as_ref()
+            .expect("mesh group-2 light bind group must be built before recording mesh draws");
+        pass.set_bind_group(2, light_bind_group, &[]);
         // Group 3 (palette + instance SSBO) is shared across every group/submesh
         // this frame — set once. The shader selects each instance's run via
         // `@builtin(instance_index)` against the densely-packed SSBO.
@@ -1076,6 +1318,44 @@ mod tests {
             &bytes[68..80],
             &[0u8; 12],
             "padding bytes 68..80 must be zero"
+        );
+    }
+
+    // Guard the group-2 params uniform layout contract: `MeshLightParams`
+    // { light_count: u32, time: f32, debug_gate: u32, _pad: u32 } — 16 B std140,
+    // mirrored by the WGSL `MeshLightParams` struct at group 2 binding 4. The
+    // mesh dynamic-light loop (Task 3) reads `time` for scripted-curve phase, so
+    // a silent layout edit on either side must fail here.
+    #[test]
+    fn mesh_light_params_is_sixteen_bytes() {
+        assert_eq!(
+            MESH_LIGHT_PARAMS_SIZE, 16,
+            "MeshLightParams must be 16 B to match the std140 WGSL uniform",
+        );
+    }
+
+    // The skinned-mesh shader must DECLARE the pinned group-2 binding map (Task 2)
+    // so the appended `curve_eval.wgsl` (`anim_samples` at b3) and `light_eval.wgsl`
+    // (`AnimationDescriptor` for b2) symbols resolve and the BGL agrees with the
+    // shader. b5–b8 belong to the sibling shadow-receipt spec and must NOT appear.
+    #[test]
+    fn skinned_mesh_wgsl_declares_group2_light_bindings() {
+        let src = include_str!("../shaders/skinned_mesh.wgsl");
+        for decl in [
+            "@group(2) @binding(0) var<storage, read> lights",
+            "@group(2) @binding(1) var<storage, read> light_influence",
+            "@group(2) @binding(2) var<storage, read> scripted_light_descriptors",
+            "@group(2) @binding(3) var<storage, read> anim_samples",
+            "@group(2) @binding(4) var<uniform> mesh_light_params",
+        ] {
+            assert!(
+                src.contains(decl),
+                "skinned_mesh.wgsl must declare group-2 binding: {decl}",
+            );
+        }
+        assert!(
+            !src.contains("@group(2) @binding(5)"),
+            "group 2 b5 is reserved for the shadow-receipt spec — not this task",
         );
     }
 }

@@ -116,12 +116,7 @@ mod tests {
             ..Transform::default()
         });
         registry
-            .set_component(
-                id,
-                MeshComponent {
-                    model: model.into(),
-                },
-            )
+            .set_component(id, MeshComponent::stateless(model.into()))
             .unwrap();
     }
 
@@ -260,7 +255,7 @@ mod tests {
         let world = single_leaf_world();
         let id = registry.spawn(Transform::default());
         registry
-            .set_component(id, MeshComponent { model: "m".into() })
+            .set_component(id, MeshComponent::stateless("m".into()))
             .unwrap();
         // Snapshot freezes the spawn (origin) as previous-tick, then move
         // current to (10,0,0).

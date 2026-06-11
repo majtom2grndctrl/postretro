@@ -295,6 +295,8 @@ fn main() -> Result<()> {
         pending_spawn_points: None,
         pending_map_entities: None,
         script_time: 0.0,
+        anim_time: 0.0,
+        anim_time_scale: 1.0,
         boot_state: BootState::Booting,
         splash_frame: 0,
         pending_level_log: false,
@@ -555,6 +557,20 @@ struct App {
     /// unload. Maintained for any future engine consumers that need a
     /// level-relative monotonic clock.
     script_time: f64,
+
+    /// Game-layer animation clock: accumulates `frame_dt × anim_time_scale` each
+    /// render frame, advanced beside `script_time` at the same site and gated by
+    /// the same dev-tools `freeze_time()` flag. All skeletal-animation timing
+    /// (entry stamps, clip-local times, fade windows, the pending-stamp resolve)
+    /// reads this clock. Accumulation — not scaling of absolute time — so
+    /// changing `anim_time_scale` never jumps existing poses. Resets to zero on
+    /// level unload. See: context/lib/scripting.md §10.3.
+    anim_time: f64,
+
+    /// Per-frame multiplier on the animation clock's advancement. `1.0` is
+    /// real-time; `0.5` half-rate; `0.0` holds every clip and fade (pause). The
+    /// slow-motion seam — no script surface yet (engine-side field only).
+    anim_time_scale: f64,
 
     /// Per-stage durations for log line A — engine boot
     /// (args_parsed, script_runtime_ctor, event_loop_created, window_created,
@@ -1147,6 +1163,15 @@ impl ApplicationHandler for App {
                 let frozen = false;
                 if !frozen {
                     self.script_time += frame_dt as f64;
+                    // Animation clock accumulates scaled dt at the same site,
+                    // under the same freeze gate. Accumulation (not absolute-time
+                    // scaling) keeps a mid-fade scale change from jumping poses;
+                    // scale 0 holds every clip and fade. See scripting.md §10.3.
+                    self.anim_time = Self::advance_anim_clock(
+                        self.anim_time,
+                        frame_dt as f64,
+                        self.anim_time_scale,
+                    );
                 }
 
                 // Position interpolated from tick-state slots; yaw/pitch from
@@ -1403,6 +1428,19 @@ impl ApplicationHandler for App {
                         // while `visible_cells` is still live (it is reclaimed into
                         // scratch after).
                         if let Some(world) = self.level.as_ref() {
+                            // Resolve pass: fill every pending animation entry
+                            // stamp from this frame's post-advance animation clock
+                            // before the collector samples poses. Runs with a
+                            // mutable registry, immediately before the (read-only)
+                            // collector, so same-tick switches have all landed and
+                            // the last target's stamp is concrete. See mesh.rs.
+                            {
+                                let mut registry = self.script_ctx.registry.borrow_mut();
+                                crate::scripting::components::mesh::resolve_pending_animation_stamps(
+                                    &mut registry,
+                                    self.anim_time,
+                                );
+                            }
                             let registry = self.script_ctx.registry.borrow();
                             // Same frame alpha the player camera reads from
                             // `frame_timing` — interpolate each mesh between its
@@ -2361,6 +2399,18 @@ impl App {
         );
         self.level_timings.record("level_load_event");
         self.script_time = 0.0;
+        // Animation clock is level-relative like `script_time`. The scale field
+        // is engine config, not level state, so it is not reset here.
+        self.anim_time = 0.0;
+    }
+
+    /// Accumulate one frame onto the animation clock: `prev + dt × scale`.
+    /// Pure so the accumulation contract (scale 0.5 halves advancement; a
+    /// mid-accumulation scale change never jumps the clock because we add scaled
+    /// deltas rather than scaling absolute time) is unit-verifiable without the
+    /// event loop. The freeze gate lives at the call site. See scripting.md §10.3.
+    fn advance_anim_clock(prev: f64, frame_dt: f64, scale: f64) -> f64 {
+        prev + frame_dt * scale
     }
 
     /// Drive `movement::tick` for every entity carrying a
@@ -2880,12 +2930,7 @@ mod tests {
 
         let id = registry.spawn(Transform::default());
         registry
-            .set_component(
-                id,
-                MeshComponent {
-                    model: model.to_string(),
-                },
-            )
+            .set_component(id, MeshComponent::stateless(model.to_string()))
             .expect("freshly spawned id is live");
     }
 
@@ -2969,6 +3014,64 @@ mod tests {
             snapshot.len(),
             1,
             "value-less slots are skipped; only the set slot appears",
+        );
+    }
+
+    // --- Animation clock accumulation (scripting.md §10.3) ---
+
+    const CLOCK_EPSILON: f64 = 1e-9;
+
+    #[test]
+    fn anim_clock_half_scale_advances_at_half_rate() {
+        // With scale 0.5, accumulating the same deltas yields half the elapsed
+        // time of a real-time (scale 1.0) clock.
+        let dt = 1.0 / 60.0;
+        let mut full = 0.0;
+        let mut half = 0.0;
+        for _ in 0..600 {
+            full = App::advance_anim_clock(full, dt, 1.0);
+            half = App::advance_anim_clock(half, dt, 0.5);
+        }
+        assert!(
+            (half - full * 0.5).abs() < CLOCK_EPSILON,
+            "half-scale clock should be exactly half the real-time clock: full={full}, half={half}"
+        );
+    }
+
+    #[test]
+    fn anim_clock_zero_scale_holds() {
+        let dt = 1.0 / 144.0;
+        let mut clock = 5.0;
+        for _ in 0..100 {
+            clock = App::advance_anim_clock(clock, dt, 0.0);
+        }
+        assert!(
+            (clock - 5.0).abs() < CLOCK_EPSILON,
+            "scale 0 must hold the clock in place, got {clock}"
+        );
+    }
+
+    #[test]
+    fn anim_clock_mid_accumulation_scale_change_produces_no_jump() {
+        // Accumulation (not absolute-time scaling) means changing the scale only
+        // affects future deltas — the already-accumulated value is untouched, so
+        // there is no discontinuity at the scale-change boundary.
+        let dt = 0.01;
+        let mut clock = 0.0;
+        for _ in 0..50 {
+            clock = App::advance_anim_clock(clock, dt, 1.0);
+        }
+        let before_change = clock; // 50 × 0.01 × 1.0 = 0.5
+        // Switch to half scale mid-accumulation. The very next frame advances by
+        // dt × 0.5 from `before_change` — no retroactive rescale of the prior 0.5.
+        let after_first_half_step = App::advance_anim_clock(clock, dt, 0.5);
+        assert!(
+            (after_first_half_step - (before_change + dt * 0.5)).abs() < CLOCK_EPSILON,
+            "scale change must not retroactively rescale accumulated time"
+        );
+        assert!(
+            after_first_half_step > before_change,
+            "clock must keep moving forward (no backward jump) across a scale change"
         );
     }
 }

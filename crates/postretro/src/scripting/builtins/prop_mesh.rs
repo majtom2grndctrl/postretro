@@ -72,7 +72,7 @@ pub(crate) fn handle(entity: &MapEntity, registry: &mut EntityRegistry) -> Optio
 
     // `set_component` only fails on a stale id — the id was just returned by
     // `try_spawn` so it must be live.
-    let _ = registry.set_component(id, MeshComponent { model });
+    let _ = registry.set_component(id, MeshComponent::stateless(model));
     // Tags are attached via `try_spawn`; per-placement KVP mirroring is
     // performed uniformly by `apply_classname_dispatch` after this handler
     // returns. Built-in handlers need not call `set_tags` or `set_map_kvps`

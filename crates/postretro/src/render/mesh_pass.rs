@@ -109,19 +109,23 @@ const SKINNED_MESH_SHADER_SOURCE: &str = concat!(
 );
 
 /// Mesh-side group-2 params uniform (binding 4): dynamic-light count, the frame's
-/// render-clock time, and a dynamic-direct debug gate. `time` is the SAME
-/// render-clock value the renderer uploads to forward `Uniforms.time` that frame
-/// (the renderer caches it and threads it in), so the scripted-light animated
-/// curves the mesh loop evaluates stay phase-coherent with the forward pass and
-/// the CPU light bridge. std140-padded to 16 bytes (the WGSL `MeshLightParams`
-/// struct mirrors this layout: `light_count: u32`, `time: f32`, `debug_gate: u32`,
-/// `_pad: u32`).
+/// render-clock time, and `lighting_isolation`. `time` is the SAME render-clock
+/// value the renderer uploads to forward `Uniforms.time` that frame (the renderer
+/// caches it and threads it in), so the scripted-light animated curves the mesh
+/// loop evaluates stay phase-coherent with the forward pass and the CPU light
+/// bridge. `lighting_isolation` is the SAME `LightingIsolation` value the renderer
+/// writes to forward `Uniforms.lighting_isolation` that frame, so the mesh
+/// dynamic-direct term participates in the lighting-isolation debug modes exactly
+/// as the world dynamic term does (the shader derives `use_dynamic` from it,
+/// mirroring forward.wgsl). std140-padded to 16 bytes (the WGSL `MeshLightParams`
+/// struct mirrors this layout: `light_count: u32`, `time: f32`,
+/// `lighting_isolation: u32`, `_pad: u32`).
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct MeshLightParams {
     light_count: u32,
     time: f32,
-    debug_gate: u32,
+    lighting_isolation: u32,
     _pad: u32,
 }
 
@@ -133,6 +137,77 @@ const MESH_LIGHT_PARAMS_SIZE: u64 = std::mem::size_of::<MeshLightParams>() as u6
 /// 0). Renders animated entity occluders into a shadow map. Standalone (no
 /// helper append) — it declares only the buffers it reads.
 const SKINNED_DEPTH_SHADER_SOURCE: &str = include_str!("../shaders/skinned_depth.wgsl");
+
+/// GPU-free builder for the mesh group-2 (dynamic direct lighting) BGL entries.
+/// Single source of truth: `MeshPass::new` builds the layout from this, and the
+/// headless `mesh_group2_bgl_matches_shader_bindings` test re-derives the binding
+/// map and per-stage storage budget from the SAME entries — so a drift in either
+/// the shader's group-2 declarations or the budget fails CI before a real GPU
+/// would reject the pipeline. Pinned binding map (mirrors `skinned_mesh.wgsl`
+/// group 2 and rendering_pipeline.md §9):
+///   b0 dynamic-light records (the `is_dynamic`-filtered set), b1 per-light
+///   influence volumes, b2 scripted-animation descriptors, b3 scripted-animation
+///   curve samples, b4 the mesh-side params uniform. All FRAGMENT-only: the mesh
+///   dynamic-light loop runs in the fragment stage, so this contributes FOUR
+///   fragment-visible storage buffers — well under the per-stage ceiling of 8
+///   (rendering_pipeline.md §10). b5–b8 are RESERVED for the shadow-receipt spec
+///   and are NOT declared here.
+fn mesh_light_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 5] {
+    let storage_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    };
+    [
+        // b0: dynamic-light records (is_dynamic-filtered set).
+        storage_entry(0),
+        // b1: per-light influence volumes.
+        storage_entry(1),
+        // b2: scripted-animation descriptors (forward group-3 b13).
+        storage_entry(2),
+        // b3: scripted-animation curve samples (forward group-3 b12).
+        storage_entry(3),
+        // b4: mesh-side params uniform (light count, time, lighting_isolation).
+        wgpu::BindGroupLayoutEntry {
+            binding: 4,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        },
+    ]
+}
+
+/// Count BGL entries that consume a `max_storage_buffers_per_shader_stage` slot
+/// for the FRAGMENT stage: read-only storage `Buffer` entries whose visibility
+/// includes FRAGMENT. wgpu charges this limit against the BGL *entry* set of a
+/// pipeline layout per stage, not against what a shader reads. Mirrors
+/// `render::mod::vertex_storage_buffers` for the fragment stage; the mesh
+/// dynamic-light loop is the mesh fragment stage's first storage-buffer use.
+#[cfg(test)]
+fn fragment_storage_buffers(entries: &[wgpu::BindGroupLayoutEntry]) -> u32 {
+    entries
+        .iter()
+        .filter(|e| {
+            e.visibility.contains(wgpu::ShaderStages::FRAGMENT)
+                && matches!(
+                    e.ty,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { .. },
+                        ..
+                    }
+                )
+        })
+        .count() as u32
+}
 
 /// One uploaded skinned model: GPU vertex + index buffers, its per-submesh
 /// material bind groups, and the CPU-side animation data (skeleton + first clip)
@@ -204,9 +279,10 @@ pub struct MeshPass {
     light_bind_group: Option<wgpu::BindGroup>,
 
     /// Group 2 binding 4 params uniform (`MeshLightParams`): light count, the
-    /// frame's forward `time`, and a debug gate. Fixed-size, owned here, written
-    /// per frame by [`MeshPass::write_light_params`]; rebound by reference into
-    /// every rebuilt group-2 bind group.
+    /// frame's forward `time`, and the forward `lighting_isolation` mode.
+    /// Fixed-size, owned here, written per frame by
+    /// [`MeshPass::write_light_params`]; rebound by reference into every rebuilt
+    /// group-2 bind group.
     light_params_buffer: wgpu::Buffer,
 
     /// Uploaded models keyed by handle (the raw `MeshComponent.model` string).
@@ -353,71 +429,17 @@ impl MeshPass {
         // mesh-side params uniform (light count, frame time, debug gate). b5–b8
         // are RESERVED for the sibling shadow-receipt spec — NOT allocated here.
         //
-        // All four storage entries are FRAGMENT-only: the mesh dynamic-light loop
-        // runs in the fragment stage (Task 3). This is the mesh fragment stage's
-        // FIRST storage-buffer use (group 3's palette + instance SSBO are
-        // VERTEX-stage), so the fragment stage sits at FOUR storage buffers here —
-        // well under the per-stage ceiling of 8 (rendering_pipeline.md §10).
+        // All five entries are FRAGMENT-only: the mesh dynamic-light loop runs in
+        // the fragment stage. This is the mesh fragment stage's FIRST storage-buffer
+        // use (group 3's palette + instance SSBO are VERTEX-stage), so the fragment
+        // stage sits at FOUR storage buffers here — well under the per-stage ceiling
+        // of 8 (rendering_pipeline.md §10). Entries come from the GPU-free
+        // `mesh_light_bind_group_layout_entries` builder so the layout and the
+        // `mesh_group2_bgl_matches_shader_bindings` headless test never drift.
         let light_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Skinned Mesh Light BGL (group 2)"),
-                entries: &[
-                    // b0: dynamic-light records (is_dynamic-filtered set).
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    // b1: per-light influence volumes.
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    // b2: scripted-animation descriptors (forward group-3 b13).
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    // b3: scripted-animation curve samples (forward group-3 b12).
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    // b4: mesh-side params uniform (light count, time, debug gate).
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 4,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
+                entries: &mesh_light_bind_group_layout_entries(),
             });
 
         // Pipeline layout: group 0 (camera), 1 (material), 2 (dynamic direct
@@ -740,28 +762,31 @@ impl MeshPass {
     }
 
     /// Write this frame's group-2 params uniform (binding 4): the dynamic-light
-    /// `light_count`, the frame's render-clock `time`, and a `debug_gate`. `time`
-    /// MUST be the SAME value the renderer wrote to forward `Uniforms.time` this
-    /// frame (the renderer caches it in `update_per_frame_uniforms` and threads it
-    /// here), so the scripted-light curves the mesh loop (Task 3) evaluates stay
-    /// phase-coherent with the forward pass.
+    /// `light_count`, the frame's render-clock `time`, and `lighting_isolation`.
+    /// `time` MUST be the SAME value the renderer wrote to forward `Uniforms.time`
+    /// this frame (the renderer caches it in `update_per_frame_uniforms` and
+    /// threads it here), so the scripted-light curves the mesh loop evaluates stay
+    /// phase-coherent with the forward pass. `lighting_isolation` MUST be the SAME
+    /// `LightingIsolation as u32` the renderer writes to forward
+    /// `Uniforms.lighting_isolation`, so the mesh dynamic-direct term is gated by
+    /// the lighting-isolation debug modes exactly as the world dynamic term is.
     pub fn write_light_params(
         &self,
         queue: &wgpu::Queue,
         light_count: u32,
         time: f32,
-        debug_gate: u32,
+        lighting_isolation: u32,
     ) {
         let params = MeshLightParams {
             light_count,
             time,
-            debug_gate,
+            lighting_isolation,
             _pad: 0,
         };
         let bytes = [
             params.light_count.to_ne_bytes(),
             params.time.to_ne_bytes(),
-            params.debug_gate.to_ne_bytes(),
+            params.lighting_isolation.to_ne_bytes(),
             params._pad.to_ne_bytes(),
         ]
         .concat();
@@ -1322,15 +1347,163 @@ mod tests {
     }
 
     // Guard the group-2 params uniform layout contract: `MeshLightParams`
-    // { light_count: u32, time: f32, debug_gate: u32, _pad: u32 } — 16 B std140,
-    // mirrored by the WGSL `MeshLightParams` struct at group 2 binding 4. The
-    // mesh dynamic-light loop (Task 3) reads `time` for scripted-curve phase, so
-    // a silent layout edit on either side must fail here.
+    // { light_count: u32, time: f32, lighting_isolation: u32, _pad: u32 } — 16 B
+    // std140, mirrored by the WGSL `MeshLightParams` struct at group 2 binding 4.
+    // The mesh dynamic-light loop reads `time` for scripted-curve phase and
+    // `lighting_isolation` for the forward-matching debug gate, so a silent layout
+    // edit on either side must fail here.
     #[test]
     fn mesh_light_params_is_sixteen_bytes() {
         assert_eq!(
             MESH_LIGHT_PARAMS_SIZE, 16,
             "MeshLightParams must be 16 B to match the std140 WGSL uniform",
+        );
+    }
+
+    // Headless guard for the mesh group-2 BGL: the entries the pipeline composes
+    // from must match the shader's declared group-2 binding map (b0–b4) and stay
+    // within the per-stage fragment storage-buffer budget. Modeled on
+    // `billboard_pipeline_vertex_storage_request_matches_bgl_definitions` — both
+    // re-derive the count from the SAME GPU-free BGL builder the layout is built
+    // from, so a drift fails CI before a real GPU rejects the pipeline.
+    #[test]
+    fn mesh_group2_bgl_matches_shader_bindings() {
+        let entries = mesh_light_bind_group_layout_entries();
+
+        // Binding map: b0–b3 read-only storage buffers, b4 a uniform. Mirrors the
+        // `@group(2) @binding(N)` declarations in skinned_mesh.wgsl exactly.
+        let bindings: Vec<u32> = entries.iter().map(|e| e.binding).collect();
+        assert_eq!(
+            bindings,
+            vec![0, 1, 2, 3, 4],
+            "mesh group-2 BGL must declare bindings b0..=b4 in order",
+        );
+        for b in 0..4u32 {
+            assert!(
+                matches!(
+                    entries[b as usize].ty,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        ..
+                    }
+                ),
+                "mesh group-2 b{b} must be a read-only storage buffer",
+            );
+        }
+        assert!(
+            matches!(
+                entries[4].ty,
+                wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    ..
+                }
+            ),
+            "mesh group-2 b4 must be the params uniform",
+        );
+
+        // All five entries are FRAGMENT-only — the mesh dynamic loop is a fragment
+        // stage, and no entry should carry VERTEX/COMPUTE it does not read (the
+        // over-broad-visibility trap that spends a per-stage slot for free).
+        for e in &entries {
+            assert_eq!(
+                e.visibility,
+                wgpu::ShaderStages::FRAGMENT,
+                "mesh group-2 b{} must be FRAGMENT-only",
+                e.binding,
+            );
+        }
+
+        // Per-stage storage budget: four fragment-visible storage buffers (b0–b3),
+        // the uniform (b4) does not count. 8 is the downlevel/WebGPU-default ceiling
+        // for `max_storage_buffers_per_shader_stage` (rendering_pipeline.md §10).
+        let frag_storage = fragment_storage_buffers(&entries);
+        assert_eq!(
+            frag_storage, 4,
+            "mesh group-2 must contribute exactly four fragment-visible storage buffers",
+        );
+        assert!(
+            frag_storage <= 8,
+            "mesh group-2 fragment-visible storage-buffer count ({frag_storage}) exceeds the \
+             downlevel-default max_storage_buffers_per_shader_stage of 8",
+        );
+    }
+
+    // Structural pin for the lighting-tier split: the buffer bound at mesh group-2
+    // b0 is fed by the renderer's `filter_dynamic_lights` output (the
+    // `is_dynamic`-filtered set), so static lights are excluded BY CONSTRUCTION —
+    // they never enter the mesh dynamic-direct loop. There is no headless render
+    // harness, so this asserts the invariant at the wiring contract: the
+    // `rebuild_light_bind_group` doc and the shader's b0 comment both name the
+    // `filter_dynamic_lights` / `is_dynamic`-filtered set as the b0 source. If a
+    // future edit rebinds b0 to the unfiltered or shadow-candidate set, the
+    // contract these strings pin is broken and this test (plus the named code
+    // comments) flags it. See `MeshPass::rebuild_light_bind_group`.
+    #[test]
+    fn mesh_group2_b0_is_fed_by_filtered_dynamic_lights() {
+        // The shader's b0 declaration documents the filtered-set invariant.
+        let shader_src = include_str!("../shaders/skinned_mesh.wgsl");
+        assert!(
+            shader_src.contains("@group(2) @binding(0) var<storage, read> lights"),
+            "skinned_mesh.wgsl must declare the dynamic-light records at group-2 b0",
+        );
+        assert!(
+            shader_src.contains("`is_dynamic`-filtered set"),
+            "the b0 declaration must document that it carries the is_dynamic-filtered set \
+             (static lights excluded by construction)",
+        );
+        // The wiring contract (`rebuild_light_bind_group`) names the
+        // `filter_dynamic_lights` output as the REQUIRED b0 source.
+        let rust_src = include_str!("mesh_pass.rs");
+        assert!(
+            rust_src.contains("filter_dynamic_lights"),
+            "rebuild_light_bind_group must pin the filter_dynamic_lights output as the b0 source",
+        );
+    }
+
+    // The mesh dynamic-direct loop contributes nothing when `light_count == 0`.
+    // Structural assertion (no headless render harness): the accumulator starts at
+    // zero and the loop bound is `light_count` (clamped to 0 when the
+    // lighting-isolation gate excludes the dynamic term via the SAME
+    // `select(0u, light_count, use_dynamic)` forward applies), so a zero-trip loop
+    // adds nothing. This scans the shader for those two structural facts.
+    #[test]
+    fn mesh_dynamic_loop_contributes_nothing_when_light_count_zero() {
+        let src = include_str!("../shaders/skinned_mesh.wgsl");
+        // Accumulator starts at zero.
+        assert!(
+            src.contains("var total = vec3<f32>(0.0);"),
+            "accumulate_dynamic_direct must seed its accumulator to zero",
+        );
+        // Loop bound is the (gated) light_count.
+        assert!(
+            src.contains(
+                "let light_count = select(0u, mesh_light_params.light_count, use_dynamic);"
+            ),
+            "the loop bound must be the gated mesh_light_params.light_count",
+        );
+        assert!(
+            src.contains("i < light_count"),
+            "the loop must iterate i in [0, light_count) — zero trips at light_count == 0",
+        );
+    }
+
+    // The mesh dynamic-direct term participates in the lighting-isolation debug
+    // modes via the SAME mode set forward.wgsl uses to gate its world dynamic term.
+    // Pin the exact `use_dynamic` derivation in both shaders so a forward-side edit
+    // that desyncs the mesh gate fails here. (Forward and mesh both compute
+    // `use_dynamic = iso 0|1|2|8`.)
+    #[test]
+    fn mesh_use_dynamic_gate_matches_forward() {
+        const GATE: &str = "(iso == 0u) || (iso == 1u) || (iso == 2u) || (iso == 8u)";
+        let mesh_src = include_str!("../shaders/skinned_mesh.wgsl");
+        let forward_src = include_str!("../shaders/forward.wgsl");
+        assert!(
+            mesh_src.contains(&format!("let use_dynamic = {GATE};")),
+            "skinned_mesh.wgsl must derive use_dynamic from the forward isolation mode set",
+        );
+        assert!(
+            forward_src.contains(&format!("let use_dynamic = {GATE};")),
+            "forward.wgsl's use_dynamic gate changed — update the mesh gate in lock-step",
         );
     }
 

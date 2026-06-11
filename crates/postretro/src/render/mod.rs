@@ -5060,13 +5060,17 @@ impl Renderer {
             // Mesh group-2 params uniform (binding 4): the dynamic-light count, the
             // frame's render-clock time (the SAME value written to forward
             // `Uniforms.time` this frame — cached in `update_per_frame_uniforms` —
-            // so the scripted-light curves the future mesh loop evaluates stay
-            // phase-coherent), and a debug gate (off for now; Task 3 wires it).
+            // so the scripted-light curves the mesh loop evaluates stay
+            // phase-coherent), and the SAME `lighting_isolation` value written to
+            // forward `Uniforms.lighting_isolation` this frame, so the mesh
+            // dynamic-direct term participates in the lighting-isolation debug
+            // modes exactly as the world dynamic term does (the shader derives
+            // `use_dynamic` from it, mirroring forward.wgsl).
             self.mesh_pass.write_light_params(
                 &self.queue,
                 self.light_count,
                 self.mesh_dynamic_time,
-                0,
+                self.lighting_isolation as u32,
             );
             let mut mesh_enc = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Skinned Mesh Pass"),

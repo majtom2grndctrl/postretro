@@ -107,12 +107,17 @@ struct AnimationDescriptor {
 
 // Mesh-side group-2 params uniform: dynamic-light count, the frame's render-clock
 // `time` (the SAME value the renderer writes to forward `Uniforms.time` that
-// frame, so the scripted curves stay phase-coherent), and a dynamic-direct debug
-// gate. Mirrors `MeshLightParams` in render/mesh_pass.rs. std140-padded to 16 B.
+// frame, so the scripted curves stay phase-coherent), and `lighting_isolation` —
+// the SAME `LightingIsolation` value the renderer uploads to forward
+// `Uniforms.lighting_isolation` that frame. The mesh dynamic-direct term
+// participates in the forward lighting-isolation debug modes exactly as the world
+// dynamic term does: the loop is gated by `use_dynamic` derived from the SAME mode
+// set forward uses (see `fs_main`). Mirrors `MeshLightParams` in
+// render/mesh_pass.rs. std140-padded to 16 B.
 struct MeshLightParams {
     light_count: u32,
     time: f32,
-    debug_gate: u32,
+    lighting_isolation: u32,
     _pad: u32,
 };
 @group(2) @binding(4) var<uniform> mesh_light_params: MeshLightParams;
@@ -368,11 +373,18 @@ fn sample_sh_direct(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_normal:
 // cannot leak in), but DIFFUSE-ONLY: Lambert against the interpolated skinned
 // normal `n`, no specular and no normal-map perturbation (the mesh path has
 // neither — see rendering_pipeline.md §9). Per-light visibility is hardwired to
-// 1.0; the shadow-receipt sibling spec replaces that seam. With light_count == 0
-// the loop returns zero and the composition reduces to indirect + baked direct.
-fn accumulate_dynamic_direct(world_pos: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+// 1.0; the shadow-receipt sibling spec replaces that seam.
+//
+// `use_dynamic` is the forward lighting-isolation gate (computed in `fs_main`
+// from `mesh_light_params.lighting_isolation`, mirroring forward.wgsl). When the
+// active mode excludes the dynamic term, the loop bound is forced to 0 — the SAME
+// `select(0u, light_count, use_dynamic)` clamp forward applies — so the term
+// contributes nothing. With `light_count == 0` (or the gate off) the loop returns
+// zero and the composition reduces to indirect + baked direct; the accumulator
+// starts at zero, so a zero-trip loop adds nothing.
+fn accumulate_dynamic_direct(world_pos: vec3<f32>, n: vec3<f32>, use_dynamic: bool) -> vec3<f32> {
     var total = vec3<f32>(0.0);
-    let light_count = mesh_light_params.light_count;
+    let light_count = select(0u, mesh_light_params.light_count, use_dynamic);
     for (var i: u32 = 0u; i < light_count; i = i + 1u) {
         // Influence-volume early-out: pure optimization — no pixel change.
         let influence = light_influence[i];
@@ -494,13 +506,28 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if dynamic_direct.has_direct != 0u {
         direct = dynamic_direct.scale * sample_sh_direct(in.world_position, n, n);
     }
+    // Lighting-isolation gate for the runtime dynamic-direct term — the SAME
+    // `LightingIsolation` mode set forward.wgsl uses to gate its world dynamic
+    // term (`use_dynamic = iso 0|1|2|8`: Normal, NoLightmap, DirectOnly,
+    // DynamicOnly). NOT a new boolean: `mesh_light_params.lighting_isolation`
+    // carries the identical value the renderer writes to forward
+    // `Uniforms.lighting_isolation` that frame, so the mesh dynamic term appears
+    // in exactly the debug modes the world dynamic term does. This is ORTHOGONAL
+    // to the group-4 `dynamic_direct.isolation` gate below (baked direct-vs-
+    // indirect isolation) — the two compose multiplicatively: the dynamic term
+    // renders only when its `use_dynamic` gate passes, and the baked SH terms are
+    // selected independently by `dynamic_direct.isolation`.
+    let iso = mesh_light_params.lighting_isolation;
+    let use_dynamic = (iso == 0u) || (iso == 1u) || (iso == 2u) || (iso == 8u);
+
     // Runtime dynamic-direct term, summed alongside the baked indirect + direct
     // terms (forward adds dynamic into the composition; it does not re-weight).
-    // Diffuse-only against the interpolated skinned normal `n`.
-    let dynamic = accumulate_dynamic_direct(in.world_position, n);
+    // Diffuse-only against the interpolated skinned normal `n`. Gated by
+    // `use_dynamic` (forced to zero outside the dynamic-visible modes).
+    let dynamic = accumulate_dynamic_direct(in.world_position, n, use_dynamic);
 
-    // Dynamic-direct isolation (debug instrument) gates only the baked SH terms;
-    // the runtime dynamic term's own isolation wiring is M10 Task 4.
+    // Baked-SH dynamic-direct isolation (debug instrument) gates only the baked SH
+    // terms — UNTOUCHED by the runtime gate above; the two multiply.
     //   0 = combined    → indirect + scale·direct
     //   1 = direct-only  → scale·direct
     //   2 = indirect-only → indirect

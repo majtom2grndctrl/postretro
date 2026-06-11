@@ -22,7 +22,7 @@ Finish the roadmap's "glTF skeleton + clip loading" bullet. The loader already r
 
 - **Clip selection, state machine, blending, time-slicing** — sibling plan *M10--skinned-animation-runtime*.
 - **True cubic-spline evaluation.** Degrade-to-LINEAR is the decision, not a stopgap; revisit only against a real asset need.
-- **Morph targets, multiple skins, multi-mesh documents, embedded/`.glb` buffers** — existing loader non-goals, unchanged.
+- **Morph targets, multiple skins, multi-mesh documents, embedded images and `.glb` binary-blob buffers** — existing loader non-goals, unchanged. (Data-URI *buffers* are in scope — the test fixture uses one.)
 - **Game-side clip-metadata table.** The runtime plan owns it (it is that plan's consumer); this plan only exposes the renderer-side query.
 
 ## Acceptance criteria
@@ -43,11 +43,11 @@ Add a per-track interpolation mode to the model module's track type (the doc com
 
 ### Task 2: All clips through the renderer cache + name lookup
 
-Stop truncating clips at the cache boundary. `render/mod.rs` `load_skinned_model` currently keeps `clips.into_iter().next()`; pass the whole `Vec<AnimationClip>` through `MeshPass::insert_model` into `UploadedModel` (field `clip: Option<AnimationClip>` becomes the clip list). `plan_and_upload`'s default sampling path uses the first clip — behavior-preserving. Add cache queries on `MeshPass`: clip-by-name for a handle (first match wins on duplicate names — documented), and the metadata list (name + duration, glTF order). Callers today: tests and the existing first-clip default; the animation runtime plan is the named external consumer. Update the load-time log to name all parsed clips.
+Stop truncating clips at the cache boundary. `render/mod.rs` `load_skinned_model` currently keeps `clips.into_iter().next()`; pass the whole `Vec<AnimationClip>` through `MeshPass::insert_model` into `UploadedModel` (field `clip: Option<AnimationClip>` becomes the clip list). `plan_and_upload`'s default sampling path uses the first clip — behavior-preserving. Add cache queries on `MeshPass`: clip-by-name for a handle (first match wins on duplicate names — documented), and the metadata list (name + duration, glTF order). Callers today: tests and the existing first-clip default; the animation runtime plan is the named external consumer. `mesh_pass` is a private field of `Renderer`, so the queries surface through `pub` forwarding accessors on `Renderer` — the seam `main.rs`'s level-load sweep (and the runtime plan) calls; `load_skinned_model`'s return is unchanged. Update the load-time log to name all parsed clips.
 
 ### Task 3: Multi-clip fixture + integration tests
 
-Author a minimal multi-clip glTF fixture inside the crate (e.g. two joints; two named clips with distinct durations; one STEP channel; one CUBICSPLINE channel) using a base64 data-URI buffer so no sidecar `.bin` ships — `gltf::import_buffers` already resolves data URIs through the existing decode-free entry. Tests drive the full path: `load_model` over the fixture asserts clip count, names, durations, STEP/cubic behavior per the ACs; a cache-level test asserts lookup-by-name and the metadata list against an inserted model. The existing real-asset test (one clip, 26 joints) stays as-is.
+Author a minimal multi-clip glTF fixture inside the crate (e.g. two joints; two named clips with distinct durations; one STEP channel; one CUBICSPLINE channel) using a base64 data-URI buffer so no sidecar `.bin` ships — `gltf::import_buffers` already resolves data URIs through the existing decode-free entry. Tests drive the full path: `load_model` over the fixture asserts clip count, names, durations, STEP/cubic behavior per the ACs; a cache-level test asserts lookup-by-name and the metadata list against an inserted model — clip storage lives in a plain CPU-side map beside the GPU cache (the `model_bounds` precedent) behind a seam tests construct without a device (`MeshPass::new` needs a GPU; the existing `mesh_pass` test module is deliberately GPU-free). The existing real-asset test (one clip, 26 joints) stays as-is.
 
 ## Sequencing
 
@@ -61,6 +61,7 @@ Author a minimal multi-clip glTF fixture inside the crate (e.g. two joints; two 
 - `model/gltf_loader.rs` `load_clip`: `channel.sampler().interpolation()` (`gltf::animation::Interpolation`). Cubic extraction applies to all three channel kinds (translation/rotation/scale).
 - `render/mesh_pass.rs`: `UploadedModel.clip` → clip list; `insert_model` signature change (single caller: `load_skinned_model`); `plan_and_upload` reads `clips.first()`.
 - Fixture lives under the `postretro` crate, path-resolved via `CARGO_MANIFEST_DIR` like the existing real-model test.
+- `gltf` 1.4 API shapes asserted here (`sampler().interpolation()` → `Interpolation::{Linear, Step, CubicSpline}`; `import_buffers` resolving `data:` URIs) match the 1.x API but were not verifiable against vendored docs at drafting — confirm at implementation. The cubic guard also fixes a latent bug: today a CUBICSPLINE channel would store 3N values against N times, violating `Track`'s parallel-length invariant.
 
 ## Open questions
 

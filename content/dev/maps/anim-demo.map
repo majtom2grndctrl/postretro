@@ -73,15 +73,17 @@
 "angles" "0 0 0"
 }
 // entity 2 — DEMO: animated grunt. Spawns in `idle`; the levelLoad reaction
-// in anim-demo-reaction.ts switches it to `alert` (250 ms crossfade).
+// in anim-demo-reaction.ts switches it to `alert` (a hard cut, not a fade —
+// the switch lands pre-frame so the pending stamp collapses; see README).
 {
 "classname" "anim_demo_grunt"
 "origin" "176 96 16"
 "angles" "0 180 0"
 "_tags" "demo_grunt"
 }
-// entity 3 — DEMO: stateless prop_mesh of the same model for contrast.
-// No animation state; stays in its rest/first-frame pose.
+// entity 3 — DEMO: stateless prop_mesh control. No animation state, so it
+// loops clip 0 on the animation clock — identical to the grunt's idle here
+// (single-clip model); with a multi-clip model it stays on clip 0.
 {
 "classname" "prop_mesh"
 "origin" "176 176 16"

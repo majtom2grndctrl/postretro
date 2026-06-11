@@ -1,23 +1,15 @@
-// DEMO CONTENT — the data script for `anim-demo.map` (M10 skinned animation).
+// DEMO CONTENT — data script for `anim-demo.map` (M10 skinned animation).
 //
-// Reactions are surfaced through `setupLevel`'s returned `LevelManifest`
-// (scripting.md §2 — the data context), NOT through `setupMod`. The map wires
-// this file in via its worldspawn `data_script` KVP; the engine runs
-// `setupLevel(ctx)` at level load and drains `{ reactions }` into the
-// per-level reaction registry.
+// Reactions are surfaced through `setupLevel`'s returned `LevelManifest`, NOT
+// through `setupMod`. The map wires this file in via its worldspawn
+// `data_script` KVP; the engine runs `setupLevel(ctx)` at level load and drains
+// `{ reactions }` into the per-level reaction registry.
 //
-// The reaction is a tag-targeted Primitive (PrimitiveReactionDescriptor): it
-// invokes the `setAnimationState` mesh primitive on every entity tagged
-// `demo_grunt`, switching it to the `alert` state. The grunt spawns in its
-// `defaultState` ("idle", looping); at level load this reaction switches it to
-// `alert` and the animation runtime crossfades over the state's 250 ms window.
-//
-// Trigger shape: a `levelLoad`-named reaction fires once when the level loads
-// (mirrors `arena-lights.ts`). A one-shot levelLoad switch is the cleanest
-// observable transition available without an AI / timer system: the demo's
-// whole point is to make the descriptor → component → crossfade path visible,
-// and a level-load switch does exactly that. (The `prop_mesh` placed alongside
-// the grunt carries no animation state and stays a stateless mesh for contrast.)
+// This file returns one tag-targeted Primitive reaction that switches the grunt
+// to `alert` at level load. Because `levelLoad` fires before the first rendered
+// frame, the switch is a HARD CUT, not a 250 ms crossfade — see
+// content/dev/maps/anim-demo.README.md ("Why the state switch is a HARD CUT")
+// for the pending-stamp-collapse reason and how a true crossfade would be seen.
 
 import { type NamedReactionDescriptor, defineReaction } from "postretro";
 

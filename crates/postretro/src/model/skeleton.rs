@@ -57,21 +57,45 @@ pub struct Skeleton {
     pub joints: Vec<Joint>,
 }
 
+/// Keyframe interpolation mode for a [`Track`], mapped from the glTF sampler's
+/// interpolation algorithm.
+///
+/// glTF defines three modes; the engine evaluates two:
+/// - `Linear` — lerp (translation/scale) / slerp (rotation) between bracketing keys.
+/// - `Step` — hold the lower bracketing key's value (no fraction) until the next key.
+///
+/// glTF's third mode, CUBICSPLINE, is **not** a `Track` variant: the loader
+/// extracts each keyframe's value element (discarding tangents) and stores the
+/// track as `Linear`, degrading cubic to linear. True cubic evaluation is out of
+/// scope (see the M10 plan), so no runtime code ever sees a cubic mode here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Interp {
+    /// Linearly interpolate between bracketing keyframes (lerp / slerp).
+    #[default]
+    Linear,
+    /// Hold the lower bracketing keyframe's value until the next keyframe.
+    Step,
+}
+
 /// One keyframe track: time samples (seconds, ascending) paired with values.
 ///
 /// The two `Vec`s are parallel — `times[i]` is the sample time of `values[i]` —
 /// and always the same length. Empty = the channel is not animated for this
 /// joint (the sampler falls back to the joint's bind-pose component).
 ///
-/// glTF mixamo clips author LINEAR interpolation for translation and rotation
-/// and omit scale; the loader stores the raw samples and `crate::model::anim::sample_clip`
-/// interpolates (lerp for translation/scale, slerp (normalized) for rotation). Interpolation mode is
-/// not stored — the slice samples LINEAR; a STEP/CUBICSPLINE-carrying clip is the
-/// broadening task's concern and would add a mode tag here.
+/// `mode` records how `crate::model::anim::sample_clip` blends between keys:
+/// `Linear` interpolates (lerp for translation/scale, normalized slerp for
+/// rotation); `Step` holds the lower bracketing key. The loader maps the glTF
+/// sampler's interpolation here; CUBICSPLINE channels are degraded to `Linear`
+/// with their value elements (tangents discarded) at load time.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Track<T> {
     pub times: Vec<f32>,
     pub values: Vec<T>,
+    /// How to interpolate between keyframes. Defaults to [`Interp::Linear`] so a
+    /// `Track::default()` (and the field-elided synthetic-test construction)
+    /// behaves as it did before the mode was tracked.
+    pub mode: Interp,
 }
 
 impl<T> Track<T> {

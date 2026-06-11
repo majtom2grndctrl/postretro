@@ -11,7 +11,7 @@ use serde::Deserialize;
 use thiserror::Error;
 
 use super::mesh::{SkinnedMesh, SkinnedVertex};
-use super::skeleton::{AnimationClip, Joint, JointTracks, RestLocal, Skeleton, Track};
+use super::skeleton::{AnimationClip, Interp, Joint, JointTracks, RestLocal, Skeleton, Track};
 
 /// One drawable run of the merged mesh: the triangles of a single primitive,
 /// paired with the material that draws them.
@@ -562,6 +562,51 @@ fn normalize_weights(weights: [u8; 4]) -> [u8; 4] {
     out
 }
 
+/// Resolve a channel's raw output elements + sampler interpolation into the
+/// keyframe `values` and engine [`Interp`] mode the track stores. Returns `None`
+/// when the channel must be skipped (its joint then holds its rest pose, the
+/// same as an absent channel).
+///
+/// - LINEAR / STEP map directly to [`Interp::Linear`] / [`Interp::Step`]; the raw
+///   outputs are the per-keyframe values (one element per input time).
+/// - CUBICSPLINE stores three elements per keyframe — `[in-tangent, value,
+///   out-tangent]` — so the value of keyframe `k` is `raw[3k + 1]`. We extract
+///   those, discard the tangents, store the track as `Linear` (degrading cubic to
+///   linear; see the M10 plan), and warn. If the triple shape does not hold
+///   (`raw.len() != 3 * key_count`) the channel is malformed for cubic, so we warn
+///   and skip it — this also guards the parallel-length invariant `Track`
+///   requires (otherwise 3N values would be paired with N times).
+fn resolve_keyframes<T: Copy>(
+    raw: Vec<T>,
+    key_count: usize,
+    interpolation: gltf::animation::Interpolation,
+    clip_name: &str,
+    channel_kind: &str,
+) -> Option<(Vec<T>, Interp)> {
+    use gltf::animation::Interpolation;
+    match interpolation {
+        Interpolation::Linear => Some((raw, Interp::Linear)),
+        Interpolation::Step => Some((raw, Interp::Step)),
+        Interpolation::CubicSpline => {
+            if raw.len() != key_count * 3 {
+                log::warn!(
+                    "clip '{clip_name}' {channel_kind} channel: CUBICSPLINE output count {} \
+                     is not 3x its {key_count} keyframes; skipping channel (joint holds rest pose)",
+                    raw.len()
+                );
+                return None;
+            }
+            log::warn!(
+                "clip '{clip_name}' {channel_kind} channel: CUBICSPLINE not supported; \
+                 extracting keyframe values and degrading to LINEAR (tangents discarded)"
+            );
+            // Each triple is [in-tangent, value, out-tangent]; keep the value.
+            let values: Vec<T> = (0..key_count).map(|k| raw[3 * k + 1]).collect();
+            Some((values, Interp::Linear))
+        }
+    }
+}
+
 /// Load one animation clip into per-joint TRS tracks (in topo joint order).
 /// Channels targeting non-joint nodes (or joints outside the skin) are skipped.
 fn load_clip(
@@ -585,6 +630,12 @@ fn load_clip(
             continue;
         }
 
+        // The sampler's interpolation algorithm drives how the runtime blends
+        // keyframes: LINEAR/STEP map straight to [`Interp`], while CUBICSPLINE is
+        // degraded to LINEAR by extracting each key's value element (tangents
+        // discarded) — true cubic evaluation is out of scope (see the M10 plan).
+        let interpolation = channel.sampler().interpolation();
+
         let reader = channel.reader(buffer_data);
         let Some(inputs) = reader.read_inputs() else {
             continue;
@@ -598,25 +649,31 @@ fn load_clip(
         };
         match outputs {
             gltf::animation::util::ReadOutputs::Translations(it) => {
-                joints[topo_idx].translation = Track {
-                    times,
-                    values: it.map(Vec3::from).collect(),
-                };
+                let raw: Vec<Vec3> = it.map(Vec3::from).collect();
+                if let Some((values, mode)) =
+                    resolve_keyframes(raw, times.len(), interpolation, &name, "translation")
+                {
+                    joints[topo_idx].translation = Track { times, values, mode };
+                }
             }
             gltf::animation::util::ReadOutputs::Rotations(it) => {
-                joints[topo_idx].rotation = Track {
-                    times,
-                    values: it
-                        .into_f32()
-                        .map(|q| Quat::from_xyzw(q[0], q[1], q[2], q[3]))
-                        .collect(),
-                };
+                let raw: Vec<Quat> = it
+                    .into_f32()
+                    .map(|q| Quat::from_xyzw(q[0], q[1], q[2], q[3]))
+                    .collect();
+                if let Some((values, mode)) =
+                    resolve_keyframes(raw, times.len(), interpolation, &name, "rotation")
+                {
+                    joints[topo_idx].rotation = Track { times, values, mode };
+                }
             }
             gltf::animation::util::ReadOutputs::Scales(it) => {
-                joints[topo_idx].scale = Track {
-                    times,
-                    values: it.map(Vec3::from).collect(),
-                };
+                let raw: Vec<Vec3> = it.map(Vec3::from).collect();
+                if let Some((values, mode)) =
+                    resolve_keyframes(raw, times.len(), interpolation, &name, "scale")
+                {
+                    joints[topo_idx].scale = Track { times, values, mode };
+                }
             }
             gltf::animation::util::ReadOutputs::MorphTargetWeights(_) => {
                 // Morph targets are out of scope for the skinned slice.
@@ -705,6 +762,61 @@ mod tests {
         // Index 7 has no mapping → defaults to joint 0.
         let out = remap_joint_quad([5, 9, 7, 5], &map);
         assert_eq!(out, [2, 0, 0, 2]);
+    }
+
+    // --- Interpolation mode mapping + CUBICSPLINE value extraction ----------
+
+    use gltf::animation::Interpolation;
+
+    #[test]
+    fn resolve_keyframes_maps_linear_and_step_directly() {
+        let raw = vec![Vec3::X, Vec3::Y, Vec3::Z];
+        let (vals, mode) =
+            resolve_keyframes(raw.clone(), 3, Interpolation::Linear, "clip", "translation")
+                .expect("linear keeps all values");
+        assert_eq!(vals, raw, "LINEAR passes raw values through");
+        assert_eq!(mode, Interp::Linear);
+
+        let (vals, mode) =
+            resolve_keyframes(raw.clone(), 3, Interpolation::Step, "clip", "translation")
+                .expect("step keeps all values");
+        assert_eq!(vals, raw, "STEP passes raw values through");
+        assert_eq!(mode, Interp::Step);
+    }
+
+    #[test]
+    fn resolve_keyframes_cubicspline_extracts_value_element_as_linear() {
+        // Two keyframes, each a [in-tangent, value, out-tangent] triple. The
+        // extracted track must be the VALUE element of each triple (index 3k+1),
+        // which here differs from the surrounding tangent elements — pinning that
+        // we keep the value, not a tangent.
+        let in_t0 = Vec3::new(-1.0, -1.0, -1.0);
+        let val0 = Vec3::new(5.0, 5.0, 5.0);
+        let out_t0 = Vec3::new(9.0, 9.0, 9.0);
+        let in_t1 = Vec3::new(-2.0, -2.0, -2.0);
+        let val1 = Vec3::new(7.0, 7.0, 7.0);
+        let out_t1 = Vec3::new(8.0, 8.0, 8.0);
+        let raw = vec![in_t0, val0, out_t0, in_t1, val1, out_t1];
+
+        let (vals, mode) =
+            resolve_keyframes(raw, 2, Interpolation::CubicSpline, "clip", "rotation")
+                .expect("well-formed cubic triple extracts values");
+        assert_eq!(vals, vec![val0, val1], "extracts the value element of each triple");
+        assert_ne!(vals[0], in_t0, "extracted value is not the in-tangent");
+        assert_ne!(vals[0], out_t0, "extracted value is not the out-tangent");
+        assert_eq!(mode, Interp::Linear, "cubic degrades to LINEAR");
+    }
+
+    #[test]
+    fn resolve_keyframes_cubicspline_wrong_shape_skips_channel() {
+        // 5 outputs against 2 keyframes is not a valid 3x cubic triple shape:
+        // skip the channel (None) rather than storing a length-mismatched track.
+        let raw = vec![Vec3::ZERO; 5];
+        let result = resolve_keyframes(raw, 2, Interpolation::CubicSpline, "clip", "scale");
+        assert!(
+            result.is_none(),
+            "malformed cubic (outputs != 3x keys) skips the channel"
+        );
     }
 
     // --- Error handling (automated AC: malformed input returns Err, no panic) ---

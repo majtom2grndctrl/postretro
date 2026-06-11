@@ -362,10 +362,14 @@ fn fragment_sampled_textures(entries: &[wgpu::BindGroupLayoutEntry]) -> u32 {
 }
 
 /// One uploaded skinned model: GPU vertex + index buffers, its per-submesh
-/// material bind groups, and the CPU-side animation data (skeleton + first clip)
-/// the per-frame palette is sampled from. A single-material model has one
-/// submesh spanning the whole index buffer; multi-material models carry one
-/// entry per primitive, in submesh order.
+/// material bind groups, and the skeleton the per-frame palette is sampled
+/// against. A single-material model has one submesh spanning the whole index
+/// buffer; multi-material models carry one entry per primitive, in submesh order.
+///
+/// The model's animation clips do NOT live here — they sit in the cache-side
+/// `MeshPass::model_clips` map (the `model_bounds` precedent) so the clip-name /
+/// metadata query seam is testable without a GPU device. The render path reaches
+/// them through that map by the same handle.
 struct UploadedModel {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
@@ -376,9 +380,17 @@ struct UploadedModel {
     /// Skeleton for pose sampling. Joint count == `skeleton.joints.len()` is the
     /// per-instance palette run length.
     skeleton: Skeleton,
-    /// First animation clip, if the model carries one. `None` → the model holds
-    /// its bind pose (identity palette run) every frame.
-    clip: Option<AnimationClip>,
+}
+
+/// Metadata for one animation clip — its authored name and duration in seconds.
+/// Returned by [`MeshPass::model_clip_metadata`] in glTF (authored) index order
+/// so a consumer can enumerate a model's clips without holding the clip data.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClipMetadata {
+    /// Clip name as authored in the glTF document.
+    pub name: String,
+    /// Clip length in seconds (latest keyframe time across all tracks).
+    pub duration: f32,
 }
 
 /// GPU resources for the skinned-mesh forward pass.
@@ -455,6 +467,15 @@ pub struct MeshPass {
     /// stamp each `PlannedInstance` with its model's bound for the CPU per-light
     /// caster cull — the renderer's GPU draw never reads it.
     model_bounds: HashMap<ModelHandle, crate::lighting::cone_frustum::Aabb>,
+
+    /// Per-model animation clips, keyed by handle, in glTF (authored) index
+    /// order — the FULL clip set parsed from the document, not just the first.
+    /// Kept on the cache beside `model_bounds` (not in `UploadedModel`, which
+    /// stays GPU-only) so the clip-name / metadata query seam is testable
+    /// without a `wgpu::Device`. `plan_and_upload` reads the first clip for the
+    /// default sampling path; the name/metadata accessors read the whole list.
+    /// A model with no animation maps to an empty `Vec`.
+    model_clips: HashMap<ModelHandle, Vec<AnimationClip>>,
 
     /// Optional per-frame pose-sampling measurement. `Some` only when
     /// `POSTRETRO_GPU_TIMING=1` (cached at construction so the hot path never
@@ -877,6 +898,7 @@ impl MeshPass {
             cube_array_supported,
             models: HashMap::new(),
             model_bounds: HashMap::new(),
+            model_clips: HashMap::new(),
             pose_sample_stats,
         }
     }
@@ -1014,14 +1036,19 @@ impl MeshPass {
 
     /// Insert (or replace) an uploaded skinned model keyed by `handle`. Uploads
     /// the mesh's vertex + index buffers and retains its per-submesh material
-    /// bind groups plus the CPU-side animation data (skeleton + first clip) the
-    /// per-frame palette is sampled from.
+    /// bind groups plus the CPU-side animation data (skeleton + the full clip
+    /// list) the per-frame palette is sampled from.
     ///
     /// `submeshes` pairs each material bind group with the index range it draws,
     /// in submesh order — built by the renderer via `build_material_bind_group`
     /// against the shared group-1 layout (the same `.prm` → `LoadedTexture` path
     /// the world uses). This is the cache-insertion seam the level-load step
     /// (Task D) calls once per distinct model at install.
+    ///
+    /// `clips` is the model's FULL animation set in glTF (authored) index order.
+    /// Stored cache-side in `model_clips` for the name/metadata query seam; the
+    /// per-frame palette samples the first clip (the default-clip path). An empty
+    /// list → the model holds its bind pose (identity palette run) every frame.
     pub fn insert_model(
         &mut self,
         device: &wgpu::Device,
@@ -1029,7 +1056,7 @@ impl MeshPass {
         mesh: &SkinnedMesh,
         submeshes: Vec<(wgpu::BindGroup, std::ops::Range<u32>)>,
         skeleton: Skeleton,
-        clip: Option<AnimationClip>,
+        clips: Vec<AnimationClip>,
     ) {
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Skinned Mesh Vertex Buffer"),
@@ -1045,6 +1072,9 @@ impl MeshPass {
         // caster cull). Lives on the cache, NOT in `UploadedModel` — the GPU draw
         // never reads it.
         self.model_bounds.insert(handle.clone(), mesh.bounds);
+        // Stash the full clip list cache-side (same rationale as `model_bounds`):
+        // it keeps the clip-name / metadata query seam testable without a GPU.
+        self.model_clips.insert(handle.clone(), clips);
         self.models.insert(
             handle,
             UploadedModel {
@@ -1052,9 +1082,43 @@ impl MeshPass {
                 index_buffer,
                 submeshes,
                 skeleton,
-                clip,
             },
         );
+    }
+
+    /// Look up an animation clip by authored `name` for the model at `handle`.
+    /// Returns `None` when the handle is not cached or the model carries no clip
+    /// of that name — absence is normal, never an error or panic.
+    ///
+    /// First match wins: glTF does not forbid duplicate animation names, so on a
+    /// model with two clips sharing a name the earlier (lower glTF index) clip is
+    /// returned. Clips are stored in authored order, so this is the first
+    /// authored clip with the name.
+    ///
+    /// Delegates to the GPU-free [`clip_by_name`] over the `model_clips` map, so
+    /// the lookup is unit-testable without `MeshPass::new` (mirrors the
+    /// `mesh_visible` / `mesh_visible_in_leaf` split).
+    ///
+    /// The query seam awaits its runtime consumer (the sibling skinned-animation
+    /// runtime plan / Task 3's end-to-end test); `allow(dead_code)` until then,
+    /// mirroring `ModelHandle::as_str`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn model_clip_by_name(&self, handle: &ModelHandle, name: &str) -> Option<&AnimationClip> {
+        clip_by_name(&self.model_clips, handle, name)
+    }
+
+    /// The clip metadata (name + duration) for the model at `handle`, in glTF
+    /// (authored) index order. Returns an empty `Vec` when the handle is not
+    /// cached or the model has no animation — no error, no panic.
+    ///
+    /// Delegates to the GPU-free [`clip_metadata`] over the `model_clips` map for
+    /// headless testability (same rationale as [`MeshPass::model_clip_by_name`]).
+    ///
+    /// Awaits its runtime consumer; `allow(dead_code)` until then (see
+    /// [`MeshPass::model_clip_by_name`]).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn model_clip_metadata(&self, handle: &ModelHandle) -> Vec<ClipMetadata> {
+        clip_metadata(&self.model_clips, handle)
     }
 
     /// Whether any model has been uploaded. The renderer skips the pass entirely
@@ -1132,9 +1196,12 @@ impl MeshPass {
                 );
 
                 // Sample this instance's clip into its palette run at a
-                // per-instance phase. No clip → leave the run as the identity
-                // bind pose seeded at init.
-                if let Some(clip) = &model.clip {
+                // per-instance phase. The default sampling path uses the model's
+                // FIRST clip (glTF order) — clip selection is a sibling plan's
+                // concern. No clip → leave the run as the identity bind pose
+                // seeded at init.
+                let first_clip = self.model_clips.get(&group.model).and_then(|c| c.first());
+                if let Some(clip) = first_clip {
                     let phase = instance_phase(inst.phase_seed, clip.duration);
                     let started = measure.then(std::time::Instant::now);
                     crate::model::anim::sample_clip(
@@ -1374,6 +1441,50 @@ pub fn mesh_visible_in_leaf(visible: &VisibleCells, leaf_id: u32) -> bool {
         VisibleCells::DrawAll => true,
         VisibleCells::Culled(cells) => cells.contains(&leaf_id),
     }
+}
+
+/// Look up an animation clip by authored `name` in a model-clip map. Pure data
+/// logic — no GPU, no `MeshPass`. Backs [`MeshPass::model_clip_by_name`] and is
+/// split out (the `model_bounds` / `mesh_visible_in_leaf` precedent) so the
+/// clip-name query seam is testable without `MeshPass::new`, which needs a
+/// `wgpu::Device`.
+///
+/// Returns `None` when `handle` is not in the map or its clip list holds no clip
+/// of that name — absence is normal, never an error or panic. **First match
+/// wins:** glTF does not forbid duplicate animation names, and clips are stored
+/// in authored (glTF index) order, so the earliest authored clip with the name
+/// is returned.
+#[cfg_attr(not(test), allow(dead_code))]
+fn clip_by_name<'a>(
+    model_clips: &'a HashMap<ModelHandle, Vec<AnimationClip>>,
+    handle: &ModelHandle,
+    name: &str,
+) -> Option<&'a AnimationClip> {
+    model_clips.get(handle)?.iter().find(|clip| clip.name == name)
+}
+
+/// The clip metadata (name + duration) for `handle` in a model-clip map, in glTF
+/// (authored) index order. Pure data logic — no GPU. Backs
+/// [`MeshPass::model_clip_metadata`]; split out for the same headless-testability
+/// reason as [`clip_by_name`]. Returns an empty `Vec` when `handle` is absent or
+/// its model has no animation — no error, no panic.
+#[cfg_attr(not(test), allow(dead_code))]
+fn clip_metadata(
+    model_clips: &HashMap<ModelHandle, Vec<AnimationClip>>,
+    handle: &ModelHandle,
+) -> Vec<ClipMetadata> {
+    model_clips
+        .get(handle)
+        .map(|clips| {
+            clips
+                .iter()
+                .map(|clip| ClipMetadata {
+                    name: clip.name.clone(),
+                    duration: clip.duration,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -1999,6 +2110,133 @@ mod tests {
         assert!(
             fragment_sampled_textures(&cube) <= 16,
             "mesh group-2 sampled-texture count must stay under the spec floor of 16",
+        );
+    }
+
+    // --- Cache-side clip query seam (GPU-free) ----------------------------------
+    //
+    // The clip-name / metadata lookups back the future skinned-animation runtime
+    // plan and main.rs's level-load sweep. They read the cache-side `model_clips`
+    // map, split out of `MeshPass` (which needs a `wgpu::Device`) into the GPU-free
+    // `clip_by_name` / `clip_metadata` free functions so the seam is testable here
+    // without a GPU. These tests stand in for the multi-clip query surface until
+    // Task 3's end-to-end fixture exercises it through a real load.
+
+    use crate::model::skeleton::AnimationClip;
+
+    /// Build a named clip with `duration` and no per-joint tracks. The query seam
+    /// keys on name + duration only; track contents are irrelevant to it.
+    fn named_clip(name: &str, duration: f32) -> AnimationClip {
+        AnimationClip {
+            name: name.to_string(),
+            duration,
+            joints: Vec::new(),
+        }
+    }
+
+    fn clip_map(
+        entries: Vec<(ModelHandle, Vec<AnimationClip>)>,
+    ) -> HashMap<ModelHandle, Vec<AnimationClip>> {
+        entries.into_iter().collect()
+    }
+
+    /// A multi-clip model retains every clip in glTF (authored) order, each
+    /// retrievable by its authored name reporting its own duration. This is the
+    /// core acceptance criterion's cache-level half (the end-to-end fixture is
+    /// Task 3's).
+    #[test]
+    fn clip_query_retains_all_clips_in_order_each_by_name_with_own_duration() {
+        let handle = ModelHandle::from("multi");
+        let map = clip_map(vec![(
+            handle.clone(),
+            vec![
+                named_clip("idle", 1.0),
+                named_clip("walk", 2.5),
+                named_clip("attack", 0.75),
+            ],
+        )]);
+
+        // Metadata preserves authored order and per-clip duration.
+        let meta = clip_metadata(&map, &handle);
+        assert_eq!(
+            meta,
+            vec![
+                ClipMetadata {
+                    name: "idle".to_string(),
+                    duration: 1.0
+                },
+                ClipMetadata {
+                    name: "walk".to_string(),
+                    duration: 2.5
+                },
+                ClipMetadata {
+                    name: "attack".to_string(),
+                    duration: 0.75
+                },
+            ],
+            "clip metadata must list every clip in authored glTF order",
+        );
+
+        // Each clip is retrievable by its authored name, reporting its own
+        // duration — not just the first.
+        for (name, duration) in [("idle", 1.0_f32), ("walk", 2.5), ("attack", 0.75)] {
+            let clip = clip_by_name(&map, &handle, name)
+                .unwrap_or_else(|| panic!("clip '{name}' must be retrievable by name"));
+            assert_eq!(clip.name, name);
+            assert!(
+                (clip.duration - duration).abs() < 1.0e-6,
+                "clip '{name}' must report its own duration {duration}, got {}",
+                clip.duration,
+            );
+        }
+    }
+
+    /// Looking up a clip name absent from a model returns nothing — no error, no
+    /// panic.
+    #[test]
+    fn clip_by_name_absent_name_returns_none() {
+        let handle = ModelHandle::from("m");
+        let map = clip_map(vec![(handle.clone(), vec![named_clip("idle", 1.0)])]);
+        assert!(
+            clip_by_name(&map, &handle, "nonexistent").is_none(),
+            "an absent clip name must return None, not panic",
+        );
+    }
+
+    /// An un-cached handle returns nothing from both queries — empty metadata, no
+    /// clip — covering a model that never loaded or has no animation.
+    #[test]
+    fn clip_query_absent_handle_returns_empty() {
+        let map = clip_map(vec![(
+            ModelHandle::from("present"),
+            vec![named_clip("idle", 1.0)],
+        )]);
+        let missing = ModelHandle::from("missing");
+        assert!(
+            clip_by_name(&map, &missing, "idle").is_none(),
+            "clip_by_name on an un-cached handle must return None",
+        );
+        assert!(
+            clip_metadata(&map, &missing).is_empty(),
+            "clip_metadata on an un-cached handle must return an empty Vec",
+        );
+    }
+
+    /// Duplicate authored names: first match wins (the earliest glTF-index clip).
+    /// glTF does not forbid duplicate animation names, and the documented rule is
+    /// that the earlier authored clip is returned.
+    #[test]
+    fn clip_by_name_returns_first_match_on_duplicate_names() {
+        let handle = ModelHandle::from("dupes");
+        let map = clip_map(vec![(
+            handle.clone(),
+            vec![named_clip("loop", 1.0), named_clip("loop", 9.0)],
+        )]);
+        let clip = clip_by_name(&map, &handle, "loop").expect("a 'loop' clip must be found");
+        assert!(
+            (clip.duration - 1.0).abs() < 1.0e-6,
+            "duplicate names must resolve to the FIRST authored clip (duration 1.0), got {}",
+            clip.duration,
         );
     }
 }

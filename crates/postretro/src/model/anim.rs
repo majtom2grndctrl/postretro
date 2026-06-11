@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use glam::{Mat4, Quat, Vec3};
 
 use super::BonePaletteEntry;
-use super::skeleton::{AnimationClip, JointTracks, RestLocal, Skeleton, Track};
+use super::skeleton::{AnimationClip, Interp, JointTracks, RestLocal, Skeleton, Track};
 
 thread_local! {
     /// Reusable world-pose scratch (one `Mat4` per joint) for the forward sweep.
@@ -30,8 +30,9 @@ thread_local! {
 /// upload as one contiguous palette run. `out` is cleared then filled, so its
 /// final length equals `skeleton.joints.len()`.
 ///
-/// Per channel: LINEAR interpolation (component lerp for translation/scale,
-/// shortest-path slerp for rotation). A channel with **no keyframes** holds the
+/// Per channel: interpolation follows the track's [`Interp`] mode — `Linear`
+/// (component lerp for translation/scale, shortest-path slerp for rotation) or
+/// `Step` (hold the lower bracketing key's value). A channel with **no keyframes** holds the
 /// joint's rest-pose component (NOT identity) — the shipped clip omits scale, so
 /// scale falls back to `Joint::rest_local.scale`. `time` is wrapped into
 /// `[0, duration)` so the clip loops; a non-positive duration samples at `t = 0`.
@@ -131,21 +132,28 @@ fn locate_span(times: &[f32], t: f32) -> Option<(usize, usize, f32)> {
     Some((i0, i1, frac))
 }
 
-/// Sample a `Vec3` track (translation/scale) with component-wise LINEAR lerp.
+/// Sample a `Vec3` track (translation/scale). `Linear` lerps component-wise
+/// between the bracketing keys; `Step` holds the lower key (`i0`) with no blend.
 fn sample_vec3_track(track: &Track<Vec3>, t: f32) -> Option<Vec3> {
     let (i0, i1, frac) = locate_span(&track.times, t)?;
     let a = track.values[i0];
-    let b = track.values[i1];
-    Some(a.lerp(b, frac))
+    match track.mode {
+        Interp::Step => Some(a),
+        Interp::Linear => {
+            let b = track.values[i1];
+            Some(a.lerp(b, frac))
+        }
+    }
 }
 
-/// Sample a `Quat` rotation track with shortest-path slerp. Endpoints are
-/// normalized (authored quats may drift) and slerp handles the dot-sign flip
-/// internally, so the interpolation never takes the long way around.
+/// Sample a `Quat` rotation track. `Linear` slerps (shortest-path) between the
+/// bracketing keys — endpoints are normalized (authored quats may drift) and
+/// glam's `slerp` handles the dot-sign flip internally, so the interpolation
+/// never takes the long way around. `Step` holds the lower key (`i0`).
 fn sample_quat_track(track: &Track<Quat>, t: f32) -> Option<Quat> {
     let (i0, i1, frac) = locate_span(&track.times, t)?;
     let a = track.values[i0].normalize();
-    if i0 == i1 {
+    if i0 == i1 || track.mode == Interp::Step {
         return Some(a);
     }
     let b = track.values[i1].normalize();
@@ -271,6 +279,7 @@ mod tests {
             translation: Track {
                 times: vec![0.0, 2.0],
                 values: vec![Vec3::new(0.0, 0.0, 0.0), Vec3::new(10.0, -4.0, 2.0)],
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -295,6 +304,7 @@ mod tests {
             rotation: Track {
                 times: vec![0.0, 1.0],
                 values: vec![q0, q1],
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -325,6 +335,7 @@ mod tests {
             translation: Track {
                 times: vec![0.0, 1.0],
                 values: vec![Vec3::new(1.0, 2.0, 3.0), Vec3::new(1.0, 2.0, 3.0)],
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -354,6 +365,7 @@ mod tests {
             translation: Track {
                 times: vec![0.0, 2.0],
                 values: vec![Vec3::new(0.0, 0.0, 0.0), Vec3::new(8.0, 0.0, 0.0)],
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -432,6 +444,90 @@ mod tests {
 
         // Sanity only — the measurement is the print above, not a threshold.
         assert!(out.len() == skeleton.joints.len());
+    }
+
+    /// A STEP translation track holds the lower keyframe's value between keys and
+    /// snaps to a keyframe's value at/after that keyframe's time — no lerp.
+    #[test]
+    fn step_translation_track_holds_lower_keyframe() {
+        let skeleton = Skeleton {
+            joints: vec![joint(None, Mat4::IDENTITY, RestLocal::default())],
+        };
+        // Three keys so the snap-at-key assertion lands on an interior key (t=2),
+        // away from t = duration where `sample_clip` wraps the time to 0.
+        let k0 = Vec3::new(0.0, 0.0, 0.0);
+        let k1 = Vec3::new(10.0, 0.0, 0.0);
+        let k2 = Vec3::new(20.0, 0.0, 0.0);
+        let tracks = JointTracks {
+            translation: Track {
+                times: vec![0.0, 2.0, 4.0],
+                values: vec![k0, k1, k2],
+                mode: Interp::Step,
+            },
+            ..Default::default()
+        };
+        let clip = translation_clip("step", 4.0, vec![tracks]);
+
+        let sample_at = |t: f32| {
+            let mut out = Vec::new();
+            sample_clip(&clip, &skeleton, t, &mut out);
+            Mat4::from_cols_array_2d(&out[0].matrix).w_axis.truncate()
+        };
+        // Between two keys: holds the LOWER key, not the midpoint lerp a LINEAR
+        // track would yield ((5,0,0) on [k0,k1]).
+        assert_vec3_eq(sample_at(1.0), k0, "STEP holds lower key mid-span");
+        assert_vec3_eq(sample_at(1.99), k0, "STEP holds lower key just before next");
+        // At and after the (interior) keyframe time: snaps to that key's value.
+        assert_vec3_eq(sample_at(2.0), k1, "STEP snaps at the keyframe time");
+        assert_vec3_eq(sample_at(3.0), k1, "STEP holds k1 until the next key");
+    }
+
+    /// LINEAR remains the default and still interpolates (regression guard that
+    /// adding the mode field did not change default behavior).
+    #[test]
+    fn linear_default_track_still_lerps() {
+        let skeleton = Skeleton {
+            joints: vec![joint(None, Mat4::IDENTITY, RestLocal::default())],
+        };
+        // Field-elided construction: `mode` defaults to Interp::Linear.
+        let tracks = JointTracks {
+            translation: Track {
+                times: vec![0.0, 2.0],
+                values: vec![Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0)],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(tracks.translation.mode, Interp::Linear, "mode defaults LINEAR");
+        let clip = translation_clip("lin", 2.0, vec![tracks]);
+        let mut out = Vec::new();
+        sample_clip(&clip, &skeleton, 1.0, &mut out);
+        let p = Mat4::from_cols_array_2d(&out[0].matrix).w_axis.truncate();
+        assert_vec3_eq(p, Vec3::new(5.0, 0.0, 0.0), "LINEAR midpoint lerps");
+    }
+
+    /// A STEP rotation track holds the lower keyframe (no slerp between keys).
+    #[test]
+    fn step_rotation_track_holds_lower_keyframe() {
+        let skeleton = Skeleton {
+            joints: vec![joint(None, Mat4::IDENTITY, RestLocal::default())],
+        };
+        let q0 = Quat::IDENTITY;
+        let q1 = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+        let tracks = JointTracks {
+            rotation: Track {
+                times: vec![0.0, 1.0],
+                values: vec![q0, q1],
+                mode: Interp::Step,
+            },
+            ..Default::default()
+        };
+        let clip = translation_clip("stepr", 1.0, vec![tracks]);
+        let mut out = Vec::new();
+        // Midpoint: a LINEAR track would slerp to 45°; STEP holds q0 (0°).
+        sample_clip(&clip, &skeleton, 0.5, &mut out);
+        let sampled = Quat::from_mat4(&Mat4::from_cols_array_2d(&out[0].matrix));
+        assert_quat_eq(sampled, q0, "STEP rotation holds lower key (no slerp)");
     }
 
     /// `out` is cleared and refilled, and reuse across calls does not change the

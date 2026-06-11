@@ -21,7 +21,8 @@
 
 use super::UiReadSnapshot;
 use super::descriptor::{
-    Align, AnchoredTree, ContainerWidget, GridWidget, ImageWidget, TextWidget, Widget,
+    Align, AnchoredTree, ColorValue, ContainerWidget, GridWidget, ImageWidget, SpacingValue,
+    TextWidget, Widget,
 };
 use super::layout::Anchor;
 use super::tree::{ImageSizes, UiDrawData, UiTree};
@@ -63,7 +64,8 @@ fn text(content: &str, font_size: f32) -> Widget {
     Widget::Text(TextWidget {
         content: content.into(),
         font_size,
-        color: [1.0, 1.0, 1.0, 1.0],
+        color: ColorValue::Literal([1.0, 1.0, 1.0, 1.0]),
+        font: None,
         bind: None,
     })
 }
@@ -77,26 +79,26 @@ fn composite_fixture() -> AnchoredTree {
         anchor: Anchor::Center,
         offset: [0.0, 0.0],
         root: Widget::VStack(ContainerWidget {
-            gap: 8.0,
-            padding: 6.0,
+            gap: SpacingValue::Literal(8.0),
+            padding: SpacingValue::Literal(6.0),
             align: Align::Start,
             // Backdrop fill makes the outer container emit a panel quad sized to
             // its content (the canonical quad-producing path now that bare panels
             // have no intrinsic size).
-            fill: Some([0.2, 0.3, 0.4, 1.0]),
+            fill: Some(ColorValue::Literal([0.2, 0.3, 0.4, 1.0])),
             border: None,
             children: vec![
                 Widget::HStack(ContainerWidget {
-                    gap: 10.0,
-                    padding: 0.0,
+                    gap: SpacingValue::Literal(10.0),
+                    padding: SpacingValue::Literal(0.0),
                     align: Align::Start,
                     fill: None,
                     border: None,
                     children: vec![text("HP 100", 24.0), text("ARMOR 50", 24.0)],
                 }),
                 Widget::Grid(GridWidget {
-                    gap: 4.0,
-                    padding: 0.0,
+                    gap: SpacingValue::Literal(4.0),
+                    padding: SpacingValue::Literal(0.0),
                     align: Align::Start,
                     cols: 2,
                     children: vec![
@@ -187,8 +189,8 @@ fn empty_gameplay_tree_early_outs_the_ui_pass() {
         anchor: Anchor::Center,
         offset: [0.0, 0.0],
         root: Widget::VStack(ContainerWidget {
-            gap: 0.0,
-            padding: 0.0,
+            gap: SpacingValue::Literal(0.0),
+            padding: SpacingValue::Literal(0.0),
             align: Align::Start,
             fill: None,
             border: None,

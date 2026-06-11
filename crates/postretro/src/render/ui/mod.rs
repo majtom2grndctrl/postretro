@@ -32,6 +32,11 @@ pub(crate) mod text;
 /// gameplay descriptor trees through it.
 pub(crate) mod tree;
 
+/// UI theme-token table: named color/font/spacing tokens widgets resolve against,
+/// the engine default theme, and the `ThemeDescriptor` override wire form. Pure
+/// data — widgets (later tasks) reference tokens by name; the merge is per-token.
+pub(crate) mod theme;
+
 pub(crate) use self::text::UiText;
 
 /// Hardcoded splash content descriptor behind the one named builder seam

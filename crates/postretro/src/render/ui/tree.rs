@@ -663,6 +663,9 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget) -> NodeId {
             content,
             font_size,
             color,
+            // Theme `font` is recorded on the descriptor but not yet applied here
+            // (font selection is a later task); the measure path uses the default.
+            font: _,
             bind,
         }) => {
             // Text nodes are sized by the measure closure in `build_draw_data`,
@@ -675,7 +678,9 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget) -> NodeId {
                     NodeContext::Text {
                         content: content.clone(),
                         font_size: *font_size,
-                        color: *color,
+                        // Token colors resolve in a later task; until then a token
+                        // reads as the engine default (opaque white).
+                        color: color.as_literal_or([1.0; 4]),
                         bind: bind.clone(),
                         last_resolved: None,
                     },
@@ -690,7 +695,9 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget) -> NodeId {
                 .new_leaf_with_context(
                     Style::default(),
                     NodeContext::Panel {
-                        fill: *fill,
+                        // Token fills resolve in a later task; until then a token
+                        // reads as transparent (no visible fill).
+                        fill: fill.as_literal_or([0.0; 4]),
                         border: border.clone(),
                         bind: bind.clone(),
                         last_resolved: None,
@@ -757,15 +764,24 @@ fn build_stack(
         .iter()
         .map(|child| build_node(taffy, child))
         .collect();
+    // Token gap/padding/fill resolve in a later task; until then a token reads as
+    // the literal fallback (zero spacing, transparent fill) via `as_literal_or`,
+    // so the helper signatures (`f32`/`Option<[f32; 4]>`) stay the literal seam
+    // Task 4 rewrites.
     let style = Style {
         display: Display::Flex,
         flex_direction: direction,
-        ..container_base_style(container.gap, container.padding, container.align)
+        ..container_base_style(
+            container.gap.as_literal_or(0.0),
+            container.padding.as_literal_or(0.0),
+            container.align,
+        )
     };
     let node = taffy
         .new_with_children(style, &children)
         .expect("taffy container creation must succeed");
-    if let Some(ctx) = container_backdrop(container.fill, container.border.as_ref()) {
+    let fill = container.fill.as_ref().map(|c| c.as_literal_or([0.0; 4]));
+    if let Some(ctx) = container_backdrop(fill, container.border.as_ref()) {
         taffy
             .set_node_context(node, Some(ctx))
             .expect("setting a fresh container's backdrop context must succeed");
@@ -786,7 +802,12 @@ fn build_grid(taffy: &mut TaffyTree<NodeContext>, grid: &GridWidget) -> NodeId {
     let style = Style {
         display: Display::Grid,
         grid_template_columns: evenly_sized_tracks(cols),
-        ..container_base_style(grid.gap, grid.padding, grid.align)
+        // Token gap/padding resolve in a later task; until then read as literals.
+        ..container_base_style(
+            grid.gap.as_literal_or(0.0),
+            grid.padding.as_literal_or(0.0),
+            grid.align,
+        )
     };
     taffy
         .new_with_children(style, &children)
@@ -1012,6 +1033,7 @@ fn linear_rgba_to_srgb_u8(color: [f32; 4]) -> [u8; 4] {
 
 #[cfg(test)]
 mod tests {
+    use super::super::descriptor::{ColorValue, SpacingValue};
     use super::*;
 
     /// Device-pixel comparison tolerance; rects snap to whole pixels but float
@@ -1047,8 +1069,8 @@ mod tests {
 
     fn vstack(gap: f32, padding: f32, align: Align, children: Vec<Widget>) -> Widget {
         Widget::VStack(ContainerWidget {
-            gap,
-            padding,
+            gap: SpacingValue::Literal(gap),
+            padding: SpacingValue::Literal(padding),
             align,
             fill: None,
             border: None,
@@ -1058,8 +1080,8 @@ mod tests {
 
     fn hstack(gap: f32, padding: f32, align: Align, children: Vec<Widget>) -> Widget {
         Widget::HStack(ContainerWidget {
-            gap,
-            padding,
+            gap: SpacingValue::Literal(gap),
+            padding: SpacingValue::Literal(padding),
             align,
             fill: None,
             border: None,
@@ -1076,7 +1098,8 @@ mod tests {
         Widget::Text(TextWidget {
             content: content.into(),
             font_size,
-            color: [1.0, 1.0, 1.0, 1.0],
+            color: ColorValue::Literal([1.0, 1.0, 1.0, 1.0]),
+            font: None,
             bind: None,
         })
     }
@@ -1270,7 +1293,8 @@ mod tests {
             Widget::Text(TextWidget {
                 content: "XX".into(),
                 font_size: 10.0,
-                color: [1.0; 4],
+                color: ColorValue::Literal([1.0; 4]),
+                font: None,
                 bind: None,
             })
         };
@@ -1278,8 +1302,8 @@ mod tests {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
             root: Widget::Grid(GridWidget {
-                gap: 8.0,
-                padding: 0.0,
+                gap: SpacingValue::Literal(8.0),
+                padding: SpacingValue::Literal(0.0),
                 align: Align::Start,
                 cols: 2,
                 children: vec![cell(), cell(), cell(), cell()],
@@ -1328,7 +1352,8 @@ mod tests {
             root: Widget::Text(TextWidget {
                 content: "ABCDEFGH".into(),
                 font_size: 40.0,
-                color: [1.0, 1.0, 1.0, 1.0],
+                color: ColorValue::Literal([1.0, 1.0, 1.0, 1.0]),
+                font: None,
                 bind: None,
             }),
         };
@@ -1364,10 +1389,10 @@ mod tests {
         // still snap to whole device pixels. (Bare panel leaves have no intrinsic
         // size now, so the backdrop is the canonical quad-producing path.)
         let filled = Widget::VStack(ContainerWidget {
-            gap: 7.0,
-            padding: 5.0,
+            gap: SpacingValue::Literal(7.0),
+            padding: SpacingValue::Literal(5.0),
             align: Align::Start,
-            fill: Some([0.2, 0.4, 0.6, 1.0]),
+            fill: Some(ColorValue::Literal([0.2, 0.4, 0.6, 1.0])),
             border: None,
             children: vec![text("x", 13.0), text("y", 13.0)],
         });
@@ -1397,10 +1422,10 @@ mod tests {
         // rect, and its children draw on top (painter's order). The backdrop is the
         // first draw entry; the text children produce runs over it.
         let filled = Widget::VStack(ContainerWidget {
-            gap: 0.0,
-            padding: 10.0,
+            gap: SpacingValue::Literal(0.0),
+            padding: SpacingValue::Literal(10.0),
             align: Align::Start,
-            fill: Some([0.1, 0.2, 0.3, 1.0]),
+            fill: Some(ColorValue::Literal([0.1, 0.2, 0.3, 1.0])),
             border: None,
             children: vec![text("AB", 40.0)],
         });
@@ -1649,7 +1674,8 @@ mod tests {
         Widget::Text(TextWidget {
             content: content.into(),
             font_size: 20.0,
-            color: [1.0, 1.0, 1.0, 1.0],
+            color: ColorValue::Literal([1.0, 1.0, 1.0, 1.0]),
+            font: None,
             bind: Some(TextBind {
                 slot: slot.into(),
                 format: format.map(str::to_string),
@@ -1662,13 +1688,13 @@ mod tests {
     /// panel has no intrinsic size).
     fn bound_panel_in_stack(fill: [f32; 4], slot: &str) -> Widget {
         Widget::VStack(ContainerWidget {
-            gap: 0.0,
-            padding: 0.0,
+            gap: SpacingValue::Literal(0.0),
+            padding: SpacingValue::Literal(0.0),
             align: Align::Stretch,
-            fill: Some([0.0, 0.0, 0.0, 1.0]),
+            fill: Some(ColorValue::Literal([0.0, 0.0, 0.0, 1.0])),
             border: None,
             children: vec![Widget::Panel(PanelWidget {
-                fill,
+                fill: ColorValue::Literal(fill),
                 border: None,
                 bind: Some(PanelBind { slot: slot.into() }),
             })],

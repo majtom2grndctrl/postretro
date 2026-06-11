@@ -16,8 +16,8 @@
 //      context/plans/in-progress/M13--state-system
 
 use super::descriptor::{
-    Align, AnchoredTree, ContainerWidget, GridWidget, PanelBind, PanelWidget, TextBind, TextWidget,
-    Widget,
+    Align, AnchoredTree, ColorValue, ContainerWidget, GridWidget, PanelBind, PanelWidget,
+    SpacingValue, TextBind, TextWidget, Widget,
 };
 use super::layout::Anchor;
 
@@ -68,7 +68,8 @@ pub(crate) fn build_demo_descriptor() -> AnchoredTree {
     let health = Widget::Text(TextWidget {
         content: "HP --".to_string(),
         font_size: HUD_FONT_SIZE,
-        color: HUD_TEXT_COLOR,
+        color: ColorValue::Literal(HUD_TEXT_COLOR),
+        font: None,
         bind: Some(TextBind {
             slot: "player.health".to_string(),
             format: Some("HP {}".to_string()),
@@ -78,7 +79,8 @@ pub(crate) fn build_demo_descriptor() -> AnchoredTree {
     let ammo = Widget::Text(TextWidget {
         content: "AMMO --".to_string(),
         font_size: HUD_FONT_SIZE,
-        color: HUD_TEXT_COLOR,
+        color: ColorValue::Literal(HUD_TEXT_COLOR),
+        font: None,
         bind: Some(TextBind {
             slot: "player.ammo".to_string(),
             format: Some("AMMO {}".to_string()),
@@ -93,7 +95,7 @@ pub(crate) fn build_demo_descriptor() -> AnchoredTree {
     // visible swatch. The panel binds `intro.flashColor`; the literal `fill` is
     // the fallback when the slot is absent/malformed.
     let swatch_panel = Widget::Panel(PanelWidget {
-        fill: FLASH_FALLBACK_FILL,
+        fill: ColorValue::Literal(FLASH_FALLBACK_FILL),
         border: None,
         bind: Some(PanelBind {
             slot: "intro.flashColor".to_string(),
@@ -102,12 +104,13 @@ pub(crate) fn build_demo_descriptor() -> AnchoredTree {
     let swatch_label = Widget::Text(TextWidget {
         content: SWATCH_LABEL.to_string(),
         font_size: HUD_FONT_SIZE,
-        color: HUD_TEXT_COLOR,
+        color: ColorValue::Literal(HUD_TEXT_COLOR),
+        font: None,
         bind: None,
     });
     let swatch = Widget::Grid(GridWidget {
-        gap: SWATCH_GAP,
-        padding: 0.0,
+        gap: SpacingValue::Literal(SWATCH_GAP),
+        padding: SpacingValue::Literal(0.0),
         align: Align::Stretch,
         cols: 2,
         children: vec![swatch_panel, swatch_label],
@@ -116,8 +119,8 @@ pub(crate) fn build_demo_descriptor() -> AnchoredTree {
     // Bottom-left HUD column: health over ammo over the flash swatch, padded in
     // from the anchored corner.
     let root = Widget::VStack(ContainerWidget {
-        gap: ROW_GAP,
-        padding: HUD_PADDING,
+        gap: SpacingValue::Literal(ROW_GAP),
+        padding: SpacingValue::Literal(HUD_PADDING),
         align: Align::Start,
         fill: None,
         border: None,
@@ -182,7 +185,8 @@ mod tests {
             Some("intro.flashColor"),
         );
         assert_eq!(
-            panel.fill, FLASH_FALLBACK_FILL,
+            panel.fill,
+            ColorValue::Literal(FLASH_FALLBACK_FILL),
             "panel keeps a literal fallback fill",
         );
     }

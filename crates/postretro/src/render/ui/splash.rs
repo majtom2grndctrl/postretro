@@ -9,7 +9,8 @@
 use crate::input::UiCaptureMode;
 
 use super::descriptor::{
-    Align, AnchoredTree, Border, ContainerWidget, ImageWidget, TextWidget, Widget,
+    Align, AnchoredTree, Border, ColorValue, ContainerWidget, ImageWidget, SpacingValue,
+    TextWidget, Widget,
 };
 use super::layout::{Anchor, REFERENCE_HEIGHT, REFERENCE_WIDTH};
 
@@ -120,14 +121,15 @@ pub(crate) fn build_splash_descriptor(version_line: &str) -> SplashDescriptor {
     let text = Widget::Text(TextWidget {
         content: version_line.to_string(),
         font_size: TEXT_LOGICAL_FONT_SIZE,
-        color: TEXT_COLOR,
+        color: ColorValue::Literal(TEXT_COLOR),
+        font: None,
         bind: None,
     });
     let inner = Widget::VStack(ContainerWidget {
-        gap: LOGO_TEXT_GAP,
-        padding: PANEL_CONTENT_PADDING,
+        gap: SpacingValue::Literal(LOGO_TEXT_GAP),
+        padding: SpacingValue::Literal(PANEL_CONTENT_PADDING),
         align: Align::Center,
-        fill: Some(PANEL_COLOR),
+        fill: Some(ColorValue::Literal(PANEL_COLOR)),
         border: None,
         children: vec![logo, text],
     });
@@ -138,10 +140,10 @@ pub(crate) fn build_splash_descriptor(version_line: &str) -> SplashDescriptor {
     // content-sizes to the inner panel + 2*rim — the whole framed panel sizes to
     // its content (no hardcoded 740x360).
     let outer = Widget::VStack(ContainerWidget {
-        gap: 0.0,
-        padding: PANEL_BORDER_THICKNESS,
+        gap: SpacingValue::Literal(0.0),
+        padding: SpacingValue::Literal(PANEL_BORDER_THICKNESS),
         align: Align::Stretch,
-        fill: Some(PANEL_BORDER_COLOR),
+        fill: Some(ColorValue::Literal(PANEL_BORDER_COLOR)),
         border: Some(Border {
             texture: String::new(),
             slice: [
@@ -150,7 +152,7 @@ pub(crate) fn build_splash_descriptor(version_line: &str) -> SplashDescriptor {
                 PANEL_BORDER_MARGIN,
                 PANEL_BORDER_MARGIN,
             ],
-            tint: PANEL_BORDER_COLOR,
+            tint: ColorValue::Literal(PANEL_BORDER_COLOR),
         }),
         children: vec![inner],
     });

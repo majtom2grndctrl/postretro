@@ -88,6 +88,12 @@ impl UiTheme {
     /// category): start from a clone of `self`, then overwrite ONLY the tokens
     /// the override names. An override naming one color leaves every other color
     /// untouched, and a name not in the default is added (mods extend the table).
+    ///
+    /// The engine-side theme setter (`Renderer::set_ui_theme`) installs an
+    /// already-merged `UiTheme`; the override-document → merge path is the wire
+    /// contract overrides serialize through, but its production caller (script
+    /// ingestion) is deferred — so it is test-only on a release build today.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn with_override(&self, over: &ThemeDescriptor) -> Self {
         let mut merged = self.clone();
         for (name, value) in &over.colors {
@@ -109,6 +115,7 @@ impl UiTheme {
 /// but this format is the contract overrides serialize through.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct ThemeDescriptor {
     #[serde(default)]
     pub colors: HashMap<String, [f32; 4]>,

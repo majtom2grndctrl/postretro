@@ -193,6 +193,7 @@ impl SplashDescriptor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::ui::theme::UiTheme;
     use crate::render::ui::tree::{ImageSizes, UiTree};
 
     /// The real committed logo asset is 2028x582, a wide banner (aspect ~3.485).
@@ -227,7 +228,7 @@ mod tests {
         // border backdrop + inner fill backdrop (quads), the logo (its own image
         // batch keyed to the logo asset), and the version text run.
         let desc = build_splash_descriptor("postretro v0.1.0");
-        let mut ui = UiTree::from_descriptor(desc.tree());
+        let mut ui = UiTree::from_descriptor(desc.tree(), &UiTheme::engine_default());
         let mut fs = font_system();
         let slots = std::collections::HashMap::new();
         let data = ui.build_draw_data([1280, 720], &mut fs, &logo_image_sizes(), &slots);

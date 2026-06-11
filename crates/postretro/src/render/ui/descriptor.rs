@@ -23,18 +23,6 @@ pub enum ColorValue {
     Token(String),
 }
 
-impl ColorValue {
-    /// The literal RGBA when this is a `Literal`, else `fallback`. Token
-    /// resolution against a theme is a later task; until then a token slot reads
-    /// as the caller's fallback so literal-only paths behave exactly as before.
-    pub(crate) fn as_literal_or(&self, fallback: [f32; 4]) -> [f32; 4] {
-        match self {
-            ColorValue::Literal(rgba) => *rgba,
-            ColorValue::Token(_) => fallback,
-        }
-    }
-}
-
 /// A spacing slot (gap/padding) on a container: either a literal logical-px value
 /// or a named theme token. Untagged so the wire form stays a bare JSON number
 /// (`4.0`) or a bare string (`"tight"`). `Literal` wraps a bare `f32` (no newtype)
@@ -47,17 +35,6 @@ impl ColorValue {
 pub enum SpacingValue {
     Literal(f32),
     Token(String),
-}
-
-impl SpacingValue {
-    /// The literal px when this is a `Literal`, else `fallback`. Token resolution
-    /// is a later task; see `ColorValue::as_literal_or`.
-    pub(crate) fn as_literal_or(&self, fallback: f32) -> f32 {
-        match self {
-            SpacingValue::Literal(px) => *px,
-            SpacingValue::Token(_) => fallback,
-        }
-    }
 }
 
 /// Top-level placement envelope wrapping the root widget. `anchor`/`offset`

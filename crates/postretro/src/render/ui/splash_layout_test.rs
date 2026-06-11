@@ -71,7 +71,7 @@ fn lay_out_splash(version: &str, device_size: [u32; 2]) -> (UiDrawList, UiDrawDa
     let mut panels = layout::project(&[bg], device_size);
 
     let desc = build_splash_descriptor(version);
-    let mut ui = UiTree::from_descriptor(desc.tree());
+    let mut ui = UiTree::from_descriptor(desc.tree(), &super::theme::UiTheme::engine_default());
     let mut fs = font_system();
     let slots = std::collections::HashMap::new();
     let draw = ui.build_draw_data(device_size, &mut fs, &logo_image_sizes(), &slots);

@@ -11,15 +11,92 @@ use taffy::prelude::{
 };
 
 use super::descriptor::{
-    Align, AnchoredTree, Border, ContainerWidget, GridWidget, ImageWidget, PanelBind, PanelWidget,
-    TextBind, TextWidget, Widget,
+    Align, AnchoredTree, Border, ColorValue, ContainerWidget, GridWidget, ImageWidget, PanelBind,
+    PanelWidget, SpacingValue, TextBind, TextWidget, Widget,
 };
 use super::layout::{Anchor, REFERENCE_HEIGHT, REFERENCE_WIDTH};
+use super::theme::UiTheme;
 use crate::scripting::slot_table::SlotValue;
 use glyphon::FontSystem;
 
-use super::text::{UI_FONT_FAMILY, UiText, measure_run};
+use super::text::{UiText, measure_run};
 use super::{UiDrawList, UiInstance};
+
+/// Fallback color for an unknown color token: opaque magenta. A missing token
+/// degrades visibly (rather than panicking or rendering invisibly) so an
+/// authoring typo is obvious on screen — see the M13 fonts+theming spec.
+const UNKNOWN_COLOR_FALLBACK: [f32; 4] = [1.0, 0.0, 1.0, 1.0];
+
+/// Fallback spacing for an unknown spacing token: zero logical px.
+const UNKNOWN_SPACING_FALLBACK: f32 = 0.0;
+
+/// Resolve a `ColorValue` against the active theme. A `Literal` is its own RGBA;
+/// a `Token` looks the name up in the theme. An unknown token degrades to opaque
+/// magenta and logs exactly one warning (per tree build, not per frame — this
+/// runs at build time, which on the retained path is once per rebuild).
+fn resolve_color(value: &ColorValue, theme: &UiTheme) -> [f32; 4] {
+    match value {
+        ColorValue::Literal(rgba) => *rgba,
+        ColorValue::Token(name) => theme.color(name).unwrap_or_else(|| {
+            log::warn!(
+                "[UI] unknown color token '{name}' — using opaque magenta fallback"
+            );
+            UNKNOWN_COLOR_FALLBACK
+        }),
+    }
+}
+
+/// Resolve a `SpacingValue` against the active theme. A `Literal` is its own px;
+/// a `Token` looks the name up. An unknown token degrades to `0.0` and logs
+/// exactly one warning per tree build.
+fn resolve_spacing(value: &SpacingValue, theme: &UiTheme) -> f32 {
+    match value {
+        SpacingValue::Literal(px) => *px,
+        SpacingValue::Token(name) => theme.spacing(name).unwrap_or_else(|| {
+            log::warn!("[UI] unknown spacing token '{name}' — using 0.0 fallback");
+            UNKNOWN_SPACING_FALLBACK
+        }),
+    }
+}
+
+/// Resolve a `text` widget's optional `font` token to a concrete family string.
+/// `None` selects the `body` token's family; `Some(name)` looks the token up. An
+/// unknown font token degrades to the `body` family and logs exactly one warning
+/// per tree build. The `body` token is a required theme token (it always
+/// resolves on the engine default), so the unwrap-to-body path never recurses
+/// into a second miss; a theme that somehow lacks `body` falls back to the
+/// embedded body family constant rather than panicking.
+fn resolve_font(font: &Option<String>, theme: &UiTheme) -> String {
+    let body = || {
+        theme
+            .font("body")
+            .unwrap_or(super::text::UI_FONT_FAMILY)
+            .to_string()
+    };
+    match font {
+        None => body(),
+        Some(name) => match theme.font(name) {
+            Some(family) => family.to_string(),
+            None => {
+                log::warn!("[UI] unknown font token '{name}' — using body family fallback");
+                body()
+            }
+        },
+    }
+}
+
+/// Resolve a `Border`'s theme-tokened `tint` against the active theme into a
+/// concrete-RGBA `Border`. `None` passes through (no border). The `texture` and
+/// `slice` are wire literals carried unchanged; only the `tint` color slot
+/// resolves (a `Token` against the theme, an unknown token degrading to opaque
+/// magenta + one warn via `resolve_color`).
+fn resolve_border(border: Option<&Border>, theme: &UiTheme) -> Option<Border> {
+    border.map(|b| Border {
+        texture: b.texture.clone(),
+        slice: b.slice,
+        tint: ColorValue::Literal(resolve_color(&b.tint, theme)),
+    })
+}
 
 /// Asset key → natural reference size (logical-reference px, `[width, height]`)
 /// for `image` nodes. Threaded into the measure seam so an image sizes from its
@@ -50,6 +127,11 @@ enum NodeContext {
         content: String,
         font_size: f32,
         color: [f32; 4],
+        /// Theme-resolved font family this run shapes and draws with. Sourced
+        /// from the `text` widget's `font` token (or the `body` token when the
+        /// widget names none) at tree-build time, so the measure seam and the
+        /// draw step both select the same registered face. See `resolve_font`.
+        family: String,
         bind: Option<TextBind>,
         /// Last resolved bound string the diff observed. `None` until the first
         /// diff resolves the binding; only meaningful when `bind` is `Some`.
@@ -150,9 +232,15 @@ impl UiTree {
     /// `Widget` to a taffy node with the mapped `Style`, plus a `NodeContext` draw
     /// payload on drawing nodes (text/panel/image leaves, and containers carrying
     /// a backdrop `fill`/`border`).
-    pub(crate) fn from_descriptor(tree: &AnchoredTree) -> Self {
+    ///
+    /// Every theme token (color/spacing/font slot) is resolved against `theme` at
+    /// build time into its concrete value carried on the node, so the per-frame
+    /// layout/draw walk never touches the theme. An unknown token degrades visibly
+    /// and logs exactly one warning per build (see `resolve_color`/`resolve_spacing`
+    /// /`resolve_font`); the resolution happens once here, not per frame.
+    pub(crate) fn from_descriptor(tree: &AnchoredTree, theme: &UiTheme) -> Self {
         let mut taffy = TaffyTree::new();
-        let root = build_node(&mut taffy, &tree.root);
+        let root = build_node(&mut taffy, &tree.root, theme);
         Self {
             taffy,
             root,
@@ -542,6 +630,7 @@ impl UiTree {
                 content,
                 font_size,
                 color,
+                family,
                 bind,
                 ..
             }) => {
@@ -561,10 +650,11 @@ impl UiTree {
                     [rect[0], rect[1]],
                     font_size * scale,
                     linear_rgba_to_srgb_u8(*color),
-                    // Interim: pass the body family so this task behaves
-                    // identically to before. Task 4 replaces this with the
-                    // token-resolved family carried on `NodeContext::Text`.
-                    UI_FONT_FAMILY,
+                    // The theme-resolved family carried on the node (from the
+                    // widget's `font` token, or `body` when it names none), so the
+                    // drawn line shapes against the same registered face the
+                    // measure seam sized it with.
+                    family.clone(),
                 ));
             }
             None => {}
@@ -627,6 +717,7 @@ fn measure_node(
         Some(NodeContext::Text {
             content,
             font_size,
+            family,
             last_resolved,
             ..
         }) => {
@@ -635,10 +726,10 @@ fn measure_node(
             // literal `content` — the fresh/splash path never resolves, so it
             // always measures the literal, unchanged from before.
             let measured = last_resolved.as_deref().unwrap_or(content);
-            // Interim: measure against the body family so this task preserves
-            // current behavior. Task 4 replaces this with the token-resolved
-            // family carried on `NodeContext::Text`.
-            let (width, height) = measure_run(font_system, measured, *font_size, UI_FONT_FAMILY);
+            // Shape against the node's theme-resolved family so a node measures
+            // against the same face it draws with (a monospace run sizes
+            // differently from the proportional body face).
+            let (width, height) = measure_run(font_system, measured, *font_size, family);
             // Honor any axis taffy has already pinned (e.g. an explicit/stretched
             // size); measure only the unconstrained axes.
             Size {
@@ -664,15 +755,15 @@ fn measure_node(
 }
 
 /// Recursively build a taffy node (and its children) for one descriptor widget.
-fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget) -> NodeId {
+/// Resolves every theme token (color/spacing/font) against `theme` into the
+/// concrete value the node carries, so the per-frame walk is theme-free.
+fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget, theme: &UiTheme) -> NodeId {
     match widget {
         Widget::Text(TextWidget {
             content,
             font_size,
             color,
-            // Theme `font` is recorded on the descriptor but not yet applied here
-            // (font selection is a later task); the measure path uses the default.
-            font: _,
+            font,
             bind,
         }) => {
             // Text nodes are sized by the measure closure in `build_draw_data`,
@@ -685,9 +776,13 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget) -> NodeId {
                     NodeContext::Text {
                         content: content.clone(),
                         font_size: *font_size,
-                        // Token colors resolve in a later task; until then a token
-                        // reads as the engine default (opaque white).
-                        color: color.as_literal_or([1.0; 4]),
+                        // Resolve the color token (or literal) against the theme;
+                        // an unknown token degrades to opaque magenta + one warn.
+                        color: resolve_color(color, theme),
+                        // Resolve the optional font token to a concrete family:
+                        // `None` → the `body` token, `Some(name)` → that token,
+                        // unknown → `body` + one warn.
+                        family: resolve_font(font, theme),
                         bind: bind.clone(),
                         last_resolved: None,
                     },
@@ -702,10 +797,9 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget) -> NodeId {
                 .new_leaf_with_context(
                     Style::default(),
                     NodeContext::Panel {
-                        // Token fills resolve in a later task; until then a token
-                        // reads as transparent (no visible fill).
-                        fill: fill.as_literal_or([0.0; 4]),
-                        border: border.clone(),
+                        // Resolve the fill token (or literal) against the theme.
+                        fill: resolve_color(fill, theme),
+                        border: resolve_border(border.as_ref(), theme),
                         bind: bind.clone(),
                         last_resolved: None,
                     },
@@ -720,9 +814,9 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget) -> NodeId {
                 },
             )
             .expect("taffy leaf creation must succeed"),
-        Widget::VStack(container) => build_stack(taffy, container, FlexDirection::Column),
-        Widget::HStack(container) => build_stack(taffy, container, FlexDirection::Row),
-        Widget::Grid(grid) => build_grid(taffy, grid),
+        Widget::VStack(container) => build_stack(taffy, container, FlexDirection::Column, theme),
+        Widget::HStack(container) => build_stack(taffy, container, FlexDirection::Row, theme),
+        Widget::Grid(grid) => build_grid(taffy, grid, theme),
         Widget::Spacer(spacer) => {
             // Flexible space: claims a proportional share of leftover space in its
             // parent container via flex_grow. No draw payload.
@@ -765,30 +859,33 @@ fn build_stack(
     taffy: &mut TaffyTree<NodeContext>,
     container: &ContainerWidget,
     direction: FlexDirection,
+    theme: &UiTheme,
 ) -> NodeId {
     let children: Vec<NodeId> = container
         .children
         .iter()
-        .map(|child| build_node(taffy, child))
+        .map(|child| build_node(taffy, child, theme))
         .collect();
-    // Token gap/padding/fill resolve in a later task; until then a token reads as
-    // the literal fallback (zero spacing, transparent fill) via `as_literal_or`,
-    // so the helper signatures (`f32`/`Option<[f32; 4]>`) stay the literal seam
-    // Task 4 rewrites.
+    // Resolve the spacing tokens to scalar `f32` BEFORE `container_base_style` —
+    // its resolved-scalar signature stays unchanged; resolution is the only seam
+    // that moved (an unknown token degrades to 0.0 + one warn via `resolve_spacing`).
     let style = Style {
         display: Display::Flex,
         flex_direction: direction,
         ..container_base_style(
-            container.gap.as_literal_or(0.0),
-            container.padding.as_literal_or(0.0),
+            resolve_spacing(&container.gap, theme),
+            resolve_spacing(&container.padding, theme),
             container.align,
         )
     };
     let node = taffy
         .new_with_children(style, &children)
         .expect("taffy container creation must succeed");
-    let fill = container.fill.as_ref().map(|c| c.as_literal_or([0.0; 4]));
-    if let Some(ctx) = container_backdrop(fill, container.border.as_ref()) {
+    // Resolve the optional backdrop fill (token or literal) and border tint
+    // against the theme into concrete values carried on the backdrop context.
+    let fill = container.fill.as_ref().map(|c| resolve_color(c, theme));
+    let border = resolve_border(container.border.as_ref(), theme);
+    if let Some(ctx) = container_backdrop(fill, border.as_ref()) {
         taffy
             .set_node_context(node, Some(ctx))
             .expect("setting a fresh container's backdrop context must succeed");
@@ -797,11 +894,11 @@ fn build_stack(
 }
 
 /// Build a CSS-grid node: `cols` equal flexible tracks, `gap` both axes.
-fn build_grid(taffy: &mut TaffyTree<NodeContext>, grid: &GridWidget) -> NodeId {
+fn build_grid(taffy: &mut TaffyTree<NodeContext>, grid: &GridWidget, theme: &UiTheme) -> NodeId {
     let children: Vec<NodeId> = grid
         .children
         .iter()
-        .map(|child| build_node(taffy, child))
+        .map(|child| build_node(taffy, child, theme))
         .collect();
     // `evenly_sized_tracks(N)` yields N equal `1fr` tracks — the descriptor's
     // "N equal columns" maps straight onto it.
@@ -809,10 +906,10 @@ fn build_grid(taffy: &mut TaffyTree<NodeContext>, grid: &GridWidget) -> NodeId {
     let style = Style {
         display: Display::Grid,
         grid_template_columns: evenly_sized_tracks(cols),
-        // Token gap/padding resolve in a later task; until then read as literals.
+        // Resolve the spacing tokens to scalar `f32` against the theme.
         ..container_base_style(
-            grid.gap.as_literal_or(0.0),
-            grid.padding.as_literal_or(0.0),
+            resolve_spacing(&grid.gap, theme),
+            resolve_spacing(&grid.padding, theme),
             grid.align,
         )
     };
@@ -1051,6 +1148,13 @@ mod tests {
         (a - b).abs() <= EPS
     }
 
+    /// The engine default theme — every required token resolves, so a literal
+    /// descriptor's tokens resolve to themselves and these layout tests behave
+    /// exactly as before theming threaded through `from_descriptor`.
+    fn theme() -> UiTheme {
+        UiTheme::engine_default()
+    }
+
     /// A headless `FontSystem` (embedded Inter face registered, no GPU). Text
     /// nodes measure through this in `build_draw_data`, so every layout test
     /// supplies one — cosmic-text shaping runs fully on the CPU.
@@ -1132,7 +1236,7 @@ mod tests {
                 vec![text("AB", 40.0), text("CD", 40.0)],
             ),
         };
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
 
@@ -1184,7 +1288,7 @@ mod tests {
                 )],
             ),
         };
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
 
@@ -1226,7 +1330,7 @@ mod tests {
                 vec![text("X", 40.0), spacer(1.0), text("Y", 40.0)],
             ),
         };
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
 
@@ -1266,9 +1370,9 @@ mod tests {
             ),
         };
         let mut fs = font_system();
-        let mut ui_ref = UiTree::from_descriptor(&tree);
+        let mut ui_ref = UiTree::from_descriptor(&tree, &theme());
         let data_ref = ui_ref.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
-        let mut ui_4k = UiTree::from_descriptor(&tree);
+        let mut ui_4k = UiTree::from_descriptor(&tree, &theme());
         let data_4k = ui_4k.build_draw_data([3840, 2160], &mut fs, &no_images(), &no_slots());
 
         assert_eq!(data_ref.texts.len(), 2);
@@ -1316,7 +1420,7 @@ mod tests {
                 children: vec![cell(), cell(), cell(), cell()],
             }),
         };
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
         let cells: Vec<_> = ui.taffy.children(ui.root).unwrap();
@@ -1364,7 +1468,7 @@ mod tests {
                 bind: None,
             }),
         };
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         let data = ui.build_draw_data([1280, 1440], &mut fs, &no_images(), &no_slots());
         // Read back the root's measured size and recompute the centered top-left
@@ -1408,7 +1512,7 @@ mod tests {
             offset: [3.5, 7.25],
             root: filled,
         };
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         // Fractional scale: 1281x721 -> scale ~1.00078.
         let data = ui.build_draw_data([1281, 721], &mut fs, &no_images(), &no_slots());
@@ -1441,7 +1545,7 @@ mod tests {
             offset: [0.0, 0.0],
             root: filled,
         };
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
 
@@ -1485,7 +1589,7 @@ mod tests {
             offset: [0.0, 0.0],
             root: text(content, font_size),
         };
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
         ui.taffy.layout(ui.root).unwrap().size
@@ -1578,7 +1682,7 @@ mod tests {
         // First layout populates taffy's cache (count 1); a second call with the
         // same tree and same viewport hits the gate's no-change path and reuses
         // the cached subtree layout — the compute counter must stay flat.
-        let mut ui = UiTree::from_descriptor(&gating_tree());
+        let mut ui = UiTree::from_descriptor(&gating_tree(), &theme());
         let mut fs = font_system();
 
         ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
@@ -1596,7 +1700,7 @@ mod tests {
     fn viewport_change_forces_layout_recompute() {
         // A different device size re-resolves the letterbox/scale, so the gate
         // must recompute even though the tree is byte-for-byte identical.
-        let mut ui = UiTree::from_descriptor(&gating_tree());
+        let mut ui = UiTree::from_descriptor(&gating_tree(), &theme());
         let mut fs = font_system();
 
         ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
@@ -1617,7 +1721,7 @@ mod tests {
         // at the same viewport the previous tree was laid out against.
         let mut fs = font_system();
 
-        let mut first = UiTree::from_descriptor(&gating_tree());
+        let mut first = UiTree::from_descriptor(&gating_tree(), &theme());
         first.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
         first.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
         assert_eq!(first.recompute_count(), 1, "cached after the first layout");
@@ -1634,7 +1738,7 @@ mod tests {
                 vec![text("AB", 30.0), text("CD", 30.0), text("EF", 30.0)],
             ),
         };
-        let mut second = UiTree::from_descriptor(&reshaped);
+        let mut second = UiTree::from_descriptor(&reshaped, &theme());
         second.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
         assert_eq!(
             second.recompute_count(),
@@ -1648,7 +1752,7 @@ mod tests {
         // The gate skips the *compute*, not the draw-list production. The cached
         // frame reads back the same taffy::Layout rects, so its draw data must be
         // identical to the freshly-computed frame's.
-        let mut ui = UiTree::from_descriptor(&gating_tree());
+        let mut ui = UiTree::from_descriptor(&gating_tree(), &theme());
         let mut fs = font_system();
 
         let computed = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
@@ -1721,7 +1825,7 @@ mod tests {
         let mut slots = HashMap::new();
         slots.insert("player.health".to_string(), SlotValue::Number(87.0));
 
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &slots);
 
@@ -1744,7 +1848,7 @@ mod tests {
         let mut slots = HashMap::new();
         slots.insert("player.ammo".to_string(), SlotValue::Number(12.5));
 
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &slots);
 
@@ -1760,7 +1864,7 @@ mod tests {
             offset: [0.0, 0.0],
             root: bound_text("fallback", "player.health", Some("HP {}")),
         };
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
 
@@ -1786,7 +1890,7 @@ mod tests {
             SlotValue::Array(resolved.to_vec()),
         );
 
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &slots);
 
@@ -1817,7 +1921,7 @@ mod tests {
             SlotValue::Array(vec![0.1, 0.2, 0.3]),
         );
 
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &slots);
 
@@ -1842,7 +1946,7 @@ mod tests {
             offset: [0.0, 0.0],
             root: bound_panel_in_stack(fallback, "intro.flashColor"),
         };
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
 
@@ -1889,7 +1993,7 @@ mod tests {
             offset: [0.0, 0.0],
             root: bound_panel_in_stack([0.0, 0.0, 0.0, 1.0], "intro.flashColor"),
         };
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
 
         let red = [1.0, 0.0, 0.0, 1.0];
@@ -1924,7 +2028,7 @@ mod tests {
             offset: [0.0, 0.0],
             root: bound_text("0", "player.health", Some("HP {}")),
         };
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
 
         let mut slots = HashMap::new();
@@ -1954,7 +2058,7 @@ mod tests {
             offset: [0.0, 0.0],
             root: bound_text("0", "player.health", Some("HP {}")),
         };
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
 
         let mut slots = HashMap::new();
@@ -1992,7 +2096,7 @@ mod tests {
             offset: [0.0, 0.0],
             root: bound_panel_in_stack([0.0, 0.0, 0.0, 1.0], "intro.flashColor"),
         };
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
 
         let settled = [0.2, 0.4, 0.6, 1.0];
@@ -2020,6 +2124,220 @@ mod tests {
             first.quads.instances.len(),
             second.quads.instances.len(),
             "cached list matches the first build",
+        );
+    }
+
+    // --- Theme-token resolution at tree build (Task 4) -----------------------
+
+    use super::super::theme::{ThemeDescriptor, UiTheme};
+    use super::super::text::{UI_FONT_FAMILY, UI_MONO_FONT_FAMILY};
+    use std::collections::HashMap as StdHashMap;
+
+    /// A `UiText`-colored quad's sRGB-decoded approximate linear color is hard to
+    /// invert exactly; instead assert on the run's color in sRGB space by encoding
+    /// the EXPECTED linear value the same way `linear_rgba_to_srgb_u8` does.
+    fn srgb_of(linear: [f32; 4]) -> [u8; 4] {
+        linear_rgba_to_srgb_u8(linear)
+    }
+
+    /// A single text leaf carrying a color slot (token or literal) and an optional
+    /// font token — the resolution-under-test inputs.
+    fn themed_text(color: ColorValue, font: Option<&str>) -> AnchoredTree {
+        AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: Widget::Text(TextWidget {
+                content: "X".into(),
+                font_size: 20.0,
+                color,
+                font: font.map(str::to_string),
+                bind: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn text_color_token_resolves_to_theme_rgba_in_draw_list() {
+        // A `color: "critical"` token resolves to the theme's `critical` RGBA; the
+        // produced text run carries that color (sRGB-encoded). Proves token slots
+        // resolve against the active theme at build time.
+        let theme = UiTheme::engine_default();
+        let critical = theme.color("critical").unwrap();
+        let tree = themed_text(ColorValue::Token("critical".into()), None);
+        let mut ui = UiTree::from_descriptor(&tree, &theme);
+        let mut fs = font_system();
+        let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+        assert_eq!(data.texts.len(), 1);
+        assert_eq!(
+            data.texts[0].color,
+            srgb_of(critical),
+            "token color resolved to the theme's critical RGBA",
+        );
+    }
+
+    #[test]
+    fn unknown_color_token_resolves_to_opaque_magenta() {
+        // An unknown color token degrades to opaque magenta [1,0,1,1] — visible,
+        // never invisible or a panic.
+        let theme = UiTheme::engine_default();
+        let tree = themed_text(ColorValue::Token("no.such.color".into()), None);
+        let mut ui = UiTree::from_descriptor(&tree, &theme);
+        let mut fs = font_system();
+        let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+        assert_eq!(
+            data.texts[0].color,
+            srgb_of([1.0, 0.0, 1.0, 1.0]),
+            "unknown color token degrades to opaque magenta",
+        );
+    }
+
+    #[test]
+    fn spacing_token_resolves_into_layout_gap() {
+        // A container `gap: "l"` (theme `l` = 16px) lays its two children out with
+        // exactly the theme-defined spacing — proving spacing tokens resolve into
+        // the taffy style before layout.
+        let theme = UiTheme::engine_default();
+        let l = theme.spacing("l").unwrap();
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: Widget::VStack(ContainerWidget {
+                gap: SpacingValue::Token("l".into()),
+                padding: SpacingValue::Literal(0.0),
+                align: Align::Start,
+                fill: None,
+                border: None,
+                children: vec![text("AB", 30.0), text("CD", 30.0)],
+            }),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme);
+        let mut fs = font_system();
+        ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+        let children: Vec<_> = ui.taffy.children(ui.root).unwrap();
+        let c0 = *ui.taffy.layout(children[0]).unwrap();
+        let c1 = *ui.taffy.layout(children[1]).unwrap();
+        assert!(
+            approx(c1.location.y - (c0.location.y + c0.size.height), l),
+            "token gap resolved to the theme's `l` spacing ({l}px), got {}",
+            c1.location.y - (c0.location.y + c0.size.height),
+        );
+    }
+
+    #[test]
+    fn unknown_spacing_token_lays_out_as_zero() {
+        // An unknown gap token degrades to 0.0 — the two children abut with no gap.
+        let theme = UiTheme::engine_default();
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: Widget::VStack(ContainerWidget {
+                gap: SpacingValue::Token("no.such.spacing".into()),
+                padding: SpacingValue::Literal(0.0),
+                align: Align::Start,
+                fill: None,
+                border: None,
+                children: vec![text("AB", 30.0), text("CD", 30.0)],
+            }),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme);
+        let mut fs = font_system();
+        ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+        let children: Vec<_> = ui.taffy.children(ui.root).unwrap();
+        let c0 = *ui.taffy.layout(children[0]).unwrap();
+        let c1 = *ui.taffy.layout(children[1]).unwrap();
+        assert!(
+            approx(c1.location.y - (c0.location.y + c0.size.height), 0.0),
+            "unknown spacing token lays out as 0.0, got {}",
+            c1.location.y - (c0.location.y + c0.size.height),
+        );
+    }
+
+    #[test]
+    fn font_token_mono_resolves_to_the_mono_family_on_the_node() {
+        // `font: "mono"` resolves to the theme's mono family on the node's
+        // `NodeContext::Text` and the produced `UiText` line — so the run shapes
+        // and draws against the registered monospace face.
+        let theme = UiTheme::engine_default();
+        let tree = themed_text(ColorValue::Literal([1.0; 4]), Some("mono"));
+        let mut ui = UiTree::from_descriptor(&tree, &theme);
+        // The node carries the resolved family before any draw.
+        if let Some(NodeContext::Text { family, .. }) = ui.taffy.get_node_context(ui.root) {
+            assert_eq!(family, UI_MONO_FONT_FAMILY, "node carries the mono family");
+        } else {
+            panic!("root must be a text node");
+        }
+        let mut fs = font_system();
+        let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+        assert_eq!(
+            data.texts[0].family, UI_MONO_FONT_FAMILY,
+            "the drawn line selects the mono family",
+        );
+    }
+
+    #[test]
+    fn absent_font_resolves_to_the_body_family() {
+        // A text widget with no `font` token resolves to the `body` family — the
+        // pre-theming default, so fontless text keeps the body face.
+        let theme = UiTheme::engine_default();
+        let tree = themed_text(ColorValue::Literal([1.0; 4]), None);
+        let ui = UiTree::from_descriptor(&tree, &theme);
+        if let Some(NodeContext::Text { family, .. }) = ui.taffy.get_node_context(ui.root) {
+            assert_eq!(family, UI_FONT_FAMILY, "absent font selects the body family");
+        } else {
+            panic!("root must be a text node");
+        }
+    }
+
+    #[test]
+    fn unknown_font_token_falls_back_to_body_family() {
+        // An unknown font token degrades to the `body` family (not magenta, not a
+        // panic) — text still renders in the default face.
+        let theme = UiTheme::engine_default();
+        let tree = themed_text(ColorValue::Literal([1.0; 4]), Some("no.such.font"));
+        let ui = UiTree::from_descriptor(&tree, &theme);
+        if let Some(NodeContext::Text { family, .. }) = ui.taffy.get_node_context(ui.root) {
+            assert_eq!(
+                family, UI_FONT_FAMILY,
+                "unknown font token falls back to the body family",
+            );
+        } else {
+            panic!("root must be a text node");
+        }
+    }
+
+    #[test]
+    fn override_theme_changes_resolved_token_values_on_rebuild() {
+        // Rebuilding the SAME descriptor against an override theme yields the new
+        // token value with NO descriptor change — the resolution seam reads the
+        // theme passed at build, so a generation bump (which installs a new theme)
+        // re-resolves tokens. Mirrors the engine-side setter's effect at the tree
+        // level (the `UiPass` generation gate decides WHEN to rebuild; this proves
+        // the rebuild produces the new values).
+        let default = UiTheme::engine_default();
+        let override_theme = default.with_override(&ThemeDescriptor {
+            colors: StdHashMap::from([("critical".to_string(), [0.0, 1.0, 1.0, 1.0])]),
+            ..Default::default()
+        });
+        let tree = themed_text(ColorValue::Token("critical".into()), None);
+
+        let mut fs = font_system();
+        let mut before = UiTree::from_descriptor(&tree, &default);
+        let data_before = before.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+        let mut after = UiTree::from_descriptor(&tree, &override_theme);
+        let data_after = after.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+
+        assert_eq!(
+            data_before.texts[0].color,
+            srgb_of(default.color("critical").unwrap()),
+        );
+        assert_eq!(
+            data_after.texts[0].color,
+            srgb_of([0.0, 1.0, 1.0, 1.0]),
+            "rebuilding against the override theme re-resolves the token value",
+        );
+        assert_ne!(
+            data_before.texts[0].color, data_after.texts[0].color,
+            "the same descriptor resolves to different colors under different themes",
         );
     }
 }

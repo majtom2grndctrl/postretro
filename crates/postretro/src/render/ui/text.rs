@@ -32,6 +32,10 @@ const UI_MONO_FONT_TTF: &[u8] =
 /// Font family name inside `UI_MONO_FONT_TTF` (the TTF `name` table family
 /// record). Must match the `mono` font token in `theme::UiTheme::engine_default`
 /// exactly, or token resolution selects a family glyphon never registered.
+/// Referenced by the family-registration/measure tests and the theme contract;
+/// the production `mono` family string lives in `engine_default`, so this is
+/// test-only on a release build.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const UI_MONO_FONT_FAMILY: &str = "JetBrains Mono";
 
 /// glyphon shapes against a `Metrics { font_size, line_height }`. UI text here is

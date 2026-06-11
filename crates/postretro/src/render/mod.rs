@@ -1301,6 +1301,20 @@ pub struct Renderer {
     /// both render signatures stay stable.
     ui_snapshot: ui::UiReadSnapshot,
 
+    /// Active UI theme: the token table every descriptor tree resolves its
+    /// color/spacing/font slots against at build time. Defaults to
+    /// `UiTheme::engine_default()` at construction; `set_ui_theme` installs an
+    /// override (e.g. from a mod's theme document) and bumps `ui_theme_generation`.
+    /// Both render paths (`record_splash_ui`, the gameplay block) resolve against
+    /// this same instance — the splash's literals resolve to themselves, so the
+    /// splash output is unchanged.
+    ui_theme: ui::theme::UiTheme,
+    /// Monotonic UI theme generation, bumped by `set_ui_theme`. The retained
+    /// gameplay tree records the generation it was built against; a bump
+    /// invalidates the resolved tokens baked into it, so `layout_gameplay_tree`
+    /// rebuilds the tree on the next frame even when the descriptor is unchanged.
+    ui_theme_generation: u64,
+
     /// Volumetric fog raymarch + composite. Active only when the level has
     /// at least one fog volume uploaded; otherwise the dispatch + composite
     /// are skipped (see `FogPass::active`).
@@ -2723,6 +2737,8 @@ impl Renderer {
             splash_logo_size: None,
             ui_images: ui::UiImageRegistry::default(),
             ui_snapshot: ui::UiReadSnapshot::default(),
+            ui_theme: ui::theme::UiTheme::engine_default(),
+            ui_theme_generation: 0,
             fog,
             fog_cell_masks: None,
             active_fog_aabbs: Vec::new(),
@@ -3373,6 +3389,25 @@ impl Renderer {
         self.ui_snapshot = snapshot;
     }
 
+    /// Install an override UI theme and bump the theme generation. Engine-side
+    /// only (no script bridge): a caller hands a fully-merged `UiTheme` (e.g.
+    /// `UiTheme::engine_default().with_override(&doc)`), which every subsequent
+    /// descriptor build resolves its tokens against. Bumping the generation
+    /// invalidates the retained gameplay tree's baked tokens, so the next gameplay
+    /// frame rebuilds the tree with the new values even when its descriptor is
+    /// unchanged. The splash re-derives its tree each frame, so it picks up the
+    /// new theme on its next frame with no extra bookkeeping.
+    // Engine-side override seam: no caller installs an override theme yet (the
+    // script/mod theme-document ingestion that drives it is deferred), so this is
+    // dead in both build profiles today — kept as the wired entry point the
+    // generation gate depends on. `Renderer` needs a GPU device, so it cannot be
+    // exercised by the CPU test suite.
+    #[allow(dead_code)]
+    pub fn set_ui_theme(&mut self, theme: ui::theme::UiTheme) {
+        self.ui_theme = theme;
+        self.ui_theme_generation = self.ui_theme_generation.wrapping_add(1);
+    }
+
     /// Returns `Err` on swapchain failure; caller exits the event loop on error.
     pub fn render_splash_frame(&mut self) -> Result<()> {
         let output = match self.surface.get_current_texture() {
@@ -3452,9 +3487,13 @@ impl Renderer {
             // The splash tree carries no state bindings, so it resolves against
             // an empty slot map — behavior unchanged from before binding landed.
             let empty_slots = std::collections::HashMap::new();
-            draw = self
-                .ui
-                .layout_tree(desc.tree(), viewport, &image_sizes, &empty_slots);
+            draw = self.ui.layout_tree(
+                desc.tree(),
+                viewport,
+                &image_sizes,
+                &empty_slots,
+                &self.ui_theme,
+            );
         }
 
         // The tree's panel quads (border + fill) draw behind the logo/text, in
@@ -5232,6 +5271,8 @@ impl Renderer {
                 ui_viewport,
                 &ui::tree::ImageSizes::new(),
                 &self.ui_snapshot.slot_values,
+                &self.ui_theme,
+                self.ui_theme_generation,
             );
             if !draw.is_empty() {
                 let white_bg = self.ui.white_bind_group().clone();

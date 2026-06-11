@@ -78,6 +78,13 @@ mod gameplay_ui_gate_test;
 #[cfg(test)]
 mod demo_ui_gate_test;
 
+/// Hard-gate CPU assertions for M13 fonts+theming Task 4: the theme-generation
+/// rebuild gate (reproduced CPU-side, mirroring `UiPass::layout_gameplay_tree`)
+/// and the exactly-one-warning-per-build fallback contract for unknown tokens.
+/// Pure CPU — no GPU adapter.
+#[cfg(test)]
+mod theme_gate_test;
+
 /// Headless regression for the multi-batch instance-buffer clobber: encodes two
 /// non-empty batches into disjoint screen regions and asserts each region keeps
 /// its own batch's color. Self-skips when no GPU adapter is present.
@@ -361,6 +368,11 @@ struct RetainedGameplayTree {
     /// The descriptor the retained `tree` was built from. Compared against the
     /// incoming descriptor each frame; a difference forces a rebuild.
     descriptor: descriptor::AnchoredTree,
+    /// The renderer's UI theme generation the retained `tree` was built (and so
+    /// token-resolved) against. A bump (the engine installed an override theme)
+    /// invalidates the resolved colors/spacing/fonts baked into the tree, so the
+    /// gate rebuilds it even when the descriptor is byte-for-byte identical.
+    theme_generation: u64,
     /// The retained taffy-backed tree, carrying its layout cache, last viewport,
     /// per-bound-node last-resolved values, and cached draw list across frames.
     tree: tree::UiTree,
@@ -627,8 +639,9 @@ impl UiPass {
         viewport: [u32; 2],
         image_sizes: &tree::ImageSizes,
         slot_values: &std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
+        theme: &theme::UiTheme,
     ) -> tree::UiDrawData {
-        let mut ui_tree = tree::UiTree::from_descriptor(tree);
+        let mut ui_tree = tree::UiTree::from_descriptor(tree, theme);
         ui_tree.build_draw_data(
             viewport,
             self.text.font_system_mut(),
@@ -659,17 +672,27 @@ impl UiPass {
         viewport: [u32; 2],
         image_sizes: &tree::ImageSizes,
         slot_values: &std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
+        theme: &theme::UiTheme,
+        theme_generation: u64,
     ) -> tree::UiDrawData {
-        // Rebuild the retained tree when there is none yet, or when the incoming
-        // descriptor differs from the one it was built from (a structural change).
+        // Rebuild the retained tree when there is none yet, when the incoming
+        // descriptor differs from the one it was built from (a structural change),
+        // OR when the theme generation moved (the engine installed an override
+        // theme, so the tokens baked into the retained tree are stale). The
+        // generation gate rebuilds even on a byte-identical descriptor; a settled
+        // frame (same descriptor + same generation) reuses the retained tree, so
+        // the across-frames cache still holds.
         let needs_build = match &self.gameplay_tree {
-            Some(retained) => retained.descriptor != *tree,
+            Some(retained) => {
+                retained.descriptor != *tree || retained.theme_generation != theme_generation
+            }
             None => true,
         };
         if needs_build {
             self.gameplay_tree = Some(RetainedGameplayTree {
                 descriptor: tree.clone(),
-                tree: tree::UiTree::from_descriptor(tree),
+                theme_generation,
+                tree: tree::UiTree::from_descriptor(tree, theme),
             });
         }
 

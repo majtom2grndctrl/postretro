@@ -26,6 +26,7 @@
 use std::collections::HashMap;
 
 use super::demo::build_demo_descriptor;
+use super::theme::UiTheme;
 use super::tree::{ImageSizes, UiDrawData, UiTree};
 use crate::scripting::slot_table::SlotValue;
 
@@ -82,7 +83,7 @@ fn demo_descriptor_resolves_binds_through_retained_path() {
     // intro.flashColor set, the demo draw data carries the formatted text strings
     // and the swatch quad carries the resolved color.
     let tree = build_demo_descriptor();
-    let mut ui = UiTree::from_descriptor(&tree);
+    let mut ui = UiTree::from_descriptor(&tree, &UiTheme::engine_default());
     let mut fs = font_system();
 
     let flash = [0.0, 0.8, 0.9, 1.0];
@@ -122,7 +123,7 @@ fn demo_panel_fill_change_rebuilds_without_relayout() {
     // rebuilds the draw list with the new color but does NOT increment
     // recompute_count (no relayout — a bound fill is appearance-only).
     let tree = build_demo_descriptor();
-    let mut ui = UiTree::from_descriptor(&tree);
+    let mut ui = UiTree::from_descriptor(&tree, &UiTheme::engine_default());
     let mut fs = font_system();
 
     let solid = [0.0, 0.65, 0.75, 1.0];
@@ -169,7 +170,7 @@ fn demo_bound_text_change_triggers_relayout() {
     // (player.health 100→87) re-measures the run and DOES increment
     // recompute_count.
     let tree = build_demo_descriptor();
-    let mut ui = UiTree::from_descriptor(&tree);
+    let mut ui = UiTree::from_descriptor(&tree, &UiTheme::engine_default());
     let mut fs = font_system();
 
     let flash = [0.0, 0.65, 0.75, 1.0];
@@ -209,7 +210,7 @@ fn demo_settled_frame_skips_rebuild_and_recompute() {
     // hold), a no-change frame performs NO draw-list rebuild and NO recompute —
     // the dirty-gate short-circuits and the cached list is returned.
     let tree = build_demo_descriptor();
-    let mut ui = UiTree::from_descriptor(&tree);
+    let mut ui = UiTree::from_descriptor(&tree, &UiTheme::engine_default());
     let mut fs = font_system();
 
     let settled = proxy_slots(100.0, 50.0, [0.0, 0.65, 0.75, 1.0]);
@@ -245,7 +246,7 @@ fn demo_unbound_slot_change_invalidates_nothing() {
     // The demo binds player.health/player.ammo/intro.flashColor; we change an
     // unrelated `world.kills` slot.
     let tree = build_demo_descriptor();
-    let mut ui = UiTree::from_descriptor(&tree);
+    let mut ui = UiTree::from_descriptor(&tree, &UiTheme::engine_default());
     let mut fs = font_system();
 
     let mut slots = proxy_slots(100.0, 50.0, [0.0, 0.65, 0.75, 1.0]);
@@ -275,7 +276,7 @@ fn demo_swatch_quad_has_real_size_presence() {
     // swatch reads as a visible block. Assert the resolved swatch quad's width and
     // height are both non-trivial.
     let tree = build_demo_descriptor();
-    let mut ui = UiTree::from_descriptor(&tree);
+    let mut ui = UiTree::from_descriptor(&tree, &UiTheme::engine_default());
     let mut fs = font_system();
     let data = ui.build_draw_data_retained(
         [1280, 720],

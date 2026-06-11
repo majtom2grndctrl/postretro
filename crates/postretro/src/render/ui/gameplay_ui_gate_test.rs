@@ -25,6 +25,7 @@ use super::descriptor::{
     TextWidget, Widget,
 };
 use super::layout::Anchor;
+use super::theme::UiTheme;
 use super::tree::{ImageSizes, UiDrawData, UiTree};
 
 const EPS: f32 = 1e-3;
@@ -54,7 +55,7 @@ fn no_slots() -> std::collections::HashMap<String, crate::scripting::slot_table:
 /// `if let Some(tree) ... if !draw.is_empty() { encode }`.
 fn gameplay_draw(tree: Option<&AnchoredTree>, device_size: [u32; 2]) -> Option<UiDrawData> {
     let tree = tree?;
-    let mut ui = UiTree::from_descriptor(tree);
+    let mut ui = UiTree::from_descriptor(tree, &UiTheme::engine_default());
     let mut fs = font_system();
     let draw = ui.build_draw_data(device_size, &mut fs, &icon_sizes(), &no_slots());
     if draw.is_empty() { None } else { Some(draw) }
@@ -198,7 +199,7 @@ fn empty_gameplay_tree_early_outs_the_ui_pass() {
         }),
     };
     let draw_empty = {
-        let mut ui = UiTree::from_descriptor(&empty);
+        let mut ui = UiTree::from_descriptor(&empty, &UiTheme::engine_default());
         let mut fs = font_system();
         ui.build_draw_data([1280, 720], &mut fs, &icon_sizes(), &no_slots())
     };

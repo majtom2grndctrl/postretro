@@ -1,9 +1,9 @@
-// Demo gameplay HUD descriptor: the hardcoded Rust description of the M13 Goal C
+// M13 demo gameplay HUD descriptor: the hardcoded Rust description of the
 // state-binding demo, authored in 1280x720 logical-reference space and laid out
 // through the retained gameplay `UiTree` (`UiPass::layout_gameplay_tree`). It is
 // the FIRST gameplay UI producer — `main.rs` publishes this tree on the
 // once-per-frame read snapshot, so the renderer drives it through the
-// subscriber-aware retained path (Task 4).
+// subscriber-aware retained path.
 //
 // This is a demo, not a HUD design: three bound nodes prove the binding seam
 // end-to-end. Two `text` nodes bind `player.health` / `player.ammo` (Number →
@@ -13,7 +13,7 @@
 // change relays out; panel-fill change is appearance-only).
 //
 // See: context/lib/scripting.md §3 (defineStore / DefinitionOnly) ·
-//      context/plans/in-progress/M13--state-system
+//      context/lib/ui.md
 
 use super::descriptor::{
     Align, AnchoredTree, ColorValue, ContainerWidget, Easing, GridWidget, PanelBind, PanelTween,

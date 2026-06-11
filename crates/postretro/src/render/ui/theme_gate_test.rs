@@ -15,7 +15,7 @@
 //
 // Pure CPU — no GPU adapter, no wgpu call.
 //
-// See: context/plans/in-progress/M13--fonts-theming
+// See: context/lib/ui.md
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};

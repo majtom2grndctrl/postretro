@@ -16,7 +16,7 @@
 // its own image batch, then the version text. If that assembly changes, this
 // fixture changes with it — that coupling is the point.
 //
-// See: context/plans/in-progress/M13--descriptor-tree-layout
+// See: context/lib/ui.md
 
 use super::layout::{self, device_scale};
 use super::splash::{SPLASH_LOGO_ASSET, build_splash_descriptor, splash_logo_reference_size};
@@ -268,7 +268,7 @@ fn splash_logo_preserves_aspect_across_resolutions() {
 #[test]
 fn splash_version_text_centers_on_panel_via_measured_width() {
     // The version line centers horizontally on the panel center from its REAL
-    // shaped-run width (the measured-width centering Goal B owes A): the run's
+    // shaped-run width (measured-width centering): the run's
     // center x must land on the panel center (canvas center 640 at scale 1.0),
     // and its left edge must back off half the measured run width. A wider
     // string shifts its left edge further left while keeping the same center —

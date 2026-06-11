@@ -34,9 +34,9 @@ impl UiTheme {
     /// (cyan accent, dark panel surface).
     ///
     /// The `body`/`mono` font entries name plain font-family strings. `"Inter"`
-    /// matches `text::UI_FONT_FAMILY` (the embedded body face). Task 3 embeds a
-    /// monospace TTF registering exactly the family `"JetBrains Mono"`; until then
-    /// the `mono` token names a family that resolves to a system fallback.
+    /// matches `text::UI_FONT_FAMILY` and `"JetBrains Mono"` matches
+    /// `text::UI_MONO_FONT_FAMILY` — both embedded faces are registered together
+    /// in `build_font_system`.
     pub fn engine_default() -> Self {
         let colors = HashMap::from([
             // Cyberpunk warning palette. `critical` is a hot red, `warning` amber,
@@ -93,6 +93,9 @@ impl UiTheme {
     /// already-merged `UiTheme`; the override-document → merge path is the wire
     /// contract overrides serialize through, but its production caller (script
     /// ingestion) is deferred — so it is test-only on a release build today.
+    ///
+    /// Paired deferred-G1 entry points (both `#[allow(dead_code)]` until script
+    /// ingestion lands): this method and `Renderer::set_ui_theme` in `render/mod.rs`.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn with_override(&self, over: &ThemeDescriptor) -> Self {
         let mut merged = self.clone();
@@ -155,7 +158,7 @@ mod tests {
 
     #[test]
     fn default_font_tokens_name_the_coordinated_families() {
-        // Task 3 registers these exact family strings; the contract pins them.
+        // The embedded Inter and JetBrains Mono faces register these exact family names; the contract pins them.
         let theme = UiTheme::engine_default();
         assert_eq!(theme.font("body"), Some("Inter"));
         assert_eq!(theme.font("mono"), Some("JetBrains Mono"));

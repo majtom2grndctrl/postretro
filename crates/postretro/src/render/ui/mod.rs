@@ -44,7 +44,7 @@ pub(crate) use self::text::UiText;
 /// renderer lays out via `UiTree`; G1 later swaps the body for script ingestion.
 pub(crate) mod splash;
 
-/// Hardcoded demo gameplay HUD descriptor (M13 Goal C state-binding demo) behind
+/// Hardcoded demo gameplay HUD descriptor (M13 state-binding demo) behind
 /// the `demo::build_demo_descriptor` seam. The FIRST gameplay UI producer:
 /// `main.rs` publishes its `AnchoredTree` on the per-frame read snapshot and the
 /// renderer drives it through the retained gameplay path. Two `text` nodes bind

@@ -1,7 +1,7 @@
 // Serde descriptor model for the UI widget tree: the internally-tagged `Widget`
 // enum (seven kinds), its field structs, and the `AnchoredTree` placement
 // envelope. Pure data — no rendering, no taffy, no retained tree.
-// See: context/plans/in-progress/M13--descriptor-tree-layout
+// See: context/lib/ui.md
 
 use serde::{Deserialize, Serialize};
 
@@ -80,9 +80,9 @@ pub enum Widget {
 /// `color` is linear RGBA. The run is sized by the glyphon measure seam and laid
 /// out in its container's flow.
 ///
-/// `bind` is the optional state-binding (Goal C): when present, the rendered
-/// string is resolved from a store slot at draw-data build time and `content`
-/// serves only as the fallback for an absent slot (see `tree::resolve_text`).
+/// `bind` is the optional state-binding: when present, the rendered string is
+/// resolved from a store slot at draw-data build time and `content` serves only
+/// as the fallback for an absent slot (see `tree::resolve_text`).
 /// Absent on every static widget, so unbound text round-trips unchanged.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -110,7 +110,7 @@ pub struct TextBind {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
     /// Optional value-tweening config (M13 UI Value-Tweening). When present, the
-    /// runtime (Task 3) eases the resolved numeric value toward each new target
+    /// tween runtime eases the resolved numeric value toward each new target
     /// over `duration_ms` using `easing` instead of snapping. Absent on every
     /// pre-tweening bind, so a tween-less bind keeps its old wire form (the key
     /// is omitted, not `null`).
@@ -120,8 +120,8 @@ pub struct TextBind {
 
 /// Easing curve for a value tween (M13). A closed serde enum: each variant maps
 /// to a camelCase wire literal (`"linear"`, `"easeIn"`, `"easeOut"`,
-/// `"easeInOut"`). Shared by `TextTween` and `PanelTween`; the runtime that
-/// samples the curve is a later step (Task 3).
+/// `"easeInOut"`). Shared by `TextTween` and `PanelTween`; the tween runtime
+/// samples the curve at each frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Easing {
@@ -152,11 +152,11 @@ pub struct TextTween {
 /// `fill`/`border` instead — a parent drawing its own backdrop beneath flowed
 /// children — so an overlapping composition needs no standalone sized panel.
 ///
-/// `bind` is the optional state-binding (Goal C): when present, the panel `fill`
-/// is resolved from a store slot holding a length-4 linear-RGBA array at
-/// draw-data build time, with the literal `fill` serving as the fallback for an
-/// absent or malformed slot (see `tree::resolve_panel_fill`). Absent on static
-/// panels, so unbound panels round-trip unchanged.
+/// `bind` is the optional state-binding: when present, the panel `fill` is
+/// resolved from a store slot holding a length-4 linear-RGBA array at draw-data
+/// build time, with the literal `fill` serving as the fallback for an absent or
+/// malformed slot (see `tree::resolve_panel_fill`). Absent on static panels, so
+/// unbound panels round-trip unchanged.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PanelWidget {
@@ -174,7 +174,7 @@ pub struct PanelWidget {
 #[serde(rename_all = "camelCase")]
 pub struct PanelBind {
     pub slot: String,
-    /// Optional value-tweening config (M13). When present, the runtime (Task 3)
+    /// Optional value-tweening config (M13). When present, the tween runtime
     /// eases the resolved RGBA fill toward each new target over `duration_ms`.
     /// Absent on every pre-tweening bind, so a tween-less bind keeps its old wire
     /// form (the key is omitted, not `null`).

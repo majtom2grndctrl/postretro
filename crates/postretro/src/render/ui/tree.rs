@@ -160,11 +160,6 @@ pub(crate) type ImageSizes = HashMap<String, [f32; 2]>;
 /// across. A retarget restarts the segment from the current `display` (never
 /// snapping mid-flight), so `start` is the display value at the retarget instant,
 /// not the bind's `from`. `T` is `f32` for text, `[f32; 4]` for panel.
-///
-/// `warned` is the per-tree-build warn-once latch for the non-tweenable-shape
-/// case (a text tween on a non-`Number` slot, a panel tween on a non-length-4
-/// `Array`): the driver resets it at the start of each `resolve_bindings` so the
-/// snap-through path logs at most one `log::warn!` per tree build.
 #[derive(Debug, Clone)]
 struct TweenState<T> {
     /// Value rendered this frame (eased toward `target` from `start`).
@@ -175,8 +170,6 @@ struct TweenState<T> {
     start_time: f64,
     /// Value the active segment eases toward.
     target: T,
-    /// Per-build latch so a non-tweenable-shape slot warns at most once per build.
-    warned: bool,
 }
 
 /// Per-node draw payload carried alongside each taffy node. Pure layout nodes
@@ -634,9 +627,10 @@ impl UiTree {
     /// panel stores its eased fill in `last_resolved` so the diff settles.
     ///
     /// A tween whose slot resolves to any OTHER shape snaps through the unchanged
-    /// resolution path (`resolve_text`/`resolve_panel_fill`) and logs exactly one
-    /// `log::warn!` per tree build via the per-node `warned` latch (reset below at
-    /// the start of each call).
+    /// resolution path (`resolve_text`/`resolve_panel_fill`) and logs one
+    /// `log::warn!` per retained frame: each node is visited once per
+    /// `resolve_bindings` call (one per retained frame) and there is no cross-frame
+    /// dedup, matching the `resolve_panel_fill` precedent.
     ///
     /// Side effects: stores each text node's freshly resolved (or displayed) string
     /// in `last_resolved` and marks it dirty when it changed; records each panel's
@@ -839,8 +833,9 @@ struct BindingDiff {
 ///   formatting as `slot_value_string`) and stored as the rendered string, so the
 ///   measure seam shapes the displayed value.
 /// - **Tweened, slot resolves to any other shape**: snap-through — render via the
-///   unchanged `resolve_text` path and log exactly ONE `log::warn!` per tree build
-///   (the per-node `warned` latch, reset at the top of each tweened call).
+///   unchanged `resolve_text` path and log one `log::warn!` per retained frame
+///   (the node is visited once per `resolve_bindings` call; there is no cross-frame
+///   dedup, matching the `resolve_panel_fill` precedent).
 ///
 /// `now` is the frame's `time_seconds`.
 fn drive_text_binding(
@@ -861,12 +856,6 @@ fn drive_text_binding(
         return changed;
     };
 
-    // Reset the per-build warn latch so the snap-through case warns at most once
-    // per tree build (this runs once per node per build).
-    if let Some(state) = tween {
-        state.warned = false;
-    }
-
     let rendered = match slot_values.get(&bind.slot) {
         Some(SlotValue::Number(n)) => {
             // Tweenable: the number is the eased target. Advance the display value
@@ -882,12 +871,12 @@ fn drive_text_binding(
         }
         _ => {
             // A tween on a non-`Number` slot (or an absent slot): snap through the
-            // unchanged resolution path, warning at most once per build. An absent
+            // unchanged resolution path, warning once per retained frame. An absent
             // slot is the normal fallback case and does NOT warn (`resolve_text`
             // already treats absence silently); only a present, non-numeric value
-            // is an authoring error worth the single warn.
+            // is an authoring error worth the warn.
             if slot_values.get(&bind.slot).is_some() {
-                warn_non_tweenable_text(bind, tween, now);
+                warn_non_tweenable_text(bind);
             }
             resolve_text(Some(bind), content, slot_values)
         }
@@ -923,7 +912,6 @@ fn drive_tween_f32(
                 start,
                 start_time: now,
                 target,
-                warned: false,
             };
             state.display = advance_f32(&state, duration_ms, easing, now);
             let display = state.display;
@@ -958,37 +946,17 @@ fn advance_f32(state: &TweenState<f32>, duration_ms: f32, easing: Easing, now: f
     state.start + (state.target - state.start) * e
 }
 
-/// Log the one-per-build warning for a text tween whose slot resolved to a
-/// non-`Number` shape, latching `warned` so a repeated non-numeric value in the
-/// same build warns only once. Seeds a latch-only tween state when none exists
-/// yet (the display fields are unused on this path — the snap renders via
-/// `resolve_text`).
-fn warn_non_tweenable_text(bind: &TextBind, tween: &mut Option<TweenState<f32>>, now: f64) {
-    match tween {
-        Some(state) if state.warned => {}
-        Some(state) => {
-            log::warn!(
-                "[UI] text bind slot '{}' carries a tween but did not resolve to a Number; \
-                 rendering the raw value without easing",
-                bind.slot,
-            );
-            state.warned = true;
-        }
-        None => {
-            log::warn!(
-                "[UI] text bind slot '{}' carries a tween but did not resolve to a Number; \
-                 rendering the raw value without easing",
-                bind.slot,
-            );
-            *tween = Some(TweenState {
-                display: 0.0,
-                start: 0.0,
-                start_time: now,
-                target: 0.0,
-                warned: true,
-            });
-        }
-    }
+/// Log the snap-through warning for a text tween whose slot resolved to a
+/// non-`Number` shape. Fires once per retained frame: the caller visits each node
+/// once per `resolve_bindings` call (one per retained frame) and there is no
+/// cross-frame dedup, matching the `resolve_panel_fill` precedent. The snap itself
+/// renders via `resolve_text`, so this never touches the tween state.
+fn warn_non_tweenable_text(bind: &TextBind) {
+    log::warn!(
+        "[UI] text bind slot '{}' carries a tween but did not resolve to a Number; \
+         rendering the raw value without easing",
+        bind.slot,
+    );
 }
 
 /// Drive one bound PANEL node for this frame and return whether its rendered
@@ -1000,8 +968,9 @@ fn warn_non_tweenable_text(bind: &TextBind, tween: &mut Option<TweenState<f32>>,
 ///   target; `drive_tween_rgba` advances the per-node `[f32; 4]` display
 ///   per-channel (alpha included, no rounding) and stores it as the rendered fill.
 /// - **Tweened, slot resolves to any other shape**: snap through the unchanged
-///   `resolve_panel_fill` path (which already warns once per build on a present-
-///   but-malformed slot) — no extra tween warn, since that path owns the warning.
+///   `resolve_panel_fill` path (which already warns once per retained frame on a
+///   present-but-malformed slot) — no extra tween warn, since that path owns the
+///   warning.
 fn drive_panel_binding(
     bind: &PanelBind,
     fallback: [f32; 4],
@@ -1026,7 +995,7 @@ fn drive_panel_binding(
         }
         // Non-tweenable shape (absent, wrong variant, or wrong length): snap
         // through the unchanged fill-resolution path. `resolve_panel_fill` already
-        // owns the one-per-build warn for a present-but-malformed slot, so the
+        // owns the once-per-frame warn for a present-but-malformed slot, so the
         // tween adds none here.
         _ => resolve_panel_fill(Some(bind), fallback, slot_values),
     };
@@ -1058,7 +1027,6 @@ fn drive_tween_rgba(
                 start,
                 start_time: now,
                 target,
-                warned: false,
             };
             state.display = advance_rgba(&state, duration_ms, easing, now);
             let display = state.display;
@@ -1498,9 +1466,11 @@ fn slot_value_string(value: &SlotValue) -> String {
 /// exactly 4 f32 is used as the linear `[r, g, b, a]` fill. An absent slot falls
 /// back silently (the normal "not written this frame" case). A present-but-
 /// malformed value (wrong variant, or an array whose length is not 4) falls back
-/// to the literal `fallback` with a single `log::warn!` — a per-build authoring
-/// error, not per-frame spam (a fresh tree builds once per frame today, so the
-/// warn fires at most once per frame for a genuinely mis-typed slot).
+/// to the literal `fallback` with a single `log::warn!` per call. The warn fires
+/// once per frame for a genuinely mis-typed slot on BOTH paths: the fresh path
+/// (one build per frame) and the retained tweened path (`drive_panel_binding`
+/// snaps through here every frame the slot keeps the wrong shape). There is no
+/// cross-frame dedup — an authoring error, not per-frame spam.
 fn resolve_panel_fill(
     bind: Option<&PanelBind>,
     fallback: [f32; 4],
@@ -3275,7 +3245,7 @@ mod tests {
     fn text_tween_on_string_slot_snaps_through_unchanged_path() {
         // Non-numeric snap-with-warn: a text tween whose slot resolves to a
         // `String` renders via the unchanged `resolve_text` path (the bare string),
-        // not an eased number. (The single per-build warn is logged but not
+        // not an eased number. (The once-per-frame warn is logged but not
         // asserted — log capture is out of scope for these CPU tests.)
         let tree = AnchoredTree {
             anchor: Anchor::TopLeft,

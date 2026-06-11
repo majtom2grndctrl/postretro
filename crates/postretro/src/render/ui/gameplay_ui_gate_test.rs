@@ -17,7 +17,7 @@
 // unconditionally for its frame-0 black clear (`record_splash_ui`), so this gate
 // asserts ONLY the gameplay predicate — it does not touch the splash clear.
 //
-// See: context/plans/in-progress/M13--descriptor-tree-layout
+// See: context/lib/ui.md
 
 use super::UiReadSnapshot;
 use super::descriptor::{
@@ -183,7 +183,7 @@ fn snapshot_carries_gameplay_tree_as_the_content_contract() {
 #[test]
 fn snapshot_default_time_is_zero() {
     // The fresh/splash default takes no time — inertness is structural. The
-    // tween runtime (Task 3) reads `time_seconds`, so the default must pin to
+    // tween runtime reads `time_seconds`, so the default must pin to
     // `0.0` so an unfed snapshot eases nothing.
     let default = UiReadSnapshot::default();
     assert_eq!(default.time_seconds, 0.0, "default carries no frame time");

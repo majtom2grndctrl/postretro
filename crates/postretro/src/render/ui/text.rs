@@ -2,7 +2,7 @@
 // atlas/renderer, and the shape→prepare→render→trim cycle. glyphon ships its OWN
 // pipeline and atlas — none of this routes through the quad pipeline in `mod.rs`;
 // the text draw records INTO the same render pass, after the quads.
-// See: context/plans/in-progress/M13--descriptor-tree-layout
+// See: context/lib/ui.md
 
 use glyphon::{
     Attrs, Buffer as TextBuffer, Cache as GlyphCache, Color as GlyphColor, Family, FontSystem,

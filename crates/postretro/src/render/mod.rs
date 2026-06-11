@@ -3364,7 +3364,7 @@ impl Renderer {
         let bind_group = self.ui.make_texture_bind_group(&self.device, &view);
         // Register the logo under the splash's known asset key, so the splash
         // descriptor's `image` node resolves to this bind group through the
-        // registry (Goal B pre-registers only known keys).
+        // registry (only known keys are pre-registered).
         self.ui_images
             .register(ui::splash::SPLASH_LOGO_ASSET, texture, bind_group);
         // Shape the logo to the decoded image so it never stretches: its natural
@@ -3402,6 +3402,8 @@ impl Renderer {
     // dead in both build profiles today — kept as the wired entry point the
     // generation gate depends on. `Renderer` needs a GPU device, so it cannot be
     // exercised by the CPU test suite.
+    // Paired deferred-G1 entry points (both dead_code until script ingestion lands):
+    // this method and `theme::UiTheme::with_override` in `render/ui/theme.rs`.
     #[allow(dead_code)]
     pub fn set_ui_theme(&mut self, theme: ui::theme::UiTheme) {
         self.ui_theme = theme;

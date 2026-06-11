@@ -23,7 +23,7 @@
 // Text is encoded through the pass (so the full path runs on the device) but its
 // pixels are NOT asserted — only that `encode` composites without error.
 //
-// See: context/plans/in-progress/M13--descriptor-tree-layout
+// See: context/lib/ui.md
 
 use super::layout;
 use super::splash::{SplashDescriptor, build_splash_descriptor};

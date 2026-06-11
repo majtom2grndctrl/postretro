@@ -1,10 +1,10 @@
 // Splash content descriptor: the hardcoded Rust description of the boot splash,
 // authored in 1280x720 logical-reference space and drawn through the UI pass via
 // the retained descriptor tree (`UiTree`). This is the ONE named seam
-// (`build_splash_descriptor`) that Goal B builds on `AnchoredTree` and G1 will
-// replace with script ingestion. Goal B ingests no script — the content is fixed
-// Rust behind this builder.
-// See: context/lib/boot_sequence.md §3a · context/plans/in-progress/M13--descriptor-tree-layout
+// (`build_splash_descriptor`) built on `AnchoredTree`; script ingestion (G1) will
+// replace the body while keeping the `SplashDescriptor` shape and call sites stable.
+// Fixed Rust content behind this builder — no script ingestion yet.
+// See: context/lib/boot_sequence.md §3a · context/lib/ui.md
 
 use crate::input::UiCaptureMode;
 
@@ -59,7 +59,7 @@ const TEXT_COLOR: [f32; 4] = [0.552011, 0.672443, 0.745404, 1.0];
 /// The image-registry key the splash logo resolves through. `install_splash_from_loaded`
 /// registers the uploaded PNG's bind group under this key, and the descriptor's
 /// logo `image` node references it; the renderer's image registry maps the two.
-/// The single named splash asset — Goal B pre-registers only known keys.
+/// The single named splash asset — only known keys are pre-registered.
 pub(crate) const SPLASH_LOGO_ASSET: &str = "splash/logo";
 
 /// The splash's input capture mode, for the dispatch seam. The splash is
@@ -86,10 +86,10 @@ pub(crate) fn splash_logo_reference_size(natural_dims: [u32; 2]) -> [f32; 2] {
 /// lays out through `UiTree`, the fullscreen background color the caller draws as
 /// the first quad, and the capture/passthrough flag for the input-dispatch seam.
 ///
-/// This is the seam: Goal B builds it on `AnchoredTree`; G1 replaces the body
-/// with script ingestion while keeping the `SplashDescriptor` shape and call
-/// sites stable. The renderer stores one of these as the active splash and
-/// re-lays-out its tree each frame against the live backbuffer size.
+/// This is the seam: built on `AnchoredTree`; script ingestion (G1) will replace
+/// the body while keeping the `SplashDescriptor` shape and call sites stable.
+/// The renderer stores one of these as the active splash and re-lays-out its
+/// tree each frame against the live backbuffer size.
 pub(crate) struct SplashDescriptor {
     /// The descriptor tree: a center-anchored outer container (border-colored
     /// backdrop + padding) wrapping an inner container (panel-colored backdrop)
@@ -113,8 +113,8 @@ pub(crate) fn build_splash_descriptor(version_line: &str) -> SplashDescriptor {
     // Inner container: the panel-colored fill that the logo + version text flow
     // inside. It content-sizes to its children (logo, gap, text) plus its own
     // padding, and centers them on the cross axis (so the version line centers on
-    // the logo column from its real measured run width — the measured-width
-    // centering Goal B owes A, now expressed as flex `align: center`).
+    // the logo column from its real measured run width — measured-width centering,
+    // now expressed as flex `align: center`).
     let logo = Widget::Image(ImageWidget {
         asset: SPLASH_LOGO_ASSET.to_string(),
     });

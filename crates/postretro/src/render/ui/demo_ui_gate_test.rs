@@ -1,6 +1,6 @@
-// Hard-gate CPU assertion for the M13 Goal C demo gameplay HUD.
+// Hard-gate CPU assertion for the M13 demo gameplay HUD.
 //
-// Task 5 makes `demo::build_demo_descriptor` the first gameplay UI producer:
+// `demo::build_demo_descriptor` is the first gameplay UI producer:
 // `main.rs` publishes its `AnchoredTree` on the per-frame read snapshot and the
 // renderer drives it through the retained gameplay `UiTree`
 // (`UiPass::layout_gameplay_tree` → `UiTree::build_draw_data_retained`). These
@@ -34,7 +34,7 @@
 // actual demo descriptor — that is the point: prove the demo screen's wiring, not
 // just the retained primitive. Pure CPU — no GPU adapter, no wgpu call.
 //
-// See: context/plans/in-progress/M13--state-system
+// See: context/lib/ui.md
 
 use std::collections::HashMap;
 

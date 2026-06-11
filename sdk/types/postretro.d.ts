@@ -151,6 +151,8 @@ declare module "postretro" {
     forgiveness?: ForgivenessParams;
     /** Optional crouch tuning. When omitted, crouch is disabled. When present, all of its fields are required. */
     crouch?: CrouchParams;
+    /** Optional first-person view-feel tuning (head bob, strafe tilt, ambient sway). A render-only camera effect. When omitted, view feel is disabled. When present, each of `bob`/`tilt`/`sway` is independently optional. */
+    viewFeel?: ViewFeelParams;
     /** Optional. Stuck-stop deadzone enable flag. When true (default), the slide loop zeroes horizontal velocity and rolls back XZ position when contradictory wall normals (≥60° apart) are seen within the same tick AND net horizontal displacement is below `stuckStopThreshold`. Suppresses orbital jitter in interior corners. Default true. */
     stuckStopEnabled?: boolean;
     /** Optional. Horizontal-displacement threshold in metres that gates the deadzone. Must be finite and ≥ 0. Default 1.0e-3. */
@@ -239,6 +241,54 @@ declare module "postretro" {
     eyeHeight: number;
     /** Rate the capsule interpolates between standing and crouched extents, per-sec. Must be finite > 0. */
     transitionRate: number;
+  };
+
+  /** First-person view-feel tuning: a render-only camera effect bundle (head bob, strafe tilt, ambient sway). Optional on `PlayerMovementDescriptor` — when omitted, view feel is disabled. When present, each of `bob`/`tilt`/`sway` is independently optional; an absent sub-object disables that motion. */
+  export type ViewFeelParams = {
+    /** Optional head-bob tuning. When omitted, head bob is disabled. When present, all of its fields are required except `groundedOnly`. */
+    bob?: BobParams;
+    /** Optional strafe-tilt tuning. When omitted, strafe tilt is disabled. When present, all of its fields are required except `groundedOnly`. */
+    tilt?: TiltParams;
+    /** Optional ambient-sway tuning. When omitted, ambient sway is disabled. When present, all of its fields are required except `groundedOnly`. */
+    sway?: SwayParams;
+  };
+
+  /** Head-bob tuning. When present on `viewFeel`, all fields are required and validated except `groundedOnly`, which is optional and defaults to true. */
+  export type BobParams = {
+    /** Bob cycles per metre travelled. Must be finite > 0. */
+    frequency: number;
+    /** Vertical bob amplitude. Must be finite and ≥ 0. */
+    verticalAmplitude: number;
+    /** Lateral bob amplitude. Must be finite and ≥ 0. */
+    lateralAmplitude: number;
+    /** Horizontal speed below which bob is suppressed. Must be finite and ≥ 0. */
+    speedThreshold: number;
+    /** Whether bob applies only while grounded. Optional; defaults to true. */
+    groundedOnly?: boolean;
+  };
+
+  /** Strafe-tilt tuning. When present on `viewFeel`, all fields are required and validated except `groundedOnly`, which is optional and defaults to true. */
+  export type TiltParams = {
+    /** Maximum tilt angle in degrees. Must be finite in [0, 90]. */
+    maxAngle: number;
+    /** Lateral speed at which the tilt reaches its reference. Must be finite > 0. */
+    speedReference: number;
+    /** Spring tension governing how quickly tilt tracks lateral motion. Must be finite > 0. */
+    tension: number;
+    /** Whether tilt applies only while grounded. Optional; defaults to true. */
+    groundedOnly?: boolean;
+  };
+
+  /** Ambient-sway tuning. When present on `viewFeel`, all fields are required and validated except `groundedOnly`, which is optional and defaults to false. */
+  export type SwayParams = {
+    /** Sway amplitude in degrees. Must be finite and ≥ 0. */
+    amplitude: number;
+    /** Sway oscillation frequency in Hz. Must be finite > 0. */
+    frequency: number;
+    /** Scales how much movement speed modulates sway. Must be finite and ≥ 0. */
+    speedScale: number;
+    /** Whether sway applies only while grounded. Optional; defaults to false. */
+    groundedOnly?: boolean;
   };
 
   /** Input-forgiveness tuning (coyote time + jump buffering). Optional on `PlayerMovementDescriptor` — when the whole `forgiveness` object is omitted, the documented engine defaults apply. When present, each field is itself optional and falls back to its engine default; an explicit 0 disables that grace independently. Both windows are in milliseconds. */

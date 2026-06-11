@@ -223,6 +223,10 @@ pub(crate) struct PlayerMovementDescriptor {
     /// materialized). When present, all of its fields are required, matching
     /// the present-then-all-required discipline of `dash`.
     pub(crate) crouch: Option<CrouchParams>,
+    /// Optional first-person view-feel tuning (head bob, strafe tilt, ambient
+    /// sway). Absent ⇒ view feel disabled (no `ViewFeelParams` materialized).
+    /// A render-only camera effect — see `ViewFeelParams`.
+    pub(crate) view_feel: Option<ViewFeelParams>,
 }
 
 impl PlayerMovementDescriptor {
@@ -363,6 +367,93 @@ pub(crate) struct CrouchParams {
     /// Rate at which the capsule interpolates between standing and crouched
     /// extents, per-sec. Must be finite > 0.
     pub(crate) transition_rate: f32,
+}
+
+/// First-person view-feel tuning: a render-only camera effect bundle (head bob,
+/// strafe tilt, ambient sway). OPTIONAL on [`PlayerMovementDescriptor`] — absent
+/// disables view feel entirely (no `ViewFeelParams` materialized). When present,
+/// each of `bob`/`tilt`/`sway` is independently optional; an absent sub-object
+/// disables that motion. Within a present sub-object, all tuning fields are
+/// required EXCEPT the optional `groundedOnly` gate. This two-level
+/// present-then-all-required discipline mirrors the optional `dash`/`crouch`
+/// sub-objects, applied at two nesting levels. View feel is consumed by the
+/// render-rate evaluator in `view_feel.rs`, called from `main.rs`; this is the data surface only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ViewFeelParams {
+    /// Optional head-bob tuning. Absent ⇒ no head bob.
+    pub(crate) bob: Option<BobParams>,
+    /// Optional strafe-tilt tuning. Absent ⇒ no strafe tilt.
+    pub(crate) tilt: Option<TiltParams>,
+    /// Optional ambient-sway tuning. Absent ⇒ no ambient sway.
+    pub(crate) sway: Option<SwayParams>,
+}
+
+/// Head-bob tuning. When present on `viewFeel`, all fields are required and
+/// validated except `grounded_only`, which is optional and defaults to `true`.
+/// Field names are camelCase on the wire (`frequency`, `verticalAmplitude`, …)
+/// and snake_case in Rust.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub(crate) struct BobParams {
+    /// Bob cycles per metre travelled. Must be finite > 0.
+    pub(crate) frequency: f32,
+    /// Vertical bob amplitude. Must be finite ≥ 0.
+    pub(crate) vertical_amplitude: f32,
+    /// Lateral bob amplitude. Must be finite ≥ 0.
+    pub(crate) lateral_amplitude: f32,
+    /// Horizontal speed below which bob is suppressed. Must be finite ≥ 0.
+    pub(crate) speed_threshold: f32,
+    /// Whether bob applies only while grounded. Optional on the wire; the
+    /// RESOLVED value is materialized here (default `true` when absent).
+    pub(crate) grounded_only: bool,
+}
+
+impl BobParams {
+    /// Default `groundedOnly` gate applied when the wire field is absent.
+    pub(crate) const DEFAULT_GROUNDED_ONLY: bool = true;
+}
+
+/// Strafe-tilt tuning. When present on `viewFeel`, all fields are required and
+/// validated except `grounded_only`, which is optional and defaults to `true`.
+/// Field names are camelCase on the wire and snake_case in Rust; `tension`
+/// stays literally `tension` everywhere (the author-facing spring knob).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub(crate) struct TiltParams {
+    /// Maximum tilt angle in degrees. Must be finite in `[0, 90]`.
+    pub(crate) max_angle: f32,
+    /// Lateral speed at which the tilt reaches its reference. Must be finite > 0.
+    pub(crate) speed_reference: f32,
+    /// Spring tension governing how quickly tilt tracks lateral motion. Must be
+    /// finite > 0.
+    pub(crate) tension: f32,
+    /// Whether tilt applies only while grounded. Optional on the wire; the
+    /// RESOLVED value is materialized here (default `true` when absent).
+    pub(crate) grounded_only: bool,
+}
+
+impl TiltParams {
+    /// Default `groundedOnly` gate applied when the wire field is absent.
+    pub(crate) const DEFAULT_GROUNDED_ONLY: bool = true;
+}
+
+/// Ambient-sway tuning. When present on `viewFeel`, all fields are required and
+/// validated except `grounded_only`, which is optional and defaults to `false`.
+/// Field names are camelCase on the wire and snake_case in Rust.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub(crate) struct SwayParams {
+    /// Sway amplitude in degrees. Must be finite ≥ 0.
+    pub(crate) amplitude: f32,
+    /// Sway oscillation frequency in Hz. Must be finite > 0.
+    pub(crate) frequency: f32,
+    /// Scales how much movement speed modulates sway. Must be finite ≥ 0.
+    pub(crate) speed_scale: f32,
+    /// Whether sway applies only while grounded. Optional on the wire; the
+    /// RESOLVED value is materialized here (default `false` when absent).
+    pub(crate) grounded_only: bool,
+}
+
+impl SwayParams {
+    /// Default `groundedOnly` gate applied when the wire field is absent.
+    pub(crate) const DEFAULT_GROUNDED_ONLY: bool = false;
 }
 
 /// The full bundle returned by a level's `setupLevel(ctx)` export.
@@ -912,6 +1003,25 @@ fn movement_descriptor_from_js<'js>(
         None
     };
 
+    // `viewFeel` is optional: absence disables view feel. When present, each of
+    // `bob`/`tilt`/`sway` is independently optional; an absent sub-object
+    // disables that motion. Within a present sub-object, all tuning fields are
+    // required except the optional `groundedOnly` gate (two-level
+    // present-then-all-required, mirroring the `dash`/`crouch` discipline).
+    let view_feel = if obj.contains_key("viewFeel").map_err(js_err)? {
+        let raw: JsValue = obj.get("viewFeel").map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            None
+        } else {
+            let vf_obj = Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
+                reason: "`movement.viewFeel` must be an object".to_string(),
+            })?;
+            Some(view_feel_params_from_js(&vf_obj)?)
+        }
+    } else {
+        None
+    };
+
     Ok(PlayerMovementDescriptor {
         capsule,
         ground,
@@ -922,6 +1032,126 @@ fn movement_descriptor_from_js<'js>(
         dash,
         forgiveness,
         crouch,
+        view_feel,
+    })
+}
+
+fn view_feel_params_from_js<'js>(obj: &Object<'js>) -> Result<ViewFeelParams, DescriptorError> {
+    let bob = if obj.contains_key("bob").map_err(js_err)? {
+        let raw: JsValue = obj.get("bob").map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            None
+        } else {
+            let bob_obj = Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
+                reason: "`movement.viewFeel.bob` must be an object".to_string(),
+            })?;
+            Some(bob_params_from_js(&bob_obj)?)
+        }
+    } else {
+        None
+    };
+    let tilt = if obj.contains_key("tilt").map_err(js_err)? {
+        let raw: JsValue = obj.get("tilt").map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            None
+        } else {
+            let tilt_obj = Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
+                reason: "`movement.viewFeel.tilt` must be an object".to_string(),
+            })?;
+            Some(tilt_params_from_js(&tilt_obj)?)
+        }
+    } else {
+        None
+    };
+    let sway = if obj.contains_key("sway").map_err(js_err)? {
+        let raw: JsValue = obj.get("sway").map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            None
+        } else {
+            let sway_obj = Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
+                reason: "`movement.viewFeel.sway` must be an object".to_string(),
+            })?;
+            Some(sway_params_from_js(&sway_obj)?)
+        }
+    } else {
+        None
+    };
+    Ok(ViewFeelParams { bob, tilt, sway })
+}
+
+fn bob_params_from_js<'js>(obj: &Object<'js>) -> Result<BobParams, DescriptorError> {
+    let frequency = validate_positive_finite(
+        get_required_f32_js(obj, "frequency")?,
+        "movement.viewFeel.bob.frequency",
+    )?;
+    let vertical_amplitude = validate_non_negative_finite(
+        get_required_f32_js(obj, "verticalAmplitude")?,
+        "movement.viewFeel.bob.verticalAmplitude",
+    )?;
+    let lateral_amplitude = validate_non_negative_finite(
+        get_required_f32_js(obj, "lateralAmplitude")?,
+        "movement.viewFeel.bob.lateralAmplitude",
+    )?;
+    let speed_threshold = validate_non_negative_finite(
+        get_required_f32_js(obj, "speedThreshold")?,
+        "movement.viewFeel.bob.speedThreshold",
+    )?;
+    let grounded_only =
+        get_optional_bool_js(obj, "groundedOnly")?.unwrap_or(BobParams::DEFAULT_GROUNDED_ONLY);
+    Ok(BobParams {
+        frequency,
+        vertical_amplitude,
+        lateral_amplitude,
+        speed_threshold,
+        grounded_only,
+    })
+}
+
+fn tilt_params_from_js<'js>(obj: &Object<'js>) -> Result<TiltParams, DescriptorError> {
+    let max_angle = validate_in_range_finite(
+        get_required_f32_js(obj, "maxAngle")?,
+        0.0,
+        90.0,
+        "movement.viewFeel.tilt.maxAngle",
+    )?;
+    let speed_reference = validate_positive_finite(
+        get_required_f32_js(obj, "speedReference")?,
+        "movement.viewFeel.tilt.speedReference",
+    )?;
+    let tension = validate_positive_finite(
+        get_required_f32_js(obj, "tension")?,
+        "movement.viewFeel.tilt.tension",
+    )?;
+    let grounded_only =
+        get_optional_bool_js(obj, "groundedOnly")?.unwrap_or(TiltParams::DEFAULT_GROUNDED_ONLY);
+    Ok(TiltParams {
+        max_angle,
+        speed_reference,
+        tension,
+        grounded_only,
+    })
+}
+
+fn sway_params_from_js<'js>(obj: &Object<'js>) -> Result<SwayParams, DescriptorError> {
+    let amplitude = validate_non_negative_finite(
+        get_required_f32_js(obj, "amplitude")?,
+        "movement.viewFeel.sway.amplitude",
+    )?;
+    let frequency = validate_positive_finite(
+        get_required_f32_js(obj, "frequency")?,
+        "movement.viewFeel.sway.frequency",
+    )?;
+    let speed_scale = validate_non_negative_finite(
+        get_required_f32_js(obj, "speedScale")?,
+        "movement.viewFeel.sway.speedScale",
+    )?;
+    let grounded_only =
+        get_optional_bool_js(obj, "groundedOnly")?.unwrap_or(SwayParams::DEFAULT_GROUNDED_ONLY);
+    Ok(SwayParams {
+        amplitude,
+        frequency,
+        speed_scale,
+        grounded_only,
     })
 }
 
@@ -1659,6 +1889,26 @@ fn movement_descriptor_from_lua(
         None
     };
 
+    // `viewFeel` is optional: absence disables view feel. Mirrors the JS path —
+    // two-level present-then-all-required across `bob`/`tilt`/`sway`.
+    let view_feel = if table.contains_key("viewFeel").map_err(lua_err)? {
+        let raw: LuaValue = table.get("viewFeel").map_err(lua_err)?;
+        match raw {
+            LuaValue::Nil => None,
+            LuaValue::Table(t) => Some(view_feel_params_from_lua(&t)?),
+            other => {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`movement.viewFeel` must be a table, got {}",
+                        other.type_name()
+                    ),
+                });
+            }
+        }
+    } else {
+        None
+    };
+
     Ok(PlayerMovementDescriptor {
         capsule,
         ground,
@@ -1669,6 +1919,119 @@ fn movement_descriptor_from_lua(
         dash,
         forgiveness,
         crouch,
+        view_feel,
+    })
+}
+
+fn view_feel_params_from_lua(table: &Table) -> Result<ViewFeelParams, DescriptorError> {
+    let bob = match read_optional_subtable_lua(table, "bob", "movement.viewFeel.bob")? {
+        Some(t) => Some(bob_params_from_lua(&t)?),
+        None => None,
+    };
+    let tilt = match read_optional_subtable_lua(table, "tilt", "movement.viewFeel.tilt")? {
+        Some(t) => Some(tilt_params_from_lua(&t)?),
+        None => None,
+    };
+    let sway = match read_optional_subtable_lua(table, "sway", "movement.viewFeel.sway")? {
+        Some(t) => Some(sway_params_from_lua(&t)?),
+        None => None,
+    };
+    Ok(ViewFeelParams { bob, tilt, sway })
+}
+
+/// Read an optional sub-table from a Luau table: absent/nil → `None`, a table →
+/// `Some(table)`, any other type → an `InvalidShape` error keyed by `path`.
+fn read_optional_subtable_lua(
+    table: &Table,
+    field: &'static str,
+    path: &str,
+) -> Result<Option<Table>, DescriptorError> {
+    if !table.contains_key(field).map_err(lua_err)? {
+        return Ok(None);
+    }
+    let raw: LuaValue = table.get(field).map_err(lua_err)?;
+    match raw {
+        LuaValue::Nil => Ok(None),
+        LuaValue::Table(t) => Ok(Some(t)),
+        other => Err(DescriptorError::InvalidShape {
+            reason: format!("`{path}` must be a table, got {}", other.type_name()),
+        }),
+    }
+}
+
+fn bob_params_from_lua(table: &Table) -> Result<BobParams, DescriptorError> {
+    let frequency = validate_positive_finite(
+        get_required_f32_lua(table, "frequency")?,
+        "movement.viewFeel.bob.frequency",
+    )?;
+    let vertical_amplitude = validate_non_negative_finite(
+        get_required_f32_lua(table, "verticalAmplitude")?,
+        "movement.viewFeel.bob.verticalAmplitude",
+    )?;
+    let lateral_amplitude = validate_non_negative_finite(
+        get_required_f32_lua(table, "lateralAmplitude")?,
+        "movement.viewFeel.bob.lateralAmplitude",
+    )?;
+    let speed_threshold = validate_non_negative_finite(
+        get_required_f32_lua(table, "speedThreshold")?,
+        "movement.viewFeel.bob.speedThreshold",
+    )?;
+    let grounded_only =
+        get_optional_bool_lua(table, "groundedOnly")?.unwrap_or(BobParams::DEFAULT_GROUNDED_ONLY);
+    Ok(BobParams {
+        frequency,
+        vertical_amplitude,
+        lateral_amplitude,
+        speed_threshold,
+        grounded_only,
+    })
+}
+
+fn tilt_params_from_lua(table: &Table) -> Result<TiltParams, DescriptorError> {
+    let max_angle = validate_in_range_finite(
+        get_required_f32_lua(table, "maxAngle")?,
+        0.0,
+        90.0,
+        "movement.viewFeel.tilt.maxAngle",
+    )?;
+    let speed_reference = validate_positive_finite(
+        get_required_f32_lua(table, "speedReference")?,
+        "movement.viewFeel.tilt.speedReference",
+    )?;
+    let tension = validate_positive_finite(
+        get_required_f32_lua(table, "tension")?,
+        "movement.viewFeel.tilt.tension",
+    )?;
+    let grounded_only =
+        get_optional_bool_lua(table, "groundedOnly")?.unwrap_or(TiltParams::DEFAULT_GROUNDED_ONLY);
+    Ok(TiltParams {
+        max_angle,
+        speed_reference,
+        tension,
+        grounded_only,
+    })
+}
+
+fn sway_params_from_lua(table: &Table) -> Result<SwayParams, DescriptorError> {
+    let amplitude = validate_non_negative_finite(
+        get_required_f32_lua(table, "amplitude")?,
+        "movement.viewFeel.sway.amplitude",
+    )?;
+    let frequency = validate_positive_finite(
+        get_required_f32_lua(table, "frequency")?,
+        "movement.viewFeel.sway.frequency",
+    )?;
+    let speed_scale = validate_non_negative_finite(
+        get_required_f32_lua(table, "speedScale")?,
+        "movement.viewFeel.sway.speedScale",
+    )?;
+    let grounded_only =
+        get_optional_bool_lua(table, "groundedOnly")?.unwrap_or(SwayParams::DEFAULT_GROUNDED_ONLY);
+    Ok(SwayParams {
+        amplitude,
+        frequency,
+        speed_scale,
+        grounded_only,
     })
 }
 
@@ -3608,6 +3971,378 @@ mod tests {
     #[test]
     fn lua_movement_forgiveness_negative_is_rejected() {
         let src = lua_movement_with_forgiveness(r#"{ coyoteMs = 100.0, jumpBufferMs = -1.0 }"#);
+        let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    // --- ViewFeelParams parsing --------------------------------------------
+
+    /// JS movement block with a `viewFeel` sub-object spliced in. `body` is the
+    /// inner `{ ... }` text (no `viewFeel:` key).
+    fn js_movement_with_view_feel(body: &str) -> String {
+        format!(
+            r#"({{
+                canonicalName: "player",
+                components: {{
+                    movement: {{
+                        capsule: {{ radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 }},
+                        ground: {{ speed: {{ walk: 7.0, run: 11.0, crouch: 3.0 }}, accel: 10.0, stepHeight: 0.3, maxSlope: 45.0 }},
+                        air: {{ forwardSteer: 0.0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0.0 }},
+                        fall: {{ terminalVelocity: 40.0 }},
+                        viewFeel: {body}
+                    }}
+                }}
+            }})"#
+        )
+    }
+
+    /// Luau movement block with a `viewFeel` sub-table spliced in.
+    fn lua_movement_with_view_feel(body: &str) -> String {
+        format!(
+            r#"return {{
+                canonicalName = "player",
+                components = {{
+                    movement = {{
+                        capsule = {{ radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 }},
+                        ground = {{ speed = {{ walk = 7.0, run = 11.0, crouch = 3.0 }}, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 }},
+                        air = {{ forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpVelocity = 5.5, jumpCeiling = 0.0 }},
+                        fall = {{ terminalVelocity = 40.0 }},
+                        viewFeel = {body}
+                    }}
+                }}
+            }}"#
+        )
+    }
+
+    const JS_BOB_FULL: &str = r#"{ frequency: 1.8, verticalAmplitude: 0.06, lateralAmplitude: 0.04, speedThreshold: 0.5 }"#;
+    const JS_TILT_FULL: &str = r#"{ maxAngle: 3.0, speedReference: 8.0, tension: 12.0 }"#;
+    const JS_SWAY_FULL: &str = r#"{ amplitude: 0.5, frequency: 0.4, speedScale: 0.2 }"#;
+
+    // Absent `viewFeel` → no ViewFeelParams materialized.
+
+    #[test]
+    fn js_movement_view_feel_absent_is_valid_and_disabled() {
+        let d = eval_js(JS_PLAYER_MOVEMENT, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap()
+        });
+        assert!(d.movement.expect("movement present").view_feel.is_none());
+    }
+
+    #[test]
+    fn lua_movement_view_feel_absent_is_valid_and_disabled() {
+        let src = r#"return {
+            canonicalName = "player",
+            components = {
+                movement = {
+                    capsule = { radius = 0.4, halfHeight = 0.8, eyeHeight = 0.5 },
+                    ground = { speed = { walk = 7.0, run = 11.0, crouch = 3.0 }, accel = 10.0, stepHeight = 0.3, maxSlope = 45.0 },
+                    air = { forwardSteer = 0.0, accel = 0.7, maxControlSpeed = 0.5, bunnyHop = false, jumps = 0, jumpVelocity = 5.5, jumpCeiling = 0.0 },
+                    fall = { terminalVelocity = 40.0 }
+                }
+            }
+        }"#;
+        let d = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap());
+        assert!(d.movement.expect("movement present").view_feel.is_none());
+    }
+
+    // Present `viewFeel` with all three motions absent is valid (empty bundle).
+
+    #[test]
+    fn js_movement_view_feel_present_empty_disables_each_motion() {
+        let src = js_movement_with_view_feel("{}");
+        let d = eval_js(&src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+        let vf = d.movement.unwrap().view_feel.expect("viewFeel present");
+        assert!(vf.bob.is_none());
+        assert!(vf.tilt.is_none());
+        assert!(vf.sway.is_none());
+    }
+
+    #[test]
+    fn lua_movement_view_feel_present_empty_disables_each_motion() {
+        let src = lua_movement_with_view_feel("{}");
+        let d = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap());
+        let vf = d.movement.unwrap().view_feel.expect("viewFeel present");
+        assert!(vf.bob.is_none());
+        assert!(vf.tilt.is_none());
+        assert!(vf.sway.is_none());
+    }
+
+    // Full shapes parse and `groundedOnly` defaults apply (bob/tilt true, sway false).
+
+    #[test]
+    fn js_movement_view_feel_full_shape_parses_with_grounded_only_defaults() {
+        let body =
+            format!(r#"{{ bob: {JS_BOB_FULL}, tilt: {JS_TILT_FULL}, sway: {JS_SWAY_FULL} }}"#);
+        let src = js_movement_with_view_feel(&body);
+        let d = eval_js(&src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+        let vf = d.movement.unwrap().view_feel.expect("viewFeel present");
+        let bob = vf.bob.expect("bob present");
+        assert_eq!(bob.frequency, 1.8);
+        assert_eq!(bob.vertical_amplitude, 0.06);
+        assert_eq!(bob.lateral_amplitude, 0.04);
+        assert_eq!(bob.speed_threshold, 0.5);
+        assert!(bob.grounded_only, "bob groundedOnly defaults true");
+        let tilt = vf.tilt.expect("tilt present");
+        assert_eq!(tilt.max_angle, 3.0);
+        assert_eq!(tilt.speed_reference, 8.0);
+        assert_eq!(tilt.tension, 12.0);
+        assert!(tilt.grounded_only, "tilt groundedOnly defaults true");
+        let sway = vf.sway.expect("sway present");
+        assert_eq!(sway.amplitude, 0.5);
+        assert_eq!(sway.frequency, 0.4);
+        assert_eq!(sway.speed_scale, 0.2);
+        assert!(!sway.grounded_only, "sway groundedOnly defaults false");
+    }
+
+    #[test]
+    fn lua_movement_view_feel_full_shape_parses_with_grounded_only_defaults() {
+        let src = lua_movement_with_view_feel(
+            r#"{
+                bob = { frequency = 1.8, verticalAmplitude = 0.06, lateralAmplitude = 0.04, speedThreshold = 0.5 },
+                tilt = { maxAngle = 3.0, speedReference = 8.0, tension = 12.0 },
+                sway = { amplitude = 0.5, frequency = 0.4, speedScale = 0.2 }
+            }"#,
+        );
+        let d = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap());
+        let vf = d.movement.unwrap().view_feel.expect("viewFeel present");
+        let bob = vf.bob.expect("bob present");
+        assert_eq!(bob.frequency, 1.8);
+        assert!(bob.grounded_only, "bob groundedOnly defaults true");
+        let tilt = vf.tilt.expect("tilt present");
+        assert_eq!(tilt.tension, 12.0);
+        assert!(tilt.grounded_only, "tilt groundedOnly defaults true");
+        let sway = vf.sway.expect("sway present");
+        assert_eq!(sway.frequency, 0.4);
+        assert!(!sway.grounded_only, "sway groundedOnly defaults false");
+    }
+
+    // Explicit `groundedOnly` overrides the per-motion default in both paths.
+
+    #[test]
+    fn js_movement_view_feel_grounded_only_explicit_overrides_default() {
+        let body = r#"{ bob: { frequency: 1.8, verticalAmplitude: 0.06, lateralAmplitude: 0.04, speedThreshold: 0.5, groundedOnly: false }, sway: { amplitude: 0.5, frequency: 0.4, speedScale: 0.2, groundedOnly: true } }"#;
+        let src = js_movement_with_view_feel(body);
+        let d = eval_js(&src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+        let vf = d.movement.unwrap().view_feel.unwrap();
+        assert!(
+            !vf.bob.unwrap().grounded_only,
+            "explicit false overrides bob default true"
+        );
+        assert!(
+            vf.sway.unwrap().grounded_only,
+            "explicit true overrides sway default false"
+        );
+    }
+
+    #[test]
+    fn lua_movement_view_feel_grounded_only_explicit_overrides_default() {
+        let src = lua_movement_with_view_feel(
+            r#"{ bob = { frequency = 1.8, verticalAmplitude = 0.06, lateralAmplitude = 0.04, speedThreshold = 0.5, groundedOnly = false }, sway = { amplitude = 0.5, frequency = 0.4, speedScale = 0.2, groundedOnly = true } }"#,
+        );
+        let d = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap());
+        let vf = d.movement.unwrap().view_feel.unwrap();
+        assert!(!vf.bob.unwrap().grounded_only);
+        assert!(vf.sway.unwrap().grounded_only);
+    }
+
+    #[test]
+    fn js_movement_view_feel_grounded_only_non_boolean_is_rejected() {
+        let body = r#"{ bob: { frequency: 1.8, verticalAmplitude: 0.06, lateralAmplitude: 0.04, speedThreshold: 0.5, groundedOnly: "yes" } }"#;
+        let src = js_movement_with_view_feel(body);
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_movement_view_feel_grounded_only_non_boolean_is_rejected() {
+        let src = lua_movement_with_view_feel(
+            r#"{ bob = { frequency = 1.8, verticalAmplitude = 0.06, lateralAmplitude = 0.04, speedThreshold = 0.5, groundedOnly = "yes" } }"#,
+        );
+        let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    // Present-then-all-required: a missing required field is rejected in both paths.
+
+    #[test]
+    fn js_movement_view_feel_bob_missing_field_reports_missing_field() {
+        // frequency omitted from bob.
+        let body =
+            r#"{ bob: { verticalAmplitude: 0.06, lateralAmplitude: 0.04, speedThreshold: 0.5 } }"#;
+        let src = js_movement_with_view_feel(body);
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert_eq!(err, DescriptorError::MissingField { field: "frequency" });
+    }
+
+    #[test]
+    fn lua_movement_view_feel_tilt_missing_field_reports_missing_field() {
+        // tension omitted from tilt.
+        let src =
+            lua_movement_with_view_feel(r#"{ tilt = { maxAngle = 3.0, speedReference = 8.0 } }"#);
+        let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert_eq!(err, DescriptorError::MissingField { field: "tension" });
+    }
+
+    #[test]
+    fn js_movement_view_feel_sway_missing_field_reports_missing_field() {
+        // speedScale omitted from sway.
+        let body = r#"{ sway: { amplitude: 0.5, frequency: 0.4 } }"#;
+        let src = js_movement_with_view_feel(body);
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert_eq!(
+            err,
+            DescriptorError::MissingField {
+                field: "speedScale"
+            }
+        );
+    }
+
+    // Value validation: positive-finite, non-negative-finite, and the
+    // tilt.maxAngle [0,90] range, symmetric across JS and Luau.
+
+    #[test]
+    fn js_movement_view_feel_bob_frequency_zero_is_rejected() {
+        let body = r#"{ bob: { frequency: 0.0, verticalAmplitude: 0.06, lateralAmplitude: 0.04, speedThreshold: 0.5 } }"#;
+        let src = js_movement_with_view_feel(body);
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_view_feel_bob_negative_amplitude_is_rejected() {
+        let body = r#"{ bob: { frequency: 1.8, verticalAmplitude: -0.01, lateralAmplitude: 0.04, speedThreshold: 0.5 } }"#;
+        let src = js_movement_with_view_feel(body);
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_view_feel_bob_zero_amplitude_is_accepted() {
+        // Amplitudes and speedThreshold permit 0 (non-negative finite).
+        let body = r#"{ bob: { frequency: 1.8, verticalAmplitude: 0.0, lateralAmplitude: 0.0, speedThreshold: 0.0 } }"#;
+        let src = js_movement_with_view_feel(body);
+        let d = eval_js(&src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+        let bob = d.movement.unwrap().view_feel.unwrap().bob.unwrap();
+        assert_eq!(bob.vertical_amplitude, 0.0);
+        assert_eq!(bob.speed_threshold, 0.0);
+    }
+
+    #[test]
+    fn js_movement_view_feel_tilt_max_angle_above_90_is_rejected() {
+        let body = r#"{ tilt: { maxAngle: 95.0, speedReference: 8.0, tension: 12.0 } }"#;
+        let src = js_movement_with_view_feel(body);
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_view_feel_tilt_max_angle_negative_is_rejected() {
+        let body = r#"{ tilt: { maxAngle: -1.0, speedReference: 8.0, tension: 12.0 } }"#;
+        let src = js_movement_with_view_feel(body);
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_view_feel_tilt_tension_zero_is_rejected() {
+        let body = r#"{ tilt: { maxAngle: 3.0, speedReference: 8.0, tension: 0.0 } }"#;
+        let src = js_movement_with_view_feel(body);
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_view_feel_sway_frequency_zero_is_rejected() {
+        let body = r#"{ sway: { amplitude: 0.5, frequency: 0.0, speedScale: 0.2 } }"#;
+        let src = js_movement_with_view_feel(body);
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_movement_view_feel_tilt_max_angle_above_90_is_rejected() {
+        let src = lua_movement_with_view_feel(
+            r#"{ tilt = { maxAngle = 95.0, speedReference = 8.0, tension = 12.0 } }"#,
+        );
+        let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_movement_view_feel_tilt_speed_reference_zero_is_rejected() {
+        let src = lua_movement_with_view_feel(
+            r#"{ tilt = { maxAngle = 3.0, speedReference = 0.0, tension = 12.0 } }"#,
+        );
+        let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_movement_view_feel_sway_negative_amplitude_is_rejected() {
+        let src = lua_movement_with_view_feel(
+            r#"{ sway = { amplitude = -0.1, frequency = 0.4, speedScale = 0.2 } }"#,
+        );
+        let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_movement_view_feel_sway_frequency_zero_is_rejected() {
+        let src = lua_movement_with_view_feel(
+            r#"{ sway = { amplitude = 0.5, frequency = 0.0, speedScale = 0.2 } }"#,
+        );
+        let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_movement_view_feel_bob_missing_field_reports_missing_field() {
+        // speedThreshold omitted from bob.
+        let src = lua_movement_with_view_feel(
+            r#"{ bob = { frequency = 1.8, verticalAmplitude = 0.06, lateralAmplitude = 0.04 } }"#,
+        );
+        let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert_eq!(
+            err,
+            DescriptorError::MissingField {
+                field: "speedThreshold",
+            }
+        );
+    }
+
+    // Wrong-typed sub-object is rejected (a present sub-object must be an object/table).
+
+    #[test]
+    fn js_movement_view_feel_bob_not_an_object_is_rejected() {
+        let body = r#"{ bob: 3 }"#;
+        let src = js_movement_with_view_feel(body);
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_movement_view_feel_sway_not_a_table_is_rejected() {
+        let src = lua_movement_with_view_feel(r#"{ sway = 3 }"#);
         let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
         assert!(matches!(err, DescriptorError::InvalidShape { .. }));
     }

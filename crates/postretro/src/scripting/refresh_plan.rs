@@ -62,6 +62,11 @@ impl DescriptorRefreshPlan {
     }
 }
 
+// These actions are built and drained in small batches during descriptor
+// hot-reload, not stored in bulk, so boxing `Replace` (which carries a full
+// `ComponentValue`) to satisfy the size heuristic would add heap indirection
+// for no real benefit.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum DescriptorRefreshAction {
     Replace {
@@ -840,6 +845,7 @@ mod tests {
                 dash: None,
                 forgiveness: None,
                 crouch: None,
+                view_feel: None,
             }),
             weapon: None,
         }

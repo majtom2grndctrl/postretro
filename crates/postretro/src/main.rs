@@ -23,6 +23,7 @@ mod scripting;
 mod shadow_cull;
 mod startup;
 mod ui_texture;
+mod view_feel;
 mod visibility;
 
 // Rooted here (not under `scripting/`) so `gen_script_types.rs` can reuse the
@@ -266,6 +267,7 @@ fn main() -> Result<()> {
         ui_dispatch: input::UiDispatch::new(),
         gamepad_system: input::gamepad::GamepadSystem::new(),
         frame_timing: FrameTiming::new(initial_state),
+        view_feel_state: view_feel::ViewFeelState::default(),
         diagnostic_inputs: input::DiagnosticInputs::new(input::default_diagnostic_chords()),
         capture_portal_walk_next_frame: false,
         scratch_cells: Vec::new(),
@@ -406,6 +408,13 @@ struct App {
     ui_dispatch: input::UiDispatch,
     gamepad_system: Option<input::gamepad::GamepadSystem>,
     frame_timing: FrameTiming,
+
+    /// Per-camera view-feel integrator (head-bob phase, strafe-tilt spring,
+    /// ambient-sway clock). Read AND updated each render frame by
+    /// `view_feel::evaluate`; deliberately render-rate state, not on the
+    /// fixed-tick `InterpolableState` (movement.md D5). Inert until a pawn
+    /// carries `view_feel`. See: context/lib/movement.md
+    view_feel_state: view_feel::ViewFeelState,
 
     /// Parallel to `input_system`; same key events, debug actions only.
     /// See: context/lib/input.md §7
@@ -1144,10 +1153,79 @@ impl ApplicationHandler for App {
                 // `self.camera` directly so zero-tick frames still see this
                 // frame's look rotation.
                 let interp = self.frame_timing.interpolated_state();
+
+                // View-feel assembly (movement.md D1/D5/D6): a render-only,
+                // pawn-driven camera effect. When the camera-driving pawn carries
+                // `view_feel`, run the render-rate evaluator and fold its output
+                // into the look angles, roll, and eye offset. When no pawn drives
+                // the camera, or it carries no `view_feel`, take the pass-through
+                // path with `roll = 0` / `eye_offset = ZERO` and no angle offsets
+                // so the matrix is bit-identical to the no-view-feel render.
+                //
+                // The evaluator owns the integrator state (`self.view_feel_state`)
+                // and never sees the camera basis; we derive its two velocity-space
+                // inputs from the pawn velocity and the camera RIGHT vector here,
+                // then map its scalar output back onto that basis. `camera.right()`
+                // is the yaw-derived, Y-free, unit-length right vector the
+                // `view_feel_inputs`/`map_output_to_camera` helpers expect.
+                let camera_right = self.camera.right();
+                // Match the camera-follow loop above, which drives the camera
+                // from the first `PlayerMovement` pawn that ALSO has a
+                // `Transform`: select that same pawn here (same
+                // `get_component::<Transform>(id).is_ok()` predicate) and run
+                // view feel only when IT carries `view_feel`. Selecting on the
+                // identical predicate keeps the two readers from diverging — a
+                // `PlayerMovement` without a `Transform` ordered first would
+                // otherwise drive view feel while the camera follows a different
+                // pawn. A later pawn's `view_feel` must not leak onto a camera
+                // the driving pawn owns either.
+                let view_feel_inputs = {
+                    use crate::scripting::registry::{ComponentKind, ComponentValue, Transform};
+                    let registry = self.script_ctx.registry.borrow();
+                    registry
+                        .iter_with_kind(ComponentKind::PlayerMovement)
+                        .find(|(id, _value)| registry.get_component::<Transform>(*id).is_ok())
+                        .and_then(|(_id, value)| match value {
+                            ComponentValue::PlayerMovement(component) => {
+                                component.view_feel.as_ref().map(|params| {
+                                    (params.clone(), component.velocity, component.is_grounded)
+                                })
+                            }
+                            _ => None,
+                        })
+                };
+                let (vf_roll, vf_yaw_offset, vf_pitch_offset, vf_eye_offset) =
+                    if let Some((params, velocity, is_grounded)) = view_feel_inputs {
+                        let (horizontal_speed, lateral_velocity) =
+                            view_feel::view_feel_inputs(velocity, camera_right);
+                        let output = view_feel::evaluate(
+                            &params,
+                            horizontal_speed,
+                            lateral_velocity,
+                            is_grounded,
+                            &mut self.view_feel_state,
+                            // Zero-frame_dt guard: the evaluator leaves the
+                            // integrator untouched at `frame_dt == 0` (Task 2
+                            // contract), so passing it through is safe — we do
+                            // not introduce a separate advance step here.
+                            frame_dt,
+                            // Accessibility scale (D6): owned/clamped by the
+                            // options module; passed verbatim, not re-clamped.
+                            self.player_options.view_feel_scale,
+                        );
+                        view_feel::map_output_to_camera(&output, camera_right)
+                    } else {
+                        // Pass-through: no driving pawn, or it carries no
+                        // `view_feel`. Identical-to-today render path.
+                        (0.0, 0.0, 0.0, Vec3::ZERO)
+                    };
+
                 let view_proj = interp.view_projection(
                     self.camera.aspect(),
-                    self.camera.yaw,
-                    self.camera.pitch,
+                    self.camera.yaw + vf_yaw_offset,
+                    self.camera.pitch + vf_pitch_offset,
+                    vf_roll,
+                    vf_eye_offset,
                 );
 
                 let capture_portal_walk = std::mem::take(&mut self.capture_portal_walk_next_frame);
@@ -2640,8 +2718,9 @@ mod tests {
         // cases, so any element-wise difference must come from the rotation.
         let render_state = InterpolableState::new(Vec3::ZERO);
         let aspect = camera.aspect();
-        let baseline = render_state.view_projection(aspect, 0.0, 0.0);
-        let rotated = render_state.view_projection(aspect, camera.yaw, camera.pitch);
+        let baseline = render_state.view_projection(aspect, 0.0, 0.0, 0.0, Vec3::ZERO);
+        let rotated =
+            render_state.view_projection(aspect, camera.yaw, camera.pitch, 0.0, Vec3::ZERO);
 
         let baseline_cols = baseline.to_cols_array();
         let rotated_cols = rotated.to_cols_array();

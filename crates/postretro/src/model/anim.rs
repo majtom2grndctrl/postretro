@@ -41,9 +41,8 @@ pub enum Loop {
     /// Wrap time into `[0, duration)` (`rem_euclid`) — the clip repeats.
     Wrap,
     /// Clamp time into `[0, duration]` — the clip holds its final keyframe after
-    /// it ends (one-shot clips: attack, death). Reached via `sample_clip_looped`
-    /// once Task 5 routes one-shot states; `allow` until then.
-    #[allow(dead_code)]
+    /// it ends (one-shot clips: attack, death). Routed by Task 5's one-shot
+    /// states via `sample_clip_looped`.
     Clamp,
 }
 
@@ -82,9 +81,6 @@ impl LocalTrs {
 /// resumes from the live blended pose with no discontinuity. The borrowed slice
 /// must be parallel to the skeleton's joints (entry `i` is joint `i`); a joint
 /// past the slice's end falls back to rest, mirroring a short clip.
-// Consumed by Task 5 (per-instance sample inputs → blended/snapshot sampling);
-// `allow` until that caller lands, mirroring `Track::is_empty`'s deferred-use note.
-#[allow(dead_code)]
 pub enum BlendSource<'a> {
     /// Sample `clip` at `time` (seconds) under `loop_policy`.
     Clip {
@@ -218,6 +214,12 @@ fn compose_palette(
 ///
 /// Reuse: pass the same `out` every frame. A thread-local scratch holds the
 /// world-pose sweep, so a steady-state call performs no heap allocation.
+///
+/// The render path now samples through [`sample_clip_looped`] (it carries an
+/// explicit loop policy per state); this `Loop::Wrap` shorthand remains for the
+/// sampler's own tests and any caller that wants today's wrap default — hence
+/// `allow(dead_code)` off the test build.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn sample_clip(
     clip: &AnimationClip,
     skeleton: &Skeleton,
@@ -263,8 +265,6 @@ pub fn sample_clip_looped(
 /// the per-joint blend. Reuse `out` across frames: a thread-local TRS scratch and
 /// the world-pose scratch are both reused, so steady-state blended sampling
 /// allocates nothing.
-// Consumed by Task 5; `allow` until that caller lands.
-#[allow(dead_code)]
 pub fn sample_blended(
     a: &BlendSource,
     b: &BlendSource,
@@ -292,8 +292,6 @@ pub fn sample_blended(
 /// `out` is cleared then filled to `skeleton.joints.len()`. Capture is a
 /// one-time event (not a steady-state per-frame call), so a growing `out` here is
 /// not on the hot path — but reuse is still safe and free of churn.
-// Consumed by Task 5 (smooth-interrupt snapshot capture); `allow` until then.
-#[allow(dead_code)]
 pub fn capture_blend(
     a: &BlendSource,
     b: &BlendSource,

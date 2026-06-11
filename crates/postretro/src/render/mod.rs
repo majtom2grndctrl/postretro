@@ -3364,9 +3364,8 @@ impl Renderer {
     /// is not cached or has no animation — no error, no panic.
     ///
     /// `pub` forwarder over the private `mesh_pass` (same seam as
-    /// [`Renderer::skinned_model_clip_by_name`]); `allow(dead_code)` until its
-    /// runtime consumer lands.
-    #[allow(dead_code)]
+    /// [`Renderer::skinned_model_clip_by_name`]). Consumed by the level-load model
+    /// sweep (`main.rs`) to build the game-side clip tables.
     pub fn skinned_model_clip_metadata(&self, model_handle: &str) -> Vec<mesh_pass::ClipMetadata> {
         self.mesh_pass
             .model_clip_metadata(&crate::model::ModelHandle::from(model_handle))
@@ -3381,6 +3380,16 @@ impl Renderer {
     pub fn set_mesh_draws(&mut self, instances: &[mesh_instances::MeshInstanceInput]) {
         self.mesh_draws.clear();
         self.mesh_draws.extend_from_slice(instances);
+    }
+
+    /// Reset per-level transient mesh-pass state at level load. `pub` forwarder
+    /// over the private `mesh_pass`; called from the level-load model sweep at the
+    /// model-cache install site (where each distinct model uploads). Today it
+    /// empties the `"smooth"`-interrupt snapshot store — entity seeds are not
+    /// stable across levels, so a stale snapshot must not survive. Task 6 extends
+    /// the pass-side hook to clear the palette cache.
+    pub fn clear_mesh_pass_for_level_load(&mut self) {
+        self.mesh_pass.clear_for_level_load();
     }
 
     /// Resolve each submesh's material key (content-hash hex → `.prm`) to a
@@ -4847,12 +4856,8 @@ impl Renderer {
                 // Sample every instance's clip into its palette run + write the
                 // per-instance SSBO. The ONLY per-frame write to these buffers —
                 // both the shadow loop and the forward draw read them unchanged.
-                self.mesh_pass.plan_and_upload(
-                    &self.queue,
-                    &plan,
-                    now_seconds as f32,
-                    &mut self.bone_palette_scratch,
-                );
+                self.mesh_pass
+                    .plan_and_upload(&self.queue, &plan, &mut self.bone_palette_scratch);
                 (!plan.groups.is_empty()).then_some(plan)
             } else {
                 None

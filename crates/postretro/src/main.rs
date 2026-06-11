@@ -129,6 +129,74 @@ fn distinct_mesh_models(registry: &crate::scripting::registry::EntityRegistry) -
     ordered
 }
 
+/// Resolve every animated mesh entity's declared state map against the level's
+/// clip tables, filling each `AnimationState.clip_index` (name → glTF index). A
+/// state naming a clip the model does not carry warns ONCE here (at level load)
+/// and stays `clip_index = None` (unusable: switching to it warns + no-ops,
+/// switching out of it hard-cuts — both via Phase 1). Stateless `prop_mesh`
+/// entities (no animation block) are skipped.
+///
+/// Runs at level load with a mutable registry, after the model sweep built the
+/// clip tables — so every state's index is concrete before the first frame.
+fn resolve_mesh_entity_clips(
+    registry: &mut crate::scripting::registry::EntityRegistry,
+    tables: &scripting_systems::mesh_anim::MeshClipTables,
+) {
+    use crate::scripting::registry::{ComponentKind, ComponentValue};
+
+    // Collect ids first so the mutable per-entity writes do not alias the
+    // immutable iteration borrow. Mesh entity counts are small.
+    let animated: Vec<crate::scripting::registry::EntityId> = registry
+        .iter_with_kind(ComponentKind::Mesh)
+        .filter_map(|(id, value)| match value {
+            ComponentValue::Mesh(mesh) if mesh.animation.is_some() => Some(id),
+            _ => None,
+        })
+        .collect();
+
+    for id in animated {
+        let Ok(mut component) = registry
+            .get_component::<crate::scripting::components::mesh::MeshComponent>(id)
+            .cloned()
+        else {
+            continue;
+        };
+        let model_name = component.model.clone();
+        let handle = crate::model::ModelHandle::from(model_name.clone());
+        let Some(anim) = component.animation.as_mut() else {
+            continue;
+        };
+        match tables.get(&handle) {
+            Some(table) => {
+                let missing =
+                    scripting_systems::mesh_anim::resolve_state_clips(&mut anim.states, table);
+                for m in &missing {
+                    log::warn!(
+                        "[Model] animation state '{}' on model '{}' names clip '{}' absent from \
+                         the model — state unusable (switching to it no-ops)",
+                        m.state,
+                        model_name,
+                        m.clip,
+                    );
+                }
+            }
+            None => {
+                // Model never uploaded (load failed): no clips resolve. Warn once
+                // for the model, leave every state unresolved.
+                log::warn!(
+                    "[Model] mesh entity references uncached model '{}' — animation states \
+                     unresolved",
+                    model_name,
+                );
+                for state in anim.states.values_mut() {
+                    state.clip_index = None;
+                }
+            }
+        }
+        let _ = registry.set_component(id, component);
+    }
+}
+
 // Policy chokepoint: the frame loop queues a staged build only when a changed
 // path matched the active mod-init dependency set (classified by ScriptRuntime).
 fn reload_summary_requires_mod_init(summary: ReloadSummary) -> bool {
@@ -289,6 +357,7 @@ fn main() -> Result<()> {
         collision_world: collision::CollisionWorld::new(),
         particle_render: scripting_systems::particle_render::ParticleRenderCollector::new(),
         mesh_render: scripting_systems::mesh_render::MeshRenderCollector::new(),
+        mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables::new(),
         active_wieldable: None,
         active_wieldable_descriptor: None,
         builtin_handled: None,
@@ -508,6 +577,14 @@ struct App {
     /// (cull applied via `mesh_pass::mesh_visible`); never touches wgpu.
     /// See: context/lib/scripting.md
     mesh_render: scripting_systems::mesh_render::MeshRenderCollector,
+
+    /// Game-side per-model animation clip tables (name → glTF index + per-index
+    /// duration), built at the level-load model sweep from each uploaded model's
+    /// renderer clip metadata. Owned beside `mesh_render`: the collector consults
+    /// it to compute per-instance sample times, and the level-load validation
+    /// resolves each mesh entity's `AnimationState.clip_index` against it. Cleared
+    /// on level unload. See: context/lib/scripting.md §10.3.
+    mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables,
 
     /// Active wieldable instance equipped by the player. The companion
     /// descriptor name lets mod-init hot reload refresh authored weapon stats
@@ -1450,6 +1527,8 @@ impl ApplicationHandler for App {
                                 world,
                                 &visible_cells,
                                 frame_result.alpha,
+                                self.anim_time,
+                                &self.mesh_clip_tables,
                             );
                             renderer.set_mesh_draws(self.mesh_render.instances());
                         }
@@ -2204,12 +2283,27 @@ impl App {
         // `load_skinned_model` already `warn!`s naming the path and returns
         // `None`, the entity then renders nothing, and the load continues.
         {
+            // Clear per-level transient mesh-pass state (the `"smooth"`-interrupt
+            // snapshot store — entity seeds are not stable across levels) at the
+            // model-cache install seam, and reset the game-side clip tables before
+            // rebuilding them for this level. Task 6 extends the pass hook to the
+            // palette cache.
+            renderer.clear_mesh_pass_for_level_load();
+            self.mesh_clip_tables.clear();
+
             let models = {
                 let registry = self.script_ctx.registry.borrow();
                 distinct_mesh_models(&registry)
             };
             for model in &models {
                 renderer.load_skinned_model(model, &self.content_root, &prm_cache_root);
+                // Build this model's game-side clip table from the renderer's clip
+                // metadata (glTF index order). A failed load cached nothing, so the
+                // metadata is empty and the table maps no clips — every state then
+                // warns + stays unresolved below.
+                let meta = renderer.skinned_model_clip_metadata(model);
+                self.mesh_clip_tables
+                    .insert(crate::model::ModelHandle::from(model.clone()), &meta);
             }
             if !models.is_empty() {
                 log::info!(
@@ -2217,6 +2311,16 @@ impl App {
                     models.len(),
                 );
             }
+
+            // Resolve every animated mesh entity's state map against its model's
+            // clip table: fill each `AnimationState.clip_index` (name → index). A
+            // state naming a clip the model does not carry warns ONCE here and stays
+            // `clip_index = None` (unusable — switching to it warns + no-ops, and
+            // switching out of it hard-cuts, both via Phase 1).
+            resolve_mesh_entity_clips(
+                &mut self.script_ctx.registry.borrow_mut(),
+                &self.mesh_clip_tables,
+            );
         }
         self.level_timings.record("model_load");
 

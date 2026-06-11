@@ -13,6 +13,7 @@ use glam::{Mat4, Vec4};
 
 use crate::lighting::cone_frustum::{Aabb, aabb_intersects_frustum};
 use crate::model::ModelHandle;
+use crate::model::anim::Loop;
 
 /// Fixed per-frame bone-palette budget, in `BonePaletteEntry` slots (one slot =
 /// one joint of one instance). Sized from a representative wave: ~64 concurrent
@@ -37,18 +38,131 @@ pub(crate) const MAX_PALETTE_ENTRIES: usize = 4096;
 /// covers both buffers.
 pub(crate) const MAX_INSTANCES: usize = MAX_PALETTE_ENTRIES;
 
+/// One sampled clip leg: its index into the model's clip list, the clip-local
+/// time (seconds) to sample at, and whether time wraps (looping) or clamps
+/// (one-shot). `Copy` plain-old-data — no heap, so a per-instance buffer of
+/// these allocates nothing in steady state.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ClipSample {
+    /// Index into the model's glTF-order clip list.
+    pub(crate) clip_index: usize,
+    /// Clip-local time (seconds) to sample at — the GPU layer feeds this to the
+    /// Phase-1 sampler, which applies the wrap/clamp itself.
+    pub(crate) time: f32,
+    /// Loop policy: `Wrap` for looping states, `Clamp` for one-shot states.
+    pub(crate) loop_policy: Loop,
+}
+
+/// Which source the active crossfade blends *out of*, plus the data the GPU
+/// layer needs to resolve it. `Copy` POD: a snapshot is referenced by entity
+/// seed against the pass's snapshot store, never carried inline.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum FadeSource {
+    /// Blend from a clip leg (the outgoing state's clip on its own advanced
+    /// timeline — `"snap"` interrupts and normal clip→clip fades).
+    Clip(ClipSample),
+    /// Blend from the per-entity snapshot captured for a `"smooth"` interrupt.
+    /// `tag` matches the store entry's tag (a store miss or tag mismatch
+    /// degrades to `fallback`). `fallback` is the interrupted state's
+    /// `(clip, time)` — the SAME pair a `"snap"` would have used, so a missed
+    /// capture cleanly downgrades the fade to a hard clip blend.
+    Snapshot {
+        /// Entry-stamp tag identifying which capture this fade expects.
+        tag: SnapshotTag,
+        /// Fallback clip leg if the snapshot store misses (capture frame culled).
+        fallback: ClipSample,
+    },
+}
+
+/// Per-instance animation sample parameters — what the GPU layer feeds the
+/// Phase-1 sampler this frame. `Copy` plain-old-data; the default
+/// ([`MeshSampleParams::stateless`]) reproduces today's stateless behavior
+/// (first clip, looped, phase-offset time).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct MeshSampleParams {
+    /// The state currently being entered / held — always sampled.
+    pub(crate) primary: ClipSample,
+    /// The active crossfade, if a fade is in flight: what to blend *from* and
+    /// the blend weight (`0` → all `from`, `1` → all `primary`). `None` once the
+    /// fade window closes (steady state — one clip sample per instance).
+    pub(crate) fade: Option<MeshFade>,
+}
+
+/// An active crossfade leg: the outgoing source and the current blend weight.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct MeshFade {
+    /// What the fade blends out of (clip leg or snapshot reference).
+    pub(crate) from: FadeSource,
+    /// Blend weight in `[0, 1]`: `0` → all `from`, `1` → all `primary`.
+    pub(crate) weight: f32,
+}
+
+/// Tag identifying one snapshot-store entry: the entered state's pending-or-
+/// resolved entry stamp, quantized to the clock's bit pattern so a re-emitted
+/// capture under a frozen clock compares equal (idempotent capture). Derived
+/// from the entered state's `entered_at: f64`; a `None` (pending) stamp never
+/// produces a snapshot fade, so the tag always has a concrete origin.
+pub(crate) type SnapshotTag = u64;
+
+/// A one-time snapshot-capture instruction emitted on a `"smooth"` interrupt
+/// frame: capture the in-flight blended pose into the per-entity snapshot store,
+/// tagged so subsequent frames blend against it. All `Copy` POD; the outgoing
+/// source may itself reference a prior snapshot (snapshot×clip capture), in
+/// which case `outgoing` carries the same `(clip, time)` fallback the sampling
+/// frames use so a store miss degrades cleanly.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct CaptureInstruction {
+    /// Entity seed keying the snapshot store (the raw `EntityId`).
+    pub(crate) seed: u32,
+    /// Tag for the new store entry (the entered state's entry stamp bits). The
+    /// pass skips a capture whose tag already matches the stored entry.
+    pub(crate) tag: SnapshotTag,
+    /// The in-flight blend's outgoing source.
+    pub(crate) outgoing: FadeSource,
+    /// The in-flight blend's incoming (entered) clip leg.
+    pub(crate) incoming: ClipSample,
+    /// The in-flight blend's weight at the interrupt instant.
+    pub(crate) weight: f32,
+}
+
 /// One skinned-mesh instance to consider for this frame: which model it draws,
-/// its final interpolated world transform, and a deterministic phase seed (the
-/// raw `EntityId`) used to de-sync animation across a wave. Produced by the
-/// render-frame collector (game side) after the visibility cull; consumed by the
-/// frame planner below.
+/// its final interpolated world transform, a deterministic phase seed (the raw
+/// `EntityId`) used to de-sync animation across a wave, the resolved per-frame
+/// sample parameters, and an optional one-time capture instruction. Produced by
+/// the render-frame collector (game side) after the visibility cull; consumed by
+/// the frame planner below.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct MeshInstanceInput {
     pub(crate) model: ModelHandle,
     pub(crate) transform: Mat4,
     /// Deterministic per-instance animation-phase seed (raw `EntityId`). Folded
-    /// into a phase offset so a spawned wave does not animate lock-step.
+    /// into a phase offset so a spawned wave does not animate lock-step, and the
+    /// key into the snapshot store.
     pub(crate) phase_seed: u32,
+    /// Resolved sample parameters: primary clip leg + optional crossfade. The
+    /// collector computes these from entity state + the clip table; for a
+    /// stateless `prop_mesh` entity this is [`MeshSampleParams::stateless`].
+    pub(crate) sample: MeshSampleParams,
+    /// One-time `"smooth"`-interrupt snapshot-capture instruction for this frame,
+    /// if the entity crossed an interrupt this frame. Evaluated by the pass into
+    /// the per-entity snapshot store before sampling (idempotent by tag).
+    pub(crate) capture: Option<CaptureInstruction>,
+}
+
+impl MeshSampleParams {
+    /// The stateless `prop_mesh` default: sample the model's first clip (glTF
+    /// index 0), looping, with no crossfade. The clip-local time is filled by the
+    /// collector (animation clock + per-instance phase) — this names the legs.
+    pub(crate) fn stateless(time: f32) -> Self {
+        Self {
+            primary: ClipSample {
+                clip_index: 0,
+                time,
+                loop_policy: Loop::Wrap,
+            },
+            fade: None,
+        }
+    }
 }
 
 /// One instance's resolved placement in the frame plan: its world transform, the
@@ -66,6 +180,14 @@ pub(crate) struct PlannedInstance {
     /// cone/face frustum to decide whether the instance casts into that light's
     /// shadow map. Surfaced CPU-side here; the GPU draw never reads it.
     pub(crate) bounds: Aabb,
+    /// Resolved per-frame sample parameters carried verbatim from the collector
+    /// — the GPU layer feeds these to the Phase-1 sampler (single / blended /
+    /// snapshot-blended), replacing the hardcoded first-clip-at-render-clock path.
+    pub(crate) sample: MeshSampleParams,
+    /// One-time `"smooth"`-interrupt capture instruction for this frame, if any.
+    /// The GPU layer evaluates it into the snapshot store (idempotent by tag)
+    /// before sampling this frame's pose.
+    pub(crate) capture: Option<CaptureInstruction>,
 }
 
 /// All instances of one model, batched for a single instanced `draw_indexed` per
@@ -166,6 +288,8 @@ pub(crate) fn plan_mesh_frame(
             palette_base,
             phase_seed: inst.phase_seed,
             bounds: joints.model_bounds(&inst.model),
+            sample: inst.sample,
+            capture: inst.capture,
         };
 
         // Append to the existing group for this model, or start a new one.
@@ -274,6 +398,8 @@ mod tests {
             model: ModelHandle::from(model),
             transform: Mat4::from_translation(Vec3::new(x, 0.0, 0.0)),
             phase_seed: seed,
+            sample: MeshSampleParams::stateless(0.0),
+            capture: None,
         }
     }
 
@@ -471,6 +597,8 @@ mod tests {
             palette_base: 0,
             phase_seed: 0,
             bounds: local,
+            sample: MeshSampleParams::stateless(0.0),
+            capture: None,
         };
         assert!(
             instance_casts_into_cone(&inside, &planes),
@@ -484,6 +612,8 @@ mod tests {
             palette_base: 0,
             phase_seed: 0,
             bounds: local,
+            sample: MeshSampleParams::stateless(0.0),
+            capture: None,
         };
         assert!(
             !instance_casts_into_cone(&outside, &planes),
@@ -535,6 +665,8 @@ mod tests {
             palette_base: 0,
             phase_seed: 0,
             bounds: bar,
+            sample: MeshSampleParams::stateless(0.0),
+            capture: None,
         };
         assert!(
             instance_casts_into_cone(&inst, &planes),

@@ -109,6 +109,41 @@ pub struct TextBind {
     pub slot: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
+    /// Optional value-tweening config (M13 UI Value-Tweening). When present, the
+    /// runtime (Task 3) eases the resolved numeric value toward each new target
+    /// over `duration_ms` using `easing` instead of snapping. Absent on every
+    /// pre-tweening bind, so a tween-less bind keeps its old wire form (the key
+    /// is omitted, not `null`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tween: Option<TextTween>,
+}
+
+/// Easing curve for a value tween (M13). A closed serde enum: each variant maps
+/// to a camelCase wire literal (`"linear"`, `"easeIn"`, `"easeOut"`,
+/// `"easeInOut"`). Shared by `TextTween` and `PanelTween`; the runtime that
+/// samples the curve is a later step (Task 3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Easing {
+    Linear,
+    EaseIn,
+    EaseOut,
+    EaseInOut,
+}
+
+/// Value-tweening config for a `text` bind (M13). When a bound numeric slot's
+/// value changes, the displayed value eases toward the new target over
+/// `duration_ms` (milliseconds) using `easing`. `from` is the optional explicit
+/// starting value for the FIRST tween (before any slot value has been seen);
+/// when absent the runtime starts from the first observed value. The wire shape
+/// differs from `PanelTween` only in `from`'s JSON type (a number here).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextTween {
+    pub duration_ms: f32,
+    pub easing: Easing,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<f32>,
 }
 
 /// Solid-fill panel with an optional 9-slice border. `fill` is linear RGBA. The
@@ -139,6 +174,27 @@ pub struct PanelWidget {
 #[serde(rename_all = "camelCase")]
 pub struct PanelBind {
     pub slot: String,
+    /// Optional value-tweening config (M13). When present, the runtime (Task 3)
+    /// eases the resolved RGBA fill toward each new target over `duration_ms`.
+    /// Absent on every pre-tweening bind, so a tween-less bind keeps its old wire
+    /// form (the key is omitted, not `null`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tween: Option<PanelTween>,
+}
+
+/// Value-tweening config for a `panel` bind (M13). When the bound RGBA slot's
+/// value changes, the displayed fill eases toward the new target over
+/// `duration_ms` (milliseconds) using `easing`. `from` is the optional explicit
+/// starting color for the FIRST tween; when absent the runtime starts from the
+/// first observed value. The wire shape differs from `TextTween` only in
+/// `from`'s JSON type (a length-4 linear-RGBA array here).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PanelTween {
+    pub duration_ms: f32,
+    pub easing: Easing,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<[f32; 4]>,
 }
 
 /// Leaf image referencing a texture asset by key. The image has no wire-level
@@ -407,5 +463,86 @@ mod tests {
         let widget: Widget = serde_json::from_str(json).expect("must deserialize");
         let reserialized = serde_json::to_string(&widget).expect("must serialize");
         assert_eq!(reserialized, json);
+    }
+
+    #[test]
+    fn bound_text_round_trips_with_tween() {
+        // A `text` bind carrying a `tween` keeps its camelCase wire form
+        // byte-for-byte. Field order inside tween: durationMs, easing, from.
+        let json = r#"{"kind":"text","content":"0","fontSize":18.0,"color":[1.0,1.0,1.0,1.0],"bind":{"slot":"player.health","tween":{"durationMs":1200.0,"easing":"easeOut","from":0.0}}}"#;
+        let widget: Widget = serde_json::from_str(json).expect("must deserialize");
+        let reserialized = serde_json::to_string(&widget).expect("must serialize");
+        assert_eq!(reserialized, json);
+    }
+
+    #[test]
+    fn bound_panel_round_trips_with_tween_and_from_absent() {
+        // A `panel` bind tween with no `from` omits the `from` key entirely
+        // (skip_serializing_if) and round-trips byte-identically.
+        let json = r#"{"kind":"panel","fill":[0.0,0.0,0.0,1.0],"border":null,"bind":{"slot":"intro.flashColor","tween":{"durationMs":150.0,"easing":"easeInOut"}}}"#;
+        let widget: Widget = serde_json::from_str(json).expect("must deserialize");
+        let reserialized = serde_json::to_string(&widget).expect("must serialize");
+        assert_eq!(reserialized, json);
+        // Belt-and-suspenders: the absent `from` emits no `from` key.
+        assert!(
+            !reserialized.contains("from"),
+            "absent from must emit no key"
+        );
+    }
+
+    #[test]
+    fn bound_panel_round_trips_with_tween_from_array() {
+        // A `panel` bind tween whose `from` is a length-4 linear-RGBA array keeps
+        // its wire form (the panel-side `from` type, distinct from text's number).
+        let json = r#"{"kind":"panel","fill":[0.0,0.0,0.0,1.0],"border":null,"bind":{"slot":"intro.flashColor","tween":{"durationMs":300.0,"easing":"linear","from":[1.0,0.0,0.0,1.0]}}}"#;
+        let widget: Widget = serde_json::from_str(json).expect("must deserialize");
+        let reserialized = serde_json::to_string(&widget).expect("must serialize");
+        assert_eq!(reserialized, json);
+    }
+
+    #[test]
+    fn tween_less_binds_serialize_without_a_tween_field() {
+        // A bind with no `tween` must not emit a `tween` key — pre-tweening binds
+        // keep their exact wire form so old descriptors round-trip unchanged.
+        let text = r#"{"kind":"text","content":"0","fontSize":18.0,"color":[1.0,1.0,1.0,1.0],"bind":{"slot":"player.ammo"}}"#;
+        let widget: Widget = serde_json::from_str(text).expect("must deserialize");
+        let reserialized = serde_json::to_string(&widget).expect("must serialize");
+        assert_eq!(reserialized, text);
+        assert!(
+            !reserialized.contains("tween"),
+            "tween-less text emits no tween key"
+        );
+
+        let panel = r#"{"kind":"panel","fill":[0.0,0.0,0.0,1.0],"border":null,"bind":{"slot":"intro.flashColor"}}"#;
+        let widget: Widget = serde_json::from_str(panel).expect("must deserialize");
+        let reserialized = serde_json::to_string(&widget).expect("must serialize");
+        assert_eq!(reserialized, panel);
+        assert!(
+            !reserialized.contains("tween"),
+            "tween-less panel emits no tween key"
+        );
+    }
+
+    #[test]
+    fn easing_variants_serialize_to_camel_case_wire_form() {
+        assert_eq!(
+            serde_json::to_string(&Easing::Linear).unwrap(),
+            r#""linear""#
+        );
+        assert_eq!(
+            serde_json::to_string(&Easing::EaseIn).unwrap(),
+            r#""easeIn""#
+        );
+        assert_eq!(
+            serde_json::to_string(&Easing::EaseOut).unwrap(),
+            r#""easeOut""#
+        );
+        assert_eq!(
+            serde_json::to_string(&Easing::EaseInOut).unwrap(),
+            r#""easeInOut""#
+        );
+        // And each parses back from its literal.
+        let parsed: Easing = serde_json::from_str(r#""easeInOut""#).unwrap();
+        assert_eq!(parsed, Easing::EaseInOut);
     }
 }

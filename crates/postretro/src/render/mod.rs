@@ -5273,6 +5273,7 @@ impl Renderer {
                 &self.ui_snapshot.slot_values,
                 &self.ui_theme,
                 self.ui_theme_generation,
+                self.ui_snapshot.time_seconds,
             );
             if !draw.is_empty() {
                 let white_bg = self.ui.white_bind_group().clone();

@@ -442,6 +442,11 @@ impl UiTree {
         font_system: &mut FontSystem,
         image_sizes: &ImageSizes,
         slot_values: &HashMap<String, SlotValue>,
+        // Deterministic, dt-accumulated frame time (seconds). Threaded here for
+        // the tween runtime; Task 3 consumes it to ease bound display values over
+        // time. Unused in this wire-format task — the leading underscore keeps
+        // clippy clean until Task 3 reads it at this exact site.
+        _time_seconds: f64,
     ) -> UiDrawData {
         // Subscriber-aware diff: resolve bound nodes against the new snapshot,
         // marking content-changed text nodes dirty for relayout and flagging any
@@ -1788,6 +1793,7 @@ mod tests {
             bind: Some(TextBind {
                 slot: slot.into(),
                 format: format.map(str::to_string),
+                tween: None,
             }),
         })
     }
@@ -1805,7 +1811,10 @@ mod tests {
             children: vec![Widget::Panel(PanelWidget {
                 fill: ColorValue::Literal(fill),
                 border: None,
-                bind: Some(PanelBind { slot: slot.into() }),
+                bind: Some(PanelBind {
+                    slot: slot.into(),
+                    tween: None,
+                }),
             })],
         })
     }
@@ -1996,7 +2005,7 @@ mod tests {
 
         let red = [1.0, 0.0, 0.0, 1.0];
         let first =
-            ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &flash_slots(red));
+            ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &flash_slots(red), 0.0);
         assert_eq!(ui.recompute_count(), 1, "first frame computes once");
         assert!(
             flash_quad_color(&first).is_some_and(|c| colors_eq(c, red)),
@@ -2004,8 +2013,13 @@ mod tests {
         );
 
         let green = [0.0, 1.0, 0.0, 1.0];
-        let second =
-            ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &flash_slots(green));
+        let second = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &flash_slots(green),
+            0.0,
+        );
         assert_eq!(
             ui.recompute_count(),
             1,
@@ -2031,12 +2045,12 @@ mod tests {
 
         let mut slots = HashMap::new();
         slots.insert("player.health".to_string(), SlotValue::Number(100.0));
-        let first = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots);
+        let first = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
         assert_eq!(ui.recompute_count(), 1, "first frame computes once");
         assert_eq!(first.texts[0].content, "HP 100");
 
         slots.insert("player.health".to_string(), SlotValue::Number(75.0));
-        let second = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots);
+        let second = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
         assert_eq!(
             ui.recompute_count(),
             2,
@@ -2061,7 +2075,7 @@ mod tests {
 
         let mut slots = HashMap::new();
         slots.insert("player.health".to_string(), SlotValue::Number(100.0));
-        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots);
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
         assert_eq!(ui.recompute_count(), 1);
         assert_eq!(
             ui.draw_rebuild_count(),
@@ -2071,7 +2085,7 @@ mod tests {
 
         // Change only an unbound slot; the bound `player.health` is untouched.
         slots.insert("world.kills".to_string(), SlotValue::Number(7.0));
-        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots);
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
         assert_eq!(
             ui.recompute_count(),
             1,
@@ -2098,15 +2112,25 @@ mod tests {
         let mut fs = font_system();
 
         let settled = [0.2, 0.4, 0.6, 1.0];
-        let first =
-            ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &flash_slots(settled));
+        let first = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &flash_slots(settled),
+            0.0,
+        );
         assert_eq!(ui.recompute_count(), 1);
         assert_eq!(ui.draw_rebuild_count(), 1, "first frame builds the list");
 
         // Same color again: nothing changed, so neither the layout nor the draw
         // list rebuild — the cached list is returned unchanged.
-        let second =
-            ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &flash_slots(settled));
+        let second = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &flash_slots(settled),
+            0.0,
+        );
         assert_eq!(ui.recompute_count(), 1, "settled frame does not relayout");
         assert_eq!(
             ui.draw_rebuild_count(),

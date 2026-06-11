@@ -95,6 +95,7 @@ fn demo_descriptor_resolves_binds_through_retained_path() {
         &mut fs,
         &no_images(),
         &proxy_slots(100.0, 50.0, flash),
+        0.0,
     );
 
     // Both bound text runs resolve through their format templates.
@@ -135,6 +136,7 @@ fn demo_panel_fill_change_rebuilds_without_relayout() {
         &mut fs,
         &no_images(),
         &proxy_slots(100.0, 50.0, solid),
+        0.0,
     );
     assert_eq!(ui.recompute_count(), 1, "first frame computes once");
     assert_eq!(ui.draw_rebuild_count(), 1, "first frame builds the list");
@@ -150,6 +152,7 @@ fn demo_panel_fill_change_rebuilds_without_relayout() {
         &mut fs,
         &no_images(),
         &proxy_slots(100.0, 50.0, pulse),
+        0.0,
     );
     assert_eq!(
         ui.recompute_count(),
@@ -182,6 +185,7 @@ fn demo_bound_text_change_triggers_relayout() {
         &mut fs,
         &no_images(),
         &proxy_slots(100.0, 50.0, flash),
+        0.0,
     );
     assert_eq!(ui.recompute_count(), 1, "first frame computes once");
     assert!(
@@ -195,6 +199,7 @@ fn demo_bound_text_change_triggers_relayout() {
         &mut fs,
         &no_images(),
         &proxy_slots(87.0, 50.0, flash),
+        0.0,
     );
     assert_eq!(
         ui.recompute_count(),
@@ -217,13 +222,13 @@ fn demo_settled_frame_skips_rebuild_and_recompute() {
     let mut fs = font_system();
 
     let settled = proxy_slots(100.0, 50.0, [0.0, 0.65, 0.75, 1.0]);
-    let first = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &settled);
+    let first = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &settled, 0.0);
     assert_eq!(ui.recompute_count(), 1, "first frame computes once");
     assert_eq!(ui.draw_rebuild_count(), 1, "first frame builds the list");
 
     // Identical snapshot again: nothing dirtied, so neither layout nor the draw
     // list rebuilds — the cached list is returned unchanged.
-    let second = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &settled);
+    let second = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &settled, 0.0);
     assert_eq!(ui.recompute_count(), 1, "settled frame does not relayout");
     assert_eq!(
         ui.draw_rebuild_count(),
@@ -253,13 +258,13 @@ fn demo_unbound_slot_change_invalidates_nothing() {
     let mut fs = font_system();
 
     let mut slots = proxy_slots(100.0, 50.0, [0.0, 0.65, 0.75, 1.0]);
-    ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots);
+    ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
     assert_eq!(ui.recompute_count(), 1);
     assert_eq!(ui.draw_rebuild_count(), 1, "first frame builds the list");
 
     // Add/changes only an unbound slot; every bound slot holds its value.
     slots.insert("world.kills".to_string(), SlotValue::Number(7.0));
-    ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots);
+    ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
     assert_eq!(
         ui.recompute_count(),
         1,
@@ -286,6 +291,7 @@ fn demo_swatch_quad_has_real_size_presence() {
         &mut fs,
         &no_images(),
         &proxy_slots(100.0, 50.0, [0.0, 0.65, 0.75, 1.0]),
+        0.0,
     );
     // Find the resolved swatch quad (the one carrying the flash color, not a
     // backdrop), and assert it has real width and height.
@@ -351,6 +357,7 @@ fn demo_hud_text_resolves_the_ok_token_color() {
         &mut fs,
         &no_images(),
         &proxy_slots(100.0, 50.0, [0.0, 0.65, 0.75, 1.0]),
+        0.0,
     );
 
     let hp = data
@@ -388,6 +395,7 @@ fn demo_swatch_label_resolves_the_mono_family() {
         &mut fs,
         &no_images(),
         &proxy_slots(100.0, 50.0, [0.0, 0.65, 0.75, 1.0]),
+        0.0,
     );
 
     let label = data

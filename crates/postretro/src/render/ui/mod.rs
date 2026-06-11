@@ -234,6 +234,13 @@ pub(crate) struct UiReadSnapshot {
     /// Only slots that currently hold a value appear; value-less slots are
     /// skipped. Empty on the splash path.
     pub slot_values: std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
+    /// Deterministic frame time in seconds, accumulated from per-frame `dt`
+    /// (`App::script_time`) — NEVER wall-clock. Stays `f64` end-to-end to match
+    /// the App's accumulator. The retained gameplay build threads it down so the
+    /// tween runtime can ease bound display values over time. `0.0` (the default)
+    /// on the splash/fresh path, where inertness is structural — that path takes
+    /// no time at all.
+    pub time_seconds: f64,
 }
 
 impl UiReadSnapshot {
@@ -244,21 +251,27 @@ impl UiReadSnapshot {
             version_line: version_line.into(),
             gameplay_tree: None,
             slot_values: std::collections::HashMap::new(),
+            // Splash/fresh path takes no time — inertness is structural.
+            time_seconds: 0.0,
         }
     }
 
     /// Snapshot carrying a gameplay-path descriptor tree (the content side) plus
-    /// the frame's resolved slot-value snapshot. The renderer lays the tree out
-    /// into the UI draw list and resolves `bind` slots against `slot_values`.
+    /// the frame's resolved slot-value snapshot and the deterministic frame time.
+    /// The renderer lays the tree out into the UI draw list, resolves `bind` slots
+    /// against `slot_values`, and threads `time_seconds` into the retained build so
+    /// the tween runtime can ease bound display values over time.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn with_gameplay_tree(
         tree: descriptor::AnchoredTree,
         slot_values: std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
+        time_seconds: f64,
     ) -> Self {
         Self {
             version_line: String::new(),
             gameplay_tree: Some(tree),
             slot_values,
+            time_seconds,
         }
     }
 }
@@ -666,6 +679,15 @@ impl UiPass {
     ///
     /// The splash stays on `layout_tree` (fresh build per frame) — it is transient
     /// and carries no bindings, so retaining it would only add bookkeeping.
+    ///
+    /// `time_seconds` is the deterministic, dt-accumulated frame time threaded
+    /// down to the retained build for the tween runtime to ease bound values over
+    /// time. The splash/fresh `layout_tree` takes no such time — its inertness is
+    /// structural.
+    // Wide by necessity: viewport + image sizes + slot values + theme + theme
+    // generation + frame time are all distinct retained-build inputs; bundling
+    // them into a struct would only obscure the per-frame call site.
+    #[allow(clippy::too_many_arguments)]
     pub fn layout_gameplay_tree(
         &mut self,
         tree: &descriptor::AnchoredTree,
@@ -674,6 +696,7 @@ impl UiPass {
         slot_values: &std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
         theme: &theme::UiTheme,
         theme_generation: u64,
+        time_seconds: f64,
     ) -> tree::UiDrawData {
         // Rebuild the retained tree when there is none yet, when the incoming
         // descriptor differs from the one it was built from (a structural change),
@@ -705,6 +728,7 @@ impl UiPass {
             self.text.font_system_mut(),
             image_sizes,
             slot_values,
+            time_seconds,
         )
     }
 

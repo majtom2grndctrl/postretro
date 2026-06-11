@@ -80,9 +80,9 @@ impl RetainedGate {
             self.tree = UiTree::from_descriptor(descriptor, theme);
             self.builds += 1;
         }
-        let data = self
-            .tree
-            .build_draw_data_retained([1280, 720], fs, &no_images(), &no_slots());
+        let data =
+            self.tree
+                .build_draw_data_retained([1280, 720], fs, &no_images(), &no_slots(), 0.0);
         data.texts[0].color
     }
 }

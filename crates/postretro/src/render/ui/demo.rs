@@ -76,6 +76,7 @@ pub(crate) fn build_demo_descriptor() -> AnchoredTree {
         bind: Some(TextBind {
             slot: "player.health".to_string(),
             format: Some("HP {}".to_string()),
+            tween: None,
         }),
     });
 
@@ -87,6 +88,7 @@ pub(crate) fn build_demo_descriptor() -> AnchoredTree {
         bind: Some(TextBind {
             slot: "player.ammo".to_string(),
             format: Some("AMMO {}".to_string()),
+            tween: None,
         }),
     });
 
@@ -102,6 +104,7 @@ pub(crate) fn build_demo_descriptor() -> AnchoredTree {
         border: None,
         bind: Some(PanelBind {
             slot: "intro.flashColor".to_string(),
+            tween: None,
         }),
     });
     let swatch_label = Widget::Text(TextWidget {

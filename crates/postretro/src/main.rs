@@ -1428,6 +1428,7 @@ impl ApplicationHandler for App {
                         renderer.set_ui_snapshot(render::ui::UiReadSnapshot::with_gameplay_tree(
                             demo_tree,
                             slot_values,
+                            self.script_time,
                         ));
 
                         let surface_texture = match renderer.render_frame_indirect(

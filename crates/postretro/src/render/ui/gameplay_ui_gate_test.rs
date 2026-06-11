@@ -164,8 +164,12 @@ fn snapshot_carries_gameplay_tree_as_the_content_contract() {
     let default = UiReadSnapshot::default();
     assert!(default.gameplay_tree.is_none(), "default carries no tree");
 
-    let snapshot =
-        UiReadSnapshot::with_gameplay_tree(composite_fixture(), std::collections::HashMap::new());
+    let snapshot = UiReadSnapshot::with_gameplay_tree(
+        composite_fixture(),
+        std::collections::HashMap::new(),
+        // This gate doesn't exercise tweening; a fixed synthetic time suffices.
+        0.0,
+    );
     let tree = snapshot
         .gameplay_tree
         .as_ref()
@@ -173,6 +177,32 @@ fn snapshot_carries_gameplay_tree_as_the_content_contract() {
     assert!(
         gameplay_draw(Some(tree), [1280, 720]).is_some(),
         "the snapshot's tree lays out to a non-empty draw list",
+    );
+}
+
+#[test]
+fn snapshot_default_time_is_zero() {
+    // The fresh/splash default takes no time — inertness is structural. The
+    // tween runtime (Task 3) reads `time_seconds`, so the default must pin to
+    // `0.0` so an unfed snapshot eases nothing.
+    let default = UiReadSnapshot::default();
+    assert_eq!(default.time_seconds, 0.0, "default carries no frame time");
+}
+
+#[test]
+fn with_gameplay_tree_carries_the_passed_time() {
+    // The gameplay constructor plumbs the deterministic, dt-accumulated frame
+    // time straight onto the snapshot (stays `f64` end-to-end). A non-zero,
+    // fractional value proves it is carried verbatim, not narrowed or reset.
+    let t = 12.5_f64;
+    let snapshot = UiReadSnapshot::with_gameplay_tree(
+        composite_fixture(),
+        std::collections::HashMap::new(),
+        t,
+    );
+    assert_eq!(
+        snapshot.time_seconds, t,
+        "with_gameplay_tree carries the passed time onto the snapshot",
     );
 }
 

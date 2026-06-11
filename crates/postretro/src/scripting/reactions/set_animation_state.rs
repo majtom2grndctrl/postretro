@@ -16,7 +16,7 @@ pub(crate) struct SetAnimationStateArgs {
 }
 
 /// Switch every target to `args.state` through [`switch_animation_state`], the
-/// single validated state-switch path (Phase 1). This dispatcher only maps each
+/// single validated state-switch path. This dispatcher only maps each
 /// [`SwitchResult`] to the appropriate log; all validation lives in the switch
 /// function (mirrors the `setEmitterRate` validated-setter precedent).
 ///

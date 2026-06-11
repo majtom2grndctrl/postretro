@@ -48,10 +48,10 @@ pub(crate) struct AnimationState {
     pub(crate) crossfade_ms: f32,
     #[serde(default)]
     pub(crate) interrupt: InterruptPolicy,
-    /// Clip index this state resolves to, filled by Task 5's level-load
-    /// validation against the model's clip metadata. `None` = unresolved /
-    /// unusable: switching *to* this state is a warn + no-op, and switching
-    /// *out of* it is a hard cut (no outgoing pose to preserve).
+    /// Clip index this state resolves to, filled at level load by
+    /// `resolve_mesh_entity_clips` against the model's clip metadata. `None` =
+    /// unresolved / unusable: switching *to* this state is a warn + no-op, and
+    /// switching *out of* it is a hard cut (no outgoing pose to preserve).
     #[serde(skip, default)]
     pub(crate) clip_index: Option<usize>,
 }
@@ -88,7 +88,8 @@ pub(crate) struct MeshAnimation {
     /// resolution at level load.
     pub(crate) states: HashMap<String, AnimationState>,
     /// The state entered at spawn. Always names a declared state (parse-time
-    /// validation, Task 3). `"defaultState"` on the wire (boundary inventory).
+    /// validation of the descriptor's `animations` block). `"defaultState"` on
+    /// the wire (boundary inventory).
     #[serde(rename = "defaultState")]
     pub(crate) default_state: String,
     /// The currently-active state name. Seeded to `default_state` at spawn.
@@ -110,8 +111,9 @@ pub(crate) struct MeshAnimation {
 
 impl MeshAnimation {
     /// Build the runtime animation state for a freshly spawned descriptor
-    /// entity: current = default, entry stamp pending, no active fade. Task 3's
-    /// descriptor-attach path calls this.
+    /// entity: current = default, entry stamp pending, no active fade. Called by
+    /// the data-archetype spawn path (`data_archetype.rs`) when materializing a
+    /// descriptor entity with an `animations` block.
     pub(crate) fn new(states: HashMap<String, AnimationState>, default_state: String) -> Self {
         Self {
             current_state: default_state.clone(),
@@ -130,6 +132,55 @@ impl MeshAnimation {
         self.states
             .get(state)
             .is_some_and(|s| s.clip_index.is_some())
+    }
+
+    /// The crossfade window (seconds) of the current state, treating a
+    /// non-positive `crossfadeMs` (or an undeclared current state) as a hard cut
+    /// (`0.0`). The window governs when an active fade reaches weight 1.0.
+    fn current_crossfade_seconds(&self) -> f32 {
+        self.states
+            .get(&self.current_state)
+            .map(|s| (s.crossfade_ms / 1000.0).max(0.0))
+            .unwrap_or(0.0)
+    }
+
+    /// True if the active fade (recorded `previous_state`) has reached weight
+    /// `>= 1.0` at `now` — i.e. the crossfade window measured from the current
+    /// state's `entered_at` has fully elapsed. False while a stamp is still
+    /// pending (`entered_at == None`): a fade that has not started cannot have
+    /// completed. A hard-cut window (`crossfade <= 0`) completes immediately on
+    /// the first resolved frame.
+    fn fade_completed_at(&self, now: f64) -> bool {
+        let Some(entered_at) = self.entered_at else {
+            return false;
+        };
+        let crossfade = self.current_crossfade_seconds();
+        if crossfade <= 0.0 {
+            return true;
+        }
+        (now - entered_at) as f32 >= crossfade
+    }
+
+    /// Whether the per-frame resolve pass must act on this entity. Steady-state
+    /// entities (entry stamp resolved, no recorded fade) are skipped — touching
+    /// them would clone, no-op mutate, and rewrite the component every frame.
+    /// Work is due for exactly three reasons:
+    /// - a pending current entry stamp to fill (`entered_at == None`);
+    /// - an active fade whose previous stamp is still pending (carry/fill it);
+    /// - an active fade that has reached weight 1.0 and must be cleared.
+    fn resolve_pass_has_work(&self, now: f64) -> bool {
+        self.entered_at.is_none()
+            || (self.previous_state.is_some()
+                && (self.previous_entered_at.is_none() || self.fade_completed_at(now)))
+    }
+
+    /// Clear a completed fade back to steady state: no previous state, no
+    /// previous stamp, fade source reset to its `Clip` default. After this the
+    /// collector samples the single new clip (the pose at weight 1.0).
+    fn clear_completed_fade(&mut self) {
+        self.previous_state = None;
+        self.previous_entered_at = None;
+        self.fade_source = FadeSourceKind::Clip;
     }
 }
 
@@ -159,8 +210,8 @@ impl MeshComponent {
     }
 }
 
-/// Outcome of a switch attempt. The caller (the `setAnimationState` reaction,
-/// Task 4) logs the failure variants; this mirrors the `setEmitterRate`
+/// Outcome of a switch attempt. The caller (the `setAnimationState` reaction)
+/// logs the failure variants; this mirrors the `setEmitterRate`
 /// validated-setter precedent (validate here, let the caller surface warnings).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SwitchResult {
@@ -177,8 +228,8 @@ pub(crate) enum SwitchResult {
 }
 
 /// Switch an entity's animation state by name. The single validated path the
-/// `setAnimationState` reaction (Task 4), the future AI plan, and future
-/// command-buffer guards call.
+/// `setAnimationState` reaction, the future AI plan, and future command-buffer
+/// guards all route through.
 ///
 /// Records the target state, a pending entry stamp, the previous state, and the
 /// new fade's SOURCE KIND (per the entered state's interrupt policy): a smooth
@@ -252,9 +303,12 @@ pub(crate) fn switch_animation_state(
     // Record the new fade's source kind. A smooth interrupt records `Snapshot`
     // so the collector emits a one-time snapshot capture of the in-flight blend;
     // every other case (non-interrupt switch, or a `Snap` interrupt) blends from
-    // the outgoing clip directly. (Phase 1 left this as last-resolved; Task 5
-    // applies the policy here at switch time — `was_fading` is exactly the
-    // "switch during an active fade" condition the interrupt criterion names.)
+    // the outgoing clip directly. The decision MUST be made here at switch time:
+    // by the time the collector runs (after the resolve pass) the in-flight pose
+    // has not been captured yet, and switch time is the only moment that jointly
+    // sees the active-fade status (`was_fading`) and the entered state's
+    // interrupt policy. The resolve pass clears `previous_state` once a fade
+    // completes, so `was_fading` here genuinely means an in-flight fade.
     anim.fade_source = if was_fading && target_policy == InterruptPolicy::Smooth {
         FadeSourceKind::Snapshot
     } else {
@@ -272,13 +326,23 @@ pub(crate) fn switch_animation_state(
 }
 
 /// Resolve every mesh entity's pending entry stamps from the frame's
-/// post-advance animation-clock value. Runs in the render-frame collection
-/// sub-stage, immediately before the mesh collector (Task 5), with a mutable
-/// registry.
+/// post-advance animation-clock value, and clear fades that have completed.
+/// Runs in the render-frame collection sub-stage, immediately before the mesh
+/// collector, with a mutable registry.
 ///
-/// A pending `entered_at` (`None`) is filled with `now`; a pending
-/// `previous_entered_at` accompanying an active fade is filled too (a switch out
-/// of a freshly-entered state where the previous stamp could not be carried).
+/// Three jobs, on exactly the entities that need them (steady-state entities are
+/// skipped — see [`MeshAnimation::resolve_pass_has_work`] — so the hot path does
+/// not clone and rewrite untouched components every frame):
+/// - A pending `entered_at` (`None`) is filled with `now`.
+/// - A pending `previous_entered_at` accompanying an active fade is filled too
+///   (a switch out of a freshly-entered state where the previous stamp could not
+///   be carried).
+/// - A fade that has reached weight 1.0 (window measured from the current
+///   state's `crossfadeMs`) is cleared back to steady state, so the next
+///   `switch_animation_state` does not mistake a finished fade for an in-flight
+///   one and record a spurious snapshot capture. At weight 1.0 the collector
+///   already shows only the new clip, so clearing is pose-equivalent.
+///
 /// This seam fills the stamps so clip-local times and fade windows have a
 /// concrete origin; the fade source-kind decision is made earlier (at switch
 /// time, in [`switch_animation_state`]) and the per-frame capture inputs are
@@ -294,7 +358,7 @@ pub(crate) fn resolve_pending_animation_stamps(registry: &mut EntityRegistry, no
             crate::scripting::registry::ComponentValue::Mesh(mesh) => mesh
                 .animation
                 .as_ref()
-                .filter(|a| a.entered_at.is_none() || a.previous_entered_at.is_none())
+                .filter(|a| a.resolve_pass_has_work(now))
                 .map(|_| id),
             _ => None,
         })
@@ -312,6 +376,13 @@ pub(crate) fn resolve_pending_animation_stamps(registry: &mut EntityRegistry, no
         }
         if anim.previous_state.is_some() && anim.previous_entered_at.is_none() {
             anim.previous_entered_at = Some(now);
+        }
+        // Clear a fade that has reached weight 1.0. Re-checked after filling the
+        // current stamp above, so a fade entered with a pending stamp is
+        // evaluated against the stamp it was just assigned (a hard-cut window
+        // clears on this first resolved frame).
+        if anim.previous_state.is_some() && anim.fade_completed_at(now) {
+            anim.clear_completed_fade();
         }
         let _ = registry.set_component(id, component);
     }
@@ -706,6 +777,130 @@ mod tests {
         assert_eq!(anim.previous_state, None);
         // The current entry stamp is untouched (not re-stamped pending).
         assert_eq!(anim.entered_at, Some(1.0));
+    }
+
+    #[test]
+    fn resolve_pass_skips_steady_state_entity() {
+        // A steady-state animated entity (entry stamp resolved, no recorded
+        // fade) must NOT be picked up by the resolve pass: the predicate reports
+        // no work, and a second resolve at a later clock leaves the component
+        // byte-identical (no needless clone/no-op-mutate/rewrite each frame).
+        let mut reg = EntityRegistry::new();
+        let id = spawn_animated(&mut reg);
+        resolve_pending_animation_stamps(&mut reg, 1.0);
+
+        let before = reg
+            .get_component::<MeshComponent>(id)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap()
+            .clone();
+        assert_eq!(before.entered_at, Some(1.0));
+        assert_eq!(before.previous_state, None);
+        // The pass predicate reports no work for a steady-state entity.
+        assert!(
+            !before.resolve_pass_has_work(2.0),
+            "steady-state entity must report no resolve-pass work"
+        );
+
+        // Running the pass again at a later clock must not alter the component.
+        resolve_pending_animation_stamps(&mut reg, 2.0);
+        let after = reg
+            .get_component::<MeshComponent>(id)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap()
+            .clone();
+        assert_eq!(before, after, "steady-state component must be untouched");
+    }
+
+    #[test]
+    fn resolve_pass_clears_fade_after_crossfade_window() {
+        // idle→attack records a fade (attack crossfade = DEFAULT_CROSSFADE_MS =
+        // 150ms = 0.15s). Resolve at the switch instant retains the fade; once
+        // the clock passes the window, the next resolve clears it back to steady
+        // state and resets the fade source to Clip.
+        let mut reg = EntityRegistry::new();
+        let id = spawn_animated(&mut reg);
+        resolve_pending_animation_stamps(&mut reg, 1.0);
+        switch_animation_state(&mut reg, id, "attack"); // records fade (idle→attack)
+
+        // First resolve fills the new entry stamp at 1.0; fade still in flight.
+        resolve_pending_animation_stamps(&mut reg, 1.0);
+        let during = reg
+            .get_component::<MeshComponent>(id)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap()
+            .clone();
+        assert_eq!(during.entered_at, Some(1.0));
+        assert_eq!(
+            during.previous_state.as_deref(),
+            Some("idle"),
+            "fade retained during the window (weight < 1.0)"
+        );
+
+        // Advance past the 0.15s window and resolve again → fade cleared.
+        resolve_pending_animation_stamps(&mut reg, 1.0 + 0.2);
+        let after = reg
+            .get_component::<MeshComponent>(id)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            after.previous_state, None,
+            "completed fade is cleared once the window elapses"
+        );
+        assert_eq!(after.previous_entered_at, None);
+        assert_eq!(after.fade_source, FadeSourceKind::Clip);
+
+        // A subsequent switch must see no in-flight fade: it records `Clip`, not
+        // a spurious `Snapshot` capture.
+        switch_animation_state(&mut reg, id, "idle");
+        let next = reg
+            .get_component::<MeshComponent>(id)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            next.fade_source,
+            FadeSourceKind::Clip,
+            "no spurious snapshot capture after a completed fade",
+        );
+    }
+
+    #[test]
+    fn resolve_pass_retains_fade_within_crossfade_window() {
+        // During the crossfade window (weight < 1.0) the resolve pass must NOT
+        // clear the fade: previous_state stays Some so the collector keeps
+        // blending the outgoing pose.
+        let mut reg = EntityRegistry::new();
+        let id = spawn_animated(&mut reg);
+        resolve_pending_animation_stamps(&mut reg, 1.0);
+        switch_animation_state(&mut reg, id, "attack");
+        resolve_pending_animation_stamps(&mut reg, 1.0);
+
+        // Halfway through the 0.15s window: fade must still be present.
+        resolve_pending_animation_stamps(&mut reg, 1.0 + 0.075);
+        let anim = reg
+            .get_component::<MeshComponent>(id)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            anim.previous_state.as_deref(),
+            Some("idle"),
+            "fade retained mid-window (weight < 1.0)"
+        );
+        assert_eq!(anim.previous_entered_at, Some(1.0));
     }
 
     #[test]

@@ -1,6 +1,4 @@
-// Data-context descriptor types: `LevelManifest`/`ReactionDescriptor`, `EntityTypeDescriptor`,
-// `LightDescriptor`, `WeaponDescriptor`, and `PlayerMovementDescriptor`; JS and Luau
-// deserialization paths for all of them.
+// Data-context descriptor types and their JS/Luau deserialization paths.
 // See: context/lib/scripting.md §2 (Data context lifecycle)
 
 use mlua::{Table, Value as LuaValue};

@@ -1378,6 +1378,140 @@ mod tests {
     }
 
     #[test]
+    fn mesh_descriptor_refresh_declines_and_keeps_live_animation_state() {
+        // Regression: a hot-reload of a descriptor whose `components.mesh` would
+        // refresh must decline (KeepOld) rather than clobbering the live animation
+        // runtime state (current state, entry stamps, in-flight fade) with a
+        // freshly-spawned default.
+        use crate::scripting::components::mesh::{AnimationState, FadeSourceKind, MeshAnimation};
+        use crate::scripting::data_descriptors::MeshDescriptor;
+        use std::collections::HashMap;
+
+        // Build a minimal MeshDescriptor (the authored descriptor surface).
+        // `clip_index` stays `None` here — it is unresolved at descriptor parse
+        // time, exactly as the real JS/Luau parsers produce.
+        let descriptor_states: HashMap<String, AnimationState> = [
+            (
+                "idle".to_string(),
+                AnimationState {
+                    clip: "idle_clip".into(),
+                    looping: true,
+                    crossfade_ms: 150.0,
+                    interrupt: crate::scripting::components::mesh::InterruptPolicy::Smooth,
+                    clip_index: None,
+                },
+            ),
+            (
+                "attack".to_string(),
+                AnimationState {
+                    clip: "attack_clip".into(),
+                    looping: false,
+                    crossfade_ms: 150.0,
+                    interrupt: crate::scripting::components::mesh::InterruptPolicy::Smooth,
+                    clip_index: None,
+                },
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let mesh_descriptor = MeshDescriptor {
+            model: "decraniated".into(),
+            animations: descriptor_states,
+            default_state: Some("idle".into()),
+        };
+
+        let make_descriptor = |name: &str| EntityTypeDescriptor {
+            canonical_name: Some(name.to_string()),
+            default_weapon: None,
+            light: None,
+            emitter: None,
+            movement: None,
+            weapon: None,
+            mesh: Some(mesh_descriptor.clone()),
+        };
+
+        let old = vec![make_descriptor("robot")];
+        let new = vec![make_descriptor("robot")];
+
+        let mut registry = EntityRegistry::new();
+        let id = registry.spawn(Transform::default());
+
+        // Construct a live MeshComponent with non-default animation runtime state:
+        // current_state has advanced to "attack", a resolved entry stamp is set,
+        // and a previous-state fade is in flight. Live states carry resolved
+        // clip_index values (filled at level load), unlike the descriptor states.
+        let live_states: HashMap<String, AnimationState> = [
+            (
+                "idle".to_string(),
+                AnimationState {
+                    clip: "idle_clip".into(),
+                    looping: true,
+                    crossfade_ms: 150.0,
+                    interrupt: crate::scripting::components::mesh::InterruptPolicy::Smooth,
+                    clip_index: Some(0),
+                },
+            ),
+            (
+                "attack".to_string(),
+                AnimationState {
+                    clip: "attack_clip".into(),
+                    looping: false,
+                    crossfade_ms: 150.0,
+                    interrupt: crate::scripting::components::mesh::InterruptPolicy::Smooth,
+                    clip_index: Some(1),
+                },
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let live_anim = MeshAnimation {
+            states: live_states,
+            default_state: "idle".into(),
+            current_state: "attack".into(),
+            entered_at: Some(42.0),
+            previous_state: Some("idle".into()),
+            previous_entered_at: Some(10.0),
+            fade_source: FadeSourceKind::Clip,
+        };
+        let live = MeshComponent {
+            model: "decraniated".into(),
+            animation: Some(live_anim),
+        };
+        registry.set_component(id, live).unwrap();
+        registry
+            .set_component(id, provenance("robot", &[DescriptorComponentKind::Mesh]))
+            .unwrap();
+
+        let plan = plan_descriptor_refresh(&old, &new, &registry);
+
+        assert_eq!(plan.actions.len(), 1);
+        let DescriptorRefreshAction::KeepOld {
+            entity,
+            component,
+            reason,
+        } = &plan.actions[0]
+        else {
+            panic!("expected keep-old action, got {:?}", plan.actions[0]);
+        };
+        assert_eq!(*entity, id);
+        assert_eq!(*component, DescriptorComponentKind::Mesh);
+        assert!(
+            reason.contains("mesh"),
+            "unexpected keep-old reason: {reason}"
+        );
+        // The live component must be untouched: the registry still holds the
+        // original non-default animation state (KeepOld records no Replace).
+        let preserved = registry.get_component::<MeshComponent>(id).unwrap();
+        let preserved_anim = preserved.animation.as_ref().unwrap();
+        assert_eq!(preserved_anim.current_state, "attack");
+        assert_eq!(preserved_anim.entered_at, Some(42.0));
+        assert_eq!(preserved_anim.previous_state.as_deref(), Some("idle"));
+        assert_eq!(preserved_anim.previous_entered_at, Some(10.0));
+        assert_eq!(plan.diagnostics.len(), 1);
+    }
+
+    #[test]
     fn apply_refresh_plan_replaces_and_removes_components() {
         let mut registry = EntityRegistry::new();
         let id = registry.spawn(Transform::default());

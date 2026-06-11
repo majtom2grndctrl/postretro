@@ -81,9 +81,11 @@ fn should_resample(distance: f32, frame_index: u64, seed: u32, force: bool) -> b
 ///
 /// [`instances`]: MeshRenderCollector::instances
 pub(crate) struct MeshRenderCollector {
-    /// Per-frame instance list: surviving (model handle, interpolated transform,
-    /// phase seed) tuples. Cleared + refilled each `collect` so capacity carries
-    /// across frames.
+    /// Per-frame instance list: surviving `MeshInstanceInput` values — each
+    /// carrying a model handle, interpolated world transform, phase seed,
+    /// resolved sample params (`MeshSampleParams`), an optional capture
+    /// instruction, and a resample flag. Cleared + refilled each `collect` so
+    /// capacity carries across frames.
     instances: Vec<MeshInstanceInput>,
     /// Monotonic frame index, bumped once per [`collect`]. Drives the per-bucket
     /// resample stride phase (`(frame_index + seed) % stride`). Owned here so the
@@ -304,7 +306,7 @@ fn resolve_sample(
         // Per-instance phase from the CURRENT state's clip duration so a looping
         // wave de-syncs; one-shot states ignore it inside `animate_entity`.
         let phase = current_state_phase(anim, table, seed);
-        if let Some(result) = mesh_anim::animate_entity(anim, table, anim_time, phase) {
+        if let Some(result) = mesh_anim::animate_entity(anim, anim_time, phase) {
             let mut capture = result.capture;
             if let Some(c) = capture.as_mut() {
                 c.seed = seed; // key the snapshot store on the entity id

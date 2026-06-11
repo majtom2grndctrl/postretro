@@ -1,12 +1,6 @@
-// Animation sampling: clip + time + skeleton → world bone palette (CPU math).
+// CPU pose-sampling library: single-clip and two-source blended sampling, loop
+// policies (wrap/clamp), snapshot capture, and animation clock helpers.
 // See: context/lib/rendering_pipeline.md §9
-//
-// CPU-only (no wgpu): glam math here, palette UPLOAD lives in the render pass.
-// Single clip, LINEAR interpolation, no blend, no state machine — the slice's
-// scope. Reuse-friendly: `sample_clip` writes into a caller-owned `Vec` and
-// keeps a thread-local scratch for the world-pose sweep, so steady-state frames
-// allocate nothing; per-frame `sample_clip` cost is tracked by the renderer's
-// rolling pose-sample stats (see `render/mod.rs`).
 
 use std::cell::RefCell;
 
@@ -41,8 +35,7 @@ pub enum Loop {
     /// Wrap time into `[0, duration)` (`rem_euclid`) — the clip repeats.
     Wrap,
     /// Clamp time into `[0, duration]` — the clip holds its final keyframe after
-    /// it ends (one-shot clips: attack, death). Routed by Task 5's one-shot
-    /// states via `sample_clip_looped`.
+    /// it ends (one-shot clips: attack, death).
     Clamp,
 }
 
@@ -194,11 +187,10 @@ fn compose_palette(
 /// Sample `clip` at `time` (seconds) against `skeleton`, writing one
 /// [`BonePaletteEntry`] per joint (in skeleton/topo order) into `out`.
 ///
-/// The single-clip palette path, with `time` always **wrapped** into
-/// `[0, duration)` so the clip loops — the behavior callers that don't carry a
-/// loop policy expect. Callers that do carry one use [`sample_clip_looped`]; this
-/// is the `Loop::Wrap` shorthand over it (and what the render pass and tests
-/// call today).
+/// `Loop::Wrap` shorthand over [`sample_clip_looped`]: time is always wrapped
+/// into `[0, duration)` so the clip loops. Production render paths carry an
+/// explicit per-state loop policy and call [`sample_clip_looped`] directly;
+/// this shorthand is retained for callers that always want the wrapping default.
 ///
 /// Each output entry is the joint's **skinning matrix**: the composed world
 /// joint transform multiplied by the joint's inverse-bind matrix, ready to
@@ -214,11 +206,6 @@ fn compose_palette(
 ///
 /// Reuse: pass the same `out` every frame. A thread-local scratch holds the
 /// world-pose sweep, so a steady-state call performs no heap allocation.
-///
-/// The render path now samples through [`sample_clip_looped`] (it carries an
-/// explicit loop policy per state); this `Loop::Wrap` shorthand remains for the
-/// sampler's own tests and any caller that wants today's wrap default — hence
-/// `allow(dead_code)` off the test build.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn sample_clip(
     clip: &AnimationClip,
@@ -811,7 +798,7 @@ mod tests {
         assert_eq!(out[0], first, "reuse is deterministic");
     }
 
-    // --- Blend + loop sampling (Task 1) ---
+    // --- Blended and loop-policy sampling ---
 
     /// Decompose a palette entry's skinning matrix back to (translation,
     /// rotation, scale). The blend tests use identity inverse-binds and a single

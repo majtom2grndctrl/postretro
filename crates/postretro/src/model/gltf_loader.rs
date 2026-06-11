@@ -44,7 +44,8 @@ pub struct LoadedModel {
     /// (topological) so the sampler composes world matrices in one forward
     /// sweep. Empty for a static model loaded through this path.
     pub skeleton: Skeleton,
-    /// Animation clips parsed from the glTF. The hardcoded slice ships one clip.
+    /// Animation clips parsed from the glTF document, in authored order. All clips
+    /// load; addressed by name or index.
     pub clips: Vec<AnimationClip>,
     /// One submesh per mesh primitive, in primitive order: the material cache
     /// key and the index range it occupies in the merged buffer. The renderer

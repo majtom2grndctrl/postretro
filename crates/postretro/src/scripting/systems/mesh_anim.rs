@@ -191,15 +191,14 @@ pub(crate) struct AnimResult {
 }
 
 /// Compute one animated entity's sample params + capture instruction from its
-/// `MeshAnimation` state, the model's clip table, the frame's animation clock,
-/// and the per-instance phase. Returns `None` when the current state is
-/// unresolved (no usable clip) — the caller falls back to the bind pose.
+/// `MeshAnimation` state, the frame's animation clock, and the per-instance
+/// phase. Returns `None` when the current state is unresolved (no usable clip)
+/// — the caller falls back to the bind pose.
 ///
 /// The phase is the per-instance looping-wave de-sync; one-shot states ignore it
 /// (they play from entry, synced to the triggering event).
 pub(crate) fn animate_entity(
     anim: &MeshAnimation,
-    table: &ModelClipTable,
     anim_time: f64,
     phase: f32,
 ) -> Option<AnimResult> {
@@ -213,13 +212,13 @@ pub(crate) fn animate_entity(
     // Is a crossfade active? Only when a previous state is recorded AND its
     // stamp resolved AND the current entry stamp resolved (a still-pending
     // stamp contributes no fade — Phase 1 collapse semantics).
-    let fade = active_fade(anim, table, anim_time, phase, entered_at, current);
+    let fade = active_fade(anim, anim_time, phase, entered_at, current);
 
     // A `"smooth"` interrupt emits a one-time capture instruction when the
     // entered state's interrupt policy is Smooth AND a fade is active AND the
     // entered fade source is a snapshot (the resolve pass recorded
     // `FadeSourceKind::Snapshot`). The capture freezes the in-flight blend.
-    let capture = build_capture(anim, table, anim_time, phase, entered_at, current, &fade);
+    let capture = build_capture(anim, anim_time, phase, current, &fade);
 
     Some(AnimResult {
         sample: MeshSampleParams { primary, fade },
@@ -231,7 +230,6 @@ pub(crate) fn animate_entity(
 /// previous state, a pending previous stamp, or the fade window has elapsed).
 fn active_fade(
     anim: &MeshAnimation,
-    table: &ModelClipTable,
     anim_time: f64,
     phase: f32,
     entered_at: f64,
@@ -252,7 +250,7 @@ fn active_fade(
         return None;
     }
 
-    let from = fade_from_source(anim, table, anim_time, phase)?;
+    let from = fade_from_source(anim, anim_time, phase)?;
     Some(MeshFade { from, weight })
 }
 
@@ -260,19 +258,13 @@ fn active_fade(
 /// fallback clip leg) for a recorded `"smooth"` snapshot fade, else the outgoing
 /// state's clip leg on its own advanced timeline (`"snap"` and normal fades).
 /// Returns `None` if the outgoing state is unresolved or its stamp is pending.
-fn fade_from_source(
-    anim: &MeshAnimation,
-    table: &ModelClipTable,
-    anim_time: f64,
-    phase: f32,
-) -> Option<FadeSource> {
+fn fade_from_source(anim: &MeshAnimation, anim_time: f64, phase: f32) -> Option<FadeSource> {
     let prev_name = anim.previous_state.as_ref()?;
     let prev = anim.states.get(prev_name)?;
     let prev_entered = anim.previous_entered_at?;
     // The outgoing clip leg: advances on its OWN timeline from its own stamp.
     // A non-looping outgoing clip clamps (Loop::Clamp via loop_policy).
     let outgoing = clip_sample(prev, prev_entered, anim_time, phase)?;
-    let _ = table; // table reserved for future duration-aware fades
 
     match anim.fade_source {
         FadeSourceKind::Snapshot => {
@@ -307,10 +299,8 @@ fn fade_from_source(
 /// way the capture equals the pose the entity was showing.
 fn build_capture(
     anim: &MeshAnimation,
-    _table: &ModelClipTable,
     anim_time: f64,
     phase: f32,
-    _entered_at: f64,
     current: &AnimationState,
     fade: &Option<MeshFade>,
 ) -> Option<CaptureInstruction> {
@@ -476,7 +466,7 @@ mod tests {
             "idle",
             Some(0.0),
         );
-        let result = animate_entity(&anim, &table, 0.5, 0.0).expect("animates");
+        let result = animate_entity(&anim, 0.5, 0.0).expect("animates");
         assert_eq!(result.sample.primary.clip_index, 0);
         assert!(
             (result.sample.primary.time - 0.5).abs() < EPS,
@@ -502,12 +492,12 @@ mod tests {
             Some(0.0),
         );
         let phase = 0.3;
-        let lp = animate_entity(&looping, &table, 1.0, phase).unwrap();
+        let lp = animate_entity(&looping, 1.0, phase).unwrap();
         assert!(
             (lp.sample.primary.time - (1.0 + phase)).abs() < EPS,
             "looping adds phase"
         );
-        let os = animate_entity(&one_shot, &table, 1.0, phase).unwrap();
+        let os = animate_entity(&one_shot, 1.0, phase).unwrap();
         assert!(
             (os.sample.primary.time - 1.0).abs() < EPS,
             "one-shot ignores phase"
@@ -535,7 +525,7 @@ mod tests {
         anim.previous_entered_at = Some(0.0);
 
         // At the switch instant (anim_time == entered): weight 0 → all `from`.
-        let at_switch = animate_entity(&anim, &table, 1.0, 0.0).unwrap();
+        let at_switch = animate_entity(&anim, 1.0, 0.0).unwrap();
         let fade = at_switch.sample.fade.expect("fade active at switch");
         assert!(
             (fade.weight - 0.0).abs() < EPS,
@@ -543,7 +533,7 @@ mod tests {
         );
 
         // Midway through the 0.2s window: weight ~0.5.
-        let midway = animate_entity(&anim, &table, 1.1, 0.0).unwrap();
+        let midway = animate_entity(&anim, 1.1, 0.0).unwrap();
         let fade = midway.sample.fade.expect("fade active midway");
         assert!(
             (fade.weight - 0.5).abs() < EPS,
@@ -552,7 +542,7 @@ mod tests {
         );
 
         // After the window closes: no fade leg.
-        let after = animate_entity(&anim, &table, 1.5, 0.0).unwrap();
+        let after = animate_entity(&anim, 1.5, 0.0).unwrap();
         assert!(after.sample.fade.is_none(), "fade clears after window");
     }
 
@@ -572,7 +562,7 @@ mod tests {
         anim.previous_state = Some("idle".into());
         anim.previous_entered_at = Some(0.0);
 
-        let result = animate_entity(&anim, &table, 2.5, 0.0).unwrap();
+        let result = animate_entity(&anim, 2.5, 0.0).unwrap();
         let fade = result.sample.fade.expect("fade active");
         let FadeSource::Clip(out) = fade.from else {
             panic!("clip fade source expected");
@@ -602,7 +592,7 @@ mod tests {
         );
         anim.previous_state = Some("idle".into());
         anim.previous_entered_at = Some(0.0);
-        let result = animate_entity(&anim, &table, 1.0, 0.0).unwrap();
+        let result = animate_entity(&anim, 1.0, 0.0).unwrap();
         assert!(result.sample.fade.is_none(), "pending stamp → no fade");
     }
 
@@ -621,7 +611,7 @@ mod tests {
         anim.previous_entered_at = Some(0.0);
         anim.fade_source = FadeSourceKind::Snapshot;
 
-        let result = animate_entity(&anim, &table, 1.05, 0.0).unwrap();
+        let result = animate_entity(&anim, 1.05, 0.0).unwrap();
         let fade = result.sample.fade.expect("snapshot fade active");
         let FadeSource::Snapshot { tag, fallback } = fade.from else {
             panic!("snapshot fade source expected");
@@ -692,7 +682,7 @@ mod tests {
             Some(0.0),
         );
         assert!(
-            animate_entity(&anim, &table, 1.0, 0.0).is_none(),
+            animate_entity(&anim, 1.0, 0.0).is_none(),
             "an unresolved current state yields no sample params (bind pose)",
         );
     }

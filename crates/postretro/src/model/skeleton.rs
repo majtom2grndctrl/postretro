@@ -92,16 +92,15 @@ pub enum Interp {
 pub struct Track<T> {
     pub times: Vec<f32>,
     pub values: Vec<T>,
-    /// How to interpolate between keyframes. Defaults to [`Interp::Linear`] so a
-    /// `Track::default()` (and the field-elided synthetic-test construction)
-    /// behaves as it did before the mode was tracked.
+    /// How to interpolate between keyframes. [`Interp::Linear`] is the meaningful
+    /// default: field-elided construction and `Track::default()` both interpolate
+    /// rather than step, which is the common case for authored animation clips.
     pub mode: Interp,
 }
 
 impl<T> Track<T> {
-    /// True when no samples were authored for this channel.
-    // Kept for the sampler-broadening task that handles unanimated-channel fallback.
-    #[allow(dead_code)]
+    /// True when the track carries no keyframes.
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.times.is_empty()
     }

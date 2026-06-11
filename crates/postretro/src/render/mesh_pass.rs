@@ -416,7 +416,7 @@ struct StoredSnapshot {
 /// Lifecycle: a capture instruction installs (or refreshes) an entry; a planned
 /// frame without an active snapshot fade for that entity (fade over, or tag
 /// mismatch on replacement) drops it. Bounded by planned-instance count and
-/// emptied wholesale at level load by [`MeshPass::clear_snapshot_store`].
+/// emptied wholesale at level load by [`MeshPass::clear_for_level_load`].
 #[derive(Debug, Default)]
 struct SnapshotStore {
     entries: HashMap<u32, StoredSnapshot>,
@@ -811,7 +811,7 @@ pub struct MeshPass {
     /// Per-entity `"smooth"`-interrupt snapshot store, keyed by entity seed. A
     /// GPU-free CPU map (the `model_bounds` precedent): a capture instruction
     /// installs an entry, a planned frame without an active snapshot fade drops
-    /// it, and [`MeshPass::clear_snapshot_store`] empties it at level load. The
+    /// it, and [`MeshPass::clear_for_level_load`] empties it at level load. The
     /// frozen pose is the blend source a `"smooth"` fade resumes from with no
     /// discontinuity.
     snapshot_store: SnapshotStore,
@@ -2682,8 +2682,9 @@ mod tests {
     /// End-to-end cache seam (M10 Task 3): clips parsed from a real multi-clip
     /// glTF, inserted under a `ModelHandle`, are queryable by authored name and
     /// enumerable as metadata in glTF order through the GPU-free free functions —
-    /// no `wgpu::Device`. This drives the same path `MeshPass::cache_model` →
-    /// `model_clip_by_name` / `model_clip_metadata` use at runtime, but headless.
+    /// no `wgpu::Device`. Drives the same `clip_metadata` / `clip_by_name` free
+    /// functions that `model_clip_metadata` / `model_clip_by_name` delegate to at
+    /// runtime, but headless.
     #[test]
     fn loaded_multi_clip_model_is_queryable_by_name_and_metadata_through_cache() {
         use std::path::PathBuf;

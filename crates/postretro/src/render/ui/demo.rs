@@ -16,8 +16,8 @@
 //      context/plans/in-progress/M13--state-system
 
 use super::descriptor::{
-    Align, AnchoredTree, ColorValue, ContainerWidget, GridWidget, PanelBind, PanelWidget,
-    SpacingValue, TextBind, TextWidget, Widget,
+    Align, AnchoredTree, ColorValue, ContainerWidget, Easing, GridWidget, PanelBind, PanelTween,
+    PanelWidget, SpacingValue, TextBind, TextTween, TextWidget, Widget,
 };
 use super::layout::Anchor;
 
@@ -57,6 +57,18 @@ const SWATCH_GAP: f32 = 8.0;
 /// Outer HUD padding from the anchored corner (logical-reference px).
 const HUD_PADDING: f32 = 16.0;
 
+/// First-resolve count-up duration for the health readout (ms). The proxy's
+/// `player.health` target is the constant `100`, so this is a pure first-resolve
+/// `from: 0` flourish (a 0→100 count-up on appear), NOT an authoritative ramp:
+/// the value still snaps to whatever the slot reports — it just eases there from
+/// `0` the first time it is seen.
+const HEALTH_TWEEN_MS: f32 = 1200.0;
+
+/// Ease duration for the flash swatch (ms). The proxy toggles `intro.flashColor`
+/// between two endpoints every 500 ms (a hard step); a short tween with no `from`
+/// smooths each toggle into a 150 ms cross-fade instead of a snap.
+const FLASH_TWEEN_MS: f32 = 150.0;
+
 /// Build the demo gameplay HUD descriptor. Returns a bottom-left-anchored
 /// `AnchoredTree` carrying:
 /// - a `text` bound to `player.health` (format `"HP {}"`),
@@ -76,7 +88,14 @@ pub(crate) fn build_demo_descriptor() -> AnchoredTree {
         bind: Some(TextBind {
             slot: "player.health".to_string(),
             format: Some("HP {}".to_string()),
-            tween: None,
+            // First-resolve flourish: count up 0→100 over 1.2s with easeOut. The
+            // proxy holds `player.health` at a constant 100, so this is purely the
+            // `from: 0` first-resolve ramp, not an authoritative value change.
+            tween: Some(TextTween {
+                duration_ms: HEALTH_TWEEN_MS,
+                easing: Easing::EaseOut,
+                from: Some(0.0),
+            }),
         }),
     });
 
@@ -103,8 +122,14 @@ pub(crate) fn build_demo_descriptor() -> AnchoredTree {
         fill: ColorValue::Literal(FLASH_FALLBACK_FILL),
         border: None,
         bind: Some(PanelBind {
+            // Ease each 500 ms proxy toggle into a 150 ms cross-fade (no `from`,
+            // so the first sight snaps to the live color, then eases on changes).
             slot: "intro.flashColor".to_string(),
-            tween: None,
+            tween: Some(PanelTween {
+                duration_ms: FLASH_TWEEN_MS,
+                easing: Easing::EaseInOut,
+                from: None,
+            }),
         }),
     });
     let swatch_label = Widget::Text(TextWidget {
@@ -170,6 +195,17 @@ mod tests {
             health.bind.as_ref().and_then(|b| b.format.as_deref()),
             Some("HP {}"),
         );
+        // The health bind tweens the first-resolve count-up: from 0 over 1.2s,
+        // easeOut.
+        assert_eq!(
+            health.bind.as_ref().and_then(|b| b.tween.clone()),
+            Some(TextTween {
+                duration_ms: HEALTH_TWEEN_MS,
+                easing: Easing::EaseOut,
+                from: Some(0.0),
+            }),
+            "health bind carries the 0→100 first-resolve count-up tween",
+        );
 
         let Widget::Text(ammo) = &col.children[1] else {
             panic!("second row is the ammo text");
@@ -197,6 +233,16 @@ mod tests {
             panel.fill,
             ColorValue::Literal(FLASH_FALLBACK_FILL),
             "panel keeps a literal fallback fill",
+        );
+        // The swatch panel eases each proxy toggle (150ms easeInOut, no `from`).
+        assert_eq!(
+            panel.bind.as_ref().and_then(|b| b.tween.clone()),
+            Some(PanelTween {
+                duration_ms: FLASH_TWEEN_MS,
+                easing: Easing::EaseInOut,
+                from: None,
+            }),
+            "swatch panel carries the toggle-smoothing tween (no `from`)",
         );
     }
 }

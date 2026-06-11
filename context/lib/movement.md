@@ -17,6 +17,8 @@ Movement is hand-authored kinematic motion in the Quake/Doom lineage, not rigid-
 
 A real constraint solver may eventually earn a *scoped, opt-in* place (e.g. a deferred grapple's swinging rope), never as the movement foundation.
 
+**View feel is render-side, not tick-side.** First-person view feel — head bob, strafe tilt, ambient sway — reads the followed pawn's velocity and grounded flag, writes nothing back. It runs at render rate. Its integrator state lives engine-side, never on the movement component or the per-tick interpolation state — tick state stays position-only. Entry: `view_feel.rs`.
+
 ## 2. Author surface: declarative
 
 Authors tune and compose movement through descriptor data — never per-tick imperative script.

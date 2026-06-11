@@ -349,26 +349,6 @@ fn decode_lightmap_direction(enc: vec4<f32>) -> vec3<f32> {
     return normalize(vec3<f32>(x, y, z));
 }
 
-fn falloff(distance: f32, range: f32, model: u32) -> f32 {
-    let r = max(range, 0.001);
-    switch model {
-        case 0u: {
-            return max(1.0 - distance / r, 0.0);
-        }
-        case 1u: {
-            // Linear window drives inverse-distance smoothly to 0 at range.
-            return (1.0 / max(distance, 0.001)) * max(1.0 - distance / r, 0.0);
-        }
-        case 2u: {
-            let d2 = max(distance * distance, 0.001);
-            return (1.0 / d2) * max(1.0 - distance / r, 0.0);
-        }
-        default: {
-            return 0.0;
-        }
-    }
-}
-
 // No `(1-ks)` attenuation, no Fresnel — retro aesthetic wants punchy additive
 // highlights, not energy conservation.
 fn blinn_phong(L: vec3<f32>, V: vec3<f32>, N: vec3<f32>,
@@ -378,46 +358,11 @@ fn blinn_phong(L: vec3<f32>, V: vec3<f32>, N: vec3<f32>,
     return color * pow(NdH, spec_exp) * spec_int;
 }
 
-fn cone_attenuation(L: vec3<f32>, aim: vec3<f32>, inner_angle: f32, outer_angle: f32) -> f32 {
-    let cos_angle = dot(-L, aim);
-    let cos_inner = cos(inner_angle);
-    let cos_outer = cos(outer_angle);
-    return smoothstep(cos_outer, cos_inner, cos_angle);
-}
-
 // Cone falloff from pre-baked cos cutoffs (static `SpecLight` path). Non-spot
 // lights pack cos_inner = 1, cos_outer = -1 so this returns 1.0 everywhere.
 fn cone_attenuation_cos(L: vec3<f32>, aim: vec3<f32>, cos_inner: f32, cos_outer: f32) -> f32 {
     let cos_angle = dot(-L, aim);
     return smoothstep(cos_outer, cos_inner, cos_angle);
-}
-
-// Sample the direction channel of an AnimationDescriptor at `cycle_t` and fall
-// back to `static_aim` when the descriptor carries no direction samples.
-// Samples are normalized at write time; Catmull-Rom between unit vectors drifts
-// only slightly off the sphere at typical authored sample rates.
-fn sample_animated_direction(desc: AnimationDescriptor, cycle_t: f32, static_aim: vec3<f32>) -> vec3<f32> {
-    if desc.direction_count == 0u {
-        return static_aim;
-    }
-    let zero_base = vec3<f32>(0.0, 0.0, 0.0);
-    return sample_color_catmull_rom(desc.direction_offset, desc.direction_count, cycle_t, zero_base);
-}
-
-fn scripted_light_intensity_scalar(premultiplied_color: vec3<f32>, base_color: vec3<f32>) -> f32 {
-    var color_channel = base_color.z;
-    var premultiplied_channel = premultiplied_color.z;
-    if base_color.x >= base_color.y && base_color.x >= base_color.z {
-        color_channel = base_color.x;
-        premultiplied_channel = premultiplied_color.x;
-    } else if base_color.y >= base_color.z {
-        color_channel = base_color.y;
-        premultiplied_channel = premultiplied_color.y;
-    }
-    if color_channel <= 1.0e-6 {
-        return 0.0;
-    }
-    return premultiplied_channel / color_channel;
 }
 
 // Tunable PCF radius (in shadow-map texels) for runtime shadow-map sampling.
@@ -1091,7 +1036,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                     ),
                     vec3<f32>(0.0),
                 );
-                let intensity = scripted_light_intensity_scalar(
+                let intensity = light_eval_scripted_intensity_scalar(
                     light.color_and_falloff_model.xyz,
                     scripted_desc.base_color,
                 );
@@ -1116,7 +1061,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 effective_color = light.color_and_falloff_model.xyz * brightness;
             }
             if light_type == 1u && scripted_desc.direction_count > 0u {
-                effective_aim = sample_animated_direction(scripted_desc, cycle_t, effective_aim);
+                effective_aim = light_eval_animated_direction(scripted_desc, cycle_t, effective_aim);
             }
         }
 
@@ -1128,7 +1073,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 let to_light = light.position_and_type.xyz - in.world_position;
                 let dist = length(to_light);
                 L = to_light / max(dist, 0.0001);
-                attenuation = falloff(dist, light.direction_and_range.w, falloff_model);
+                attenuation = light_eval_falloff(dist, light.direction_and_range.w, falloff_model);
 
                 // Dynamic point-light cube shadow. The cube slot rides in
                 // `cone_angles_and_pad.w` (sentinel 0xFFFFFFFF = no slot, i.e.
@@ -1152,8 +1097,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 let to_light = light.position_and_type.xyz - in.world_position;
                 let dist = length(to_light);
                 L = to_light / max(dist, 0.0001);
-                let dist_falloff = falloff(dist, light.direction_and_range.w, falloff_model);
-                let cone = cone_attenuation(
+                let dist_falloff = light_eval_falloff(dist, light.direction_and_range.w, falloff_model);
+                let cone = light_eval_cone_attenuation(
                     L,
                     effective_aim,
                     light.cone_angles_and_pad.x,

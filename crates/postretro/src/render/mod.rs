@@ -157,6 +157,16 @@ fn sphere_intersects_any_fog_aabb(center: Vec3, radius: f32, aabbs: &[(Vec3, Vec
 // It reads `spec_lights` / `chunk_grid` / `chunk_offsets` / `chunk_indices` by
 // name — all already declared in `forward.wgsl` for the static-light loop — and
 // declares no buffers of its own. Never reimplement the selection here.
+//
+// `light_eval.wgsl` owns the dynamic-tier per-light evaluation helpers
+// (`light_eval_falloff`, `light_eval_cone_attenuation`,
+// `light_eval_animated_direction`, `light_eval_scripted_intensity_scalar`) the
+// runtime light loop calls — extracted so the skinned-mesh pass can mirror the
+// same loop against its own group-2 bindings. It declares no buffers. Append
+// ORDER dependency: `light_eval_animated_direction` calls
+// `sample_color_catmull_rom` from `curve_eval.wgsl`, so the consumer must also
+// append curve_eval (forward does, above). WGSL resolves module-scope names
+// regardless of textual order, so the relative order of these two is free.
 const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/forward.wgsl"),
     "\n",
@@ -165,6 +175,8 @@ const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/sh_sample.wgsl"),
     "\n",
     include_str!("../shaders/sdf_light_select.wgsl"),
+    "\n",
+    include_str!("../shaders/light_eval.wgsl"),
 );
 
 /// Derive the no-`CUBE_ARRAY_TEXTURES` variant of a group-5 shader (forward or
@@ -6142,7 +6154,7 @@ mod tests {
             "color branch should bind the clamped unit-RGB sample before applying intensity",
         );
         assert!(
-            color_branch.contains("scripted_light_intensity_scalar("),
+            color_branch.contains("light_eval_scripted_intensity_scalar("),
             "color branch should recover the static intensity scalar",
         );
         assert!(

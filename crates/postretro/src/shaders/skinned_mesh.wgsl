@@ -122,6 +122,32 @@ struct MeshLightParams {
 };
 @group(2) @binding(4) var<uniform> mesh_light_params: MeshLightParams;
 
+// --- Group 2 (cont.): shadow receipt (M10 mesh shadow receipt Task 2) ---------
+// b5–b8 alias the SAME pool-owned GPU resources the forward pass binds in its
+// group 5, via a MESH-SPECIFIC layout (the BGL in render/mesh_pass.rs is
+// authoritative; it omits forward's SDF-factor + scene-depth entries the mesh
+// must not sample). The appended `shadow_sample.wgsl` references these four
+// names (`spot_shadow_depth`, `spot_shadow_compare`, `light_space_matrices`,
+// `point_shadow_cube`) by lexical resolution — the SAME binding-agnostic
+// composition forward.wgsl uses. DECLARED here but not yet SAMPLED: Task 3's
+// per-light visibility term calls `sample_spot_shadow` / `sample_point_shadow`.
+// Read-but-unused bindings are legal WGSL, so the shader still validates.
+//
+// b7 is a UNIFORM (`array<mat4x4<f32>, 96>` = SHADOW_POOL_SIZE) — NOT storage —
+// to keep the fragment storage-buffer count at 4 (rendering_pipeline.md §10);
+// it stays well under the 16 KiB uniform cap. Matches forward's group-5 b2.
+@group(2) @binding(5) var spot_shadow_depth: texture_depth_2d_array;
+@group(2) @binding(6) var spot_shadow_compare: sampler_comparison;
+struct LightSpaceMatrices {
+    m: array<mat4x4<f32>, 96>,
+};
+@group(2) @binding(7) var<uniform> light_space_matrices: LightSpaceMatrices;
+// CUBE_SHADOW_BINDING — on a no-`CUBE_ARRAY_TEXTURES` adapter,
+// `render::strip_point_shadow_cube` drops this `// CUBE_SHADOW_BINDING`-tagged
+// declaration (and neutralizes `sample_point_shadow`), so the shader matches a
+// group-2 BGL that omits b8. Mirrors forward.wgsl's group-5 b5 cube binding.
+@group(2) @binding(8) var point_shadow_cube: texture_depth_cube_array;
+
 // --- Group 3: skinned instance data ------------------------------------------
 // `bone_palette` is the SHARED palette storage buffer; every instance's run of
 // `BonePaletteEntry` (one mat4 per joint) is appended into it. Each instance's

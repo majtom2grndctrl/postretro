@@ -2623,6 +2623,10 @@ impl Renderer {
             // Mesh group 4 uses the SUPERSET layout (shared SH entries + the
             // mesh-only dynamic-direct params uniform at binding 16).
             &sh_volume_resources.mesh_bind_group_layout,
+            // Cube-array support pins the `Some`-iff-layout invariant: the mesh
+            // group-2 BGL carries the b8 cube entry iff this is true, and the
+            // no-cube shader strip is applied to the mesh source when it is false.
+            cube_array_supported,
         );
         mesh_pass.upload_identity_palette(&queue);
         // Build the mesh group-2 dynamic-direct light bind group over the SAME
@@ -2631,12 +2635,23 @@ impl Renderer {
         // (b1), and forward's scripted-descriptor (b2) / anim-sample (b3) buffers.
         // Rebuilt on level load wherever those buffers reallocate (see
         // `set_geometry`).
+        // b5–b8 alias the SAME pool-owned shadow resources forward binds at its
+        // group 5: the spot pool's D2-array depth view (b5), its comparison
+        // sampler (b6), its light-space-matrices uniform buffer (b7), and the cube
+        // pool's `CubeArray` sampling view (b8 — `Some` iff `cube_array_supported`,
+        // the `Some`-iff-layout invariant). These pool resources are stable for the
+        // renderer's lifetime (the pools are never recreated), so they only ever
+        // rebind here alongside the b0–b4 reallocation rebind on level load.
         mesh_pass.rebuild_light_bind_group(
             &device,
             &lights_buffer,
             &influence_buffer,
             &sh_volume_resources.scripted_light_descriptors,
             &sh_volume_resources.animation.anim_samples,
+            &spot_shadow_pool.array_view,
+            &spot_shadow_pool.compare_sampler,
+            &spot_shadow_pool.matrices_buffer,
+            cube_shadow_pool.as_ref().map(|p| &p.sampling_view),
         );
 
         // UI quad / 9-slice + text pass — sibling to fog. Owns all UI GPU state
@@ -2982,12 +2997,21 @@ impl Renderer {
         // buffers. The forward `lighting_bind_group` above is rebuilt for the same
         // reason; this mirrors it for the mesh pass so a level swap does not leave
         // the mesh group-2 bind group dangling at the prior level's buffers.
+        // b5–b8 re-reference the SAME pool-owned shadow resources (stable for the
+        // renderer's lifetime — the pools are never recreated), supplied here so the
+        // shadow bindings rebind alongside the reallocated b0–b4. The cube view is
+        // `Some` iff `cube_shadow_pool` is present (the `Some`-iff-layout invariant).
+        let cube_sampling_view = self.cube_shadow_pool.as_ref().map(|p| &p.sampling_view);
         self.mesh_pass.rebuild_light_bind_group(
             &self.device,
             &self.lights_buffer,
             &influence_buffer,
             &self.sh_volume_resources.scripted_light_descriptors,
             &self.sh_volume_resources.animation.anim_samples,
+            &self.spot_shadow_pool.array_view,
+            &self.spot_shadow_pool.compare_sampler,
+            &self.spot_shadow_pool.matrices_buffer,
+            cube_sampling_view,
         );
 
         self.sdf_atlas_resources =

@@ -405,6 +405,28 @@ fn sample_sh_direct(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_normal:
 // either ⇒ unshadowed (×1.0). Slot logic is identical to forward.wgsl's dynamic
 // loop; the shadow factor folds into the per-light attenuation.
 //
+// BIAS / NORMAL-OFFSET TUNING SEAM (M10 mesh shadow receipt) — read before
+// touching self-shadow acne on skinned entities:
+//   * This loop — where `sample_spot_shadow` / `sample_point_shadow` are called
+//     below — is the SOLE SANCTIONED place to add or tune a mesh-receiver
+//     bias / normal-offset. Do NOT edit the bias inside the shared
+//     `shadow_sample.wgsl`: the forward and fog passes share those helpers, so a
+//     change there alters world shadows (peter-panning risk) and breaks forward's
+//     no-behavior-change AC. Keep mesh-only acne fixes here.
+//   * PREFERRED remedy if acne appears on curved skinned surfaces: a sample-site
+//     NORMAL-OFFSET — push `world_pos` along the interpolated normal `n` by a
+//     small world-space (normal-scaled) amount before passing it to the sampler,
+//     rather than raising the shared depth bias. The entity's own depth is already
+//     in the maps (occluders render via `record_skinned_depth`), so the receiver
+//     offset is the cleaner lever.
+//   * OPEN QUESTION (HUMAN CHECKPOINT — not resolved in-tree): the exact
+//     normal-offset / bias VALUES. They require a human visual check of self-
+//     shadow acne on dev skinned models at gameplay distance under BOTH spot- and
+//     point-shadowed lights. No value is invented here — the call sites below
+//     sample at the un-offset `world_pos` today (byte-identical to the
+//     pre-tuning behavior); a human introduces the offset constant here after
+//     judging acne, without touching the shared snippet.
+//
 // `use_dynamic` is the forward lighting-isolation gate (computed in `fs_main`
 // from `mesh_light_params.lighting_isolation`, mirroring forward.wgsl). When the
 // active mode excludes the dynamic term, the loop bound is forced to 0 — the SAME

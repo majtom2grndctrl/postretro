@@ -321,6 +321,24 @@ fn fragment_storage_buffers(entries: &[wgpu::BindGroupLayoutEntry]) -> u32 {
         .count() as u32
 }
 
+/// Count BGL entries that consume a `max_sampled_textures_per_shader_stage` slot
+/// for the FRAGMENT stage: `BindingType::Texture` entries whose visibility
+/// includes FRAGMENT. wgpu charges this limit against the BGL *entry* set of a
+/// pipeline layout per stage, not against how many textures a shader samples.
+/// Mirrors `render::mod::fragment_sampled_textures` for the mesh group-2 budget
+/// guard; the mesh group-2 shadow textures (spot depth array + the optional cube
+/// array) are the mesh fragment stage's group-2 sampled-texture draw.
+#[cfg(test)]
+fn fragment_sampled_textures(entries: &[wgpu::BindGroupLayoutEntry]) -> u32 {
+    entries
+        .iter()
+        .filter(|e| {
+            e.visibility.contains(wgpu::ShaderStages::FRAGMENT)
+                && matches!(e.ty, wgpu::BindingType::Texture { .. })
+        })
+        .count() as u32
+}
+
 /// One uploaded skinned model: GPU vertex + index buffers, its per-submesh
 /// material bind groups, and the CPU-side animation data (skeleton + first clip)
 /// the per-frame palette is sampled from. A single-material model has one
@@ -1850,6 +1868,59 @@ mod tests {
             fragment_storage_buffers(&no_cube),
             4,
             "shadow-receipt bindings must keep the fragment storage-buffer count at 4",
+        );
+    }
+
+    // Recording guard for the mesh pipeline's group-2 sampled-texture count across
+    // BOTH cube-support variants. wgpu charges
+    // `max_sampled_textures_per_shader_stage` against the BGL *entry* set per
+    // stage, and per-stage sampled-texture slots are a hard, low ceiling
+    // (rendering_pipeline.md §10; the forward pipeline pins its own count in
+    // `forward_pipeline_sampled_texture_request_matches_bgl_definitions`). Pin the
+    // mesh group-2 numbers so a future binding addition that pushes a sampled
+    // texture into group 2 is caught headlessly before a real GPU rejects it.
+    //
+    // No cube support: ONE sampled texture — b5 spot depth 2D-array. (b6 is a
+    // sampler, b7 a uniform; b8 cube array is omitted on the no-cube layout.)
+    // Cube support: TWO — b5 spot depth array + b8 point-shadow cube array.
+    // Modeled on the billboard storage-count guard
+    // (`billboard_pipeline_vertex_storage_request_matches_bgl_definitions`) and the
+    // forward sampled-texture guard: re-derive from the SAME GPU-free BGL builder.
+    #[test]
+    fn mesh_group2_sampled_texture_count_recorded_for_both_cube_variants() {
+        // No-cube: only b5 (spot depth array) is a fragment-sampled texture.
+        let no_cube = mesh_light_bind_group_layout_entries(false);
+        assert_eq!(
+            fragment_sampled_textures(&no_cube),
+            1,
+            "no-cube mesh group-2 must carry exactly ONE sampled texture (b5 spot depth array)",
+        );
+
+        // Cube: b5 (spot depth array) + b8 (point-shadow cube array) = two.
+        let cube = mesh_light_bind_group_layout_entries(true);
+        assert_eq!(
+            fragment_sampled_textures(&cube),
+            2,
+            "cube-supported mesh group-2 must carry exactly TWO sampled textures \
+             (b5 spot depth array + b8 cube array)",
+        );
+
+        // The cube variant adds exactly ONE sampled texture over the no-cube
+        // variant — the point-shadow cube array (b8) and nothing else.
+        assert_eq!(
+            fragment_sampled_textures(&cube) - fragment_sampled_textures(&no_cube),
+            1,
+            "enabling cube support must add exactly one sampled texture (the b8 cube array)",
+        );
+
+        // Both counts sit well under the Metal/WebGPU sampled-texture spec floor of
+        // 16. Group 2 is only one of the mesh pipeline's bind groups, but pinning
+        // its contribution here keeps the group-2 share honest; raising it toward
+        // the ceiling should be a deliberate budget decision (rendering_pipeline.md
+        // §10), not an accidental binding addition.
+        assert!(
+            fragment_sampled_textures(&cube) <= 16,
+            "mesh group-2 sampled-texture count must stay under the spec floor of 16",
         );
     }
 }

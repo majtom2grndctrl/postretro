@@ -563,12 +563,19 @@ mod tests {
 
     /// Regression: the WGSL `LightSpaceMatrices` array was hard-coded to 12
     /// while the Rust pool was 64, so any slot ≥ 12 indexed the light-space
-    /// matrix array out of bounds. Pin both shaders' declared array length to
-    /// `LIGHT_SPACE_MATRICES_SIZE` so neither can silently drift from the pool.
+    /// matrix array out of bounds. Pin every shader that declares the array to
+    /// `LIGHT_SPACE_MATRICES_SIZE` so none can silently drift from the pool.
+    ///
+    /// The skinned-mesh fragment shader (M10 mesh shadow receipt) declares the
+    /// SAME `array<mat4x4<f32>, SHADOW_POOL_SIZE>` at its group-2 b7, sampling the
+    /// pool's `matrices_buffer`, so it is scanned here alongside forward + fog — a
+    /// mesh-side drift would index the light-space matrices out of bounds exactly
+    /// as the forward bug did.
     #[test]
     fn light_space_matrices_array_len_matches_pool() {
         const FORWARD_SRC: &str = include_str!("../shaders/forward.wgsl");
         const FOG_SRC: &str = include_str!("../shaders/fog_volume.wgsl");
+        const MESH_SRC: &str = include_str!("../shaders/skinned_mesh.wgsl");
 
         // `LIGHT_SPACE_MATRICES_SIZE` is the byte size of an
         // `array<mat4x4<f32>, SHADOW_POOL_SIZE>`: each mat4 is 16 f32 × 4 B.
@@ -587,6 +594,11 @@ mod tests {
             light_space_matrices_array_len(FOG_SRC),
             Some(expected_len),
             "fog_volume.wgsl LightSpaceMatrices array length must equal the Rust pool size"
+        );
+        assert_eq!(
+            light_space_matrices_array_len(MESH_SRC),
+            Some(expected_len),
+            "skinned_mesh.wgsl LightSpaceMatrices array length must equal the Rust pool size"
         );
     }
 

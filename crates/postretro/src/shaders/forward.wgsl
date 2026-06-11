@@ -371,7 +371,7 @@ fn cone_attenuation_cos(L: vec3<f32>, aim: vec3<f32>, cos_inner: f32, cos_outer:
 // `POINT_SHADOW_DEPTH_BIAS`) and the `cube_face_ndc_depth` reconstruction — live
 // in `shadow_sample.wgsl`, concatenated after this source at pipeline-build time
 // (render/mod.rs `SHADER_SOURCE`). The snippet declares no bindings: it reads the
-// group-5 `spot_shadow_depth`, `point_shadow_compare` (`spot_shadow_compare`),
+// group-5 `spot_shadow_depth`, `spot_shadow_compare`,
 // `light_space_matrices`, and `point_shadow_cube` declared above by lexical name.
 // The no-cube body markers around `sample_point_shadow`'s body travel WITH the
 // moved body into the snippet, so `strip_point_shadow_cube` still neutralizes it

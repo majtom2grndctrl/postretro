@@ -11,8 +11,8 @@ use taffy::prelude::{
 };
 
 use super::descriptor::{
-    Align, AnchoredTree, Border, ColorValue, ContainerWidget, GridWidget, ImageWidget, PanelBind,
-    PanelWidget, SpacingValue, TextBind, TextWidget, Widget,
+    Align, AnchoredTree, Border, ColorValue, ContainerWidget, Easing, GridWidget, ImageWidget,
+    PanelBind, PanelWidget, SpacingValue, TextBind, TextWidget, Widget,
 };
 use super::layout::{Anchor, REFERENCE_HEIGHT, REFERENCE_WIDTH};
 use super::theme::UiTheme;
@@ -29,6 +29,58 @@ const UNKNOWN_COLOR_FALLBACK: [f32; 4] = [1.0, 0.0, 1.0, 1.0];
 
 /// Fallback spacing for an unknown spacing token: zero logical px.
 const UNKNOWN_SPACING_FALLBACK: f32 = 0.0;
+
+// --- Value-tween easing (M13 UI Value-Tweening, Task 3) ---------------------
+
+/// Identity easing: `t` unchanged.
+fn linear(t: f32) -> f32 {
+    t
+}
+
+/// Cubic ease-in: slow start, `t^3`.
+fn ease_in(t: f32) -> f32 {
+    t * t * t
+}
+
+/// Cubic ease-out: fast start, decelerating — the cubic mirror of `ease_in`.
+fn ease_out(t: f32) -> f32 {
+    let u = 1.0 - t;
+    1.0 - u * u * u
+}
+
+/// Cubic ease-in-out: accelerate then decelerate, symmetric about `t = 0.5`.
+fn ease_in_out(t: f32) -> f32 {
+    if t < 0.5 {
+        4.0 * t * t * t
+    } else {
+        let u = -2.0 * t + 2.0;
+        1.0 - (u * u * u) / 2.0
+    }
+}
+
+/// Dispatch an `Easing` curve, clamping `t` to `[0, 1]` first so an out-of-range
+/// normalized time (a frame past the tween's end, or a negative dt) never
+/// produces an eased value outside `[0, 1]`.
+fn apply(easing: Easing, t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    match easing {
+        Easing::Linear => linear(t),
+        Easing::EaseIn => ease_in(t),
+        Easing::EaseOut => ease_out(t),
+        Easing::EaseInOut => ease_in_out(t),
+    }
+}
+
+/// Per-channel linear lerp of two RGBA colors at eased fraction `e` (no rounding;
+/// alpha included). Used by the panel tween driver to ease the fill color.
+fn lerp_rgba(from: [f32; 4], to: [f32; 4], e: f32) -> [f32; 4] {
+    [
+        from[0] + (to[0] - from[0]) * e,
+        from[1] + (to[1] - from[1]) * e,
+        from[2] + (to[2] - from[2]) * e,
+        from[3] + (to[3] - from[3]) * e,
+    ]
+}
 
 /// Resolve a `ColorValue` against the active theme. A `Literal` is its own RGBA;
 /// a `Token` looks the name up in the theme. An unknown token degrades to opaque
@@ -102,6 +154,31 @@ fn resolve_border(border: Option<&Border>, theme: &UiTheme) -> Option<Border> {
 /// fixed size. The renderer builds this from the uploaded texture's pixel dims.
 pub(crate) type ImageSizes = HashMap<String, [f32; 2]>;
 
+/// Live tween state for a bound node whose bind carries a `tween`. Absent on
+/// untweened binds. `display` is the value the draw step renders THIS frame;
+/// `start`/`start_time`/`target` describe the in-flight segment the driver eases
+/// across. A retarget restarts the segment from the current `display` (never
+/// snapping mid-flight), so `start` is the display value at the retarget instant,
+/// not the bind's `from`. `T` is `f32` for text, `[f32; 4]` for panel.
+///
+/// `warned` is the per-tree-build warn-once latch for the non-tweenable-shape
+/// case (a text tween on a non-`Number` slot, a panel tween on a non-length-4
+/// `Array`): the driver resets it at the start of each `resolve_bindings` so the
+/// snap-through path logs at most one `log::warn!` per tree build.
+#[derive(Debug, Clone)]
+struct TweenState<T> {
+    /// Value rendered this frame (eased toward `target` from `start`).
+    display: T,
+    /// Value the active segment eased from (set at first-resolve or retarget).
+    start: T,
+    /// Frame time (seconds) the active segment started easing at.
+    start_time: f64,
+    /// Value the active segment eases toward.
+    target: T,
+    /// Per-build latch so a non-tweenable-shape slot warns at most once per build.
+    warned: bool,
+}
+
 /// Per-node draw payload carried alongside each taffy node. Pure layout nodes
 /// (stacks, grids, spacers) carry `None`; only nodes that emit a draw entry hold
 /// data here. taffy owns the geometry; this owns "what to draw in that rect".
@@ -136,6 +213,13 @@ enum NodeContext {
         /// Unbound nodes never set it. The measure seam shapes this string when
         /// present (so a content change re-measures), else the literal `content`.
         last_resolved: Option<String>,
+        /// Live tween state when `bind`'s `tween` is `Some` AND the slot has
+        /// resolved to a `Number` at least once. `None` for untweened binds and
+        /// before the first numeric resolution. While `Some`, the driver eases
+        /// `display` toward `target` and `last_resolved` holds the rounded,
+        /// formatted display string (so the measure seam shapes the displayed
+        /// value).
+        tween: Option<TweenState<f32>>,
     },
     /// Solid-fill panel quad, optionally framed by a 9-slice `border`. `fill`
     /// stays linear `[f32; 4]` — no sRGB conversion on the quad path. Carried by
@@ -156,6 +240,11 @@ enum NodeContext {
         /// Last resolved bound fill the diff observed. `None` until the first
         /// diff; only meaningful when `bind` is `Some`.
         last_resolved: Option<[f32; 4]>,
+        /// Live tween state when `bind`'s `tween` is `Some` AND the slot has
+        /// resolved to a length-4 `Array` at least once. `None` for untweened
+        /// binds and before the first array resolution. While `Some`, the driver
+        /// eases `display` (the rendered fill) per-channel toward `target`.
+        tween: Option<TweenState<[f32; 4]>>,
     },
     /// Textured image quad. `asset` is the texture key the renderer binds; the
     /// rect comes from layout. The image sizes from the asset's natural reference
@@ -442,20 +531,19 @@ impl UiTree {
         font_system: &mut FontSystem,
         image_sizes: &ImageSizes,
         slot_values: &HashMap<String, SlotValue>,
-        // Deterministic, dt-accumulated frame time (seconds). Threaded here for
-        // the tween runtime; Task 3 consumes it to ease bound display values over
-        // time. Unused in this wire-format task — the leading underscore keeps
-        // clippy clean until Task 3 reads it at this exact site.
-        _time_seconds: f64,
+        // Deterministic, dt-accumulated frame time (seconds). The tween driver
+        // (`resolve_bindings`) reads it to advance eased display values: a tween's
+        // normalized progress is `(time_seconds - start_time) / duration`.
+        time_seconds: f64,
     ) -> UiDrawData {
-        // Subscriber-aware diff: resolve bound nodes against the new snapshot,
-        // marking content-changed text nodes dirty for relayout and flagging any
-        // appearance change. Runs before the gate so its `mark_dirty` is visible
-        // to `taffy.dirty(root)` below.
+        // Subscriber-aware diff + tween driver: resolve bound nodes against the
+        // new snapshot at this frame's time, easing tweened display values and
+        // classifying each change. Runs before the gate so its `mark_dirty` is
+        // visible to `taffy.dirty(root)` below.
         let BindingDiff {
             content_changed,
             appearance_changed,
-        } = self.resolve_bindings(slot_values);
+        } = self.resolve_bindings(slot_values, time_seconds);
 
         let viewport_changed = self.last_viewport != Some(device_size);
         // taffy reports the root dirty after a structural rebuild OR after the
@@ -520,72 +608,102 @@ impl UiTree {
         }
     }
 
-    /// Subscriber-aware bound-value diff. Walks every node, resolves the bound
-    /// ones against `slot_values`, and reports whether any layout-affecting
-    /// (text content) or appearance-only (panel fill) binding changed since the
-    /// last diff. Unbound nodes and slots without a binding are never compared.
-    /// Side effects: stores each text node's freshly resolved string in
-    /// `last_resolved` and marks it dirty when it changed (so the measure seam
-    /// reshapes it); records each panel's resolved fill in `last_resolved`.
-    fn resolve_bindings(&mut self, slot_values: &HashMap<String, SlotValue>) -> BindingDiff {
+    /// Subscriber-aware bound-value diff AND tween driver. Walks every node,
+    /// resolves the bound ones against `slot_values` at the frame's
+    /// `time_seconds`, and reports whether any layout-affecting (text content) or
+    /// appearance-only (panel fill) binding changed since the last diff. Unbound
+    /// nodes and slots without a binding are never compared.
+    ///
+    /// For a TWEENED bind whose slot resolves to a tweenable shape (a text bind to
+    /// a `Number`, a panel bind to a length-4 `Array`), the resolved value is the
+    /// tween *target*; the driver eases a per-node display value toward it:
+    /// - **First resolution** with `from` present starts the display at `from` and
+    ///   eases toward the target (the level-load flourish); with `from` absent the
+    ///   display snaps to the target (no tween on first sight).
+    /// - **Target change** (retarget) restarts the eased segment from the *current
+    ///   display value* at this frame's time — a mid-flight retarget never snaps.
+    /// - **In flight** advances the eased display from the segment's start time
+    ///   using `(now - start_time) / duration` (`duration_ms` converted to
+    ///   seconds). At `t >= 1` the display equals the target EXACTLY (settle).
+    ///
+    /// The driver classifies through the SAME `BindingDiff` as the untweened path:
+    /// a text change (the rendered, rounded string differs) is content-changed
+    /// (re-measures → `mark_dirty`); a panel change is appearance-only (redraw, no
+    /// relayout). A tweened text node stores its rounded/formatted display string
+    /// in `last_resolved` so the measure seam shapes the displayed value; a tweened
+    /// panel stores its eased fill in `last_resolved` so the diff settles.
+    ///
+    /// A tween whose slot resolves to any OTHER shape snaps through the unchanged
+    /// resolution path (`resolve_text`/`resolve_panel_fill`) and logs exactly one
+    /// `log::warn!` per tree build via the per-node `warned` latch (reset below at
+    /// the start of each call).
+    ///
+    /// Side effects: stores each text node's freshly resolved (or displayed) string
+    /// in `last_resolved` and marks it dirty when it changed; records each panel's
+    /// resolved (or eased) fill in `last_resolved`; mutates per-node tween state.
+    fn resolve_bindings(
+        &mut self,
+        slot_values: &HashMap<String, SlotValue>,
+        time_seconds: f64,
+    ) -> BindingDiff {
         // Collect node ids first (depth-first from the root) to avoid borrowing
         // the taffy tree while mutating node contexts / marking dirty in the loop.
         let mut nodes: Vec<NodeId> = Vec::new();
         self.collect_node_ids(self.root, &mut nodes);
         let mut diff = BindingDiff::default();
+        // Text nodes whose displayed string changed: deferred so `mark_dirty`
+        // (which borrows the tree) runs after the per-node mutable borrow drops.
+        let mut dirty_text: Vec<NodeId> = Vec::new();
         for node in nodes {
-            // Resolve against an immutable borrow, then drop it before any
-            // mutation (mark_dirty / set_node_context) on the same tree.
-            let resolution = match self.taffy.get_node_context(node) {
+            // One mutable borrow per node: the tween driver both reads the prior
+            // segment and writes the advanced one, so a read-then-write split would
+            // need two borrows. `mark_dirty` is deferred (collected above) so the
+            // borrow can drop first.
+            match self.taffy.get_node_context_mut(node) {
                 Some(NodeContext::Text {
                     content,
                     bind: Some(bind),
                     last_resolved,
+                    tween,
                     ..
                 }) => {
-                    let resolved = resolve_text(Some(bind), content, slot_values);
-                    let changed = last_resolved.as_deref() != Some(resolved.as_str());
-                    Some(Resolution::Text { resolved, changed })
+                    if drive_text_binding(
+                        bind,
+                        content,
+                        last_resolved,
+                        tween,
+                        slot_values,
+                        time_seconds,
+                    ) {
+                        diff.content_changed = true;
+                        dirty_text.push(node);
+                    }
                 }
                 Some(NodeContext::Panel {
                     fill,
                     bind: Some(bind),
                     last_resolved,
+                    tween,
                     ..
                 }) => {
-                    let resolved = resolve_panel_fill(Some(bind), *fill, slot_values);
-                    let changed = last_resolved.is_none_or(|prev| !colors_eq(prev, resolved));
-                    Some(Resolution::Panel { resolved, changed })
-                }
-                _ => None,
-            };
-
-            match resolution {
-                Some(Resolution::Text { resolved, changed }) => {
-                    if changed {
-                        diff.content_changed = true;
-                        if let Some(NodeContext::Text { last_resolved, .. }) =
-                            self.taffy.get_node_context_mut(node)
-                        {
-                            *last_resolved = Some(resolved);
-                        }
-                        // Content change may re-measure: force a relayout.
-                        self.mark_dirty(node);
-                    }
-                }
-                Some(Resolution::Panel { resolved, changed }) => {
-                    if changed {
+                    if drive_panel_binding(
+                        bind,
+                        *fill,
+                        last_resolved,
+                        tween,
+                        slot_values,
+                        time_seconds,
+                    ) {
                         diff.appearance_changed = true;
-                        if let Some(NodeContext::Panel { last_resolved, .. }) =
-                            self.taffy.get_node_context_mut(node)
-                        {
-                            *last_resolved = Some(resolved);
-                        }
                         // Appearance-only: no mark_dirty, no relayout.
                     }
                 }
-                None => {}
+                _ => {}
             }
+        }
+        // Content change may re-measure: force a relayout on each changed text node.
+        for node in dirty_text {
+            self.mark_dirty(node);
         }
         diff
     }
@@ -607,11 +725,23 @@ impl UiTree {
 
         match context {
             Some(NodeContext::Panel {
-                fill, border, bind, ..
+                fill,
+                border,
+                bind,
+                last_resolved,
+                tween,
             }) => {
                 // A bound panel resolves its fill from the slot snapshot; an
-                // absent/malformed slot falls back to the literal `fill`.
-                let fill = resolve_panel_fill(bind.as_ref(), *fill, slot_values);
+                // absent/malformed slot falls back to the literal `fill`. For a
+                // TWEENED bind whose driver has produced an eased display fill
+                // (`tween` is `Some` and `last_resolved` holds it), render that
+                // eased fill instead of re-resolving the raw slot — so the
+                // per-channel easing reaches the draw. The fresh/splash path never
+                // populates `tween`, so it resolves the target directly (inert).
+                let fill = match (tween, last_resolved) {
+                    (Some(_), Some(eased)) => *eased,
+                    _ => resolve_panel_fill(bind.as_ref(), *fill, slot_values),
+                };
                 data.quads.push(project_quad(
                     ref_origin,
                     layout,
@@ -635,14 +765,26 @@ impl UiTree {
                 color,
                 family,
                 bind,
-                ..
+                last_resolved,
+                tween,
             }) => {
                 // A bound text node resolves its drawn string from the slot
                 // snapshot (through the optional `{}` format template); an absent
                 // slot falls back to the literal `content`. Layout already used
-                // the literal `content` for measurement (see `measure_node`), so
+                // the literal `content` (or the resolved/displayed string in
+                // `last_resolved`) for measurement (see `measure_node`), so
                 // resolution only swaps the rendered string, never the geometry.
-                let resolved = resolve_text(bind.as_ref(), content, slot_values);
+                //
+                // For a TWEENED bind whose driver has produced a displayed value
+                // (`tween` is `Some`, with the rounded/formatted display string in
+                // `last_resolved`), render that string so the eased value reaches
+                // the draw and matches what the measure seam shaped. The
+                // fresh/splash path never populates `tween`, so it resolves the
+                // target directly (inert).
+                let resolved = match (tween, last_resolved) {
+                    (Some(_), Some(displayed)) => displayed.clone(),
+                    _ => resolve_text(bind.as_ref(), content, slot_values),
+                };
                 // Device-pixel top-left + device-scaled font size; color converts
                 // linear RGBA -> sRGB [u8; 4] at draw-list build time. The run is
                 // laid out in flow (its container's `align` centers it on the
@@ -686,12 +828,271 @@ struct BindingDiff {
     appearance_changed: bool,
 }
 
-/// One bound node's freshly resolved value plus whether it differs from the
-/// node's last-resolved value. Carried out of the immutable resolution borrow so
-/// the mutable write-back/mark-dirty happens after the borrow ends.
-enum Resolution {
-    Text { resolved: String, changed: bool },
-    Panel { resolved: [f32; 4], changed: bool },
+/// Drive one bound TEXT node for this frame and return whether its rendered
+/// (`last_resolved`) string changed since the last diff. Three paths:
+///
+/// - **Untweened** (`bind.tween` is `None`): the original behavior — resolve the
+///   string via `resolve_text`, store it, report change. `tween` stays `None`.
+/// - **Tweened, slot resolves to a `Number`**: the number is the eased target.
+///   `drive_tween_f32` advances the per-node `f32` display from its segment; the
+///   rounded display is formatted through `bind.format`'s `{}` (same integral
+///   formatting as `slot_value_string`) and stored as the rendered string, so the
+///   measure seam shapes the displayed value.
+/// - **Tweened, slot resolves to any other shape**: snap-through — render via the
+///   unchanged `resolve_text` path and log exactly ONE `log::warn!` per tree build
+///   (the per-node `warned` latch, reset at the top of each tweened call).
+///
+/// `now` is the frame's `time_seconds`.
+fn drive_text_binding(
+    bind: &TextBind,
+    content: &str,
+    last_resolved: &mut Option<String>,
+    tween: &mut Option<TweenState<f32>>,
+    slot_values: &HashMap<String, SlotValue>,
+    now: f64,
+) -> bool {
+    let Some(cfg) = bind.tween.as_ref() else {
+        // No tween config: the untweened path, byte-for-byte as before.
+        let resolved = resolve_text(Some(bind), content, slot_values);
+        let changed = last_resolved.as_deref() != Some(resolved.as_str());
+        if changed {
+            *last_resolved = Some(resolved);
+        }
+        return changed;
+    };
+
+    // Reset the per-build warn latch so the snap-through case warns at most once
+    // per tree build (this runs once per node per build).
+    if let Some(state) = tween {
+        state.warned = false;
+    }
+
+    let rendered = match slot_values.get(&bind.slot) {
+        Some(SlotValue::Number(n)) => {
+            // Tweenable: the number is the eased target. Advance the display value
+            // and render the rounded integer through the format template.
+            let target = *n;
+            let display =
+                drive_tween_f32(tween, cfg.from, target, cfg.duration_ms, cfg.easing, now);
+            let integral = display.round() as i64;
+            match &bind.format {
+                Some(template) => template.replacen("{}", &integral.to_string(), 1),
+                None => integral.to_string(),
+            }
+        }
+        _ => {
+            // A tween on a non-`Number` slot (or an absent slot): snap through the
+            // unchanged resolution path, warning at most once per build. An absent
+            // slot is the normal fallback case and does NOT warn (`resolve_text`
+            // already treats absence silently); only a present, non-numeric value
+            // is an authoring error worth the single warn.
+            if slot_values.get(&bind.slot).is_some() {
+                warn_non_tweenable_text(bind, tween, now);
+            }
+            resolve_text(Some(bind), content, slot_values)
+        }
+    };
+
+    let changed = last_resolved.as_deref() != Some(rendered.as_str());
+    if changed {
+        *last_resolved = Some(rendered);
+    }
+    changed
+}
+
+/// Advance (or initialize / retarget) a text node's `f32` tween segment toward
+/// `target` at frame time `now`, returning the eased display value for this frame.
+/// Stores the advanced state back into `tween`. See `resolve_bindings` for the
+/// first-resolve / retarget / in-flight / settle mechanics.
+fn drive_tween_f32(
+    tween: &mut Option<TweenState<f32>>,
+    from: Option<f32>,
+    target: f32,
+    duration_ms: f32,
+    easing: Easing,
+    now: f64,
+) -> f32 {
+    match tween {
+        None => {
+            // First resolution. With `from` present, start there and ease toward
+            // the target (the level-load flourish); with `from` absent, snap to the
+            // target (no tween on first sight) by seeding a settled segment.
+            let start = from.unwrap_or(target);
+            let mut state = TweenState {
+                display: start,
+                start,
+                start_time: now,
+                target,
+                warned: false,
+            };
+            state.display = advance_f32(&state, duration_ms, easing, now);
+            let display = state.display;
+            *tween = Some(state);
+            display
+        }
+        Some(state) => {
+            // Retarget: a new target restarts the segment from the CURRENT display
+            // (never snapping mid-flight) at this frame's time.
+            if state.target != target {
+                state.start = state.display;
+                state.start_time = now;
+                state.target = target;
+            }
+            state.display = advance_f32(state, duration_ms, easing, now);
+            state.display
+        }
+    }
+}
+
+/// Sample a text tween segment at `now`: normalized progress `(now - start_time) /
+/// duration`, eased, lerped from `start` to `target`. At `t >= 1` (including a
+/// non-positive duration) the value equals `target` EXACTLY so the settle is bit-
+/// exact. `duration_ms` is milliseconds; converted to seconds for the f64 clock.
+fn advance_f32(state: &TweenState<f32>, duration_ms: f32, easing: Easing, now: f64) -> f32 {
+    let duration = (duration_ms as f64) / 1000.0;
+    if duration <= 0.0 || now - state.start_time >= duration {
+        return state.target;
+    }
+    let t = ((now - state.start_time) / duration) as f32;
+    let e = apply(easing, t);
+    state.start + (state.target - state.start) * e
+}
+
+/// Log the one-per-build warning for a text tween whose slot resolved to a
+/// non-`Number` shape, latching `warned` so a repeated non-numeric value in the
+/// same build warns only once. Seeds a latch-only tween state when none exists
+/// yet (the display fields are unused on this path — the snap renders via
+/// `resolve_text`).
+fn warn_non_tweenable_text(bind: &TextBind, tween: &mut Option<TweenState<f32>>, now: f64) {
+    match tween {
+        Some(state) if state.warned => {}
+        Some(state) => {
+            log::warn!(
+                "[UI] text bind slot '{}' carries a tween but did not resolve to a Number; \
+                 rendering the raw value without easing",
+                bind.slot,
+            );
+            state.warned = true;
+        }
+        None => {
+            log::warn!(
+                "[UI] text bind slot '{}' carries a tween but did not resolve to a Number; \
+                 rendering the raw value without easing",
+                bind.slot,
+            );
+            *tween = Some(TweenState {
+                display: 0.0,
+                start: 0.0,
+                start_time: now,
+                target: 0.0,
+                warned: true,
+            });
+        }
+    }
+}
+
+/// Drive one bound PANEL node for this frame and return whether its rendered
+/// (`last_resolved`) fill changed since the last diff. Mirrors
+/// `drive_text_binding`:
+///
+/// - **Untweened**: resolve the fill via `resolve_panel_fill`, store, report.
+/// - **Tweened, slot resolves to a length-4 `Array`**: the array is the eased
+///   target; `drive_tween_rgba` advances the per-node `[f32; 4]` display
+///   per-channel (alpha included, no rounding) and stores it as the rendered fill.
+/// - **Tweened, slot resolves to any other shape**: snap through the unchanged
+///   `resolve_panel_fill` path (which already warns once per build on a present-
+///   but-malformed slot) — no extra tween warn, since that path owns the warning.
+fn drive_panel_binding(
+    bind: &PanelBind,
+    fallback: [f32; 4],
+    last_resolved: &mut Option<[f32; 4]>,
+    tween: &mut Option<TweenState<[f32; 4]>>,
+    slot_values: &HashMap<String, SlotValue>,
+    now: f64,
+) -> bool {
+    let Some(cfg) = bind.tween.as_ref() else {
+        let resolved = resolve_panel_fill(Some(bind), fallback, slot_values);
+        let changed = last_resolved.is_none_or(|prev| !colors_eq(prev, resolved));
+        if changed {
+            *last_resolved = Some(resolved);
+        }
+        return changed;
+    };
+
+    let resolved = match slot_values.get(&bind.slot) {
+        Some(SlotValue::Array(rgba)) if rgba.len() == 4 => {
+            let target = [rgba[0], rgba[1], rgba[2], rgba[3]];
+            drive_tween_rgba(tween, cfg.from, target, cfg.duration_ms, cfg.easing, now)
+        }
+        // Non-tweenable shape (absent, wrong variant, or wrong length): snap
+        // through the unchanged fill-resolution path. `resolve_panel_fill` already
+        // owns the one-per-build warn for a present-but-malformed slot, so the
+        // tween adds none here.
+        _ => resolve_panel_fill(Some(bind), fallback, slot_values),
+    };
+
+    let changed = last_resolved.is_none_or(|prev| !colors_eq(prev, resolved));
+    if changed {
+        *last_resolved = Some(resolved);
+    }
+    changed
+}
+
+/// Advance (or initialize / retarget) a panel node's RGBA tween segment toward
+/// `target` at frame time `now`, returning the eased per-channel display fill.
+/// Same first-resolve / retarget / in-flight / settle mechanics as the text
+/// driver, but the lerp runs per channel (alpha included, no rounding).
+fn drive_tween_rgba(
+    tween: &mut Option<TweenState<[f32; 4]>>,
+    from: Option<[f32; 4]>,
+    target: [f32; 4],
+    duration_ms: f32,
+    easing: Easing,
+    now: f64,
+) -> [f32; 4] {
+    match tween {
+        None => {
+            let start = from.unwrap_or(target);
+            let mut state = TweenState {
+                display: start,
+                start,
+                start_time: now,
+                target,
+                warned: false,
+            };
+            state.display = advance_rgba(&state, duration_ms, easing, now);
+            let display = state.display;
+            *tween = Some(state);
+            display
+        }
+        Some(state) => {
+            if state.target != target {
+                state.start = state.display;
+                state.start_time = now;
+                state.target = target;
+            }
+            state.display = advance_rgba(state, duration_ms, easing, now);
+            state.display
+        }
+    }
+}
+
+/// Sample a panel tween segment at `now`: eased fraction (as `advance_f32`),
+/// applied per channel via `lerp_rgba`. At `t >= 1` (or a non-positive duration)
+/// the fill equals `target` EXACTLY so the settle is bit-exact.
+fn advance_rgba(
+    state: &TweenState<[f32; 4]>,
+    duration_ms: f32,
+    easing: Easing,
+    now: f64,
+) -> [f32; 4] {
+    let duration = (duration_ms as f64) / 1000.0;
+    if duration <= 0.0 || now - state.start_time >= duration {
+        return state.target;
+    }
+    let t = ((now - state.start_time) / duration) as f32;
+    let e = apply(easing, t);
+    lerp_rgba(state.start, state.target, e)
 }
 
 /// Exact per-channel equality for a resolved fill. The diff compares the resolved
@@ -788,6 +1189,10 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget, theme: &UiThe
                         family: resolve_font(font, theme),
                         bind: bind.clone(),
                         last_resolved: None,
+                        // Tween state is born on the first numeric resolution, not
+                        // at build: the fresh path never tweens, and the retained
+                        // diff initializes it when the slot first reads a `Number`.
+                        tween: None,
                     },
                 )
                 .expect("taffy leaf creation must succeed")
@@ -805,6 +1210,8 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget, theme: &UiThe
                         border: resolve_border(border.as_ref(), theme),
                         bind: bind.clone(),
                         last_resolved: None,
+                        // Born on the first length-4 array resolution (see above).
+                        tween: None,
                     },
                 )
                 .expect("taffy leaf creation must succeed")
@@ -851,6 +1258,7 @@ fn container_backdrop(fill: Option<[f32; 4]>, border: Option<&Border>) -> Option
             // Container backdrops never bind — only `panel` leaves carry a bind.
             bind: None,
             last_resolved: None,
+            tween: None,
         }),
     }
 }
@@ -2364,5 +2772,599 @@ mod tests {
             data_before.texts[0].color, data_after.texts[0].color,
             "the same descriptor resolves to different colors under different themes",
         );
+    }
+
+    // --- Value-tween driver (Task 3) -----------------------------------------
+
+    use super::super::descriptor::{PanelTween, TextTween};
+
+    /// A tweened bound text leaf: fallback `content`, a `bind` slot, optional
+    /// format, and a `TextTween`.
+    fn tweened_text(content: &str, slot: &str, format: Option<&str>, tween: TextTween) -> Widget {
+        Widget::Text(TextWidget {
+            content: content.into(),
+            font_size: 20.0,
+            color: ColorValue::Literal([1.0, 1.0, 1.0, 1.0]),
+            font: None,
+            bind: Some(TextBind {
+                slot: slot.into(),
+                format: format.map(str::to_string),
+                tween: Some(tween),
+            }),
+        })
+    }
+
+    /// A tweened bound panel leaf wrapped in a stretch container (so the leaf gets
+    /// a non-zero laid-out rect).
+    fn tweened_panel_in_stack(fill: [f32; 4], slot: &str, tween: PanelTween) -> Widget {
+        Widget::VStack(ContainerWidget {
+            gap: SpacingValue::Literal(0.0),
+            padding: SpacingValue::Literal(0.0),
+            align: Align::Stretch,
+            fill: Some(ColorValue::Literal([0.0, 0.0, 0.0, 1.0])),
+            border: None,
+            children: vec![Widget::Panel(PanelWidget {
+                fill: ColorValue::Literal(fill),
+                border: None,
+                bind: Some(PanelBind {
+                    slot: slot.into(),
+                    tween: Some(tween),
+                }),
+            })],
+        })
+    }
+
+    /// One numeric slot map for a text tween.
+    fn number_slots(slot: &str, value: f32) -> HashMap<String, SlotValue> {
+        let mut slots = HashMap::new();
+        slots.insert(slot.to_string(), SlotValue::Number(value));
+        slots
+    }
+
+    /// Parse a rendered text run's content back to an `f32` (the displayed value
+    /// the driver rounded to an integer).
+    fn text_value(data: &UiDrawData) -> f32 {
+        data.texts[0]
+            .content
+            .parse::<f32>()
+            .expect("displayed text is an integer string")
+    }
+
+    #[test]
+    fn text_tween_first_resolve_with_from_starts_at_from_and_reaches_target_at_duration() {
+        // First-resolve `from` flourish: a text bind with `from: 0.0`, target 100
+        // (constant slot). Frame 0 renders 0; subsequent frames advance
+        // monotonically toward 100; the value is EXACTLY 100 at durationMs.
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: tweened_text(
+                "0",
+                "player.health",
+                None,
+                TextTween {
+                    duration_ms: 1000.0,
+                    easing: Easing::Linear,
+                    from: Some(0.0),
+                },
+            ),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let slots = number_slots("player.health", 100.0);
+
+        // Frame 0: display starts at `from` = 0.
+        let f0 = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
+        assert_eq!(text_value(&f0), 0.0, "frame 0 renders the `from` value");
+
+        // Advance through the tween; values rise monotonically toward 100.
+        let mut prev = 0.0;
+        for &t in &[0.25, 0.5, 0.75] {
+            let f = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, t);
+            let v = text_value(&f);
+            assert!(
+                v >= prev && v <= 100.0,
+                "value {v} at t={t} advances monotonically within [prev={prev}, 100]",
+            );
+            prev = v;
+        }
+
+        // At t == durationMs (1.0s) the display equals the target EXACTLY.
+        let f_end = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 1.0);
+        assert_eq!(
+            text_value(&f_end),
+            100.0,
+            "display equals target at duration"
+        );
+    }
+
+    #[test]
+    fn text_tween_without_from_renders_target_immediately_on_first_resolve() {
+        // A tween with no `from` snaps to the target on first sight (no flourish):
+        // frame 0 already renders the full target value.
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: tweened_text(
+                "0",
+                "player.health",
+                None,
+                TextTween {
+                    duration_ms: 1000.0,
+                    easing: Easing::EaseOut,
+                    from: None,
+                },
+            ),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let slots = number_slots("player.health", 80.0);
+
+        let f0 = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
+        assert_eq!(
+            text_value(&f0),
+            80.0,
+            "no `from` snaps to the target on first resolve",
+        );
+    }
+
+    #[test]
+    fn text_tween_retarget_mid_flight_restarts_from_current_display() {
+        // Mid-flight retarget: a tween from 0 -> 100 is interrupted at t=0.5 by a
+        // new target of 0. The tween must restart from the CURRENT display value
+        // (~50 under linear), not snap to `from` (0) nor jump to the new target.
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: tweened_text(
+                "0",
+                "player.health",
+                None,
+                TextTween {
+                    duration_ms: 1000.0,
+                    easing: Easing::Linear,
+                    from: Some(0.0),
+                },
+            ),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+
+        // Drive to mid-flight at t=0.5 with target 100: display ~= 50.
+        ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &number_slots("player.health", 100.0),
+            0.0,
+        );
+        let mid = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &number_slots("player.health", 100.0),
+            0.5,
+        );
+        let mid_v = text_value(&mid);
+        assert!(
+            (40.0..=60.0).contains(&mid_v),
+            "mid-flight value ~50 under linear easing, got {mid_v}",
+        );
+
+        // Retarget to 0 at t=0.5: the segment restarts from the current display
+        // (~50) at this instant, so this very frame still reads ~50 (elapsed 0) —
+        // it must NOT snap to `from`=0 nor jump to the new target 0.
+        let retarget = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &number_slots("player.health", 0.0),
+            0.5,
+        );
+        let retarget_v = text_value(&retarget);
+        assert!(
+            (40.0..=60.0).contains(&retarget_v),
+            "retarget restarts from the current display ~{mid_v} (no snap to from/target), got {retarget_v}",
+        );
+
+        // A later frame eases DOWN from ~50 toward 0 — continuous, below the
+        // retarget value and above the new target.
+        let after = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &number_slots("player.health", 0.0),
+            1.0,
+        );
+        let after_v = text_value(&after);
+        assert!(
+            after_v < retarget_v && after_v > 0.0,
+            "retargeted tween eases continuously down from {retarget_v} toward 0, got {after_v}",
+        );
+
+        // And it reaches the new target exactly one duration after the retarget.
+        let settled = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &number_slots("player.health", 0.0),
+            1.5,
+        );
+        assert_eq!(text_value(&settled), 0.0, "retargeted tween settles at 0");
+    }
+
+    #[test]
+    fn text_tween_ease_out_advances_monotonically_toward_target() {
+        // Easing monotonicity: under easeOut the in-flight display rises
+        // monotonically toward the target across advancing frames.
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: tweened_text(
+                "0",
+                "player.health",
+                None,
+                TextTween {
+                    duration_ms: 1000.0,
+                    easing: Easing::EaseOut,
+                    from: Some(0.0),
+                },
+            ),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let slots = number_slots("player.health", 100.0);
+
+        let mut prev = -1.0;
+        for &t in &[0.0, 0.1, 0.2, 0.4, 0.6, 0.8, 1.0] {
+            let f = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, t);
+            let v = text_value(&f);
+            assert!(
+                v >= prev,
+                "easeOut value must be monotonic non-decreasing: {v} < {prev} at t={t}",
+            );
+            prev = v;
+        }
+        assert_eq!(
+            prev, 100.0,
+            "easeOut reaches the target exactly at duration"
+        );
+    }
+
+    #[test]
+    fn text_tween_settles_at_exact_target_past_duration() {
+        // Exact-target settle: at t >= duration the display equals the target
+        // exactly (a frame well past the end stays pinned, no overshoot).
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: tweened_text(
+                "0",
+                "player.health",
+                None,
+                TextTween {
+                    duration_ms: 500.0,
+                    easing: Easing::EaseInOut,
+                    from: Some(10.0),
+                },
+            ),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let slots = number_slots("player.health", 42.0);
+
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
+        // t = 5.0s is ten durations past the end.
+        let far = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 5.0);
+        assert_eq!(text_value(&far), 42.0, "well past duration pins to target");
+    }
+
+    #[test]
+    fn text_tween_in_flight_relayouts_each_advancing_frame() {
+        // In-flight text is content-changed each advancing frame (the rendered
+        // integer string differs, re-measures): recompute_count increments per
+        // frame while the eased value is still moving.
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: tweened_text(
+                "0",
+                "player.health",
+                None,
+                TextTween {
+                    duration_ms: 1000.0,
+                    easing: Easing::Linear,
+                    from: Some(0.0),
+                },
+            ),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let slots = number_slots("player.health", 100.0);
+
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
+        let c0 = ui.recompute_count();
+        // Each advancing frame moves the integer (0 -> 25 -> 50 -> 75), so each
+        // relays out.
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.25);
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.5);
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.75);
+        assert_eq!(
+            ui.recompute_count(),
+            c0 + 3,
+            "an in-flight text tween relays out each advancing frame",
+        );
+    }
+
+    #[test]
+    fn panel_tween_in_flight_redraws_without_relayout() {
+        // In-flight panel eases per-channel and is appearance-only: the draw list
+        // rebuilds each advancing frame but layout NEVER recomputes.
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: tweened_panel_in_stack(
+                [0.0, 0.0, 0.0, 1.0],
+                "intro.flashColor",
+                PanelTween {
+                    duration_ms: 1000.0,
+                    easing: Easing::Linear,
+                    from: Some([0.0, 0.0, 0.0, 1.0]),
+                },
+            ),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let target = [1.0, 0.5, 0.25, 1.0];
+
+        let f0 = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &flash_slots(target),
+            0.0,
+        );
+        assert_eq!(ui.recompute_count(), 1, "first frame computes once");
+        // Frame 0 starts at the `from` color (all-black-but-alpha is the backdrop
+        // color too, so just assert the panel hasn't reached the target yet).
+        let c0 = flash_quad_color(&f0);
+
+        let r0 = ui.recompute_count();
+        let d0 = ui.draw_rebuild_count();
+        let mid = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &flash_slots(target),
+            0.5,
+        );
+        // Per-channel eased halfway under linear: ~[0.5, 0.25, 0.125, 1.0].
+        let mid_c = mid
+            .quads
+            .instances
+            .iter()
+            .map(|q| q.color)
+            .find(|c| !colors_eq(*c, [0.0, 0.0, 0.0, 1.0]))
+            .expect("an eased panel quad");
+        assert!(
+            mid_c[0] > 0.0 && mid_c[0] < 1.0 && mid_c[1] > 0.0 && mid_c[1] < 0.5,
+            "panel eased per channel mid-flight: {mid_c:?}",
+        );
+        assert_eq!(
+            ui.recompute_count(),
+            r0,
+            "an in-flight panel tween must NOT relayout",
+        );
+        assert!(
+            ui.draw_rebuild_count() > d0,
+            "an in-flight panel tween rebuilds the draw list (redraw)",
+        );
+        let _ = c0;
+    }
+
+    #[test]
+    fn panel_tween_eases_alpha_channel_and_settles_exactly() {
+        // The panel tween eases all four channels (alpha included) and settles at
+        // the exact target past the duration.
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: tweened_panel_in_stack(
+                [0.0, 0.0, 0.0, 1.0],
+                "intro.flashColor",
+                PanelTween {
+                    duration_ms: 1000.0,
+                    easing: Easing::Linear,
+                    from: Some([0.0, 0.0, 0.0, 0.0]),
+                },
+            ),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let target = [0.2, 0.4, 0.6, 1.0];
+
+        // Mid-flight: alpha is between the from (0.0) and target (1.0).
+        ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &flash_slots(target),
+            0.0,
+        );
+        let mid = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &flash_slots(target),
+            0.5,
+        );
+        let mid_c = mid
+            .quads
+            .instances
+            .iter()
+            .map(|q| q.color)
+            .find(|c| c[3] > 0.0 && c[3] < 1.0)
+            .expect("a panel quad with eased mid alpha");
+        assert!(
+            (0.4..=0.6).contains(&mid_c[3]),
+            "alpha eased ~0.5 mid-flight under linear, got {}",
+            mid_c[3],
+        );
+
+        // Past duration: settles to the exact target.
+        let end = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &flash_slots(target),
+            2.0,
+        );
+        let end_c = flash_quad_color(&end).expect("a settled panel quad");
+        assert!(
+            end_c.iter().zip(target.iter()).all(|(a, b)| approx(*a, *b)),
+            "panel settles at the exact target {target:?}, got {end_c:?}",
+        );
+    }
+
+    #[test]
+    fn text_tween_settled_frame_skips_rebuild_and_recompute() {
+        // Post-settle no-rebuild: once a text tween has settled, a no-change frame
+        // (same target, time well past the end) returns the cached draw list with
+        // NO relayout and NO draw-list rebuild.
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: tweened_text(
+                "0",
+                "player.health",
+                None,
+                TextTween {
+                    duration_ms: 500.0,
+                    easing: Easing::Linear,
+                    from: Some(0.0),
+                },
+            ),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let slots = number_slots("player.health", 30.0);
+
+        // Drive past the end so the display settles at 30.
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 1.0);
+        let r_settled = ui.recompute_count();
+        let d_settled = ui.draw_rebuild_count();
+
+        // A further frame at a still-later time with the same target: the rounded
+        // display is already 30 and stays 30, so nothing rebuilds.
+        let f = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 2.0);
+        assert_eq!(
+            ui.recompute_count(),
+            r_settled,
+            "a settled text frame does not relayout",
+        );
+        assert_eq!(
+            ui.draw_rebuild_count(),
+            d_settled,
+            "a settled text frame returns the cached list (no rebuild)",
+        );
+        assert_eq!(text_value(&f), 30.0, "cached list still carries the target");
+    }
+
+    #[test]
+    fn text_tween_on_string_slot_snaps_through_unchanged_path() {
+        // Non-numeric snap-with-warn: a text tween whose slot resolves to a
+        // `String` renders via the unchanged `resolve_text` path (the bare string),
+        // not an eased number. (The single per-build warn is logged but not
+        // asserted — log capture is out of scope for these CPU tests.)
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: tweened_text(
+                "fallback",
+                "hud.label",
+                None,
+                TextTween {
+                    duration_ms: 1000.0,
+                    easing: Easing::Linear,
+                    from: Some(0.0),
+                },
+            ),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let mut slots = HashMap::new();
+        slots.insert("hud.label".to_string(), SlotValue::String("ALERT".into()));
+
+        let f = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
+        assert_eq!(
+            f.texts[0].content, "ALERT",
+            "a tween on a non-Number slot renders the raw string, not an eased number",
+        );
+    }
+
+    #[test]
+    fn text_tween_fresh_path_resolves_target_directly_no_cross_frame_state() {
+        // Fresh-path inertness: the same tweened descriptor through the fresh
+        // `build_draw_data` (no time, no retained state) resolves the target
+        // DIRECTLY — no flourish, no eased value, no cross-frame tween state.
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: tweened_text(
+                "0",
+                "player.health",
+                None,
+                TextTween {
+                    duration_ms: 1000.0,
+                    easing: Easing::Linear,
+                    from: Some(0.0),
+                },
+            ),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let slots = number_slots("player.health", 100.0);
+
+        // Fresh path renders the target (100) immediately — `from`=0 is ignored.
+        let f = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &slots);
+        assert_eq!(
+            f.texts[0].content, "100",
+            "the fresh path resolves the tween target directly (inert, no easing)",
+        );
+        // No tween state was born on the node (the fresh path never drives tweens).
+        if let Some(NodeContext::Text { tween, .. }) = ui.taffy.get_node_context(ui.root) {
+            assert!(
+                tween.is_none(),
+                "fresh path leaves no cross-frame tween state"
+            );
+        } else {
+            panic!("root must be a text node");
+        }
+    }
+
+    #[test]
+    fn untweened_bound_text_unaffected_by_time() {
+        // Untweened binds keep the existing behavior regardless of `time_seconds`:
+        // the resolved value is rendered directly, no easing, no tween state.
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: bound_text("0", "player.health", Some("HP {}")),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let slots = number_slots("player.health", 73.0);
+
+        let f = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 9.0);
+        assert_eq!(
+            f.texts[0].content, "HP 73",
+            "an untweened bind renders the resolved value directly at any time",
+        );
+        if let Some(NodeContext::Text { tween, .. }) = ui.taffy.get_node_context(ui.root) {
+            assert!(tween.is_none(), "an untweened bind grows no tween state");
+        } else {
+            panic!("root must be a text node");
+        }
     }
 }

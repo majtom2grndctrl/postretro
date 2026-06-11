@@ -653,7 +653,11 @@ fn load_clip(
                 if let Some((values, mode)) =
                     resolve_keyframes(raw, times.len(), interpolation, &name, "translation")
                 {
-                    joints[topo_idx].translation = Track { times, values, mode };
+                    joints[topo_idx].translation = Track {
+                        times,
+                        values,
+                        mode,
+                    };
                 }
             }
             gltf::animation::util::ReadOutputs::Rotations(it) => {
@@ -664,7 +668,11 @@ fn load_clip(
                 if let Some((values, mode)) =
                     resolve_keyframes(raw, times.len(), interpolation, &name, "rotation")
                 {
-                    joints[topo_idx].rotation = Track { times, values, mode };
+                    joints[topo_idx].rotation = Track {
+                        times,
+                        values,
+                        mode,
+                    };
                 }
             }
             gltf::animation::util::ReadOutputs::Scales(it) => {
@@ -672,7 +680,11 @@ fn load_clip(
                 if let Some((values, mode)) =
                     resolve_keyframes(raw, times.len(), interpolation, &name, "scale")
                 {
-                    joints[topo_idx].scale = Track { times, values, mode };
+                    joints[topo_idx].scale = Track {
+                        times,
+                        values,
+                        mode,
+                    };
                 }
             }
             gltf::animation::util::ReadOutputs::MorphTargetWeights(_) => {
@@ -801,7 +813,11 @@ mod tests {
         let (vals, mode) =
             resolve_keyframes(raw, 2, Interpolation::CubicSpline, "clip", "rotation")
                 .expect("well-formed cubic triple extracts values");
-        assert_eq!(vals, vec![val0, val1], "extracts the value element of each triple");
+        assert_eq!(
+            vals,
+            vec![val0, val1],
+            "extracts the value element of each triple"
+        );
         assert_ne!(vals[0], in_t0, "extracted value is not the in-tangent");
         assert_ne!(vals[0], out_t0, "extracted value is not the out-tangent");
         assert_eq!(mode, Interp::Linear, "cubic degrades to LINEAR");
@@ -1101,5 +1117,166 @@ mod tests {
         // The `None` arm (no `extras` block at all) yields no tags.
         let extras: gltf::json::Extras = None;
         assert!(read_model_tags(&extras).is_empty());
+    }
+
+    // --- Multi-clip fixture: full load path (M10 Task 3) --------------------
+    //
+    // A hand-authored two-joint glTF with two named clips of distinct durations,
+    // exercising the LINEAR / STEP / CUBICSPLINE channel paths end-to-end. The
+    // buffer is a base64 data-URI (no sidecar `.bin`), resolved by the loader's
+    // `import_buffers` data-URI entry. Authored layout (verified byte-for-byte
+    // against the encoded buffer):
+    //   joints: skin = [node1 (root), node2 (child of node1)] → topo [0, 1].
+    //   clip "idle"  (dur 1.0): LINEAR rotation on the root joint, keys at
+    //                t=0,1 = identity, then Z+90°.
+    //   clip "walk"  (dur 2.0): STEP translation on the root joint, keys at
+    //                t=0,1,2 = (0,0,0),(10,0,0),(20,0,0); plus a CUBICSPLINE
+    //                translation on the child joint, keys at t=0,1 with value
+    //                elements (5,5,5),(7,7,7) and tangents that differ from
+    //                those values (in=-1/-2, out=9/8) so the value-vs-tangent
+    //                extraction is observable.
+
+    use crate::model::anim::sample_clip;
+    use glam::Mat4;
+
+    const SAMPLE_EPS: f32 = 1.0e-4;
+
+    fn multi_clip_fixture_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_clip/multi_clip.gltf")
+    }
+
+    /// Sample a clip against the model's skeleton at `time` and return joint
+    /// `joint`'s composed local translation (extracted from its skinning matrix;
+    /// inverse-bind matrices in the fixture are identity, so the skinning matrix
+    /// is the world-space joint transform).
+    fn sampled_joint_translation(
+        model: &LoadedModel,
+        clip_idx: usize,
+        joint: usize,
+        time: f32,
+    ) -> Vec3 {
+        let mut out = Vec::new();
+        sample_clip(&model.clips[clip_idx], &model.skeleton, time, &mut out);
+        Mat4::from_cols_array_2d(&out[joint].matrix)
+            .w_axis
+            .truncate()
+    }
+
+    fn assert_vec3_close(got: Vec3, want: Vec3, ctx: &str) {
+        assert!(
+            (got - want).length() < SAMPLE_EPS,
+            "{ctx}: expected {want:?}, got {got:?}",
+        );
+    }
+
+    #[test]
+    fn multi_clip_fixture_loads_all_clips_with_authored_names_and_durations() {
+        let model = load_model(&multi_clip_fixture_path()).expect("multi-clip fixture loads");
+
+        // Two joints in topo order (root before child).
+        assert_eq!(model.skeleton.joints.len(), 2, "skin has two joints");
+        assert_eq!(
+            model.skeleton.joints[0].parent, None,
+            "topo joint 0 is the root"
+        );
+        assert_eq!(
+            model.skeleton.joints[1].parent,
+            Some(0),
+            "topo joint 1 is the root's child",
+        );
+
+        // More than one clip; every authored clip retained in glTF order, each
+        // reporting its own duration.
+        assert_eq!(model.clips.len(), 2, "both animations load as clips");
+        assert_eq!(model.clips[0].name, "idle");
+        assert_eq!(model.clips[1].name, "walk");
+        assert!(
+            (model.clips[0].duration - 1.0).abs() < SAMPLE_EPS,
+            "'idle' duration is its own latest keyframe (1.0), got {}",
+            model.clips[0].duration,
+        );
+        assert!(
+            (model.clips[1].duration - 2.0).abs() < SAMPLE_EPS,
+            "'walk' duration is its own latest keyframe (2.0), got {}",
+            model.clips[1].duration,
+        );
+    }
+
+    #[test]
+    fn multi_clip_fixture_step_channel_holds_lower_keyframe_value() {
+        // "walk" clip index 1: STEP translation on the root joint (topo 0), keys
+        // (0,0,0)@0, (10,0,0)@1, (20,0,0)@2. A STEP channel holds the earlier
+        // keyframe's value between keys and snaps at/after a keyframe time.
+        let model = load_model(&multi_clip_fixture_path()).expect("multi-clip fixture loads");
+
+        // Between keys 0 and 1: holds the lower key exactly (NOT the (5,0,0) a
+        // LINEAR track would lerp to at the midpoint).
+        assert_vec3_close(
+            sampled_joint_translation(&model, 1, 0, 0.5),
+            Vec3::new(0.0, 0.0, 0.0),
+            "STEP holds the earlier keyframe value mid-span",
+        );
+        // At a keyframe time: snaps to that keyframe's value.
+        assert_vec3_close(
+            sampled_joint_translation(&model, 1, 0, 1.0),
+            Vec3::new(10.0, 0.0, 0.0),
+            "STEP snaps to the keyframe value at its time",
+        );
+        // After that keyframe, before the next: still holds it.
+        assert_vec3_close(
+            sampled_joint_translation(&model, 1, 0, 1.5),
+            Vec3::new(10.0, 0.0, 0.0),
+            "STEP holds the keyframe value until the next key",
+        );
+    }
+
+    #[test]
+    fn multi_clip_fixture_cubicspline_channel_samples_keyframe_values_not_tangents() {
+        // "walk" clip index 1: CUBICSPLINE translation on the child joint (topo
+        // 1). The loader degrades cubic to LINEAR by extracting each keyframe's
+        // VALUE element — (5,5,5)@0 and (7,7,7)@1 — discarding the in/out
+        // tangents (-1/-2 and 9/8). Sampling at the keys must return the values,
+        // which are distinct from any adjacent tangent element.
+        let model = load_model(&multi_clip_fixture_path()).expect("multi-clip fixture loads");
+
+        // At t=0: keyframe-0 value (5,5,5) — not the in-tangent (-1,-1,-1) nor
+        // the out-tangent (9,9,9).
+        assert_vec3_close(
+            sampled_joint_translation(&model, 1, 1, 0.0),
+            Vec3::new(5.0, 5.0, 5.0),
+            "CUBICSPLINE sample is keyframe-0 value, not its tangents",
+        );
+        // The stored track holds exactly the two extracted VALUE elements — no
+        // tangents — and is marked LINEAR (cubic degraded). Asserting the track
+        // contents directly pins keyframe-1's value (7,7,7) without the wrap that
+        // sampling at t=duration would trigger.
+        let child_translation = &model.clips[1].joints[1].translation;
+        assert_eq!(
+            child_translation.mode,
+            Interp::Linear,
+            "CUBICSPLINE channel is stored as LINEAR (cubic degraded at load)",
+        );
+        assert_eq!(
+            child_translation.values.len(),
+            2,
+            "two keyframes → two extracted values (tangents discarded)",
+        );
+        assert_vec3_close(
+            child_translation.values[0],
+            Vec3::new(5.0, 5.0, 5.0),
+            "extracted keyframe-0 value, not a tangent",
+        );
+        assert_vec3_close(
+            child_translation.values[1],
+            Vec3::new(7.0, 7.0, 7.0),
+            "extracted keyframe-1 value, not a tangent",
+        );
+        // The midpoint lerps between the extracted VALUES (linear degrade), so it
+        // lands between (5,5,5) and (7,7,7) — never near a tangent magnitude.
+        assert_vec3_close(
+            sampled_joint_translation(&model, 1, 1, 0.5),
+            Vec3::new(6.0, 6.0, 6.0),
+            "CUBICSPLINE degrades to LINEAR: midpoint lerps between extracted values",
+        );
     }
 }

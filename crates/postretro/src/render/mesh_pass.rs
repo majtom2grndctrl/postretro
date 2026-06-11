@@ -1460,7 +1460,10 @@ fn clip_by_name<'a>(
     handle: &ModelHandle,
     name: &str,
 ) -> Option<&'a AnimationClip> {
-    model_clips.get(handle)?.iter().find(|clip| clip.name == name)
+    model_clips
+        .get(handle)?
+        .iter()
+        .find(|clip| clip.name == name)
 }
 
 /// The clip metadata (name + duration) for `handle` in a model-clip map, in glTF
@@ -2237,6 +2240,46 @@ mod tests {
             (clip.duration - 1.0).abs() < 1.0e-6,
             "duplicate names must resolve to the FIRST authored clip (duration 1.0), got {}",
             clip.duration,
+        );
+    }
+
+    /// End-to-end cache seam (M10 Task 3): clips parsed from a real multi-clip
+    /// glTF, inserted under a `ModelHandle`, are queryable by authored name and
+    /// enumerable as metadata in glTF order through the GPU-free free functions —
+    /// no `wgpu::Device`. This drives the same path `MeshPass::cache_model` →
+    /// `model_clip_by_name` / `model_clip_metadata` use at runtime, but headless.
+    #[test]
+    fn loaded_multi_clip_model_is_queryable_by_name_and_metadata_through_cache() {
+        use std::path::PathBuf;
+
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/multi_clip/multi_clip.gltf");
+        let model =
+            crate::model::gltf_loader::load_model(&fixture).expect("multi-clip fixture loads");
+
+        let handle = ModelHandle::from("multi_clip");
+        let map = clip_map(vec![(handle.clone(), model.clips.clone())]);
+
+        // Metadata lists both clips in authored glTF order, each with its own
+        // duration (idle 1.0, walk 2.0) — exactly what was parsed from the file.
+        let meta = clip_metadata(&map, &handle);
+        assert_eq!(meta.len(), 2, "both loaded clips appear in metadata");
+        assert_eq!(meta[0].name, "idle");
+        assert_eq!(meta[1].name, "walk");
+        assert!((meta[0].duration - 1.0).abs() < 1.0e-4, "idle duration");
+        assert!((meta[1].duration - 2.0).abs() < 1.0e-4, "walk duration");
+
+        // Each clip is retrievable by its authored name, reporting its own
+        // duration.
+        let idle = clip_by_name(&map, &handle, "idle").expect("'idle' clip found by name");
+        assert!((idle.duration - 1.0).abs() < 1.0e-4);
+        let walk = clip_by_name(&map, &handle, "walk").expect("'walk' clip found by name");
+        assert!((walk.duration - 2.0).abs() < 1.0e-4);
+
+        // A name the model does not carry returns nothing — no error, no panic.
+        assert!(
+            clip_by_name(&map, &handle, "run").is_none(),
+            "an absent clip name returns None",
         );
     }
 }

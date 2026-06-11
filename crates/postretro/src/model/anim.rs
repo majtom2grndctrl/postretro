@@ -498,7 +498,11 @@ mod tests {
             },
             ..Default::default()
         };
-        assert_eq!(tracks.translation.mode, Interp::Linear, "mode defaults LINEAR");
+        assert_eq!(
+            tracks.translation.mode,
+            Interp::Linear,
+            "mode defaults LINEAR"
+        );
         let clip = translation_clip("lin", 2.0, vec![tracks]);
         let mut out = Vec::new();
         sample_clip(&clip, &skeleton, 1.0, &mut out);

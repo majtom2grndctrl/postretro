@@ -21,10 +21,13 @@ use super::descriptor::{
 };
 use super::layout::Anchor;
 
-/// HUD text color, linear RGBA — a soft cyan-white that reads against the dark
-/// gameplay scene. Mirrors `splash.rs`'s local-const style (one named color, no
-/// theme tokens — those are out of scope here).
-const HUD_TEXT_COLOR: [f32; 4] = [0.55, 0.85, 0.90, 1.0];
+/// HUD text color token. The readouts (`player.health` / `player.ammo`) show a
+/// nominal at-rest state, so the `ok` token (the theme's green) reads as a
+/// healthy readout — `critical` (hot red) would imply a danger/low state. This
+/// resolves against the active theme at build time, exercising token resolution
+/// on a live screen (not just fixtures). The swatch label below uses the same
+/// readout color.
+const HUD_TEXT_COLOR_TOKEN: &str = "ok";
 
 /// HUD text size, logical-reference px.
 const HUD_FONT_SIZE: f32 = 28.0;
@@ -68,7 +71,7 @@ pub(crate) fn build_demo_descriptor() -> AnchoredTree {
     let health = Widget::Text(TextWidget {
         content: "HP --".to_string(),
         font_size: HUD_FONT_SIZE,
-        color: ColorValue::Literal(HUD_TEXT_COLOR),
+        color: ColorValue::Token(HUD_TEXT_COLOR_TOKEN.into()),
         font: None,
         bind: Some(TextBind {
             slot: "player.health".to_string(),
@@ -79,7 +82,7 @@ pub(crate) fn build_demo_descriptor() -> AnchoredTree {
     let ammo = Widget::Text(TextWidget {
         content: "AMMO --".to_string(),
         font_size: HUD_FONT_SIZE,
-        color: ColorValue::Literal(HUD_TEXT_COLOR),
+        color: ColorValue::Token(HUD_TEXT_COLOR_TOKEN.into()),
         font: None,
         bind: Some(TextBind {
             slot: "player.ammo".to_string(),
@@ -104,8 +107,11 @@ pub(crate) fn build_demo_descriptor() -> AnchoredTree {
     let swatch_label = Widget::Text(TextWidget {
         content: SWATCH_LABEL.to_string(),
         font_size: HUD_FONT_SIZE,
-        color: ColorValue::Literal(HUD_TEXT_COLOR),
-        font: None,
+        color: ColorValue::Token(HUD_TEXT_COLOR_TOKEN.into()),
+        // Shape the swatch label against the `mono` font token — the second
+        // registered face, exercised on a live screen alongside the body face
+        // used by the readouts above.
+        font: Some("mono".into()),
         bind: None,
     });
     let swatch = Widget::Grid(GridWidget {

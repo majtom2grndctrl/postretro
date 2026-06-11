@@ -26,6 +26,9 @@
 use std::collections::HashMap;
 
 use super::demo::build_demo_descriptor;
+use super::descriptor::{AnchoredTree, ColorValue, TextWidget, Widget};
+use super::layout::Anchor;
+use super::text::{UI_FONT_FAMILY, UI_MONO_FONT_FAMILY, measure_run};
 use super::theme::UiTheme;
 use super::tree::{ImageSizes, UiDrawData, UiTree};
 use crate::scripting::slot_table::SlotValue;
@@ -297,5 +300,144 @@ fn demo_swatch_quad_has_real_size_presence() {
         "swatch quad has real size presence (w,h) = ({}, {})",
         swatch.rect[2],
         swatch.rect[3],
+    );
+}
+
+/// The sRGB-encoded `[u8; 4]` a linear-RGBA color resolves to in a built draw
+/// list. Mirrors `tree::linear_rgba_to_srgb_u8` (private there) via a round-trip
+/// through a built tree, so the demo's resolved token color can be compared
+/// against the theme value in the same encoding the draw list carries — without
+/// re-deriving the sRGB transfer here. Matches `theme_gate_test::srgb_of`.
+fn srgb_of(linear: [f32; 4]) -> [u8; 4] {
+    let tree = AnchoredTree {
+        anchor: Anchor::TopLeft,
+        offset: [0.0, 0.0],
+        root: Widget::Text(TextWidget {
+            content: "X".into(),
+            font_size: 20.0,
+            color: ColorValue::Literal(linear),
+            font: None,
+            bind: None,
+        }),
+    };
+    let mut ui = UiTree::from_descriptor(&tree, &UiTheme::engine_default());
+    let mut fs = font_system();
+    ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots())
+        .texts[0]
+        .color
+}
+
+/// An empty slot map for the `srgb_of` helper's literal probe — that probe binds
+/// nothing, so resolution always takes the literal path.
+fn no_slots() -> HashMap<String, SlotValue> {
+    HashMap::new()
+}
+
+#[test]
+fn demo_hud_text_resolves_the_ok_token_color() {
+    // Acceptance — the demo's HUD readouts color through a theme token, not the
+    // old literal: built and resolved against the engine default theme, the
+    // `player.health` run carries the `ok` token's RGBA (sRGB-encoded), and that
+    // color differs from the pre-token literal the demo used to carry.
+    let theme = UiTheme::engine_default();
+    let ok = theme.color("ok").expect("engine default has the `ok` token");
+    let tree = build_demo_descriptor();
+    let mut ui = UiTree::from_descriptor(&tree, &theme);
+    let mut fs = font_system();
+    let data = ui.build_draw_data_retained(
+        [1280, 720],
+        &mut fs,
+        &no_images(),
+        &proxy_slots(100.0, 50.0, [0.0, 0.65, 0.75, 1.0]),
+    );
+
+    let hp = data
+        .texts
+        .iter()
+        .find(|t| t.content == "HP 100")
+        .expect("the demo draws the health readout");
+    assert_eq!(
+        hp.color,
+        srgb_of(ok),
+        "the HUD readout resolves the `ok` token's theme RGBA",
+    );
+    // The pre-token literal was a soft cyan-white; the resolved `ok` green must
+    // not coincide with it, so this proves the token path actually drives color.
+    const OLD_HUD_LITERAL: [f32; 4] = [0.55, 0.85, 0.90, 1.0];
+    assert_ne!(
+        hp.color,
+        srgb_of(OLD_HUD_LITERAL),
+        "the resolved token color is not the old hardcoded literal",
+    );
+}
+
+#[test]
+fn demo_swatch_label_resolves_the_mono_family() {
+    // Acceptance — the swatch label shapes against the second registered face:
+    // the `FLASH` run resolves to the `mono` family (not the body family the
+    // readouts use), and its measured width matches the mono face (not body),
+    // confirming the family selection reaches the measure seam.
+    let theme = UiTheme::engine_default();
+    let tree = build_demo_descriptor();
+    let mut ui = UiTree::from_descriptor(&tree, &theme);
+    let mut fs = font_system();
+    let data = ui.build_draw_data_retained(
+        [1280, 720],
+        &mut fs,
+        &no_images(),
+        &proxy_slots(100.0, 50.0, [0.0, 0.65, 0.75, 1.0]),
+    );
+
+    let label = data
+        .texts
+        .iter()
+        .find(|t| t.content == "FLASH")
+        .expect("the demo draws the swatch label");
+    assert_eq!(
+        label.family, UI_MONO_FONT_FAMILY,
+        "the swatch label resolves to the mono family",
+    );
+    assert_ne!(
+        label.family, UI_FONT_FAMILY,
+        "the swatch label is shaped with the mono face, not the body face",
+    );
+
+    // The drawn line's device font size shapes wider against the mono face than
+    // the body face for this label — the family reaches the measure seam, not
+    // just the draw record. Compare the two faces at the run's own device size.
+    let (mono_w, _) = measure_run(&mut fs, "FLASH", label.font_size, UI_MONO_FONT_FAMILY);
+    let (body_w, _) = measure_run(&mut fs, "FLASH", label.font_size, UI_FONT_FAMILY);
+    assert!(
+        (mono_w - body_w).abs() > EPS,
+        "mono and body faces measure `FLASH` differently (mono {mono_w}, body {body_w})",
+    );
+}
+
+#[test]
+fn demo_descriptor_round_trips_token_color_and_mono_font_on_the_wire() {
+    // Acceptance — the token forms serialize in their wire shapes: the demo
+    // descriptor round-trips byte-for-byte through serde JSON, and the serialized
+    // form carries the HUD color token as a bare string and the swatch font as
+    // `"mono"` (a token, not a literal array / absent key).
+    let tree = build_demo_descriptor();
+    let json = serde_json::to_string(&tree).expect("demo descriptor serializes");
+    let roundtripped: AnchoredTree =
+        serde_json::from_str(&json).expect("demo descriptor deserializes");
+    assert_eq!(roundtripped, tree, "demo descriptor round-trips identically");
+
+    // Color token serializes as a bare string, font token as `"mono"`.
+    assert!(
+        json.contains(r#""color":"ok""#),
+        "HUD color serializes as the bare token string, got {json}",
+    );
+    assert!(
+        json.contains(r#""font":"mono""#),
+        "swatch label font serializes as the `mono` token, got {json}",
+    );
+    // No HUD text re-serialized its color as a literal array — the token path
+    // never rewrote a token into a literal.
+    assert!(
+        !json.contains(r#""color":[0.55,0.85,0.9"#),
+        "no node re-serialized the old literal HUD color, got {json}",
     );
 }

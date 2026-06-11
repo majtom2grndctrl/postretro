@@ -5110,6 +5110,7 @@ impl Renderer {
                 self.light_count,
                 self.mesh_dynamic_time,
                 self.lighting_isolation as u32,
+                self.ambient_floor,
             );
             let mut mesh_enc = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Skinned Mesh Pass"),
@@ -5675,6 +5676,30 @@ pub fn level_world_to_geometry<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Regression guard for the exact bug this fix closes: the renderer must thread
+    // `self.ambient_floor` into the mesh `write_light_params` call so the
+    // diagnostics ambient-floor slider reaches skinned meshes (it was silently
+    // dropped, leaving shadowed mesh faces black). A behavioral assertion needs a
+    // GPU, so this pins the call-site source: if the `self.ambient_floor` argument
+    // is removed or renamed, the contract fails here before it reaches a frame.
+    #[test]
+    fn renderer_threads_ambient_floor_into_mesh_write_light_params() {
+        let src = include_str!("mod.rs");
+        let call = src
+            .split("self.mesh_pass.write_light_params(")
+            .nth(1)
+            .expect("mesh_pass.write_light_params call site must exist");
+        let args = call
+            .split_once(");")
+            .expect("call must terminate with );")
+            .0;
+        assert!(
+            args.contains("self.ambient_floor"),
+            "mesh write_light_params call must pass self.ambient_floor (the \
+             ambient-floor slider must reach skinned meshes)",
+        );
+    }
 
     // Regression: the forward "Textured Pipeline Layout" grew a fragment-stage
     // sampled-texture binding (the SH direct atlas, group-3 binding 15) but the

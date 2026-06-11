@@ -112,13 +112,15 @@ struct AnimationDescriptor {
 // `Uniforms.lighting_isolation` that frame. The mesh dynamic-direct term
 // participates in the forward lighting-isolation debug modes exactly as the world
 // dynamic term does: the loop is gated by `use_dynamic` derived from the SAME mode
-// set forward uses (see `fs_main`). Mirrors `MeshLightParams` in
-// render/mesh_pass.rs. std140-padded to 16 B.
+// set forward uses (see `fs_main`). `ambient_floor` is the SAME constant ambient
+// fill the renderer uploads to forward `Uniforms.ambient_floor` that frame; added
+// once in `fs_main` so shadowed mesh faces lift with the diagnostics slider.
+// Mirrors `MeshLightParams` in render/mesh_pass.rs. std140-padded to 16 B.
 struct MeshLightParams {
     light_count: u32,
     time: f32,
     lighting_isolation: u32,
-    _pad: u32,
+    ambient_floor: f32,
 };
 @group(2) @binding(4) var<uniform> mesh_light_params: MeshLightParams;
 
@@ -621,6 +623,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     } else if dynamic_direct.isolation == 2u {
         lighting = indirect;
     }
-    lighting = lighting + dynamic;
+    // Add the ambient floor once as a constant additive fill — disjoint from the
+    // indirect/baked-direct/dynamic terms, so it lifts shadowed faces without
+    // double-counting any light. Mirrors forward.wgsl's ambient-floor term
+    // (`total_light = vec3(ambient_floor) + indirect + static_direct`,
+    // rendering_pipeline.md §4 composition); summed before the albedo multiply.
+    lighting = vec3<f32>(mesh_light_params.ambient_floor) + lighting + dynamic;
     return vec4<f32>(base_color.rgb * lighting, base_color.a);
 }

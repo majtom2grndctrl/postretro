@@ -154,20 +154,38 @@ fn skinned_mesh_shader_source(cube_array_supported: bool) -> std::borrow::Cow<'s
 /// writes to forward `Uniforms.lighting_isolation` that frame, so the mesh
 /// dynamic-direct term participates in the lighting-isolation debug modes exactly
 /// as the world dynamic term does (the shader derives `use_dynamic` from it,
-/// mirroring forward.wgsl). std140-padded to 16 bytes (the WGSL `MeshLightParams`
+/// mirroring forward.wgsl). `ambient_floor` is the SAME constant ambient fill the
+/// renderer uploads to forward `Uniforms.ambient_floor` that frame; the mesh
+/// fragment shader adds it once as an additive fill so shadowed mesh faces lift
+/// with the diagnostics slider exactly as world surfaces do (see forward.wgsl's
+/// ambient-floor term). std140-padded to 16 bytes (the WGSL `MeshLightParams`
 /// struct mirrors this layout: `light_count: u32`, `time: f32`,
-/// `lighting_isolation: u32`, `_pad: u32`).
+/// `lighting_isolation: u32`, `ambient_floor: f32`).
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct MeshLightParams {
     light_count: u32,
     time: f32,
     lighting_isolation: u32,
-    _pad: u32,
+    ambient_floor: f32,
 }
 
 /// Byte size of the group-2 params uniform (`MeshLightParams`, 16 B).
 const MESH_LIGHT_PARAMS_SIZE: u64 = std::mem::size_of::<MeshLightParams>() as u64;
+
+/// Serialize `MeshLightParams` to its 16-byte std140 upload, field order matching
+/// the struct (and the WGSL mirror): `light_count` (0..4), `time` (4..8),
+/// `lighting_isolation` (8..12), `ambient_floor` (12..16). Split out from
+/// `write_light_params` so the byte layout can be asserted GPU-free in tests.
+fn build_light_params_bytes(params: MeshLightParams) -> Vec<u8> {
+    [
+        params.light_count.to_ne_bytes(),
+        params.time.to_ne_bytes(),
+        params.lighting_isolation.to_ne_bytes(),
+        params.ambient_floor.to_ne_bytes(),
+    ]
+    .concat()
+}
 
 /// Depth-only skinned shader: position + joints + weights, skinned by the shared
 /// `skin_matrix` kernel and projected by a per-render light-space matrix (group
@@ -974,26 +992,23 @@ impl MeshPass {
     /// `LightingIsolation as u32` the renderer writes to forward
     /// `Uniforms.lighting_isolation`, so the mesh dynamic-direct term is gated by
     /// the lighting-isolation debug modes exactly as the world dynamic term is.
+    /// `ambient_floor` MUST be the SAME value the renderer writes to forward
+    /// `Uniforms.ambient_floor` this frame, so shadowed mesh faces lift with the
+    /// diagnostics ambient-floor slider exactly as world surfaces do.
     pub fn write_light_params(
         &self,
         queue: &wgpu::Queue,
         light_count: u32,
         time: f32,
         lighting_isolation: u32,
+        ambient_floor: f32,
     ) {
-        let params = MeshLightParams {
+        let bytes = build_light_params_bytes(MeshLightParams {
             light_count,
             time,
             lighting_isolation,
-            _pad: 0,
-        };
-        let bytes = [
-            params.light_count.to_ne_bytes(),
-            params.time.to_ne_bytes(),
-            params.lighting_isolation.to_ne_bytes(),
-            params._pad.to_ne_bytes(),
-        ]
-        .concat();
+            ambient_floor,
+        });
         queue.write_buffer(&self.light_params_buffer, 0, &bytes);
     }
 
@@ -1551,16 +1566,47 @@ mod tests {
     }
 
     // Guard the group-2 params uniform layout contract: `MeshLightParams`
-    // { light_count: u32, time: f32, lighting_isolation: u32, _pad: u32 } — 16 B
-    // std140, mirrored by the WGSL `MeshLightParams` struct at group 2 binding 4.
-    // The mesh dynamic-light loop reads `time` for scripted-curve phase and
-    // `lighting_isolation` for the forward-matching debug gate, so a silent layout
-    // edit on either side must fail here.
+    // { light_count: u32, time: f32, lighting_isolation: u32, ambient_floor: f32 }
+    // — 16 B std140, mirrored by the WGSL `MeshLightParams` struct at group 2
+    // binding 4. The mesh dynamic-light loop reads `time` for scripted-curve phase,
+    // `lighting_isolation` for the forward-matching debug gate, and `ambient_floor`
+    // for the constant additive fill, so a silent layout edit on either side must
+    // fail here.
     #[test]
     fn mesh_light_params_is_sixteen_bytes() {
         assert_eq!(
             MESH_LIGHT_PARAMS_SIZE, 16,
             "MeshLightParams must be 16 B to match the std140 WGSL uniform",
+        );
+    }
+
+    // Byte-layout guard for the group-2 params serialization: `ambient_floor` is
+    // the 4th word and MUST land at bytes 12..16 (matching the WGSL struct offset),
+    // so the diagnostics ambient-floor slider reaches the mesh shader. Mirrors the
+    // forward `ambient_floor` byte-offset precedent in render/mod.rs. Exact
+    // `f32::to_le_bytes` comparison — a dropped/reordered field fails here.
+    #[test]
+    fn write_light_params_places_ambient_floor_at_bytes_twelve_to_sixteen() {
+        let ambient_floor = 0.375_f32;
+        let bytes = build_light_params_bytes(MeshLightParams {
+            light_count: 3,
+            time: 1.5,
+            lighting_isolation: 8,
+            ambient_floor,
+        });
+        assert_eq!(bytes.len(), 16, "serialized MeshLightParams must be 16 B");
+        assert_eq!(
+            &bytes[12..16],
+            &ambient_floor.to_le_bytes(),
+            "ambient_floor must serialize at bytes 12..16 (4th word)",
+        );
+        // The leading three words must be undisturbed by the new field.
+        assert_eq!(&bytes[0..4], &3u32.to_le_bytes(), "light_count at 0..4");
+        assert_eq!(&bytes[4..8], &1.5f32.to_le_bytes(), "time at 4..8");
+        assert_eq!(
+            &bytes[8..12],
+            &8u32.to_le_bytes(),
+            "lighting_isolation at 8..12",
         );
     }
 

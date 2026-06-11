@@ -70,11 +70,14 @@ Level install runs once, on the main thread, after worker delivery. Texture uplo
 | 12 | Data script run → per-level reactions into `data_registry`; progress tracker init |
 | 13 | Data-archetype sweep (match map placements against registered entity types not already handled), player spawn, camera teleport to first player spawn (or geometry center) |
 | 14 | Second sprite pass for descriptor-spawned emitters |
-| 15 | Fire the `levelLoad` named event |
+| 15 | Mesh model sweep: upload each distinct mesh model once, then resolve every animated mesh entity's clip indices (see mesh-sweep note below) |
+| 16 | Fire the `levelLoad` named event |
 
 Lights come from PRL data via the light bridge, not classname dispatch. Entity types are engine-global and arrive at mod-init via `setupMod` — `setupLevel`/the data script contributes only per-level reactions (see `scripting.md` §2).
 
 **Mesh-spawn seam.** World mesh spawning is its own install stage, distinct from classname dispatch. The durable contract: map geometry becomes renderable mesh entities here, after geometry upload and before the light/fog bridges. (The current implementation hardwires a single world mesh; a classname-driven handler is planned — see §7.)
+
+**Mesh-sweep order.** The single mesh model sweep (model upload + clip-index resolve) runs *after* the data-archetype sweep (stage 13), so it sees both classname-dispatched `prop_mesh` entities and descriptor-spawned animated meshes (`components.mesh`) — every mesh model uploads once and every animated state resolves its `clip_index`. It runs *before* the `levelLoad` fire (stage 16), because a `setAnimationState` reaction in `levelLoad` requires resolved clip indices. Running it earlier (right after classname dispatch) would miss descriptor-spawned meshes entirely, leaving their clips `None` — the bug this ordering fixes.
 
 ---
 

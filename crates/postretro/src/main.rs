@@ -2273,61 +2273,6 @@ impl App {
         }
         self.level_timings.record("classname_dispatch");
 
-        // Level-load model sweep. Classname dispatch above spawned a
-        // `MeshComponent` entity per `prop_mesh` placement; now collect the
-        // distinct `model` handles off those entities and load + upload each
-        // exactly once into the renderer's model cache (renderer owns GPU). This
-        // runs at level-load time, never mid-frame, so there is no in-frame
-        // hitch. The model handle is the renderer cache key the per-frame draw
-        // planner groups by, so it is passed VERBATIM as the cache key; the glTF
-        // file itself is opened from `content_root.join(handle)` inside
-        // `load_skinned_model` (open path and cache key are decoupled — every
-        // other asset joins the content root, but the key must stay the raw
-        // handle the planner looks up). A failed/invalid load is non-fatal:
-        // `load_skinned_model` already `warn!`s naming the path and returns
-        // `None`, the entity then renders nothing, and the load continues.
-        {
-            // Clear per-level transient mesh-pass state (the `"smooth"`-interrupt
-            // snapshot store — entity seeds are not stable across levels) at the
-            // model-cache install seam, and reset the game-side clip tables before
-            // rebuilding them for this level. Task 6 extends the pass hook to the
-            // palette cache.
-            renderer.clear_mesh_pass_for_level_load();
-            self.mesh_clip_tables.clear();
-
-            let models = {
-                let registry = self.script_ctx.registry.borrow();
-                distinct_mesh_models(&registry)
-            };
-            for model in &models {
-                renderer.load_skinned_model(model, &self.content_root, &prm_cache_root);
-                // Build this model's game-side clip table from the renderer's clip
-                // metadata (glTF index order). A failed load cached nothing, so the
-                // metadata is empty and the table maps no clips — every state then
-                // warns + stays unresolved below.
-                let meta = renderer.skinned_model_clip_metadata(model);
-                self.mesh_clip_tables
-                    .insert(crate::model::ModelHandle::from(model.clone()), &meta);
-            }
-            if !models.is_empty() {
-                log::info!(
-                    "[Model] uploaded {} distinct mesh model(s) for this level",
-                    models.len(),
-                );
-            }
-
-            // Resolve every animated mesh entity's state map against its model's
-            // clip table: fill each `AnimationState.clip_index` (name → index). A
-            // state naming a clip the model does not carry warns ONCE here and stays
-            // `clip_index = None` (unusable — switching to it warns + no-ops, and
-            // switching out of it hard-cuts, both via Phase 1).
-            resolve_mesh_entity_clips(
-                &mut self.script_ctx.registry.borrow_mut(),
-                &self.mesh_clip_tables,
-            );
-        }
-        self.level_timings.record("model_load");
-
         // Register sprite collections for every distinct `sprite` name in
         // the registry. Covers map-spawned emitters; descriptor-spawned
         // emitters get a second pass after the data script runs.
@@ -2497,6 +2442,68 @@ impl App {
             self.particle_render.register_sprite(collection);
         }
         self.level_timings.record("archetype_sweep");
+
+        // Level-load model sweep. Runs AFTER both classname dispatch (which
+        // spawned a `MeshComponent` per `prop_mesh` placement) and the
+        // data-archetype sweep (which spawned descriptor-declared mesh entities,
+        // including animated `components.mesh` placements) so this single sweep
+        // sees EVERY mesh entity. Collect the distinct `model` handles off those
+        // entities and load + upload each exactly once into the renderer's model
+        // cache (renderer owns GPU). This runs at level-load time, never
+        // mid-frame, so there is no in-frame hitch. The model handle is the
+        // renderer cache key the per-frame draw planner groups by, so it is
+        // passed VERBATIM as the cache key; the glTF file itself is opened from
+        // `content_root.join(handle)` inside `load_skinned_model` (open path and
+        // cache key are decoupled — every other asset joins the content root, but
+        // the key must stay the raw handle the planner looks up). A
+        // failed/invalid load is non-fatal: `load_skinned_model` already `warn!`s
+        // naming the path and returns `None`, the entity then renders nothing,
+        // and the load continues.
+        //
+        // Ordering: this must run after the archetype sweep (so descriptor mesh
+        // entities exist before clip resolve) and before the `levelLoad` fire
+        // (which can run `setAnimationState`, requiring resolved clip indices).
+        if let Some(renderer) = self.renderer.as_mut() {
+            // Clear per-level transient mesh-pass state (the `"smooth"`-interrupt
+            // snapshot store — entity seeds are not stable across levels) at the
+            // model-cache install seam, and reset the game-side clip tables before
+            // rebuilding them for this level. Task 6 extends the pass hook to the
+            // palette cache.
+            renderer.clear_mesh_pass_for_level_load();
+            self.mesh_clip_tables.clear();
+
+            let models = {
+                let registry = self.script_ctx.registry.borrow();
+                distinct_mesh_models(&registry)
+            };
+            for model in &models {
+                renderer.load_skinned_model(model, &self.content_root, &prm_cache_root);
+                // Build this model's game-side clip table from the renderer's clip
+                // metadata (glTF index order). A failed load cached nothing, so the
+                // metadata is empty and the table maps no clips — every state then
+                // warns + stays unresolved below.
+                let meta = renderer.skinned_model_clip_metadata(model);
+                self.mesh_clip_tables
+                    .insert(crate::model::ModelHandle::from(model.clone()), &meta);
+            }
+            if !models.is_empty() {
+                log::info!(
+                    "[Model] uploaded {} distinct mesh model(s) for this level",
+                    models.len(),
+                );
+            }
+
+            // Resolve every animated mesh entity's state map against its model's
+            // clip table: fill each `AnimationState.clip_index` (name → index). A
+            // state naming a clip the model does not carry warns ONCE here and stays
+            // `clip_index = None` (unusable — switching to it warns + no-ops, and
+            // switching out of it hard-cuts, both via Phase 1).
+            resolve_mesh_entity_clips(
+                &mut self.script_ctx.registry.borrow_mut(),
+                &self.mesh_clip_tables,
+            );
+        }
+        self.level_timings.record("model_load");
 
         fire_named_event_with_sequences(
             "levelLoad",
@@ -3078,6 +3085,85 @@ mod tests {
 
         let registry = EntityRegistry::new();
         assert!(distinct_mesh_models(&registry).is_empty());
+    }
+
+    // Regression: the level-load model sweep + clip resolve ran BEFORE the
+    // data-archetype dispatch, so descriptor-spawned animated meshes never had
+    // their `clip_index` filled (every state stayed `None` → setAnimationState
+    // no-ops). The sweep now runs AFTER archetype dispatch. This pins the seam:
+    // when resolve runs against a registry that already holds a
+    // descriptor-style mesh entity (unresolved `clip_index: None` states), it
+    // resolves the indices — proving the resolve sees descriptor-spawned meshes.
+    #[test]
+    fn resolve_after_archetype_dispatch_fills_descriptor_mesh_clip_index() {
+        use crate::scripting::components::mesh::{
+            AnimationState, DEFAULT_CROSSFADE_MS, InterruptPolicy, MeshAnimation, MeshComponent,
+        };
+        use crate::scripting::registry::{EntityRegistry, Transform};
+        use std::collections::HashMap;
+
+        // A descriptor-declared animated mesh as it exists right after
+        // `apply_data_archetype_dispatch`: states present, every `clip_index`
+        // still `None` (the dispatch builds states but does not resolve them).
+        let unresolved = |clip: &str| AnimationState {
+            clip: clip.into(),
+            looping: true,
+            crossfade_ms: DEFAULT_CROSSFADE_MS,
+            interrupt: InterruptPolicy::Smooth,
+            clip_index: None,
+        };
+        let mut states = HashMap::new();
+        states.insert("idle".to_string(), unresolved("idle_clip"));
+        states.insert("attack".to_string(), unresolved("attack_clip"));
+
+        let mut registry = EntityRegistry::new();
+        let id = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                id,
+                MeshComponent {
+                    model: "models/descriptor_mob/scene.gltf".to_string(),
+                    animation: Some(MeshAnimation::new(states, "idle".to_string())),
+                },
+            )
+            .expect("freshly spawned id is live");
+
+        // Before resolve, the descriptor mesh's model is already visible to the
+        // sweep — so the single post-dispatch sweep would upload it.
+        let models = distinct_mesh_models(&registry);
+        assert!(models.contains(&"models/descriptor_mob/scene.gltf".to_string()));
+
+        // Build the clip table the renderer would produce for this model
+        // (glTF index order). Hand-built so no GPU is needed.
+        let mut tables = scripting_systems::mesh_anim::MeshClipTables::new();
+        let meta = vec![
+            crate::render::mesh_pass::ClipMetadata {
+                name: "idle_clip".to_string(),
+                duration: 2.0,
+            },
+            crate::render::mesh_pass::ClipMetadata {
+                name: "attack_clip".to_string(),
+                duration: 0.8,
+            },
+        ];
+        tables.insert(
+            crate::model::ModelHandle::from("models/descriptor_mob/scene.gltf"),
+            &meta,
+        );
+
+        resolve_mesh_entity_clips(&mut registry, &tables);
+
+        // The descriptor entity's states are now resolved to concrete glTF
+        // indices — the contract that makes `setAnimationState` work at spawn.
+        let component = registry
+            .get_component::<MeshComponent>(id)
+            .expect("mesh component still present");
+        let anim = component
+            .animation
+            .as_ref()
+            .expect("animation block present");
+        assert_eq!(anim.states.get("idle").unwrap().clip_index, Some(0));
+        assert_eq!(anim.states.get("attack").unwrap().clip_index, Some(1));
     }
 
     #[test]

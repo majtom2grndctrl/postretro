@@ -2,6 +2,8 @@
 // skinned-draw inputs (model handle + interpolated transform) for the renderer.
 // See: context/lib/entity_model.md §5 · context/lib/rendering_pipeline.md §9
 
+use std::collections::HashMap;
+
 use super::mesh_anim::{self, MeshClipTables};
 use crate::model::ModelHandle;
 use crate::prl::LevelWorld;
@@ -9,6 +11,63 @@ use crate::render::mesh_instances::{MeshInstanceInput, MeshSampleParams};
 use crate::render::mesh_pass::mesh_visible;
 use crate::scripting::registry::{ComponentKind, ComponentValue, EntityRegistry, Transform};
 use crate::visibility::VisibleCells;
+
+/// Animation time-slicing distance thresholds + per-bucket resample strides
+/// (Task 6). DISTANT skinned instances re-sample their pose every Nth frame and
+/// re-upload a cached palette on the skipped frames, trading pose freshness for
+/// CPU sampling cost. Off-screen instances already cost nothing (culled before
+/// planning); this cuts the steady-state per-instance sample rate for the ones
+/// that are visible but far.
+///
+/// TUNABLE, not a contract: the ~20 m / ~40 m split and the 1 / 2 / 4 strides are
+/// the plan's starting proposal, picked so a near monster stays frame-fresh while
+/// a distant crowd de-syncs its sampling. Adjust against the camera FOV and the
+/// representative wave size; the acceptance test pins the *shape* (near every
+/// frame, far at stride) and survives a retune of the exact numbers.
+const RESAMPLE_NEAR_DISTANCE: f32 = 20.0;
+/// Upper distance threshold (meters): beyond this an instance falls in the
+/// farthest bucket ([`RESAMPLE_STRIDE_FAR`]). TUNABLE — see
+/// [`RESAMPLE_NEAR_DISTANCE`].
+const RESAMPLE_FAR_DISTANCE: f32 = 40.0;
+/// Near bucket (`distance <= RESAMPLE_NEAR_DISTANCE`): resample every frame —
+/// stride 1 means the modulo test is always true.
+const RESAMPLE_STRIDE_NEAR: u64 = 1;
+/// Mid bucket (`RESAMPLE_NEAR_DISTANCE < distance <= RESAMPLE_FAR_DISTANCE`):
+/// resample every 2nd frame. TUNABLE — see [`RESAMPLE_NEAR_DISTANCE`].
+const RESAMPLE_STRIDE_MID: u64 = 2;
+/// Far bucket (`distance > RESAMPLE_FAR_DISTANCE`): resample every 4th frame.
+/// TUNABLE — see [`RESAMPLE_NEAR_DISTANCE`].
+const RESAMPLE_STRIDE_FAR: u64 = 4;
+
+/// The resample stride (in frames) for an instance at `distance` meters from the
+/// camera. A larger stride means a lower re-sample rate (more cached re-uploads).
+/// Pure data logic — the bucketing half of the time-slicing decision, factored
+/// out so a collector unit test asserts the near/mid/far rates without a device.
+fn resample_stride(distance: f32) -> u64 {
+    if distance <= RESAMPLE_NEAR_DISTANCE {
+        RESAMPLE_STRIDE_NEAR
+    } else if distance <= RESAMPLE_FAR_DISTANCE {
+        RESAMPLE_STRIDE_MID
+    } else {
+        RESAMPLE_STRIDE_FAR
+    }
+}
+
+/// Whether an instance re-samples its pose this frame (Task 6 time-slicing).
+/// `force` short-circuits the stride test (a just-changed state or an active
+/// crossfade must resample so the transition is never frozen on a skipped frame).
+/// Otherwise the per-entity phase `(frame_index + seed) % stride == 0` decides:
+/// folding `seed` in de-syncs distant instances so a far crowd does not resample
+/// in lock-step. Stride 1 (near bucket) makes the modulo always true → every
+/// frame. Pure data logic; the renderer-side cache may still upgrade a `false` to
+/// a resample on a cache miss.
+fn should_resample(distance: f32, frame_index: u64, seed: u32, force: bool) -> bool {
+    if force {
+        return true;
+    }
+    let stride = resample_stride(distance);
+    (frame_index.wrapping_add(seed as u64)) % stride == 0
+}
 
 /// Per-frame scratch state for the skinned-mesh render path. Owned by the game
 /// layer (not the renderer) so the wgpu boundary stays inside `MeshPass` —
@@ -26,12 +85,38 @@ pub(crate) struct MeshRenderCollector {
     /// phase seed) tuples. Cleared + refilled each `collect` so capacity carries
     /// across frames.
     instances: Vec<MeshInstanceInput>,
+    /// Monotonic frame index, bumped once per [`collect`]. Drives the per-bucket
+    /// resample stride phase (`(frame_index + seed) % stride`). Owned here so the
+    /// time-slicing decision stays entirely game-side and testable without
+    /// threading a counter through the render loop. `wrapping`-incremented; the
+    /// modulo phase is unaffected by the eventual wrap.
+    ///
+    /// [`collect`]: MeshRenderCollector::collect
+    frame_index: u64,
+    /// Per-entity last-seen state fingerprint (the entered-state stamp bits),
+    /// keyed by entity seed. A change between frames means the entity (re)entered
+    /// a state this frame, which forces a resample so the transition is never
+    /// frozen on a skipped frame. Bounded by the live animated-entity count;
+    /// entries absent from a frame drop so it never grows past the active set.
+    last_state: HashMap<u32, u64>,
+    /// Scratch for the rebuilt `last_state` map each frame — swapped with
+    /// `last_state` so a steady-state frame reuses both allocations (no per-frame
+    /// map churn).
+    last_state_scratch: HashMap<u32, u64>,
+    /// Count of instances that resampled this frame (Task 6 acceptance metric).
+    /// Tallied at the bucketing decision — the game-side counter a collector unit
+    /// test asserts the reduced rate against without a GPU device.
+    resample_count: u32,
 }
 
 impl MeshRenderCollector {
     pub(crate) fn new() -> Self {
         Self {
             instances: Vec::new(),
+            frame_index: 0,
+            last_state: HashMap::new(),
+            last_state_scratch: HashMap::new(),
+            resample_count: 0,
         }
     }
 
@@ -61,7 +146,17 @@ impl MeshRenderCollector {
     /// (looping states only — one-shot states play from entry, no phase). It also
     /// keys the snapshot store on a `"smooth"` capture.
     ///
+    /// Animation time-slicing (Task 6): `camera_pos` is this frame's camera eye
+    /// position. Each survivor's distance to it picks a resample stride bucket
+    /// ([`resample_stride`]); the per-entity phase `(frame_index + seed) % stride`
+    /// then decides whether the instance re-samples this frame. A state change
+    /// (entered-stamp fingerprint moved) or an active crossfade FORCES a resample
+    /// so a transition is never frozen on a skipped frame. The per-frame resample
+    /// tally is exposed via [`resample_count`] (the game-side acceptance metric).
+    ///
     /// [`instances`]: MeshRenderCollector::instances
+    /// [`resample_count`]: MeshRenderCollector::resample_count
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn collect(
         &mut self,
         registry: &EntityRegistry,
@@ -70,8 +165,15 @@ impl MeshRenderCollector {
         alpha: f32,
         anim_time: f64,
         tables: &MeshClipTables,
+        camera_pos: glam::Vec3,
     ) {
         self.instances.clear();
+        // Rebuild the last-state map into the scratch so entries absent this
+        // frame (despawned / culled-out entities) drop — bounding it by the live
+        // animated-entity count. Swapped back at the end; both allocations carry.
+        self.last_state_scratch.clear();
+        self.resample_count = 0;
+        let frame_index = self.frame_index;
 
         for (id, value) in registry.iter_with_kind(ComponentKind::Mesh) {
             let ComponentValue::Mesh(mesh) = value else {
@@ -97,6 +199,28 @@ impl MeshRenderCollector {
             let (sample, capture) =
                 resolve_sample(mesh.animation.as_ref(), &handle, tables, anim_time, seed);
 
+            // Time-slicing decision. Distance from the CURRENT-TICK position (the
+            // same stable per-tick value the cull used). For an ANIMATED entity a
+            // state change this frame (entered-stamp fingerprint moved vs. last
+            // frame) OR an active crossfade forces a resample so the transition is
+            // never frozen. A STATELESS entity has no state to change — it follows
+            // pure stride bucketing and is never tracked, keeping `last_state`
+            // bounded by the animated-entity count.
+            let state_changed = match state_fingerprint(mesh.animation.as_ref()) {
+                Some(fingerprint) => {
+                    let changed = self.last_state.get(&seed) != Some(&fingerprint);
+                    self.last_state_scratch.insert(seed, fingerprint);
+                    changed
+                }
+                None => false,
+            };
+            let force = state_changed || sample.fade.is_some() || capture.is_some();
+            let distance = current.position.distance(camera_pos);
+            let resample = should_resample(distance, frame_index, seed, force);
+            if resample {
+                self.resample_count += 1;
+            }
+
             self.instances.push(MeshInstanceInput {
                 model: handle,
                 transform: glam::Mat4::from_scale_rotation_translation(
@@ -107,14 +231,49 @@ impl MeshRenderCollector {
                 phase_seed: seed,
                 sample,
                 capture,
+                resample,
             });
         }
+
+        // Swap the rebuilt map in (the old one becomes next frame's scratch) and
+        // advance the frame phase. `wrapping_add` so the modulo phase keeps going
+        // past `u64::MAX` without a panic.
+        std::mem::swap(&mut self.last_state, &mut self.last_state_scratch);
+        self.frame_index = self.frame_index.wrapping_add(1);
     }
 
     /// The per-instance draw inputs to plan this frame (cull already applied).
     pub(crate) fn instances(&self) -> &[MeshInstanceInput] {
         &self.instances
     }
+
+    /// Count of instances that resampled their pose this frame (Task 6). The
+    /// game-side acceptance metric: near instances tally every frame, far ones at
+    /// the bucket stride, and a state-changing / crossfading distant instance is
+    /// counted on the frame it transitions. Reset at the top of each [`collect`].
+    ///
+    /// The metric's only in-engine consumer today is the time-slicing acceptance
+    /// test; `allow(dead_code)` off the test build until a diagnostics overlay
+    /// surfaces it (the `state_elapsed` precedent).
+    ///
+    /// [`collect`]: MeshRenderCollector::collect
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn resample_count(&self) -> u32 {
+        self.resample_count
+    }
+}
+
+/// The state fingerprint for an animated entity: its current entered-state stamp
+/// bits (a pending stamp reads `0`), or `None` for a STATELESS entity (no
+/// animation block — nothing to change, so it is never tracked and never forces a
+/// resample). A change between frames means the entity (re)entered a state — the
+/// signal that forces a resample. The current state name does not need hashing
+/// in: a switch always moves the entered stamp (the resolve pass restamps on
+/// entry), so the stamp bits alone capture a (re)entry.
+fn state_fingerprint(
+    animation: Option<&crate::scripting::components::mesh::MeshAnimation>,
+) -> Option<u64> {
+    animation.map(|anim| anim.entered_at.map(|t| t.to_bits()).unwrap_or(0))
 }
 
 /// Resolve one entity's sample params + optional capture instruction.
@@ -268,6 +427,7 @@ mod tests {
             1.0,
             0.0,
             &MeshClipTables::new(),
+            glam::Vec3::ZERO,
         );
         assert_eq!(collector.instances().len(), 1);
         // Translation column carries the entity position; handle preserved.
@@ -292,6 +452,7 @@ mod tests {
             1.0,
             0.0,
             &MeshClipTables::new(),
+            glam::Vec3::ZERO,
         );
         assert_eq!(collector.instances().len(), 2);
         let xs: Vec<f32> = collector
@@ -327,6 +488,7 @@ mod tests {
             1.0,
             0.0,
             &MeshClipTables::new(),
+            glam::Vec3::ZERO,
         );
         assert_eq!(collector.instances().len(), 2);
         let handles: Vec<&str> = collector
@@ -352,6 +514,7 @@ mod tests {
             1.0,
             0.0,
             &MeshClipTables::new(),
+            glam::Vec3::ZERO,
         );
         assert!(collector.instances().is_empty());
     }
@@ -388,6 +551,7 @@ mod tests {
             0.5,
             0.0,
             &MeshClipTables::new(),
+            glam::Vec3::ZERO,
         );
         assert_eq!(collector.instances().len(), 1);
         let t = collector.instances()[0].transform.w_axis;
@@ -411,6 +575,7 @@ mod tests {
             1.0,
             0.0,
             &MeshClipTables::new(),
+            glam::Vec3::ZERO,
         );
         let cap_after_first = collector.instances.capacity();
         assert!(cap_after_first >= 1);
@@ -429,6 +594,7 @@ mod tests {
             1.0,
             0.0,
             &MeshClipTables::new(),
+            glam::Vec3::ZERO,
         );
         assert!(collector.instances().is_empty());
         assert_eq!(collector.instances.capacity(), cap_after_first);
@@ -509,7 +675,15 @@ mod tests {
         spawn_mesh(&mut reg, "prop", Vec3::new(1.0, 0.0, 0.0));
         spawn_mesh(&mut reg, "prop", Vec3::new(2.0, 0.0, 0.0));
 
-        collector.collect(&reg, &world, &VisibleCells::DrawAll, 1.0, 3.0, &tables);
+        collector.collect(
+            &reg,
+            &world,
+            &VisibleCells::DrawAll,
+            1.0,
+            3.0,
+            &tables,
+            glam::Vec3::ZERO,
+        );
         let insts = collector.instances();
         assert_eq!(insts.len(), 2);
         for inst in insts {
@@ -543,7 +717,15 @@ mod tests {
         resolve_pending_animation_stamps(&mut reg, 0.0);
 
         // Default state idle (clip 0) at spawn.
-        collector.collect(&reg, &world, &VisibleCells::DrawAll, 1.0, 0.5, &tables);
+        collector.collect(
+            &reg,
+            &world,
+            &VisibleCells::DrawAll,
+            1.0,
+            0.5,
+            &tables,
+            glam::Vec3::ZERO,
+        );
         assert_eq!(
             collector.instances()[0].sample.primary.clip_index,
             0,
@@ -553,7 +735,15 @@ mod tests {
         // Switch to walk; the new state's clip (1) drives the primary leg.
         switch_animation_state(&mut reg, id, "walk");
         resolve_pending_animation_stamps(&mut reg, 1.0);
-        collector.collect(&reg, &world, &VisibleCells::DrawAll, 1.0, 5.0, &tables);
+        collector.collect(
+            &reg,
+            &world,
+            &VisibleCells::DrawAll,
+            1.0,
+            5.0,
+            &tables,
+            glam::Vec3::ZERO,
+        );
         assert_eq!(
             collector.instances()[0].sample.primary.clip_index,
             1,
@@ -583,7 +773,15 @@ mod tests {
         resolve_pending_animation_stamps(&mut reg, 1.02);
 
         // Collect 0.02s into idle's 100ms fade — capture due this frame.
-        collector.collect(&reg, &world, &VisibleCells::DrawAll, 1.0, 1.04, &tables);
+        collector.collect(
+            &reg,
+            &world,
+            &VisibleCells::DrawAll,
+            1.0,
+            1.04,
+            &tables,
+            glam::Vec3::ZERO,
+        );
         let inst = &collector.instances()[0];
         let capture = inst
             .capture
@@ -601,5 +799,221 @@ mod tests {
             inst.sample.primary.clip_index, 0,
             "primary is the entered idle"
         );
+    }
+
+    // --- Animation time-slicing (Task 6) ---------------------------------------
+
+    /// A camera position far enough that an instance at the origin lands past
+    /// `RESAMPLE_FAR_DISTANCE` (the stride-4 far bucket). Placed along +X.
+    fn far_camera() -> Vec3 {
+        Vec3::new(RESAMPLE_FAR_DISTANCE + 10.0, 0.0, 0.0)
+    }
+
+    #[test]
+    fn resample_stride_buckets_by_distance() {
+        // The pure bucketing function: near → stride 1, mid → 2, far → 4.
+        assert_eq!(resample_stride(0.0), RESAMPLE_STRIDE_NEAR);
+        assert_eq!(
+            resample_stride(RESAMPLE_NEAR_DISTANCE),
+            RESAMPLE_STRIDE_NEAR
+        );
+        assert_eq!(
+            resample_stride(RESAMPLE_NEAR_DISTANCE + 0.1),
+            RESAMPLE_STRIDE_MID
+        );
+        assert_eq!(resample_stride(RESAMPLE_FAR_DISTANCE), RESAMPLE_STRIDE_MID);
+        assert_eq!(
+            resample_stride(RESAMPLE_FAR_DISTANCE + 0.1),
+            RESAMPLE_STRIDE_FAR
+        );
+    }
+
+    #[test]
+    fn near_instance_resamples_every_frame() {
+        // A stateless instance at the origin with the camera on top of it (near
+        // bucket, stride 1) must resample on every single collect — the resample
+        // count equals the instance count each frame.
+        let mut reg = EntityRegistry::new();
+        let world = single_leaf_world();
+        let mut collector = MeshRenderCollector::new();
+        spawn_mesh(&mut reg, "decraniated", Vec3::ZERO);
+
+        for _ in 0..8 {
+            collector.collect(
+                &reg,
+                &world,
+                &VisibleCells::DrawAll,
+                1.0,
+                0.0,
+                &MeshClipTables::new(),
+                Vec3::ZERO,
+            );
+            assert_eq!(
+                collector.resample_count(),
+                1,
+                "a near instance resamples every frame",
+            );
+            assert!(
+                collector.instances()[0].resample,
+                "near instance carries resample = true",
+            );
+        }
+    }
+
+    #[test]
+    fn far_instance_resamples_at_reduced_rate() {
+        // A stateless instance at the origin with the camera in the far bucket
+        // (stride 4) must resample only every 4th frame, NOT every frame — the
+        // acceptance metric: the per-frame resample count drops accordingly. Over
+        // a window of 4N frames the far instance resamples exactly N times, while
+        // a near instance would have resampled 4N times.
+        let mut reg = EntityRegistry::new();
+        let world = single_leaf_world();
+        let mut collector = MeshRenderCollector::new();
+        spawn_mesh(&mut reg, "decraniated", Vec3::ZERO);
+
+        let frames = (RESAMPLE_STRIDE_FAR * 5) as usize;
+        let mut resampled = 0u32;
+        for _ in 0..frames {
+            collector.collect(
+                &reg,
+                &world,
+                &VisibleCells::DrawAll,
+                1.0,
+                0.0,
+                &MeshClipTables::new(),
+                far_camera(),
+            );
+            resampled += collector.resample_count();
+        }
+        // Exactly frames / stride resamples (the modulo fires once per stride).
+        assert_eq!(
+            resampled,
+            frames as u32 / RESAMPLE_STRIDE_FAR as u32,
+            "far instance resamples at 1/stride the near rate",
+        );
+        // And strictly fewer than the every-frame rate (the reduction is real).
+        assert!(
+            resampled < frames as u32,
+            "far instance resamples strictly less often than every frame",
+        );
+    }
+
+    #[test]
+    fn far_crowd_desyncs_rather_than_resampling_in_lockstep() {
+        // Two distant stateless instances with distinct seeds must not resample on
+        // the SAME frames — folding the entity seed into the stride phase de-syncs
+        // them, so on most frames at most one of the two resamples (the per-frame
+        // count is rarely both at once). Verify the two never both skip forever and
+        // that there exists a frame where their resample decisions differ.
+        let mut reg = EntityRegistry::new();
+        let world = single_leaf_world();
+        let mut collector = MeshRenderCollector::new();
+        spawn_mesh(&mut reg, "decraniated", Vec3::ZERO);
+        spawn_mesh(&mut reg, "decraniated", Vec3::ZERO);
+
+        let mut saw_difference = false;
+        for _ in 0..(RESAMPLE_STRIDE_FAR * 4) {
+            collector.collect(
+                &reg,
+                &world,
+                &VisibleCells::DrawAll,
+                1.0,
+                0.0,
+                &MeshClipTables::new(),
+                far_camera(),
+            );
+            let flags: Vec<bool> = collector.instances().iter().map(|i| i.resample).collect();
+            assert_eq!(flags.len(), 2);
+            if flags[0] != flags[1] {
+                saw_difference = true;
+            }
+        }
+        assert!(
+            saw_difference,
+            "distinct seeds de-sync: there is a frame where the two far instances disagree",
+        );
+    }
+
+    #[test]
+    fn distant_state_change_forces_resample() {
+        // A DISTANT animated instance (far bucket, stride 4) still resamples on the
+        // frame it changes state — the transition must never be frozen by the
+        // time-slice. Drive it to a frame the stride would otherwise SKIP, then
+        // switch state on that frame and confirm it resamples anyway.
+        let mut reg = EntityRegistry::new();
+        let world = single_leaf_world();
+        let mut collector = MeshRenderCollector::new();
+        let tables = grunt_tables();
+        let id = spawn_animated(&mut reg, Vec3::ZERO);
+        resolve_pending_animation_stamps(&mut reg, 0.0);
+        let cam = far_camera();
+
+        // Advance frames until we reach one the far stride would skip (resample
+        // false). The spawn frame forces a resample (new state fingerprint), so we
+        // need to roll past the forced frames into a steady skip.
+        let mut skip_frame = None;
+        for f in 0..(RESAMPLE_STRIDE_FAR * 3) {
+            collector.collect(&reg, &world, &VisibleCells::DrawAll, 1.0, 0.5, &tables, cam);
+            if !collector.instances()[0].resample {
+                skip_frame = Some(f);
+                break;
+            }
+        }
+        assert!(
+            skip_frame.is_some(),
+            "a far animated instance must eventually hit a skipped frame",
+        );
+
+        // Now switch state — this collect must resample despite the stride.
+        switch_animation_state(&mut reg, id, "walk");
+        resolve_pending_animation_stamps(&mut reg, 1.0);
+        collector.collect(&reg, &world, &VisibleCells::DrawAll, 1.0, 1.0, &tables, cam);
+        assert!(
+            collector.instances()[0].resample,
+            "a distant instance resamples on the frame its state changes",
+        );
+    }
+
+    #[test]
+    fn distant_active_crossfade_forces_resample() {
+        // A DISTANT instance mid-crossfade resamples every frame the fade is in
+        // flight (the blend weight advances each frame — a frozen pose would
+        // visibly hitch). After the switch+resolve, several consecutive collects
+        // inside the fade window must all resample even at the far stride.
+        let mut reg = EntityRegistry::new();
+        let world = single_leaf_world();
+        let mut collector = MeshRenderCollector::new();
+        let tables = grunt_tables();
+        let id = spawn_animated(&mut reg, Vec3::ZERO);
+        resolve_pending_animation_stamps(&mut reg, 0.0);
+        let cam = far_camera();
+
+        // Start a fade: idle→walk (walk fades in over 200ms).
+        switch_animation_state(&mut reg, id, "walk");
+        resolve_pending_animation_stamps(&mut reg, 1.0);
+
+        // Collect at several points INSIDE the 200ms fade window. Each must
+        // resample because a fade is active (forced regardless of the stride).
+        for anim_time in [1.0, 1.05, 1.1, 1.15] {
+            collector.collect(
+                &reg,
+                &world,
+                &VisibleCells::DrawAll,
+                1.0,
+                anim_time,
+                &tables,
+                cam,
+            );
+            let inst = &collector.instances()[0];
+            assert!(
+                inst.sample.fade.is_some(),
+                "fade is active at anim_time {anim_time}",
+            );
+            assert!(
+                inst.resample,
+                "a distant instance resamples while a crossfade is in flight (t={anim_time})",
+            );
+        }
     }
 }

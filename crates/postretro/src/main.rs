@@ -1529,6 +1529,10 @@ impl ApplicationHandler for App {
                                 frame_result.alpha,
                                 self.anim_time,
                                 &self.mesh_clip_tables,
+                                // Camera eye position — the same value that seeds
+                                // the portal flood-fill — drives the per-instance
+                                // animation time-slicing distance bucket (Task 6).
+                                interp.position,
                             );
                             renderer.set_mesh_draws(self.mesh_render.instances());
                         }

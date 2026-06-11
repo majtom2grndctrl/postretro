@@ -147,6 +147,14 @@ pub(crate) struct MeshInstanceInput {
     /// if the entity crossed an interrupt this frame. Evaluated by the pass into
     /// the per-entity snapshot store before sampling (idempotent by tag).
     pub(crate) capture: Option<CaptureInstruction>,
+    /// Animation time-slicing decision (Task 6): `true` → re-sample this
+    /// instance's pose this frame; `false` → the pass may re-upload its cached
+    /// palette run and skip sampling. Decided game-side from the instance's
+    /// camera distance bucket + frame-stride phase, forced `true` on a state
+    /// change, an active crossfade, or a renderer-side cache miss (the pass
+    /// upgrades a miss to a resample regardless of this flag). A `Copy` bool —
+    /// no per-instance heap.
+    pub(crate) resample: bool,
 }
 
 impl MeshSampleParams {
@@ -188,6 +196,14 @@ pub(crate) struct PlannedInstance {
     /// The GPU layer evaluates it into the snapshot store (idempotent by tag)
     /// before sampling this frame's pose.
     pub(crate) capture: Option<CaptureInstruction>,
+    /// Animation time-slicing decision (Task 6), carried verbatim from the
+    /// instance input. `true` → the pass samples this instance's pose AND
+    /// refreshes its palette cache; `false` → the pass re-uploads the cached
+    /// palette run with no sampling. A renderer-side cache MISS upgrades a
+    /// `false` to a resample regardless (the collector cannot see cache state),
+    /// so a culled instance re-entering view never shows a stale pose. `Copy`
+    /// bool — no per-instance heap.
+    pub(crate) resample: bool,
 }
 
 /// All instances of one model, batched for a single instanced `draw_indexed` per
@@ -290,6 +306,7 @@ pub(crate) fn plan_mesh_frame(
             bounds: joints.model_bounds(&inst.model),
             sample: inst.sample,
             capture: inst.capture,
+            resample: inst.resample,
         };
 
         // Append to the existing group for this model, or start a new one.
@@ -400,6 +417,7 @@ mod tests {
             phase_seed: seed,
             sample: MeshSampleParams::stateless(0.0),
             capture: None,
+            resample: true,
         }
     }
 
@@ -599,6 +617,7 @@ mod tests {
             bounds: local,
             sample: MeshSampleParams::stateless(0.0),
             capture: None,
+            resample: true,
         };
         assert!(
             instance_casts_into_cone(&inside, &planes),
@@ -614,6 +633,7 @@ mod tests {
             bounds: local,
             sample: MeshSampleParams::stateless(0.0),
             capture: None,
+            resample: true,
         };
         assert!(
             !instance_casts_into_cone(&outside, &planes),
@@ -667,6 +687,7 @@ mod tests {
             bounds: bar,
             sample: MeshSampleParams::stateless(0.0),
             capture: None,
+            resample: true,
         };
         assert!(
             instance_casts_into_cone(&inst, &planes),

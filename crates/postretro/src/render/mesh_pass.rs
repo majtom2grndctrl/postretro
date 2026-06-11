@@ -515,6 +515,85 @@ impl SnapshotStore {
     }
 }
 
+/// One cached palette run: the last sampled bone-palette matrices for an entity,
+/// reused on a time-sliced SKIP frame so the pass re-uploads a valid pose without
+/// re-sampling. The `Vec` is reused in place on a resample (cleared + extended),
+/// so a steady-state cache hit allocates nothing.
+#[derive(Debug, Default)]
+struct CachedPalette {
+    /// The entity's last sampled palette run (one `BonePaletteEntry` per joint).
+    run: Vec<BonePaletteEntry>,
+    /// Set true when the entry is touched (resample or skip) this frame; entries
+    /// left `false` after a frame are evicted, so the cache never exceeds the
+    /// frame's planned-instance count.
+    seen_this_frame: bool,
+}
+
+/// Renderer-side per-entity palette cache for animation time-slicing (Task 6),
+/// keyed by entity seed — the `SnapshotStore`/`model_bounds` precedent (GPU-free
+/// data logic, unit-testable without a `wgpu::Device`). On a RESAMPLE frame the
+/// pass samples the pose and refreshes the cached run; on a SKIPPED frame it
+/// re-uploads the cached run with no sampling. A cache MISS forces a resample
+/// that frame regardless of the collector's flag (the collector cannot see
+/// renderer-side cache state), so a culled instance re-entering view never shows
+/// a stale pose.
+///
+/// Eviction: entries not touched in a frame are dropped at [`end_frame`], so the
+/// cache is bounded by the frame's planned-instance count (≤ `MAX_INSTANCES`
+/// entries, ≤ `MAX_PALETTE_ENTRIES` total slots). Emptied wholesale at level load
+/// by [`PaletteCache::clear`] (entity seeds are not stable across levels).
+///
+/// [`end_frame`]: PaletteCache::end_frame
+#[derive(Debug, Default)]
+struct PaletteCache {
+    entries: HashMap<u32, CachedPalette>,
+}
+
+impl PaletteCache {
+    /// Resolve whether this instance must sample this frame. Returns `true` when
+    /// the collector asked to resample OR the cache misses (no entry for this
+    /// seed) — the miss upgrade is what keeps a re-entering instance from showing
+    /// a stale pose. A `false` return means a valid cached run exists and the
+    /// collector cleared the instance to skip.
+    fn must_sample(&self, seed: u32, collector_resample: bool) -> bool {
+        collector_resample || !self.entries.contains_key(&seed)
+    }
+
+    /// Store a freshly sampled run for `seed`, reusing the entry's `Vec` storage
+    /// in place (cleared + extended — no realloc on a steady-state hit). Marks the
+    /// entry seen this frame so eviction keeps it.
+    fn store(&mut self, seed: u32, run: &[BonePaletteEntry]) {
+        let entry = self.entries.entry(seed).or_default();
+        entry.run.clear();
+        entry.run.extend_from_slice(run);
+        entry.seen_this_frame = true;
+    }
+
+    /// The cached run for `seed` on a SKIP frame, or `None` if absent. Also marks
+    /// the entry seen so a skipped instance is not evicted. (A skip only reaches
+    /// here when `must_sample` already returned `false`, i.e. the entry exists.)
+    fn touch_cached(&mut self, seed: u32) -> Option<&[BonePaletteEntry]> {
+        let entry = self.entries.get_mut(&seed)?;
+        entry.seen_this_frame = true;
+        Some(entry.run.as_slice())
+    }
+
+    /// Evict entries not touched this frame and reset the per-entry seen flags for
+    /// the next frame. Called once at the end of the per-frame sample/upload pass,
+    /// so the cache holds exactly this frame's planned instances.
+    fn end_frame(&mut self) {
+        self.entries.retain(|_, e| e.seen_this_frame);
+        for e in self.entries.values_mut() {
+            e.seen_this_frame = false;
+        }
+    }
+
+    /// Empty the cache (level-load clear).
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
 /// A resolved clip blend source's owned parts, so a `BlendSource::Clip` can be
 /// reconstructed by reference. `BlendSource` borrows the clip, so the borrow
 /// must outlive the `BlendSource` — this holds the `(clip, time, loop)` and
@@ -736,6 +815,14 @@ pub struct MeshPass {
     /// frozen pose is the blend source a `"smooth"` fade resumes from with no
     /// discontinuity.
     snapshot_store: SnapshotStore,
+
+    /// Per-entity palette cache for animation time-slicing (Task 6), keyed by
+    /// entity seed — the `model_bounds`/`SnapshotStore` GPU-free precedent. On a
+    /// resample frame the freshly sampled run refreshes the cache; on a skipped
+    /// frame the cached run is re-uploaded with no sampling; a cache miss forces a
+    /// resample. Per-frame eviction bounds it by the planned-instance count, and
+    /// [`MeshPass::clear_for_level_load`] empties it at level load.
+    palette_cache: PaletteCache,
 
     /// Reusable per-joint local-TRS scratch for snapshot CAPTURE (kept off the
     /// hot path; capture is a one-time event, not steady-state). Separate from
@@ -1166,6 +1253,7 @@ impl MeshPass {
             model_bounds: HashMap::new(),
             model_clips: HashMap::new(),
             snapshot_store: SnapshotStore::default(),
+            palette_cache: PaletteCache::default(),
             capture_scratch: Vec::new(),
             pose_sample_stats,
         }
@@ -1400,8 +1488,14 @@ impl MeshPass {
     /// levels, so a stale snapshot from a prior level must not survive. Task 6
     /// extends this to clear the (forthcoming) palette cache; keep it the single
     /// per-level reset seam so a future addition lands here, not scattered.
+    ///
+    /// Task 6: also empties the time-slicing palette cache. Entity seeds are not
+    /// stable across levels, so a stale cached palette run must not survive — a
+    /// new level's instance reusing a prior level's seed would otherwise re-upload
+    /// (or skip-resample against) a pose from a different model.
     pub fn clear_for_level_load(&mut self) {
         self.snapshot_store.clear();
+        self.palette_cache.clear();
     }
 
     /// Initialize the shared bone palette to identity (bind pose) before the
@@ -1463,6 +1557,7 @@ impl MeshPass {
             models,
             model_clips,
             snapshot_store,
+            palette_cache,
             capture_scratch,
             instance_buffer,
             palette_buffer,
@@ -1517,29 +1612,55 @@ impl MeshPass {
                     snapshot_store.drop_entry(inst.phase_seed);
                 }
 
-                // Sample this instance's pose per its resolved params.
-                let started = measure.then(std::time::Instant::now);
-                let sampled = sample_instance(
-                    &inst.sample,
-                    &model.skeleton,
-                    snapshot_store,
-                    inst.phase_seed,
-                    &resolve_clip,
-                    scratch,
-                );
-                if let Some(started) = started {
-                    sampled_instances += 1;
-                    sample_elapsed += started.elapsed();
-                }
-                if sampled && !scratch.is_empty() {
-                    queue.write_buffer(
-                        palette_buffer,
-                        inst.palette_base as u64 * BONE_PALETTE_ENTRY_SIZE as u64,
-                        bytemuck::cast_slice(scratch),
+                // Time-slicing decision (Task 6). Sample when the collector asked
+                // for a resample OR the cache misses (a re-entering instance with
+                // no cached run must sample, never show a stale pose). Otherwise
+                // re-upload the cached run with no sampling.
+                if palette_cache.must_sample(inst.phase_seed, inst.resample) {
+                    // RESAMPLE: sample this instance's pose, upload it, and refresh
+                    // the cache with the freshly sampled run.
+                    let started = measure.then(std::time::Instant::now);
+                    let sampled = sample_instance(
+                        &inst.sample,
+                        &model.skeleton,
+                        snapshot_store,
+                        inst.phase_seed,
+                        &resolve_clip,
+                        scratch,
                     );
+                    if let Some(started) = started {
+                        sampled_instances += 1;
+                        sample_elapsed += started.elapsed();
+                    }
+                    if sampled && !scratch.is_empty() {
+                        queue.write_buffer(
+                            palette_buffer,
+                            inst.palette_base as u64 * BONE_PALETTE_ENTRY_SIZE as u64,
+                            bytemuck::cast_slice(scratch),
+                        );
+                        // Refresh the cache so a future skipped frame re-uploads
+                        // THIS pose. Reuses the entry's `Vec` storage in place.
+                        palette_cache.store(inst.phase_seed, scratch);
+                    }
+                } else if let Some(cached) = palette_cache.touch_cached(inst.phase_seed) {
+                    // SKIP: re-upload the cached run at this frame's palette base
+                    // (the base can move frame to frame as the dense plan repacks).
+                    // No sampling, no allocation.
+                    if !cached.is_empty() {
+                        queue.write_buffer(
+                            palette_buffer,
+                            inst.palette_base as u64 * BONE_PALETTE_ENTRY_SIZE as u64,
+                            bytemuck::cast_slice(cached),
+                        );
+                    }
                 }
             }
         }
+
+        // Evict cache entries not touched this frame, so the cache holds exactly
+        // this frame's planned instances (bounded by MAX_INSTANCES / the palette
+        // budget) and a culled-out entity's stale run does not linger.
+        palette_cache.end_frame();
 
         // Fold this frame's pose-sampling tallies in and flush the rate-limited
         // line when the interval elapses. Only `Some` under POSTRETRO_GPU_TIMING.
@@ -2951,5 +3072,106 @@ mod tests {
         assert!(store.matching(2, 6).is_none(), "tag mismatch never matches");
         store.clear();
         assert!(store.matching(2, 5).is_none(), "clear empties the store");
+    }
+
+    // --- Time-slicing palette cache (Task 6) -----------------------------------
+
+    fn palette_run(fill: f32, joints: usize) -> Vec<BonePaletteEntry> {
+        vec![
+            BonePaletteEntry {
+                matrix: [[fill; 4]; 4],
+            };
+            joints
+        ]
+    }
+
+    #[test]
+    fn palette_cache_miss_forces_resample_then_skip_serves_cache() {
+        // A cold cache MISSES, so it must force a resample regardless of the
+        // collector's flag — a re-entering instance never re-uploads a stale (or
+        // absent) pose. After the run is stored, a collector skip serves the cache.
+        let mut cache = PaletteCache::default();
+        let seed = 7u32;
+
+        // Miss: even with collector_resample = false, must_sample is true.
+        assert!(
+            cache.must_sample(seed, false),
+            "a cache miss forces a resample even when the collector cleared a skip",
+        );
+
+        // Store a sampled run (the resample frame's outcome).
+        let run = palette_run(1.0, 4);
+        cache.store(seed, &run);
+
+        // Now a collector skip (resample = false) is honored — the entry exists.
+        assert!(
+            !cache.must_sample(seed, false),
+            "with a cached run, a collector skip is honored (no forced resample)",
+        );
+        // And the cached run is served for the skip re-upload.
+        let cached = cache
+            .touch_cached(seed)
+            .expect("cached run present on skip");
+        assert_eq!(cached.len(), 4);
+        assert_eq!(cached[0].matrix[0][0], 1.0);
+
+        // A collector resample still samples even with a cache hit.
+        assert!(
+            cache.must_sample(seed, true),
+            "an explicit collector resample always samples, cache hit or not",
+        );
+    }
+
+    #[test]
+    fn palette_cache_store_reuses_storage_in_place() {
+        // A resample refreshes the run in place — repeated stores must not change
+        // the served contents' shape unexpectedly, and the latest store wins.
+        let mut cache = PaletteCache::default();
+        let seed = 3u32;
+        cache.store(seed, &palette_run(1.0, 6));
+        cache.store(seed, &palette_run(2.0, 6));
+        let cached = cache.touch_cached(seed).expect("present");
+        assert_eq!(cached.len(), 6);
+        assert_eq!(cached[0].matrix[0][0], 2.0, "the latest stored run wins");
+    }
+
+    #[test]
+    fn palette_cache_evicts_entries_absent_from_the_frame() {
+        // Entries not touched in a frame are evicted at end_frame, so the cache is
+        // bounded by the frame's planned-instance count — a culled-out entity's
+        // stale run does not linger.
+        let mut cache = PaletteCache::default();
+        cache.store(1, &palette_run(1.0, 2));
+        cache.store(2, &palette_run(1.0, 2));
+        cache.end_frame(); // both stored this "frame" → both survive
+        assert!(!cache.must_sample(1, false), "entry 1 survives its frame");
+        assert!(!cache.must_sample(2, false), "entry 2 survives its frame");
+
+        // Next frame: touch only entity 1 (it skips), entity 2 is absent (culled).
+        assert!(cache.touch_cached(1).is_some());
+        cache.end_frame();
+        assert!(
+            !cache.must_sample(1, false),
+            "the touched entry survives eviction",
+        );
+        assert!(
+            cache.must_sample(2, false),
+            "the untouched entry is evicted → its next appearance forces a resample",
+        );
+    }
+
+    #[test]
+    fn palette_cache_clear_empties_for_level_load() {
+        // The level-load clear empties the cache wholesale — entity seeds are not
+        // stable across levels, so a stale run must not survive.
+        let mut cache = PaletteCache::default();
+        cache.store(9, &palette_run(1.0, 3));
+        cache.end_frame();
+        assert!(!cache.must_sample(9, false), "entry present before clear");
+        cache.clear();
+        assert!(
+            cache.must_sample(9, false),
+            "clear empties the cache → a miss forces a resample",
+        );
     }
 }

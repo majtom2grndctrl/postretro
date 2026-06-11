@@ -11,9 +11,13 @@
 //   * group 0 = camera (shared renderer-owned camera uniform / bind group)
 //   * group 1 = material (the `build_material_bind_group` bind group — the SH-lit
 //               fragment samples diffuse + aniso sampler from this group)
-//   * group 2 = RESERVED for dynamic direct only (the dynamic-direct sibling
-//               task allocates it; SH indirect already ships at group 4, so this
-//               slot is not the SH ambient slot — not allocated now)
+//   * group 2 = dynamic direct lighting + shadow receipt (fully allocated b0–b8):
+//               b0 dynamic-light records, b1 per-light influence volumes, b2
+//               scripted-animation descriptors, b3 scripted-animation curve
+//               samples, b4 the mesh-side params uniform; b5 spot shadow depth,
+//               b6 comparison sampler, b7 light-space matrices uniform, b8 the
+//               conditional cube-array depth (present iff `cube_array_supported`).
+//               SH indirect ships at group 4, so this is not the SH ambient slot.
 //   * group 3 = skinned instance data: shared bone-palette storage buffer
 //               (binding 0) + per-instance SSBO carrying each instance's model
 //               matrix and palette base index, addressed by
@@ -88,7 +92,7 @@ fn build_instance_entry(model: glam::Mat4, base_index: u32) -> [u8; INSTANCE_ENT
 //
 // The mesh path NOW carries the dynamic-direct light scaffolding: `skinned_mesh.wgsl`
 // declares the group-2 bindings (lights, influence volumes, scripted descriptors,
-// `anim_samples`, params uniform) the future runtime light loop (Task 3) will read,
+// `anim_samples`, params uniform) the runtime light loop reads,
 // so the shared `light_eval.wgsl` per-light helpers and the `curve_eval.wgsl`
 // Catmull-Rom samplers they call are appended here — mirroring the forward
 // composition (`render/mod.rs::SHADER_SOURCE`). `curve_eval.wgsl` reads
@@ -101,8 +105,9 @@ fn build_instance_entry(model: glam::Mat4, base_index: u32) -> [u8; INSTANCE_ENT
 //
 // `shadow_sample.wgsl` (the shared runtime shadow-map samplers `sample_spot_shadow`
 // / `sample_point_shadow` + their bias/resolution constants) is appended LAST so
-// Task 3's per-light visibility term can call it against the mesh's own group-2
-// b5–b8 shadow bindings (declared in `skinned_mesh.wgsl`). It declares no bindings
+// the runtime dynamic-light loop's per-light visibility term can call it against
+// the mesh's own group-2 b5–b8 shadow bindings (declared in `skinned_mesh.wgsl`).
+// It declares no bindings
 // itself — it references `spot_shadow_depth` / `spot_shadow_compare` /
 // `light_space_matrices` / `point_shadow_cube` by lexical name, the same way
 // forward.wgsl composes it. On a no-`CUBE_ARRAY_TEXTURES` adapter the composed
@@ -183,10 +188,10 @@ const SKINNED_DEPTH_SHADER_SOURCE: &str = include_str!("../shaders/skinned_depth
 ///   dynamic-light loop runs in the fragment stage, so b0–b3 contribute FOUR
 ///   fragment-visible storage buffers — well under the per-stage ceiling of 8
 ///   (rendering_pipeline.md §10). b4 is a uniform (no storage-slot cost).
-///   b5–b8 are the SHADOW-RECEIPT bindings (M10 mesh shadow receipt Task 2),
-///   aliasing the SAME GPU resources the forward pass binds in its group 5, via a
-///   MESH-SPECIFIC layout (NOT forward's group-5 BGL — that carries SDF-factor +
-///   scene-depth entries the mesh must not sample):
+///   b5–b8 are the SHADOW-RECEIPT bindings on a MESH-SPECIFIC layout that omits
+///   forward's SDF-factor + scene-depth entries the mesh must not sample. They
+///   alias the SAME GPU resources the forward pass binds in its group 5 (NOT
+///   forward's group-5 BGL):
 ///     b5 spot depth 2D-array (`spot_shadow_depth`, FRAGMENT),
 ///     b6 comparison sampler (`spot_shadow_compare`, FRAGMENT),
 ///     b7 light-space matrices UNIFORM (`light_space_matrices`, FRAGMENT) — a
@@ -205,8 +210,7 @@ const SKINNED_DEPTH_SHADER_SOURCE: &str = include_str!("../shaders/skinned_depth
 ///
 /// b5 + b8 are sampled depth textures (spot 2D-array always, cube array iff
 /// supported): the mesh pipeline's group-2 sampled-texture count is ONE without
-/// cube support and TWO with it. The full recording test is Task 4; this builder
-/// just keeps the inventory honest.
+/// cube support and TWO with it.
 fn mesh_light_bind_group_layout_entries(
     cube_array_supported: bool,
 ) -> Vec<wgpu::BindGroupLayoutEntry> {
@@ -569,13 +573,16 @@ impl MeshPass {
         // atlas), b1 per-light influence volumes, b2 scripted-animation
         // descriptors (forward's group-3 b13 `scripted_light_descriptors`, the
         // SAME buffer rebound here), b3 scripted-animation curve samples
-        // (forward's group-3 b12 `anim_samples`, same buffer), b4 the NEW
+        // (forward's group-3 b12 `anim_samples`, same buffer), b4 the
         // mesh-side params uniform (light count, frame time, debug gate). b5–b8
-        // are RESERVED for the sibling shadow-receipt spec — NOT allocated here.
+        // are the shadow-receipt bindings (spot depth, comparison sampler,
+        // light-space matrices uniform, conditional cube-array depth), allocated by
+        // the `mesh_light_bind_group_layout_entries` builder call below.
         //
-        // All five entries are FRAGMENT-only: the mesh dynamic-light loop runs in
-        // the fragment stage. This is the mesh fragment stage's FIRST storage-buffer
-        // use (group 3's palette + instance SSBO are VERTEX-stage), so the fragment
+        // Every entry is FRAGMENT-only: the mesh dynamic-light loop AND its shadow
+        // sampling run in the fragment stage. This is the mesh fragment stage's
+        // FIRST storage-buffer use (group 3's palette + instance SSBO are
+        // VERTEX-stage), so the fragment
         // stage sits at FOUR storage buffers here — well under the per-stage ceiling
         // of 8 (rendering_pipeline.md §10). Entries come from the GPU-free
         // `mesh_light_bind_group_layout_entries` builder so the layout and the
@@ -587,7 +594,7 @@ impl MeshPass {
             });
 
         // Pipeline layout: group 0 (camera), 1 (material), 2 (dynamic direct
-        // lighting — the group-2 BGL above; was `None` before M10 Task 2),
+        // lighting + shadow receipt — the group-2 BGL above),
         // 3 (skinned instance data), 4 (SH irradiance volume —
         // `ShVolumeResources.mesh_bind_group_layout`, the SUPERSET layout that
         // extends the shared SH entries with the direct-atlas texture at binding
@@ -871,10 +878,10 @@ impl MeshPass {
     /// `scripted_light_descriptors`; `anim_samples` is forward's group-3 b12
     /// `anim_samples` — the SAME GPU buffers, rebound at mesh group 2 b2/b3.
     ///
-    /// b5–b8 are the SHADOW-RECEIPT bindings (M10 mesh shadow receipt Task 2),
-    /// aliasing the SAME pool-owned GPU resources the forward pass binds in its
-    /// group 5 (via a mesh-specific layout — NOT forward's group-5 BGL, which
-    /// carries SDF-factor + scene-depth entries the mesh must not sample):
+    /// b5–b8 are the SHADOW-RECEIPT bindings, on a mesh-specific layout that
+    /// OMITS forward's SDF-factor + scene-depth entries the mesh must not sample.
+    /// They alias the SAME pool-owned GPU resources the forward pass binds in its
+    /// group 5 (NOT forward's group-5 BGL):
     /// `spot_shadow_depth` is the spot pool's D2-array `array_view` (b5),
     /// `spot_shadow_compare` is the pool's comparison sampler (b6),
     /// `light_space_matrices` is the pool's `matrices_buffer` UNIFORM (b7), and
@@ -1558,7 +1565,7 @@ mod tests {
     }
 
     // Headless guard for the mesh group-2 BGL: the entries the pipeline composes
-    // from must match the shader's declared group-2 binding map (b0–b4) and stay
+    // from must match the shader's declared group-2 binding map (b0–b8) and stay
     // within the per-stage fragment storage-buffer budget. Modeled on
     // `billboard_pipeline_vertex_storage_request_matches_bgl_definitions` — both
     // re-derive the count from the SAME GPU-free BGL builder the layout is built
@@ -1631,18 +1638,21 @@ mod tests {
         );
     }
 
-    // Structural pin for the lighting-tier split: the buffer bound at mesh group-2
-    // b0 is fed by the renderer's `filter_dynamic_lights` output (the
+    // CONTRACT-DOC PIN (not a behavioral test): the lighting-tier split — mesh
+    // group-2 b0 carries the renderer's `filter_dynamic_lights` output (the
     // `is_dynamic`-filtered set), so static lights are excluded BY CONSTRUCTION —
-    // they never enter the mesh dynamic-direct loop. There is no headless render
-    // harness, so this asserts the invariant at the wiring contract: the
-    // `rebuild_light_bind_group` doc and the shader's b0 comment both name the
+    // lives in the actual bind-group wiring (`rebuild_light_bind_group`), which
+    // takes a `lights` slice and cannot be exercised without a GPU. This test does
+    // NOT verify that wiring; it is a string pin that keeps the DOCUMENTED contract
+    // present and self-consistent: the shader's b0 declaration and the
+    // `rebuild_light_bind_group` doc both must keep naming the
     // `filter_dynamic_lights` / `is_dynamic`-filtered set as the b0 source. If a
-    // future edit rebinds b0 to the unfiltered or shadow-candidate set, the
-    // contract these strings pin is broken and this test (plus the named code
-    // comments) flags it. See `MeshPass::rebuild_light_bind_group`.
+    // future edit deletes or contradicts that documented contract, this fails —
+    // flagging the docs for review. It would NOT catch a wiring bug that rebound b0
+    // to the wrong buffer while leaving the doc strings intact; that is the GPU
+    // layer, verified by running the engine (testing_guide §3).
     #[test]
-    fn mesh_group2_b0_is_fed_by_filtered_dynamic_lights() {
+    fn skinned_mesh_b0_filtered_dynamic_lights_contract_is_documented() {
         // The shader's b0 declaration documents the filtered-set invariant.
         let shader_src = include_str!("../shaders/skinned_mesh.wgsl");
         assert!(
@@ -1710,11 +1720,11 @@ mod tests {
         );
     }
 
-    // The skinned-mesh shader must DECLARE the pinned group-2 binding map (Task 2)
-    // so the appended `curve_eval.wgsl` (`anim_samples` at b3) and `light_eval.wgsl`
+    // The skinned-mesh shader must DECLARE the pinned group-2 binding map so the
+    // appended `curve_eval.wgsl` (`anim_samples` at b3) and `light_eval.wgsl`
     // (`AnimationDescriptor` for b2) symbols resolve and the BGL agrees with the
-    // shader. b5–b8 are the shadow-receipt bindings (M10 mesh shadow receipt Task 2)
-    // the appended `shadow_sample.wgsl` references by lexical name.
+    // shader. b5–b8 are the shadow-receipt bindings the appended
+    // `shadow_sample.wgsl` references by lexical name.
     #[test]
     fn skinned_mesh_wgsl_declares_group2_light_bindings() {
         let src = include_str!("../shaders/skinned_mesh.wgsl");
@@ -1741,8 +1751,7 @@ mod tests {
             "skinned_mesh.wgsl b8 cube binding must carry the // CUBE_SHADOW_BINDING tag",
         );
         // The b7 light-space matrices array length must match SHADOW_POOL_SIZE so
-        // the mesh declaration agrees with the pool's `matrices_buffer` (Task 4
-        // extends the dedicated array-len regression to the mesh shader).
+        // the mesh declaration agrees with the pool's `matrices_buffer`.
         assert!(
             src.contains(&format!(
                 "array<mat4x4<f32>, {}>",
@@ -1758,8 +1767,31 @@ mod tests {
     // neutralizes `sample_point_shadow`). The pipeline picks the matching variant
     // for the adapter, so a validation break in either would only surface at GPU
     // bring-up on the un-tested adapter class — this pins both at build time.
+    //
+    // Regression: an unused cube binding is legal WGSL, so naga-validating both
+    // variants alone does NOT prove the strip removed the b8 declaration. If the
+    // `// CUBE_SHADOW_BINDING` tag drifts off the declaration line (onto a comment),
+    // the strip leaves the b8 `var point_shadow_cube` declared while the no-cube BGL
+    // omits b8 → `create_render_pipeline` rejects the mismatch on a no-cube adapter.
+    // The contains-assertions below catch that drift in CI: the no-cube variant must
+    // NOT declare b8; the cube variant must.
     #[test]
     fn skinned_mesh_shader_source_validates_both_cube_variants() {
+        const CUBE_DECL: &str = "@group(2) @binding(8) var point_shadow_cube";
+
+        let no_cube = skinned_mesh_shader_source(false);
+        assert!(
+            !no_cube.contains(CUBE_DECL),
+            "no-cube skinned-mesh source must NOT declare the b8 cube binding — the strip \
+             must remove it so the shader matches the no-cube group-2 BGL (which omits b8)",
+        );
+
+        let cube = skinned_mesh_shader_source(true);
+        assert!(
+            cube.contains(CUBE_DECL),
+            "cube-supported skinned-mesh source must declare the b8 cube binding",
+        );
+
         for cube_supported in [true, false] {
             let src = skinned_mesh_shader_source(cube_supported);
             let module = naga::front::wgsl::parse_str(&src).unwrap_or_else(|e| {

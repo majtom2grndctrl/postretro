@@ -30,9 +30,10 @@
 // Entities follow the BILLBOARD precedent, not forward's static-surface variant:
 // `reject_backface = false` (a moving skinned entity is not a static world
 // surface) with Chebyshev probe-occlusion on. Baked static direct is computed
-// here via `sample_sh_direct`; group 2 now carries the dynamic-direct light
-// resources (M10 Task 2) — declared but not yet read; the per-fragment runtime
-// dynamic-tier light loop (plan D10) lands in Task 3.
+// here via `sample_sh_direct`; group 2 carries the live dynamic-direct loop
+// (`accumulate_dynamic_direct`) plus the shadow-receipt bindings (b5–b8): the
+// per-fragment dynamic-tier lights are evaluated with spot/point shadow
+// attenuation and summed into the SH composition.
 //
 // Design note (non-binding): the skinning vertex stage is kept separable so a
 // future position-only depth-only skinned variant (the shadow task) can share
@@ -64,14 +65,13 @@ struct CameraUniforms {
 // influence volumes, b2 scripted-animation descriptors (forward's group-3 b13
 // `scripted_light_descriptors`, SAME buffer), b3 scripted-animation curve samples
 // (forward's group-3 b12 `anim_samples`, SAME buffer), b4 the mesh-side params
-// uniform. b5–b8 are RESERVED for the shadow-receipt spec — not declared here.
+// uniform. b5–b8 carry the shadow-receipt bindings (declared further below).
 //
-// These bindings are DECLARED but not yet READ: the per-fragment dynamic-light
-// loop is Task 3. They exist now so the appended shared helpers resolve their
-// module-scope names — `curve_eval.wgsl` reads `anim_samples` (b3) and
-// `light_eval.wgsl` reads the `AnimationDescriptor` type (declared below) — and
-// so the BGL and shader agree. Unused bindings/functions are legal in WGSL, so
-// the shader still passes naga validation. `GpuLight` / `AnimationDescriptor`
+// All of b0–b8 are DECLARED and READ: the per-fragment dynamic-light loop
+// (`accumulate_dynamic_direct`) consumes them. The appended shared helpers also
+// resolve their module-scope names against these declarations —
+// `curve_eval.wgsl` reads `anim_samples` (b3) and `light_eval.wgsl` reads the
+// `AnimationDescriptor` type (declared below). `GpuLight` / `AnimationDescriptor`
 // mirror forward.wgsl's same-named structs (the underlying buffers are the same).
 struct GpuLight {
     position_and_type: vec4<f32>,
@@ -86,7 +86,7 @@ struct GpuLight {
 // Per-light scripted-animation descriptor — mirrors forward.wgsl's
 // `AnimationDescriptor` (48 B; see render/sh_volume.rs ANIMATION_DESCRIPTOR_SIZE).
 // Consumed by the appended `light_eval.wgsl` helpers (e.g.
-// `light_eval_animated_direction`) when the Task-3 loop lands.
+// `light_eval_animated_direction`) from the dynamic-light loop.
 struct AnimationDescriptor {
     period: f32,
     phase: f32,
@@ -129,9 +129,10 @@ struct MeshLightParams {
 // must not sample). The appended `shadow_sample.wgsl` references these four
 // names (`spot_shadow_depth`, `spot_shadow_compare`, `light_space_matrices`,
 // `point_shadow_cube`) by lexical resolution — the SAME binding-agnostic
-// composition forward.wgsl uses. DECLARED here but not yet SAMPLED: Task 3's
-// per-light visibility term calls `sample_spot_shadow` / `sample_point_shadow`.
-// Read-but-unused bindings are legal WGSL, so the shader still validates.
+// composition forward.wgsl uses. DECLARED here and SAMPLED by
+// `accumulate_dynamic_direct`: its per-light visibility term calls
+// `sample_spot_shadow` (spot slot `cone_angles_and_pad.z`) and
+// `sample_point_shadow` (cube slot `cone_angles_and_pad.w`).
 //
 // b7 is a UNIFORM (`array<mat4x4<f32>, 96>` = SHADOW_POOL_SIZE) — NOT storage —
 // to keep the fragment storage-buffer count at 4 (rendering_pipeline.md §10);
@@ -142,11 +143,13 @@ struct LightSpaceMatrices {
     m: array<mat4x4<f32>, 96>,
 };
 @group(2) @binding(7) var<uniform> light_space_matrices: LightSpaceMatrices;
-// CUBE_SHADOW_BINDING — on a no-`CUBE_ARRAY_TEXTURES` adapter,
-// `render::strip_point_shadow_cube` drops this `// CUBE_SHADOW_BINDING`-tagged
-// declaration (and neutralizes `sample_point_shadow`), so the shader matches a
-// group-2 BGL that omits b8. Mirrors forward.wgsl's group-5 b5 cube binding.
-@group(2) @binding(8) var point_shadow_cube: texture_depth_cube_array;
+// The inline tag on the declaration below marks it for the no-cube shader
+// variant: on an adapter without `CUBE_ARRAY_TEXTURES`,
+// `render::strip_point_shadow_cube` strips the tagged declaration (and
+// neutralizes `sample_point_shadow`), so the shader matches a group-2 BGL that
+// omits b8. Mirrors forward.wgsl's group-5 b5 cube binding — tag placed inline
+// on the declaration line, NOT in this prose, so the strip drops the right line.
+@group(2) @binding(8) var point_shadow_cube: texture_depth_cube_array; // CUBE_SHADOW_BINDING
 
 // --- Group 3: skinned instance data ------------------------------------------
 // `bone_palette` is the SHARED palette storage buffer; every instance's run of
@@ -179,7 +182,7 @@ struct Instance {
 // shared SH bind group. It adds direct atlas at binding 15 and the mesh-only
 // `DynamicDirectParams` uniform at binding 16 on top of the shared entries
 // (b1/b2/b10/b11/b12/b13/b14). Group 3 is locked to instance data; group 2
-// stays UNALLOCATED (reserved for the future dynamic-direct light loop, D10).
+// carries the live dynamic-direct loop + shadow-receipt bindings (b0–b8).
 // The appended `sh_sample.wgsl` helper reads the shared bindings by lexical
 // name. The animated-layer storage buffers (b11/b12/b13) live in the layout
 // but are not declared here — the mesh path never evaluates animated layers
@@ -572,7 +575,8 @@ fn accumulate_dynamic_direct(world_pos: vec3<f32>, n: vec3<f32>, use_dynamic: bo
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // SH-lit: sample base color, multiply by baked indirect irradiance, then add
     // the baked static-direct term (group 4 binding 15; gated by `has_direct`).
-    // The future dynamic-direct light loop (D10, group 2) is not yet built.
+    // The runtime dynamic-direct term (group 2) is summed below before the albedo
+    // multiply, via `accumulate_dynamic_direct`.
     // The skinned world normal drives the octahedral direction lookup and
     // (unused, backface rejection off) the geometric backface test.
     let base_color = textureSample(base_texture, aniso_sampler, in.uv);

@@ -1,7 +1,7 @@
 // Billboard sprite pass: camera-facing quads for env_smoke_emitter entities,
-// lit by the full lighting stack (SH ambient, static multi-source specular via
-// the chunk light list, and dynamic direct diffuse). Alpha-additive, depth
-// test enabled, depth write disabled.
+// lit by the full lighting stack (ambient floor, SH ambient, static multi-source
+// specular via the chunk light list, and dynamic direct diffuse). Alpha-additive,
+// depth test enabled, depth write disabled.
 //
 // See: context/lib/rendering_pipeline.md §7.4
 
@@ -156,9 +156,10 @@ struct VertexOutput {
     @location(0) uv: vec2<f32>,
     @location(1) world_position: vec3<f32>,
     @location(2) opacity: f32,
-    // Full lighting term computed per-vertex: baked indirect + baked static
-    // direct (with the dynamic-direct isolation debug mode applied) PLUS the
-    // multi-source static-specular term and the dynamic-direct diffuse term.
+    // Full lighting term computed per-vertex: ambient floor + baked indirect +
+    // baked static direct (with the dynamic-direct isolation debug mode applied)
+    // PLUS the multi-source static-specular term and the dynamic-direct diffuse
+    // term.
     // Every lighting input derives from the sprite center
     // (`world_position`, identical at all four quad corners) and the
     // camera-facing `N = V`, so this term is constant across the quad —
@@ -371,8 +372,14 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
     }
 
     // Fold the SH term together with the static-specular and dynamic-diffuse
-    // terms into the single interpolated lighting output.
-    let lighting = sh_lighting + static_specular + dynamic_diffuse;
+    // terms into the single interpolated lighting output. The ambient floor is a
+    // constant additive fill mirroring forward.wgsl's `total_light =
+    // vec3(ambient_floor) + ...` (rendering_pipeline.md §4): summed once, disjoint
+    // from the SH/specular/dynamic terms (no double-count), and added outside the
+    // dynamic-direct isolation branch like forward. The fragment multiplies this
+    // by sprite albedo·opacity·alpha, so the floor lifts only lit sprite texels —
+    // it adds no full-screen haze.
+    let lighting = vec3<f32>(uniforms.ambient_floor) + sh_lighting + static_specular + dynamic_diffuse;
 
     var out: VertexOutput;
     out.clip_position = uniforms.view_proj * vec4<f32>(world_pos, 1.0);
@@ -517,8 +524,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let sprite_sample = sample_post_retro(sprite_texture, sprite_sampler, in.uv, ddx, ddy);
 
     // The fragment shader does NO lighting. The full lighting term —
-    // baked indirect + baked static direct + static specular + dynamic diffuse —
-    // is computed per-vertex and arrives interpolated. Every lighting input
+    // ambient floor + baked indirect + baked static direct + static specular +
+    // dynamic diffuse — is computed per-vertex and arrives interpolated. Every lighting input
     // derives from the sprite center and the camera-facing `N = V`, so the term
     // is constant across the quad and the interpolated value equals the prior
     // per-fragment result. See `vs_main` / `VertexOutput.lighting`.

@@ -1,7 +1,7 @@
 // Pure first-person view-feel evaluator: head bob, strafe tilt, ambient sway.
 // Render-rate, pawn-driven, owns no GPU or camera basis — the caller maps the
-// scalar outputs onto its camera basis (Task 4 wiring in `main.rs`).
-// See: context/lib/movement.md (D1: view feel is render-only, never the tick)
+// scalar outputs onto its camera basis at the render-assembly site in `main.rs`.
+// See: context/lib/movement.md
 
 use std::f32::consts::TAU;
 
@@ -27,13 +27,17 @@ const TILT_DAMPING_RATIO: f32 = 0.8;
 /// noise). The ratios are engine constants, not authored fields. Chosen near
 /// irrational (√2, √3, golden-ratio neighbours) to avoid commensurate beats.
 ///
-/// `approx_constant` is allowed deliberately: these are fixed decorrelation
-/// ratios that happen to sit near √2/√3, not approximations *of* them — the
-/// literal values are the contract, so we must NOT swap in `f32::consts::SQRT_2`
-/// (which would change the value and reintroduce a commensurate beat).
+/// Decorrelation-ratio contract (applies to all three arrays): these literal
+/// values are the contract — they sit near √2/√3/φ neighbours but are NOT
+/// approximations of those constants. Do not replace them with
+/// `f32::consts::SQRT_2` or similar; the stdlib constants would change the
+/// value and reintroduce a commensurate beat. `approx_constant` is suppressed
+/// on each array that actually trips the lint for exactly this reason.
 #[allow(clippy::approx_constant)]
 const SWAY_YAW_RATIOS: [f32; 3] = [1.0, 1.414_213_6, 2.236_068];
+#[allow(clippy::approx_constant)]
 const SWAY_PITCH_RATIOS: [f32; 3] = [1.103_516_6, 1.732_050_8, 2.645_751_3];
+#[allow(clippy::approx_constant)]
 const SWAY_ROLL_RATIOS: [f32; 3] = [0.870_551, 1.618_034, 2.094_395_2];
 
 /// Engine-owned integrator state for the view-feel evaluator. Read AND updated
@@ -149,7 +153,10 @@ pub(crate) fn evaluate(
         sway_pitch: sway_pitch * global_scale,
     };
 
-    // Cheap exact-zero short-circuit for the common disabled-scale path.
+    // Short-circuit is placed AFTER the sub-evaluators intentionally: the
+    // integrator (spring, bob phase, sway clock) must keep advancing even
+    // when scale is zero, so that re-enabling the scale resumes smoothly
+    // with no frozen-state snap. This check zeroes only the OUTPUT.
     if global_scale == 0.0 {
         return ViewFeelOutput::ZERO;
     }
@@ -281,8 +288,9 @@ fn evaluate_sway(
     frame_dt: f32,
 ) -> (f32, f32, f32) {
     // Airborne gating (D8): grounded-only sway contributes zero off the floor.
-    // The clock still does not advance here — it advances only when sway is
-    // active, keeping `frame_dt == 0` and gated frames state-stable.
+    // The early return leaves sway_clock untouched — the clock advances only
+    // past this gate — so the sway phase resumes coherently when grounding
+    // is restored (no clock jump).
     if sway.grounded_only && !is_grounded {
         return (0.0, 0.0, 0.0);
     }

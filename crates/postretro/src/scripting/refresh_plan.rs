@@ -62,12 +62,10 @@ impl DescriptorRefreshPlan {
     }
 }
 
-// `Replace` legitimately carries a full `ComponentValue` (the only variant that
-// needs the refreshed payload); the others hold only ids/kinds. The size gap is
-// inherent to that payload, and these actions are built/drained in small batches
-// during descriptor hot-reload, not stored in bulk — so boxing the common
-// `Replace` path to satisfy the size heuristic would add a heap indirection for
-// no real benefit. Allow the variant-size lint instead.
+// These actions are built and drained in small batches during descriptor
+// hot-reload, not stored in bulk, so boxing `Replace` (which carries a full
+// `ComponentValue`) to satisfy the size heuristic would add heap indirection
+// for no real benefit.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum DescriptorRefreshAction {

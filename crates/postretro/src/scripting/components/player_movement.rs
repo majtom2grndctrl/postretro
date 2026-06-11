@@ -76,7 +76,7 @@ pub(crate) struct PlayerMovementComponent {
     /// Optional first-person view-feel tuning (head bob, strafe tilt, ambient
     /// sway), materialized from the descriptor's `view_feel` field. `None` ⇒
     /// view feel disabled. A render-only camera effect consumed by the
-    /// render-side evaluator (other tasks); movement logic never reads it.
+    /// render-rate evaluator in `view_feel.rs`, called from `main.rs`; movement logic never reads it.
     pub(crate) view_feel: Option<ViewFeelParams>,
     /// Configured STANDING capsule half-height — the reference value the
     /// stand-up resize/probe grow back to. Seeded from `desc.capsule.half_height`

@@ -377,7 +377,7 @@ pub(crate) struct CrouchParams {
 /// required EXCEPT the optional `groundedOnly` gate. This two-level
 /// present-then-all-required discipline mirrors the optional `dash`/`crouch`
 /// sub-objects, applied at two nesting levels. View feel is consumed by the
-/// render-side evaluator (other tasks); this is the data surface only.
+/// render-rate evaluator in `view_feel.rs`, called from `main.rs`; this is the data surface only.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ViewFeelParams {
     /// Optional head-bob tuning. Absent ⇒ no head bob.

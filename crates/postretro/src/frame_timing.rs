@@ -30,15 +30,12 @@ impl InterpolableState {
         }
     }
 
-    /// Build a view-projection matrix from this interpolated position and the
-    /// caller-supplied view angles. Yaw/pitch come from the render-rate camera
-    /// (not the tick-state) so mouse motion is never lost on zero-tick frames.
-    /// We recompute the matrix from scratch rather than interpolating matrices
-    /// (which doesn't produce correct results).
     /// Build the view matrix from position plus view angles, with an optional
     /// render-only camera effect: a `roll` angle (radians) about the look
     /// direction and a world-space `eye_offset` applied to the camera position.
-    /// Retained for future passes that may need view-space depth.
+    /// Yaw/pitch come from the render-rate camera (not the tick-state) so mouse
+    /// motion is never lost on zero-tick frames; the matrix is recomputed from
+    /// scratch rather than interpolated (interpolating matrices is not correct).
     ///
     /// `roll` rolls the up vector around the look direction (head-bob/strafe
     /// tilt); `eye_offset` translates the eye without changing where it looks

@@ -46,7 +46,7 @@ No save-on-change occurs at runtime until the M13 settings menu is wired. The bo
 
 ## 5. `view_feel_scale` Seam
 
-`view_feel_scale` (`[0, 1]`, default `1.0`) is an accessibility scale for view-feel responsiveness. It is defined in `PlayerOptions` and clamped on load. The `movement--view-feel` feature reads this field rather than maintaining its own constant. This field has no effect until `movement--view-feel` is implemented.
+`view_feel_scale` (`[0, 1]`, default `1.0`) is an accessibility scale for view-feel responsiveness. Clamped on load. Passed as the `global_scale` argument to `view_feel::evaluate` at the render-assembly site — multiplies all view-feel output (bob, tilt, sway). `0` zeroes all view feel.
 
 ---
 

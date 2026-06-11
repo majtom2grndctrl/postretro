@@ -1170,16 +1170,21 @@ impl ApplicationHandler for App {
                 // `view_feel_inputs`/`map_output_to_camera` helpers expect.
                 let camera_right = self.camera.right();
                 // Match the camera-follow loop above, which drives the camera
-                // from the FIRST `PlayerMovement` pawn: read that same pawn here
-                // and run view feel only when IT carries `view_feel`. A later
-                // pawn's `view_feel` must not leak onto a camera the first pawn
-                // drives.
+                // from the first `PlayerMovement` pawn that ALSO has a
+                // `Transform`: select that same pawn here (same
+                // `get_component::<Transform>(id).is_ok()` predicate) and run
+                // view feel only when IT carries `view_feel`. Selecting on the
+                // identical predicate keeps the two readers from diverging — a
+                // `PlayerMovement` without a `Transform` ordered first would
+                // otherwise drive view feel while the camera follows a different
+                // pawn. A later pawn's `view_feel` must not leak onto a camera
+                // the driving pawn owns either.
                 let view_feel_inputs = {
-                    use crate::scripting::registry::{ComponentKind, ComponentValue};
+                    use crate::scripting::registry::{ComponentKind, ComponentValue, Transform};
                     let registry = self.script_ctx.registry.borrow();
                     registry
                         .iter_with_kind(ComponentKind::PlayerMovement)
-                        .next()
+                        .find(|(id, _value)| registry.get_component::<Transform>(*id).is_ok())
                         .and_then(|(_id, value)| match value {
                             ComponentValue::PlayerMovement(component) => {
                                 component.view_feel.as_ref().map(|params| {

@@ -36,6 +36,19 @@ export const playerEntity = defineEntity({
         eyeHeight: 0.3,
         transitionRate: 8.0,
       },
+      viewFeel: {
+        bob: {
+          frequency: 0.25,
+          verticalAmplitude: 0.1,
+          lateralAmplitude: 0,
+          speedThreshold: 2.0,
+        },
+        tilt: {
+          speedReference: 10,
+          maxAngle: 4,
+          tension: 15,
+        },
+      },
     },
   },
 });

@@ -23,6 +23,7 @@ mod scripting;
 mod shadow_cull;
 mod startup;
 mod ui_texture;
+mod view_feel;
 mod visibility;
 
 // Rooted here (not under `scripting/`) so `gen_script_types.rs` can reuse the

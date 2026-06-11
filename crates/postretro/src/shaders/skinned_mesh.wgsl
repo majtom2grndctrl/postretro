@@ -398,8 +398,12 @@ fn sample_sh_direct(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_normal:
 // (the b0 buffer is the renderer's `is_dynamic`-filtered set, so static lights
 // cannot leak in), but DIFFUSE-ONLY: Lambert against the interpolated skinned
 // normal `n`, no specular and no normal-map perturbation (the mesh path has
-// neither — see rendering_pipeline.md §9). Per-light visibility is hardwired to
-// 1.0; the shadow-receipt sibling spec replaces that seam.
+// neither — see rendering_pipeline.md §9). Each per-light term is attenuated by
+// the light's shadow map: the spot slot from `cone_angles_and_pad.z` indexes
+// `light_space_matrices` for `sample_spot_shadow`, the cube slot from
+// `cone_angles_and_pad.w` drives `sample_point_shadow` — sentinel 0xFFFFFFFF on
+// either ⇒ unshadowed (×1.0). Slot logic is identical to forward.wgsl's dynamic
+// loop; the shadow factor folds into the per-light attenuation.
 //
 // `use_dynamic` is the forward lighting-isolation gate (computed in `fs_main`
 // from `mesh_light_params.lighting_isolation`, mirroring forward.wgsl). When the
@@ -485,6 +489,25 @@ fn accumulate_dynamic_direct(world_pos: vec3<f32>, n: vec3<f32>, use_dynamic: bo
                 let dist = length(to_light);
                 L = to_light / max(dist, 0.0001);
                 attenuation = light_eval_falloff(dist, light.direction_and_range.w, falloff_model);
+
+                // Dynamic point-light cube shadow — mirrors forward.wgsl's case
+                // 0u. The cube slot rides in `cone_angles_and_pad.w` (sentinel
+                // 0xFFFFFFFF = no slot, i.e. the light was not ranked into the
+                // cube pool). A point light without a slot keeps its unshadowed
+                // attenuation. On a no-`CUBE_ARRAY_TEXTURES` adapter the stripped
+                // `sample_point_shadow` returns 1.0, so this call site validates
+                // and lights the mesh unshadowed. Folded into `attenuation` so the
+                // dynamic point term is shadowed exactly once (no lightmap touched).
+                let cube_slot = bitcast<u32>(light.cone_angles_and_pad.w);
+                if cube_slot != 0xFFFFFFFFu {
+                    let shadow = sample_point_shadow(
+                        cube_slot,
+                        light.position_and_type.xyz,
+                        world_pos,
+                        light.direction_and_range.w
+                    );
+                    attenuation = attenuation * shadow;
+                }
             }
             case 1u: {
                 let to_light = light.position_and_type.xyz - world_pos;
@@ -498,6 +521,17 @@ fn accumulate_dynamic_direct(world_pos: vec3<f32>, n: vec3<f32>, use_dynamic: bo
                     light.cone_angles_and_pad.y,
                 );
                 attenuation = dist_falloff * cone;
+
+                // Dynamic spot shadow — mirrors forward.wgsl's case 1u. The spot
+                // slot rides in `cone_angles_and_pad.z` (sentinel 0xFFFFFFFF = no
+                // slot ⇒ unshadowed). A valid slot indexes `light_space_matrices`
+                // and folds the PCF visibility into `attenuation`.
+                let slot_index = bitcast<u32>(light.cone_angles_and_pad.z);
+                if slot_index != 0xFFFFFFFFu {
+                    let light_proj = light_space_matrices.m[slot_index];
+                    let shadow = sample_spot_shadow(slot_index, world_pos, light_proj);
+                    attenuation = attenuation * shadow;
+                }
             }
             default: {
                 // Directional light (case 2u and any unknown discriminant).
@@ -506,10 +540,8 @@ fn accumulate_dynamic_direct(world_pos: vec3<f32>, n: vec3<f32>, use_dynamic: bo
             }
         }
 
-        // Shadow receipt (M10 sibling spec) replaces this 1.0.
-        let visibility = 1.0;
         let NdotL = max(dot(n, L), 0.0);
-        total = total + effective_color * attenuation * NdotL * visibility;
+        total = total + effective_color * attenuation * NdotL;
     }
     return total;
 }

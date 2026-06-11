@@ -1,0 +1,97 @@
+// Game: Postretro
+// Format: Standard
+// DEMO MAP — M10 skinned-animation runtime.
+// Compile: cargo run -p postretro-level-compiler -- content/dev/maps/anim-demo.map -o content/dev/maps/anim-demo.prl
+// Run:     cargo run -p postretro -- content/dev/maps/anim-demo.prl
+// See content/dev/maps/anim-demo.README.md for what to look for.
+// entity 0
+{
+"classname" "worldspawn"
+"initialGravity" "-9.81"
+"wad" ""
+"data_script" "../scripts/anim-demo-reaction.ts"
+"_tb_mod" "dev"
+// floor
+{
+( 272 -16 -16 ) ( 272 272 0 ) ( 272 272 -16 ) concrete_pavement_036 0 0 0 1 1
+( -16 272 -16 ) ( -16 -16 0 ) ( -16 -16 -16 ) concrete_pavement_036 0 0 0 1 1
+( 272 272 -16 ) ( -16 272 0 ) ( -16 272 -16 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 -16 ) ( 272 -16 0 ) ( 272 -16 -16 ) concrete_pavement_036 0 0 0 1 1
+( -16 272 0 ) ( 272 -16 0 ) ( -16 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 -16 ) ( 272 272 -16 ) ( -16 272 -16 ) concrete_pavement_036 0 0 0 1 1
+}
+// ceiling
+{
+( 272 -16 128 ) ( 272 272 144 ) ( 272 272 128 ) concrete_pavement_036 0 0 0 1 1
+( -16 272 128 ) ( -16 -16 144 ) ( -16 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( 272 272 128 ) ( -16 272 144 ) ( -16 272 128 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 128 ) ( 272 -16 144 ) ( 272 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( -16 272 144 ) ( 272 -16 144 ) ( -16 -16 144 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 128 ) ( 272 272 128 ) ( -16 272 128 ) concrete_pavement_036 0 0 0 1 1
+}
+// west wall
+{
+( 0 -16 0 ) ( 0 272 128 ) ( 0 272 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 272 0 ) ( -16 -16 128 ) ( -16 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 272 0 ) ( -16 272 128 ) ( -16 272 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 0 ) ( 0 -16 128 ) ( 0 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 272 128 ) ( 0 -16 128 ) ( -16 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 0 ) ( 0 272 0 ) ( -16 272 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// east wall
+{
+( 272 -16 0 ) ( 272 272 128 ) ( 272 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 256 272 0 ) ( 256 -16 128 ) ( 256 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 272 272 0 ) ( 256 272 128 ) ( 256 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 256 -16 0 ) ( 272 -16 128 ) ( 272 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 256 272 128 ) ( 272 -16 128 ) ( 256 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( 256 -16 0 ) ( 272 272 0 ) ( 256 272 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// south wall
+{
+( 256 -16 0 ) ( 256 0 128 ) ( 256 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 0 -16 128 ) ( 0 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 256 0 0 ) ( 0 0 128 ) ( 0 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 -16 0 ) ( 256 -16 128 ) ( 256 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 128 ) ( 256 -16 128 ) ( 0 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( 0 -16 0 ) ( 256 0 0 ) ( 0 0 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// north wall
+{
+( 256 256 0 ) ( 256 272 128 ) ( 256 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 272 0 ) ( 0 256 128 ) ( 0 256 0 ) concrete_pavement_036 0 0 0 1 1
+( 256 272 0 ) ( 0 272 128 ) ( 0 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 256 0 ) ( 256 256 128 ) ( 256 256 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 272 128 ) ( 256 256 128 ) ( 0 256 128 ) concrete_pavement_036 0 0 0 1 1
+( 0 256 0 ) ( 256 272 0 ) ( 0 272 0 ) concrete_pavement_036 0 0 0 1 1
+}
+}
+// entity 1 — player spawn (facing +X toward the grunt)
+{
+"classname" "player_spawn"
+"origin" "48 128 24"
+"angles" "0 0 0"
+}
+// entity 2 — DEMO: animated grunt. Spawns in `idle`; the levelLoad reaction
+// in anim-demo-reaction.ts switches it to `alert` (250 ms crossfade).
+{
+"classname" "anim_demo_grunt"
+"origin" "176 96 16"
+"angles" "0 180 0"
+"_tags" "demo_grunt"
+}
+// entity 3 — DEMO: stateless prop_mesh of the same model for contrast.
+// No animation state; stays in its rest/first-frame pose.
+{
+"classname" "prop_mesh"
+"origin" "176 176 16"
+"model" "models/decraniated_low_poly_retro_pixel/scene.gltf"
+"angles" "0 180 0"
+}
+// entity 4 — light so the meshes are visible
+{
+"classname" "light"
+"origin" "128 128 100"
+"light" "300"
+"_falloff_range" "2048"
+}

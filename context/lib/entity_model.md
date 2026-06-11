@@ -38,7 +38,7 @@ Capabilities attach via component columns in the registry. Current engine compon
 | SpriteVisual | Billboard visual parameters |
 | FogVolume | Runtime fog-volume parameters |
 | Weapon | Runtime weapon params and per-instance cooldown state |
-| MeshComponent | Skinned model handle (`model: String`) for mesh-bearing entities spawned via `prop_mesh` |
+| MeshComponent | Skinned model handle (`model: String`) plus optional declared animation states and per-entity animation state; spawned via `prop_mesh` or a descriptor carrying a mesh component |
 
 Type-specific data lives in the component. An entity is "a player" by virtue of carrying `PlayerMovement`, not by belonging to a typed collection. Future entity types (enemies, doors, projectiles, pickups) follow the same pattern — illustrative, not current scope.
 

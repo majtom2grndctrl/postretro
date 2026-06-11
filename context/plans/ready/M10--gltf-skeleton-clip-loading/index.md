@@ -1,6 +1,6 @@
 # glTF Skeleton + Clip Loading
 
-> **Status:** draft.
+> **Status:** ready.
 > **Milestone:** 10 (Animated Enemies) — render foundation track. Follows the shipped *Mesh render pass*, *Dynamic mesh shadows / direct lighting / shadow receipt*.
 > **Related:** `context/lib/rendering_pipeline.md` §9 · `context/plans/done/M10--gltf-mesh-loading/` · `context/plans/done/M10--model-pipeline-slice/findings.md` · sibling plan `M10--skinned-animation-runtime` (the consumer).
 

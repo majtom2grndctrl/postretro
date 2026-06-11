@@ -18,7 +18,7 @@ use super::layout::{Anchor, REFERENCE_HEIGHT, REFERENCE_WIDTH};
 use crate::scripting::slot_table::SlotValue;
 use glyphon::FontSystem;
 
-use super::text::{UiText, measure_run};
+use super::text::{UI_FONT_FAMILY, UiText, measure_run};
 use super::{UiDrawList, UiInstance};
 
 /// Asset key → natural reference size (logical-reference px, `[width, height]`)
@@ -561,6 +561,10 @@ impl UiTree {
                     [rect[0], rect[1]],
                     font_size * scale,
                     linear_rgba_to_srgb_u8(*color),
+                    // Interim: pass the body family so this task behaves
+                    // identically to before. Task 4 replaces this with the
+                    // token-resolved family carried on `NodeContext::Text`.
+                    UI_FONT_FAMILY,
                 ));
             }
             None => {}
@@ -631,7 +635,10 @@ fn measure_node(
             // literal `content` — the fresh/splash path never resolves, so it
             // always measures the literal, unchanged from before.
             let measured = last_resolved.as_deref().unwrap_or(content);
-            let (width, height) = measure_run(font_system, measured, *font_size);
+            // Interim: measure against the body family so this task preserves
+            // current behavior. Task 4 replaces this with the token-resolved
+            // family carried on `NodeContext::Text`.
+            let (width, height) = measure_run(font_system, measured, *font_size, UI_FONT_FAMILY);
             // Honor any axis taffy has already pinned (e.g. an explicit/stretched
             // size); measure only the unconstrained axes.
             Size {

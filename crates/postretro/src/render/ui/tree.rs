@@ -11,21 +11,166 @@ use taffy::prelude::{
 };
 
 use super::descriptor::{
-    Align, AnchoredTree, Border, ContainerWidget, GridWidget, ImageWidget, PanelBind, PanelWidget,
-    TextBind, TextWidget, Widget,
+    Align, AnchoredTree, Border, ColorValue, ContainerWidget, Easing, GridWidget, ImageWidget,
+    PanelBind, PanelWidget, SpacingValue, TextBind, TextWidget, Widget,
 };
 use super::layout::{Anchor, REFERENCE_HEIGHT, REFERENCE_WIDTH};
+use super::theme::UiTheme;
 use crate::scripting::slot_table::SlotValue;
 use glyphon::FontSystem;
 
 use super::text::{UiText, measure_run};
 use super::{UiDrawList, UiInstance};
 
+/// Fallback color for an unknown color token: opaque magenta. A missing token
+/// degrades visibly (rather than panicking or rendering invisibly) so an
+/// authoring typo is obvious on screen — see the M13 fonts+theming spec.
+const UNKNOWN_COLOR_FALLBACK: [f32; 4] = [1.0, 0.0, 1.0, 1.0];
+
+/// Fallback spacing for an unknown spacing token: zero logical px.
+const UNKNOWN_SPACING_FALLBACK: f32 = 0.0;
+
+// --- Value-tween easing (M13 UI Value-Tweening, Task 3) ---------------------
+
+/// Identity easing: `t` unchanged.
+fn linear(t: f32) -> f32 {
+    t
+}
+
+/// Cubic ease-in: slow start, `t^3`.
+fn ease_in(t: f32) -> f32 {
+    t * t * t
+}
+
+/// Cubic ease-out: fast start, decelerating — the cubic mirror of `ease_in`.
+fn ease_out(t: f32) -> f32 {
+    let u = 1.0 - t;
+    1.0 - u * u * u
+}
+
+/// Cubic ease-in-out: accelerate then decelerate, symmetric about `t = 0.5`.
+fn ease_in_out(t: f32) -> f32 {
+    if t < 0.5 {
+        4.0 * t * t * t
+    } else {
+        let u = -2.0 * t + 2.0;
+        1.0 - (u * u * u) / 2.0
+    }
+}
+
+/// Dispatch an `Easing` curve, clamping `t` to `[0, 1]` first so an out-of-range
+/// normalized time (a frame past the tween's end, or a negative dt) never
+/// produces an eased value outside `[0, 1]`.
+fn apply(easing: Easing, t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    match easing {
+        Easing::Linear => linear(t),
+        Easing::EaseIn => ease_in(t),
+        Easing::EaseOut => ease_out(t),
+        Easing::EaseInOut => ease_in_out(t),
+    }
+}
+
+/// Per-channel linear lerp of two RGBA colors at eased fraction `e` (no rounding;
+/// alpha included). Used by the panel tween driver to ease the fill color.
+fn lerp_rgba(from: [f32; 4], to: [f32; 4], e: f32) -> [f32; 4] {
+    [
+        from[0] + (to[0] - from[0]) * e,
+        from[1] + (to[1] - from[1]) * e,
+        from[2] + (to[2] - from[2]) * e,
+        from[3] + (to[3] - from[3]) * e,
+    ]
+}
+
+/// Resolve a `ColorValue` against the active theme. A `Literal` is its own RGBA;
+/// a `Token` looks the name up in the theme. An unknown token degrades to opaque
+/// magenta and logs exactly one warning (per tree build, not per frame — this
+/// runs at build time, which on the retained path is once per rebuild).
+fn resolve_color(value: &ColorValue, theme: &UiTheme) -> [f32; 4] {
+    match value {
+        ColorValue::Literal(rgba) => *rgba,
+        ColorValue::Token(name) => theme.color(name).unwrap_or_else(|| {
+            log::warn!("[UI] unknown color token '{name}' — using opaque magenta fallback");
+            UNKNOWN_COLOR_FALLBACK
+        }),
+    }
+}
+
+/// Resolve a `SpacingValue` against the active theme. A `Literal` is its own px;
+/// a `Token` looks the name up. An unknown token degrades to `0.0` and logs
+/// exactly one warning per tree build.
+fn resolve_spacing(value: &SpacingValue, theme: &UiTheme) -> f32 {
+    match value {
+        SpacingValue::Literal(px) => *px,
+        SpacingValue::Token(name) => theme.spacing(name).unwrap_or_else(|| {
+            log::warn!("[UI] unknown spacing token '{name}' — using 0.0 fallback");
+            UNKNOWN_SPACING_FALLBACK
+        }),
+    }
+}
+
+/// Resolve a `text` widget's optional `font` token to a concrete family string.
+/// `None` selects the `body` token's family; `Some(name)` looks the token up. An
+/// unknown font token degrades to the `body` family and logs exactly one warning
+/// per tree build. The `body` token is a required theme token (it always
+/// resolves on the engine default), so the unwrap-to-body path never recurses
+/// into a second miss; a theme that somehow lacks `body` falls back to the
+/// embedded body family constant rather than panicking.
+fn resolve_font(font: &Option<String>, theme: &UiTheme) -> String {
+    let body = || {
+        theme
+            .font("body")
+            .unwrap_or(super::text::UI_FONT_FAMILY)
+            .to_string()
+    };
+    match font {
+        None => body(),
+        Some(name) => match theme.font(name) {
+            Some(family) => family.to_string(),
+            None => {
+                log::warn!("[UI] unknown font token '{name}' — using body family fallback");
+                body()
+            }
+        },
+    }
+}
+
+/// Resolve a `Border`'s theme-tokened `tint` against the active theme into a
+/// concrete-RGBA `Border`. `None` passes through (no border). The `texture` and
+/// `slice` are wire literals carried unchanged; only the `tint` color slot
+/// resolves (a `Token` against the theme, an unknown token degrading to opaque
+/// magenta + one warn via `resolve_color`).
+fn resolve_border(border: Option<&Border>, theme: &UiTheme) -> Option<Border> {
+    border.map(|b| Border {
+        texture: b.texture.clone(),
+        slice: b.slice,
+        tint: ColorValue::Literal(resolve_color(&b.tint, theme)),
+    })
+}
+
 /// Asset key → natural reference size (logical-reference px, `[width, height]`)
 /// for `image` nodes. Threaded into the measure seam so an image sizes from its
 /// real asset dimensions (content-driven, like text) rather than a wire-level
 /// fixed size. The renderer builds this from the uploaded texture's pixel dims.
 pub(crate) type ImageSizes = HashMap<String, [f32; 2]>;
+
+/// Live tween state for a bound node whose bind carries a `tween`. Absent on
+/// untweened binds. `display` is the value the draw step renders THIS frame;
+/// `start`/`start_time`/`target` describe the in-flight segment the driver eases
+/// across. A retarget restarts the segment from the current `display` (never
+/// snapping mid-flight), so `start` is the display value at the retarget instant,
+/// not the bind's `from`. `T` is `f32` for text, `[f32; 4]` for panel.
+#[derive(Debug, Clone)]
+struct TweenState<T> {
+    /// Value rendered this frame (eased toward `target` from `start`).
+    display: T,
+    /// Value the active segment eased from (set at first-resolve or retarget).
+    start: T,
+    /// Frame time (seconds) the active segment started easing at.
+    start_time: f64,
+    /// Value the active segment eases toward.
+    target: T,
+}
 
 /// Per-node draw payload carried alongside each taffy node. Pure layout nodes
 /// (stacks, grids, spacers) carry `None`; only nodes that emit a draw entry hold
@@ -50,12 +195,24 @@ enum NodeContext {
         content: String,
         font_size: f32,
         color: [f32; 4],
+        /// Theme-resolved font family this run shapes and draws with. Sourced
+        /// from the `text` widget's `font` token (or the `body` token when the
+        /// widget names none) at tree-build time, so the measure seam and the
+        /// draw step both select the same registered face. See `resolve_font`.
+        family: String,
         bind: Option<TextBind>,
         /// Last resolved bound string the diff observed. `None` until the first
         /// diff resolves the binding; only meaningful when `bind` is `Some`.
         /// Unbound nodes never set it. The measure seam shapes this string when
         /// present (so a content change re-measures), else the literal `content`.
         last_resolved: Option<String>,
+        /// Live tween state when `bind`'s `tween` is `Some` AND the slot has
+        /// resolved to a `Number` at least once. `None` for untweened binds and
+        /// before the first numeric resolution. While `Some`, the driver eases
+        /// `display` toward `target` and `last_resolved` holds the rounded,
+        /// formatted display string (so the measure seam shapes the displayed
+        /// value).
+        tween: Option<TweenState<f32>>,
     },
     /// Solid-fill panel quad, optionally framed by a 9-slice `border`. `fill`
     /// stays linear `[f32; 4]` — no sRGB conversion on the quad path. Carried by
@@ -76,6 +233,11 @@ enum NodeContext {
         /// Last resolved bound fill the diff observed. `None` until the first
         /// diff; only meaningful when `bind` is `Some`.
         last_resolved: Option<[f32; 4]>,
+        /// Live tween state when `bind`'s `tween` is `Some` AND the slot has
+        /// resolved to a length-4 `Array` at least once. `None` for untweened
+        /// binds and before the first array resolution. While `Some`, the driver
+        /// eases `display` (the rendered fill) per-channel toward `target`.
+        tween: Option<TweenState<[f32; 4]>>,
     },
     /// Textured image quad. `asset` is the texture key the renderer binds; the
     /// rect comes from layout. The image sizes from the asset's natural reference
@@ -150,9 +312,15 @@ impl UiTree {
     /// `Widget` to a taffy node with the mapped `Style`, plus a `NodeContext` draw
     /// payload on drawing nodes (text/panel/image leaves, and containers carrying
     /// a backdrop `fill`/`border`).
-    pub(crate) fn from_descriptor(tree: &AnchoredTree) -> Self {
+    ///
+    /// Every theme token (color/spacing/font slot) is resolved against `theme` at
+    /// build time into its concrete value carried on the node, so the per-frame
+    /// layout/draw walk never touches the theme. An unknown token degrades visibly
+    /// and logs exactly one warning per build (see `resolve_color`/`resolve_spacing`
+    /// /`resolve_font`); the resolution happens once here, not per frame.
+    pub(crate) fn from_descriptor(tree: &AnchoredTree, theme: &UiTheme) -> Self {
         let mut taffy = TaffyTree::new();
-        let root = build_node(&mut taffy, &tree.root);
+        let root = build_node(&mut taffy, &tree.root, theme);
         Self {
             taffy,
             root,
@@ -356,15 +524,19 @@ impl UiTree {
         font_system: &mut FontSystem,
         image_sizes: &ImageSizes,
         slot_values: &HashMap<String, SlotValue>,
+        // Deterministic, dt-accumulated frame time (seconds). The tween driver
+        // (`resolve_bindings`) reads it to advance eased display values: a tween's
+        // normalized progress is `(time_seconds - start_time) / duration`.
+        time_seconds: f64,
     ) -> UiDrawData {
-        // Subscriber-aware diff: resolve bound nodes against the new snapshot,
-        // marking content-changed text nodes dirty for relayout and flagging any
-        // appearance change. Runs before the gate so its `mark_dirty` is visible
-        // to `taffy.dirty(root)` below.
+        // Subscriber-aware diff + tween driver: resolve bound nodes against the
+        // new snapshot at this frame's time, easing tweened display values and
+        // classifying each change. Runs before the gate so its `mark_dirty` is
+        // visible to `taffy.dirty(root)` below.
         let BindingDiff {
             content_changed,
             appearance_changed,
-        } = self.resolve_bindings(slot_values);
+        } = self.resolve_bindings(slot_values, time_seconds);
 
         let viewport_changed = self.last_viewport != Some(device_size);
         // taffy reports the root dirty after a structural rebuild OR after the
@@ -429,72 +601,103 @@ impl UiTree {
         }
     }
 
-    /// Subscriber-aware bound-value diff. Walks every node, resolves the bound
-    /// ones against `slot_values`, and reports whether any layout-affecting
-    /// (text content) or appearance-only (panel fill) binding changed since the
-    /// last diff. Unbound nodes and slots without a binding are never compared.
-    /// Side effects: stores each text node's freshly resolved string in
-    /// `last_resolved` and marks it dirty when it changed (so the measure seam
-    /// reshapes it); records each panel's resolved fill in `last_resolved`.
-    fn resolve_bindings(&mut self, slot_values: &HashMap<String, SlotValue>) -> BindingDiff {
+    /// Subscriber-aware bound-value diff AND tween driver. Walks every node,
+    /// resolves the bound ones against `slot_values` at the frame's
+    /// `time_seconds`, and reports whether any layout-affecting (text content) or
+    /// appearance-only (panel fill) binding changed since the last diff. Unbound
+    /// nodes and slots without a binding are never compared.
+    ///
+    /// For a TWEENED bind whose slot resolves to a tweenable shape (a text bind to
+    /// a `Number`, a panel bind to a length-4 `Array`), the resolved value is the
+    /// tween *target*; the driver eases a per-node display value toward it:
+    /// - **First resolution** with `from` present starts the display at `from` and
+    ///   eases toward the target (the level-load flourish); with `from` absent the
+    ///   display snaps to the target (no tween on first sight).
+    /// - **Target change** (retarget) restarts the eased segment from the *current
+    ///   display value* at this frame's time — a mid-flight retarget never snaps.
+    /// - **In flight** advances the eased display from the segment's start time
+    ///   using `(now - start_time) / duration` (`duration_ms` converted to
+    ///   seconds). At `t >= 1` the display equals the target EXACTLY (settle).
+    ///
+    /// The driver classifies through the SAME `BindingDiff` as the untweened path:
+    /// a text change (the rendered, rounded string differs) is content-changed
+    /// (re-measures → `mark_dirty`); a panel change is appearance-only (redraw, no
+    /// relayout). A tweened text node stores its rounded/formatted display string
+    /// in `last_resolved` so the measure seam shapes the displayed value; a tweened
+    /// panel stores its eased fill in `last_resolved` so the diff settles.
+    ///
+    /// A tween whose slot resolves to any OTHER shape snaps through the unchanged
+    /// resolution path (`resolve_text`/`resolve_panel_fill`) and logs one
+    /// `log::warn!` per retained frame: each node is visited once per
+    /// `resolve_bindings` call (one per retained frame) and there is no cross-frame
+    /// dedup, matching the `resolve_panel_fill` precedent.
+    ///
+    /// Side effects: stores each text node's freshly resolved (or displayed) string
+    /// in `last_resolved` and marks it dirty when it changed; records each panel's
+    /// resolved (or eased) fill in `last_resolved`; mutates per-node tween state.
+    fn resolve_bindings(
+        &mut self,
+        slot_values: &HashMap<String, SlotValue>,
+        time_seconds: f64,
+    ) -> BindingDiff {
         // Collect node ids first (depth-first from the root) to avoid borrowing
         // the taffy tree while mutating node contexts / marking dirty in the loop.
         let mut nodes: Vec<NodeId> = Vec::new();
         self.collect_node_ids(self.root, &mut nodes);
         let mut diff = BindingDiff::default();
+        // Text nodes whose displayed string changed: deferred so `mark_dirty`
+        // (which borrows the tree) runs after the per-node mutable borrow drops.
+        let mut dirty_text: Vec<NodeId> = Vec::new();
         for node in nodes {
-            // Resolve against an immutable borrow, then drop it before any
-            // mutation (mark_dirty / set_node_context) on the same tree.
-            let resolution = match self.taffy.get_node_context(node) {
+            // One mutable borrow per node: the tween driver both reads the prior
+            // segment and writes the advanced one, so a read-then-write split would
+            // need two borrows. `mark_dirty` is deferred (collected above) so the
+            // borrow can drop first.
+            match self.taffy.get_node_context_mut(node) {
                 Some(NodeContext::Text {
                     content,
                     bind: Some(bind),
                     last_resolved,
+                    tween,
                     ..
                 }) => {
-                    let resolved = resolve_text(Some(bind), content, slot_values);
-                    let changed = last_resolved.as_deref() != Some(resolved.as_str());
-                    Some(Resolution::Text { resolved, changed })
+                    if drive_text_binding(
+                        bind,
+                        content,
+                        last_resolved,
+                        tween,
+                        slot_values,
+                        time_seconds,
+                    ) {
+                        diff.content_changed = true;
+                        dirty_text.push(node);
+                    }
                 }
                 Some(NodeContext::Panel {
                     fill,
                     bind: Some(bind),
                     last_resolved,
+                    tween,
                     ..
                 }) => {
-                    let resolved = resolve_panel_fill(Some(bind), *fill, slot_values);
-                    let changed = last_resolved.is_none_or(|prev| !colors_eq(prev, resolved));
-                    Some(Resolution::Panel { resolved, changed })
-                }
-                _ => None,
-            };
-
-            match resolution {
-                Some(Resolution::Text { resolved, changed }) => {
-                    if changed {
-                        diff.content_changed = true;
-                        if let Some(NodeContext::Text { last_resolved, .. }) =
-                            self.taffy.get_node_context_mut(node)
-                        {
-                            *last_resolved = Some(resolved);
-                        }
-                        // Content change may re-measure: force a relayout.
-                        self.mark_dirty(node);
-                    }
-                }
-                Some(Resolution::Panel { resolved, changed }) => {
-                    if changed {
+                    if drive_panel_binding(
+                        bind,
+                        *fill,
+                        last_resolved,
+                        tween,
+                        slot_values,
+                        time_seconds,
+                    ) {
                         diff.appearance_changed = true;
-                        if let Some(NodeContext::Panel { last_resolved, .. }) =
-                            self.taffy.get_node_context_mut(node)
-                        {
-                            *last_resolved = Some(resolved);
-                        }
                         // Appearance-only: no mark_dirty, no relayout.
                     }
                 }
-                None => {}
+                _ => {}
             }
+        }
+        // Content change may re-measure: force a relayout on each changed text node.
+        for node in dirty_text {
+            self.mark_dirty(node);
         }
         diff
     }
@@ -516,11 +719,23 @@ impl UiTree {
 
         match context {
             Some(NodeContext::Panel {
-                fill, border, bind, ..
+                fill,
+                border,
+                bind,
+                last_resolved,
+                tween,
             }) => {
                 // A bound panel resolves its fill from the slot snapshot; an
-                // absent/malformed slot falls back to the literal `fill`.
-                let fill = resolve_panel_fill(bind.as_ref(), *fill, slot_values);
+                // absent/malformed slot falls back to the literal `fill`. For a
+                // TWEENED bind whose driver has produced an eased display fill
+                // (`tween` is `Some` and `last_resolved` holds it), render that
+                // eased fill instead of re-resolving the raw slot — so the
+                // per-channel easing reaches the draw. The fresh/splash path never
+                // populates `tween`, so it resolves the target directly (inert).
+                let fill = match (tween, last_resolved) {
+                    (Some(_), Some(eased)) => *eased,
+                    _ => resolve_panel_fill(bind.as_ref(), *fill, slot_values),
+                };
                 data.quads.push(project_quad(
                     ref_origin,
                     layout,
@@ -542,15 +757,28 @@ impl UiTree {
                 content,
                 font_size,
                 color,
+                family,
                 bind,
-                ..
+                last_resolved,
+                tween,
             }) => {
                 // A bound text node resolves its drawn string from the slot
                 // snapshot (through the optional `{}` format template); an absent
                 // slot falls back to the literal `content`. Layout already used
-                // the literal `content` for measurement (see `measure_node`), so
+                // the literal `content` (or the resolved/displayed string in
+                // `last_resolved`) for measurement (see `measure_node`), so
                 // resolution only swaps the rendered string, never the geometry.
-                let resolved = resolve_text(bind.as_ref(), content, slot_values);
+                //
+                // For a TWEENED bind whose driver has produced a displayed value
+                // (`tween` is `Some`, with the rounded/formatted display string in
+                // `last_resolved`), render that string so the eased value reaches
+                // the draw and matches what the measure seam shaped. The
+                // fresh/splash path never populates `tween`, so it resolves the
+                // target directly (inert).
+                let resolved = match (tween, last_resolved) {
+                    (Some(_), Some(displayed)) => displayed.clone(),
+                    _ => resolve_text(bind.as_ref(), content, slot_values),
+                };
                 // Device-pixel top-left + device-scaled font size; color converts
                 // linear RGBA -> sRGB [u8; 4] at draw-list build time. The run is
                 // laid out in flow (its container's `align` centers it on the
@@ -561,6 +789,11 @@ impl UiTree {
                     [rect[0], rect[1]],
                     font_size * scale,
                     linear_rgba_to_srgb_u8(*color),
+                    // The theme-resolved family carried on the node (from the
+                    // widget's `font` token, or `body` when it names none), so the
+                    // drawn line shapes against the same registered face the
+                    // measure seam sized it with.
+                    family.clone(),
                 ));
             }
             None => {}
@@ -589,12 +822,245 @@ struct BindingDiff {
     appearance_changed: bool,
 }
 
-/// One bound node's freshly resolved value plus whether it differs from the
-/// node's last-resolved value. Carried out of the immutable resolution borrow so
-/// the mutable write-back/mark-dirty happens after the borrow ends.
-enum Resolution {
-    Text { resolved: String, changed: bool },
-    Panel { resolved: [f32; 4], changed: bool },
+/// Drive one bound TEXT node for this frame and return whether its rendered
+/// (`last_resolved`) string changed since the last diff. Three paths:
+///
+/// - **Untweened** (`bind.tween` is `None`): the original behavior — resolve the
+///   string via `resolve_text`, store it, report change. `tween` stays `None`.
+/// - **Tweened, slot resolves to a `Number`**: the number is the eased target.
+///   `drive_tween_f32` advances the per-node `f32` display from its segment; the
+///   rounded display is formatted through `bind.format`'s `{}` (same integral
+///   formatting as `slot_value_string`) and stored as the rendered string, so the
+///   measure seam shapes the displayed value.
+/// - **Tweened, slot resolves to any other shape**: snap-through — render via the
+///   unchanged `resolve_text` path and log one `log::warn!` per retained frame
+///   (the node is visited once per `resolve_bindings` call; there is no cross-frame
+///   dedup, matching the `resolve_panel_fill` precedent).
+///
+/// `now` is the frame's `time_seconds`.
+fn drive_text_binding(
+    bind: &TextBind,
+    content: &str,
+    last_resolved: &mut Option<String>,
+    tween: &mut Option<TweenState<f32>>,
+    slot_values: &HashMap<String, SlotValue>,
+    now: f64,
+) -> bool {
+    let Some(cfg) = bind.tween.as_ref() else {
+        // No tween config: the untweened path, byte-for-byte as before.
+        let resolved = resolve_text(Some(bind), content, slot_values);
+        let changed = last_resolved.as_deref() != Some(resolved.as_str());
+        if changed {
+            *last_resolved = Some(resolved);
+        }
+        return changed;
+    };
+
+    let rendered = match slot_values.get(&bind.slot) {
+        Some(SlotValue::Number(n)) => {
+            // Tweenable: the number is the eased target. Advance the display value
+            // and render the rounded integer through the format template.
+            let target = *n;
+            let display =
+                drive_tween_f32(tween, cfg.from, target, cfg.duration_ms, cfg.easing, now);
+            let integral = display.round() as i64;
+            match &bind.format {
+                Some(template) => template.replacen("{}", &integral.to_string(), 1),
+                None => integral.to_string(),
+            }
+        }
+        _ => {
+            // A tween on a non-`Number` slot (or an absent slot): snap through the
+            // unchanged resolution path, warning once per retained frame. An absent
+            // slot is the normal fallback case and does NOT warn (`resolve_text`
+            // already treats absence silently); only a present, non-numeric value
+            // is an authoring error worth the warn.
+            if slot_values.get(&bind.slot).is_some() {
+                warn_non_tweenable_text(bind);
+            }
+            resolve_text(Some(bind), content, slot_values)
+        }
+    };
+
+    let changed = last_resolved.as_deref() != Some(rendered.as_str());
+    if changed {
+        *last_resolved = Some(rendered);
+    }
+    changed
+}
+
+/// Advance (or initialize / retarget) a text node's `f32` tween segment toward
+/// `target` at frame time `now`, returning the eased display value for this frame.
+/// Stores the advanced state back into `tween`. See `resolve_bindings` for the
+/// first-resolve / retarget / in-flight / settle mechanics.
+fn drive_tween_f32(
+    tween: &mut Option<TweenState<f32>>,
+    from: Option<f32>,
+    target: f32,
+    duration_ms: f32,
+    easing: Easing,
+    now: f64,
+) -> f32 {
+    match tween {
+        None => {
+            // First resolution. With `from` present, start there and ease toward
+            // the target (the level-load flourish); with `from` absent, snap to the
+            // target (no tween on first sight) by seeding a settled segment.
+            let start = from.unwrap_or(target);
+            let mut state = TweenState {
+                display: start,
+                start,
+                start_time: now,
+                target,
+            };
+            state.display = advance_f32(&state, duration_ms, easing, now);
+            let display = state.display;
+            *tween = Some(state);
+            display
+        }
+        Some(state) => {
+            // Retarget: a new target restarts the segment from the CURRENT display
+            // (never snapping mid-flight) at this frame's time.
+            if state.target != target {
+                state.start = state.display;
+                state.start_time = now;
+                state.target = target;
+            }
+            state.display = advance_f32(state, duration_ms, easing, now);
+            state.display
+        }
+    }
+}
+
+/// Sample a text tween segment at `now`: normalized progress `(now - start_time) /
+/// duration`, eased, lerped from `start` to `target`. At `t >= 1` (including a
+/// non-positive duration) the value equals `target` EXACTLY so the settle is bit-
+/// exact. `duration_ms` is milliseconds; converted to seconds for the f64 clock.
+fn advance_f32(state: &TweenState<f32>, duration_ms: f32, easing: Easing, now: f64) -> f32 {
+    let duration = (duration_ms as f64) / 1000.0;
+    if duration <= 0.0 || now - state.start_time >= duration {
+        return state.target;
+    }
+    let t = ((now - state.start_time) / duration) as f32;
+    let e = apply(easing, t);
+    state.start + (state.target - state.start) * e
+}
+
+/// Log the snap-through warning for a text tween whose slot resolved to a
+/// non-`Number` shape. Fires once per retained frame: the caller visits each node
+/// once per `resolve_bindings` call (one per retained frame) and there is no
+/// cross-frame dedup, matching the `resolve_panel_fill` precedent. The snap itself
+/// renders via `resolve_text`, so this never touches the tween state.
+fn warn_non_tweenable_text(bind: &TextBind) {
+    log::warn!(
+        "[UI] text bind slot '{}' carries a tween but did not resolve to a Number; \
+         rendering the raw value without easing",
+        bind.slot,
+    );
+}
+
+/// Drive one bound PANEL node for this frame and return whether its rendered
+/// (`last_resolved`) fill changed since the last diff. Mirrors
+/// `drive_text_binding`:
+///
+/// - **Untweened**: resolve the fill via `resolve_panel_fill`, store, report.
+/// - **Tweened, slot resolves to a length-4 `Array`**: the array is the eased
+///   target; `drive_tween_rgba` advances the per-node `[f32; 4]` display
+///   per-channel (alpha included, no rounding) and stores it as the rendered fill.
+/// - **Tweened, slot resolves to any other shape**: snap through the unchanged
+///   `resolve_panel_fill` path (which already warns once per retained frame on a
+///   present-but-malformed slot) — no extra tween warn, since that path owns the
+///   warning.
+fn drive_panel_binding(
+    bind: &PanelBind,
+    fallback: [f32; 4],
+    last_resolved: &mut Option<[f32; 4]>,
+    tween: &mut Option<TweenState<[f32; 4]>>,
+    slot_values: &HashMap<String, SlotValue>,
+    now: f64,
+) -> bool {
+    let Some(cfg) = bind.tween.as_ref() else {
+        let resolved = resolve_panel_fill(Some(bind), fallback, slot_values);
+        let changed = last_resolved.is_none_or(|prev| !colors_eq(prev, resolved));
+        if changed {
+            *last_resolved = Some(resolved);
+        }
+        return changed;
+    };
+
+    let resolved = match slot_values.get(&bind.slot) {
+        Some(SlotValue::Array(rgba)) if rgba.len() == 4 => {
+            let target = [rgba[0], rgba[1], rgba[2], rgba[3]];
+            drive_tween_rgba(tween, cfg.from, target, cfg.duration_ms, cfg.easing, now)
+        }
+        // Non-tweenable shape (absent, wrong variant, or wrong length): snap
+        // through the unchanged fill-resolution path. `resolve_panel_fill` already
+        // owns the once-per-frame warn for a present-but-malformed slot, so the
+        // tween adds none here.
+        _ => resolve_panel_fill(Some(bind), fallback, slot_values),
+    };
+
+    let changed = last_resolved.is_none_or(|prev| !colors_eq(prev, resolved));
+    if changed {
+        *last_resolved = Some(resolved);
+    }
+    changed
+}
+
+/// Advance (or initialize / retarget) a panel node's RGBA tween segment toward
+/// `target` at frame time `now`, returning the eased per-channel display fill.
+/// Same first-resolve / retarget / in-flight / settle mechanics as the text
+/// driver, but the lerp runs per channel (alpha included, no rounding).
+fn drive_tween_rgba(
+    tween: &mut Option<TweenState<[f32; 4]>>,
+    from: Option<[f32; 4]>,
+    target: [f32; 4],
+    duration_ms: f32,
+    easing: Easing,
+    now: f64,
+) -> [f32; 4] {
+    match tween {
+        None => {
+            let start = from.unwrap_or(target);
+            let mut state = TweenState {
+                display: start,
+                start,
+                start_time: now,
+                target,
+            };
+            state.display = advance_rgba(&state, duration_ms, easing, now);
+            let display = state.display;
+            *tween = Some(state);
+            display
+        }
+        Some(state) => {
+            if state.target != target {
+                state.start = state.display;
+                state.start_time = now;
+                state.target = target;
+            }
+            state.display = advance_rgba(state, duration_ms, easing, now);
+            state.display
+        }
+    }
+}
+
+/// Sample a panel tween segment at `now`: eased fraction (as `advance_f32`),
+/// applied per channel via `lerp_rgba`. At `t >= 1` (or a non-positive duration)
+/// the fill equals `target` EXACTLY so the settle is bit-exact.
+fn advance_rgba(
+    state: &TweenState<[f32; 4]>,
+    duration_ms: f32,
+    easing: Easing,
+    now: f64,
+) -> [f32; 4] {
+    let duration = (duration_ms as f64) / 1000.0;
+    if duration <= 0.0 || now - state.start_time >= duration {
+        return state.target;
+    }
+    let t = ((now - state.start_time) / duration) as f32;
+    let e = apply(easing, t);
+    lerp_rgba(state.start, state.target, e)
 }
 
 /// Exact per-channel equality for a resolved fill. The diff compares the resolved
@@ -623,6 +1089,7 @@ fn measure_node(
         Some(NodeContext::Text {
             content,
             font_size,
+            family,
             last_resolved,
             ..
         }) => {
@@ -631,7 +1098,10 @@ fn measure_node(
             // literal `content` — the fresh/splash path never resolves, so it
             // always measures the literal, unchanged from before.
             let measured = last_resolved.as_deref().unwrap_or(content);
-            let (width, height) = measure_run(font_system, measured, *font_size);
+            // Shape against the node's theme-resolved family so a node measures
+            // against the same face it draws with (a monospace run sizes
+            // differently from the proportional body face).
+            let (width, height) = measure_run(font_system, measured, *font_size, family);
             // Honor any axis taffy has already pinned (e.g. an explicit/stretched
             // size); measure only the unconstrained axes.
             Size {
@@ -657,12 +1127,15 @@ fn measure_node(
 }
 
 /// Recursively build a taffy node (and its children) for one descriptor widget.
-fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget) -> NodeId {
+/// Resolves every theme token (color/spacing/font) against `theme` into the
+/// concrete value the node carries, so the per-frame walk is theme-free.
+fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget, theme: &UiTheme) -> NodeId {
     match widget {
         Widget::Text(TextWidget {
             content,
             font_size,
             color,
+            font,
             bind,
         }) => {
             // Text nodes are sized by the measure closure in `build_draw_data`,
@@ -675,9 +1148,19 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget) -> NodeId {
                     NodeContext::Text {
                         content: content.clone(),
                         font_size: *font_size,
-                        color: *color,
+                        // Resolve the color token (or literal) against the theme;
+                        // an unknown token degrades to opaque magenta + one warn.
+                        color: resolve_color(color, theme),
+                        // Resolve the optional font token to a concrete family:
+                        // `None` → the `body` token, `Some(name)` → that token,
+                        // unknown → `body` + one warn.
+                        family: resolve_font(font, theme),
                         bind: bind.clone(),
                         last_resolved: None,
+                        // Tween state is born on the first numeric resolution, not
+                        // at build: the fresh path never tweens, and the retained
+                        // diff initializes it when the slot first reads a `Number`.
+                        tween: None,
                     },
                 )
                 .expect("taffy leaf creation must succeed")
@@ -690,10 +1173,13 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget) -> NodeId {
                 .new_leaf_with_context(
                     Style::default(),
                     NodeContext::Panel {
-                        fill: *fill,
-                        border: border.clone(),
+                        // Resolve the fill token (or literal) against the theme.
+                        fill: resolve_color(fill, theme),
+                        border: resolve_border(border.as_ref(), theme),
                         bind: bind.clone(),
                         last_resolved: None,
+                        // Born on the first length-4 array resolution (see above).
+                        tween: None,
                     },
                 )
                 .expect("taffy leaf creation must succeed")
@@ -706,9 +1192,9 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget) -> NodeId {
                 },
             )
             .expect("taffy leaf creation must succeed"),
-        Widget::VStack(container) => build_stack(taffy, container, FlexDirection::Column),
-        Widget::HStack(container) => build_stack(taffy, container, FlexDirection::Row),
-        Widget::Grid(grid) => build_grid(taffy, grid),
+        Widget::VStack(container) => build_stack(taffy, container, FlexDirection::Column, theme),
+        Widget::HStack(container) => build_stack(taffy, container, FlexDirection::Row, theme),
+        Widget::Grid(grid) => build_grid(taffy, grid, theme),
         Widget::Spacer(spacer) => {
             // Flexible space: claims a proportional share of leftover space in its
             // parent container via flex_grow. No draw payload.
@@ -740,6 +1226,7 @@ fn container_backdrop(fill: Option<[f32; 4]>, border: Option<&Border>) -> Option
             // Container backdrops never bind — only `panel` leaves carry a bind.
             bind: None,
             last_resolved: None,
+            tween: None,
         }),
     }
 }
@@ -751,21 +1238,33 @@ fn build_stack(
     taffy: &mut TaffyTree<NodeContext>,
     container: &ContainerWidget,
     direction: FlexDirection,
+    theme: &UiTheme,
 ) -> NodeId {
     let children: Vec<NodeId> = container
         .children
         .iter()
-        .map(|child| build_node(taffy, child))
+        .map(|child| build_node(taffy, child, theme))
         .collect();
+    // Resolve the spacing tokens to scalar `f32` BEFORE `container_base_style` —
+    // its resolved-scalar signature stays unchanged; resolution is the only seam
+    // that moved (an unknown token degrades to 0.0 + one warn via `resolve_spacing`).
     let style = Style {
         display: Display::Flex,
         flex_direction: direction,
-        ..container_base_style(container.gap, container.padding, container.align)
+        ..container_base_style(
+            resolve_spacing(&container.gap, theme),
+            resolve_spacing(&container.padding, theme),
+            container.align,
+        )
     };
     let node = taffy
         .new_with_children(style, &children)
         .expect("taffy container creation must succeed");
-    if let Some(ctx) = container_backdrop(container.fill, container.border.as_ref()) {
+    // Resolve the optional backdrop fill (token or literal) and border tint
+    // against the theme into concrete values carried on the backdrop context.
+    let fill = container.fill.as_ref().map(|c| resolve_color(c, theme));
+    let border = resolve_border(container.border.as_ref(), theme);
+    if let Some(ctx) = container_backdrop(fill, border.as_ref()) {
         taffy
             .set_node_context(node, Some(ctx))
             .expect("setting a fresh container's backdrop context must succeed");
@@ -774,11 +1273,11 @@ fn build_stack(
 }
 
 /// Build a CSS-grid node: `cols` equal flexible tracks, `gap` both axes.
-fn build_grid(taffy: &mut TaffyTree<NodeContext>, grid: &GridWidget) -> NodeId {
+fn build_grid(taffy: &mut TaffyTree<NodeContext>, grid: &GridWidget, theme: &UiTheme) -> NodeId {
     let children: Vec<NodeId> = grid
         .children
         .iter()
-        .map(|child| build_node(taffy, child))
+        .map(|child| build_node(taffy, child, theme))
         .collect();
     // `evenly_sized_tracks(N)` yields N equal `1fr` tracks — the descriptor's
     // "N equal columns" maps straight onto it.
@@ -786,7 +1285,12 @@ fn build_grid(taffy: &mut TaffyTree<NodeContext>, grid: &GridWidget) -> NodeId {
     let style = Style {
         display: Display::Grid,
         grid_template_columns: evenly_sized_tracks(cols),
-        ..container_base_style(grid.gap, grid.padding, grid.align)
+        // Resolve the spacing tokens to scalar `f32` against the theme.
+        ..container_base_style(
+            resolve_spacing(&grid.gap, theme),
+            resolve_spacing(&grid.padding, theme),
+            grid.align,
+        )
     };
     taffy
         .new_with_children(style, &children)
@@ -962,9 +1466,11 @@ fn slot_value_string(value: &SlotValue) -> String {
 /// exactly 4 f32 is used as the linear `[r, g, b, a]` fill. An absent slot falls
 /// back silently (the normal "not written this frame" case). A present-but-
 /// malformed value (wrong variant, or an array whose length is not 4) falls back
-/// to the literal `fallback` with a single `log::warn!` — a per-build authoring
-/// error, not per-frame spam (a fresh tree builds once per frame today, so the
-/// warn fires at most once per frame for a genuinely mis-typed slot).
+/// to the literal `fallback` with a single `log::warn!` per call. The warn fires
+/// once per frame for a genuinely mis-typed slot on BOTH paths: the fresh path
+/// (one build per frame) and the retained tweened path (`drive_panel_binding`
+/// snaps through here every frame the slot keeps the wrong shape). There is no
+/// cross-frame dedup — an authoring error, not per-frame spam.
 fn resolve_panel_fill(
     bind: Option<&PanelBind>,
     fallback: [f32; 4],
@@ -1012,6 +1518,7 @@ fn linear_rgba_to_srgb_u8(color: [f32; 4]) -> [u8; 4] {
 
 #[cfg(test)]
 mod tests {
+    use super::super::descriptor::{ColorValue, SpacingValue};
     use super::*;
 
     /// Device-pixel comparison tolerance; rects snap to whole pixels but float
@@ -1020,6 +1527,13 @@ mod tests {
 
     fn approx(a: f32, b: f32) -> bool {
         (a - b).abs() <= EPS
+    }
+
+    /// The engine default theme — every required token resolves, so a literal
+    /// descriptor's tokens resolve to themselves and these layout tests behave
+    /// exactly as before theming threaded through `from_descriptor`.
+    fn theme() -> UiTheme {
+        UiTheme::engine_default()
     }
 
     /// A headless `FontSystem` (embedded Inter face registered, no GPU). Text
@@ -1047,8 +1561,8 @@ mod tests {
 
     fn vstack(gap: f32, padding: f32, align: Align, children: Vec<Widget>) -> Widget {
         Widget::VStack(ContainerWidget {
-            gap,
-            padding,
+            gap: SpacingValue::Literal(gap),
+            padding: SpacingValue::Literal(padding),
             align,
             fill: None,
             border: None,
@@ -1058,8 +1572,8 @@ mod tests {
 
     fn hstack(gap: f32, padding: f32, align: Align, children: Vec<Widget>) -> Widget {
         Widget::HStack(ContainerWidget {
-            gap,
-            padding,
+            gap: SpacingValue::Literal(gap),
+            padding: SpacingValue::Literal(padding),
             align,
             fill: None,
             border: None,
@@ -1076,7 +1590,8 @@ mod tests {
         Widget::Text(TextWidget {
             content: content.into(),
             font_size,
-            color: [1.0, 1.0, 1.0, 1.0],
+            color: ColorValue::Literal([1.0, 1.0, 1.0, 1.0]),
+            font: None,
             bind: None,
         })
     }
@@ -1102,7 +1617,7 @@ mod tests {
                 vec![text("AB", 40.0), text("CD", 40.0)],
             ),
         };
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
 
@@ -1154,7 +1669,7 @@ mod tests {
                 )],
             ),
         };
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
 
@@ -1196,7 +1711,7 @@ mod tests {
                 vec![text("X", 40.0), spacer(1.0), text("Y", 40.0)],
             ),
         };
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
 
@@ -1236,9 +1751,9 @@ mod tests {
             ),
         };
         let mut fs = font_system();
-        let mut ui_ref = UiTree::from_descriptor(&tree);
+        let mut ui_ref = UiTree::from_descriptor(&tree, &theme());
         let data_ref = ui_ref.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
-        let mut ui_4k = UiTree::from_descriptor(&tree);
+        let mut ui_4k = UiTree::from_descriptor(&tree, &theme());
         let data_4k = ui_4k.build_draw_data([3840, 2160], &mut fs, &no_images(), &no_slots());
 
         assert_eq!(data_ref.texts.len(), 2);
@@ -1270,7 +1785,8 @@ mod tests {
             Widget::Text(TextWidget {
                 content: "XX".into(),
                 font_size: 10.0,
-                color: [1.0; 4],
+                color: ColorValue::Literal([1.0; 4]),
+                font: None,
                 bind: None,
             })
         };
@@ -1278,14 +1794,14 @@ mod tests {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
             root: Widget::Grid(GridWidget {
-                gap: 8.0,
-                padding: 0.0,
+                gap: SpacingValue::Literal(8.0),
+                padding: SpacingValue::Literal(0.0),
                 align: Align::Start,
                 cols: 2,
                 children: vec![cell(), cell(), cell(), cell()],
             }),
         };
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
         let cells: Vec<_> = ui.taffy.children(ui.root).unwrap();
@@ -1328,11 +1844,12 @@ mod tests {
             root: Widget::Text(TextWidget {
                 content: "ABCDEFGH".into(),
                 font_size: 40.0,
-                color: [1.0, 1.0, 1.0, 1.0],
+                color: ColorValue::Literal([1.0, 1.0, 1.0, 1.0]),
+                font: None,
                 bind: None,
             }),
         };
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         let data = ui.build_draw_data([1280, 1440], &mut fs, &no_images(), &no_slots());
         // Read back the root's measured size and recompute the centered top-left
@@ -1364,10 +1881,10 @@ mod tests {
         // still snap to whole device pixels. (Bare panel leaves have no intrinsic
         // size now, so the backdrop is the canonical quad-producing path.)
         let filled = Widget::VStack(ContainerWidget {
-            gap: 7.0,
-            padding: 5.0,
+            gap: SpacingValue::Literal(7.0),
+            padding: SpacingValue::Literal(5.0),
             align: Align::Start,
-            fill: Some([0.2, 0.4, 0.6, 1.0]),
+            fill: Some(ColorValue::Literal([0.2, 0.4, 0.6, 1.0])),
             border: None,
             children: vec![text("x", 13.0), text("y", 13.0)],
         });
@@ -1376,7 +1893,7 @@ mod tests {
             offset: [3.5, 7.25],
             root: filled,
         };
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         // Fractional scale: 1281x721 -> scale ~1.00078.
         let data = ui.build_draw_data([1281, 721], &mut fs, &no_images(), &no_slots());
@@ -1397,10 +1914,10 @@ mod tests {
         // rect, and its children draw on top (painter's order). The backdrop is the
         // first draw entry; the text children produce runs over it.
         let filled = Widget::VStack(ContainerWidget {
-            gap: 0.0,
-            padding: 10.0,
+            gap: SpacingValue::Literal(0.0),
+            padding: SpacingValue::Literal(10.0),
             align: Align::Start,
-            fill: Some([0.1, 0.2, 0.3, 1.0]),
+            fill: Some(ColorValue::Literal([0.1, 0.2, 0.3, 1.0])),
             border: None,
             children: vec![text("AB", 40.0)],
         });
@@ -1409,7 +1926,7 @@ mod tests {
             offset: [0.0, 0.0],
             root: filled,
         };
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
 
@@ -1453,7 +1970,7 @@ mod tests {
             offset: [0.0, 0.0],
             root: text(content, font_size),
         };
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
         ui.taffy.layout(ui.root).unwrap().size
@@ -1546,7 +2063,7 @@ mod tests {
         // First layout populates taffy's cache (count 1); a second call with the
         // same tree and same viewport hits the gate's no-change path and reuses
         // the cached subtree layout — the compute counter must stay flat.
-        let mut ui = UiTree::from_descriptor(&gating_tree());
+        let mut ui = UiTree::from_descriptor(&gating_tree(), &theme());
         let mut fs = font_system();
 
         ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
@@ -1564,7 +2081,7 @@ mod tests {
     fn viewport_change_forces_layout_recompute() {
         // A different device size re-resolves the letterbox/scale, so the gate
         // must recompute even though the tree is byte-for-byte identical.
-        let mut ui = UiTree::from_descriptor(&gating_tree());
+        let mut ui = UiTree::from_descriptor(&gating_tree(), &theme());
         let mut fs = font_system();
 
         ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
@@ -1585,7 +2102,7 @@ mod tests {
         // at the same viewport the previous tree was laid out against.
         let mut fs = font_system();
 
-        let mut first = UiTree::from_descriptor(&gating_tree());
+        let mut first = UiTree::from_descriptor(&gating_tree(), &theme());
         first.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
         first.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
         assert_eq!(first.recompute_count(), 1, "cached after the first layout");
@@ -1602,7 +2119,7 @@ mod tests {
                 vec![text("AB", 30.0), text("CD", 30.0), text("EF", 30.0)],
             ),
         };
-        let mut second = UiTree::from_descriptor(&reshaped);
+        let mut second = UiTree::from_descriptor(&reshaped, &theme());
         second.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
         assert_eq!(
             second.recompute_count(),
@@ -1616,7 +2133,7 @@ mod tests {
         // The gate skips the *compute*, not the draw-list production. The cached
         // frame reads back the same taffy::Layout rects, so its draw data must be
         // identical to the freshly-computed frame's.
-        let mut ui = UiTree::from_descriptor(&gating_tree());
+        let mut ui = UiTree::from_descriptor(&gating_tree(), &theme());
         let mut fs = font_system();
 
         let computed = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
@@ -1649,10 +2166,12 @@ mod tests {
         Widget::Text(TextWidget {
             content: content.into(),
             font_size: 20.0,
-            color: [1.0, 1.0, 1.0, 1.0],
+            color: ColorValue::Literal([1.0, 1.0, 1.0, 1.0]),
+            font: None,
             bind: Some(TextBind {
                 slot: slot.into(),
                 format: format.map(str::to_string),
+                tween: None,
             }),
         })
     }
@@ -1662,15 +2181,18 @@ mod tests {
     /// panel has no intrinsic size).
     fn bound_panel_in_stack(fill: [f32; 4], slot: &str) -> Widget {
         Widget::VStack(ContainerWidget {
-            gap: 0.0,
-            padding: 0.0,
+            gap: SpacingValue::Literal(0.0),
+            padding: SpacingValue::Literal(0.0),
             align: Align::Stretch,
-            fill: Some([0.0, 0.0, 0.0, 1.0]),
+            fill: Some(ColorValue::Literal([0.0, 0.0, 0.0, 1.0])),
             border: None,
             children: vec![Widget::Panel(PanelWidget {
-                fill,
+                fill: ColorValue::Literal(fill),
                 border: None,
-                bind: Some(PanelBind { slot: slot.into() }),
+                bind: Some(PanelBind {
+                    slot: slot.into(),
+                    tween: None,
+                }),
             })],
         })
     }
@@ -1688,7 +2210,7 @@ mod tests {
         let mut slots = HashMap::new();
         slots.insert("player.health".to_string(), SlotValue::Number(87.0));
 
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &slots);
 
@@ -1711,7 +2233,7 @@ mod tests {
         let mut slots = HashMap::new();
         slots.insert("player.ammo".to_string(), SlotValue::Number(12.5));
 
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &slots);
 
@@ -1727,7 +2249,7 @@ mod tests {
             offset: [0.0, 0.0],
             root: bound_text("fallback", "player.health", Some("HP {}")),
         };
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
 
@@ -1753,7 +2275,7 @@ mod tests {
             SlotValue::Array(resolved.to_vec()),
         );
 
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &slots);
 
@@ -1784,7 +2306,7 @@ mod tests {
             SlotValue::Array(vec![0.1, 0.2, 0.3]),
         );
 
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &slots);
 
@@ -1809,7 +2331,7 @@ mod tests {
             offset: [0.0, 0.0],
             root: bound_panel_in_stack(fallback, "intro.flashColor"),
         };
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
 
@@ -1856,12 +2378,12 @@ mod tests {
             offset: [0.0, 0.0],
             root: bound_panel_in_stack([0.0, 0.0, 0.0, 1.0], "intro.flashColor"),
         };
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
 
         let red = [1.0, 0.0, 0.0, 1.0];
         let first =
-            ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &flash_slots(red));
+            ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &flash_slots(red), 0.0);
         assert_eq!(ui.recompute_count(), 1, "first frame computes once");
         assert!(
             flash_quad_color(&first).is_some_and(|c| colors_eq(c, red)),
@@ -1869,8 +2391,13 @@ mod tests {
         );
 
         let green = [0.0, 1.0, 0.0, 1.0];
-        let second =
-            ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &flash_slots(green));
+        let second = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &flash_slots(green),
+            0.0,
+        );
         assert_eq!(
             ui.recompute_count(),
             1,
@@ -1891,17 +2418,17 @@ mod tests {
             offset: [0.0, 0.0],
             root: bound_text("0", "player.health", Some("HP {}")),
         };
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
 
         let mut slots = HashMap::new();
         slots.insert("player.health".to_string(), SlotValue::Number(100.0));
-        let first = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots);
+        let first = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
         assert_eq!(ui.recompute_count(), 1, "first frame computes once");
         assert_eq!(first.texts[0].content, "HP 100");
 
         slots.insert("player.health".to_string(), SlotValue::Number(75.0));
-        let second = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots);
+        let second = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
         assert_eq!(
             ui.recompute_count(),
             2,
@@ -1921,12 +2448,12 @@ mod tests {
             offset: [0.0, 0.0],
             root: bound_text("0", "player.health", Some("HP {}")),
         };
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
 
         let mut slots = HashMap::new();
         slots.insert("player.health".to_string(), SlotValue::Number(100.0));
-        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots);
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
         assert_eq!(ui.recompute_count(), 1);
         assert_eq!(
             ui.draw_rebuild_count(),
@@ -1936,7 +2463,7 @@ mod tests {
 
         // Change only an unbound slot; the bound `player.health` is untouched.
         slots.insert("world.kills".to_string(), SlotValue::Number(7.0));
-        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots);
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
         assert_eq!(
             ui.recompute_count(),
             1,
@@ -1959,19 +2486,29 @@ mod tests {
             offset: [0.0, 0.0],
             root: bound_panel_in_stack([0.0, 0.0, 0.0, 1.0], "intro.flashColor"),
         };
-        let mut ui = UiTree::from_descriptor(&tree);
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
 
         let settled = [0.2, 0.4, 0.6, 1.0];
-        let first =
-            ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &flash_slots(settled));
+        let first = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &flash_slots(settled),
+            0.0,
+        );
         assert_eq!(ui.recompute_count(), 1);
         assert_eq!(ui.draw_rebuild_count(), 1, "first frame builds the list");
 
         // Same color again: nothing changed, so neither the layout nor the draw
         // list rebuild — the cached list is returned unchanged.
-        let second =
-            ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &flash_slots(settled));
+        let second = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &flash_slots(settled),
+            0.0,
+        );
         assert_eq!(ui.recompute_count(), 1, "settled frame does not relayout");
         assert_eq!(
             ui.draw_rebuild_count(),
@@ -1988,5 +2525,816 @@ mod tests {
             second.quads.instances.len(),
             "cached list matches the first build",
         );
+    }
+
+    // --- Theme-token resolution at tree build (Task 4) -----------------------
+
+    use super::super::text::{UI_FONT_FAMILY, UI_MONO_FONT_FAMILY};
+    use super::super::theme::{ThemeDescriptor, UiTheme};
+    use std::collections::HashMap as StdHashMap;
+
+    /// A `UiText`-colored quad's sRGB-decoded approximate linear color is hard to
+    /// invert exactly; instead assert on the run's color in sRGB space by encoding
+    /// the EXPECTED linear value the same way `linear_rgba_to_srgb_u8` does.
+    fn srgb_of(linear: [f32; 4]) -> [u8; 4] {
+        linear_rgba_to_srgb_u8(linear)
+    }
+
+    /// A single text leaf carrying a color slot (token or literal) and an optional
+    /// font token — the resolution-under-test inputs.
+    fn themed_text(color: ColorValue, font: Option<&str>) -> AnchoredTree {
+        AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: Widget::Text(TextWidget {
+                content: "X".into(),
+                font_size: 20.0,
+                color,
+                font: font.map(str::to_string),
+                bind: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn text_color_token_resolves_to_theme_rgba_in_draw_list() {
+        // A `color: "critical"` token resolves to the theme's `critical` RGBA; the
+        // produced text run carries that color (sRGB-encoded). Proves token slots
+        // resolve against the active theme at build time.
+        let theme = UiTheme::engine_default();
+        let critical = theme.color("critical").unwrap();
+        let tree = themed_text(ColorValue::Token("critical".into()), None);
+        let mut ui = UiTree::from_descriptor(&tree, &theme);
+        let mut fs = font_system();
+        let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+        assert_eq!(data.texts.len(), 1);
+        assert_eq!(
+            data.texts[0].color,
+            srgb_of(critical),
+            "token color resolved to the theme's critical RGBA",
+        );
+    }
+
+    #[test]
+    fn unknown_color_token_resolves_to_opaque_magenta() {
+        // An unknown color token degrades to opaque magenta [1,0,1,1] — visible,
+        // never invisible or a panic.
+        let theme = UiTheme::engine_default();
+        let tree = themed_text(ColorValue::Token("no.such.color".into()), None);
+        let mut ui = UiTree::from_descriptor(&tree, &theme);
+        let mut fs = font_system();
+        let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+        assert_eq!(
+            data.texts[0].color,
+            srgb_of([1.0, 0.0, 1.0, 1.0]),
+            "unknown color token degrades to opaque magenta",
+        );
+    }
+
+    #[test]
+    fn spacing_token_resolves_into_layout_gap() {
+        // A container `gap: "l"` (theme `l` = 16px) lays its two children out with
+        // exactly the theme-defined spacing — proving spacing tokens resolve into
+        // the taffy style before layout.
+        let theme = UiTheme::engine_default();
+        let l = theme.spacing("l").unwrap();
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: Widget::VStack(ContainerWidget {
+                gap: SpacingValue::Token("l".into()),
+                padding: SpacingValue::Literal(0.0),
+                align: Align::Start,
+                fill: None,
+                border: None,
+                children: vec![text("AB", 30.0), text("CD", 30.0)],
+            }),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme);
+        let mut fs = font_system();
+        ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+        let children: Vec<_> = ui.taffy.children(ui.root).unwrap();
+        let c0 = *ui.taffy.layout(children[0]).unwrap();
+        let c1 = *ui.taffy.layout(children[1]).unwrap();
+        assert!(
+            approx(c1.location.y - (c0.location.y + c0.size.height), l),
+            "token gap resolved to the theme's `l` spacing ({l}px), got {}",
+            c1.location.y - (c0.location.y + c0.size.height),
+        );
+    }
+
+    #[test]
+    fn unknown_spacing_token_lays_out_as_zero() {
+        // An unknown gap token degrades to 0.0 — the two children abut with no gap.
+        let theme = UiTheme::engine_default();
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: Widget::VStack(ContainerWidget {
+                gap: SpacingValue::Token("no.such.spacing".into()),
+                padding: SpacingValue::Literal(0.0),
+                align: Align::Start,
+                fill: None,
+                border: None,
+                children: vec![text("AB", 30.0), text("CD", 30.0)],
+            }),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme);
+        let mut fs = font_system();
+        ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+        let children: Vec<_> = ui.taffy.children(ui.root).unwrap();
+        let c0 = *ui.taffy.layout(children[0]).unwrap();
+        let c1 = *ui.taffy.layout(children[1]).unwrap();
+        assert!(
+            approx(c1.location.y - (c0.location.y + c0.size.height), 0.0),
+            "unknown spacing token lays out as 0.0, got {}",
+            c1.location.y - (c0.location.y + c0.size.height),
+        );
+    }
+
+    #[test]
+    fn font_token_mono_resolves_to_the_mono_family_on_the_node() {
+        // `font: "mono"` resolves to the theme's mono family on the node's
+        // `NodeContext::Text` and the produced `UiText` line — so the run shapes
+        // and draws against the registered monospace face.
+        let theme = UiTheme::engine_default();
+        let tree = themed_text(ColorValue::Literal([1.0; 4]), Some("mono"));
+        let mut ui = UiTree::from_descriptor(&tree, &theme);
+        // The node carries the resolved family before any draw.
+        if let Some(NodeContext::Text { family, .. }) = ui.taffy.get_node_context(ui.root) {
+            assert_eq!(family, UI_MONO_FONT_FAMILY, "node carries the mono family");
+        } else {
+            panic!("root must be a text node");
+        }
+        let mut fs = font_system();
+        let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+        assert_eq!(
+            data.texts[0].family, UI_MONO_FONT_FAMILY,
+            "the drawn line selects the mono family",
+        );
+    }
+
+    #[test]
+    fn absent_font_resolves_to_the_body_family() {
+        // A text widget with no `font` token resolves to the `body` family — the
+        // pre-theming default, so fontless text keeps the body face.
+        let theme = UiTheme::engine_default();
+        let tree = themed_text(ColorValue::Literal([1.0; 4]), None);
+        let ui = UiTree::from_descriptor(&tree, &theme);
+        if let Some(NodeContext::Text { family, .. }) = ui.taffy.get_node_context(ui.root) {
+            assert_eq!(
+                family, UI_FONT_FAMILY,
+                "absent font selects the body family"
+            );
+        } else {
+            panic!("root must be a text node");
+        }
+    }
+
+    #[test]
+    fn unknown_font_token_falls_back_to_body_family() {
+        // An unknown font token degrades to the `body` family (not magenta, not a
+        // panic) — text still renders in the default face.
+        let theme = UiTheme::engine_default();
+        let tree = themed_text(ColorValue::Literal([1.0; 4]), Some("no.such.font"));
+        let ui = UiTree::from_descriptor(&tree, &theme);
+        if let Some(NodeContext::Text { family, .. }) = ui.taffy.get_node_context(ui.root) {
+            assert_eq!(
+                family, UI_FONT_FAMILY,
+                "unknown font token falls back to the body family",
+            );
+        } else {
+            panic!("root must be a text node");
+        }
+    }
+
+    #[test]
+    fn override_theme_changes_resolved_token_values_on_rebuild() {
+        // Rebuilding the SAME descriptor against an override theme yields the new
+        // token value with NO descriptor change — the resolution seam reads the
+        // theme passed at build, so a generation bump (which installs a new theme)
+        // re-resolves tokens. Mirrors the engine-side setter's effect at the tree
+        // level (the `UiPass` generation gate decides WHEN to rebuild; this proves
+        // the rebuild produces the new values).
+        let default = UiTheme::engine_default();
+        let override_theme = default.with_override(&ThemeDescriptor {
+            colors: StdHashMap::from([("critical".to_string(), [0.0, 1.0, 1.0, 1.0])]),
+            ..Default::default()
+        });
+        let tree = themed_text(ColorValue::Token("critical".into()), None);
+
+        let mut fs = font_system();
+        let mut before = UiTree::from_descriptor(&tree, &default);
+        let data_before = before.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+        let mut after = UiTree::from_descriptor(&tree, &override_theme);
+        let data_after = after.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+
+        assert_eq!(
+            data_before.texts[0].color,
+            srgb_of(default.color("critical").unwrap()),
+        );
+        assert_eq!(
+            data_after.texts[0].color,
+            srgb_of([0.0, 1.0, 1.0, 1.0]),
+            "rebuilding against the override theme re-resolves the token value",
+        );
+        assert_ne!(
+            data_before.texts[0].color, data_after.texts[0].color,
+            "the same descriptor resolves to different colors under different themes",
+        );
+    }
+
+    // --- Value-tween driver (Task 3) -----------------------------------------
+
+    use super::super::descriptor::{PanelTween, TextTween};
+
+    /// A tweened bound text leaf: fallback `content`, a `bind` slot, optional
+    /// format, and a `TextTween`.
+    fn tweened_text(content: &str, slot: &str, format: Option<&str>, tween: TextTween) -> Widget {
+        Widget::Text(TextWidget {
+            content: content.into(),
+            font_size: 20.0,
+            color: ColorValue::Literal([1.0, 1.0, 1.0, 1.0]),
+            font: None,
+            bind: Some(TextBind {
+                slot: slot.into(),
+                format: format.map(str::to_string),
+                tween: Some(tween),
+            }),
+        })
+    }
+
+    /// A tweened bound panel leaf wrapped in a stretch container (so the leaf gets
+    /// a non-zero laid-out rect).
+    fn tweened_panel_in_stack(fill: [f32; 4], slot: &str, tween: PanelTween) -> Widget {
+        Widget::VStack(ContainerWidget {
+            gap: SpacingValue::Literal(0.0),
+            padding: SpacingValue::Literal(0.0),
+            align: Align::Stretch,
+            fill: Some(ColorValue::Literal([0.0, 0.0, 0.0, 1.0])),
+            border: None,
+            children: vec![Widget::Panel(PanelWidget {
+                fill: ColorValue::Literal(fill),
+                border: None,
+                bind: Some(PanelBind {
+                    slot: slot.into(),
+                    tween: Some(tween),
+                }),
+            })],
+        })
+    }
+
+    /// One numeric slot map for a text tween.
+    fn number_slots(slot: &str, value: f32) -> HashMap<String, SlotValue> {
+        let mut slots = HashMap::new();
+        slots.insert(slot.to_string(), SlotValue::Number(value));
+        slots
+    }
+
+    /// Parse a rendered text run's content back to an `f32` (the displayed value
+    /// the driver rounded to an integer).
+    fn text_value(data: &UiDrawData) -> f32 {
+        data.texts[0]
+            .content
+            .parse::<f32>()
+            .expect("displayed text is an integer string")
+    }
+
+    #[test]
+    fn text_tween_first_resolve_with_from_starts_at_from_and_reaches_target_at_duration() {
+        // First-resolve `from` flourish: a text bind with `from: 0.0`, target 100
+        // (constant slot). Frame 0 renders 0; subsequent frames advance
+        // monotonically toward 100; the value is EXACTLY 100 at durationMs.
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: tweened_text(
+                "0",
+                "player.health",
+                None,
+                TextTween {
+                    duration_ms: 1000.0,
+                    easing: Easing::Linear,
+                    from: Some(0.0),
+                },
+            ),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let slots = number_slots("player.health", 100.0);
+
+        // Frame 0: display starts at `from` = 0.
+        let f0 = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
+        assert_eq!(text_value(&f0), 0.0, "frame 0 renders the `from` value");
+
+        // Advance through the tween; values rise monotonically toward 100.
+        let mut prev = 0.0;
+        for &t in &[0.25, 0.5, 0.75] {
+            let f = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, t);
+            let v = text_value(&f);
+            assert!(
+                v >= prev && v <= 100.0,
+                "value {v} at t={t} advances monotonically within [prev={prev}, 100]",
+            );
+            prev = v;
+        }
+
+        // At t == durationMs (1.0s) the display equals the target EXACTLY.
+        let f_end = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 1.0);
+        assert_eq!(
+            text_value(&f_end),
+            100.0,
+            "display equals target at duration"
+        );
+    }
+
+    #[test]
+    fn text_tween_without_from_renders_target_immediately_on_first_resolve() {
+        // A tween with no `from` snaps to the target on first sight (no flourish):
+        // frame 0 already renders the full target value.
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: tweened_text(
+                "0",
+                "player.health",
+                None,
+                TextTween {
+                    duration_ms: 1000.0,
+                    easing: Easing::EaseOut,
+                    from: None,
+                },
+            ),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let slots = number_slots("player.health", 80.0);
+
+        let f0 = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
+        assert_eq!(
+            text_value(&f0),
+            80.0,
+            "no `from` snaps to the target on first resolve",
+        );
+    }
+
+    #[test]
+    fn text_tween_retarget_mid_flight_restarts_from_current_display() {
+        // Mid-flight retarget: a tween from 0 -> 100 is interrupted at t=0.5 by a
+        // new target of 0. The tween must restart from the CURRENT display value
+        // (~50 under linear), not snap to `from` (0) nor jump to the new target.
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: tweened_text(
+                "0",
+                "player.health",
+                None,
+                TextTween {
+                    duration_ms: 1000.0,
+                    easing: Easing::Linear,
+                    from: Some(0.0),
+                },
+            ),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+
+        // Drive to mid-flight at t=0.5 with target 100: display ~= 50.
+        ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &number_slots("player.health", 100.0),
+            0.0,
+        );
+        let mid = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &number_slots("player.health", 100.0),
+            0.5,
+        );
+        let mid_v = text_value(&mid);
+        assert!(
+            (40.0..=60.0).contains(&mid_v),
+            "mid-flight value ~50 under linear easing, got {mid_v}",
+        );
+
+        // Retarget to 0 at t=0.5: the segment restarts from the current display
+        // (~50) at this instant, so this very frame still reads ~50 (elapsed 0) —
+        // it must NOT snap to `from`=0 nor jump to the new target 0.
+        let retarget = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &number_slots("player.health", 0.0),
+            0.5,
+        );
+        let retarget_v = text_value(&retarget);
+        assert!(
+            (40.0..=60.0).contains(&retarget_v),
+            "retarget restarts from the current display ~{mid_v} (no snap to from/target), got {retarget_v}",
+        );
+
+        // A later frame eases DOWN from ~50 toward 0 — continuous, below the
+        // retarget value and above the new target.
+        let after = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &number_slots("player.health", 0.0),
+            1.0,
+        );
+        let after_v = text_value(&after);
+        assert!(
+            after_v < retarget_v && after_v > 0.0,
+            "retargeted tween eases continuously down from {retarget_v} toward 0, got {after_v}",
+        );
+
+        // And it reaches the new target exactly one duration after the retarget.
+        let settled = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &number_slots("player.health", 0.0),
+            1.5,
+        );
+        assert_eq!(text_value(&settled), 0.0, "retargeted tween settles at 0");
+    }
+
+    #[test]
+    fn text_tween_ease_out_advances_monotonically_toward_target() {
+        // Easing monotonicity: under easeOut the in-flight display rises
+        // monotonically toward the target across advancing frames.
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: tweened_text(
+                "0",
+                "player.health",
+                None,
+                TextTween {
+                    duration_ms: 1000.0,
+                    easing: Easing::EaseOut,
+                    from: Some(0.0),
+                },
+            ),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let slots = number_slots("player.health", 100.0);
+
+        let mut prev = -1.0;
+        for &t in &[0.0, 0.1, 0.2, 0.4, 0.6, 0.8, 1.0] {
+            let f = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, t);
+            let v = text_value(&f);
+            assert!(
+                v >= prev,
+                "easeOut value must be monotonic non-decreasing: {v} < {prev} at t={t}",
+            );
+            prev = v;
+        }
+        assert_eq!(
+            prev, 100.0,
+            "easeOut reaches the target exactly at duration"
+        );
+    }
+
+    #[test]
+    fn text_tween_settles_at_exact_target_past_duration() {
+        // Exact-target settle: at t >= duration the display equals the target
+        // exactly (a frame well past the end stays pinned, no overshoot).
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: tweened_text(
+                "0",
+                "player.health",
+                None,
+                TextTween {
+                    duration_ms: 500.0,
+                    easing: Easing::EaseInOut,
+                    from: Some(10.0),
+                },
+            ),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let slots = number_slots("player.health", 42.0);
+
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
+        // t = 5.0s is ten durations past the end.
+        let far = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 5.0);
+        assert_eq!(text_value(&far), 42.0, "well past duration pins to target");
+    }
+
+    #[test]
+    fn text_tween_in_flight_relayouts_each_advancing_frame() {
+        // In-flight text is content-changed each advancing frame (the rendered
+        // integer string differs, re-measures): recompute_count increments per
+        // frame while the eased value is still moving.
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: tweened_text(
+                "0",
+                "player.health",
+                None,
+                TextTween {
+                    duration_ms: 1000.0,
+                    easing: Easing::Linear,
+                    from: Some(0.0),
+                },
+            ),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let slots = number_slots("player.health", 100.0);
+
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
+        let c0 = ui.recompute_count();
+        // Each advancing frame moves the integer (0 -> 25 -> 50 -> 75), so each
+        // relays out.
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.25);
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.5);
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.75);
+        assert_eq!(
+            ui.recompute_count(),
+            c0 + 3,
+            "an in-flight text tween relays out each advancing frame",
+        );
+    }
+
+    #[test]
+    fn panel_tween_in_flight_redraws_without_relayout() {
+        // In-flight panel eases per-channel and is appearance-only: the draw list
+        // rebuilds each advancing frame but layout NEVER recomputes.
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: tweened_panel_in_stack(
+                [0.0, 0.0, 0.0, 1.0],
+                "intro.flashColor",
+                PanelTween {
+                    duration_ms: 1000.0,
+                    easing: Easing::Linear,
+                    from: Some([0.0, 0.0, 0.0, 1.0]),
+                },
+            ),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let target = [1.0, 0.5, 0.25, 1.0];
+
+        let f0 = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &flash_slots(target),
+            0.0,
+        );
+        assert_eq!(ui.recompute_count(), 1, "first frame computes once");
+        // Frame 0 starts at the `from` color (all-black-but-alpha is the backdrop
+        // color too, so just assert the panel hasn't reached the target yet).
+        let c0 = flash_quad_color(&f0);
+
+        let r0 = ui.recompute_count();
+        let d0 = ui.draw_rebuild_count();
+        let mid = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &flash_slots(target),
+            0.5,
+        );
+        // Per-channel eased halfway under linear: ~[0.5, 0.25, 0.125, 1.0].
+        let mid_c = mid
+            .quads
+            .instances
+            .iter()
+            .map(|q| q.color)
+            .find(|c| !colors_eq(*c, [0.0, 0.0, 0.0, 1.0]))
+            .expect("an eased panel quad");
+        assert!(
+            mid_c[0] > 0.0 && mid_c[0] < 1.0 && mid_c[1] > 0.0 && mid_c[1] < 0.5,
+            "panel eased per channel mid-flight: {mid_c:?}",
+        );
+        assert_eq!(
+            ui.recompute_count(),
+            r0,
+            "an in-flight panel tween must NOT relayout",
+        );
+        assert!(
+            ui.draw_rebuild_count() > d0,
+            "an in-flight panel tween rebuilds the draw list (redraw)",
+        );
+        let _ = c0;
+    }
+
+    #[test]
+    fn panel_tween_eases_alpha_channel_and_settles_exactly() {
+        // The panel tween eases all four channels (alpha included) and settles at
+        // the exact target past the duration.
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: tweened_panel_in_stack(
+                [0.0, 0.0, 0.0, 1.0],
+                "intro.flashColor",
+                PanelTween {
+                    duration_ms: 1000.0,
+                    easing: Easing::Linear,
+                    from: Some([0.0, 0.0, 0.0, 0.0]),
+                },
+            ),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let target = [0.2, 0.4, 0.6, 1.0];
+
+        // Mid-flight: alpha is between the from (0.0) and target (1.0).
+        ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &flash_slots(target),
+            0.0,
+        );
+        let mid = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &flash_slots(target),
+            0.5,
+        );
+        let mid_c = mid
+            .quads
+            .instances
+            .iter()
+            .map(|q| q.color)
+            .find(|c| c[3] > 0.0 && c[3] < 1.0)
+            .expect("a panel quad with eased mid alpha");
+        assert!(
+            (0.4..=0.6).contains(&mid_c[3]),
+            "alpha eased ~0.5 mid-flight under linear, got {}",
+            mid_c[3],
+        );
+
+        // Past duration: settles to the exact target.
+        let end = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &flash_slots(target),
+            2.0,
+        );
+        let end_c = flash_quad_color(&end).expect("a settled panel quad");
+        assert!(
+            end_c.iter().zip(target.iter()).all(|(a, b)| approx(*a, *b)),
+            "panel settles at the exact target {target:?}, got {end_c:?}",
+        );
+    }
+
+    #[test]
+    fn text_tween_settled_frame_skips_rebuild_and_recompute() {
+        // Post-settle no-rebuild: once a text tween has settled, a no-change frame
+        // (same target, time well past the end) returns the cached draw list with
+        // NO relayout and NO draw-list rebuild.
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: tweened_text(
+                "0",
+                "player.health",
+                None,
+                TextTween {
+                    duration_ms: 500.0,
+                    easing: Easing::Linear,
+                    from: Some(0.0),
+                },
+            ),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let slots = number_slots("player.health", 30.0);
+
+        // Drive past the end so the display settles at 30.
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 1.0);
+        let r_settled = ui.recompute_count();
+        let d_settled = ui.draw_rebuild_count();
+
+        // A further frame at a still-later time with the same target: the rounded
+        // display is already 30 and stays 30, so nothing rebuilds.
+        let f = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 2.0);
+        assert_eq!(
+            ui.recompute_count(),
+            r_settled,
+            "a settled text frame does not relayout",
+        );
+        assert_eq!(
+            ui.draw_rebuild_count(),
+            d_settled,
+            "a settled text frame returns the cached list (no rebuild)",
+        );
+        assert_eq!(text_value(&f), 30.0, "cached list still carries the target");
+    }
+
+    #[test]
+    fn text_tween_on_string_slot_snaps_through_unchanged_path() {
+        // Non-numeric snap-with-warn: a text tween whose slot resolves to a
+        // `String` renders via the unchanged `resolve_text` path (the bare string),
+        // not an eased number. (The once-per-frame warn is logged but not
+        // asserted — log capture is out of scope for these CPU tests.)
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: tweened_text(
+                "fallback",
+                "hud.label",
+                None,
+                TextTween {
+                    duration_ms: 1000.0,
+                    easing: Easing::Linear,
+                    from: Some(0.0),
+                },
+            ),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let mut slots = HashMap::new();
+        slots.insert("hud.label".to_string(), SlotValue::String("ALERT".into()));
+
+        let f = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
+        assert_eq!(
+            f.texts[0].content, "ALERT",
+            "a tween on a non-Number slot renders the raw string, not an eased number",
+        );
+    }
+
+    #[test]
+    fn text_tween_fresh_path_resolves_target_directly_no_cross_frame_state() {
+        // Fresh-path inertness: the same tweened descriptor through the fresh
+        // `build_draw_data` (no time, no retained state) resolves the target
+        // DIRECTLY — no flourish, no eased value, no cross-frame tween state.
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: tweened_text(
+                "0",
+                "player.health",
+                None,
+                TextTween {
+                    duration_ms: 1000.0,
+                    easing: Easing::Linear,
+                    from: Some(0.0),
+                },
+            ),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let slots = number_slots("player.health", 100.0);
+
+        // Fresh path renders the target (100) immediately — `from`=0 is ignored.
+        let f = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &slots);
+        assert_eq!(
+            f.texts[0].content, "100",
+            "the fresh path resolves the tween target directly (inert, no easing)",
+        );
+        // No tween state was born on the node (the fresh path never drives tweens).
+        if let Some(NodeContext::Text { tween, .. }) = ui.taffy.get_node_context(ui.root) {
+            assert!(
+                tween.is_none(),
+                "fresh path leaves no cross-frame tween state"
+            );
+        } else {
+            panic!("root must be a text node");
+        }
+    }
+
+    #[test]
+    fn untweened_bound_text_unaffected_by_time() {
+        // Untweened binds keep the existing behavior regardless of `time_seconds`:
+        // the resolved value is rendered directly, no easing, no tween state.
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: bound_text("0", "player.health", Some("HP {}")),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let slots = number_slots("player.health", 73.0);
+
+        let f = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 9.0);
+        assert_eq!(
+            f.texts[0].content, "HP 73",
+            "an untweened bind renders the resolved value directly at any time",
+        );
+        if let Some(NodeContext::Text { tween, .. }) = ui.taffy.get_node_context(ui.root) {
+            assert!(tween.is_none(), "an untweened bind grows no tween state");
+        } else {
+            panic!("root must be a text node");
+        }
     }
 }

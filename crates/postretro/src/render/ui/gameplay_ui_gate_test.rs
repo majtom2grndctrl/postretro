@@ -17,13 +17,15 @@
 // unconditionally for its frame-0 black clear (`record_splash_ui`), so this gate
 // asserts ONLY the gameplay predicate — it does not touch the splash clear.
 //
-// See: context/plans/in-progress/M13--descriptor-tree-layout
+// See: context/lib/ui.md
 
 use super::UiReadSnapshot;
 use super::descriptor::{
-    Align, AnchoredTree, ContainerWidget, GridWidget, ImageWidget, TextWidget, Widget,
+    Align, AnchoredTree, ColorValue, ContainerWidget, GridWidget, ImageWidget, SpacingValue,
+    TextWidget, Widget,
 };
 use super::layout::Anchor;
+use super::theme::UiTheme;
 use super::tree::{ImageSizes, UiDrawData, UiTree};
 
 const EPS: f32 = 1e-3;
@@ -53,7 +55,7 @@ fn no_slots() -> std::collections::HashMap<String, crate::scripting::slot_table:
 /// `if let Some(tree) ... if !draw.is_empty() { encode }`.
 fn gameplay_draw(tree: Option<&AnchoredTree>, device_size: [u32; 2]) -> Option<UiDrawData> {
     let tree = tree?;
-    let mut ui = UiTree::from_descriptor(tree);
+    let mut ui = UiTree::from_descriptor(tree, &UiTheme::engine_default());
     let mut fs = font_system();
     let draw = ui.build_draw_data(device_size, &mut fs, &icon_sizes(), &no_slots());
     if draw.is_empty() { None } else { Some(draw) }
@@ -63,7 +65,8 @@ fn text(content: &str, font_size: f32) -> Widget {
     Widget::Text(TextWidget {
         content: content.into(),
         font_size,
-        color: [1.0, 1.0, 1.0, 1.0],
+        color: ColorValue::Literal([1.0, 1.0, 1.0, 1.0]),
+        font: None,
         bind: None,
     })
 }
@@ -77,26 +80,26 @@ fn composite_fixture() -> AnchoredTree {
         anchor: Anchor::Center,
         offset: [0.0, 0.0],
         root: Widget::VStack(ContainerWidget {
-            gap: 8.0,
-            padding: 6.0,
+            gap: SpacingValue::Literal(8.0),
+            padding: SpacingValue::Literal(6.0),
             align: Align::Start,
             // Backdrop fill makes the outer container emit a panel quad sized to
             // its content (the canonical quad-producing path now that bare panels
             // have no intrinsic size).
-            fill: Some([0.2, 0.3, 0.4, 1.0]),
+            fill: Some(ColorValue::Literal([0.2, 0.3, 0.4, 1.0])),
             border: None,
             children: vec![
                 Widget::HStack(ContainerWidget {
-                    gap: 10.0,
-                    padding: 0.0,
+                    gap: SpacingValue::Literal(10.0),
+                    padding: SpacingValue::Literal(0.0),
                     align: Align::Start,
                     fill: None,
                     border: None,
                     children: vec![text("HP 100", 24.0), text("ARMOR 50", 24.0)],
                 }),
                 Widget::Grid(GridWidget {
-                    gap: 4.0,
-                    padding: 0.0,
+                    gap: SpacingValue::Literal(4.0),
+                    padding: SpacingValue::Literal(0.0),
                     align: Align::Start,
                     cols: 2,
                     children: vec![
@@ -161,8 +164,12 @@ fn snapshot_carries_gameplay_tree_as_the_content_contract() {
     let default = UiReadSnapshot::default();
     assert!(default.gameplay_tree.is_none(), "default carries no tree");
 
-    let snapshot =
-        UiReadSnapshot::with_gameplay_tree(composite_fixture(), std::collections::HashMap::new());
+    let snapshot = UiReadSnapshot::with_gameplay_tree(
+        composite_fixture(),
+        std::collections::HashMap::new(),
+        // This gate doesn't exercise tweening; a fixed synthetic time suffices.
+        0.0,
+    );
     let tree = snapshot
         .gameplay_tree
         .as_ref()
@@ -170,6 +177,32 @@ fn snapshot_carries_gameplay_tree_as_the_content_contract() {
     assert!(
         gameplay_draw(Some(tree), [1280, 720]).is_some(),
         "the snapshot's tree lays out to a non-empty draw list",
+    );
+}
+
+#[test]
+fn snapshot_default_time_is_zero() {
+    // The fresh/splash default takes no time — inertness is structural. The
+    // tween runtime reads `time_seconds`, so the default must pin to
+    // `0.0` so an unfed snapshot eases nothing.
+    let default = UiReadSnapshot::default();
+    assert_eq!(default.time_seconds, 0.0, "default carries no frame time");
+}
+
+#[test]
+fn with_gameplay_tree_carries_the_passed_time() {
+    // The gameplay constructor plumbs the deterministic, dt-accumulated frame
+    // time straight onto the snapshot (stays `f64` end-to-end). A non-zero,
+    // fractional value proves it is carried verbatim, not narrowed or reset.
+    let t = 12.5_f64;
+    let snapshot = UiReadSnapshot::with_gameplay_tree(
+        composite_fixture(),
+        std::collections::HashMap::new(),
+        t,
+    );
+    assert_eq!(
+        snapshot.time_seconds, t,
+        "with_gameplay_tree carries the passed time onto the snapshot",
     );
 }
 
@@ -187,8 +220,8 @@ fn empty_gameplay_tree_early_outs_the_ui_pass() {
         anchor: Anchor::Center,
         offset: [0.0, 0.0],
         root: Widget::VStack(ContainerWidget {
-            gap: 0.0,
-            padding: 0.0,
+            gap: SpacingValue::Literal(0.0),
+            padding: SpacingValue::Literal(0.0),
             align: Align::Start,
             fill: None,
             border: None,
@@ -196,7 +229,7 @@ fn empty_gameplay_tree_early_outs_the_ui_pass() {
         }),
     };
     let draw_empty = {
-        let mut ui = UiTree::from_descriptor(&empty);
+        let mut ui = UiTree::from_descriptor(&empty, &UiTheme::engine_default());
         let mut fs = font_system();
         ui.build_draw_data([1280, 720], &mut fs, &icon_sizes(), &no_slots())
     };

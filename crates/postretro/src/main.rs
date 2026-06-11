@@ -1090,7 +1090,7 @@ impl ApplicationHandler for App {
                     let _ = fire_named_event(event_name, &self.script_ctx.data_registry.borrow());
                 }
 
-                // Static UI proxy (Goal C): republish the HUD store slots from
+                // Static UI proxy: republish the HUD store slots from
                 // the engine side. Runs AFTER game logic settles the store and
                 // BEFORE the UI read-snapshot build below, so the snapshot
                 // freezes the proxy's values this same frame. Delta-driven from
@@ -1417,7 +1417,7 @@ impl ApplicationHandler for App {
                         // cloned values, never the live `SlotTable`. The demo HUD
                         // descriptor is the gameplay UI producer: it is published as
                         // the gameplay tree alongside the slot values, and the
-                        // renderer's retained gameplay path (Task 4) lays it out and
+                        // renderer's retained gameplay path lays it out and
                         // resolves its `player.health`/`player.ammo`/`intro.flashColor`
                         // binds against the snapshot. The descriptor is structurally
                         // identical every frame, so the retained tree reuses it and
@@ -1428,6 +1428,7 @@ impl ApplicationHandler for App {
                         renderer.set_ui_snapshot(render::ui::UiReadSnapshot::with_gameplay_tree(
                             demo_tree,
                             slot_values,
+                            self.script_time,
                         ));
 
                         let surface_texture = match renderer.render_frame_indirect(

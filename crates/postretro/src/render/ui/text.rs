@@ -2,7 +2,7 @@
 // atlas/renderer, and the shape→prepare→render→trim cycle. glyphon ships its OWN
 // pipeline and atlas — none of this routes through the quad pipeline in `mod.rs`;
 // the text draw records INTO the same render pass, after the quads.
-// See: context/plans/in-progress/M13--descriptor-tree-layout
+// See: context/lib/ui.md
 
 use glyphon::{
     Attrs, Buffer as TextBuffer, Cache as GlyphCache, Color as GlyphColor, Family, FontSystem,
@@ -19,7 +19,24 @@ const UI_FONT_TTF: &[u8] = include_bytes!("../../../../../content/base/fonts/Int
 /// Font family name inside `UI_FONT_TTF` (the TTF `name` table family record).
 /// `TextArea`s select it by family so glyphon resolves to the embedded face
 /// rather than a system fallback.
-const UI_FONT_FAMILY: &str = "Inter";
+pub(crate) const UI_FONT_FAMILY: &str = "Inter";
+
+/// Engine default UI monospace typeface: JetBrains Mono (SIL Open Font License
+/// 1.1). Embedded at compile time alongside Inter and registered into the same
+/// `FontSystem` in `UiTextRenderer::new`, so the `mono` theme token resolves to
+/// the embedded face with no runtime font file I/O. The license travels with the
+/// asset at `content/base/fonts/JetBrainsMono-OFL.txt`.
+const UI_MONO_FONT_TTF: &[u8] =
+    include_bytes!("../../../../../content/base/fonts/JetBrainsMono-Regular.ttf");
+
+/// Font family name inside `UI_MONO_FONT_TTF` (the TTF `name` table family
+/// record). Must match the `mono` font token in `theme::UiTheme::engine_default`
+/// exactly, or token resolution selects a family glyphon never registered.
+/// Referenced by the family-registration/measure tests and the theme contract;
+/// the production `mono` family string lives in `engine_default`, so this is
+/// test-only on a release build.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) const UI_MONO_FONT_FAMILY: &str = "JetBrains Mono";
 
 /// glyphon shapes against a `Metrics { font_size, line_height }`. UI text here is
 /// single-line, so line height tracks the font size with a small factor for the
@@ -44,6 +61,11 @@ pub(crate) struct UiText {
     /// `TextAtlas` is built with the sRGB surface format so coverage blends in
     /// the surface color space (see `UiTextRenderer::new`).
     pub color: [u8; 4],
+    /// Registered font family name to shape this line with. Selected per line in
+    /// `shape_text` via `Family::Name`, so it must match a family registered in
+    /// `build_font_system` (e.g. `UI_FONT_FAMILY`/`UI_MONO_FONT_FAMILY`); an
+    /// unregistered name falls back to a system face.
+    pub family: String,
 }
 
 impl UiText {
@@ -53,12 +75,14 @@ impl UiText {
         position: [f32; 2],
         font_size: f32,
         color: [u8; 4],
+        family: impl Into<String>,
     ) -> Self {
         Self {
             content: content.into(),
             position,
             font_size,
             color,
+            family: family.into(),
         }
     }
 }
@@ -128,8 +152,8 @@ impl UiTextRenderer {
         }
     }
 
-    /// Shape each `UiText` into a glyphon `Buffer`, selecting the embedded Inter
-    /// family at the line's device-pixel font size. Returns the owned buffers so
+    /// Shape each `UiText` into a glyphon `Buffer`, selecting the line's own
+    /// `family` at its device-pixel font size. Returns the owned buffers so
     /// they outlive `prepare`/`render`. Empty input yields an empty `Vec` and no
     /// shaping work.
     pub fn shape_text(&mut self, texts: &[UiText], viewport: [u32; 2]) -> Vec<TextBuffer> {
@@ -148,7 +172,7 @@ impl UiTextRenderer {
             buffer.set_text(
                 &mut self.font_system,
                 &t.content,
-                &Attrs::new().family(Family::Name(UI_FONT_FAMILY)),
+                &Attrs::new().family(Family::Name(&t.family)),
                 Shaping::Advanced,
                 None,
             );
@@ -249,13 +273,17 @@ impl UiTextRenderer {
     }
 }
 
-/// Build a `FontSystem` with the embedded Inter face registered. Pure CPU — no
-/// GPU device needed, so the layout-measure path can be exercised headless. The
-/// embedded slice is compile-time data (`load_font_data` takes ownership of the
-/// bytes) with no runtime file I/O.
+/// Build a `FontSystem` with the embedded Inter (body) and JetBrains Mono (mono)
+/// faces registered. Pure CPU — no GPU device needed, so the layout-measure path
+/// can be exercised headless. Each embedded slice is compile-time data
+/// (`load_font_data` takes ownership of the bytes) with no runtime file I/O;
+/// cosmic-text's DB takes one `load_font_data` call per face.
 pub(crate) fn build_font_system() -> FontSystem {
     let mut font_system = FontSystem::new();
     font_system.db_mut().load_font_data(UI_FONT_TTF.to_vec());
+    font_system
+        .db_mut()
+        .load_font_data(UI_MONO_FONT_TTF.to_vec());
     font_system
 }
 
@@ -269,11 +297,14 @@ pub(crate) fn build_font_system() -> FontSystem {
 /// tall, so an empty label still reserves its line.
 ///
 /// Takes `&mut FontSystem` (not `&mut UiTextRenderer`) so measurement carries no
-/// GPU state: shaping is pure cosmic-text and runs without a device.
+/// GPU state: shaping is pure cosmic-text and runs without a device. Shapes with
+/// the given `family` so a node measures against the same face it will draw with
+/// (a monospace run sizes wider/narrower than the proportional body face).
 pub(crate) fn measure_run(
     font_system: &mut FontSystem,
     content: &str,
     font_size: f32,
+    family: &str,
 ) -> (f32, f32) {
     let line_height = font_size * LINE_HEIGHT_FACTOR;
     let metrics = Metrics::new(font_size, line_height);
@@ -285,7 +316,7 @@ pub(crate) fn measure_run(
     buffer.set_text(
         font_system,
         content,
-        &Attrs::new().family(Family::Name(UI_FONT_FAMILY)),
+        &Attrs::new().family(Family::Name(family)),
         Shaping::Advanced,
         None,
     );
@@ -348,6 +379,87 @@ mod tests {
     }
 
     #[test]
+    fn embedded_mono_font_bytes_are_present_and_a_truetype() {
+        // Mirror of the Inter magic check for the mono face: a missing/empty
+        // asset must fail the build-test, not just produce blank monospace text.
+        assert!(
+            UI_MONO_FONT_TTF.len() > 1024,
+            "embedded mono TTF looks truncated ({} bytes)",
+            UI_MONO_FONT_TTF.len(),
+        );
+        let magic = &UI_MONO_FONT_TTF[0..4];
+        assert!(
+            magic == [0x00, 0x01, 0x00, 0x00]
+                || magic == *b"OTTO"
+                || magic == *b"true"
+                || magic == *b"ttcf",
+            "embedded mono font is not a recognized sfnt/TrueType (magic {magic:?})",
+        );
+    }
+
+    #[test]
+    fn embedded_mono_font_registers_and_resolves_family() {
+        // CPU-only: registering the embedded mono bytes must make the
+        // `UI_MONO_FONT_FAMILY` family queryable so the `mono` theme token (which
+        // names the identical string) resolves to the embedded face. If this
+        // fails because the real family name differs, update both
+        // `UI_MONO_FONT_FAMILY` here and the `mono` entry in `theme.rs`.
+        let mut fs = FontSystem::new();
+        fs.db_mut().load_font_data(UI_MONO_FONT_TTF.to_vec());
+        let has_family = fs.db().faces().any(|face| {
+            face.families
+                .iter()
+                .any(|(name, _)| name == UI_MONO_FONT_FAMILY)
+        });
+        assert!(
+            has_family,
+            "embedded mono font did not register family {UI_MONO_FONT_FAMILY:?}",
+        );
+    }
+
+    #[test]
+    fn build_font_system_registers_both_body_and_mono_families() {
+        // `build_font_system` registers both faces, so a single FontSystem
+        // resolves both the body and mono token families — the shaping seam both
+        // `shape_text` and `measure_run` select against.
+        let fs = build_font_system();
+        let has_family = |target: &str| {
+            fs.db()
+                .faces()
+                .any(|face| face.families.iter().any(|(name, _)| name == target))
+        };
+        assert!(
+            has_family(UI_FONT_FAMILY),
+            "body family {UI_FONT_FAMILY:?} not registered",
+        );
+        assert!(
+            has_family(UI_MONO_FONT_FAMILY),
+            "mono family {UI_MONO_FONT_FAMILY:?} not registered",
+        );
+    }
+
+    #[test]
+    fn mono_and_body_families_measure_to_different_widths() {
+        // The same content shaped against the proportional body face and the
+        // monospace face produces different advances — proof that `measure_run`
+        // honors the family and that the embedded mono face is actually selected
+        // (not silently falling back to the body face).
+        let mut fs = build_font_system();
+        let content = "iiiiWWWW mmmm";
+        let font_size = 24.0_f32;
+        let (body_w, _) = measure_run(&mut fs, content, font_size, UI_FONT_FAMILY);
+        let (mono_w, _) = measure_run(&mut fs, content, font_size, UI_MONO_FONT_FAMILY);
+        // Approximate comparison: assert the widths DIFFER beyond an epsilon,
+        // rather than equal-within-epsilon (testing guide §3 — floats).
+        const EPS: f32 = 1.0;
+        assert!(
+            (body_w - mono_w).abs() > EPS,
+            "mono ({mono_w}) and body ({body_w}) widths should differ \
+             beyond {EPS}px; mono may have fallen back to the body face",
+        );
+    }
+
+    #[test]
     fn ui_text_carries_device_scaled_inputs() {
         // UiText carries device-pixel position + a device-scaled font size +
         // color, no logical-reference coords. Font size scales by the same
@@ -360,7 +472,9 @@ mod tests {
             [40.0, 600.0],
             logical_size * scale,
             [220, 230, 240, 255],
+            UI_FONT_FAMILY,
         );
+        assert_eq!(t.family, UI_FONT_FAMILY);
         assert_eq!(t.font_size, 72.0);
         assert_eq!(t.position, [40.0, 600.0]);
         assert_eq!(t.color, [220, 230, 240, 255]);

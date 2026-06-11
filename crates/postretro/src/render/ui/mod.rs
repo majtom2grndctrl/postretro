@@ -32,6 +32,11 @@ pub(crate) mod text;
 /// gameplay descriptor trees through it.
 pub(crate) mod tree;
 
+/// UI theme-token table: named color/font/spacing tokens widgets resolve against,
+/// the engine default theme, and the `ThemeDescriptor` override wire form. Pure
+/// data — widgets (later tasks) reference tokens by name; the merge is per-token.
+pub(crate) mod theme;
+
 pub(crate) use self::text::UiText;
 
 /// Hardcoded splash content descriptor behind the one named builder seam
@@ -39,7 +44,7 @@ pub(crate) use self::text::UiText;
 /// renderer lays out via `UiTree`; G1 later swaps the body for script ingestion.
 pub(crate) mod splash;
 
-/// Hardcoded demo gameplay HUD descriptor (M13 Goal C state-binding demo) behind
+/// Hardcoded demo gameplay HUD descriptor (M13 state-binding demo) behind
 /// the `demo::build_demo_descriptor` seam. The FIRST gameplay UI producer:
 /// `main.rs` publishes its `AnchoredTree` on the per-frame read snapshot and the
 /// renderer drives it through the retained gameplay path. Two `text` nodes bind
@@ -72,6 +77,13 @@ mod gameplay_ui_gate_test;
 /// Pure CPU — no GPU adapter.
 #[cfg(test)]
 mod demo_ui_gate_test;
+
+/// Hard-gate CPU assertions for M13 fonts+theming Task 4: the theme-generation
+/// rebuild gate (reproduced CPU-side, mirroring `UiPass::layout_gameplay_tree`)
+/// and the exactly-one-warning-per-build fallback contract for unknown tokens.
+/// Pure CPU — no GPU adapter.
+#[cfg(test)]
+mod theme_gate_test;
 
 /// Headless regression for the multi-batch instance-buffer clobber: encodes two
 /// non-empty batches into disjoint screen regions and asserts each region keeps
@@ -222,6 +234,13 @@ pub(crate) struct UiReadSnapshot {
     /// Only slots that currently hold a value appear; value-less slots are
     /// skipped. Empty on the splash path.
     pub slot_values: std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
+    /// Deterministic frame time in seconds, accumulated from per-frame `dt`
+    /// (`App::script_time`) — NEVER wall-clock. Stays `f64` end-to-end to match
+    /// the App's accumulator. The retained gameplay build threads it down so the
+    /// tween runtime can ease bound display values over time. `0.0` (the default)
+    /// on the splash/fresh path, where inertness is structural — that path takes
+    /// no time at all.
+    pub time_seconds: f64,
 }
 
 impl UiReadSnapshot {
@@ -232,21 +251,27 @@ impl UiReadSnapshot {
             version_line: version_line.into(),
             gameplay_tree: None,
             slot_values: std::collections::HashMap::new(),
+            // Splash/fresh path takes no time — inertness is structural.
+            time_seconds: 0.0,
         }
     }
 
     /// Snapshot carrying a gameplay-path descriptor tree (the content side) plus
-    /// the frame's resolved slot-value snapshot. The renderer lays the tree out
-    /// into the UI draw list and resolves `bind` slots against `slot_values`.
+    /// the frame's resolved slot-value snapshot and the deterministic frame time.
+    /// The renderer lays the tree out into the UI draw list, resolves `bind` slots
+    /// against `slot_values`, and threads `time_seconds` into the retained build so
+    /// the tween runtime can ease bound display values over time.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn with_gameplay_tree(
         tree: descriptor::AnchoredTree,
         slot_values: std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
+        time_seconds: f64,
     ) -> Self {
         Self {
             version_line: String::new(),
             gameplay_tree: Some(tree),
             slot_values,
+            time_seconds,
         }
     }
 }
@@ -356,6 +381,11 @@ struct RetainedGameplayTree {
     /// The descriptor the retained `tree` was built from. Compared against the
     /// incoming descriptor each frame; a difference forces a rebuild.
     descriptor: descriptor::AnchoredTree,
+    /// The renderer's UI theme generation the retained `tree` was built (and so
+    /// token-resolved) against. A bump (the engine installed an override theme)
+    /// invalidates the resolved colors/spacing/fonts baked into the tree, so the
+    /// gate rebuilds it even when the descriptor is byte-for-byte identical.
+    theme_generation: u64,
     /// The retained taffy-backed tree, carrying its layout cache, last viewport,
     /// per-bound-node last-resolved values, and cached draw list across frames.
     tree: tree::UiTree,
@@ -622,8 +652,9 @@ impl UiPass {
         viewport: [u32; 2],
         image_sizes: &tree::ImageSizes,
         slot_values: &std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
+        theme: &theme::UiTheme,
     ) -> tree::UiDrawData {
-        let mut ui_tree = tree::UiTree::from_descriptor(tree);
+        let mut ui_tree = tree::UiTree::from_descriptor(tree, theme);
         ui_tree.build_draw_data(
             viewport,
             self.text.font_system_mut(),
@@ -648,23 +679,43 @@ impl UiPass {
     ///
     /// The splash stays on `layout_tree` (fresh build per frame) — it is transient
     /// and carries no bindings, so retaining it would only add bookkeeping.
+    ///
+    /// `time_seconds` is the deterministic, dt-accumulated frame time threaded
+    /// down to the retained build for the tween runtime to ease bound values over
+    /// time. The splash/fresh `layout_tree` takes no such time — its inertness is
+    /// structural.
+    // Wide by necessity: viewport + image sizes + slot values + theme + theme
+    // generation + frame time are all distinct retained-build inputs; bundling
+    // them into a struct would only obscure the per-frame call site.
+    #[allow(clippy::too_many_arguments)]
     pub fn layout_gameplay_tree(
         &mut self,
         tree: &descriptor::AnchoredTree,
         viewport: [u32; 2],
         image_sizes: &tree::ImageSizes,
         slot_values: &std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
+        theme: &theme::UiTheme,
+        theme_generation: u64,
+        time_seconds: f64,
     ) -> tree::UiDrawData {
-        // Rebuild the retained tree when there is none yet, or when the incoming
-        // descriptor differs from the one it was built from (a structural change).
+        // Rebuild the retained tree when there is none yet, when the incoming
+        // descriptor differs from the one it was built from (a structural change),
+        // OR when the theme generation moved (the engine installed an override
+        // theme, so the tokens baked into the retained tree are stale). The
+        // generation gate rebuilds even on a byte-identical descriptor; a settled
+        // frame (same descriptor + same generation) reuses the retained tree, so
+        // the across-frames cache still holds.
         let needs_build = match &self.gameplay_tree {
-            Some(retained) => retained.descriptor != *tree,
+            Some(retained) => {
+                retained.descriptor != *tree || retained.theme_generation != theme_generation
+            }
             None => true,
         };
         if needs_build {
             self.gameplay_tree = Some(RetainedGameplayTree {
                 descriptor: tree.clone(),
-                tree: tree::UiTree::from_descriptor(tree),
+                theme_generation,
+                tree: tree::UiTree::from_descriptor(tree, theme),
             });
         }
 
@@ -677,6 +728,7 @@ impl UiPass {
             self.text.font_system_mut(),
             image_sizes,
             slot_values,
+            time_seconds,
         )
     }
 

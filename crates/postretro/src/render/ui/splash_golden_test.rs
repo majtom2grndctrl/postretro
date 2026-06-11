@@ -23,7 +23,7 @@
 // Text is encoded through the pass (so the full path runs on the device) but its
 // pixels are NOT asserted — only that `encode` composites without error.
 //
-// See: context/plans/in-progress/M13--descriptor-tree-layout
+// See: context/lib/ui.md
 
 use super::layout;
 use super::splash::{SplashDescriptor, build_splash_descriptor};
@@ -140,7 +140,13 @@ fn render_splash_offscreen(ctx: &GpuCtx) -> Readback {
     );
     // The splash tree has no state bindings, so it resolves against empty slots.
     let slots = std::collections::HashMap::new();
-    let draw = pass.layout_tree(desc.tree(), viewport, &image_sizes, &slots);
+    let draw = pass.layout_tree(
+        desc.tree(),
+        viewport,
+        &image_sizes,
+        &slots,
+        &super::theme::UiTheme::engine_default(),
+    );
     panel_list
         .instances
         .extend_from_slice(&draw.quads.instances);

@@ -563,12 +563,19 @@ mod tests {
 
     /// Regression: the WGSL `LightSpaceMatrices` array was hard-coded to 12
     /// while the Rust pool was 64, so any slot ≥ 12 indexed the light-space
-    /// matrix array out of bounds. Pin both shaders' declared array length to
-    /// `LIGHT_SPACE_MATRICES_SIZE` so neither can silently drift from the pool.
+    /// matrix array out of bounds. Pin every shader that declares the array to
+    /// `LIGHT_SPACE_MATRICES_SIZE` so none can silently drift from the pool.
+    ///
+    /// The skinned-mesh fragment shader (M10 mesh shadow receipt) declares the
+    /// SAME `array<mat4x4<f32>, SHADOW_POOL_SIZE>` at its group-2 b7, sampling the
+    /// pool's `matrices_buffer`, so it is scanned here alongside forward + fog — a
+    /// mesh-side drift would index the light-space matrices out of bounds exactly
+    /// as the forward bug did.
     #[test]
     fn light_space_matrices_array_len_matches_pool() {
         const FORWARD_SRC: &str = include_str!("../shaders/forward.wgsl");
         const FOG_SRC: &str = include_str!("../shaders/fog_volume.wgsl");
+        const MESH_SRC: &str = include_str!("../shaders/skinned_mesh.wgsl");
 
         // `LIGHT_SPACE_MATRICES_SIZE` is the byte size of an
         // `array<mat4x4<f32>, SHADOW_POOL_SIZE>`: each mat4 is 16 f32 × 4 B.
@@ -588,6 +595,11 @@ mod tests {
             Some(expected_len),
             "fog_volume.wgsl LightSpaceMatrices array length must equal the Rust pool size"
         );
+        assert_eq!(
+            light_space_matrices_array_len(MESH_SRC),
+            Some(expected_len),
+            "skinned_mesh.wgsl LightSpaceMatrices array length must equal the Rust pool size"
+        );
     }
 
     /// Tunable PCF radius wiring (AC, mechanical half): `sample_spot_shadow` must
@@ -597,19 +609,23 @@ mod tests {
     /// revert to a single-texel (radius-zero / one-tap) sample.
     #[test]
     fn forward_spot_shadow_has_nonzero_pcf_radius_and_multitap_kernel() {
-        const FORWARD_SRC: &str = include_str!("../shaders/forward.wgsl");
+        // `SPOT_SHADOW_PCF_RADIUS` and the `sample_spot_shadow` kernel live in the
+        // shared `shadow_sample.wgsl` snippet (extracted from forward.wgsl so the
+        // skinned-mesh pass can reuse them), concatenated into the forward module
+        // at pipeline build.
+        const SHADOW_SRC: &str = include_str!("../shaders/shadow_sample.wgsl");
 
         // The shared radius parameter exists, is a const, and parses to non-zero.
         let marker = "const SPOT_SHADOW_PCF_RADIUS: f32 =";
-        let start = FORWARD_SRC
+        let start = SHADOW_SRC
             .find(marker)
-            .expect("forward.wgsl must declare SPOT_SHADOW_PCF_RADIUS")
+            .expect("shadow_sample.wgsl must declare SPOT_SHADOW_PCF_RADIUS")
             + marker.len();
-        let end = FORWARD_SRC[start..]
+        let end = SHADOW_SRC[start..]
             .find(';')
             .expect("SPOT_SHADOW_PCF_RADIUS declaration must terminate with ';'")
             + start;
-        let value: f32 = FORWARD_SRC[start..end]
+        let value: f32 = SHADOW_SRC[start..end]
             .trim()
             .parse()
             .expect("SPOT_SHADOW_PCF_RADIUS must be a float literal");
@@ -622,7 +638,7 @@ mod tests {
         // comparison samples (3×3 box → 9 taps), so it is not a single-texel
         // sample. Both the radius use and the 9-tap normalization must be present.
         assert!(
-            FORWARD_SRC.contains("SPOT_SHADOW_PCF_RADIUS") && FORWARD_SRC.contains("/ 9.0"),
+            SHADOW_SRC.contains("SPOT_SHADOW_PCF_RADIUS") && SHADOW_SRC.contains("/ 9.0"),
             "sample_spot_shadow must use the radius and average a multi-tap kernel"
         );
     }

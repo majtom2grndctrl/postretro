@@ -30,8 +30,10 @@
 // Entities follow the BILLBOARD precedent, not forward's static-surface variant:
 // `reject_backface = false` (a moving skinned entity is not a static world
 // surface) with Chebyshev probe-occlusion on. Baked static direct is computed
-// here via `sample_sh_direct`; group 2 stays UNALLOCATED, reserved for the
-// future dynamic-direct light loop (runtime dynamic-tier lights, plan D10).
+// here via `sample_sh_direct`; group 2 carries the live dynamic-direct loop
+// (`accumulate_dynamic_direct`) plus the shadow-receipt bindings (b5–b8): the
+// per-fragment dynamic-tier lights are evaluated with spot/point shadow
+// attenuation and summed into the SH composition.
 //
 // Design note (non-binding): the skinning vertex stage is kept separable so a
 // future position-only depth-only skinned variant (the shadow task) can share
@@ -55,13 +57,103 @@ struct CameraUniforms {
 @group(1) @binding(0) var base_texture: texture_2d<f32>;
 @group(1) @binding(5) var aniso_sampler: sampler;
 
-// --- Group 3: skinned instance data ------------------------------------------
-// Group 2 is intentionally left UNALLOCATED. It is reserved for the future
-// dynamic-direct light loop (runtime dynamic-tier lights, plan D10) — distinct
-// from the baked static-direct term, which already landed in group 4 (binding
-// 15). The pipeline layout passes `None` for group 2; D10 inserts a slot here
-// rather than renumbering existing groups.
+// --- Group 2: dynamic direct lighting ----------------------------------------
+// Filled by M10 Task 2. Binding map PINNED across both M10 mesh specs (the BGL
+// in render/mesh_pass.rs is authoritative): b0 dynamic-light records (the
+// renderer's `is_dynamic`-filtered set — the dynamic tier only; static-tier
+// direct for movers is the group-4 baked atlas, so no double-count), b1 per-light
+// influence volumes, b2 scripted-animation descriptors (forward's group-3 b13
+// `scripted_light_descriptors`, SAME buffer), b3 scripted-animation curve samples
+// (forward's group-3 b12 `anim_samples`, SAME buffer), b4 the mesh-side params
+// uniform. b5–b8 carry the shadow-receipt bindings (declared further below).
 //
+// All of b0–b8 are DECLARED and READ: the per-fragment dynamic-light loop
+// (`accumulate_dynamic_direct`) consumes them. The appended shared helpers also
+// resolve their module-scope names against these declarations —
+// `curve_eval.wgsl` reads `anim_samples` (b3) and `light_eval.wgsl` reads the
+// `AnimationDescriptor` type (declared below). `GpuLight` / `AnimationDescriptor`
+// mirror forward.wgsl's same-named structs (the underlying buffers are the same).
+struct GpuLight {
+    position_and_type: vec4<f32>,
+    color_and_falloff_model: vec4<f32>,
+    direction_and_range: vec4<f32>,
+    cone_angles_and_pad: vec4<f32>,
+};
+@group(2) @binding(0) var<storage, read> lights: array<GpuLight>;
+// Per-light influence volume: xyz = sphere center, w = radius.
+@group(2) @binding(1) var<storage, read> light_influence: array<vec4<f32>>;
+
+// Per-light scripted-animation descriptor — mirrors forward.wgsl's
+// `AnimationDescriptor` (48 B; see render/sh_volume.rs ANIMATION_DESCRIPTOR_SIZE).
+// Consumed by the appended `light_eval.wgsl` helpers (e.g.
+// `light_eval_animated_direction`) from the dynamic-light loop.
+struct AnimationDescriptor {
+    period: f32,
+    phase: f32,
+    brightness_offset: u32,
+    brightness_count: u32,
+    base_color: vec3<f32>,
+    color_offset: u32,
+    color_count: u32,
+    is_active: u32,
+    direction_offset: u32,
+    direction_count: u32,
+};
+@group(2) @binding(2) var<storage, read> scripted_light_descriptors: array<AnimationDescriptor>;
+// Scripted-animation curve samples (packed f32). `curve_eval.wgsl` (appended to
+// this source) reads `anim_samples` by lexical name; this declaration satisfies
+// that reference. Same buffer forward binds at its group-3 b12.
+@group(2) @binding(3) var<storage, read> anim_samples: array<f32>;
+
+// Mesh-side group-2 params uniform: dynamic-light count, the frame's render-clock
+// `time` (the SAME value the renderer writes to forward `Uniforms.time` that
+// frame, so the scripted curves stay phase-coherent), and `lighting_isolation` —
+// the SAME `LightingIsolation` value the renderer uploads to forward
+// `Uniforms.lighting_isolation` that frame. The mesh dynamic-direct term
+// participates in the forward lighting-isolation debug modes exactly as the world
+// dynamic term does: the loop is gated by `use_dynamic` derived from the SAME mode
+// set forward uses (see `fs_main`). `ambient_floor` is the SAME constant ambient
+// fill the renderer uploads to forward `Uniforms.ambient_floor` that frame; added
+// once in `fs_main` so shadowed mesh faces lift with the diagnostics slider.
+// Mirrors `MeshLightParams` in render/mesh_pass.rs. std140-padded to 16 B.
+struct MeshLightParams {
+    light_count: u32,
+    time: f32,
+    lighting_isolation: u32,
+    ambient_floor: f32,
+};
+@group(2) @binding(4) var<uniform> mesh_light_params: MeshLightParams;
+
+// --- Group 2 (cont.): shadow receipt (M10 mesh shadow receipt Task 2) ---------
+// b5–b8 alias the SAME pool-owned GPU resources the forward pass binds in its
+// group 5, via a MESH-SPECIFIC layout (the BGL in render/mesh_pass.rs is
+// authoritative; it omits forward's SDF-factor + scene-depth entries the mesh
+// must not sample). The appended `shadow_sample.wgsl` references these four
+// names (`spot_shadow_depth`, `spot_shadow_compare`, `light_space_matrices`,
+// `point_shadow_cube`) by lexical resolution — the SAME binding-agnostic
+// composition forward.wgsl uses. DECLARED here and SAMPLED by
+// `accumulate_dynamic_direct`: its per-light visibility term calls
+// `sample_spot_shadow` (spot slot `cone_angles_and_pad.z`) and
+// `sample_point_shadow` (cube slot `cone_angles_and_pad.w`).
+//
+// b7 is a UNIFORM (`array<mat4x4<f32>, 96>` = SHADOW_POOL_SIZE) — NOT storage —
+// to keep the fragment storage-buffer count at 4 (rendering_pipeline.md §10);
+// it stays well under the 16 KiB uniform cap. Matches forward's group-5 b2.
+@group(2) @binding(5) var spot_shadow_depth: texture_depth_2d_array;
+@group(2) @binding(6) var spot_shadow_compare: sampler_comparison;
+struct LightSpaceMatrices {
+    m: array<mat4x4<f32>, 96>,
+};
+@group(2) @binding(7) var<uniform> light_space_matrices: LightSpaceMatrices;
+// The inline tag on the declaration below marks it for the no-cube shader
+// variant: on an adapter without `CUBE_ARRAY_TEXTURES`,
+// `render::strip_point_shadow_cube` strips the tagged declaration (and
+// neutralizes `sample_point_shadow`), so the shader matches a group-2 BGL that
+// omits b8. Mirrors forward.wgsl's group-5 b5 cube binding — tag placed inline
+// on the declaration line, NOT in this prose, so the strip drops the right line.
+@group(2) @binding(8) var point_shadow_cube: texture_depth_cube_array; // CUBE_SHADOW_BINDING
+
+// --- Group 3: skinned instance data ------------------------------------------
 // `bone_palette` is the SHARED palette storage buffer; every instance's run of
 // `BonePaletteEntry` (one mat4 per joint) is appended into it. Each instance's
 // `Instance.base_index` selects its run; `Instance.model` is its per-instance
@@ -92,7 +184,7 @@ struct Instance {
 // shared SH bind group. It adds direct atlas at binding 15 and the mesh-only
 // `DynamicDirectParams` uniform at binding 16 on top of the shared entries
 // (b1/b2/b10/b11/b12/b13/b14). Group 3 is locked to instance data; group 2
-// stays UNALLOCATED (reserved for the future dynamic-direct light loop, D10).
+// carries the live dynamic-direct loop + shadow-receipt bindings (b0–b8).
 // The appended `sh_sample.wgsl` helper reads the shared bindings by lexical
 // name. The animated-layer storage buffers (b11/b12/b13) live in the layout
 // but are not declared here — the mesh path never evaluates animated layers
@@ -307,11 +399,186 @@ fn sample_sh_direct(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_normal:
     );
 }
 
+// Runtime dynamic-direct light loop — mirrors forward.wgsl's dynamic-tier loop
+// (the b0 buffer is the renderer's `is_dynamic`-filtered set, so static lights
+// cannot leak in), but DIFFUSE-ONLY: Lambert against the interpolated skinned
+// normal `n`, no specular and no normal-map perturbation (the mesh path has
+// neither — see rendering_pipeline.md §9). Each per-light term is attenuated by
+// the light's shadow map: the spot slot from `cone_angles_and_pad.z` indexes
+// `light_space_matrices` for `sample_spot_shadow`, the cube slot from
+// `cone_angles_and_pad.w` drives `sample_point_shadow` — sentinel 0xFFFFFFFF on
+// either ⇒ unshadowed (×1.0). Slot logic is identical to forward.wgsl's dynamic
+// loop; the shadow factor folds into the per-light attenuation.
+//
+// BIAS / NORMAL-OFFSET TUNING SEAM (M10 mesh shadow receipt) — read before
+// touching self-shadow acne on skinned entities:
+//   * This loop — where `sample_spot_shadow` / `sample_point_shadow` are called
+//     below — is the SOLE SANCTIONED place to add or tune a mesh-receiver
+//     bias / normal-offset. Do NOT edit the bias inside the shared
+//     `shadow_sample.wgsl`: the forward and fog passes share those helpers, so a
+//     change there alters world shadows (peter-panning risk) and breaks forward's
+//     no-behavior-change AC. Keep mesh-only acne fixes here.
+//   * PREFERRED remedy if acne appears on curved skinned surfaces: a sample-site
+//     NORMAL-OFFSET — push `world_pos` along the interpolated normal `n` by a
+//     small world-space (normal-scaled) amount before passing it to the sampler,
+//     rather than raising the shared depth bias. The entity's own depth is already
+//     in the maps (occluders render via `record_skinned_depth`), so the receiver
+//     offset is the cleaner lever.
+//   * OPEN QUESTION (HUMAN CHECKPOINT — not resolved in-tree): the exact
+//     normal-offset / bias VALUES. They require a human visual check of self-
+//     shadow acne on dev skinned models at gameplay distance under BOTH spot- and
+//     point-shadowed lights. No value is invented here — the call sites below
+//     sample at the un-offset `world_pos` today (byte-identical to the
+//     pre-tuning behavior); a human introduces the offset constant here after
+//     judging acne, without touching the shared snippet.
+//
+// `use_dynamic` is the forward lighting-isolation gate (computed in `fs_main`
+// from `mesh_light_params.lighting_isolation`, mirroring forward.wgsl). When the
+// active mode excludes the dynamic term, the loop bound is forced to 0 — the SAME
+// `select(0u, light_count, use_dynamic)` clamp forward applies — so the term
+// contributes nothing. With `light_count == 0` (or the gate off) the loop returns
+// zero and the composition reduces to indirect + baked direct; the accumulator
+// starts at zero, so a zero-trip loop adds nothing.
+fn accumulate_dynamic_direct(world_pos: vec3<f32>, n: vec3<f32>, use_dynamic: bool) -> vec3<f32> {
+    var total = vec3<f32>(0.0);
+    let light_count = select(0u, mesh_light_params.light_count, use_dynamic);
+    for (var i: u32 = 0u; i < light_count; i = i + 1u) {
+        // Influence-volume early-out: pure optimization — no pixel change.
+        let influence = light_influence[i];
+        let inf_radius = influence.w;
+        if inf_radius <= 1.0e30 {
+            let d = world_pos - influence.xyz;
+            if dot(d, d) > inf_radius * inf_radius {
+                continue;
+            }
+        }
+
+        let light = lights[i];
+        let light_type = bitcast<u32>(light.position_and_type.w);
+        let falloff_model = bitcast<u32>(light.color_and_falloff_model.w);
+
+        // Scripted per-light animation. `is_active == 0` keeps the static
+        // GpuLight color/aim; active descriptors override from Catmull-Rom
+        // curves on the shared anim_samples buffer. `mesh_light_params.time` is
+        // the same frame time forward uses, so the curves stay phase-coherent.
+        let scripted_desc = scripted_light_descriptors[i];
+        var effective_color = light.color_and_falloff_model.xyz;
+        var effective_aim = light.direction_and_range.xyz;
+        if scripted_desc.is_active != 0u {
+            let cycle_t = fract(mesh_light_params.time / max(scripted_desc.period, 0.0001) + scripted_desc.phase);
+            // Catmull-Rom overshoot can dip below zero; clamp so an animated
+            // light never emits negative, sign-flipped light.
+            if scripted_desc.color_count > 0u {
+                let unit_sample = max(
+                    sample_color_catmull_rom(
+                        scripted_desc.color_offset,
+                        scripted_desc.color_count,
+                        cycle_t,
+                        scripted_desc.base_color,
+                    ),
+                    vec3<f32>(0.0),
+                );
+                let intensity = light_eval_scripted_intensity_scalar(
+                    light.color_and_falloff_model.xyz,
+                    scripted_desc.base_color,
+                );
+                let brightness = max(
+                    sample_curve_catmull_rom(
+                        scripted_desc.brightness_offset,
+                        scripted_desc.brightness_count,
+                        cycle_t,
+                    ),
+                    0.0,
+                );
+                effective_color = unit_sample * intensity * brightness;
+            } else if scripted_desc.brightness_count > 0u {
+                let brightness = max(
+                    sample_curve_catmull_rom(
+                        scripted_desc.brightness_offset,
+                        scripted_desc.brightness_count,
+                        cycle_t,
+                    ),
+                    0.0,
+                );
+                effective_color = light.color_and_falloff_model.xyz * brightness;
+            }
+            if light_type == 1u && scripted_desc.direction_count > 0u {
+                effective_aim = light_eval_animated_direction(scripted_desc, cycle_t, effective_aim);
+            }
+        }
+
+        var L: vec3<f32>;
+        var attenuation: f32;
+
+        switch light_type {
+            case 0u: {
+                let to_light = light.position_and_type.xyz - world_pos;
+                let dist = length(to_light);
+                L = to_light / max(dist, 0.0001);
+                attenuation = light_eval_falloff(dist, light.direction_and_range.w, falloff_model);
+
+                // Dynamic point-light cube shadow — mirrors forward.wgsl's case
+                // 0u. The cube slot rides in `cone_angles_and_pad.w` (sentinel
+                // 0xFFFFFFFF = no slot, i.e. the light was not ranked into the
+                // cube pool). A point light without a slot keeps its unshadowed
+                // attenuation. On a no-`CUBE_ARRAY_TEXTURES` adapter the stripped
+                // `sample_point_shadow` returns 1.0, so this call site validates
+                // and lights the mesh unshadowed. Folded into `attenuation` so the
+                // dynamic point term is shadowed exactly once (no lightmap touched).
+                let cube_slot = bitcast<u32>(light.cone_angles_and_pad.w);
+                if cube_slot != 0xFFFFFFFFu {
+                    let shadow = sample_point_shadow(
+                        cube_slot,
+                        light.position_and_type.xyz,
+                        world_pos,
+                        light.direction_and_range.w
+                    );
+                    attenuation = attenuation * shadow;
+                }
+            }
+            case 1u: {
+                let to_light = light.position_and_type.xyz - world_pos;
+                let dist = length(to_light);
+                L = to_light / max(dist, 0.0001);
+                let dist_falloff = light_eval_falloff(dist, light.direction_and_range.w, falloff_model);
+                let cone = light_eval_cone_attenuation(
+                    L,
+                    effective_aim,
+                    light.cone_angles_and_pad.x,
+                    light.cone_angles_and_pad.y,
+                );
+                attenuation = dist_falloff * cone;
+
+                // Dynamic spot shadow — mirrors forward.wgsl's case 1u. The spot
+                // slot rides in `cone_angles_and_pad.z` (sentinel 0xFFFFFFFF = no
+                // slot ⇒ unshadowed). A valid slot indexes `light_space_matrices`
+                // and folds the PCF visibility into `attenuation`.
+                let slot_index = bitcast<u32>(light.cone_angles_and_pad.z);
+                if slot_index != 0xFFFFFFFFu {
+                    let light_proj = light_space_matrices.m[slot_index];
+                    let shadow = sample_spot_shadow(slot_index, world_pos, light_proj);
+                    attenuation = attenuation * shadow;
+                }
+            }
+            default: {
+                // Directional light (case 2u and any unknown discriminant).
+                L = -effective_aim;
+                attenuation = 1.0;
+            }
+        }
+
+        let NdotL = max(dot(n, L), 0.0);
+        total = total + effective_color * attenuation * NdotL;
+    }
+    return total;
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // SH-lit: sample base color, multiply by baked indirect irradiance, then add
     // the baked static-direct term (group 4 binding 15; gated by `has_direct`).
-    // The future dynamic-direct light loop (D10, group 2) is not yet built.
+    // The runtime dynamic-direct term (group 2) is summed below before the albedo
+    // multiply, via `accumulate_dynamic_direct`.
     // The skinned world normal drives the octahedral direction lookup and
     // (unused, backface rejection off) the geometric backface test.
     let base_color = textureSample(base_texture, aniso_sampler, in.uv);
@@ -325,7 +592,28 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if dynamic_direct.has_direct != 0u {
         direct = dynamic_direct.scale * sample_sh_direct(in.world_position, n, n);
     }
-    // Dynamic-direct isolation (debug instrument):
+    // Lighting-isolation gate for the runtime dynamic-direct term — the SAME
+    // `LightingIsolation` mode set forward.wgsl uses to gate its world dynamic
+    // term (`use_dynamic = iso 0|1|2|8`: Normal, NoLightmap, DirectOnly,
+    // DynamicOnly). NOT a new boolean: `mesh_light_params.lighting_isolation`
+    // carries the identical value the renderer writes to forward
+    // `Uniforms.lighting_isolation` that frame, so the mesh dynamic term appears
+    // in exactly the debug modes the world dynamic term does. This is ORTHOGONAL
+    // to the group-4 `dynamic_direct.isolation` gate below (baked direct-vs-
+    // indirect isolation) — the two compose multiplicatively: the dynamic term
+    // renders only when its `use_dynamic` gate passes, and the baked SH terms are
+    // selected independently by `dynamic_direct.isolation`.
+    let iso = mesh_light_params.lighting_isolation;
+    let use_dynamic = (iso == 0u) || (iso == 1u) || (iso == 2u) || (iso == 8u);
+
+    // Runtime dynamic-direct term, summed alongside the baked indirect + direct
+    // terms (forward adds dynamic into the composition; it does not re-weight).
+    // Diffuse-only against the interpolated skinned normal `n`. Gated by
+    // `use_dynamic` (forced to zero outside the dynamic-visible modes).
+    let dynamic = accumulate_dynamic_direct(in.world_position, n, use_dynamic);
+
+    // Baked-SH dynamic-direct isolation (debug instrument) gates only the baked SH
+    // terms — UNTOUCHED by the runtime gate above; the two multiply.
     //   0 = combined    → indirect + scale·direct
     //   1 = direct-only  → scale·direct
     //   2 = indirect-only → indirect
@@ -335,5 +623,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     } else if dynamic_direct.isolation == 2u {
         lighting = indirect;
     }
+    // Add the ambient floor once as a constant additive fill — disjoint from the
+    // indirect/baked-direct/dynamic terms, so it lifts shadowed faces without
+    // double-counting any light. Mirrors forward.wgsl's ambient-floor term
+    // (`total_light = vec3(ambient_floor) + indirect + static_direct`,
+    // rendering_pipeline.md §4 composition); summed before the albedo multiply.
+    lighting = vec3<f32>(mesh_light_params.ambient_floor) + lighting + dynamic;
     return vec4<f32>(base_color.rgb * lighting, base_color.a);
 }

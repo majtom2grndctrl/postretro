@@ -408,13 +408,11 @@ fn plan_component_replace(
         DescriptorComponentKind::Emitter => {
             plan_emitter_replace(entity, provenance, new_descriptor, registry)
         }
-        // Mesh component hot-reload refresh is out of scope for the M10 mesh
-        // descriptor surface (Task 3): the per-entity animation runtime carries
-        // live state (current state, entry stamps, in-flight fades) that an
-        // in-place field copy would clobber. Refresh is declined here, so the
-        // planner keeps the existing live component (no replace action). A
-        // dedicated mesh-refresh path can land later if hot-reload of the
-        // animation surface is needed.
+        // Mesh component hot-reload refresh is declined: the per-entity animation
+        // runtime carries live state (current state, entry stamps, in-flight
+        // fades) that an in-place field copy would clobber. The planner keeps the
+        // existing live component (no replace action). A dedicated mesh-refresh
+        // path can land later if hot-reload of the animation surface is needed.
         DescriptorComponentKind::Mesh => Err("mesh component refresh is not supported".to_string()),
     };
 

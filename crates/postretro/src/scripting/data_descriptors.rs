@@ -118,9 +118,10 @@ impl LightDescriptor {
 /// Validation (at parse time): `model` non-empty; each state's `clip` non-empty;
 /// `crossfade_ms` finite ≥ 0; `interrupt` (when present on the wire) one of
 /// `"smooth"`/`"snap"`. When `animations` is present it must be non-empty and
-/// `default_state` must be present and name a declared state. Clip resolution
-/// against the model's clip metadata is deferred to Task 5 (level load), so
-/// `AnimationState::clip_index` stays `None` here.
+/// `default_state` must be present and name a declared state. A `defaultState`
+/// without an `animations` block is also rejected. Clip resolution against the
+/// model's clip metadata is resolved at level load by `resolve_mesh_entity_clips`;
+/// `AnimationState::clip_index` stays `None` at parse.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct MeshDescriptor {
     pub(crate) model: String,
@@ -213,15 +214,21 @@ impl MeshDescriptor {
                     crossfade_ms: raw.crossfade_ms,
                     interrupt,
                     // Resolved against the model's clip metadata at level load
-                    // (Task 5); unresolved here.
+                    // by `resolve_mesh_entity_clips`; unresolved here.
                     clip_index: None,
                 },
             );
         }
 
         // `defaultState` is required exactly when states are declared, and must
-        // name one of them. With no states declared it must be absent.
+        // name one of them. With no states declared it must be absent — a
+        // `defaultState` without an `animations` block is rejected.
         let default_state = if animations.is_empty() {
+            if default_state.is_some() {
+                return Err(DescriptorError::InvalidShape {
+                    reason: "`components.mesh.defaultState` requires an `animations` block; no animations were declared".to_string(),
+                });
+            }
             None
         } else {
             let default = default_state.ok_or(DescriptorError::MissingField {
@@ -4684,7 +4691,7 @@ mod tests {
         assert!(matches!(err, DescriptorError::InvalidShape { .. }));
     }
 
-    // --- components.mesh (Task 3) -------------------------------------------
+    // --- components.mesh -----------------------------------------------------
 
     #[test]
     fn js_mesh_stateless_parses_model_only() {
@@ -4811,6 +4818,13 @@ mod tests {
     }
 
     #[test]
+    fn js_mesh_default_state_without_animations_is_rejected() {
+        let src = r#"({ components: { mesh: { model: "m", defaultState: "idle" } } })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
     fn lua_mesh_stateless_parses_model_only() {
         let src = r#"return { components = { mesh = { model = "decraniated" } } }"#;
         let d = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap());
@@ -4865,6 +4879,13 @@ mod tests {
                 field: "defaultState"
             }
         );
+    }
+
+    #[test]
+    fn lua_mesh_default_state_without_animations_is_rejected() {
+        let src = r#"return { components = { mesh = { model = "m", defaultState = "idle" } } }"#;
+        let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
     }
 
     #[test]

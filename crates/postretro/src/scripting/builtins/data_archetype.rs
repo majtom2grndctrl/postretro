@@ -308,7 +308,7 @@ fn attach_descriptor_components(
         // No `animations` block ⇒ stateless mesh (model handle only). Otherwise
         // copy the declared state map in via `MeshAnimation::new`: current =
         // default state, entry stamp pending (filled by the resolve pass), no
-        // active fade. Parse-time validation (Task 3) guarantees `default_state`
+        // active fade. Parse-time validation guarantees `default_state`
         // is `Some` exactly when the map is non-empty and names a declared state.
         let component = match &mesh_desc.default_state {
             Some(default_state) => MeshComponent {
@@ -632,8 +632,8 @@ mod tests {
 
     /// Build an `EntityTypeDescriptor` carrying only a mesh component. `animated`
     /// selects between a stateless mesh (model only) and a two-state animated
-    /// mesh (`idle` default + `attack`), mirroring the descriptor shape Task 3's
-    /// parser produces.
+    /// mesh (`idle` default + `attack`), mirroring the validated descriptor shape
+    /// the mesh parser produces.
     fn mesh_descriptor(classname: &str, animated: bool) -> EntityTypeDescriptor {
         use crate::scripting::components::mesh::{AnimationState, InterruptPolicy};
 

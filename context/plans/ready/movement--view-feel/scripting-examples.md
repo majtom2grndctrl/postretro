@@ -22,7 +22,7 @@ export const playerEntity = defineEntity({
     movement: {
       capsule: { radius: 0.2, halfHeight: 0.8, eyeHeight: 0.5 },
       ground: {
-        speed: { walk: 7.0, run: 11.0 },
+        speed: { walk: 7.0, run: 11.0, crouch: 3.5 },
         accel: 8.0,
         stepHeight: 0.5,
         maxSlope: 45.0,
@@ -76,7 +76,7 @@ export const tankEntity = defineEntity({
     movement: {
       capsule: { radius: 0.35, halfHeight: 1.0, eyeHeight: 0.6 },
       ground: {
-        speed: { walk: 4.0, run: 6.5 },
+        speed: { walk: 4.0, run: 6.5, crouch: 2.0 },
         accel: 5.0,
         stepHeight: 0.4,
         maxSlope: 40.0,
@@ -129,7 +129,7 @@ export const scoutEntity = defineEntity({
     movement: {
       capsule: { radius: 0.15, halfHeight: 0.7, eyeHeight: 0.45 },
       ground: {
-        speed: { walk: 8.0, run: 14.0 },
+        speed: { walk: 8.0, run: 14.0, crouch: 4.0 },
         accel: 14.0,
         stepHeight: 0.35,
         maxSlope: 50.0,
@@ -183,7 +183,7 @@ export const alienEntity = defineEntity({
     movement: {
       capsule: { radius: 0.25, halfHeight: 0.9, eyeHeight: 0.55 },
       ground: {
-        speed: { walk: 5.5, run: 9.0 },
+        speed: { walk: 5.5, run: 9.0, crouch: 2.5 },
         accel: 7.0,
         stepHeight: 0.45,
         maxSlope: 55.0,
@@ -232,7 +232,7 @@ export const minimalistEntity = defineEntity({
     movement: {
       capsule: { radius: 0.1, halfHeight: 0.5, eyeHeight: 0.4 },
       ground: {
-        speed: { walk: 0.0, run: 0.0 },
+        speed: { walk: 0.0, run: 0.0, crouch: 0.0 },
         accel: 0.0,
         stepHeight: 0.0,
         maxSlope: 0.0,
@@ -246,7 +246,7 @@ export const minimalistEntity = defineEntity({
         jumpVelocity: 0.0,
         jumpCeiling: 0.0,
       },
-      fall: { terminalVelocity: 0.0 },
+      fall: { terminalVelocity: 1.0 },
       // viewFeel absent — camera is perfectly steady
     },
   },
@@ -271,7 +271,7 @@ local playerEntity = postretro.defineEntity({
     movement = {
       capsule = { radius = 0.2, halfHeight = 0.8, eyeHeight = 0.5 },
       ground = {
-        speed = { walk = 7.0, run = 11.0 },
+        speed = { walk = 7.0, run = 11.0, crouch = 3.5 },
         accel = 8.0,
         stepHeight = 0.5,
         maxSlope = 45.0,
@@ -319,7 +319,7 @@ local tankEntity = postretro.defineEntity({
     movement = {
       capsule = { radius = 0.35, halfHeight = 1.0, eyeHeight = 0.6 },
       ground = {
-        speed = { walk = 4.0, run = 6.5 },
+        speed = { walk = 4.0, run = 6.5, crouch = 2.0 },
         accel = 5.0,
         stepHeight = 0.4,
         maxSlope = 40.0,
@@ -367,14 +367,18 @@ local tankEntity = postretro.defineEntity({
 | `bob.verticalAmplitude` | m, ≥ 0 | Eye offset at bob peak; larger = more thud |
 | `bob.lateralAmplitude` | m, ≥ 0 | Side-to-side eye drift per bob cycle |
 | `bob.speedThreshold` | m/s, ≥ 0 | Minimum speed before bob engages |
+| `bob.groundedOnly` | boolean, optional (default `true`) | When true, bob runs only while grounded — airborne it holds phase and outputs zero |
 | `tilt.maxAngle` | degrees, [0, 90] | Max view roll at full strafe speed |
 | `tilt.speedReference` | m/s, > 0 | Lateral speed that produces `maxAngle` |
 | `tilt.tension` | > 0 | Spring stiffness: low = heavy/slow-settle, high = snappy |
+| `tilt.groundedOnly` | boolean, optional (default `true`) | When true, the roll settles level while airborne |
 | `sway.amplitude` | degrees, ≥ 0 | Base wander magnitude at rest |
 | `sway.frequency` | Hz, > 0 | Base rate of the noise oscillation |
 | `sway.speedScale` | ≥ 0 | Extra amplitude gain per m/s of horizontal speed |
+| `sway.groundedOnly` | boolean, optional (default `false`) | When true, sway contributes zero while airborne |
 
 **Two-level optionality.** `viewFeel` itself is optional on `movement`. Within a
 present `viewFeel`, each of `bob`, `tilt`, `sway` is independently optional —
 omit any to disable that motion. Within a present sub-object, every field is
-required.
+required except the optional `groundedOnly` (defaults: bob/tilt `true`,
+sway `false`).

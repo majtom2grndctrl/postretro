@@ -157,6 +157,29 @@ fn sphere_intersects_any_fog_aabb(center: Vec3, radius: f32, aabbs: &[(Vec3, Vec
 // It reads `spec_lights` / `chunk_grid` / `chunk_offsets` / `chunk_indices` by
 // name — all already declared in `forward.wgsl` for the static-light loop — and
 // declares no buffers of its own. Never reimplement the selection here.
+//
+// `light_eval.wgsl` owns the dynamic-tier per-light evaluation helpers
+// (`light_eval_falloff`, `light_eval_cone_attenuation`,
+// `light_eval_animated_direction`, `light_eval_scripted_intensity_scalar`) the
+// runtime light loop calls — extracted so the skinned-mesh pass can mirror the
+// same loop against its own group-2 bindings. It declares no buffers. Append
+// ORDER dependency: `light_eval_animated_direction` calls
+// `sample_color_catmull_rom` from `curve_eval.wgsl`, so the consumer must also
+// append curve_eval (forward does, above). WGSL resolves module-scope names
+// regardless of textual order, so the relative order of these two is free.
+//
+// `shadow_sample.wgsl` owns the runtime shadow-map samplers (`sample_spot_shadow`
+// spot 2D-array PCF, `sample_point_shadow` point cube-array PCF) plus their
+// bias/resolution constants and `cube_face_ndc_depth` — extracted so the
+// skinned-mesh pass can mirror the same calls against its own group-2 b5–b8
+// shadow bindings. It declares no bindings: it reads the group-5
+// `spot_shadow_depth`, `spot_shadow_compare`, `light_space_matrices`, and
+// `point_shadow_cube` declared in `forward.wgsl` by lexical name. The
+// `// CUBE_SHADOW_BODY_BEGIN` / `// CUBE_SHADOW_BODY_END` markers around
+// `sample_point_shadow`'s body travel WITH the body into this snippet, so
+// `strip_point_shadow_cube` still neutralizes the cube path in the composed
+// no-`CUBE_ARRAY_TEXTURES` source; the `// CUBE_SHADOW_BINDING` binding
+// declaration stays with the consumer in `forward.wgsl`.
 const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/forward.wgsl"),
     "\n",
@@ -165,6 +188,10 @@ const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/sh_sample.wgsl"),
     "\n",
     include_str!("../shaders/sdf_light_select.wgsl"),
+    "\n",
+    include_str!("../shaders/light_eval.wgsl"),
+    "\n",
+    include_str!("../shaders/shadow_sample.wgsl"),
 );
 
 /// Derive the no-`CUBE_ARRAY_TEXTURES` variant of a group-5 shader (forward or
@@ -1069,6 +1096,12 @@ pub struct Renderer {
     /// wgpu rejects zero-sized storage buffer bindings.
     lighting_bind_group: wgpu::BindGroup,
     light_count: u32,
+    /// The frame's forward `Uniforms.time` value, cached by
+    /// `update_per_frame_uniforms` so the skinned-mesh group-2 params uniform
+    /// (`MeshLightParams.time`) is written from the SAME render-clock value the
+    /// forward pass uses that frame. The scripted-light animated curves the mesh
+    /// dynamic loop evaluates depend on this phase coherence.
+    mesh_dynamic_time: f32,
     ambient_floor: f32,
     indirect_scale: f32,
     /// DYNAMIC baked-static-direct SH scale (0..1). Debug instrument for the
@@ -2590,7 +2623,7 @@ impl Renderer {
         // an un-sampled run renders in bind pose. Each frame `plan_and_upload`
         // samples every instance's clip into its palette run before the shadow
         // depth loop; `record_draws` then records the forward draw.
-        let mesh_pass = mesh_pass::MeshPass::new(
+        let mut mesh_pass = mesh_pass::MeshPass::new(
             &device,
             surface_format,
             DEPTH_FORMAT,
@@ -2604,8 +2637,36 @@ impl Renderer {
             // Mesh group 4 uses the SUPERSET layout (shared SH entries + the
             // mesh-only dynamic-direct params uniform at binding 16).
             &sh_volume_resources.mesh_bind_group_layout,
+            // Cube-array support pins the `Some`-iff-layout invariant: the mesh
+            // group-2 BGL carries the b8 cube entry iff this is true, and the
+            // no-cube shader strip is applied to the mesh source when it is false.
+            cube_array_supported,
         );
         mesh_pass.upload_identity_palette(&queue);
+        // Build the mesh group-2 dynamic-direct light bind group over the SAME
+        // runtime buffers the forward `lighting_bind_group` binds: the
+        // `is_dynamic`-filtered `lights_buffer` (b0), the influence-volume buffer
+        // (b1), and forward's scripted-descriptor (b2) / anim-sample (b3) buffers.
+        // Rebuilt on level load wherever those buffers reallocate (see
+        // `set_geometry`).
+        // b5–b8 alias the SAME pool-owned shadow resources forward binds at its
+        // group 5: the spot pool's D2-array depth view (b5), its comparison
+        // sampler (b6), its light-space-matrices uniform buffer (b7), and the cube
+        // pool's `CubeArray` sampling view (b8 — `Some` iff `cube_array_supported`,
+        // the `Some`-iff-layout invariant). These pool resources are stable for the
+        // renderer's lifetime (the pools are never recreated), so they only ever
+        // rebind here alongside the b0–b4 reallocation rebind on level load.
+        mesh_pass.rebuild_light_bind_group(
+            &device,
+            &lights_buffer,
+            &influence_buffer,
+            &sh_volume_resources.scripted_light_descriptors,
+            &sh_volume_resources.animation.anim_samples,
+            &spot_shadow_pool.array_view,
+            &spot_shadow_pool.compare_sampler,
+            &spot_shadow_pool.matrices_buffer,
+            cube_shadow_pool.as_ref().map(|p| &p.sampling_view),
+        );
 
         // UI quad / 9-slice + text pass — sibling to fog. Owns all UI GPU state
         // (quad pipeline, glyphon atlas/renderer, white texel). The splash phase
@@ -2666,6 +2727,7 @@ impl Renderer {
             uniform_bind_group,
             lighting_bind_group,
             light_count,
+            mesh_dynamic_time: 0.0,
             ambient_floor,
             indirect_scale: DEFAULT_INDIRECT_SCALE,
             dynamic_direct_scale: DEFAULT_DYNAMIC_DIRECT_SCALE,
@@ -2942,6 +3004,30 @@ impl Renderer {
             geometry.direct_sh_volume,
             self.level_lights.len(),
             self.probe_occlusion_enabled,
+        );
+
+        // Rebuild the mesh group-2 dynamic-direct light bind group over the
+        // just-reallocated runtime buffers — the `is_dynamic`-filtered
+        // `lights_buffer` (b0), the fresh `influence_buffer` (b1), and the new
+        // `sh_volume_resources` scripted-descriptor (b2) / anim-sample (b3)
+        // buffers. The forward `lighting_bind_group` above is rebuilt for the same
+        // reason; this mirrors it for the mesh pass so a level swap does not leave
+        // the mesh group-2 bind group dangling at the prior level's buffers.
+        // b5–b8 re-reference the SAME pool-owned shadow resources (stable for the
+        // renderer's lifetime — the pools are never recreated), supplied here so the
+        // shadow bindings rebind alongside the reallocated b0–b4. The cube view is
+        // `Some` iff `cube_shadow_pool` is present (the `Some`-iff-layout invariant).
+        let cube_sampling_view = self.cube_shadow_pool.as_ref().map(|p| &p.sampling_view);
+        self.mesh_pass.rebuild_light_bind_group(
+            &self.device,
+            &self.lights_buffer,
+            &influence_buffer,
+            &self.sh_volume_resources.scripted_light_descriptors,
+            &self.sh_volume_resources.animation.anim_samples,
+            &self.spot_shadow_pool.array_view,
+            &self.spot_shadow_pool.compare_sampler,
+            &self.spot_shadow_pool.matrices_buffer,
+            cube_sampling_view,
         );
 
         self.sdf_atlas_resources =
@@ -3822,6 +3908,13 @@ impl Renderer {
         self.queue.write_buffer(&self.uniform_buffer, 0, &data);
         self.last_camera_position = camera_position;
         self.last_view_proj = view_proj;
+        // Cache this frame's `time` so the skinned-mesh group-2 params uniform
+        // (`MeshLightParams.time`) is written from the SAME render-clock value —
+        // the scripted-light curves the mesh dynamic loop evaluates must share the
+        // forward pass's animation phase (and the CPU light bridge's, which gates
+        // shadow-pool eligibility). Written from this single source, never
+        // recomputed at the mesh draw.
+        self.mesh_dynamic_time = time;
 
         // Mesh dynamic-direct uniform (group 4 binding 16). The mesh path reads
         // a trimmed camera uniform (no group-0 tail), so the scale/isolation/
@@ -5044,6 +5137,22 @@ impl Renderer {
         // the hoist populated, the SAME buffers the skinned-depth shadow pass
         // read, so an entity and its shadow share one pose (no one-frame lag).
         if let Some(plan) = &mesh_frame_plan {
+            // Mesh group-2 params uniform (binding 4): the dynamic-light count, the
+            // frame's render-clock time (the SAME value written to forward
+            // `Uniforms.time` this frame — cached in `update_per_frame_uniforms` —
+            // so the scripted-light curves the mesh loop evaluates stay
+            // phase-coherent), and the SAME `lighting_isolation` value written to
+            // forward `Uniforms.lighting_isolation` this frame, so the mesh
+            // dynamic-direct term participates in the lighting-isolation debug
+            // modes exactly as the world dynamic term does (the shader derives
+            // `use_dynamic` from it, mirroring forward.wgsl).
+            self.mesh_pass.write_light_params(
+                &self.queue,
+                self.light_count,
+                self.mesh_dynamic_time,
+                self.lighting_isolation as u32,
+                self.ambient_floor,
+            );
             let mut mesh_enc = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Skinned Mesh Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -5611,6 +5720,30 @@ pub fn level_world_to_geometry<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Regression guard for the exact bug this fix closes: the renderer must thread
+    // `self.ambient_floor` into the mesh `write_light_params` call so the
+    // diagnostics ambient-floor slider reaches skinned meshes (it was silently
+    // dropped, leaving shadowed mesh faces black). A behavioral assertion needs a
+    // GPU, so this pins the call-site source: if the `self.ambient_floor` argument
+    // is removed or renamed, the contract fails here before it reaches a frame.
+    #[test]
+    fn renderer_threads_ambient_floor_into_mesh_write_light_params() {
+        let src = include_str!("mod.rs");
+        let call = src
+            .split("self.mesh_pass.write_light_params(")
+            .nth(1)
+            .expect("mesh_pass.write_light_params call site must exist");
+        let args = call
+            .split_once(");")
+            .expect("call must terminate with );")
+            .0;
+        assert!(
+            args.contains("self.ambient_floor"),
+            "mesh write_light_params call must pass self.ambient_floor (the \
+             ambient-floor slider must reach skinned meshes)",
+        );
+    }
 
     // Regression: the forward "Textured Pipeline Layout" grew a fragment-stage
     // sampled-texture binding (the SH direct atlas, group-3 binding 15) but the
@@ -6186,7 +6319,7 @@ mod tests {
             "color branch should bind the clamped unit-RGB sample before applying intensity",
         );
         assert!(
-            color_branch.contains("scripted_light_intensity_scalar("),
+            color_branch.contains("light_eval_scripted_intensity_scalar("),
             "color branch should recover the static intensity scalar",
         );
         assert!(

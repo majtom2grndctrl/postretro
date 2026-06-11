@@ -91,12 +91,14 @@ After the agent reports back, re-read the spec to confirm edits landed.
 
 | Outcome | Recommendation |
 |---|---|
-| No findings, or only nits already auto-applied | Promote to `ready/` |
+| No findings, or only nits already auto-applied | Run `/review-implementability`, then promote to `ready/` |
 | Mechanical fixes applied, no architectural findings | Re-run this skill once to verify fixes are clean |
 | Architectural findings present | Surface to caller with locations and suggested directions. Do not auto-apply. Do not recommend promotion. |
-| Findings only emerge from source-reading; spec text alone reveals nothing | Spec has hit diminishing returns. Promote. |
+| Findings only emerge from source-reading; spec text alone reveals nothing | Spec has hit diminishing returns. Run `/review-implementability`, then promote. |
 
 Last row is the explicit stopping rule.
+
+**Implementability gate.** This skill reviews what the spec *says*; `/review-implementability` reviews whether a task agent could *execute* it (task-paragraph self-sufficiency, AC achievability). Run it only once this review is structurally clean — its findings are keyed to task paragraphs, so structural rework invalidates them. Skip if it already ran clean on this revision.
 
 ### 7. Report
 

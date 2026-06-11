@@ -609,21 +609,25 @@ mod tests {
     /// here rather than only on a live GPU.
     #[test]
     fn forward_cube_sampling_constants_match_pool() {
-        const FORWARD_SRC: &str = include_str!("../shaders/forward.wgsl");
+        // The cube-sampling constants and PCF kernel live in the shared
+        // `shadow_sample.wgsl` snippet (extracted from forward.wgsl so the
+        // skinned-mesh pass can reuse them), concatenated into the forward
+        // module at pipeline build.
+        const SHADOW_SRC: &str = include_str!("../shaders/shadow_sample.wgsl");
 
         // CUBE_NEAR_CLIP must match `cube_face_matrices`' near plane.
         let near_marker = "const CUBE_NEAR_CLIP: f32 = ";
-        let near = FORWARD_SRC
+        let near = SHADOW_SRC
             .find(near_marker)
             .map(|i| i + near_marker.len())
             .and_then(|start| {
-                let end = FORWARD_SRC[start..].find(';')? + start;
-                FORWARD_SRC[start..end].trim().parse::<f32>().ok()
+                let end = SHADOW_SRC[start..].find(';')? + start;
+                SHADOW_SRC[start..end].trim().parse::<f32>().ok()
             })
-            .expect("forward.wgsl must declare CUBE_NEAR_CLIP");
+            .expect("shadow_sample.wgsl must declare CUBE_NEAR_CLIP");
         assert_eq!(
             near, CUBE_NEAR_CLIP,
-            "forward.wgsl CUBE_NEAR_CLIP must match cube_shadow::CUBE_NEAR_CLIP"
+            "shadow_sample.wgsl CUBE_NEAR_CLIP must match cube_shadow::CUBE_NEAR_CLIP"
         );
 
         // The PCF tap spacing divides by the named `CUBE_FACE_RESOLUTION` const,
@@ -631,21 +635,21 @@ mod tests {
         // value so the two cannot drift, and confirm the tap spacing actually uses
         // the named const (not a re-introduced bare literal).
         let res_marker = "const CUBE_FACE_RESOLUTION: f32 = ";
-        let res = FORWARD_SRC
+        let res = SHADOW_SRC
             .find(res_marker)
             .map(|i| i + res_marker.len())
             .and_then(|start| {
-                let end = FORWARD_SRC[start..].find(';')? + start;
-                FORWARD_SRC[start..end].trim().parse::<f32>().ok()
+                let end = SHADOW_SRC[start..].find(';')? + start;
+                SHADOW_SRC[start..end].trim().parse::<f32>().ok()
             })
-            .expect("forward.wgsl must declare CUBE_FACE_RESOLUTION");
+            .expect("shadow_sample.wgsl must declare CUBE_FACE_RESOLUTION");
         assert_eq!(
             res, CUBE_FACE_RESOLUTION as f32,
-            "forward.wgsl CUBE_FACE_RESOLUTION must match cube_shadow::CUBE_FACE_RESOLUTION"
+            "shadow_sample.wgsl CUBE_FACE_RESOLUTION must match cube_shadow::CUBE_FACE_RESOLUTION"
         );
         assert!(
-            FORWARD_SRC.contains("/ CUBE_FACE_RESOLUTION)"),
-            "forward.wgsl must scale the PCF tap by the named CUBE_FACE_RESOLUTION const"
+            SHADOW_SRC.contains("/ CUBE_FACE_RESOLUTION)"),
+            "shadow_sample.wgsl must scale the PCF tap by the named CUBE_FACE_RESOLUTION const"
         );
     }
 }

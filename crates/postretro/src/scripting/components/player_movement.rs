@@ -30,8 +30,9 @@ use crate::scripting::ir::{BakedIr, BindError, BoundProgram, CURRENT_IR_VERSION,
 /// This is DERIVED data: [`PlayerMovementComponent::from_descriptor`] is the sole
 /// builder, binding each expression against [`MovementScope::for_validation`].
 /// The same static type table already validated the expressions at descriptor
-/// declaration (Task 2), so a bind failure here is unreachable in practice; if it
-/// ever occurs `from_descriptor` warns once and materializes with dash disabled.
+/// declaration (see `validate_dash_expr` in `data_descriptors.rs`), so a bind
+/// failure here is unreachable in practice; if it ever occurs `from_descriptor`
+/// warns once and materializes with dash disabled.
 ///
 /// Not serialized (`#[serde(skip)]` on the component field) and compared as
 /// always-equal: it carries no authoritative state, only programs re-derivable
@@ -263,7 +264,7 @@ impl PlayerMovementComponent {
         let air_jumps_remaining = desc.air.jumps;
 
         // Bind the dash value expressions against the validation scope. The same
-        // static type table validated these at declaration (Task 2), so a bind
+        // static type table validated these at descriptor declaration, so a bind
         // failure here is unreachable. If one ever occurs, degrade VISIBLY: warn
         // once and materialize with dash disabled rather than panicking in this
         // subsystem path (development_guide.md §6.2). `dash`/`dash_programs` move
@@ -348,3 +349,92 @@ impl PlayerMovementComponent {
 
 // Manual Serialize/Deserialize impls on the descriptor sub-structs are not
 // present; derive on this component requires the sub-structs to derive too.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scripting::data_descriptors::{
+        AirParams, CapsuleParams, DashParams, FallParams, ForgivenessParams, GroundParams,
+        PlayerMovementDescriptor, SpeedParams,
+    };
+
+    /// Minimal descriptor used by tests that only need a valid materialization
+    /// base (no dash, no crouch, no view feel, forgiveness windows zeroed).
+    fn minimal_descriptor() -> PlayerMovementDescriptor {
+        PlayerMovementDescriptor {
+            capsule: CapsuleParams {
+                radius: 0.4,
+                half_height: 0.8,
+                eye_height: 0.5,
+            },
+            ground: GroundParams {
+                speed: SpeedParams {
+                    walk: 7.0,
+                    run: 11.0,
+                    crouch: 3.0,
+                },
+                accel: 10.0,
+                step_height: 0.3,
+                max_slope: 45.0,
+            },
+            air: AirParams {
+                forward_steer: 0.0,
+                accel: 0.7,
+                max_control_speed: 0.5,
+                bunny_hop: false,
+                jumps: 0,
+                jump_velocity: 5.5,
+                jump_ceiling: 0.0,
+            },
+            fall: FallParams {
+                terminal_velocity: 40.0,
+            },
+            stuck_stop_enabled: PlayerMovementDescriptor::DEFAULT_STUCK_STOP_ENABLED,
+            stuck_stop_threshold: PlayerMovementDescriptor::DEFAULT_STUCK_STOP_THRESHOLD,
+            dash: None,
+            forgiveness: Some(ForgivenessParams {
+                coyote_ms: 0.0,
+                jump_buffer_ms: 0.0,
+            }),
+            crouch: None,
+            view_feel: None,
+        }
+    }
+
+    #[test]
+    fn from_descriptor_disables_dash_when_expression_fails_to_bind() {
+        // Degradation-path contract: a post-validation bind failure must never
+        // panic. `from_descriptor` must warn once and materialize with dash
+        // disabled (`dash == None`, every `DashPrograms` slot `None`).
+        //
+        // The failure is forced by injecting an unresolvable `Input` node —
+        // a name that does not exist in `MovementScope::for_validation` —
+        // directly into `boost_speed`, bypassing the declaration-time validator.
+        let mut desc = minimal_descriptor();
+        desc.dash = Some(DashParams {
+            boost_speed: NumberOrIr::Ir(IrNode::Input {
+                name: "definitely_not_a_movement_input".into(),
+            }),
+            momentum_retention: NumberOrIr::Literal(0.5),
+            steer_control: NumberOrIr::Literal(0.3),
+            dash_drag: NumberOrIr::Literal(2.0),
+            cooldown_ms: NumberOrIr::Literal(100.0),
+            air_dashes: 1,
+            preserve_vertical: BoolOrIr::Literal(false),
+        });
+
+        // Must not panic; must degrade visibly.
+        let comp = PlayerMovementComponent::from_descriptor(&desc);
+        assert!(
+            comp.dash.is_none(),
+            "dash must be disabled on bind failure, got {:?}",
+            comp.dash
+        );
+        assert!(comp.dash_programs.boost_speed.is_none());
+        assert!(comp.dash_programs.momentum_retention.is_none());
+        assert!(comp.dash_programs.steer_control.is_none());
+        assert!(comp.dash_programs.dash_drag.is_none());
+        assert!(comp.dash_programs.cooldown_ms.is_none());
+        assert!(comp.dash_programs.preserve_vertical.is_none());
+    }
+}

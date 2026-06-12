@@ -14,7 +14,7 @@
 // `resolve_output` returns `None` for every name; `OutputHandle` exists only to
 // satisfy the trait and `write` is unreachable.
 
-use crate::scripting::components::player_movement::{MovementState, PlayerMovementComponent};
+use crate::scripting::components::player_movement::PlayerMovementComponent;
 use crate::scripting::ir::{BindingScope, IrType, IrValue, ResolvedInput, ResolvedOutput};
 
 /// The fixed movement input namespace, in handle order (index `0..6`). Each entry
@@ -41,10 +41,7 @@ const INPUTS: [(&str, IrType); 6] = [
 /// Indexed handles (`usize` into [`MovementScope::values`]) keep binding engine
 /// internal — the script-facing slot table is never consulted, so the
 /// script-opacity invariant (entity_model.md §7b) holds by construction.
-///
-/// `Clone` is derived: `DashPrograms` holds `BoundProgram<MovementScope>`, whose
-/// `Clone` requires `MovementScope`'s handle type (`usize`) to be `Clone`.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct MovementScope {
     /// The snapshot the bound expressions read. Slot `i` holds the value for
     /// `INPUTS[i]`. [`MovementScope::refresh`] repopulates it each tick before
@@ -52,8 +49,9 @@ pub(crate) struct MovementScope {
     values: [IrValue; 6],
 }
 
-// `for_validation`/`refresh` are called from `data_descriptors` and `player_movement`
-// in non-test builds; the cfg_attr keeps the dead-code lint honest if future adopters drop them.
+// `gen_script_types` (bin/gen_script_types.rs) compiles this file standalone via a
+// `#[path]` shim where `movement/mod.rs` is absent, so `refresh` is dead code in that
+// compilation unit. The allow suppresses that warning without touching other builds.
 #[cfg_attr(not(test), allow(dead_code))]
 impl MovementScope {
     /// A scope with no live values, for declaration-time validation. Bind only
@@ -62,8 +60,10 @@ impl MovementScope {
     /// slots are type-correct zeros (`0.0` / `false`) so an accidental read would
     /// still be total.
     ///
-    /// Used at descriptor declaration time (dash expression validation) and at
-    /// component construction (`DashPrograms`).
+    /// Used at descriptor declaration time (dash expression validation), at
+    /// component construction (`DashPrograms`), and at the hot-path eval sites
+    /// in `movement/mod.rs` where the scope is zero-initialised here then
+    /// immediately populated via [`MovementScope::refresh`] before eval.
     pub(crate) fn for_validation() -> Self {
         Self {
             values: [
@@ -94,16 +94,6 @@ impl MovementScope {
             IrValue::Number(component.dash_cooldown_ms),
             IrValue::Number(elapsed_ms),
         ];
-    }
-
-    /// Resolve `elapsed_ms` from a movement state: the active `Dash`'s elapsed
-    /// time, or `0.0` in any other state. A convenience so callers need not
-    /// destructure `MovementState` at every refresh site.
-    pub(crate) fn elapsed_ms_of(state: MovementState) -> f32 {
-        match state {
-            MovementState::Dash { elapsed_ms, .. } => elapsed_ms,
-            _ => 0.0,
-        }
     }
 }
 
@@ -300,24 +290,8 @@ mod tests {
     }
 
     #[test]
-    fn elapsed_ms_of_reads_dash_state_and_zero_elsewhere() {
-        assert_eq!(
-            MovementScope::elapsed_ms_of(MovementState::Dash {
-                elapsed_ms: 42.0,
-                boost: Vec3::ZERO,
-            }),
-            42.0
-        );
-        assert_eq!(MovementScope::elapsed_ms_of(MovementState::Normal), 0.0);
-        assert_eq!(
-            MovementScope::elapsed_ms_of(MovementState::Crouching { eye_current: 1.0 }),
-            0.0
-        );
-    }
-
-    #[test]
     fn for_validation_binds_without_a_component() {
-        // Task 2's declaration-time validation path: bind consults only names and
+        // Declaration-time validation path: bind consults only names and
         // types, so a dash expression type-checks against a value-less scope.
         let scope = MovementScope::for_validation();
         let expr = read_only(IrNode::Add {

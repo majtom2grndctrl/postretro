@@ -188,7 +188,7 @@ pub(crate) fn view_feel_inputs(velocity: Vec3, camera_right: Vec3) -> (f32, f32)
 }
 
 /// Map a [`ViewFeelOutput`] onto the camera basis, producing the arguments the
-/// render chokepoint (`InterpolableState::render_camera`) consumes. Kept pure
+/// render chokepoint (`camera::RenderCamera`) consumes. Kept pure
 /// and separate from the render loop so the angle conversions, channel sums, and
 /// offset basis mapping are unit-testable.
 ///

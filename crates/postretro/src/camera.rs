@@ -1,9 +1,7 @@
-// Free-fly camera: position, orientation, projection, and view matrix computation.
-// See: context/lib/input.md
+// Camera state plus render-eye, view, and projection assembly.
+// See: context/lib/rendering_pipeline.md §11
 
-#[cfg(test)]
-use glam::Mat4;
-use glam::Vec3;
+use glam::{Mat4, Vec3};
 
 /// Horizontal field of view in radians (100 degrees).
 pub const HFOV: f32 = 100.0 * std::f32::consts::PI / 180.0;
@@ -19,6 +17,70 @@ const PITCH_LIMIT: f32 = 89.0 * std::f32::consts::PI / 180.0;
 pub const MOVE_SPEED: f32 = 7.0;
 
 pub const SPRINT_MULTIPLIER: f32 = 2.0;
+
+/// Camera values assembled from one interpolated position and one set of
+/// render-only view effects. Consumers must use both fields together so
+/// visibility and GPU rendering share the same eye.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RenderCamera {
+    pub(crate) eye_position: Vec3,
+    pub(crate) view_projection: Mat4,
+}
+
+impl RenderCamera {
+    /// Assemble the effective eye and matrix used by the entire render stage.
+    pub(crate) fn new(
+        position: Vec3,
+        aspect: f32,
+        yaw: f32,
+        pitch: f32,
+        roll: f32,
+        eye_offset: Vec3,
+    ) -> Self {
+        let eye_position = effective_eye_position(position, eye_offset);
+        let view = render_view_matrix(position, yaw, pitch, roll, eye_offset);
+
+        // Clamp aspect to avoid degenerate projection (near-zero aspect produces
+        // vfov near PI, which makes tan(vfov/2) explode).
+        let safe_aspect = aspect.max(0.1);
+        let vfov = 2.0 * ((HFOV / 2.0).tan() / safe_aspect).atan();
+        let projection = Mat4::perspective_rh(vfov, safe_aspect, NEAR, FAR);
+
+        Self {
+            eye_position,
+            view_projection: projection * view,
+        }
+    }
+}
+
+/// Effective camera origin for render-stage consumers. View-feel offsets must
+/// move visibility, lighting, and the view matrix together.
+fn effective_eye_position(position: Vec3, eye_offset: Vec3) -> Vec3 {
+    if eye_offset == Vec3::ZERO {
+        position
+    } else {
+        position + eye_offset
+    }
+}
+
+/// Build a render view matrix from an interpolated position and render-rate
+/// orientation, including optional roll and world-space eye translation.
+fn render_view_matrix(position: Vec3, yaw: f32, pitch: f32, roll: f32, eye_offset: Vec3) -> Mat4 {
+    let look_dir = Vec3::new(
+        -yaw.sin() * pitch.cos(),
+        pitch.sin(),
+        -yaw.cos() * pitch.cos(),
+    );
+
+    // Keep the no-effect path bit-identical to the pre-view-feel matrix.
+    if roll == 0.0 && eye_offset == Vec3::ZERO {
+        return Mat4::look_at_rh(position, position + look_dir, Vec3::Y);
+    }
+
+    let up = glam::Quat::from_axis_angle(look_dir, roll) * Vec3::Y;
+    let eye = effective_eye_position(position, eye_offset);
+    Mat4::look_at_rh(eye, eye + look_dir, up)
+}
 
 /// Free-fly camera with Euler angle orientation and perspective projection.
 pub struct Camera {
@@ -82,8 +144,7 @@ impl Camera {
         (self.position, direction)
     }
 
-    /// Combined view-projection matrix. Used by tests; production rendering
-    /// uses `InterpolableState::render_camera` for interpolated state.
+    /// Combined view-projection matrix for the free-fly camera.
     #[cfg(test)]
     pub fn view_projection(&self) -> Mat4 {
         let view = self.view_matrix();
@@ -360,6 +421,154 @@ mod tests {
         cam.update_aspect(100, 100);
         let vfov = 2.0 * ((HFOV / 2.0).tan() / cam.aspect).atan();
         assert!(approx_eq(vfov, HFOV));
+    }
+
+    // -- Render camera assembly --
+
+    #[test]
+    fn render_camera_produces_finite_matrix() {
+        let camera = RenderCamera::new(
+            Vec3::new(0.0, 200.0, 500.0),
+            16.0 / 9.0,
+            0.0,
+            0.0,
+            0.0,
+            Vec3::ZERO,
+        );
+        for (i, val) in camera.view_projection.to_cols_array().iter().enumerate() {
+            assert!(val.is_finite(), "view_proj[{i}] is not finite: {val}");
+        }
+    }
+
+    #[test]
+    fn render_camera_handles_zero_aspect_without_nan() {
+        let camera = RenderCamera::new(Vec3::ZERO, 0.0, 0.0, 0.0, 0.0, Vec3::ZERO);
+        for (i, val) in camera.view_projection.to_cols_array().iter().enumerate() {
+            assert!(!val.is_nan(), "view_proj[{i}] with zero aspect is NaN");
+        }
+    }
+
+    // Regression: head bob moved the view matrix but left portal visibility at
+    // the unoffset tick position, causing transient clear-color geometry holes.
+    #[test]
+    fn render_camera_assembles_view_projection_and_effective_eye_from_same_offset() {
+        let position = Vec3::new(3.0, 4.0, 5.0);
+        let offset = Vec3::new(-0.5, 0.25, 0.75);
+        let aspect = 16.0 / 9.0;
+        let yaw: f32 = 0.7;
+        let pitch: f32 = -0.3;
+        let roll: f32 = 0.2;
+
+        let camera = RenderCamera::new(position, aspect, yaw, pitch, roll, offset);
+
+        let look_dir = Vec3::new(
+            -yaw.sin() * pitch.cos(),
+            pitch.sin(),
+            -yaw.cos() * pitch.cos(),
+        );
+        let up = glam::Quat::from_axis_angle(look_dir, roll) * Vec3::Y;
+        let expected_eye = position + offset;
+        let view = Mat4::look_at_rh(expected_eye, expected_eye + look_dir, up);
+        let vfov = 2.0 * ((HFOV / 2.0).tan() / aspect).atan();
+        let projection = Mat4::perspective_rh(vfov, aspect, NEAR, FAR);
+
+        assert_eq!(camera.eye_position, expected_eye);
+        assert_eq!(
+            camera.view_projection.to_cols_array(),
+            (projection * view).to_cols_array(),
+        );
+    }
+
+    #[test]
+    fn render_camera_zero_offset_preserves_position_bits() {
+        let position = Vec3::new(-0.0, 4.0, -5.0);
+        let camera = RenderCamera::new(position, 16.0 / 9.0, 0.0, 0.0, 0.0, Vec3::ZERO);
+
+        for (actual, expected) in camera
+            .eye_position
+            .to_array()
+            .into_iter()
+            .zip(position.to_array())
+        {
+            assert_eq!(actual.to_bits(), expected.to_bits());
+        }
+    }
+
+    #[test]
+    fn render_view_matrix_zero_effect_matches_original_path_bit_exact() {
+        let position = Vec3::new(3.0, 200.0, -42.0);
+        let yaw: f32 = 0.7;
+        let pitch: f32 = -0.3;
+        let look_dir = Vec3::new(
+            -yaw.sin() * pitch.cos(),
+            pitch.sin(),
+            -yaw.cos() * pitch.cos(),
+        );
+        let expected = Mat4::look_at_rh(position, position + look_dir, Vec3::Y);
+
+        let actual = render_view_matrix(position, yaw, pitch, 0.0, Vec3::ZERO);
+
+        assert_eq!(actual.to_cols_array(), expected.to_cols_array());
+    }
+
+    #[test]
+    fn render_camera_zero_effect_is_bit_stable() {
+        let position = Vec3::new(0.0, 200.0, 500.0);
+        let aspect = 16.0 / 9.0;
+        let yaw = 0.4;
+        let pitch = 0.1;
+
+        let a = RenderCamera::new(position, aspect, yaw, pitch, 0.0, Vec3::ZERO);
+        let b = RenderCamera::new(position, aspect, yaw, pitch, 0.0, Vec3::ZERO);
+        assert_eq!(
+            a.view_projection.to_cols_array(),
+            b.view_projection.to_cols_array()
+        );
+    }
+
+    #[test]
+    fn render_view_matrix_nonzero_roll_differs_from_zero_roll() {
+        let position = Vec3::new(0.0, 200.0, 500.0);
+        let yaw = 0.4;
+        let pitch = 0.1;
+
+        let level = render_view_matrix(position, yaw, pitch, 0.0, Vec3::ZERO);
+        let rolled = render_view_matrix(position, yaw, pitch, 0.15, Vec3::ZERO);
+
+        assert_ne!(level.to_cols_array(), rolled.to_cols_array());
+    }
+
+    #[test]
+    fn render_view_matrix_eye_offset_shifts_camera_position() {
+        let position = Vec3::new(0.0, 200.0, 500.0);
+        let offset = Vec3::new(5.0, 0.0, 0.0);
+
+        let no_offset = render_view_matrix(position, 0.0, 0.0, 0.0, Vec3::ZERO);
+        let offset_view = render_view_matrix(position, 0.0, 0.0, 0.0, offset);
+        let eye_in_no_offset = no_offset.transform_point3(position);
+        let eye_in_offset = offset_view.transform_point3(position);
+
+        assert_vec3_approx(eye_in_no_offset, Vec3::ZERO);
+        assert!(approx_eq(eye_in_offset.x, -offset.x));
+    }
+
+    #[test]
+    fn render_view_matrix_eye_offset_preserves_forward_direction() {
+        let position = Vec3::new(0.0, 200.0, 500.0);
+        let yaw = 0.4;
+        let pitch = 0.1;
+
+        let no_offset = render_view_matrix(position, yaw, pitch, 0.0, Vec3::ZERO);
+        let offset_view = render_view_matrix(position, yaw, pitch, 0.0, Vec3::new(2.0, -3.0, 1.0));
+
+        for col in 0..3 {
+            for row in 0..3 {
+                assert!(approx_eq(
+                    offset_view.col(col)[row],
+                    no_offset.col(col)[row]
+                ));
+            }
+        }
     }
 
     // -- View matrix correctness --

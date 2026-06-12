@@ -1220,7 +1220,8 @@ impl ApplicationHandler for App {
                         (0.0, 0.0, 0.0, Vec3::ZERO)
                     };
 
-                let render_camera = interp.render_camera(
+                let render_camera = camera::RenderCamera::new(
+                    interp.position,
                     self.camera.aspect(),
                     self.camera.yaw + vf_yaw_offset,
                     self.camera.pitch + vf_pitch_offset,
@@ -2591,8 +2592,8 @@ impl App {
 //
 // - On a frame with `ticks == 0`, mouse delta accumulated this frame must
 //   still rotate the camera *and* change the rendered view-projection
-//   matrix. Yaw/pitch reach the matrix as arguments to `view_projection`,
-//   not as fields of `InterpolableState`, so a yaw assertion alone does
+//   matrix. Yaw/pitch reach the matrix through `RenderCamera::new`, not as
+//   fields of `InterpolableState`, so a yaw assertion alone does
 //   not cover the rendering path — a matrix assertion is required.
 // - On a multi-tick frame, look rotation applies once at render rate,
 //   not once per tick.
@@ -2681,7 +2682,7 @@ mod tests {
 
     /// On a frame with zero ticks, accumulated mouse delta must rotate the
     /// camera *and* change the rendered view-projection matrix. Both checks
-    /// are required: `render_camera` takes yaw/pitch as arguments, so an
+    /// are required: `RenderCamera::new` takes yaw/pitch as arguments, so an
     /// updated `camera.yaw` alone does not prove rendering sees it.
     #[test]
     fn mouse_delta_applied_on_zero_tick_frame() {
@@ -2724,14 +2725,19 @@ mod tests {
         // baseline matrix with yaw/pitch = 0 and the post-rotation matrix
         // with the camera's actual yaw/pitch. Position is identical in both
         // cases, so any element-wise difference must come from the rotation.
-        let render_state = InterpolableState::new(Vec3::ZERO);
         let aspect = camera.aspect();
-        let baseline = render_state
-            .render_camera(aspect, 0.0, 0.0, 0.0, Vec3::ZERO)
-            .view_projection;
-        let rotated = render_state
-            .render_camera(aspect, camera.yaw, camera.pitch, 0.0, Vec3::ZERO)
-            .view_projection;
+        let baseline =
+            crate::camera::RenderCamera::new(Vec3::ZERO, aspect, 0.0, 0.0, 0.0, Vec3::ZERO)
+                .view_projection;
+        let rotated = crate::camera::RenderCamera::new(
+            Vec3::ZERO,
+            aspect,
+            camera.yaw,
+            camera.pitch,
+            0.0,
+            Vec3::ZERO,
+        )
+        .view_projection;
 
         let baseline_cols = baseline.to_cols_array();
         let rotated_cols = rotated.to_cols_array();

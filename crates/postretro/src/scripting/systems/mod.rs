@@ -7,6 +7,7 @@
 
 pub(crate) mod emitter_bridge;
 pub(crate) mod fog_volume_bridge;
+pub(crate) mod health;
 pub(crate) mod light_bridge;
 pub(crate) mod mesh_anim;
 pub(crate) mod mesh_render;

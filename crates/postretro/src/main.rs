@@ -55,6 +55,7 @@ use crate::scripting::builtins::{
     apply_data_archetype_dispatch, register_builtins as register_builtin_classnames,
     spawn_from_player_starts,
 };
+use crate::scripting::components::health::apply_damage;
 use crate::scripting::ctx::ScriptCtx;
 use crate::scripting::primitives::light::register_sequenced_light_primitives;
 use crate::scripting::primitives::register_all;
@@ -1067,6 +1068,11 @@ impl ApplicationHandler for App {
                 // context/lib/entity_model.md §5
                 let mut pending_movement_events: Vec<&'static str> = Vec::new();
                 let mut pending_weapon_events: Vec<&'static str> = Vec::new();
+                // Death-event names accumulate here and drain through the
+                // sequence-aware dispatcher (a separate sibling loop below), so a
+                // `progress` reaction naming a sequence resolves — unlike the
+                // plain `fire_named_event` drains, which would no-op it.
+                let mut pending_death_events: Vec<String> = Vec::new();
 
                 if let Some(snapshot) = gameplay_snapshot.as_ref() {
                     for _ in 0..ticks {
@@ -1177,6 +1183,15 @@ impl ApplicationHandler for App {
                         let weapon_events = self.run_weapon_fire_tick(snapshot, tick_dt);
                         pending_weapon_events.extend(weapon_events);
 
+                        // Order 3: death sweep — resolve every entity at zero HP
+                        // after this tick's damage has settled. Reports kills and
+                        // player death back as owned data; we feed kill tags
+                        // through the progress tracker (which returns any events
+                        // that crossed their threshold) and accumulate those plus
+                        // `playerDied` for the sequence-aware drain below.
+                        let death_events = self.run_death_sweep();
+                        pending_death_events.extend(death_events);
+
                         self.frame_timing
                             .push_state(InterpolableState::new(self.camera.position));
                     }
@@ -1190,6 +1205,19 @@ impl ApplicationHandler for App {
                 }
                 for event_name in &pending_weapon_events {
                     let _ = fire_named_event(event_name, &self.script_ctx.data_registry.borrow());
+                }
+                // Death events drain through the sequence-aware dispatcher in
+                // their OWN loop: a `progress` reaction that names a sequence
+                // would no-op under plain `fire_named_event`. Chained-event names
+                // are discarded (`let _ =`), matching the drains above.
+                for event_name in &pending_death_events {
+                    let _ = fire_named_event_with_sequences(
+                        event_name,
+                        &self.script_ctx.data_registry.borrow(),
+                        &self.sequence_registry,
+                        &self.reaction_registry,
+                        &self.script_ctx,
+                    );
                 }
 
                 // Static UI proxy: republish the HUD store slots from
@@ -2633,8 +2661,46 @@ impl App {
         );
         if let Some(impact) = events.impact {
             weapon::spawn_impact_effect_at(&mut registry, impact.point, impact.normal);
+            // Additive to the impact burst: when the nearest hit was an entity
+            // hitbox, route the payload through the damage chokepoint. Spatial
+            // targeting rides on the impact (`target`), never inside the
+            // payload. The death sweep (run after this tick) resolves any kill.
+            if let (Some(target), weapon::ActivationOutcome::Hit(payload)) =
+                (impact.target, impact.outcome)
+            {
+                apply_damage(&mut registry, target, &payload);
+            }
         }
         events.event_names()
+    }
+
+    /// Resolve every zero-HP entity for this tick and surface the events its
+    /// deaths trigger. The sweep itself only mutates the registry (despawn /
+    /// latch) and returns owned data — it cannot reach the progress tracker or
+    /// the event-dispatch path. Here on the app side we close that loop:
+    ///
+    /// - Each killed non-player's tags flow through
+    ///   `ProgressTracker::on_entity_killed`, whose returned event names (a
+    ///   `progress` reaction crossing its declared fraction) join the drain.
+    /// - A player death contributes the `playerDied` event exactly once (the
+    ///   sweep's `death_handled` latch guarantees the single report).
+    ///
+    /// The returned names are accumulated by the caller and drained after the
+    /// tick loop via `fire_named_event_with_sequences`.
+    fn run_death_sweep(&mut self) -> Vec<String> {
+        let report = {
+            let mut registry = self.script_ctx.registry.borrow_mut();
+            scripting_systems::health::sweep_deaths(&mut registry)
+        };
+
+        let mut events = Vec::new();
+        for tags in &report.killed_tags {
+            events.extend(self.progress_tracker.on_entity_killed(tags));
+        }
+        if report.player_died {
+            events.push(scripting_systems::health::PLAYER_DIED_EVENT.to_string());
+        }
+        events
     }
 
     /// Transition input focus, acquiring or releasing the cursor as required

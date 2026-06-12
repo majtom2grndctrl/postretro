@@ -31,6 +31,16 @@ mod visibility;
 #[path = "scripting/systems/mod.rs"]
 mod scripting_systems;
 
+// Test-only counting global allocator. `#[global_allocator]` must annotate a
+// crate-root static, so the static lives here; the allocator type and its
+// counters live in `scripting::ir::alloc_probe`. Gated on `#[cfg(test)]` so it
+// never touches the production binary — the IR eval pass's zero-allocation
+// guarantee is asserted by a test that arms the counters around `eval_value`.
+#[cfg(test)]
+#[global_allocator]
+static COUNTING_ALLOCATOR: scripting::ir::alloc_probe::CountingAllocator =
+    scripting::ir::alloc_probe::CountingAllocator;
+
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

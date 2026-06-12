@@ -31,8 +31,8 @@ write path). Draftable now; orchestrate after both.
 - Engine-shipped keyboard descriptor: a JSON descriptor asset registered as a
   named tree (`keyboard`) — lowercase letters, digits, space, backspace,
   done — `grid` + `focus: "spatial"`, every key a `button` firing
-  `appendText`/`backspaceText`; `done` fires `closeDialog` plus a commit
-  reaction.
+  `appendText`/`backspaceText`; `done` triggers Task 3's commit path (the
+  opener's `onCommit`, then pop).
 - Target-slot convention: text entry edits one **engine-declared writable**
   string slot (`ui.textEntry`) — guaranteed to exist for the engine-shipped
   keyboard asset, and a valid write target under F's readonly-based gate.
@@ -63,7 +63,8 @@ write path). Draftable now; orchestrate after both.
 
 - [ ] With a gamepad only: open the demo screen, open text entry, navigate
   keys spatially, type a word, press done — the bound text field shows the
-  entered string; cancel (nav.cancel) closes without committing.
+  entered string and the opener's `onCommit` fires its observable effect;
+  cancel (nav.cancel) closes without firing `onCommit`.
 - [ ] With a hardware keyboard: open text entry, type (including shifted
   characters), Backspace deletes, Enter commits, Escape cancels — same
   observable result as the gamepad path; keystrokes never leak to game logic
@@ -123,7 +124,9 @@ The `keyboard` descriptor JSON asset, registered in F's named-tree registry
 at boot, declaring `captureMode: "capture"` and its `textEntryTarget` on its
 own envelope; its `done` key triggers Task 3's commit path. The demo screen
 binds its text field to `ui.textEntry` directly and opens the keyboard via
-`showDialog { tree: "keyboard", onCommit }`, exercising both input paths.
+`showDialog { tree: "keyboard", onCommit }`, exercising both input paths;
+the demo's `onCommit` fires an observable confirmation (a `playSound`), so
+commit and cancel are distinguishable with the field bound directly.
 SDK pattern helpers, docs.
 
 ## Sequencing
@@ -132,8 +135,9 @@ SDK pattern helpers, docs.
 descriptor/focus).
 **Phase 2 (sequential):** Task 3 — consumes Task 1's edit commands.
 **Phase 3 (sequential):** Task 4 — consumes all three.
-**Cross-plan:** entire plan runs after E Task 2 and F Tasks 2–4 (stack,
-focus, button, setState). Run as the wave's trailing phase or the next
+**Cross-plan:** entire plan runs after E Tasks 2 and 4 (command path;
+`showDialog`'s `onCommit`) and F Tasks 2–4 (stack, focus, button,
+setState). Run as the wave's trailing phase or the next
 orchestrate immediately after.
 
 ## Rough sketch

@@ -136,8 +136,9 @@ the optional `onCommit` reaction name (fired by a commit on the pushed tree —
 the text-entry plan's consumer); the tree's capture mode and other behavior
 travel on its registered `AnchoredTree` envelope (F's named-tree registry),
 not on the command. `showDialog` and `openMenu` are aliases in v1 —
-identical `PushTree` behavior, both names kept per research-§15 API; semantic
-divergence (e.g. pause policy) is deferred to BIS. SDK constructors in `sdk/lib/ui/reactions.{ts,luau}`,
+identical `PushTree` behavior apart from `showDialog`'s optional `onCommit`,
+both names kept per research-§15 API; semantic divergence (e.g. pause
+policy) is deferred to BIS. SDK constructors in `sdk/lib/ui/reactions.{ts,luau}`,
 typedef emission, docs, and a demo: health-bar panel with styleRanges + a
 crossing at 20% firing flash + sound.
 
@@ -163,9 +164,8 @@ Coordinate `descriptor.rs` / `tree.rs` edits with F (see
 - Detector: `scripting/state_crossings.rs` (new); crossing descriptors are
   parsed in `data_descriptors.rs` alongside `NamedReaction` from the widened
   setup-manifest return (`{ reactions, crossings }`).
-- `screen.flash` registered like the `player.*` engine-owned slots; an
-  App-side flash-decay state (start color, `durationMs`, start time) writes
-  the slot each tick at the game-logic stage.
+- `screen.flash` registered like the `player.*` engine-owned slots; decay
+  mechanism per Task 4 (the App-side flash-decay state).
 
 ## Boundary inventory
 
@@ -176,7 +176,7 @@ Coordinate `descriptor.rs` / `tree.rs` edits with F (see
 | pulse effect | `Pulse { period_ms }` | `"pulse": { "periodMs" }` | `pulse.periodMs` | `pulse.periodMs` |
 | flash effect | `Flash { duration_ms }` | `"flash": { "durationMs" }` | `flash.durationMs` | `flash.durationMs` |
 | crossing primitive | `CrossingDescriptor` (DataRegistry) | manifest `"crossings"`: `{ "slot", "below"\|"above", "max"?, "fire": [names] }` | `onStateCrossing` | `onStateCrossing` |
-| crossing condition | `CrossingCondition::{Below, Above}` | `{ "below", "max"? }` / `{ "above", "max"? }` | `{ below, max? }` / `{ above, max? }` | same |
+| crossing condition | `CrossingCondition::{Below, Above}` | n/a (flattened into the crossings manifest entry above) | `{ below, max? }` / `{ above, max? }` (SDK arg shape) | same |
 | styleRanges max | `StyleRanges { max }` | `"max"` | `max` | `max` |
 | styleRanges entries | `StyleRanges { entries }` | `"entries"` | `entries` | `entries` |
 | helpers | command variants | reaction args camelCase | `flashScreen` `playSound` `rumble` `showDialog` `closeDialog` `openMenu` | same |

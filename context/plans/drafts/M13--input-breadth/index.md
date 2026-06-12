@@ -60,7 +60,8 @@ reaction sliders require. Realizes `ui-layer.md` §11–§12, §15 (focus model)
   than frame N+1 (extends A's existing ordering test to real intents).
 - [ ] Pushing a second tree freezes the one below (no focus, no activation);
   popping restores the lower tree's focus when it declared
-  `restoreOnReturn`; HUD (passthrough tree) never captures.
+  `restoreOnReturn`; HUD (passthrough tree) never captures; `PushTree` with
+  an unknown registered-tree name warns, no panic.
 - [ ] D-pad/keyboard moves focus through a `vstack` in tree order
   (`"linear"`), wraps when `wrap: true`, and moves nearest-neighbor by
   direction in a `grid` (`"spatial"`); `focusNeighbors` overrides win;
@@ -89,6 +90,9 @@ reaction sliders require. Realizes `ui-layer.md` §11–§12, §15 (focus model)
   covered by CPU-side tests (layout-tree / draw-list assertions, no GPU
   goldens); descriptors without new fields keep pre-F wire form
   byte-identical.
+- [ ] The pause-menu demo is fully gamepad-navigable in the dev map and the
+  `audio.master` slider audibly changes volume (manual verification of
+  Task 5's demo).
 - [ ] Typedefs + SDK surface in both runtimes; `docs/scripting-reference.md`
   covers nav intents, focus props, the new widgets, and `setState`.
 
@@ -111,7 +115,8 @@ Luau string union emitted in typedefs.
 ### Task 2: modal stack
 
 `UiReadSnapshot.gameplay_tree: Option<AnchoredTree>` →
-`trees: Vec<UiTreeEntry>` (name + descriptor + capture mode); retained side
+`trees: Vec<UiTreeEntry>` (name + descriptor + capture mode + the optional
+pending `onCommit` carried from PushTree); retained side
 becomes a Vec of per-tree retained state with per-tree dirty gating; draw
 bottom→top. This task also ships the **named-tree registry** the wave's other
 plans reference: the app-side stack owner holds `name → AnchoredTree`
@@ -152,8 +157,8 @@ UI event carries. The hold-to-repeat timer lives in the focus engine
 ### Task 4: `setState` + interactive widgets
 
 `setState` system-reaction primitive (E's command path): `{ slot, value }`
-applied to writable modder-declared slots at the game-logic stage, readonly
-rejected with a warning. Widgets: `button { id, label, onPress }` — focusable,
+applied to writable slots (modder- or engine-declared — writability, not
+ownership, gates) at the game-logic stage, readonly rejected with a warning. Widgets: `button { id, label, onPress }` — focusable,
 activation fires the named reaction; `slider { id, label, bind, min, max,
 step, capturesNav }` — consumed nav steps the value and emits `setState`;
 the slider renders its current numeric value as text beside its label;

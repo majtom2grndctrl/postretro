@@ -40,7 +40,7 @@ Use subagents for exploration — codebase reading, pattern discovery, doc looku
 
 **Code-grounding is non-negotiable.** Every Rust/TS/Lua identifier the spec will name — function, struct, type, field, enum variant — must be confirmed against current source before the spec asserts anything about it. Don't write "X returns Y" or "X has fields A, B" from memory. Open the file, read the signature, then write. Memory drift is the largest single source of spec inaccuracy.
 
-**Oversized-file watch.** Watch source-file size while grounding. Flag any file the plan will extend that runs past ~800 lines — a soft smell, not a gate. A cohesive 900-line table is fine; a tangled 600-line module may not be. A file that big is already hard to navigate; piling on more compounds it. Carry the flag forward as a split-first task (§3).
+**Oversized-file watch.** Watch source-file size while grounding. Flag any file already past ~800 lines that the plan will extend — a soft smell, not a gate. A cohesive 900-line table is fine; a tangled 600-line module may not be. Carry the flag forward as a split-first task (§3).
 
 **Research notes stay out of the spec.** If findings are useful but don't drive decisions, put them in a sibling `research.md` in the plan folder. The spec captures decisions and behavior, not the investigation that produced them.
 

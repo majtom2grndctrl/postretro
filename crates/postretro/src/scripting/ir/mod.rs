@@ -12,6 +12,7 @@
 pub(crate) mod alloc_probe;
 pub(crate) mod bind;
 pub(crate) mod eval;
+pub(crate) mod load;
 pub(crate) mod scope;
 pub(crate) mod scopes;
 
@@ -19,6 +20,10 @@ use serde::{Deserialize, Serialize};
 
 pub(crate) use bind::{BindError, BoundNode, BoundProgram, bind};
 pub(crate) use eval::{eval_and_write, eval_value};
+// Re-exported as the sole load-time version seam; the first adopter (Task 5)
+// has not landed yet, so suppress the no-consumer-yet warning until then.
+#[allow(unused_imports)]
+pub(crate) use load::load_baked_ir;
 pub(crate) use scope::{BindingScope, ResolvedInput, ResolvedOutput};
 pub(crate) use scopes::{StoreCapability, StoreScope};
 

@@ -11,6 +11,9 @@
 pub(crate) mod bind;
 pub(crate) mod scope;
 
+#[cfg(test)]
+mod parity_tests;
+
 use serde::{Deserialize, Serialize};
 
 pub(crate) use bind::{BindError, BoundNode, BoundProgram, bind};

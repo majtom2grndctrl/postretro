@@ -47,10 +47,11 @@ reaction lists (`onStateCrossing`), and the UI reaction helpers (`flashScreen`,
 - [ ] When a tween (TW) is active on the bind, styleRanges evaluate the eased
   display value; the crossing detector evaluates the authoritative slot — a
   contract test demonstrates the two diverging mid-tween.
-- [ ] `onStateCrossing("player.health", { below: 0.2 }, [...])` fires its
-  reaction list exactly once when the value transitions from ≥ threshold to
-  < threshold, fires again only after re-crossing back, and does not fire for
-  a slot that already starts below threshold at registration.
+- [ ] `onStateCrossing("player.health", { below: 0.2, max: 100 }, [...])`
+  fires its reaction list exactly once when the value transitions from
+  ≥ threshold to < threshold, fires again only after re-crossing back, and
+  does not fire for a slot that already starts below threshold at
+  registration.
 - [ ] Crossing reactions dispatch through the existing named-reaction
   vocabulary: a crossing can fire the same named reaction an entity event
   fires, with identical effect.
@@ -62,9 +63,12 @@ reaction lists (`onStateCrossing`), and the UI reaction helpers (`flashScreen`,
 - [ ] `showDialog` / `openMenu` push a named registered tree onto the modal
   stack and `closeDialog` pops it (verified once F's stack exists — see
   Sequencing); unknown tree name warns, no panic.
-- [ ] Both runtimes (TS + Luau) declare identical styleRanges /
-  onStateCrossing / helper surfaces; typedefs emitted; round-trip wire test:
-  a descriptor without `styleRanges` keeps its pre-E wire form byte-identical.
+- [ ] Both runtimes (TS + Luau) declare identical `onStateCrossing` + helper
+  surfaces; `styleRanges` is wire-format + typedef only (descriptor ingestion
+  arrives with G1); typedefs emitted; round-trip wire test: a descriptor
+  without `styleRanges` keeps its pre-E wire form byte-identical.
+- [ ] The health-bar panel with `styleRanges` plus the 20% crossing firing
+  flash + sound runs in the dev map (manual verification of Task 4's demo).
 - [ ] `docs/scripting-reference.md` covers the new surface.
 
 ## Tasks
@@ -80,7 +84,8 @@ widget knowledge) living beside the theme resolver so F's `bar` calls it
 unchanged. Per-node effect state (pulse phase anchor, flash entry clock) lives
 in `NodeContext` next to TW's tween state; clocked by snapshot `time_seconds`.
 Evaluates the display value when a tween is active. Appearance-only — drives
-redraw, never relayout.
+redraw, never relayout. Ships the byte-identical round-trip test for
+descriptors without `styleRanges`.
 
 ### Task 2: system-reaction command path
 
@@ -102,21 +107,30 @@ reactions)` primitive in both runtimes, stored in `DataRegistry`). After the
 game-logic stage writes slots, the detector compares each watched slot's
 current value to its previous: `below: x` fires on `prev >= x && cur < x`,
 `above: x` on `prev <= x && cur > x` (thresholds are fractions of the
-registration's `max`, default 1.0 for raw-value comparison). Previous value
-initializes to the slot value at level start — no fire on initial state.
+registration's `max`, carried in the condition object, default 1.0 for
+raw-value comparison). Previous value initializes to the slot value at level
+start — no fire on initial state; a slot with no value yet initializes its
+previous value on first observed value and cannot fire before one exists.
+Registration against a non-`Number` slot warns and skips at registration time.
 Firing dispatches the reaction list synchronously via Task 2's path. Watchers
 clear on level unload with the rest of the data registry.
 
 ### Task 4: helper primitives + SDK + demo
 
-`playSound { sound, bus?, volume? }` → audio module `play()`. `rumble
+`playSound { sound, bus? }` → audio module `play()` (volume is deferred —
+the audio `play()` path has no per-voice volume today; adding it later is
+additive). `rumble
 { strong, weak?, durationMs }` → gilrs force-feedback on the active gamepad
 (gilrs 0.11 `ff` API; warn-once no-op when unsupported), duration timeout
 tracked in the input stage. `flashScreen { color, durationMs }` → engine-owned
-`screen.flash` RGBA slot, written via the engine write path, alpha decayed to
-0 over `durationMs` each tick. `showDialog { tree }` / `openMenu { tree }` /
+`screen.flash` RGBA slot, written via the engine write path; the drained
+`FlashScreen` command feeds an App-side flash-decay state (start color,
+`durationMs`, start time) that writes the slot each tick at the game-logic
+stage. `showDialog { tree }` / `openMenu { tree }` /
 `closeDialog {}` → PushTree/PopTree commands (consumed by F's stack; inert
-warn until it lands). SDK constructors in `sdk/lib/ui/reactions.{ts,luau}`,
+warn until it lands). `showDialog` and `openMenu` are aliases in v1 —
+identical `PushTree` behavior, both names kept per research-§15 API; semantic
+divergence (e.g. pause policy) is deferred to BIS. SDK constructors in `sdk/lib/ui/reactions.{ts,luau}`,
 typedef emission, docs, and a demo: health-bar panel with styleRanges + a
 crossing at 20% firing flash + sound.
 
@@ -141,8 +155,9 @@ Coordinate `descriptor.rs` / `tree.rs` edits with F (see
   the app tick after reaction dispatch.
 - Detector: `scripting/state_crossings.rs` (new), registrations parsed in
   `data_descriptors.rs` alongside `NamedReaction`.
-- `screen.flash` registered like the `player.*` engine-owned slots; decay
-  runs where other engine-owned slot writes happen (game-logic stage).
+- `screen.flash` registered like the `player.*` engine-owned slots; an
+  App-side flash-decay state (start color, `durationMs`, start time) writes
+  the slot each tick at the game-logic stage.
 
 ## Boundary inventory
 
@@ -154,7 +169,13 @@ Coordinate `descriptor.rs` / `tree.rs` edits with F (see
 | flash effect | `Flash { duration_ms }` | `"flash": { "durationMs" }` | `flash.durationMs` | `flash.durationMs` |
 | crossing primitive | n/a (DataRegistry entry) | n/a | `onStateCrossing` | `onStateCrossing` |
 | crossing condition | `CrossingCondition::{Below, Above}` | `{ "below" }` / `{ "above" }` | `{ below }` / `{ above }` | `{ below }` / `{ above }` |
+| styleRanges max | `StyleRanges { max }` | `"max"` | `max` | `max` |
+| styleRanges entries | `StyleRanges { entries }` | `"entries"` | `entries` | `entries` |
 | helpers | command variants | reaction args camelCase | `flashScreen` `playSound` `rumble` `showDialog` `closeDialog` `openMenu` | same |
+| flashScreen args | — | `{ "color", "durationMs" }` | `flashScreen { color, durationMs }` | same |
+| playSound args | — | `{ "sound", "bus"? }` | `playSound { sound, bus? }` | same |
+| rumble args | — | `{ "strong", "weak"?, "durationMs" }` | `rumble { strong, weak?, durationMs }` | same |
+| showDialog/openMenu args | — | `{ "tree" }` | `showDialog { tree }` / `openMenu { tree }` | same |
 | flash slot | n/a | n/a | `screen.flash` | `screen.flash` |
 
 ## Open questions

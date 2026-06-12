@@ -31,8 +31,9 @@ reaction sliders require. Realizes `ui-layer.md` §11–§12, §15 (focus model)
 - Widgets: `button` (focusable, `onPress` fires a named reaction), `slider`
   (`capturesNav`, value display + `setState` write-back), `bar` (numeric bind
   + `max` → fill fraction; E styleRanges and TW tween apply).
-- `setState` reaction primitive: writes a modder-declared writable slot;
-  readonly/engine-owned targets warn and no-op.
+- `setState` reaction primitive: writes a writable slot; readonly targets warn
+  and no-op — writability, not ownership, gates the write; engine-owned
+  writable slots are valid targets.
 - Gamepad: D-pad/stick → nav intents through the same focus path; existing
   dead zone reused.
 
@@ -47,6 +48,8 @@ reaction sliders require. Realizes `ui-layer.md` §11–§12, §15 (focus model)
 - Remappable UI bindings (UI nav reads fixed actions; remapping is the
   existing action-map layer's concern).
 - Screen-reader / a11y consumption (G2).
+- Multi-value text templates (`"{}/{max}"`, deferred from Goal C) stay
+  deferred — `bar` computes its fraction internally, no template needed.
 
 ## Acceptance criteria
 
@@ -63,7 +66,8 @@ reaction sliders require. Realizes `ui-layer.md` §11–§12, §15 (focus model)
   focused node's rect using theme tokens.
 - [ ] Holding a nav direction repeats at the container's declared
   delay/interval in dt-accumulated time; releasing stops; confirm/cancel
-  fire once per press regardless of hold.
+  fire once per press regardless of hold, absent a per-button
+  `repeatOnHold` opt-in (added by the text-entry plan).
 - [ ] Mouse motion sets `input.mode` to `pointer` (cursor visible, ring
   hidden); any stick/D-pad/nav-key input sets `focus` (cursor hidden, ring
   visible); a widget bound to `input.mode` toggles visibility accordingly;
@@ -111,7 +115,10 @@ named-tree registrations; engine push/pop API for pause/dialog. Top tree's
 
 Draw-data build exports a flat list `(node_id, device_rect, z)` for
 focusable/interactive nodes (stable string `id` field added to widget
-descriptors, auto-generated when absent). Focus engine (CPU, renderer-local
+descriptors, auto-generated when absent — runtime-only, never serialized,
+preserving the byte-identical round-trip; regenerated deterministically
+from tree position on rebuild; focus restore across structural rebuilds
+relies on authored ids). Focus engine (CPU, renderer-local
 state keyed per tree): policies `linear` (tree order, wrap) and `spatial`
 (nearest node center in the directional half-plane), `focusNeighbors`
 override, `initialFocus`, `restoreOnReturn`. Pointer hits resolve by topmost
@@ -125,8 +132,11 @@ applied to writable modder-declared slots at the game-logic stage, readonly
 rejected with a warning. Widgets: `button { id, label, onPress }` — focusable,
 activation fires the named reaction; `slider { id, label, bind, min, max,
 step, capturesNav }` — consumed nav steps the value and emits `setState`;
-`bar { bind, max, fill, background }` — fill fraction from bound value, calls
-E's styleRanges evaluator when present, tween-compatible. All additive to the
+the slider renders its current numeric value as text beside its label;
+`bar { bind, max, fill, background, styleRanges? }` — fill fraction from
+bound value, calls E's styleRanges evaluator when present, tween-compatible;
+`bind` follows the `PanelBind`/`TextBind` shape precedent (slot name +
+optional tween). All additive to the
 `Widget` union, camelCase, round-trip-stable.
 
 ### Task 5: input-mode slot + gamepad polish + demo
@@ -135,9 +145,12 @@ Engine-owned `input.mode` enum slot (`pointer` / `focus`) written by the
 input stage on mode transitions (mouse motion vs. nav input; small dt
 debounce so jitter doesn't flap); OS cursor visibility follows it while a
 capturing tree is on the stack. Gamepad stick-as-D-pad edge detection for nav
-(press past deadzone = one intent, repeat handled by Task 3's timer). Demo: a
-pause-style menu tree (buttons + an `audio.master`-bound slider) pushed onto
-the stack, fully gamepad-navigable; HUD `bar` bound to the health proxy.
+(press past deadzone = one intent, repeat handled by Task 3's timer). Demo: a pause-style menu tree (buttons + an `audio.master`-bound slider)
+pushed onto the stack, fully gamepad-navigable; HUD `bar` bound to the health
+proxy. `audio.master` does not exist in engine code — the demo mod declares it
+via `defineStore` (writable), and Task 5 wires an App-side consumer that
+applies its value to the audio master bus volume on change, making the slider
+audible.
 
 ## Sequencing
 
@@ -169,13 +182,21 @@ E Task 1 and F Task 4 in the same orchestration phase.
 |---|---|---|---|---|
 | nav intent | `NavIntent::Up` … | `"nav.up"` … | `"nav.up"` literal union | string |
 | focus policy | `FocusPolicy` | `"focus": "linear" \| { … }` | `focus` | `focus` |
-| repeat | `{ initial_delay_ms, interval_ms }` | `"repeat": { "initialDelayMs", "intervalMs" }` | same | same |
+| repeat | `RepeatPolicy { initial_delay_ms, interval_ms }` | `"repeat": { "initialDelayMs", "intervalMs" }` | same | same |
 | neighbors | `focus_neighbors` | `"focusNeighbors"` | `focusNeighbors` | `focusNeighbors` |
 | node id | `id: Option<String>` | `"id"` | `id` | `id` |
 | button press | named reaction ref | `"onPress": "<reaction>"` | `onPress` | `onPress` |
 | nav capture | `captures_nav` | `"capturesNav": ["nav.left", …]` | `capturesNav` | `capturesNav` |
 | widgets | `Widget::{Button, Slider, Bar}` | `"button"` / `"slider"` / `"bar"` | constructors | constructors |
 | state write | `SystemReactionCommand::SetState` | reaction `"setState"` | `setState` | `setState` |
+| bar bind | `PanelBind`/`TextBind` shape | `"bind"` (slot name + optional tween) | `bind` | `bind` |
+| label | `label: String` | `"label"` | `label` | `label` |
+| slider min/max/step | `min, max, step: f32` | `"min"` / `"max"` / `"step"` | `min` / `max` / `step` | same |
+| slider bind | slot name + optional tween | `"bind"` | `bind` | `bind` |
+| bar max/fill/background | `max, fill, background` | `"max"` / `"fill"` / `"background"` | `max` / `fill` / `background` | same |
+| focus wrap | `wrap: bool` | `"wrap"` | `wrap` | `wrap` |
+| initialFocus | `initial_focus: Option<String>` | `"initialFocus"` | `initialFocus` | `initialFocus` |
+| restoreOnReturn | `restore_on_return: bool` | `"restoreOnReturn"` | `restoreOnReturn` | `restoreOnReturn` |
 | mode slot | n/a | n/a | `input.mode` | `input.mode` |
 
 ## Open questions

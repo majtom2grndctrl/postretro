@@ -9,6 +9,8 @@
 export type { EntityForComponent, World } from "./world";
 export { world } from "./world";
 
+export { ir } from "./ir";
+
 export type { AnimatableScalar, AnimatableVec3 } from "./animation";
 
 export type { LightEntityHandle } from "./entities/lights";

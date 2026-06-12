@@ -244,6 +244,8 @@ The typed command buffer is the shape these already take, extended from a fixed 
 
 **Preserves the two hard rules.** The VM still drops after load (§1, §2) — the IR is plain data that outlives it, so no live VM is needed at tick time. The vocabulary still arrives through generated typedefs (§7): builder opcodes are registered like any primitive and emitted into `postretro.d.ts` / `postretro.d.luau`.
 
+**IR substrate.** Two value types: number (`f32`) and boolean. Two-phase evaluator: **bind** (once — type-checks the tree against a static type table, resolves named inputs and outputs to scope-provided handles) and **eval** (per tick — pure, total, bounded; zero heap allocation during the value-computing pass). Names bind through a pluggable **scope abstraction**, not a hardwired global namespace: the mod state store is one scope, a movement-local input set is another. A movement scope binds engine-internal inputs engine-side without routing through the script-facing slot table — the `entity_model.md` §7b invariant holds by construction. Write-path capability is a bind-time scope decision: engine-capability scopes bypass readonly for engine-owned slots; script-capability scopes are readonly-gated — mirroring the store's existing engine-bypass vs script-gated write split. The IR envelope carries a `u32` version stamp validated at load; unsupported versions are ignored with a warning and the adopter falls back to its native behavior. This shares one versioning story with the state-store persist format and the deferred `setState` IR — not three separate schemes.
+
 **Node constraints — determinism and totality.** Every node must be **pure, total, and bounded**:
 
 - No wall-clock, no unseeded RNG, no unbounded loops, no per-eval heap allocation.
@@ -254,9 +256,7 @@ Start the node set minimal: named-input leaves, arithmetic, `clamp`, `lerp`, `se
 
 **The typedef is the contract.** The generated `.d.ts` / `.d.luau` (§7) *is* the vocabulary — and therefore the documentation of its limits. If a node is not in the typedef the author cannot type it, so the boundary is clear by construction. No separate "what's allowed" list to drift out of sync.
 
-**Scope.** This is a cross-cutting engine pattern, not a feature. Nothing is implemented now; this records the principle. Movement is one candidate adopter (`movement.md` §2) but not necessarily the first.
-
-> **Open question — IR versioning.** A serialized command buffer baked into a mod must survive engine-version changes. IR / command-buffer versioning for mod compatibility is a real obligation to design before the first shipping use, not after.
+**Scope.** This is a cross-cutting engine pattern. Movement is the first adopter (M14 plan 3). Plans are sequential: substrate → movement adopter → consolidation (demand-driven). Each plan consumes the prior plan's settled output.
 
 ---
 

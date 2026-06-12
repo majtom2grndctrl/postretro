@@ -13,6 +13,8 @@ use super::components::billboard_emitter::{
 };
 use super::components::mesh::{AnimationState, InterruptPolicy};
 use super::registry::EntityId;
+use crate::movement::MovementScope;
+use crate::scripting::ir::{BakedIr, CURRENT_IR_VERSION, IrNode, IrType, bind};
 
 /// Variants of a single reaction's behavior body. The `name` lives on the
 /// wrapping [`NamedReaction`]; this enum captures only the descriptor shape.
@@ -540,26 +542,114 @@ pub(crate) struct FallParams {
     pub(crate) terminal_velocity: f32,
 }
 
+/// A dash numeric field: either a bare literal or an engine-evaluated IR
+/// expression over the movement-local input namespace ([`MovementScope`]).
+///
+/// `#[serde(untagged)]` mirrors the substrate's untagged-`IrValue` precedent: a
+/// bare JSON number deserializes to [`NumberOrIr::Literal`], an op-tagged object
+/// (`{"op": …}`) to [`NumberOrIr::Ir`]. The two are disjoint on the wire — a
+/// number never matches the `Ir` (object) variant and an object never matches
+/// the `f32` variant — so variant ordering is not load-bearing.
+///
+/// The hand-written JS/Luau parsers route values explicitly (object → IR,
+/// scalar → literal) so the literal path keeps its range validators; the derived
+/// serde impls exist so `DashParams` round-trips through `PlayerMovementComponent`'s
+/// `Serialize`/`Deserialize`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum NumberOrIr {
+    Literal(f32),
+    Ir(IrNode),
+}
+
+/// A dash boolean field: a bare literal or an engine-evaluated IR expression.
+/// The boolean analogue of [`NumberOrIr`]; see its docs for the untagged-serde
+/// rationale.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum BoolOrIr {
+    Literal(bool),
+    Ir(IrNode),
+}
+
+impl NumberOrIr {
+    /// The literal value when this field is a bare scalar, else `None`.
+    /// Tests use this to assert expression fields round-trip as `None`.
+    pub(crate) fn literal(&self) -> Option<f32> {
+        match self {
+            NumberOrIr::Literal(v) => Some(*v),
+            NumberOrIr::Ir(_) => None,
+        }
+    }
+}
+
+impl BoolOrIr {
+    /// The literal value when this field is a bare boolean, else `None`. See
+    /// [`NumberOrIr::literal`].
+    pub(crate) fn literal(&self) -> Option<bool> {
+        match self {
+            BoolOrIr::Literal(v) => Some(*v),
+            BoolOrIr::Ir(_) => None,
+        }
+    }
+}
+
+impl From<f32> for NumberOrIr {
+    fn from(v: f32) -> Self {
+        NumberOrIr::Literal(v)
+    }
+}
+
+impl From<bool> for BoolOrIr {
+    fn from(v: bool) -> Self {
+        BoolOrIr::Literal(v)
+    }
+}
+
+impl PartialEq<f32> for NumberOrIr {
+    fn eq(&self, other: &f32) -> bool {
+        matches!(self, NumberOrIr::Literal(v) if v == other)
+    }
+}
+
+impl PartialEq<bool> for BoolOrIr {
+    fn eq(&self, other: &bool) -> bool {
+        matches!(self, BoolOrIr::Literal(v) if v == other)
+    }
+}
+
 /// Dash tuning. Optional on [`PlayerMovementDescriptor`] (absent disables
 /// dash); when present, all fields are required and validated. Field names are
 /// camelCase on the wire (`boostSpeed`, `momentumRetention`, …) and snake_case
 /// in Rust. Stored later by `PlayerMovementComponent` as `Option<DashParams>`.
+///
+/// Each value field accepts a bare literal OR an engine-evaluated expression
+/// ([`NumberOrIr`] / [`BoolOrIr`]) over the movement-local input namespace; the
+/// evaluation moment is engine-pinned per field (see `movement.md` §2). The
+/// hand-written parsers validate an expression at declaration: a literal keeps
+/// its existing range check; an expression is bound against
+/// [`MovementScope::for_validation`] and its root type checked.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct DashParams {
-    /// Impulse magnitude applied on dash, world-units/sec. Must be finite > 0.
-    pub(crate) boost_speed: f32,
-    /// Fraction of pre-dash momentum folded into the dash, unitless `[0, 1]`.
-    pub(crate) momentum_retention: f32,
-    /// In-dash steering authority, unitless `[0, 1]`.
-    pub(crate) steer_control: f32,
-    /// Decay rate of the dash impulse, world-units/sec². `0` is legitimate.
-    pub(crate) dash_drag: f32,
-    /// Cooldown between dashes in milliseconds. `0` is legitimate.
-    pub(crate) cooldown_ms: f32,
-    /// Number of air dashes allowed before landing.
+    /// Impulse magnitude applied on dash, world-units/sec (entry-moment). A
+    /// literal must be finite > 0.
+    pub(crate) boost_speed: NumberOrIr,
+    /// Fraction of pre-dash momentum folded into the dash, unitless `[0, 1]`
+    /// (entry-moment).
+    pub(crate) momentum_retention: NumberOrIr,
+    /// In-dash steering authority, unitless `[0, 1]` (per-tick).
+    pub(crate) steer_control: NumberOrIr,
+    /// Decay rate of the dash impulse, world-units/sec² (per-tick). A literal
+    /// `0` is legitimate.
+    pub(crate) dash_drag: NumberOrIr,
+    /// Cooldown between dashes in milliseconds (entry-moment). A literal `0` is
+    /// legitimate.
+    pub(crate) cooldown_ms: NumberOrIr,
+    /// Number of air dashes allowed before landing. Stays a plain integer (no
+    /// expression form).
     pub(crate) air_dashes: u32,
-    /// Whether the dash preserves the pre-dash vertical velocity.
-    pub(crate) preserve_vertical: bool,
+    /// Whether the dash preserves the pre-dash vertical velocity (entry-moment).
+    pub(crate) preserve_vertical: BoolOrIr,
 }
 
 /// Crouch tuning. Optional on [`PlayerMovementDescriptor`] (absent disables
@@ -997,7 +1087,7 @@ pub(crate) fn entity_descriptor_from_js<'js>(
                         Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
                             reason: "`components.movement` must be an object".to_string(),
                         })?;
-                    movement = Some(movement_descriptor_from_js(&m_obj)?);
+                    movement = Some(movement_descriptor_from_js(ctx, &m_obj)?);
                 }
             }
             if components_obj.contains_key("weapon").map_err(js_err)? {
@@ -1146,6 +1236,7 @@ fn raw_animation_state_from_js<'js>(
 }
 
 fn movement_descriptor_from_js<'js>(
+    ctx: &Ctx<'js>,
     obj: &Object<'js>,
 ) -> Result<PlayerMovementDescriptor, DescriptorError> {
     let capsule_obj: Object = get_required_object_js(obj, "capsule")?;
@@ -1275,7 +1366,7 @@ fn movement_descriptor_from_js<'js>(
             let dash_obj = Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
                 reason: "`movement.dash` must be an object".to_string(),
             })?;
-            Some(dash_params_from_js(&dash_obj)?)
+            Some(dash_params_from_js(ctx, &dash_obj)?)
         }
     } else {
         None
@@ -1490,31 +1581,35 @@ fn forgiveness_params_from_js<'js>(
     })
 }
 
-fn dash_params_from_js<'js>(obj: &Object<'js>) -> Result<DashParams, DescriptorError> {
-    let boost_speed = validate_positive_finite(
-        get_required_f32_js(obj, "boostSpeed")?,
-        "movement.dash.boostSpeed",
-    )?;
-    let momentum_retention = validate_in_range_finite(
-        get_required_f32_js(obj, "momentumRetention")?,
-        0.0,
-        1.0,
+fn dash_params_from_js<'js>(
+    ctx: &Ctx<'js>,
+    obj: &Object<'js>,
+) -> Result<DashParams, DescriptorError> {
+    let boost_speed =
+        read_dash_number_js(ctx, obj, "boostSpeed", "movement.dash.boostSpeed", |v| {
+            validate_positive_finite(v, "movement.dash.boostSpeed")
+        })?;
+    let momentum_retention = read_dash_number_js(
+        ctx,
+        obj,
+        "momentumRetention",
         "movement.dash.momentumRetention",
+        |v| validate_in_range_finite(v, 0.0, 1.0, "movement.dash.momentumRetention"),
     )?;
-    let steer_control = validate_in_range_finite(
-        get_required_f32_js(obj, "steerControl")?,
-        0.0,
-        1.0,
+    let steer_control = read_dash_number_js(
+        ctx,
+        obj,
+        "steerControl",
         "movement.dash.steerControl",
+        |v| validate_in_range_finite(v, 0.0, 1.0, "movement.dash.steerControl"),
     )?;
-    let dash_drag = validate_non_negative_finite(
-        get_required_f32_js(obj, "dashDrag")?,
-        "movement.dash.dashDrag",
-    )?;
-    let cooldown_ms = validate_non_negative_finite(
-        get_required_f32_js(obj, "cooldownMs")?,
-        "movement.dash.cooldownMs",
-    )?;
+    let dash_drag = read_dash_number_js(ctx, obj, "dashDrag", "movement.dash.dashDrag", |v| {
+        validate_non_negative_finite(v, "movement.dash.dashDrag")
+    })?;
+    let cooldown_ms =
+        read_dash_number_js(ctx, obj, "cooldownMs", "movement.dash.cooldownMs", |v| {
+            validate_non_negative_finite(v, "movement.dash.cooldownMs")
+        })?;
     let air_dashes_value = get_required_f32_js(obj, "airDashes")?;
     if !air_dashes_value.is_finite() || air_dashes_value < 0.0 || air_dashes_value.fract() != 0.0 {
         return Err(DescriptorError::InvalidShape {
@@ -1524,7 +1619,7 @@ fn dash_params_from_js<'js>(obj: &Object<'js>) -> Result<DashParams, DescriptorE
         });
     }
     let air_dashes = air_dashes_value as u32;
-    let preserve_vertical = get_required_bool_js(obj, "preserveVertical")?;
+    let preserve_vertical = read_dash_bool_js(ctx, obj, "preserveVertical")?;
     Ok(DashParams {
         boost_speed,
         momentum_retention,
@@ -1534,6 +1629,75 @@ fn dash_params_from_js<'js>(obj: &Object<'js>) -> Result<DashParams, DescriptorE
         air_dashes,
         preserve_vertical,
     })
+}
+
+/// Read a dash numeric field (JS): a value that is an object converts through
+/// the conv bridge to JSON, deserializes to an [`IrNode`], and is validated as a
+/// `Number`-typed expression. A plain number takes the literal path with its
+/// existing range validator `validate`. Absence is a [`DescriptorError::MissingField`].
+fn read_dash_number_js<'js>(
+    ctx: &Ctx<'js>,
+    obj: &Object<'js>,
+    field: &'static str,
+    path: &str,
+    validate: impl FnOnce(f32) -> Result<f32, DescriptorError>,
+) -> Result<NumberOrIr, DescriptorError> {
+    if !obj.contains_key(field).map_err(js_err)? {
+        return Err(DescriptorError::MissingField { field });
+    }
+    let raw: JsValue = obj.get(field).map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Err(DescriptorError::MissingField { field });
+    }
+    // Arrays fall through here (is_array() excludes them) and hit the final
+    // InvalidShape below. The Luau reader routes arrays into ir_node_from_json
+    // instead — same InvalidShape variant, different message text by design.
+    if raw.is_object() && !raw.is_array() {
+        let json = super::conv::js_to_json(ctx, raw).map_err(js_err)?;
+        let node = ir_node_from_json(json, path)?;
+        return Ok(NumberOrIr::Ir(validate_dash_expr(
+            node,
+            IrType::Number,
+            path,
+        )?));
+    }
+    if let Some(i) = raw.as_int() {
+        return Ok(NumberOrIr::Literal(validate(i as f32)?));
+    }
+    if let Some(f) = raw.as_float() {
+        return Ok(NumberOrIr::Literal(validate(f as f32)?));
+    }
+    Err(DescriptorError::InvalidShape {
+        reason: format!("'{field}' must be a number or a runtime expression"),
+    })
+}
+
+/// Read a dash boolean field (JS): an object value parses as a `Bool`-typed
+/// expression; a plain boolean takes the literal path. Mirror of
+/// [`read_dash_number_js`] for the single boolean dash field.
+fn read_dash_bool_js<'js>(
+    ctx: &Ctx<'js>,
+    obj: &Object<'js>,
+    field: &'static str,
+) -> Result<BoolOrIr, DescriptorError> {
+    let path = "movement.dash.preserveVertical";
+    if !obj.contains_key(field).map_err(js_err)? {
+        return Err(DescriptorError::MissingField { field });
+    }
+    let raw: JsValue = obj.get(field).map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Err(DescriptorError::MissingField { field });
+    }
+    if raw.is_object() && !raw.is_array() {
+        let json = super::conv::js_to_json(ctx, raw).map_err(js_err)?;
+        let node = ir_node_from_json(json, path)?;
+        return Ok(BoolOrIr::Ir(validate_dash_expr(node, IrType::Bool, path)?));
+    }
+    raw.as_bool()
+        .map(BoolOrIr::Literal)
+        .ok_or_else(|| DescriptorError::InvalidShape {
+            reason: format!("'{field}' must be a boolean or a runtime expression"),
+        })
 }
 
 /// Parse a `crouch` sub-object. `radius` is the standing capsule radius, used to
@@ -1594,6 +1758,56 @@ fn get_required_bool_js<'js>(
     raw.as_bool().ok_or_else(|| DescriptorError::InvalidShape {
         reason: format!("'{field}' must be a boolean"),
     })
+}
+
+/// Validate a dash expression node at declaration: wrap it in a read-only
+/// [`BakedIr`] envelope and `bind` it against [`MovementScope::for_validation`],
+/// then require the bound program's root type to match the field's expected
+/// type. Any `BindError` (unknown input, type-table violation) and any root-type
+/// mismatch map to [`DescriptorError::InvalidShape`].
+///
+/// The explicit root-type check is load-bearing: `bind` with no `output` never
+/// checks the root's type, so without it a bool-rooted expression in a number
+/// field would silently bind and evaluate as a type-zero value.
+fn validate_dash_expr(
+    node: IrNode,
+    expected: IrType,
+    field: &str,
+) -> Result<IrNode, DescriptorError> {
+    let baked = BakedIr {
+        version: CURRENT_IR_VERSION,
+        output: None,
+        root: node,
+    };
+    let scope = MovementScope::for_validation();
+    let program = bind(&baked, &scope).map_err(|e| DescriptorError::InvalidShape {
+        reason: format!("`{field}` expression is invalid: {e}"),
+    })?;
+    if program.root_type != expected {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{field}` expression must produce a {}, but its root produces a {}",
+                ir_type_label(expected),
+                ir_type_label(program.root_type)
+            ),
+        });
+    }
+    Ok(baked.root)
+}
+
+/// Deserialize a JSON value (produced from the conv bridge) into an [`IrNode`],
+/// reporting a malformed node object as [`DescriptorError::InvalidShape`].
+fn ir_node_from_json(value: serde_json::Value, field: &str) -> Result<IrNode, DescriptorError> {
+    serde_json::from_value(value).map_err(|e| DescriptorError::InvalidShape {
+        reason: format!("`{field}` is not a recognizable runtime expression: {e}"),
+    })
+}
+
+fn ir_type_label(ty: IrType) -> &'static str {
+    match ty {
+        IrType::Number => "number",
+        IrType::Bool => "boolean",
+    }
 }
 
 fn validate_positive_finite(value: f32, field: &str) -> Result<f32, DescriptorError> {
@@ -2501,32 +2715,27 @@ fn forgiveness_params_from_lua(table: &Table) -> Result<ForgivenessParams, Descr
 }
 
 fn dash_params_from_lua(table: &Table) -> Result<DashParams, DescriptorError> {
-    let boost_speed = validate_positive_finite(
-        get_required_f32_lua(table, "boostSpeed")?,
-        "movement.dash.boostSpeed",
-    )?;
-    let momentum_retention = validate_in_range_finite(
-        get_required_f32_lua(table, "momentumRetention")?,
-        0.0,
-        1.0,
+    let boost_speed = read_dash_number_lua(table, "boostSpeed", "movement.dash.boostSpeed", |v| {
+        validate_positive_finite(v, "movement.dash.boostSpeed")
+    })?;
+    let momentum_retention = read_dash_number_lua(
+        table,
+        "momentumRetention",
         "movement.dash.momentumRetention",
+        |v| validate_in_range_finite(v, 0.0, 1.0, "movement.dash.momentumRetention"),
     )?;
-    let steer_control = validate_in_range_finite(
-        get_required_f32_lua(table, "steerControl")?,
-        0.0,
-        1.0,
-        "movement.dash.steerControl",
-    )?;
-    let dash_drag = validate_non_negative_finite(
-        get_required_f32_lua(table, "dashDrag")?,
-        "movement.dash.dashDrag",
-    )?;
-    let cooldown_ms = validate_non_negative_finite(
-        get_required_f32_lua(table, "cooldownMs")?,
-        "movement.dash.cooldownMs",
-    )?;
+    let steer_control =
+        read_dash_number_lua(table, "steerControl", "movement.dash.steerControl", |v| {
+            validate_in_range_finite(v, 0.0, 1.0, "movement.dash.steerControl")
+        })?;
+    let dash_drag = read_dash_number_lua(table, "dashDrag", "movement.dash.dashDrag", |v| {
+        validate_non_negative_finite(v, "movement.dash.dashDrag")
+    })?;
+    let cooldown_ms = read_dash_number_lua(table, "cooldownMs", "movement.dash.cooldownMs", |v| {
+        validate_non_negative_finite(v, "movement.dash.cooldownMs")
+    })?;
     let air_dashes = get_required_u32_lua(table, "airDashes")?;
-    let preserve_vertical = get_required_bool_lua(table, "preserveVertical")?;
+    let preserve_vertical = read_dash_bool_lua(table, "preserveVertical")?;
     Ok(DashParams {
         boost_speed,
         momentum_retention,
@@ -2536,6 +2745,69 @@ fn dash_params_from_lua(table: &Table) -> Result<DashParams, DescriptorError> {
         air_dashes,
         preserve_vertical,
     })
+}
+
+/// Read a dash numeric field (Luau): a table value converts through the conv
+/// bridge to JSON, deserializes to an [`IrNode`], and is validated as a
+/// `Number`-typed expression; a plain number takes the literal path with its
+/// existing range validator. Mirror of [`read_dash_number_js`] — the
+/// missing-Luau-arm parity trap is avoided by keeping the two symmetric.
+fn read_dash_number_lua(
+    table: &Table,
+    field: &'static str,
+    path: &str,
+    validate: impl FnOnce(f32) -> Result<f32, DescriptorError>,
+) -> Result<NumberOrIr, DescriptorError> {
+    if !table.contains_key(field).map_err(lua_err)? {
+        return Err(DescriptorError::MissingField { field });
+    }
+    let raw: LuaValue = table.get(field).map_err(lua_err)?;
+    match raw {
+        LuaValue::Nil => Err(DescriptorError::MissingField { field }),
+        LuaValue::Integer(i) => Ok(NumberOrIr::Literal(validate(i as f32)?)),
+        LuaValue::Number(f) => Ok(NumberOrIr::Literal(validate(f as f32)?)),
+        LuaValue::Table(_) => {
+            let json = super::conv::lua_to_json(raw).map_err(lua_err)?;
+            let node = ir_node_from_json(json, path)?;
+            Ok(NumberOrIr::Ir(validate_dash_expr(
+                node,
+                IrType::Number,
+                path,
+            )?))
+        }
+        other => Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "'{field}' must be a number or a runtime expression, got {}",
+                other.type_name()
+            ),
+        }),
+    }
+}
+
+/// Read a dash boolean field (Luau): a table value parses as a `Bool`-typed
+/// expression; a plain boolean takes the literal path. Mirror of
+/// [`read_dash_bool_js`].
+fn read_dash_bool_lua(table: &Table, field: &'static str) -> Result<BoolOrIr, DescriptorError> {
+    let path = "movement.dash.preserveVertical";
+    if !table.contains_key(field).map_err(lua_err)? {
+        return Err(DescriptorError::MissingField { field });
+    }
+    let raw: LuaValue = table.get(field).map_err(lua_err)?;
+    match raw {
+        LuaValue::Nil => Err(DescriptorError::MissingField { field }),
+        LuaValue::Boolean(b) => Ok(BoolOrIr::Literal(b)),
+        LuaValue::Table(_) => {
+            let json = super::conv::lua_to_json(raw).map_err(lua_err)?;
+            let node = ir_node_from_json(json, path)?;
+            Ok(BoolOrIr::Ir(validate_dash_expr(node, IrType::Bool, path)?))
+        }
+        other => Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "'{field}' must be a boolean or a runtime expression, got {}",
+                other.type_name()
+            ),
+        }),
+    }
 }
 
 /// Mirror of [`crouch_params_from_js`] for Luau tables. `radius` is the standing
@@ -3834,7 +4106,7 @@ mod tests {
         assert_eq!(dash.dash_drag, 60.0);
         assert_eq!(dash.cooldown_ms, 800.0);
         assert_eq!(dash.air_dashes, 1);
-        assert!(!dash.preserve_vertical);
+        assert_eq!(dash.preserve_vertical, false);
     }
 
     #[test]
@@ -3848,7 +4120,7 @@ mod tests {
         assert_eq!(dash.dash_drag, 60.0);
         assert_eq!(dash.cooldown_ms, 800.0);
         assert_eq!(dash.air_dashes, 1);
-        assert!(!dash.preserve_vertical);
+        assert_eq!(dash.preserve_vertical, false);
     }
 
     #[test]
@@ -3861,7 +4133,7 @@ mod tests {
         let dash = d.movement.unwrap().dash.expect("dash present");
         assert_eq!(dash.dash_drag, 0.0);
         assert_eq!(dash.cooldown_ms, 0.0);
-        assert!(dash.preserve_vertical);
+        assert_eq!(dash.preserve_vertical, true);
     }
 
     #[test]
@@ -4050,6 +4322,180 @@ mod tests {
                 field: "preserveVertical",
             }
         );
+    }
+
+    // --- Dash expression-capable fields (Task 2) ---------------------------
+
+    #[test]
+    fn js_movement_dash_number_field_accepts_expression() {
+        // `boostSpeed` is a clamped read of the movement-local `speed` input — a
+        // well-typed Number-rooted expression. It must bind and round-trip as an
+        // `Ir` variant (literal() is therefore None).
+        let src = js_movement_with_dash(
+            r#"{ boostSpeed: { op: "clamp", x: { op: "input", name: "speed" }, lo: { op: "const", value: 0.0 }, hi: { op: "const", value: 30.0 } }, momentumRetention: 0.5, steerControl: 0.25, dashDrag: 60.0, cooldownMs: 800.0, airDashes: 1, preserveVertical: false }"#,
+        );
+        let d = eval_js(&src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+        let dash = d.movement.unwrap().dash.expect("dash present");
+        assert!(
+            matches!(dash.boost_speed, NumberOrIr::Ir(_)),
+            "expression field parses to the Ir variant"
+        );
+        assert_eq!(dash.boost_speed.literal(), None);
+        // The other (literal) fields keep their literal sugar / behavior.
+        assert_eq!(dash.momentum_retention, 0.5);
+        assert_eq!(dash.air_dashes, 1);
+        assert_eq!(dash.preserve_vertical, false);
+    }
+
+    #[test]
+    fn js_movement_dash_bool_field_accepts_expression() {
+        // `preserveVertical` as a Bool-rooted comparison over `verticalSpeed`.
+        let src = js_movement_with_dash(
+            r#"{ boostSpeed: 18.0, momentumRetention: 0.5, steerControl: 0.25, dashDrag: 60.0, cooldownMs: 800.0, airDashes: 1, preserveVertical: { op: "gt", a: { op: "input", name: "verticalSpeed" }, b: { op: "const", value: 0.0 } } }"#,
+        );
+        let d = eval_js(&src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+        let dash = d.movement.unwrap().dash.expect("dash present");
+        assert!(matches!(dash.preserve_vertical, BoolOrIr::Ir(_)));
+        assert_eq!(dash.preserve_vertical.literal(), None);
+    }
+
+    #[test]
+    fn js_movement_dash_expression_unknown_read_is_rejected() {
+        let src = js_movement_with_dash(
+            r#"{ boostSpeed: { op: "input", name: "notARealInput" }, momentumRetention: 0.5, steerControl: 0.25, dashDrag: 60.0, cooldownMs: 800.0, airDashes: 1, preserveVertical: false }"#,
+        );
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_dash_expression_type_table_violation_is_rejected() {
+        // `clamp` requires number operands; a boolean `grounded` input violates
+        // the type table. Bind rejects without panicking.
+        let src = js_movement_with_dash(
+            r#"{ boostSpeed: { op: "clamp", x: { op: "input", name: "grounded" }, lo: { op: "const", value: 0.0 }, hi: { op: "const", value: 1.0 } }, momentumRetention: 0.5, steerControl: 0.25, dashDrag: 60.0, cooldownMs: 800.0, airDashes: 1, preserveVertical: false }"#,
+        );
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_dash_expression_root_type_mismatch_is_rejected() {
+        // A boolean-rooted expression in a Number field: bind alone (no output)
+        // never checks the root type, so this exercises the explicit root-type
+        // check in `validate_dash_expr`.
+        let src = js_movement_with_dash(
+            r#"{ boostSpeed: { op: "gt", a: { op: "input", name: "speed" }, b: { op: "const", value: 1.0 } }, momentumRetention: 0.5, steerControl: 0.25, dashDrag: 60.0, cooldownMs: 800.0, airDashes: 1, preserveVertical: false }"#,
+        );
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_dash_malformed_node_object_is_rejected() {
+        // An object that is not a recognizable node shape (no valid `op`).
+        let src = js_movement_with_dash(
+            r#"{ boostSpeed: { notAnOp: 1 }, momentumRetention: 0.5, steerControl: 0.25, dashDrag: 60.0, cooldownMs: 800.0, airDashes: 1, preserveVertical: false }"#,
+        );
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_dev_player_dash_expressions_bind() {
+        // Guards the dev player descriptor (`content/dev/scripts/player.ts`): the
+        // exact IR the authored `runtime.*` builders emit for `momentumRetention`
+        // and `steerControl` must bind without a `DescriptorError`. If the scope
+        // names, op vocabulary, or root types ever drift, this fails before the
+        // dev map does. `momentumRetention` is a `select` on the boolean
+        // `grounded` input; `steerControl` clamps an `elapsedMs / 150` ramp into
+        // [0, 1] — the 150 ms window sits inside the engine's 200 ms DASH_MAX_MS
+        // bound so the ramp stays observable.
+        let src = js_movement_with_dash(
+            r#"{
+                boostSpeed: 22.0,
+                momentumRetention: { op: "select", cond: { op: "input", name: "grounded" }, a: { op: "const", value: 0.4 }, b: { op: "const", value: 0.7 } },
+                steerControl: { op: "clamp", x: { op: "div", a: { op: "input", name: "elapsedMs" }, b: { op: "const", value: 150.0 } }, lo: { op: "const", value: 0.0 }, hi: { op: "const", value: 1.0 } },
+                dashDrag: 0,
+                cooldownMs: 600,
+                airDashes: 1,
+                preserveVertical: false
+            }"#,
+        );
+        let d = eval_js(&src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+        let dash = d.movement.unwrap().dash.expect("dash present");
+        // Both authored fields bind as expressions; the literal fields keep sugar.
+        assert!(matches!(dash.momentum_retention, NumberOrIr::Ir(_)));
+        assert!(matches!(dash.steer_control, NumberOrIr::Ir(_)));
+        assert_eq!(dash.boost_speed, 22.0);
+        assert_eq!(dash.air_dashes, 1);
+        assert_eq!(dash.preserve_vertical, false);
+    }
+
+    #[test]
+    fn lua_movement_dash_number_field_accepts_expression() {
+        let src = lua_movement_with_dash(
+            r#"{ boostSpeed = { op = "clamp", x = { op = "input", name = "speed" }, lo = { op = "const", value = 0.0 }, hi = { op = "const", value = 30.0 } }, momentumRetention = 0.5, steerControl = 0.25, dashDrag = 60.0, cooldownMs = 800.0, airDashes = 1, preserveVertical = false }"#,
+        );
+        let d = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap());
+        let dash = d.movement.unwrap().dash.expect("dash present");
+        assert!(matches!(dash.boost_speed, NumberOrIr::Ir(_)));
+        assert_eq!(dash.boost_speed.literal(), None);
+        assert_eq!(dash.momentum_retention, 0.5);
+    }
+
+    #[test]
+    fn lua_movement_dash_bool_field_accepts_expression() {
+        let src = lua_movement_with_dash(
+            r#"{ boostSpeed = 18.0, momentumRetention = 0.5, steerControl = 0.25, dashDrag = 60.0, cooldownMs = 800.0, airDashes = 1, preserveVertical = { op = "gt", a = { op = "input", name = "verticalSpeed" }, b = { op = "const", value = 0.0 } } }"#,
+        );
+        let d = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap());
+        let dash = d.movement.unwrap().dash.expect("dash present");
+        assert!(matches!(dash.preserve_vertical, BoolOrIr::Ir(_)));
+    }
+
+    #[test]
+    fn lua_movement_dash_expression_unknown_read_is_rejected() {
+        let src = lua_movement_with_dash(
+            r#"{ boostSpeed = { op = "input", name = "notARealInput" }, momentumRetention = 0.5, steerControl = 0.25, dashDrag = 60.0, cooldownMs = 800.0, airDashes = 1, preserveVertical = false }"#,
+        );
+        let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_movement_dash_expression_type_table_violation_is_rejected() {
+        let src = lua_movement_with_dash(
+            r#"{ boostSpeed = { op = "clamp", x = { op = "input", name = "grounded" }, lo = { op = "const", value = 0.0 }, hi = { op = "const", value = 1.0 } }, momentumRetention = 0.5, steerControl = 0.25, dashDrag = 60.0, cooldownMs = 800.0, airDashes = 1, preserveVertical = false }"#,
+        );
+        let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_movement_dash_expression_root_type_mismatch_is_rejected() {
+        let src = lua_movement_with_dash(
+            r#"{ boostSpeed = { op = "gt", a = { op = "input", name = "speed" }, b = { op = "const", value = 1.0 } }, momentumRetention = 0.5, steerControl = 0.25, dashDrag = 60.0, cooldownMs = 800.0, airDashes = 1, preserveVertical = false }"#,
+        );
+        let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_movement_dash_malformed_node_object_is_rejected() {
+        let src = lua_movement_with_dash(
+            r#"{ boostSpeed = { notAnOp = 1 }, momentumRetention = 0.5, steerControl = 0.25, dashDrag = 60.0, cooldownMs = 800.0, airDashes = 1, preserveVertical = false }"#,
+        );
+        let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
     }
 
     // --- CrouchParams parsing ----------------------------------------------

@@ -10,10 +10,98 @@
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
+// Cross-module (game-logic stage) import: the bound dash expressions the
+// component holds are `BoundProgram<MovementScope>` from the `movement` module.
+// This mirrors the reverse import (`movement/scope.rs` references
+// `PlayerMovementComponent`); both modules are game-logic-stage, so no subsystem
+// boundary is crossed.
+use crate::movement::MovementScope;
 use crate::scripting::data_descriptors::{
-    AirParams, CapsuleParams, CrouchParams, DashParams, FallParams, ForgivenessParams,
-    GroundParams, PlayerMovementDescriptor, ViewFeelParams,
+    AirParams, BoolOrIr, CapsuleParams, CrouchParams, DashParams, FallParams, ForgivenessParams,
+    GroundParams, NumberOrIr, PlayerMovementDescriptor, ViewFeelParams,
 };
+use crate::scripting::ir::{BakedIr, BindError, BoundProgram, CURRENT_IR_VERSION, IrNode, bind};
+
+/// Bound dash value expressions, one slot per expression-capable
+/// [`DashParams`] field. A slot is `Some` exactly when the corresponding field
+/// is authored as an expression ([`NumberOrIr::Ir`] / [`BoolOrIr::Ir`]); a
+/// literal field leaves it `None` and reads its bare value directly.
+///
+/// This is DERIVED data: [`PlayerMovementComponent::from_descriptor`] is the sole
+/// builder, binding each expression against [`MovementScope::for_validation`].
+/// The same static type table already validated the expressions at descriptor
+/// declaration (Task 2), so a bind failure here is unreachable in practice; if it
+/// ever occurs `from_descriptor` warns once and materializes with dash disabled.
+///
+/// Not serialized (`#[serde(skip)]` on the component field) and compared as
+/// always-equal: it carries no authoritative state, only programs re-derivable
+/// from `dash`, which IS serialized and compared.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct DashPrograms {
+    pub(crate) boost_speed: Option<BoundProgram<MovementScope>>,
+    pub(crate) momentum_retention: Option<BoundProgram<MovementScope>>,
+    pub(crate) steer_control: Option<BoundProgram<MovementScope>>,
+    pub(crate) dash_drag: Option<BoundProgram<MovementScope>>,
+    pub(crate) cooldown_ms: Option<BoundProgram<MovementScope>>,
+    pub(crate) preserve_vertical: Option<BoundProgram<MovementScope>>,
+}
+
+impl PartialEq for DashPrograms {
+    /// Programs are derived from `dash` (which is compared), so two components
+    /// with equal `dash` fields have equivalent programs by construction. Treat
+    /// them as always equal so `PlayerMovementComponent`'s derived `PartialEq`
+    /// rests entirely on the authoritative descriptor fields.
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl DashPrograms {
+    /// Bind every expression-form field of `dash` against the validation scope,
+    /// producing the per-field bound-program slots. Returns `Err` on the first
+    /// bind failure (unreachable post-declaration; `from_descriptor` degrades to
+    /// dash-disabled if it ever fires). A literal field yields a `None` slot.
+    fn from_dash(dash: &DashParams) -> Result<Self, BindError> {
+        Ok(Self {
+            boost_speed: bind_number_field(&dash.boost_speed)?,
+            momentum_retention: bind_number_field(&dash.momentum_retention)?,
+            steer_control: bind_number_field(&dash.steer_control)?,
+            dash_drag: bind_number_field(&dash.dash_drag)?,
+            cooldown_ms: bind_number_field(&dash.cooldown_ms)?,
+            preserve_vertical: bind_bool_field(&dash.preserve_vertical)?,
+        })
+    }
+}
+
+/// Bind a number dash field's expression against the validation scope, or `None`
+/// when the field is a literal. The IR node is wrapped in a read-only [`BakedIr`]
+/// envelope, mirroring the declaration-time validation in `data_descriptors.rs`.
+fn bind_number_field(field: &NumberOrIr) -> Result<Option<BoundProgram<MovementScope>>, BindError> {
+    match field {
+        NumberOrIr::Literal(_) => Ok(None),
+        NumberOrIr::Ir(node) => bind_dash_node(node).map(Some),
+    }
+}
+
+/// Boolean analogue of [`bind_number_field`].
+fn bind_bool_field(field: &BoolOrIr) -> Result<Option<BoundProgram<MovementScope>>, BindError> {
+    match field {
+        BoolOrIr::Literal(_) => Ok(None),
+        BoolOrIr::Ir(node) => bind_dash_node(node).map(Some),
+    }
+}
+
+/// Wrap an [`IrNode`] in a read-only [`BakedIr`] envelope and bind it against
+/// [`MovementScope::for_validation`] — the same scope and envelope the
+/// declaration-time validator used, so the bind cannot newly fail here.
+fn bind_dash_node(node: &IrNode) -> Result<BoundProgram<MovementScope>, BindError> {
+    let baked = BakedIr {
+        version: CURRENT_IR_VERSION,
+        output: None,
+        root: node.clone(),
+    };
+    bind(&baked, &MovementScope::for_validation())
+}
 
 /// The player's active movement state. Mutually-exclusive: exactly one state
 /// owns the per-tick velocity intent at a time. `tick` dispatches to the
@@ -70,6 +158,14 @@ pub(crate) struct PlayerMovementComponent {
     /// `None` ⇒ dash disabled: the `Normal` → `Dash` transition never fires and
     /// no dash impulse is ever applied.
     pub(crate) dash: Option<DashParams>,
+    /// Bound dash value expressions, one slot per expression-capable `dash`
+    /// field (`None` for literal fields). DERIVED from `dash` by
+    /// `from_descriptor` — never authored, never serialized (`#[serde(skip)]`),
+    /// and compared always-equal (see [`DashPrograms`]). When `dash` is `None`
+    /// every slot is `None`. The dash intent paths read these to evaluate the
+    /// expression form; literal fields skip eval entirely.
+    #[serde(skip)]
+    pub(crate) dash_programs: DashPrograms,
     /// Optional crouch tuning, materialized from the descriptor's `crouch`
     /// field. `None` ⇒ crouch disabled.
     pub(crate) crouch: Option<CrouchParams>,
@@ -165,9 +261,28 @@ impl PlayerMovementComponent {
     pub(crate) fn from_descriptor(desc: &PlayerMovementDescriptor) -> Self {
         let cos_walkable = desc.ground.max_slope.to_radians().cos();
         let air_jumps_remaining = desc.air.jumps;
+
+        // Bind the dash value expressions against the validation scope. The same
+        // static type table validated these at declaration (Task 2), so a bind
+        // failure here is unreachable. If one ever occurs, degrade VISIBLY: warn
+        // once and materialize with dash disabled rather than panicking in this
+        // subsystem path (development_guide.md §6.2). `dash`/`dash_programs` move
+        // together — disabling `dash` keeps the empty `dash_programs` consistent.
+        let (dash, dash_programs) = match desc.dash.as_ref() {
+            None => (None, DashPrograms::default()),
+            Some(params) => match DashPrograms::from_dash(params) {
+                Ok(programs) => (desc.dash.clone(), programs),
+                Err(err) => {
+                    log::warn!(
+                        "[Movement] dash expression failed to bind ({err}); disabling dash for this descriptor"
+                    );
+                    (None, DashPrograms::default())
+                }
+            },
+        };
         // Mirror how `air_jumps_remaining` is seeded from `air.jumps`: the
         // air-dash budget starts full at construction, 0 when dash is disabled.
-        let air_dashes_remaining = desc.dash.as_ref().map_or(0, |d| d.air_dashes);
+        let air_dashes_remaining = dash.as_ref().map_or(0, |d| d.air_dashes);
         // Forgiveness windows materialize here: an absent `forgiveness`
         // sub-object applies the documented engine defaults; a present one
         // already merged per-field defaults at parse time (0 disables a grace).
@@ -177,7 +292,8 @@ impl PlayerMovementComponent {
             ground: desc.ground.clone(),
             air: desc.air.clone(),
             fall: desc.fall.clone(),
-            dash: desc.dash.clone(),
+            dash,
+            dash_programs,
             crouch: desc.crouch.clone(),
             // View feel is a render-only camera effect: clone the descriptor's
             // tuning verbatim (no transform), mirroring ground/air/fall.

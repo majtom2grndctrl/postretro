@@ -2639,7 +2639,7 @@ impl App {
                     Ok(t) => t.position,
                     Err(_) => continue,
                 };
-                snapshots.push((id, component.clone(), position));
+                snapshots.push((id, (**component).clone(), position));
             }
         }
 

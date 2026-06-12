@@ -70,7 +70,12 @@ pub(crate) enum BindError {
 /// node tree reads the bound form with no mental remap) and a recursive eval
 /// walk over `Box` children is allocation-free at tick time — the boxes are
 /// allocated once at bind. `H` is the scope's `InputHandle` type.
-#[derive(Debug)]
+///
+/// `Clone` is derived so an adopter can hold a bound program inside a component
+/// that flows through `Clone`/`PartialEq`/serde container derives (the dash
+/// `DashPrograms` case). The derive adds an `H: Clone` bound, satisfied by every
+/// real scope's handle (`usize` for `MovementScope`).
+#[derive(Debug, Clone)]
 pub(crate) enum BoundNode<H> {
     Const(IrValue),
     Input(H),
@@ -120,6 +125,25 @@ pub(crate) struct BoundProgram<S: BindingScope> {
     pub(crate) root: BoundNode<S::InputHandle>,
     pub(crate) root_type: IrType,
     pub(crate) output: Option<S::OutputHandle>,
+}
+
+// Manual `Clone` bounded on the handle types only, mirroring the manual `Debug`
+// below. A `#[derive(Clone)]` would add a spurious `S: Clone` bound (the struct
+// holds no `S`, only its associated handle types), forcing every concrete scope
+// to be `Clone` just to clone a program. Bounding on the handle types instead
+// keeps the requirement where it belongs.
+impl<S: BindingScope> Clone for BoundProgram<S>
+where
+    S::InputHandle: Clone,
+    S::OutputHandle: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            root: self.root.clone(),
+            root_type: self.root_type,
+            output: self.output.clone(),
+        }
+    }
 }
 
 // Manual `Debug` bounded on the handle types only. The `#[derive(Debug)]` macro

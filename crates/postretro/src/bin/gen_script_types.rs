@@ -19,6 +19,18 @@ mod scripting;
 #[path = "../weapon/damage.rs"]
 mod weapon;
 
+// `scripting::data_descriptors` binds dash value expressions against
+// `crate::movement::MovementScope` (movement owns its binding scope). Pull in
+// only the scope module — its sole dependencies are the IR substrate and the
+// player-movement component, both already reachable through `scripting`. The
+// rest of the movement subsystem needs renderer/collision modules this bin
+// lacks, so it is deliberately excluded.
+#[path = "../movement/scope.rs"]
+mod movement_scope;
+mod movement {
+    pub(crate) use crate::movement_scope::MovementScope;
+}
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 

@@ -291,20 +291,20 @@ export type FallParams = {
 
 --- Dash tuning. Optional on `PlayerMovementDescriptor` — when omitted, dash is disabled. When present, all fields are required and validated.
 export type DashParams = {
-  --- Impulse magnitude applied on dash in metres/sec. Must be finite > 0.
-  boostSpeed: number,
-  --- Fraction of pre-dash momentum folded into the dash, unitless in [0, 1].
-  momentumRetention: number,
-  --- In-dash steering authority, unitless in [0, 1].
-  steerControl: number,
-  --- Decay rate of the dash impulse in metres/sec². Must be finite and ≥ 0.
-  dashDrag: number,
-  --- Cooldown between dashes in milliseconds. Must be finite and ≥ 0.
-  cooldownMs: number,
+  --- Impulse magnitude applied on dash in metres/sec. A literal must be finite > 0. Accepts a runtime expression, evaluated at dash entry.
+  boostSpeed: number | RuntimeValue,
+  --- Fraction of pre-dash momentum folded into the dash, unitless in [0, 1]. Accepts a runtime expression, evaluated at dash entry.
+  momentumRetention: number | RuntimeValue,
+  --- In-dash steering authority, unitless in [0, 1]. Accepts a runtime expression, evaluated per tick during the dash.
+  steerControl: number | RuntimeValue,
+  --- Decay rate of the dash impulse in metres/sec². A literal must be finite and ≥ 0. Accepts a runtime expression, evaluated per tick during the dash.
+  dashDrag: number | RuntimeValue,
+  --- Cooldown between dashes in milliseconds. A literal must be finite and ≥ 0. Accepts a runtime expression, evaluated at dash entry.
+  cooldownMs: number | RuntimeValue,
   --- Number of air dashes allowed before landing.
   airDashes: number,
-  --- Whether the dash preserves the pre-dash vertical velocity.
-  preserveVertical: boolean,
+  --- Whether the dash preserves the pre-dash vertical velocity. Accepts a runtime expression, evaluated at dash entry.
+  preserveVertical: boolean | RuntimeValue,
 }
 
 --- Crouch tuning. Optional on `PlayerMovementDescriptor` — when omitted, crouch is disabled. When present, all fields are required and validated.
@@ -696,92 +696,99 @@ declare function defineReaction(
 declare function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor
 
 -- ---------------------------------------------------------------------------
--- Behavior IR vocabulary — the typed command buffer (scripting.md §11). The
--- `ir.*` builders assemble these node tables as plain data; constructing a
--- node has no FFI side effect. The `IrNode` union is the *closure* of the
+-- Runtime-value vocabulary — the typed command buffer (scripting.md §11). The
+-- `runtime.*` builders assemble these node tables as plain data; constructing a
+-- node has no FFI side effect. The `RuntimeValue` union is the *closure* of the
 -- vocabulary: an author cannot name an op outside it. Field names match the
 -- Rust `IrNode` wire format byte-for-byte (`a`/`b`, `x`/`lo`/`hi`, `cond`,
 -- `name`, `value`) so builder output deserializes straight into `IrNode`.
--- Source of truth: crates/postretro/src/scripting/ir/mod.rs + sdk/lib/ir.luau.
+-- (Author surface is `runtime`/`RuntimeValue`; the Rust substrate and wire op
+-- tags keep the `ir` names — scripting.md §11, "Author-facing naming".)
+-- Source of truth: crates/postretro/src/scripting/ir/mod.rs + sdk/lib/runtime.luau.
 -- Static block (not registry-emitted): `register_tagged_union` /
 -- `TypeShape::TaggedUnion` renders one payload type name per variant under a
 -- fixed tag key — it cannot express per-variant inline struct fields (e.g.
--- `value`, `a`/`b`, `cond`) or the recursive `IrNode` self-reference that
+-- `value`, `a`/`b`, `cond`) or the recursive `RuntimeValue` self-reference that
 -- every non-leaf variant requires.
 
 --- Literal scalar leaf: `{ op = "const", value }`. `value` is a number or boolean.
-export type IrConst = { op: "const", value: number | boolean }
+export type RuntimeConst = { op: "const", value: number | boolean }
 --- Named-input leaf: `{ op = "input", name }`. Bound to live state by the Rust evaluator.
-export type IrInput = { op: "input", name: string }
+export type RuntimeRead = { op: "input", name: string }
 --- Addition: `a + b` (number).
-export type IrAdd = { op: "add", a: IrNode, b: IrNode }
+export type RuntimeAdd = { op: "add", a: RuntimeValue, b: RuntimeValue }
 --- Subtraction: `a - b` (number).
-export type IrSub = { op: "sub", a: IrNode, b: IrNode }
+export type RuntimeSub = { op: "sub", a: RuntimeValue, b: RuntimeValue }
 --- Multiplication: `a * b` (number).
-export type IrMul = { op: "mul", a: IrNode, b: IrNode }
+export type RuntimeMul = { op: "mul", a: RuntimeValue, b: RuntimeValue }
 --- Division: `a / b` (number).
-export type IrDiv = { op: "div", a: IrNode, b: IrNode }
+export type RuntimeDiv = { op: "div", a: RuntimeValue, b: RuntimeValue }
 --- Clamp `x` to `[lo, hi]` (number).
-export type IrClamp = { op: "clamp", x: IrNode, lo: IrNode, hi: IrNode }
+export type RuntimeClamp = { op: "clamp", x: RuntimeValue, lo: RuntimeValue, hi: RuntimeValue }
 --- Linear interpolation between `a` and `b` by `t` (number).
-export type IrLerp = { op: "lerp", a: IrNode, b: IrNode, t: IrNode }
+export type RuntimeLerp = { op: "lerp", a: RuntimeValue, b: RuntimeValue, t: RuntimeValue }
 --- Less-than comparison (boolean).
-export type IrLt = { op: "lt", a: IrNode, b: IrNode }
+export type RuntimeLt = { op: "lt", a: RuntimeValue, b: RuntimeValue }
 --- Less-than-or-equal comparison (boolean).
-export type IrLe = { op: "le", a: IrNode, b: IrNode }
+export type RuntimeLe = { op: "le", a: RuntimeValue, b: RuntimeValue }
 --- Greater-than comparison (boolean).
-export type IrGt = { op: "gt", a: IrNode, b: IrNode }
+export type RuntimeGt = { op: "gt", a: RuntimeValue, b: RuntimeValue }
 --- Greater-than-or-equal comparison (boolean).
-export type IrGe = { op: "ge", a: IrNode, b: IrNode }
+export type RuntimeGe = { op: "ge", a: RuntimeValue, b: RuntimeValue }
 --- Equality comparison (boolean).
-export type IrEq = { op: "eq", a: IrNode, b: IrNode }
+export type RuntimeEq = { op: "eq", a: RuntimeValue, b: RuntimeValue }
 --- Inequality comparison (boolean).
-export type IrNe = { op: "ne", a: IrNode, b: IrNode }
+export type RuntimeNe = { op: "ne", a: RuntimeValue, b: RuntimeValue }
 --- Branchless select: `cond ? a : b`. `a` and `b` share a type.
-export type IrSelect = { op: "select", cond: IrNode, a: IrNode, b: IrNode }
+export type RuntimeSelect = { op: "select", cond: RuntimeValue, a: RuntimeValue, b: RuntimeValue }
 
---- A node in the authored behavior IR tree. Closed vocabulary: every node the
+--- A node in the authored runtime-value tree. Closed vocabulary: every node the
 --- evaluator accepts is one of these variants. New opcodes extend this union
 --- in lockstep with the Rust `IrNode` enum.
-export type IrNode = IrConst | IrInput | IrAdd | IrSub | IrMul | IrDiv | IrClamp | IrLerp | IrLt | IrLe | IrGt | IrGe | IrEq | IrNe | IrSelect
+export type RuntimeValue = RuntimeConst | RuntimeRead | RuntimeAdd | RuntimeSub | RuntimeMul | RuntimeDiv | RuntimeClamp | RuntimeLerp | RuntimeLt | RuntimeLe | RuntimeGt | RuntimeGe | RuntimeEq | RuntimeNe | RuntimeSelect
 
---- Pure builder vocabulary for the behavior IR, installed as global `ir`.
---- Every method returns a plain `IrNode` table; constructing a node has no
---- FFI side effect.
---- Builders are dot-called (`ir.add(...)`), not method-called, so the
+--- A builder operand: an already-built node, or a bare `number`/`boolean`
+--- literal that the builder auto-wraps into a `const` node.
+export type RuntimeOperand = RuntimeValue | number | boolean
+
+--- Pure builder vocabulary for runtime values, installed as global `runtime`.
+--- Every method returns a plain `RuntimeValue` table; constructing a node has
+--- no FFI side effect. Bare `number`/`boolean` operands are auto-wrapped into
+--- `const` nodes.
+--- Builders are dot-called (`runtime.add(...)`), not method-called, so the
 --- signatures take no `self` parameter.
-export type Ir = {
+export type Runtime = {
   --- Literal scalar leaf. `const` is reserved, so the builder is `constant`.
-  constant: (value: number | boolean) -> IrConst,
+  constant: (value: number | boolean) -> RuntimeConst,
   --- Named-input leaf, bound to live state by name in the Rust evaluator.
-  input: (name: string) -> IrInput,
+  read: (name: string) -> RuntimeRead,
   --- `a + b` (number).
-  add: (a: IrNode, b: IrNode) -> IrAdd,
+  add: (a: RuntimeOperand, b: RuntimeOperand) -> RuntimeAdd,
   --- `a - b` (number).
-  sub: (a: IrNode, b: IrNode) -> IrSub,
+  sub: (a: RuntimeOperand, b: RuntimeOperand) -> RuntimeSub,
   --- `a * b` (number).
-  mul: (a: IrNode, b: IrNode) -> IrMul,
+  mul: (a: RuntimeOperand, b: RuntimeOperand) -> RuntimeMul,
   --- `a / b` (number).
-  div: (a: IrNode, b: IrNode) -> IrDiv,
+  div: (a: RuntimeOperand, b: RuntimeOperand) -> RuntimeDiv,
   --- Clamp `x` to `[lo, hi]` (number).
-  clamp: (x: IrNode, lo: IrNode, hi: IrNode) -> IrClamp,
+  clamp: (x: RuntimeOperand, lo: RuntimeOperand, hi: RuntimeOperand) -> RuntimeClamp,
   --- Linear interpolation between `a` and `b` by `t` (number).
-  lerp: (a: IrNode, b: IrNode, t: IrNode) -> IrLerp,
+  lerp: (a: RuntimeOperand, b: RuntimeOperand, t: RuntimeOperand) -> RuntimeLerp,
   --- `a < b` (boolean).
-  lt: (a: IrNode, b: IrNode) -> IrLt,
+  lt: (a: RuntimeOperand, b: RuntimeOperand) -> RuntimeLt,
   --- `a <= b` (boolean).
-  le: (a: IrNode, b: IrNode) -> IrLe,
+  le: (a: RuntimeOperand, b: RuntimeOperand) -> RuntimeLe,
   --- `a > b` (boolean).
-  gt: (a: IrNode, b: IrNode) -> IrGt,
+  gt: (a: RuntimeOperand, b: RuntimeOperand) -> RuntimeGt,
   --- `a >= b` (boolean).
-  ge: (a: IrNode, b: IrNode) -> IrGe,
+  ge: (a: RuntimeOperand, b: RuntimeOperand) -> RuntimeGe,
   --- `a == b` (boolean).
-  eq: (a: IrNode, b: IrNode) -> IrEq,
+  eq: (a: RuntimeOperand, b: RuntimeOperand) -> RuntimeEq,
   --- `a ~= b` (boolean).
-  ne: (a: IrNode, b: IrNode) -> IrNe,
+  ne: (a: RuntimeOperand, b: RuntimeOperand) -> RuntimeNe,
   --- Branchless select: `cond ? a : b`. `a` and `b` share a type.
-  select: (cond: IrNode, a: IrNode, b: IrNode) -> IrSelect,
+  select: (cond: RuntimeOperand, a: RuntimeOperand, b: RuntimeOperand) -> RuntimeSelect,
 }
 
---- Behavior IR builder vocabulary global.
-declare ir: Ir
+--- Runtime-value builder vocabulary global.
+declare runtime: Runtime

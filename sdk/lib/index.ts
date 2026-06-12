@@ -9,7 +9,7 @@
 export type { EntityForComponent, World } from "./world";
 export { world } from "./world";
 
-export { ir } from "./ir";
+export { runtime } from "./runtime";
 
 export type { AnimatableScalar, AnimatableVec3 } from "./animation";
 

@@ -2404,6 +2404,37 @@ impl App {
                         (None, None)
                     }
                 };
+
+            // Attach the `player.health` slot's declared range `[0, max]` now
+            // that the pawn (and its health component) has materialized. `max`
+            // is mod data, so it cannot be declared at `SlotTable` construction.
+            //
+            // Borrow discipline: `registry` is the live `borrow_mut` taken at
+            // the top of this block; read `max` THROUGH it here, before the
+            // `drop(registry)` below. A second `self.script_ctx.registry.borrow()`
+            // while this `borrow_mut` is live would panic (RefCell). The slot
+            // table is a separate `RefCell`, so its `borrow_mut` does not
+            // conflict with the registry borrow.
+            if let Some((_, health)) =
+                crate::scripting::components::health::pawn_with_health(&registry)
+            {
+                use crate::scripting::slot_table::NumericRange;
+                if let Err(err) = self
+                    .script_ctx
+                    .slot_table
+                    .borrow_mut()
+                    .set_engine_numeric_range(
+                        "player.health",
+                        NumericRange {
+                            min: 0.0,
+                            max: health.max,
+                        },
+                    )
+                {
+                    log::warn!("[Loader] failed to set player.health range: {err}");
+                }
+            }
+
             // Drop the registry borrow before touching `self.level` / `self.camera`.
             drop(registry);
             self.active_wieldable = active_wieldable;

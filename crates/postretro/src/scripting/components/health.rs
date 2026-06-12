@@ -8,7 +8,7 @@ use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
 use crate::scripting::data_descriptors::HealthDescriptor;
-use crate::scripting::registry::{EntityId, EntityRegistry};
+use crate::scripting::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
 use crate::weapon::DamagePayload;
 
 /// One world-aligned AABB hitbox, fixed per archetype. An entity is
@@ -57,6 +57,24 @@ impl HealthComponent {
             offset: Vec3::from_array(h.offset.unwrap_or([0.0, 0.0, 0.0])),
         });
     }
+}
+
+/// Locate the player pawn — the first entity carrying `PlayerMovement`
+/// (entity_model.md: "a player by virtue of carrying `PlayerMovement`") — and
+/// return it paired with its live `Health` component, when both are present.
+/// `None` when there is no pawn or the pawn carries no `Health` component.
+///
+/// Shared by the `player.health` slot-range producers: the level-install path
+/// (attaching `[0, max]` at materialization) and the hot-reload range-follow
+/// hook both resolve the pawn the same way.
+pub(crate) fn pawn_with_health(registry: &EntityRegistry) -> Option<(EntityId, HealthComponent)> {
+    let (pawn, _) = registry
+        .iter_with_kind(ComponentKind::PlayerMovement)
+        .find(|(_, value)| matches!(value, ComponentValue::PlayerMovement(_)))?;
+    registry
+        .get_component::<HealthComponent>(pawn)
+        .ok()
+        .map(|health| (pawn, *health))
 }
 
 /// The damage chokepoint every producer routes through. Subtracts the payload's

@@ -129,6 +129,74 @@ fn distinct_mesh_models(registry: &crate::scripting::registry::EntityRegistry) -
     ordered
 }
 
+/// Resolve every animated mesh entity's declared state map against the level's
+/// clip tables, filling each `AnimationState.clip_index` (name → glTF index). A
+/// state naming a clip the model does not carry warns ONCE here (at level load)
+/// and stays `clip_index = None` (unusable: switching to it warns + no-ops,
+/// switching out of it hard-cuts — both handled by the animation state machine). Stateless `prop_mesh`
+/// entities (no animation block) are skipped.
+///
+/// Runs at level load with a mutable registry, after the model sweep built the
+/// clip tables — so every state's index is concrete before the first frame.
+fn resolve_mesh_entity_clips(
+    registry: &mut crate::scripting::registry::EntityRegistry,
+    tables: &scripting_systems::mesh_anim::MeshClipTables,
+) {
+    use crate::scripting::registry::{ComponentKind, ComponentValue};
+
+    // Collect ids first so the mutable per-entity writes do not alias the
+    // immutable iteration borrow. Mesh entity counts are small.
+    let animated: Vec<crate::scripting::registry::EntityId> = registry
+        .iter_with_kind(ComponentKind::Mesh)
+        .filter_map(|(id, value)| match value {
+            ComponentValue::Mesh(mesh) if mesh.animation.is_some() => Some(id),
+            _ => None,
+        })
+        .collect();
+
+    for id in animated {
+        let Ok(mut component) = registry
+            .get_component::<crate::scripting::components::mesh::MeshComponent>(id)
+            .cloned()
+        else {
+            continue;
+        };
+        let model_name = component.model.clone();
+        let handle = crate::model::ModelHandle::from(model_name.clone());
+        let Some(anim) = component.animation.as_mut() else {
+            continue;
+        };
+        match tables.get(&handle) {
+            Some(table) => {
+                let missing =
+                    scripting_systems::mesh_anim::resolve_state_clips(&mut anim.states, table);
+                for m in &missing {
+                    log::warn!(
+                        "[Model] animation state '{}' on model '{}' names clip '{}' absent from \
+                         the model — state unusable (switching to it no-ops)",
+                        m.state,
+                        model_name,
+                        m.clip,
+                    );
+                }
+            }
+            None => {
+                // Model never uploaded (load failed): no clips resolve. Warn once
+                // for the model, leave every state unresolved.
+                log::warn!(
+                    "[Model] mesh entity references uncached model '{}' — animation states \
+                     unresolved",
+                    model_name,
+                );
+                for state in anim.states.values_mut() {
+                    state.clip_index = None;
+                }
+            }
+        }
+        let _ = registry.set_component(id, component);
+    }
+}
+
 // Policy chokepoint: the frame loop queues a staged build only when a changed
 // path matched the active mod-init dependency set (classified by ScriptRuntime).
 fn reload_summary_requires_mod_init(summary: ReloadSummary) -> bool {
@@ -289,12 +357,15 @@ fn main() -> Result<()> {
         collision_world: collision::CollisionWorld::new(),
         particle_render: scripting_systems::particle_render::ParticleRenderCollector::new(),
         mesh_render: scripting_systems::mesh_render::MeshRenderCollector::new(),
+        mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables::new(),
         active_wieldable: None,
         active_wieldable_descriptor: None,
         builtin_handled: None,
         pending_spawn_points: None,
         pending_map_entities: None,
         script_time: 0.0,
+        anim_time: 0.0,
+        anim_time_scale: 1.0,
         boot_state: BootState::Booting,
         splash_frame: 0,
         pending_level_log: false,
@@ -507,6 +578,14 @@ struct App {
     /// See: context/lib/scripting.md
     mesh_render: scripting_systems::mesh_render::MeshRenderCollector,
 
+    /// Game-side per-model animation clip tables (name → glTF index + per-index
+    /// duration), built at the level-load model sweep from each uploaded model's
+    /// renderer clip metadata. Owned beside `mesh_render`: the collector consults
+    /// it to compute per-instance sample times, and the level-load validation
+    /// resolves each mesh entity's `AnimationState.clip_index` against it. Cleared
+    /// on level unload. See: context/lib/scripting.md §10.3.
+    mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables,
+
     /// Active wieldable instance equipped by the player. The companion
     /// descriptor name lets mod-init hot reload refresh authored weapon stats
     /// while preserving per-instance cooldown.
@@ -555,6 +634,20 @@ struct App {
     /// unload. Maintained for any future engine consumers that need a
     /// level-relative monotonic clock.
     script_time: f64,
+
+    /// Game-layer animation clock: accumulates `frame_dt × anim_time_scale` each
+    /// render frame, advanced beside `script_time` at the same site and gated by
+    /// the same dev-tools `freeze_time()` flag. All skeletal-animation timing
+    /// (entry stamps, clip-local times, fade windows, the pending-stamp resolve)
+    /// reads this clock. Accumulation — not scaling of absolute time — so
+    /// changing `anim_time_scale` never jumps existing poses. Resets to zero on
+    /// level unload. See: context/lib/scripting.md §10.3.
+    anim_time: f64,
+
+    /// Per-frame multiplier on the animation clock's advancement. `1.0` is
+    /// real-time; `0.5` half-rate; `0.0` holds every clip and fade (pause). The
+    /// slow-motion seam — no script surface yet (engine-side field only).
+    anim_time_scale: f64,
 
     /// Per-stage durations for log line A — engine boot
     /// (args_parsed, script_runtime_ctor, event_loop_created, window_created,
@@ -1147,6 +1240,15 @@ impl ApplicationHandler for App {
                 let frozen = false;
                 if !frozen {
                     self.script_time += frame_dt as f64;
+                    // Animation clock accumulates scaled dt at the same site,
+                    // under the same freeze gate. Accumulation (not absolute-time
+                    // scaling) keeps a mid-fade scale change from jumping poses;
+                    // scale 0 holds every clip and fade. See scripting.md §10.3.
+                    self.anim_time = Self::advance_anim_clock(
+                        self.anim_time,
+                        frame_dt as f64,
+                        self.anim_time_scale,
+                    );
                 }
 
                 // Position interpolated from tick-state slots; yaw/pitch from
@@ -1412,6 +1514,19 @@ impl ApplicationHandler for App {
                         // while `visible_cells` is still live (it is reclaimed into
                         // scratch after).
                         if let Some(world) = self.level.as_ref() {
+                            // Resolve pass: fill every pending animation entry
+                            // stamp from this frame's post-advance animation clock
+                            // before the collector samples poses. Runs with a
+                            // mutable registry, immediately before the (read-only)
+                            // collector, so same-tick switches have all landed and
+                            // the last target's stamp is concrete. See mesh.rs.
+                            {
+                                let mut registry = self.script_ctx.registry.borrow_mut();
+                                crate::scripting::components::mesh::resolve_pending_animation_stamps(
+                                    &mut registry,
+                                    self.anim_time,
+                                );
+                            }
                             let registry = self.script_ctx.registry.borrow();
                             // Same frame alpha the player camera reads from
                             // `frame_timing` — interpolate each mesh between its
@@ -1421,6 +1536,12 @@ impl ApplicationHandler for App {
                                 world,
                                 &visible_cells,
                                 frame_result.alpha,
+                                self.anim_time,
+                                &self.mesh_clip_tables,
+                                // Camera eye position — the same value that seeds
+                                // the portal flood-fill — drives the per-instance
+                                // animation time-slicing distance bucket.
+                                interp.position,
                             );
                             renderer.set_mesh_draws(self.mesh_render.instances());
                         }
@@ -2161,36 +2282,6 @@ impl App {
         }
         self.level_timings.record("classname_dispatch");
 
-        // Level-load model sweep. Classname dispatch above spawned a
-        // `MeshComponent` entity per `prop_mesh` placement; now collect the
-        // distinct `model` handles off those entities and load + upload each
-        // exactly once into the renderer's model cache (renderer owns GPU). This
-        // runs at level-load time, never mid-frame, so there is no in-frame
-        // hitch. The model handle is the renderer cache key the per-frame draw
-        // planner groups by, so it is passed VERBATIM as the cache key; the glTF
-        // file itself is opened from `content_root.join(handle)` inside
-        // `load_skinned_model` (open path and cache key are decoupled — every
-        // other asset joins the content root, but the key must stay the raw
-        // handle the planner looks up). A failed/invalid load is non-fatal:
-        // `load_skinned_model` already `warn!`s naming the path and returns
-        // `None`, the entity then renders nothing, and the load continues.
-        {
-            let models = {
-                let registry = self.script_ctx.registry.borrow();
-                distinct_mesh_models(&registry)
-            };
-            for model in &models {
-                renderer.load_skinned_model(model, &self.content_root, &prm_cache_root);
-            }
-            if !models.is_empty() {
-                log::info!(
-                    "[Model] uploaded {} distinct mesh model(s) for this level",
-                    models.len(),
-                );
-            }
-        }
-        self.level_timings.record("model_load");
-
         // Register sprite collections for every distinct `sprite` name in
         // the registry. Covers map-spawned emitters; descriptor-spawned
         // emitters get a second pass after the data script runs.
@@ -2361,6 +2452,67 @@ impl App {
         }
         self.level_timings.record("archetype_sweep");
 
+        // Level-load model sweep. Runs AFTER both classname dispatch (which
+        // spawned a `MeshComponent` per `prop_mesh` placement) and the
+        // data-archetype sweep (which spawned descriptor-declared mesh entities,
+        // including animated `components.mesh` placements) so this single sweep
+        // sees EVERY mesh entity. Collect the distinct `model` handles off those
+        // entities and load + upload each exactly once into the renderer's model
+        // cache (renderer owns GPU). This runs at level-load time, never
+        // mid-frame, so there is no in-frame hitch. The model handle is the
+        // renderer cache key the per-frame draw planner groups by, so it is
+        // passed VERBATIM as the cache key; the glTF file itself is opened from
+        // `content_root.join(handle)` inside `load_skinned_model` (open path and
+        // cache key are decoupled — every other asset joins the content root, but
+        // the key must stay the raw handle the planner looks up). A
+        // failed/invalid load is non-fatal: `load_skinned_model` already `warn!`s
+        // naming the path and returns `None`, the entity then renders nothing,
+        // and the load continues.
+        //
+        // Ordering: this must run after the archetype sweep (so descriptor mesh
+        // entities exist before clip resolve) and before the `levelLoad` fire
+        // (which can run `setAnimationState`, requiring resolved clip indices).
+        if let Some(renderer) = self.renderer.as_mut() {
+            // Clear per-level transient mesh-pass state (the `"smooth"`-interrupt
+            // snapshot store and the per-entity palette cache — entity seeds are not
+            // stable across levels) at the model-cache install seam, and reset the
+            // game-side clip tables before rebuilding them for this level.
+            renderer.clear_mesh_pass_for_level_load();
+            self.mesh_clip_tables.clear();
+
+            let models = {
+                let registry = self.script_ctx.registry.borrow();
+                distinct_mesh_models(&registry)
+            };
+            for model in &models {
+                renderer.load_skinned_model(model, &self.content_root, &prm_cache_root);
+                // Build this model's game-side clip table from the renderer's clip
+                // metadata (glTF index order). A failed load cached nothing, so the
+                // metadata is empty and the table maps no clips — every state then
+                // warns + stays unresolved below.
+                let meta = renderer.skinned_model_clip_metadata(model);
+                self.mesh_clip_tables
+                    .insert(crate::model::ModelHandle::from(model.clone()), &meta);
+            }
+            if !models.is_empty() {
+                log::info!(
+                    "[Model] uploaded {} distinct mesh model(s) for this level",
+                    models.len(),
+                );
+            }
+
+            // Resolve every animated mesh entity's state map against its model's
+            // clip table: fill each `AnimationState.clip_index` (name → index). A
+            // state naming a clip the model does not carry warns ONCE here and stays
+            // `clip_index = None` (unusable — switching to it warns + no-ops, and
+            // switching out of it hard-cuts — both handled by the animation state machine).
+            resolve_mesh_entity_clips(
+                &mut self.script_ctx.registry.borrow_mut(),
+                &self.mesh_clip_tables,
+            );
+        }
+        self.level_timings.record("model_load");
+
         fire_named_event_with_sequences(
             "levelLoad",
             &self.script_ctx.data_registry.borrow(),
@@ -2370,6 +2522,18 @@ impl App {
         );
         self.level_timings.record("level_load_event");
         self.script_time = 0.0;
+        // Animation clock is level-relative like `script_time`. The scale field
+        // is engine config, not level state, so it is not reset here.
+        self.anim_time = 0.0;
+    }
+
+    /// Accumulate one frame onto the animation clock: `prev + dt × scale`.
+    /// Pure so the accumulation contract (scale 0.5 halves advancement; a
+    /// mid-accumulation scale change never jumps the clock because we add scaled
+    /// deltas rather than scaling absolute time) is unit-verifiable without the
+    /// event loop. The freeze gate lives at the call site. See scripting.md §10.3.
+    fn advance_anim_clock(prev: f64, frame_dt: f64, scale: f64) -> f64 {
+        prev + frame_dt * scale
     }
 
     /// Drive `movement::tick` for every entity carrying a
@@ -2897,12 +3061,7 @@ mod tests {
 
         let id = registry.spawn(Transform::default());
         registry
-            .set_component(
-                id,
-                MeshComponent {
-                    model: model.to_string(),
-                },
-            )
+            .set_component(id, MeshComponent::stateless(model.to_string()))
             .expect("freshly spawned id is live");
     }
 
@@ -2942,6 +3101,85 @@ mod tests {
 
         let registry = EntityRegistry::new();
         assert!(distinct_mesh_models(&registry).is_empty());
+    }
+
+    // Regression: the level-load model sweep + clip resolve ran BEFORE the
+    // data-archetype dispatch, so descriptor-spawned animated meshes never had
+    // their `clip_index` filled (every state stayed `None` → setAnimationState
+    // no-ops). The sweep now runs AFTER archetype dispatch. This pins the seam:
+    // when resolve runs against a registry that already holds a
+    // descriptor-style mesh entity (unresolved `clip_index: None` states), it
+    // resolves the indices — proving the resolve sees descriptor-spawned meshes.
+    #[test]
+    fn resolve_after_archetype_dispatch_fills_descriptor_mesh_clip_index() {
+        use crate::scripting::components::mesh::{
+            AnimationState, DEFAULT_CROSSFADE_MS, InterruptPolicy, MeshAnimation, MeshComponent,
+        };
+        use crate::scripting::registry::{EntityRegistry, Transform};
+        use std::collections::HashMap;
+
+        // A descriptor-declared animated mesh as it exists right after
+        // `apply_data_archetype_dispatch`: states present, every `clip_index`
+        // still `None` (the dispatch builds states but does not resolve them).
+        let unresolved = |clip: &str| AnimationState {
+            clip: clip.into(),
+            looping: true,
+            crossfade_ms: DEFAULT_CROSSFADE_MS,
+            interrupt: InterruptPolicy::Smooth,
+            clip_index: None,
+        };
+        let mut states = HashMap::new();
+        states.insert("idle".to_string(), unresolved("idle_clip"));
+        states.insert("attack".to_string(), unresolved("attack_clip"));
+
+        let mut registry = EntityRegistry::new();
+        let id = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                id,
+                MeshComponent {
+                    model: "models/descriptor_mob/scene.gltf".to_string(),
+                    animation: Some(MeshAnimation::new(states, "idle".to_string())),
+                },
+            )
+            .expect("freshly spawned id is live");
+
+        // Before resolve, the descriptor mesh's model is already visible to the
+        // sweep — so the single post-dispatch sweep would upload it.
+        let models = distinct_mesh_models(&registry);
+        assert!(models.contains(&"models/descriptor_mob/scene.gltf".to_string()));
+
+        // Build the clip table the renderer would produce for this model
+        // (glTF index order). Hand-built so no GPU is needed.
+        let mut tables = scripting_systems::mesh_anim::MeshClipTables::new();
+        let meta = vec![
+            crate::render::mesh_pass::ClipMetadata {
+                name: "idle_clip".to_string(),
+                duration: 2.0,
+            },
+            crate::render::mesh_pass::ClipMetadata {
+                name: "attack_clip".to_string(),
+                duration: 0.8,
+            },
+        ];
+        tables.insert(
+            crate::model::ModelHandle::from("models/descriptor_mob/scene.gltf"),
+            &meta,
+        );
+
+        resolve_mesh_entity_clips(&mut registry, &tables);
+
+        // The descriptor entity's states are now resolved to concrete glTF
+        // indices — the contract that makes `setAnimationState` work at spawn.
+        let component = registry
+            .get_component::<MeshComponent>(id)
+            .expect("mesh component still present");
+        let anim = component
+            .animation
+            .as_ref()
+            .expect("animation block present");
+        assert_eq!(anim.states.get("idle").unwrap().clip_index, Some(0));
+        assert_eq!(anim.states.get("attack").unwrap().clip_index, Some(1));
     }
 
     #[test]
@@ -2986,6 +3224,64 @@ mod tests {
             snapshot.len(),
             1,
             "value-less slots are skipped; only the set slot appears",
+        );
+    }
+
+    // --- Animation clock accumulation (scripting.md §10.3) ---
+
+    const CLOCK_EPSILON: f64 = 1e-9;
+
+    #[test]
+    fn anim_clock_half_scale_advances_at_half_rate() {
+        // With scale 0.5, accumulating the same deltas yields half the elapsed
+        // time of a real-time (scale 1.0) clock.
+        let dt = 1.0 / 60.0;
+        let mut full = 0.0;
+        let mut half = 0.0;
+        for _ in 0..600 {
+            full = App::advance_anim_clock(full, dt, 1.0);
+            half = App::advance_anim_clock(half, dt, 0.5);
+        }
+        assert!(
+            (half - full * 0.5).abs() < CLOCK_EPSILON,
+            "half-scale clock should be exactly half the real-time clock: full={full}, half={half}"
+        );
+    }
+
+    #[test]
+    fn anim_clock_zero_scale_holds() {
+        let dt = 1.0 / 144.0;
+        let mut clock = 5.0;
+        for _ in 0..100 {
+            clock = App::advance_anim_clock(clock, dt, 0.0);
+        }
+        assert!(
+            (clock - 5.0).abs() < CLOCK_EPSILON,
+            "scale 0 must hold the clock in place, got {clock}"
+        );
+    }
+
+    #[test]
+    fn anim_clock_mid_accumulation_scale_change_produces_no_jump() {
+        // Accumulation (not absolute-time scaling) means changing the scale only
+        // affects future deltas — the already-accumulated value is untouched, so
+        // there is no discontinuity at the scale-change boundary.
+        let dt = 0.01;
+        let mut clock = 0.0;
+        for _ in 0..50 {
+            clock = App::advance_anim_clock(clock, dt, 1.0);
+        }
+        let before_change = clock; // 50 × 0.01 × 1.0 = 0.5
+        // Switch to half scale mid-accumulation. The very next frame advances by
+        // dt × 0.5 from `before_change` — no retroactive rescale of the prior 0.5.
+        let after_first_half_step = App::advance_anim_clock(clock, dt, 0.5);
+        assert!(
+            (after_first_half_step - (before_change + dt * 0.5)).abs() < CLOCK_EPSILON,
+            "scale change must not retroactively rescale accumulated time"
+        );
+        assert!(
+            after_first_half_step > before_change,
+            "clock must keep moving forward (no backward jump) across a scale change"
         );
     }
 }

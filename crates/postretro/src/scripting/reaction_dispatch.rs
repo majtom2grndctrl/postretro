@@ -470,6 +470,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: None,
+            mesh: None,
         });
 
         let resolved = resolve_entity_type("grunt", &data);
@@ -482,6 +483,7 @@ mod tests {
                 emitter: None,
                 movement: None,
                 weapon: None,
+                mesh: None,
             })
         );
     }

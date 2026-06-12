@@ -50,13 +50,14 @@ use std::collections::HashMap;
 
 use wgpu::util::DeviceExt;
 
+use crate::model::anim::{BlendSource, LocalTrs};
 use crate::model::mesh::SkinnedMesh;
 use crate::model::skeleton::{AnimationClip, Skeleton};
 use crate::model::{BonePaletteEntry, ModelHandle};
 use crate::prl::LevelWorld;
 use crate::render::mesh_instances::{
-    JointCounts, MAX_INSTANCES, MAX_PALETTE_ENTRIES, MeshFramePlan, instance_casts_into_cone,
-    instance_phase,
+    ClipSample, FadeSource, JointCounts, MAX_INSTANCES, MAX_PALETTE_ENTRIES, MeshFramePlan,
+    MeshSampleParams, SnapshotTag, instance_casts_into_cone,
 };
 use crate::visibility::VisibleCells;
 
@@ -362,10 +363,14 @@ fn fragment_sampled_textures(entries: &[wgpu::BindGroupLayoutEntry]) -> u32 {
 }
 
 /// One uploaded skinned model: GPU vertex + index buffers, its per-submesh
-/// material bind groups, and the CPU-side animation data (skeleton + first clip)
-/// the per-frame palette is sampled from. A single-material model has one
-/// submesh spanning the whole index buffer; multi-material models carry one
-/// entry per primitive, in submesh order.
+/// material bind groups, and the skeleton the per-frame palette is sampled
+/// against. A single-material model has one submesh spanning the whole index
+/// buffer; multi-material models carry one entry per primitive, in submesh order.
+///
+/// The model's animation clips do NOT live here — they sit in the cache-side
+/// `MeshPass::model_clips` map (the `model_bounds` precedent) so the clip-name /
+/// metadata query seam is testable without a GPU device. The render path reaches
+/// them through that map by the same handle.
 struct UploadedModel {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
@@ -376,9 +381,363 @@ struct UploadedModel {
     /// Skeleton for pose sampling. Joint count == `skeleton.joints.len()` is the
     /// per-instance palette run length.
     skeleton: Skeleton,
-    /// First animation clip, if the model carries one. `None` → the model holds
-    /// its bind pose (identity palette run) every frame.
-    clip: Option<AnimationClip>,
+}
+
+/// Metadata for one animation clip — its authored name and duration in seconds.
+/// Returned by [`MeshPass::model_clip_metadata`] in glTF (authored) index order
+/// so a consumer can enumerate a model's clips without holding the clip data.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClipMetadata {
+    /// Clip name as authored in the glTF document.
+    pub name: String,
+    /// Clip length in seconds (latest keyframe time across all tracks).
+    pub duration: f32,
+}
+
+/// One captured `"smooth"`-interrupt snapshot: the per-joint local-TRS pose
+/// frozen at the interrupt instant, tagged with the entered state's entry stamp.
+/// A subsequent snapshot fade blends against `pose` only when its
+/// [`SnapshotTag`] matches `tag`; a mismatch (a replacement fade) drops the entry.
+///
+/// The pose buffer is owned (cloned out of the sampler's snapshot capture) — a
+/// snapshot outlives the frame that captured it, so it cannot borrow the
+/// per-frame scratch.
+#[derive(Debug, Clone, PartialEq)]
+struct StoredSnapshot {
+    tag: SnapshotTag,
+    pose: Vec<LocalTrs>,
+}
+
+/// Per-entity snapshot store for `"smooth"` interrupts: a plain CPU-side map
+/// keyed by entity seed, each entry tagged. A GPU-free seam (mirrors the
+/// `model_bounds` precedent) so the smooth-interrupt logic is unit-testable
+/// without a `wgpu::Device`.
+///
+/// Lifecycle: a capture instruction installs (or refreshes) an entry; a planned
+/// frame without an active snapshot fade for that entity (fade over, or tag
+/// mismatch on replacement) drops it. Bounded by planned-instance count and
+/// emptied wholesale at level load by [`MeshPass::clear_for_level_load`].
+#[derive(Debug, Default)]
+struct SnapshotStore {
+    entries: HashMap<u32, StoredSnapshot>,
+}
+
+impl SnapshotStore {
+    /// Apply a capture instruction: capture `blend(outgoing, incoming)` at the
+    /// instruction's weight into the store, tagged. **Idempotent:** if the stored
+    /// entry already carries this tag, nothing is evaluated (a re-emission under a
+    /// frozen clock is a no-op). A snapshot-referencing outgoing source that
+    /// MISSES the store captures `blend(fallback, incoming)` instead (the capture
+    /// frame for the referenced snapshot was culled — degrade to the fallback).
+    ///
+    /// `resolve_clip` maps a clip index to its `&AnimationClip` (the model's clip
+    /// list); a missing clip aborts the capture (no usable pose).
+    fn apply_capture<'a>(
+        &mut self,
+        capture: &crate::render::mesh_instances::CaptureInstruction,
+        skeleton: &Skeleton,
+        resolve_clip: impl Fn(usize) -> Option<&'a AnimationClip>,
+        scratch: &mut Vec<LocalTrs>,
+    ) {
+        // Idempotent: a matching tag means this capture already landed.
+        if self
+            .entries
+            .get(&capture.seed)
+            .is_some_and(|e| e.tag == capture.tag)
+        {
+            return;
+        }
+
+        // Resolve the incoming (entered) clip leg.
+        let Some(incoming) = clip_blend_source(&capture.incoming, &resolve_clip) else {
+            return;
+        };
+
+        // Resolve the outgoing source: a snapshot reference blends against the
+        // stored pose if present, else its fallback clip (degrade-on-miss). A
+        // clip source resolves directly.
+        let outgoing_clip;
+        let outgoing: BlendSource = match capture.outgoing {
+            FadeSource::Snapshot { tag, fallback } => {
+                match self.entries.get(&capture.seed) {
+                    Some(stored) if stored.tag == tag => BlendSource::Snapshot(&stored.pose),
+                    _ => {
+                        // Store miss / stale tag: capture from the fallback clip.
+                        let Some(src) = clip_blend_source(&fallback, &resolve_clip) else {
+                            return;
+                        };
+                        outgoing_clip = src;
+                        outgoing_clip.as_blend_source()
+                    }
+                }
+            }
+            FadeSource::Clip(leg) => {
+                let Some(src) = clip_blend_source(&leg, &resolve_clip) else {
+                    return;
+                };
+                outgoing_clip = src;
+                outgoing_clip.as_blend_source()
+            }
+        };
+
+        crate::model::anim::capture_blend(
+            &outgoing,
+            &incoming.as_blend_source(),
+            capture.weight,
+            skeleton,
+            scratch,
+        );
+        self.entries.insert(
+            capture.seed,
+            StoredSnapshot {
+                tag: capture.tag,
+                pose: scratch.clone(),
+            },
+        );
+    }
+
+    /// Look up an entry whose tag matches `tag`, for a snapshot fade.
+    fn matching(&self, seed: u32, tag: SnapshotTag) -> Option<&[LocalTrs]> {
+        self.entries
+            .get(&seed)
+            .filter(|e| e.tag == tag)
+            .map(|e| e.pose.as_slice())
+    }
+
+    /// Drop an entity's entry (fade over, or a replacement-fade tag mismatch).
+    fn drop_entry(&mut self, seed: u32) {
+        self.entries.remove(&seed);
+    }
+
+    /// Empty the store (level-load clear).
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
+/// One cached palette run: the last sampled bone-palette matrices for an entity,
+/// reused on a time-sliced SKIP frame so the pass re-uploads a valid pose without
+/// re-sampling. The `Vec` is reused in place on a resample (cleared + extended),
+/// so a steady-state cache hit allocates nothing.
+#[derive(Debug, Default)]
+struct CachedPalette {
+    /// The entity's last sampled palette run (one `BonePaletteEntry` per joint).
+    run: Vec<BonePaletteEntry>,
+    /// Set true when the entry is touched (resample or skip) this frame; entries
+    /// left `false` after a frame are evicted, so the cache never exceeds the
+    /// frame's planned-instance count.
+    seen_this_frame: bool,
+}
+
+/// Renderer-side per-entity palette cache for animation time-slicing,
+/// keyed by entity seed — the `SnapshotStore`/`model_bounds` precedent (GPU-free
+/// data logic, unit-testable without a `wgpu::Device`). On a RESAMPLE frame the
+/// pass samples the pose and refreshes the cached run; on a SKIPPED frame it
+/// re-uploads the cached run with no sampling. A cache MISS forces a resample
+/// that frame regardless of the collector's flag (the collector cannot see
+/// renderer-side cache state), so a culled instance re-entering view never shows
+/// a stale pose.
+///
+/// Eviction: entries not touched in a frame are dropped at [`end_frame`], so the
+/// cache is bounded by the frame's planned-instance count (≤ `MAX_INSTANCES`
+/// entries, ≤ `MAX_PALETTE_ENTRIES` total slots). Emptied wholesale at level load
+/// by [`PaletteCache::clear`] (entity seeds are not stable across levels).
+///
+/// [`end_frame`]: PaletteCache::end_frame
+#[derive(Debug, Default)]
+struct PaletteCache {
+    entries: HashMap<u32, CachedPalette>,
+}
+
+impl PaletteCache {
+    /// Resolve whether this instance must sample this frame. Returns `true` when
+    /// the collector asked to resample OR the cache misses (no entry for this
+    /// seed) — the miss upgrade is what keeps a re-entering instance from showing
+    /// a stale pose. A `false` return means a valid cached run exists and the
+    /// collector cleared the instance to skip.
+    fn must_sample(&self, seed: u32, collector_resample: bool) -> bool {
+        collector_resample || !self.entries.contains_key(&seed)
+    }
+
+    /// Store a freshly sampled run for `seed`, reusing the entry's `Vec` storage
+    /// in place (cleared + extended — no realloc on a steady-state hit). Marks the
+    /// entry seen this frame so eviction keeps it.
+    fn store(&mut self, seed: u32, run: &[BonePaletteEntry]) {
+        let entry = self.entries.entry(seed).or_default();
+        entry.run.clear();
+        entry.run.extend_from_slice(run);
+        entry.seen_this_frame = true;
+    }
+
+    /// The cached run for `seed` on a SKIP frame, or `None` if absent. Also marks
+    /// the entry seen so a skipped instance is not evicted. (A skip only reaches
+    /// here when `must_sample` already returned `false`, i.e. the entry exists.)
+    fn touch_cached(&mut self, seed: u32) -> Option<&[BonePaletteEntry]> {
+        let entry = self.entries.get_mut(&seed)?;
+        entry.seen_this_frame = true;
+        Some(entry.run.as_slice())
+    }
+
+    /// Evict entries not touched this frame and reset the per-entry seen flags for
+    /// the next frame. Called once at the end of the per-frame sample/upload pass,
+    /// so the cache holds exactly this frame's planned instances.
+    fn end_frame(&mut self) {
+        self.entries.retain(|_, e| e.seen_this_frame);
+        for e in self.entries.values_mut() {
+            e.seen_this_frame = false;
+        }
+    }
+
+    /// Empty the cache (level-load clear).
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
+/// A resolved clip blend source's owned parts, so a `BlendSource::Clip` can be
+/// reconstructed by reference. `BlendSource` borrows the clip, so the borrow
+/// must outlive the `BlendSource` — this holds the `(clip, time, loop)` and
+/// hands out a fresh `BlendSource` on demand.
+struct ClipBlend<'a> {
+    clip: &'a AnimationClip,
+    time: f32,
+    loop_policy: crate::model::anim::Loop,
+}
+
+impl<'a> ClipBlend<'a> {
+    fn as_blend_source(&self) -> BlendSource<'a> {
+        BlendSource::Clip {
+            clip: self.clip,
+            time: self.time,
+            loop_policy: self.loop_policy,
+        }
+    }
+}
+
+/// Resolve a [`ClipSample`] leg into a borrowed [`ClipBlend`], or `None` if its
+/// clip index is absent from the model.
+fn clip_blend_source<'a>(
+    leg: &ClipSample,
+    resolve_clip: &impl Fn(usize) -> Option<&'a AnimationClip>,
+) -> Option<ClipBlend<'a>> {
+    let clip = resolve_clip(leg.clip_index)?;
+    Some(ClipBlend {
+        clip,
+        time: leg.time,
+        loop_policy: leg.loop_policy,
+    })
+}
+
+/// Sample one instance's pose into `out` per its resolved [`MeshSampleParams`]:
+/// a single clip (no fade), a clip→clip blend, or a snapshot→clip blend. Always
+/// writes a full run into `out` and returns `true`, so the caller's palette write
+/// covers the whole region.
+///
+/// When the primary clip does not resolve there is no pose to sample, so `out` is
+/// filled with one identity (bind-pose) matrix per joint rather than left
+/// untouched. Leaving it untouched would let the caller skip the write and expose
+/// whatever matrices the densely-repacked palette region last held (another
+/// instance's pose) — the identity fill makes the unsampled run a clean bind pose
+/// instead of inheriting a stranger's matrices.
+///
+/// Fade resolution mirrors the collector's intent but degrades safely at the GPU
+/// seam: a [`FadeSource::Snapshot`] whose store entry is missing (capture frame
+/// culled) falls back to its `(clip, time)` pair — a `"snap"`-equivalent hard
+/// blend the game layer never saw.
+fn sample_instance<'a>(
+    sample: &MeshSampleParams,
+    skeleton: &Skeleton,
+    store: &SnapshotStore,
+    seed: u32,
+    resolve_clip: &impl Fn(usize) -> Option<&'a AnimationClip>,
+    out: &mut Vec<BonePaletteEntry>,
+) -> bool {
+    // Primary clip must resolve; without it there is no pose to sample. Write an
+    // identity (bind-pose) run so the caller's palette write overwrites any stale
+    // matrices the dense repack left in this instance's region.
+    let Some(primary) = clip_blend_source(&sample.primary, resolve_clip) else {
+        out.clear();
+        out.resize(
+            skeleton.joints.len(),
+            BonePaletteEntry {
+                matrix: glam::Mat4::IDENTITY.to_cols_array_2d(),
+            },
+        );
+        return true;
+    };
+
+    let Some(fade) = sample.fade else {
+        // Steady state: single clip sample (the common, allocation-free path).
+        crate::model::anim::sample_clip_looped(
+            primary.clip,
+            skeleton,
+            primary.time,
+            primary.loop_policy,
+            out,
+        );
+        return true;
+    };
+
+    // A fade is active: blend `from` → `primary` at the weight. The blended
+    // sampler takes weight 0 → `a` (the outgoing `from`), 1 → `b` (the entered
+    // `primary`), matching the collector's weight convention.
+    let primary_src = primary.as_blend_source();
+    match fade.from {
+        FadeSource::Clip(leg) => {
+            let Some(from) = clip_blend_source(&leg, resolve_clip) else {
+                // Outgoing clip gone: fall back to the primary alone.
+                crate::model::anim::sample_clip_looped(
+                    primary.clip,
+                    skeleton,
+                    primary.time,
+                    primary.loop_policy,
+                    out,
+                );
+                return true;
+            };
+            crate::model::anim::sample_blended(
+                &from.as_blend_source(),
+                &primary_src,
+                fade.weight,
+                skeleton,
+                out,
+            );
+        }
+        FadeSource::Snapshot { tag, fallback } => {
+            match store.matching(seed, tag) {
+                Some(pose) => {
+                    crate::model::anim::sample_blended(
+                        &BlendSource::Snapshot(pose),
+                        &primary_src,
+                        fade.weight,
+                        skeleton,
+                        out,
+                    );
+                }
+                None => {
+                    // Store miss (capture frame culled): degrade to the fallback
+                    // clip — a `"snap"`-equivalent blend the game layer never saw.
+                    match clip_blend_source(&fallback, resolve_clip) {
+                        Some(from) => crate::model::anim::sample_blended(
+                            &from.as_blend_source(),
+                            &primary_src,
+                            fade.weight,
+                            skeleton,
+                            out,
+                        ),
+                        None => crate::model::anim::sample_clip_looped(
+                            primary.clip,
+                            skeleton,
+                            primary.time,
+                            primary.loop_policy,
+                            out,
+                        ),
+                    }
+                }
+            }
+        }
+    }
+    true
 }
 
 /// GPU resources for the skinned-mesh forward pass.
@@ -446,7 +805,7 @@ pub struct MeshPass {
 
     /// Uploaded models keyed by handle (the raw `MeshComponent.model` string).
     /// One entry per distinct model; mirrors `SmokePass::sheets`. The level-load
-    /// step (Task D) populates this via [`MeshPass::insert_model`].
+    /// level-load model sweep populates this via [`MeshPass::insert_model`].
     models: HashMap<ModelHandle, UploadedModel>,
 
     /// Per-model LOCAL-space AABB, keyed by handle, populated at `insert_model`
@@ -455,6 +814,38 @@ pub struct MeshPass {
     /// stamp each `PlannedInstance` with its model's bound for the CPU per-light
     /// caster cull — the renderer's GPU draw never reads it.
     model_bounds: HashMap<ModelHandle, crate::lighting::cone_frustum::Aabb>,
+
+    /// Per-model animation clips, keyed by handle, in glTF (authored) index
+    /// order — the FULL clip set parsed from the document, not just the first.
+    /// Kept on the cache beside `model_bounds` (not in `UploadedModel`, which
+    /// stays GPU-only) so the clip-name / metadata query seam is testable
+    /// without a `wgpu::Device`. `plan_and_upload` samples each instance by the
+    /// clip indices its per-instance `MeshSampleParams` carry (the collector
+    /// resolves state → clip index game-side); the name/metadata accessors read
+    /// the whole list. A model with no animation maps to an empty `Vec`.
+    model_clips: HashMap<ModelHandle, Vec<AnimationClip>>,
+
+    /// Per-entity `"smooth"`-interrupt snapshot store, keyed by entity seed. A
+    /// GPU-free CPU map (the `model_bounds` precedent): a capture instruction
+    /// installs an entry, a planned frame without an active snapshot fade drops
+    /// it, and [`MeshPass::clear_for_level_load`] empties it at level load. The
+    /// frozen pose is the blend source a `"smooth"` fade resumes from with no
+    /// discontinuity.
+    snapshot_store: SnapshotStore,
+
+    /// Per-entity palette cache for animation time-slicing, keyed by
+    /// entity seed — the `model_bounds`/`SnapshotStore` GPU-free precedent. On a
+    /// resample frame the freshly sampled run refreshes the cache; on a skipped
+    /// frame the cached run is re-uploaded with no sampling; a cache miss forces a
+    /// resample. Per-frame eviction bounds it by the planned-instance count, and
+    /// [`MeshPass::clear_for_level_load`] empties it at level load.
+    palette_cache: PaletteCache,
+
+    /// Reusable per-joint local-TRS scratch for snapshot CAPTURE (kept off the
+    /// hot path; capture is a one-time event, not steady-state). Separate from
+    /// the renderer's palette scratch so a capture does not clobber an in-flight
+    /// pose sample.
+    capture_scratch: Vec<LocalTrs>,
 
     /// Optional per-frame pose-sampling measurement. `Some` only when
     /// `POSTRETRO_GPU_TIMING=1` (cached at construction so the hot path never
@@ -877,6 +1268,10 @@ impl MeshPass {
             cube_array_supported,
             models: HashMap::new(),
             model_bounds: HashMap::new(),
+            model_clips: HashMap::new(),
+            snapshot_store: SnapshotStore::default(),
+            palette_cache: PaletteCache::default(),
+            capture_scratch: Vec::new(),
             pose_sample_stats,
         }
     }
@@ -1014,14 +1409,20 @@ impl MeshPass {
 
     /// Insert (or replace) an uploaded skinned model keyed by `handle`. Uploads
     /// the mesh's vertex + index buffers and retains its per-submesh material
-    /// bind groups plus the CPU-side animation data (skeleton + first clip) the
-    /// per-frame palette is sampled from.
+    /// bind groups plus the CPU-side animation data (skeleton + the full clip
+    /// list) the per-frame palette is sampled from.
     ///
     /// `submeshes` pairs each material bind group with the index range it draws,
     /// in submesh order — built by the renderer via `build_material_bind_group`
     /// against the shared group-1 layout (the same `.prm` → `LoadedTexture` path
-    /// the world uses). This is the cache-insertion seam the level-load step
-    /// (Task D) calls once per distinct model at install.
+    /// the world uses). This is the cache-insertion seam the level-load model
+    /// sweep calls once per distinct model at install.
+    ///
+    /// `clips` is the model's FULL animation set in glTF (authored) index order.
+    /// Stored cache-side in `model_clips` for the name/metadata query seam and for
+    /// per-instance sampling: `plan_and_upload` indexes this list by each
+    /// instance's resolved `MeshSampleParams`. An empty list → the model holds its
+    /// bind pose (identity palette run) every frame.
     pub fn insert_model(
         &mut self,
         device: &wgpu::Device,
@@ -1029,7 +1430,7 @@ impl MeshPass {
         mesh: &SkinnedMesh,
         submeshes: Vec<(wgpu::BindGroup, std::ops::Range<u32>)>,
         skeleton: Skeleton,
-        clip: Option<AnimationClip>,
+        clips: Vec<AnimationClip>,
     ) {
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Skinned Mesh Vertex Buffer"),
@@ -1045,6 +1446,9 @@ impl MeshPass {
         // caster cull). Lives on the cache, NOT in `UploadedModel` — the GPU draw
         // never reads it.
         self.model_bounds.insert(handle.clone(), mesh.bounds);
+        // Stash the full clip list cache-side (same rationale as `model_bounds`):
+        // it keeps the clip-name / metadata query seam testable without a GPU.
+        self.model_clips.insert(handle.clone(), clips);
         self.models.insert(
             handle,
             UploadedModel {
@@ -1052,15 +1456,64 @@ impl MeshPass {
                 index_buffer,
                 submeshes,
                 skeleton,
-                clip,
             },
         );
+    }
+
+    /// Look up an animation clip by authored `name` for the model at `handle`.
+    /// Returns `None` when the handle is not cached or the model carries no clip
+    /// of that name — absence is normal, never an error or panic.
+    ///
+    /// First match wins: glTF does not forbid duplicate animation names, so on a
+    /// model with two clips sharing a name the earlier (lower glTF index) clip is
+    /// returned. Clips are stored in authored order, so this is the first
+    /// authored clip with the name.
+    ///
+    /// Delegates to the GPU-free [`clip_by_name`] over the `model_clips` map, so
+    /// the lookup is unit-testable without `MeshPass::new` (mirrors the
+    /// `mesh_visible` / `mesh_visible_in_leaf` split).
+    ///
+    /// The query seam awaits its runtime consumer (clip-name resolution at level
+    /// load); the free [`clip_by_name`] it wraps is exercised by the GPU-free
+    /// tests, so this thin device-bound wrapper carries an `allow(dead_code)` until
+    /// that consumer lands, mirroring `ModelHandle::as_str`.
+    #[allow(dead_code)]
+    pub fn model_clip_by_name(&self, handle: &ModelHandle, name: &str) -> Option<&AnimationClip> {
+        clip_by_name(&self.model_clips, handle, name)
+    }
+
+    /// The clip metadata (name + duration) for the model at `handle`, in glTF
+    /// (authored) index order. Returns an empty `Vec` when the handle is not
+    /// cached or the model has no animation — no error, no panic.
+    ///
+    /// Delegates to the GPU-free [`clip_metadata`] over the `model_clips` map for
+    /// headless testability (same rationale as [`MeshPass::model_clip_by_name`]).
+    /// Consumed at level load (via `Renderer::skinned_model_clip_metadata`) to
+    /// build the game-side clip tables.
+    pub fn model_clip_metadata(&self, handle: &ModelHandle) -> Vec<ClipMetadata> {
+        clip_metadata(&self.model_clips, handle)
     }
 
     /// Whether any model has been uploaded. The renderer skips the pass entirely
     /// when the cache is empty.
     pub fn has_model(&self) -> bool {
         !self.models.is_empty()
+    }
+
+    /// Level-load clear hook: reset per-level transient mesh-pass state. Called
+    /// at the model-cache install site in the level-load sweep (mirrors
+    /// `FogPass::clear_for_level_load`). The single per-level reset seam, so any
+    /// future per-level state lands here rather than scattered.
+    ///
+    /// Empties both per-entity caches keyed by entity seed — the `"smooth"`-
+    /// interrupt snapshot store and the time-slicing palette cache. Entity seeds
+    /// are not stable across levels, so a stale snapshot or cached palette run
+    /// from a prior level must not survive: a new level's instance reusing a prior
+    /// seed would otherwise blend against (or re-upload) a pose from a different
+    /// model.
+    pub fn clear_for_level_load(&mut self) {
+        self.snapshot_store.clear();
+        self.palette_cache.clear();
     }
 
     /// Initialize the shared bone palette to identity (bind pose) before the
@@ -1085,82 +1538,150 @@ impl MeshPass {
     /// one-frame pose lag between an entity and its shadow.
     ///
     /// For each planned instance: pack its SSBO entry (model matrix + palette
-    /// base) and sample its model's clip into the palette at that base, at a
-    /// per-instance phase derived from the instance's seed (so a wave is not
-    /// lock-step). `now_seconds` is the render clock; `scratch` is the renderer's
-    /// reusable pose buffer (kept off any GPU pass so a steady-state frame
-    /// allocates nothing).
+    /// base), evaluate any one-time snapshot-capture instruction into the
+    /// per-entity snapshot store, then sample its pose into the palette at that
+    /// base per the instance's resolved [`MeshSampleParams`] — a single clip
+    /// ([`crate::model::anim::sample_clip_looped`]), a clip→clip blend, or a
+    /// snapshot→clip blend. All sample times arrive in the params (the collector
+    /// computed them from the animation clock), so the pass holds no render-clock
+    /// of its own. The optional pose-sampling measurement uses an `Instant`, not
+    /// the render clock.
+    ///
+    /// Snapshot-store lifecycle: a capture installs/refreshes an entry (idempotent
+    /// by tag); an instance whose fade is NOT an active matching snapshot fade
+    /// drops its entry (fade over, or a replacement-fade tag mismatch). A
+    /// snapshot fade whose store entry is missing (its capture frame was culled /
+    /// budget-dropped) degrades to the fallback clip — a discontinuity no one saw
+    /// because the entity was not drawn at the interrupt instant.
     ///
     /// Cull is the caller's job — see [`mesh_visible`]; the plan already holds
     /// only surviving, in-budget instances.
-    ///
-    /// Takes `&mut self` only for the optional pose-sampling measurement
-    /// (`POSTRETRO_GPU_TIMING=1`); the cache itself is read immutably.
     pub fn plan_and_upload(
         &mut self,
         queue: &wgpu::Queue,
         plan: &MeshFramePlan,
-        now_seconds: f32,
         scratch: &mut Vec<BonePaletteEntry>,
     ) {
         if plan.groups.is_empty() {
             return;
         }
 
-        // Per-frame pose-sampling tallies, folded into `pose_sample_stats` after
-        // the loop (only when the gate is on, so an unmeasured frame pays only
-        // these two stack locals). Measuring inside the per-instance borrow of
-        // `self.models` would conflict with `&mut self.pose_sample_stats`.
-        let measure = self.pose_sample_stats.is_some();
+        // Disjoint field borrows: the capture step mutates `snapshot_store` +
+        // `capture_scratch` while reading `model_clips`/`models`; the sample step
+        // reads `snapshot_store`. Destructuring lets the borrow checker see they
+        // are distinct fields (a `self.method` call would borrow all of `self`).
+        let Self {
+            models,
+            model_clips,
+            snapshot_store,
+            palette_cache,
+            capture_scratch,
+            instance_buffer,
+            palette_buffer,
+            pose_sample_stats,
+            ..
+        } = self;
+
+        let measure = pose_sample_stats.is_some();
         let mut sampled_instances: u64 = 0;
         let mut sample_elapsed = std::time::Duration::ZERO;
 
         for group in &plan.groups {
-            let Some(model) = self.models.get(&group.model) else {
+            let Some(model) = models.get(&group.model) else {
                 // Planner only emits groups for cached models, but guard anyway.
                 continue;
             };
+            let clips = model_clips.get(&group.model);
+            let resolve_clip = |idx: usize| clips.and_then(|c| c.get(idx));
 
-            // Write each instance's SSBO entry + sample its palette run.
             for (i, inst) in group.instances.iter().enumerate() {
                 let instance_index = group.instance_offset as usize + i;
                 let entry = build_instance_entry(inst.transform, inst.palette_base);
                 queue.write_buffer(
-                    &self.instance_buffer,
+                    instance_buffer,
                     (instance_index * INSTANCE_ENTRY_SIZE) as u64,
                     &entry,
                 );
 
-                // Sample this instance's clip into its palette run at a
-                // per-instance phase. No clip → leave the run as the identity
-                // bind pose seeded at init.
-                if let Some(clip) = &model.clip {
-                    let phase = instance_phase(inst.phase_seed, clip.duration);
-                    let started = measure.then(std::time::Instant::now);
-                    crate::model::anim::sample_clip(
-                        clip,
+                // Evaluate the one-time `"smooth"` capture (if any) into the store
+                // BEFORE sampling, so this frame's snapshot fade resolves against
+                // it. Idempotent by tag — a re-emission evaluates nothing.
+                if let Some(capture) = &inst.capture {
+                    snapshot_store.apply_capture(
+                        capture,
                         &model.skeleton,
-                        now_seconds + phase,
+                        resolve_clip,
+                        capture_scratch,
+                    );
+                }
+
+                // Lifecycle: drop this entity's store entry unless its fade is an
+                // active snapshot fade whose tag matches a stored entry. The
+                // capture above just installed the matching entry on a capture
+                // frame, so an in-progress smooth fade survives; a finished or
+                // clip/snap fade clears it.
+                let keep_snapshot = matches!(
+                    inst.sample.fade.map(|f| f.from),
+                    Some(FadeSource::Snapshot { tag, .. })
+                        if snapshot_store.matching(inst.phase_seed, tag).is_some()
+                );
+                if !keep_snapshot {
+                    snapshot_store.drop_entry(inst.phase_seed);
+                }
+
+                // Time-slicing decision. Sample when the collector asked
+                // for a resample OR the cache misses (a re-entering instance with
+                // no cached run must sample, never show a stale pose). Otherwise
+                // re-upload the cached run with no sampling.
+                if palette_cache.must_sample(inst.phase_seed, inst.resample) {
+                    // RESAMPLE: sample this instance's pose, upload it, and refresh
+                    // the cache with the freshly sampled run.
+                    let started = measure.then(std::time::Instant::now);
+                    let sampled = sample_instance(
+                        &inst.sample,
+                        &model.skeleton,
+                        snapshot_store,
+                        inst.phase_seed,
+                        &resolve_clip,
                         scratch,
                     );
                     if let Some(started) = started {
                         sampled_instances += 1;
                         sample_elapsed += started.elapsed();
                     }
-                    if !scratch.is_empty() {
+                    if sampled && !scratch.is_empty() {
                         queue.write_buffer(
-                            &self.palette_buffer,
+                            palette_buffer,
                             inst.palette_base as u64 * BONE_PALETTE_ENTRY_SIZE as u64,
                             bytemuck::cast_slice(scratch),
+                        );
+                        // Refresh the cache so a future skipped frame re-uploads
+                        // THIS pose. Reuses the entry's `Vec` storage in place.
+                        palette_cache.store(inst.phase_seed, scratch);
+                    }
+                } else if let Some(cached) = palette_cache.touch_cached(inst.phase_seed) {
+                    // SKIP: re-upload the cached run at this frame's palette base
+                    // (the base can move frame to frame as the dense plan repacks).
+                    // No sampling, no allocation.
+                    if !cached.is_empty() {
+                        queue.write_buffer(
+                            palette_buffer,
+                            inst.palette_base as u64 * BONE_PALETTE_ENTRY_SIZE as u64,
+                            bytemuck::cast_slice(cached),
                         );
                     }
                 }
             }
         }
 
+        // Evict cache entries not touched this frame, so the cache holds exactly
+        // this frame's planned instances (bounded by MAX_INSTANCES / the palette
+        // budget) and a culled-out entity's stale run does not linger.
+        palette_cache.end_frame();
+
         // Fold this frame's pose-sampling tallies in and flush the rate-limited
         // line when the interval elapses. Only `Some` under POSTRETRO_GPU_TIMING.
-        if let Some(stats) = self.pose_sample_stats.as_mut() {
+        if let Some(stats) = pose_sample_stats.as_mut() {
             stats.record_frame(sampled_instances, sample_elapsed);
         }
     }
@@ -1374,6 +1895,52 @@ pub fn mesh_visible_in_leaf(visible: &VisibleCells, leaf_id: u32) -> bool {
         VisibleCells::DrawAll => true,
         VisibleCells::Culled(cells) => cells.contains(&leaf_id),
     }
+}
+
+/// Look up an animation clip by authored `name` in a model-clip map. Pure data
+/// logic — no GPU, no `MeshPass`. Backs [`MeshPass::model_clip_by_name`] and is
+/// split out (the `model_bounds` / `mesh_visible_in_leaf` precedent) so the
+/// clip-name query seam is testable without `MeshPass::new`, which needs a
+/// `wgpu::Device`.
+///
+/// Returns `None` when `handle` is not in the map or its clip list holds no clip
+/// of that name — absence is normal, never an error or panic. **First match
+/// wins:** glTF does not forbid duplicate animation names, and clips are stored
+/// in authored (glTF index) order, so the earliest authored clip with the name
+/// is returned.
+#[cfg_attr(not(test), allow(dead_code))]
+fn clip_by_name<'a>(
+    model_clips: &'a HashMap<ModelHandle, Vec<AnimationClip>>,
+    handle: &ModelHandle,
+    name: &str,
+) -> Option<&'a AnimationClip> {
+    model_clips
+        .get(handle)?
+        .iter()
+        .find(|clip| clip.name == name)
+}
+
+/// The clip metadata (name + duration) for `handle` in a model-clip map, in glTF
+/// (authored) index order. Pure data logic — no GPU. Backs
+/// [`MeshPass::model_clip_metadata`]; split out for the same headless-testability
+/// reason as [`clip_by_name`]. Returns an empty `Vec` when `handle` is absent or
+/// its model has no animation — no error, no panic.
+fn clip_metadata(
+    model_clips: &HashMap<ModelHandle, Vec<AnimationClip>>,
+    handle: &ModelHandle,
+) -> Vec<ClipMetadata> {
+    model_clips
+        .get(handle)
+        .map(|clips| {
+            clips
+                .iter()
+                .map(|clip| ClipMetadata {
+                    name: clip.name.clone(),
+                    duration: clip.duration,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -1999,6 +2566,925 @@ mod tests {
         assert!(
             fragment_sampled_textures(&cube) <= 16,
             "mesh group-2 sampled-texture count must stay under the spec floor of 16",
+        );
+    }
+
+    // --- Cache-side clip query seam (GPU-free) ----------------------------------
+    //
+    // The clip-name / metadata lookups back clip-name resolution at level load
+    // (main.rs's level-load sweep). They read the cache-side `model_clips` map,
+    // split out of `MeshPass` (which needs a `wgpu::Device`) into the GPU-free
+    // `clip_by_name` / `clip_metadata` free functions so the seam is testable here
+    // without a GPU.
+
+    use crate::model::skeleton::AnimationClip;
+
+    /// Build a named clip with `duration` and no per-joint tracks. The query seam
+    /// keys on name + duration only; track contents are irrelevant to it.
+    fn named_clip(name: &str, duration: f32) -> AnimationClip {
+        AnimationClip {
+            name: name.to_string(),
+            duration,
+            joints: Vec::new(),
+        }
+    }
+
+    fn clip_map(
+        entries: Vec<(ModelHandle, Vec<AnimationClip>)>,
+    ) -> HashMap<ModelHandle, Vec<AnimationClip>> {
+        entries.into_iter().collect()
+    }
+
+    /// A multi-clip model retains every clip in glTF (authored) order, each
+    /// retrievable by its authored name reporting its own duration — the
+    /// cache-level half of the multi-clip query contract.
+    #[test]
+    fn clip_query_retains_all_clips_in_order_each_by_name_with_own_duration() {
+        let handle = ModelHandle::from("multi");
+        let map = clip_map(vec![(
+            handle.clone(),
+            vec![
+                named_clip("idle", 1.0),
+                named_clip("walk", 2.5),
+                named_clip("attack", 0.75),
+            ],
+        )]);
+
+        // Metadata preserves authored order and per-clip duration.
+        let meta = clip_metadata(&map, &handle);
+        assert_eq!(
+            meta,
+            vec![
+                ClipMetadata {
+                    name: "idle".to_string(),
+                    duration: 1.0
+                },
+                ClipMetadata {
+                    name: "walk".to_string(),
+                    duration: 2.5
+                },
+                ClipMetadata {
+                    name: "attack".to_string(),
+                    duration: 0.75
+                },
+            ],
+            "clip metadata must list every clip in authored glTF order",
+        );
+
+        // Each clip is retrievable by its authored name, reporting its own
+        // duration — not just the first.
+        for (name, duration) in [("idle", 1.0_f32), ("walk", 2.5), ("attack", 0.75)] {
+            let clip = clip_by_name(&map, &handle, name)
+                .unwrap_or_else(|| panic!("clip '{name}' must be retrievable by name"));
+            assert_eq!(clip.name, name);
+            assert!(
+                (clip.duration - duration).abs() < 1.0e-6,
+                "clip '{name}' must report its own duration {duration}, got {}",
+                clip.duration,
+            );
+        }
+    }
+
+    /// Looking up a clip name absent from a model returns nothing — no error, no
+    /// panic.
+    #[test]
+    fn clip_by_name_absent_name_returns_none() {
+        let handle = ModelHandle::from("m");
+        let map = clip_map(vec![(handle.clone(), vec![named_clip("idle", 1.0)])]);
+        assert!(
+            clip_by_name(&map, &handle, "nonexistent").is_none(),
+            "an absent clip name must return None, not panic",
+        );
+    }
+
+    /// An un-cached handle returns nothing from both queries — empty metadata, no
+    /// clip — covering a model that never loaded or has no animation.
+    #[test]
+    fn clip_query_absent_handle_returns_empty() {
+        let map = clip_map(vec![(
+            ModelHandle::from("present"),
+            vec![named_clip("idle", 1.0)],
+        )]);
+        let missing = ModelHandle::from("missing");
+        assert!(
+            clip_by_name(&map, &missing, "idle").is_none(),
+            "clip_by_name on an un-cached handle must return None",
+        );
+        assert!(
+            clip_metadata(&map, &missing).is_empty(),
+            "clip_metadata on an un-cached handle must return an empty Vec",
+        );
+    }
+
+    /// Duplicate authored names: first match wins (the earliest glTF-index clip).
+    /// glTF does not forbid duplicate animation names, and the documented rule is
+    /// that the earlier authored clip is returned.
+    #[test]
+    fn clip_by_name_returns_first_match_on_duplicate_names() {
+        let handle = ModelHandle::from("dupes");
+        let map = clip_map(vec![(
+            handle.clone(),
+            vec![named_clip("loop", 1.0), named_clip("loop", 9.0)],
+        )]);
+        let clip = clip_by_name(&map, &handle, "loop").expect("a 'loop' clip must be found");
+        assert!(
+            (clip.duration - 1.0).abs() < 1.0e-6,
+            "duplicate names must resolve to the FIRST authored clip (duration 1.0), got {}",
+            clip.duration,
+        );
+    }
+
+    /// End-to-end cache seam: clips parsed from a real multi-clip glTF, inserted
+    /// under a `ModelHandle`, are queryable by authored name and
+    /// enumerable as metadata in glTF order through the GPU-free free functions —
+    /// no `wgpu::Device`. Drives the same `clip_metadata` / `clip_by_name` free
+    /// functions that `model_clip_metadata` / `model_clip_by_name` delegate to at
+    /// runtime, but headless.
+    #[test]
+    fn loaded_multi_clip_model_is_queryable_by_name_and_metadata_through_cache() {
+        use std::path::PathBuf;
+
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/multi_clip/multi_clip.gltf");
+        let model =
+            crate::model::gltf_loader::load_model(&fixture).expect("multi-clip fixture loads");
+
+        let handle = ModelHandle::from("multi_clip");
+        let map = clip_map(vec![(handle.clone(), model.clips.clone())]);
+
+        // Metadata lists both clips in authored glTF order, each with its own
+        // duration (idle 1.0, walk 2.0) — exactly what was parsed from the file.
+        let meta = clip_metadata(&map, &handle);
+        assert_eq!(meta.len(), 2, "both loaded clips appear in metadata");
+        assert_eq!(meta[0].name, "idle");
+        assert_eq!(meta[1].name, "walk");
+        assert!((meta[0].duration - 1.0).abs() < 1.0e-4, "idle duration");
+        assert!((meta[1].duration - 2.0).abs() < 1.0e-4, "walk duration");
+
+        // Each clip is retrievable by its authored name, reporting its own
+        // duration.
+        let idle = clip_by_name(&map, &handle, "idle").expect("'idle' clip found by name");
+        assert!((idle.duration - 1.0).abs() < 1.0e-4);
+        let walk = clip_by_name(&map, &handle, "walk").expect("'walk' clip found by name");
+        assert!((walk.duration - 2.0).abs() < 1.0e-4);
+
+        // A name the model does not carry returns nothing — no error, no panic.
+        assert!(
+            clip_by_name(&map, &handle, "run").is_none(),
+            "an absent clip name returns None",
+        );
+    }
+
+    // --- Snapshot store + per-instance sampling (GPU-free) ----------------------
+    //
+    // `SnapshotStore`, `apply_capture`, and `sample_instance` take no wgpu types
+    // (the `model_bounds` precedent), so the `"smooth"`-interrupt seam and the
+    // per-instance blend selection are unit-testable without a device. These pin:
+    // single-clip steady state, clip→clip + snapshot→clip blends, the missed-
+    // capture degrade-to-fallback, idempotent capture, and the store lifecycle.
+
+    use crate::model::anim::Loop as AnimLoop;
+    use crate::model::skeleton::{Joint, JointTracks, RestLocal, Skeleton, Track};
+    use crate::render::mesh_instances::{
+        CaptureInstruction, ClipSample, FadeSource, MeshFade, MeshSampleParams,
+    };
+    use glam::{Mat4, Quat};
+
+    /// Single-root skeleton with identity inverse-bind, so a palette entry's
+    /// skinning matrix decomposes straight to the joint's local TRS.
+    fn one_joint_skeleton() -> Skeleton {
+        Skeleton {
+            joints: vec![Joint {
+                parent: None,
+                inverse_bind: Mat4::IDENTITY.to_cols_array_2d(),
+                rest_local: RestLocal::default(),
+            }],
+        }
+    }
+
+    /// One-joint clip holding a constant translation (single key), so it samples
+    /// to exactly `tx` on X at any time.
+    fn const_x_clip(name: &str, tx: f32) -> AnimationClip {
+        AnimationClip {
+            name: name.to_string(),
+            duration: 1.0,
+            joints: vec![JointTracks {
+                translation: Track {
+                    times: vec![0.0],
+                    values: vec![Vec3::new(tx, 0.0, 0.0)],
+                    ..Default::default()
+                },
+                rotation: Track {
+                    times: vec![0.0],
+                    values: vec![Quat::IDENTITY],
+                    ..Default::default()
+                },
+                scale: Track {
+                    times: vec![0.0],
+                    values: vec![Vec3::ONE],
+                    ..Default::default()
+                },
+            }],
+        }
+    }
+
+    fn palette_x(out: &[BonePaletteEntry]) -> f32 {
+        Mat4::from_cols_array_2d(&out[0].matrix).w_axis.x
+    }
+
+    fn clip_leg(idx: usize, time: f32) -> ClipSample {
+        ClipSample {
+            clip_index: idx,
+            time,
+            loop_policy: AnimLoop::Wrap,
+        }
+    }
+
+    #[test]
+    fn sample_instance_single_clip_no_fade_samples_primary() {
+        let skel = one_joint_skeleton();
+        let clips = [const_x_clip("idle", 5.0)];
+        let store = SnapshotStore::default();
+        let params = MeshSampleParams {
+            primary: clip_leg(0, 0.0),
+            fade: None,
+        };
+        let mut out = Vec::new();
+        let sampled = sample_instance(&params, &skel, &store, 1, &|i| clips.get(i), &mut out);
+        assert!(sampled);
+        assert!(
+            (palette_x(&out) - 5.0).abs() < 1.0e-4,
+            "single clip → primary pose"
+        );
+    }
+
+    #[test]
+    fn sample_instance_unresolved_primary_writes_identity_bind_pose_run() {
+        // Regression: an unresolved primary clip used to return false and skip the
+        // palette write, leaving the densely-repacked run holding another
+        // instance's stale matrices. It must now write a clean identity bind-pose
+        // run (one per joint) and return true so the caller overwrites the region.
+        let skel = one_joint_skeleton();
+        let clips: Vec<AnimationClip> = vec![]; // index 0 absent
+        let store = SnapshotStore::default();
+        let params = MeshSampleParams {
+            primary: clip_leg(0, 0.0),
+            fade: None,
+        };
+        // Pre-fill `out` with a stranger's stale pose to prove it is overwritten.
+        let mut out = palette_run(99.0, 1);
+        let sampled = sample_instance(&params, &skel, &store, 1, &|i| clips.get(i), &mut out);
+        assert!(
+            sampled,
+            "an unresolved primary still writes a (bind-pose) run"
+        );
+        assert_eq!(out.len(), skel.joints.len(), "one entry per joint");
+        let identity = glam::Mat4::IDENTITY.to_cols_array_2d();
+        assert_eq!(
+            out[0].matrix, identity,
+            "the unsampled run is the identity bind pose, not stale matrices",
+        );
+    }
+
+    #[test]
+    fn sample_instance_clip_fade_blends_endpoints_and_midpoint() {
+        let skel = one_joint_skeleton();
+        let clips = [const_x_clip("from", 0.0), const_x_clip("to", 10.0)];
+        let store = SnapshotStore::default();
+        let mut out = Vec::new();
+        let make = |weight: f32| MeshSampleParams {
+            primary: clip_leg(1, 0.0),
+            fade: Some(MeshFade {
+                from: FadeSource::Clip(clip_leg(0, 0.0)),
+                weight,
+            }),
+        };
+        // Weight 0 → all `from` (x=0); weight 1 → all primary (x=10); 0.5 → 5.
+        sample_instance(&make(0.0), &skel, &store, 1, &|i| clips.get(i), &mut out);
+        assert!(
+            (palette_x(&out) - 0.0).abs() < 1.0e-4,
+            "weight 0 = outgoing"
+        );
+        sample_instance(&make(1.0), &skel, &store, 1, &|i| clips.get(i), &mut out);
+        assert!(
+            (palette_x(&out) - 10.0).abs() < 1.0e-4,
+            "weight 1 = primary"
+        );
+        sample_instance(&make(0.5), &skel, &store, 1, &|i| clips.get(i), &mut out);
+        assert!(
+            (palette_x(&out) - 5.0).abs() < 1.0e-4,
+            "weight 0.5 = midpoint"
+        );
+    }
+
+    /// `apply_capture` freezes `blend(outgoing_clip, incoming_clip)` into the
+    /// store; a subsequent snapshot fade at weight 0 reproduces that captured
+    /// pose — the smooth interrupt has no discontinuity.
+    #[test]
+    fn capture_then_snapshot_fade_reproduces_in_flight_blend() {
+        let skel = one_joint_skeleton();
+        // outgoing idle (x=0), incoming walk (x=10). Capture at weight 0.4 →
+        // blended x = 4.0.
+        let clips = [const_x_clip("idle", 0.0), const_x_clip("walk", 10.0)];
+        let mut store = SnapshotStore::default();
+        let tag: SnapshotTag = 42;
+        let capture = CaptureInstruction {
+            seed: 7,
+            tag,
+            outgoing: FadeSource::Clip(clip_leg(0, 0.0)),
+            incoming: clip_leg(1, 0.0),
+            weight: 0.4,
+        };
+        let mut scratch = Vec::new();
+        store.apply_capture(&capture, &skel, |i| clips.get(i), &mut scratch);
+        assert!(store.matching(7, tag).is_some(), "store holds the capture");
+
+        // Snapshot fade at weight 0 reproduces the captured pose (x = 4.0).
+        let params = MeshSampleParams {
+            primary: clip_leg(1, 0.0),
+            fade: Some(MeshFade {
+                from: FadeSource::Snapshot {
+                    tag,
+                    fallback: clip_leg(0, 0.0),
+                },
+                weight: 0.0,
+            }),
+        };
+        let mut out = Vec::new();
+        sample_instance(&params, &skel, &store, 7, &|i| clips.get(i), &mut out);
+        assert!(
+            (palette_x(&out) - 4.0).abs() < 1.0e-4,
+            "snapshot fade weight 0 reproduces the captured in-flight blend, got {}",
+            palette_x(&out),
+        );
+    }
+
+    /// Capture is IDEMPOTENT by tag: a re-emission under the same tag evaluates
+    /// nothing (a frozen-clock re-render does not re-capture a moved pose).
+    #[test]
+    fn capture_is_idempotent_by_tag() {
+        let skel = one_joint_skeleton();
+        let clips = [const_x_clip("idle", 0.0), const_x_clip("walk", 10.0)];
+        let mut store = SnapshotStore::default();
+        let tag: SnapshotTag = 1;
+        let first = CaptureInstruction {
+            seed: 3,
+            tag,
+            outgoing: FadeSource::Clip(clip_leg(0, 0.0)),
+            incoming: clip_leg(1, 0.0),
+            weight: 0.4,
+        };
+        let mut scratch = Vec::new();
+        store.apply_capture(&first, &skel, |i| clips.get(i), &mut scratch);
+        let captured = store.matching(3, tag).unwrap().to_vec();
+
+        // Re-emit with the SAME tag but a different weight — must NOT re-capture.
+        let again = CaptureInstruction {
+            weight: 0.9,
+            ..first
+        };
+        store.apply_capture(&again, &skel, |i| clips.get(i), &mut scratch);
+        assert_eq!(
+            store.matching(3, tag).unwrap(),
+            captured.as_slice(),
+            "a same-tag re-emission must evaluate nothing (idempotent)",
+        );
+    }
+
+    /// A snapshot fade whose store entry is MISSING (capture frame culled /
+    /// budget-dropped) degrades to the fallback clip — a `"snap"`-equivalent
+    /// blend, no panic, no stale snapshot.
+    #[test]
+    fn missing_snapshot_degrades_to_fallback_clip() {
+        let skel = one_joint_skeleton();
+        let clips = [const_x_clip("fallback", 2.0), const_x_clip("primary", 10.0)];
+        let store = SnapshotStore::default(); // empty — capture frame never planned
+        let params = MeshSampleParams {
+            primary: clip_leg(1, 0.0),
+            fade: Some(MeshFade {
+                from: FadeSource::Snapshot {
+                    tag: 99,
+                    fallback: clip_leg(0, 0.0),
+                },
+                weight: 0.5,
+            }),
+        };
+        let mut out = Vec::new();
+        sample_instance(&params, &skel, &store, 5, &|i| clips.get(i), &mut out);
+        // Blend fallback (x=2) → primary (x=10) at 0.5 = 6.0 (NOT the snapshot).
+        assert!(
+            (palette_x(&out) - 6.0).abs() < 1.0e-4,
+            "missed snapshot degrades to fallback×primary blend, got {}",
+            palette_x(&out),
+        );
+    }
+
+    /// A snapshot-referencing capture that MISSES the store captures
+    /// `blend(fallback, incoming)` instead — the degrade applies to the capture
+    /// path too, so a chained smooth interrupt over a culled snapshot is sound.
+    #[test]
+    fn snapshot_referencing_capture_misses_store_uses_fallback() {
+        let skel = one_joint_skeleton();
+        // fallback x=2, incoming x=10. Capture at weight 0.5 → x = 6.0.
+        let clips = [
+            const_x_clip("fallback", 2.0),
+            const_x_clip("incoming", 10.0),
+        ];
+        let mut store = SnapshotStore::default();
+        let new_tag: SnapshotTag = 100;
+        let capture = CaptureInstruction {
+            seed: 8,
+            tag: new_tag,
+            // Outgoing references a PRIOR snapshot (tag 77) that is NOT in the
+            // store, carrying the same fallback the sampling frames use.
+            outgoing: FadeSource::Snapshot {
+                tag: 77,
+                fallback: clip_leg(0, 0.0),
+            },
+            incoming: clip_leg(1, 0.0),
+            weight: 0.5,
+        };
+        let mut scratch = Vec::new();
+        store.apply_capture(&capture, &skel, |i| clips.get(i), &mut scratch);
+        let pose = store
+            .matching(8, new_tag)
+            .expect("capture landed via fallback");
+        let x = pose[0].translation.x;
+        assert!(
+            (x - 6.0).abs() < 1.0e-4,
+            "missed snapshot reference captures blend(fallback, incoming), got {x}",
+        );
+    }
+
+    /// Chained smooth interrupt: a capture whose outgoing references a PRIOR
+    /// stored snapshot blends against that snapshot (store HIT), freezing
+    /// `blend(prior_snapshot, incoming)` and superseding the prior entry — the
+    /// "interrupt whose source is itself a snapshot" acceptance criterion.
+    #[test]
+    fn chained_capture_blends_against_prior_snapshot() {
+        let skel = one_joint_skeleton();
+        // Seed a prior snapshot (tag 1) holding x = 8.0 directly.
+        let mut store = SnapshotStore::default();
+        store.entries.insert(
+            7,
+            StoredSnapshot {
+                tag: 1,
+                pose: vec![LocalTrs {
+                    translation: Vec3::new(8.0, 0.0, 0.0),
+                    rotation: Quat::IDENTITY,
+                    scale: Vec3::ONE,
+                }],
+            },
+        );
+        // Incoming clip x = 0. New capture (tag 2) outgoing references the prior
+        // snapshot (tag 1) → HIT. At weight 0.25, x = 8*(0.75)+0*(0.25) = 6.0.
+        let clips = [const_x_clip("incoming", 0.0)];
+        let capture = CaptureInstruction {
+            seed: 7,
+            tag: 2,
+            outgoing: FadeSource::Snapshot {
+                tag: 1,
+                fallback: clip_leg(0, 0.0),
+            },
+            incoming: clip_leg(0, 0.0),
+            weight: 0.25,
+        };
+        let mut scratch = Vec::new();
+        store.apply_capture(&capture, &skel, |i| clips.get(i), &mut scratch);
+        // Old entry (tag 1) superseded by the new one (tag 2).
+        assert!(store.matching(7, 1).is_none(), "prior entry superseded");
+        let pose = store.matching(7, 2).expect("new chained capture stored");
+        assert!(
+            (pose[0].translation.x - 6.0).abs() < 1.0e-4,
+            "chained capture blends against the prior snapshot, got {}",
+            pose[0].translation.x,
+        );
+    }
+
+    // --- End-to-end smooth-interrupt palette continuity (game side → renderer) --
+    //
+    // Drives the WHOLE smooth-interrupt path with no GPU: build a `MeshAnimation`,
+    // start an A→B fade, switch to C (smooth) mid-flight, run the game-side resolve
+    // pass + `animate_entity`, then feed the emitted capture + sample params into
+    // `apply_capture`/`sample_instance` and read the palette. Asserts the pose at
+    // the interrupt instant equals the pre-switch in-flight blend (no pop) and
+    // then eases toward C. Regression: a "smooth" interrupt that captured the
+    // outgoing leg (or dropped the in-flight blend's OUT leg) snapped instead.
+
+    use crate::scripting::components::mesh::{
+        AnimationState as GameState, FadeSourceKind, InterruptPolicy, MeshAnimation,
+    };
+    use std::collections::HashMap as GameMap;
+
+    /// Build a game-side `AnimationState` with an explicit resolved clip index.
+    fn game_state(clip: &str, crossfade_ms: f32, clip_index: usize) -> GameState {
+        GameState {
+            clip: clip.into(),
+            looping: true,
+            crossfade_ms,
+            interrupt: InterruptPolicy::Smooth,
+            clip_index: Some(clip_index),
+        }
+    }
+
+    /// A three-state animation: A=idle(clip0), B=walk(clip1), C=run(clip2), all
+    /// looping, B/C fading in over `b_ms`/`c_ms`. Used to drive an A→B fade then a
+    /// smooth interrupt to C.
+    fn abc_animation(b_ms: f32, c_ms: f32) -> MeshAnimation {
+        let mut states = GameMap::new();
+        states.insert("A".into(), game_state("idle", 0.0, 0));
+        states.insert("B".into(), game_state("walk", b_ms, 1));
+        states.insert("C".into(), game_state("run", c_ms, 2));
+        MeshAnimation::new(states, "A".into())
+    }
+
+    #[test]
+    fn smooth_interrupt_end_to_end_no_pop_then_eases_to_c() {
+        // A→B fade in flight (B over 0.2s); at t=1.1 (w_AB = 0.5) interrupt to C
+        // (smooth, C over 0.1s). The interrupt-instant pose must equal
+        // blend(A, B, 0.5) with NO discontinuity, then ease toward C.
+        let skel = one_joint_skeleton();
+        // clip0 A x=0, clip1 B x=10, clip2 C x=100 (const, so blends are exact).
+        let clips = [
+            const_x_clip("idle", 0.0),
+            const_x_clip("walk", 10.0),
+            const_x_clip("run", 100.0),
+        ];
+        let resolve = |i: usize| clips.get(i);
+
+        let mut anim = abc_animation(200.0, 100.0);
+        // A entered at 0.0 (resolved), B fading in from A at 1.0.
+        anim.entered_at = Some(0.0);
+        anim.current_state = "B".into();
+        anim.previous_state = Some("A".into());
+        anim.previous_entered_at = Some(0.0);
+        // B's own entry stamp:
+        anim.entered_at = Some(1.0);
+        anim.fade_source = FadeSourceKind::Clip;
+
+        // Mid-B-fade: interrupt to C (smooth). Mirror what
+        // `switch_animation_state` records for a smooth interrupt, then resolve C's
+        // stamp to the interrupt instant t2 = 1.1.
+        anim.interrupted_outgoing = Some(
+            crate::scripting::components::mesh::InterruptedOutgoing::Clip {
+                state: "A".into(),
+                entered_at: 0.0,
+            },
+        );
+        anim.previous_state = Some("B".into());
+        anim.previous_entered_at = Some(1.0);
+        anim.current_state = "C".into();
+        anim.fade_source = FadeSourceKind::Snapshot;
+        let t2 = 1.1_f64; // C entered_at — the interrupt instant
+        anim.entered_at = Some(t2);
+
+        // Expected in-flight pose the entity showed JUST before the switch:
+        // blend(A, B, w_AB) with w_AB = (t2 - B_stamp)/B_crossfade = 0.1/0.2 = 0.5.
+        let expected_s_x = 0.0 * 0.5 + 10.0 * 0.5; // = 5.0
+
+        // Game side: emit the capture + sample params at the interrupt instant.
+        let result =
+            crate::scripting_systems::mesh_anim::animate_entity(&anim, t2, 0.0).expect("animates");
+        let capture = result.capture.expect("smooth interrupt emits a capture");
+
+        // Renderer side: apply the capture, then sample the pose this frame.
+        let mut store = SnapshotStore::default();
+        let mut scratch = Vec::new();
+        store.apply_capture(&capture, &skel, resolve, &mut scratch);
+
+        let mut out = Vec::new();
+        sample_instance(&result.sample, &skel, &store, 0, &resolve, &mut out);
+        assert!(
+            (palette_x(&out) - expected_s_x).abs() < 1.0e-3,
+            "interrupt-instant pose must equal the in-flight blend {expected_s_x}, got {}",
+            palette_x(&out),
+        );
+
+        // Now advance into C's fade window: the pose must ease toward C (x=100),
+        // moving away from S. At t = t2 + 0.05 (halfway through C's 0.1s window)
+        // the snapshot→C blend weight is 0.5, so x = blend(5.0, 100.0, 0.5) = 52.5.
+        let mid = crate::scripting_systems::mesh_anim::animate_entity(&anim, t2 + 0.05, 0.0)
+            .expect("animates mid-C-fade");
+        // The capture is idempotent (same tag) — re-applying changes nothing.
+        store.apply_capture(
+            &mid.capture.expect("re-emitted capture under frozen stamp"),
+            &skel,
+            resolve,
+            &mut scratch,
+        );
+        let mut out_mid = Vec::new();
+        sample_instance(&mid.sample, &skel, &store, 0, &resolve, &mut out_mid);
+        let x_mid = palette_x(&out_mid);
+        assert!(
+            (x_mid - 52.5).abs() < 1.0e-3,
+            "mid-C-fade pose eases from S(5.0) toward C(100.0): expected 52.5, got {x_mid}",
+        );
+        assert!(
+            x_mid > expected_s_x,
+            "the pose moves toward C, not back toward the outgoing leg",
+        );
+    }
+
+    #[test]
+    fn smooth_interrupt_end_to_end_chained_snapshot_no_pop() {
+        // Snapshot-of-snapshot: a smooth interrupt over an ALREADY-smooth fade.
+        // A→B interrupted to C (smooth) leaves a snapshot S1 = blend(A,B,0.5).
+        // Then C is interrupted to D (smooth) mid-C-fade: the new capture must
+        // blend against S1 (store HIT) so D's fade resumes from the live pose
+        // (blend(S1, C, w_C)) with no discontinuity.
+        let skel = one_joint_skeleton();
+        let clips = [
+            const_x_clip("idle", 0.0),  // A clip0
+            const_x_clip("walk", 10.0), // B clip1
+            const_x_clip("run", 100.0), // C clip2
+            const_x_clip("dash", 50.0), // D clip3
+        ];
+        let resolve = |i: usize| clips.get(i);
+
+        // First interrupt (A→B → C) at t2a = 1.1, capturing S1 = blend(A,B,0.5)=5.0,
+        // tagged bits(1.1). Build the post-first-interrupt anim directly.
+        let mut anim = {
+            let mut states = GameMap::new();
+            states.insert("A".into(), game_state("idle", 0.0, 0));
+            states.insert("B".into(), game_state("walk", 200.0, 1));
+            states.insert("C".into(), game_state("run", 100.0, 2));
+            states.insert("D".into(), game_state("dash", 100.0, 3));
+            MeshAnimation::new(states, "A".into())
+        };
+        let t2a = 1.1_f64;
+        anim.current_state = "C".into();
+        anim.previous_state = Some("B".into());
+        anim.previous_entered_at = Some(1.0);
+        anim.entered_at = Some(t2a);
+        anim.fade_source = FadeSourceKind::Snapshot;
+        anim.interrupted_outgoing = Some(
+            crate::scripting::components::mesh::InterruptedOutgoing::Clip {
+                state: "A".into(),
+                entered_at: 0.0,
+            },
+        );
+
+        // Apply the first capture into the store (S1 tagged bits(1.1)).
+        let first = crate::scripting_systems::mesh_anim::animate_entity(&anim, t2a, 0.0)
+            .unwrap()
+            .capture
+            .expect("first smooth interrupt capture");
+        let mut store = SnapshotStore::default();
+        let mut scratch = Vec::new();
+        store.apply_capture(&first, &skel, resolve, &mut scratch);
+        let s1_x = palette_x_trs(store.matching(0, t2a.to_bits()).expect("S1 stored"));
+        assert!((s1_x - 5.0).abs() < 1.0e-3, "S1 = blend(A,B,0.5) = 5.0");
+
+        // Second interrupt (C → D, smooth) at t2b = t2a + 0.05 (w_C = 0.5 over C's
+        // 0.1s window). The interrupted fade was the SNAPSHOT fade S1→C, so D's
+        // capture references the prior snapshot S1 (tag bits(t2a)) and blends
+        // blend(S1, C, 0.5) = blend(5.0, 100.0, 0.5) = 52.5 — the live pose.
+        let t2b = t2a + 0.05;
+        anim.current_state = "D".into();
+        anim.previous_state = Some("C".into());
+        anim.previous_entered_at = Some(t2a);
+        anim.entered_at = Some(t2b);
+        anim.fade_source = FadeSourceKind::Snapshot;
+        // The interrupted fade (S1→C) had a SNAPSHOT outgoing: stash references S1.
+        anim.interrupted_outgoing = Some(
+            crate::scripting::components::mesh::InterruptedOutgoing::Snapshot {
+                tag: t2a.to_bits(),
+            },
+        );
+
+        let second = crate::scripting_systems::mesh_anim::animate_entity(&anim, t2b, 0.0)
+            .expect("animates")
+            .capture
+            .expect("second (chained) smooth interrupt capture");
+        store.apply_capture(&second, &skel, resolve, &mut scratch);
+        let s2_x = palette_x_trs(store.matching(0, t2b.to_bits()).expect("S2 stored"));
+        assert!(
+            (s2_x - 52.5).abs() < 1.0e-3,
+            "chained capture S2 = blend(S1, C, 0.5) = 52.5 (no pop), got {s2_x}",
+        );
+        // And the prior snapshot S1 is superseded.
+        assert!(
+            store.matching(0, t2a.to_bits()).is_none(),
+            "S1 is superseded by the chained capture S2",
+        );
+
+        // Sample D's fade at its instant (weight 0) → reproduces S2 exactly.
+        let mut out = Vec::new();
+        let sample = crate::scripting_systems::mesh_anim::animate_entity(&anim, t2b, 0.0)
+            .unwrap()
+            .sample;
+        sample_instance(&sample, &skel, &store, 0, &resolve, &mut out);
+        assert!(
+            (palette_x(&out) - 52.5).abs() < 1.0e-3,
+            "D's fade at the interrupt instant reproduces S2 (no discontinuity)",
+        );
+    }
+
+    #[test]
+    fn culled_interrupt_frame_reconstructs_same_snapshot_idempotently() {
+        // The capture frame is CULLED (never applied). On the first PLANNED frame —
+        // later in C's fade window — the re-evaluated capture must reconstruct the
+        // SAME interrupt-instant snapshot S, because legs are sampled at the frozen
+        // entered_at, not the moving clock. Regression: sampling at the live clock
+        // installed a drifted mid-fade pose on a late capture.
+        let skel = one_joint_skeleton();
+        let clips = [
+            const_x_clip("idle", 0.0),
+            const_x_clip("walk", 10.0),
+            const_x_clip("run", 100.0),
+        ];
+        let resolve = |i: usize| clips.get(i);
+
+        let mut anim = abc_animation(200.0, 100.0);
+        let t2 = 1.1_f64;
+        anim.current_state = "C".into();
+        anim.previous_state = Some("B".into());
+        anim.previous_entered_at = Some(1.0);
+        anim.entered_at = Some(t2);
+        anim.fade_source = FadeSourceKind::Snapshot;
+        anim.interrupted_outgoing = Some(
+            crate::scripting::components::mesh::InterruptedOutgoing::Clip {
+                state: "A".into(),
+                entered_at: 0.0,
+            },
+        );
+
+        // The capture as it would be emitted AT the interrupt instant (the frame
+        // that got culled — never applied to the store).
+        let at_instant = crate::scripting_systems::mesh_anim::animate_entity(&anim, t2, 0.0)
+            .unwrap()
+            .capture
+            .expect("interrupt-instant capture");
+
+        // The capture re-emitted on a LATER planned frame (clock advanced to
+        // t2 + 0.06, deep into C's fade). It must be byte-identical: same tag, same
+        // outgoing/incoming legs (frozen at t2), same weight.
+        let late = crate::scripting_systems::mesh_anim::animate_entity(&anim, t2 + 0.06, 0.0)
+            .unwrap()
+            .capture
+            .expect("late re-emitted capture");
+        assert_eq!(
+            at_instant, late,
+            "a culled capture, re-emitted late, reconstructs the SAME instruction",
+        );
+
+        // And applying the late capture to a cold store yields S = blend(A,B,0.5).
+        let mut store = SnapshotStore::default();
+        let mut scratch = Vec::new();
+        store.apply_capture(&late, &skel, resolve, &mut scratch);
+        let s_x = palette_x_trs(store.matching(0, t2.to_bits()).expect("S stored late"));
+        assert!(
+            (s_x - 5.0).abs() < 1.0e-3,
+            "the late capture reconstructs the interrupt-instant S = 5.0, got {s_x}",
+        );
+    }
+
+    /// Read joint 0's X translation directly out of a stored snapshot's TRS buffer.
+    fn palette_x_trs(pose: &[LocalTrs]) -> f32 {
+        pose[0].translation.x
+    }
+
+    #[test]
+    fn snapshot_store_drop_and_clear() {
+        let skel = one_joint_skeleton();
+        let clips = [const_x_clip("a", 0.0), const_x_clip("b", 1.0)];
+        let mut store = SnapshotStore::default();
+        let mut scratch = Vec::new();
+        store.apply_capture(
+            &CaptureInstruction {
+                seed: 1,
+                tag: 5,
+                outgoing: FadeSource::Clip(clip_leg(0, 0.0)),
+                incoming: clip_leg(1, 0.0),
+                weight: 0.5,
+            },
+            &skel,
+            |i| clips.get(i),
+            &mut scratch,
+        );
+        assert!(store.matching(1, 5).is_some());
+        store.drop_entry(1);
+        assert!(
+            store.matching(1, 5).is_none(),
+            "drop_entry removes the entry"
+        );
+
+        // A tag mismatch never matches even when an entry exists.
+        store.apply_capture(
+            &CaptureInstruction {
+                seed: 2,
+                tag: 5,
+                outgoing: FadeSource::Clip(clip_leg(0, 0.0)),
+                incoming: clip_leg(1, 0.0),
+                weight: 0.5,
+            },
+            &skel,
+            |i| clips.get(i),
+            &mut scratch,
+        );
+        assert!(store.matching(2, 6).is_none(), "tag mismatch never matches");
+        store.clear();
+        assert!(store.matching(2, 5).is_none(), "clear empties the store");
+    }
+
+    // --- Time-slicing palette cache --------------------------------------------
+
+    fn palette_run(fill: f32, joints: usize) -> Vec<BonePaletteEntry> {
+        vec![
+            BonePaletteEntry {
+                matrix: [[fill; 4]; 4],
+            };
+            joints
+        ]
+    }
+
+    #[test]
+    fn palette_cache_miss_forces_resample_then_skip_serves_cache() {
+        // A cold cache MISSES, so it must force a resample regardless of the
+        // collector's flag — a re-entering instance never re-uploads a stale (or
+        // absent) pose. After the run is stored, a collector skip serves the cache.
+        let mut cache = PaletteCache::default();
+        let seed = 7u32;
+
+        // Miss: even with collector_resample = false, must_sample is true.
+        assert!(
+            cache.must_sample(seed, false),
+            "a cache miss forces a resample even when the collector cleared a skip",
+        );
+
+        // Store a sampled run (the resample frame's outcome).
+        let run = palette_run(1.0, 4);
+        cache.store(seed, &run);
+
+        // Now a collector skip (resample = false) is honored — the entry exists.
+        assert!(
+            !cache.must_sample(seed, false),
+            "with a cached run, a collector skip is honored (no forced resample)",
+        );
+        // And the cached run is served for the skip re-upload.
+        let cached = cache
+            .touch_cached(seed)
+            .expect("cached run present on skip");
+        assert_eq!(cached.len(), 4);
+        assert_eq!(cached[0].matrix[0][0], 1.0);
+
+        // A collector resample still samples even with a cache hit.
+        assert!(
+            cache.must_sample(seed, true),
+            "an explicit collector resample always samples, cache hit or not",
+        );
+    }
+
+    #[test]
+    fn palette_cache_store_reuses_storage_in_place() {
+        // A resample refreshes the run in place — repeated stores must not change
+        // the served contents' shape unexpectedly, and the latest store wins.
+        let mut cache = PaletteCache::default();
+        let seed = 3u32;
+        cache.store(seed, &palette_run(1.0, 6));
+        cache.store(seed, &palette_run(2.0, 6));
+        let cached = cache.touch_cached(seed).expect("present");
+        assert_eq!(cached.len(), 6);
+        assert_eq!(cached[0].matrix[0][0], 2.0, "the latest stored run wins");
+    }
+
+    #[test]
+    fn palette_cache_evicts_entries_absent_from_the_frame() {
+        // Entries not touched in a frame are evicted at end_frame, so the cache is
+        // bounded by the frame's planned-instance count — a culled-out entity's
+        // stale run does not linger.
+        let mut cache = PaletteCache::default();
+        cache.store(1, &palette_run(1.0, 2));
+        cache.store(2, &palette_run(1.0, 2));
+        cache.end_frame(); // both stored this "frame" → both survive
+        assert!(!cache.must_sample(1, false), "entry 1 survives its frame");
+        assert!(!cache.must_sample(2, false), "entry 2 survives its frame");
+
+        // Next frame: touch only entity 1 (it skips), entity 2 is absent (culled).
+        assert!(cache.touch_cached(1).is_some());
+        cache.end_frame();
+        assert!(
+            !cache.must_sample(1, false),
+            "the touched entry survives eviction",
+        );
+        assert!(
+            cache.must_sample(2, false),
+            "the untouched entry is evicted → its next appearance forces a resample",
+        );
+    }
+
+    #[test]
+    fn palette_cache_clear_empties_for_level_load() {
+        // The level-load clear empties the cache wholesale — entity seeds are not
+        // stable across levels, so a stale run must not survive.
+        let mut cache = PaletteCache::default();
+        cache.store(9, &palette_run(1.0, 3));
+        cache.end_frame();
+        assert!(!cache.must_sample(9, false), "entry present before clear");
+        cache.clear();
+        assert!(
+            cache.must_sample(9, false),
+            "clear empties the cache → a miss forces a resample",
         );
     }
 }

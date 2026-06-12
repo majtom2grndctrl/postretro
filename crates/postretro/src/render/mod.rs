@@ -3299,28 +3299,33 @@ impl Renderer {
             ..
         } = model;
         let clip_count = clips.len();
-        // Retain the first clip alongside the model so the per-frame palette is
-        // sampled per instance from the live animation. No clip → the instance
-        // renders in its bind pose (identity palette run).
-        let clip = clips.into_iter().next();
-        if let Some(clip) = &clip {
+        // Name every parsed clip so a multi-clip asset surfaces its full set in
+        // the load log (the cache retains them all; the per-frame palette samples
+        // the first). Joined as "name (1.23s)" in glTF order.
+        if !clips.is_empty() {
+            let clip_summary = clips
+                .iter()
+                .map(|clip| format!("'{}' ({:.2}s)", clip.name, clip.duration))
+                .collect::<Vec<_>>()
+                .join(", ");
             log::info!(
-                "[Model] skinned model animation: clip '{}' ({:.2}s), {} joints",
-                clip.name,
-                clip.duration,
+                "[Model] skinned model animation: {} clip(s) [{}], {} joints",
+                clip_count,
+                clip_summary,
                 skeleton.joints.len(),
             );
         }
 
         // `handle` (the verbatim cache key) was derived alongside the open path
-        // by `resolve_model_open_path_and_handle` — see this method's doc.
+        // by `resolve_model_open_path_and_handle` — see this method's doc. The
+        // FULL clip set is handed to the cache; clip selection is a sibling plan.
         self.mesh_pass.insert_model(
             &self.device,
             handle,
             &mesh,
             submesh_materials,
             skeleton,
-            clip,
+            clips,
         );
 
         log::info!(
@@ -3329,6 +3334,19 @@ impl Renderer {
             tags.len(),
         );
         Some(tags)
+    }
+
+    /// The clip metadata (name + duration) for a cached skinned model, in glTF
+    /// (authored) index order, keyed by the same `model_handle` string
+    /// `load_skinned_model` cached it under. Returns an empty `Vec` when the model
+    /// is not cached or has no animation — no error, no panic.
+    ///
+    /// `pub` forwarder over the private `mesh_pass` (same seam as
+    /// [`Renderer::skinned_model_clip_by_name`]). Consumed by the level-load model
+    /// sweep (`main.rs`) to build the game-side clip tables.
+    pub fn skinned_model_clip_metadata(&self, model_handle: &str) -> Vec<mesh_pass::ClipMetadata> {
+        self.mesh_pass
+            .model_clip_metadata(&crate::model::ModelHandle::from(model_handle))
     }
 
     /// Replace this frame's skinned-mesh instance list with the inputs emitted by
@@ -3340,6 +3358,15 @@ impl Renderer {
     pub fn set_mesh_draws(&mut self, instances: &[mesh_instances::MeshInstanceInput]) {
         self.mesh_draws.clear();
         self.mesh_draws.extend_from_slice(instances);
+    }
+
+    /// Reset per-level transient mesh-pass state at level load. `pub` forwarder
+    /// over the private `mesh_pass`; called from the level-load model sweep at the
+    /// model-cache install site (where each distinct model uploads). Empties the
+    /// `"smooth"`-interrupt snapshot store and the per-entity palette cache —
+    /// entity seeds are not stable across levels, so stale state must not survive.
+    pub fn clear_mesh_pass_for_level_load(&mut self) {
+        self.mesh_pass.clear_for_level_load();
     }
 
     /// Resolve each submesh's material key (content-hash hex → `.prm`) to a
@@ -4806,12 +4833,8 @@ impl Renderer {
                 // Sample every instance's clip into its palette run + write the
                 // per-instance SSBO. The ONLY per-frame write to these buffers —
                 // both the shadow loop and the forward draw read them unchanged.
-                self.mesh_pass.plan_and_upload(
-                    &self.queue,
-                    &plan,
-                    now_seconds as f32,
-                    &mut self.bone_palette_scratch,
-                );
+                self.mesh_pass
+                    .plan_and_upload(&self.queue, &plan, &mut self.bone_palette_scratch);
                 (!plan.groups.is_empty()).then_some(plan)
             } else {
                 None

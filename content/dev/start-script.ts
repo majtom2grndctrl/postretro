@@ -1,5 +1,6 @@
 import { playerEntity } from "./scripts/player";
 import { referencePistolEntity } from "./scripts/reference-pistol";
+import { animDemoGruntEntity } from "./scripts/anim-demo-grunt";
 import { referenceEntities } from "../../sdk/behaviors/reference/entities";
 import { registerIntroStore } from "./scripts/intro-store";
 
@@ -13,6 +14,13 @@ export function setupMod() {
 
   return {
     name: "dev",
-    entities: [playerEntity, referencePistolEntity, ...referenceEntities],
+    entities: [
+      playerEntity,
+      referencePistolEntity,
+      // DEMO: M10 skinned-animation grunt. Map-placeable via
+      // `"classname" "anim_demo_grunt"`; see content/dev/maps/anim-demo.map.
+      animDemoGruntEntity,
+      ...referenceEntities,
+    ],
   };
 }

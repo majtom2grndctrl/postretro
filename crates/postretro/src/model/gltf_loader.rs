@@ -11,7 +11,7 @@ use serde::Deserialize;
 use thiserror::Error;
 
 use super::mesh::{SkinnedMesh, SkinnedVertex};
-use super::skeleton::{AnimationClip, Joint, JointTracks, RestLocal, Skeleton, Track};
+use super::skeleton::{AnimationClip, Interp, Joint, JointTracks, RestLocal, Skeleton, Track};
 
 /// One drawable run of the merged mesh: the triangles of a single primitive,
 /// paired with the material that draws them.
@@ -44,7 +44,8 @@ pub struct LoadedModel {
     /// (topological) so the sampler composes world matrices in one forward
     /// sweep. Empty for a static model loaded through this path.
     pub skeleton: Skeleton,
-    /// Animation clips parsed from the glTF. The hardcoded slice ships one clip.
+    /// Animation clips parsed from the glTF document, in authored order. All clips
+    /// load; addressed by name or index.
     pub clips: Vec<AnimationClip>,
     /// One submesh per mesh primitive, in primitive order: the material cache
     /// key and the index range it occupies in the merged buffer. The renderer
@@ -562,6 +563,51 @@ fn normalize_weights(weights: [u8; 4]) -> [u8; 4] {
     out
 }
 
+/// Resolve a channel's raw output elements + sampler interpolation into the
+/// keyframe `values` and engine [`Interp`] mode the track stores. Returns `None`
+/// when the channel must be skipped (its joint then holds its rest pose, the
+/// same as an absent channel).
+///
+/// - LINEAR / STEP map directly to [`Interp::Linear`] / [`Interp::Step`]; the raw
+///   outputs are the per-keyframe values (one element per input time).
+/// - CUBICSPLINE stores three elements per keyframe — `[in-tangent, value,
+///   out-tangent]` — so the value of keyframe `k` is `raw[3k + 1]`. We extract
+///   those, discard the tangents, store the track as `Linear` (degrading cubic to
+///   linear; tangent storage and hermite blending are not implemented), and warn. If the triple shape does not hold
+///   (`raw.len() != 3 * key_count`) the channel is malformed for cubic, so we warn
+///   and skip it — this also guards the parallel-length invariant `Track`
+///   requires (otherwise 3N values would be paired with N times).
+fn resolve_keyframes<T: Copy>(
+    raw: Vec<T>,
+    key_count: usize,
+    interpolation: gltf::animation::Interpolation,
+    clip_name: &str,
+    channel_kind: &str,
+) -> Option<(Vec<T>, Interp)> {
+    use gltf::animation::Interpolation;
+    match interpolation {
+        Interpolation::Linear => Some((raw, Interp::Linear)),
+        Interpolation::Step => Some((raw, Interp::Step)),
+        Interpolation::CubicSpline => {
+            if raw.len() != key_count * 3 {
+                log::warn!(
+                    "clip '{clip_name}' {channel_kind} channel: CUBICSPLINE output count {} \
+                     is not 3x its {key_count} keyframes; skipping channel (joint holds rest pose)",
+                    raw.len()
+                );
+                return None;
+            }
+            log::warn!(
+                "clip '{clip_name}' {channel_kind} channel: CUBICSPLINE not supported; \
+                 extracting keyframe values and degrading to LINEAR (tangents discarded)"
+            );
+            // Each triple is [in-tangent, value, out-tangent]; keep the value.
+            let values: Vec<T> = (0..key_count).map(|k| raw[3 * k + 1]).collect();
+            Some((values, Interp::Linear))
+        }
+    }
+}
+
 /// Load one animation clip into per-joint TRS tracks (in topo joint order).
 /// Channels targeting non-joint nodes (or joints outside the skin) are skipped.
 fn load_clip(
@@ -585,6 +631,12 @@ fn load_clip(
             continue;
         }
 
+        // The sampler's interpolation algorithm drives how the runtime blends
+        // keyframes: LINEAR/STEP map straight to [`Interp`], while CUBICSPLINE is
+        // degraded to LINEAR by extracting each key's value element (tangents
+        // discarded) — true cubic evaluation is out of scope (tangent storage and hermite blending are not implemented).
+        let interpolation = channel.sampler().interpolation();
+
         let reader = channel.reader(buffer_data);
         let Some(inputs) = reader.read_inputs() else {
             continue;
@@ -598,25 +650,43 @@ fn load_clip(
         };
         match outputs {
             gltf::animation::util::ReadOutputs::Translations(it) => {
-                joints[topo_idx].translation = Track {
-                    times,
-                    values: it.map(Vec3::from).collect(),
-                };
+                let raw: Vec<Vec3> = it.map(Vec3::from).collect();
+                if let Some((values, mode)) =
+                    resolve_keyframes(raw, times.len(), interpolation, &name, "translation")
+                {
+                    joints[topo_idx].translation = Track {
+                        times,
+                        values,
+                        mode,
+                    };
+                }
             }
             gltf::animation::util::ReadOutputs::Rotations(it) => {
-                joints[topo_idx].rotation = Track {
-                    times,
-                    values: it
-                        .into_f32()
-                        .map(|q| Quat::from_xyzw(q[0], q[1], q[2], q[3]))
-                        .collect(),
-                };
+                let raw: Vec<Quat> = it
+                    .into_f32()
+                    .map(|q| Quat::from_xyzw(q[0], q[1], q[2], q[3]))
+                    .collect();
+                if let Some((values, mode)) =
+                    resolve_keyframes(raw, times.len(), interpolation, &name, "rotation")
+                {
+                    joints[topo_idx].rotation = Track {
+                        times,
+                        values,
+                        mode,
+                    };
+                }
             }
             gltf::animation::util::ReadOutputs::Scales(it) => {
-                joints[topo_idx].scale = Track {
-                    times,
-                    values: it.map(Vec3::from).collect(),
-                };
+                let raw: Vec<Vec3> = it.map(Vec3::from).collect();
+                if let Some((values, mode)) =
+                    resolve_keyframes(raw, times.len(), interpolation, &name, "scale")
+                {
+                    joints[topo_idx].scale = Track {
+                        times,
+                        values,
+                        mode,
+                    };
+                }
             }
             gltf::animation::util::ReadOutputs::MorphTargetWeights(_) => {
                 // Morph targets are out of scope for the skinned slice.
@@ -705,6 +775,65 @@ mod tests {
         // Index 7 has no mapping → defaults to joint 0.
         let out = remap_joint_quad([5, 9, 7, 5], &map);
         assert_eq!(out, [2, 0, 0, 2]);
+    }
+
+    // --- Interpolation mode mapping + CUBICSPLINE value extraction ----------
+
+    use gltf::animation::Interpolation;
+
+    #[test]
+    fn resolve_keyframes_maps_linear_and_step_directly() {
+        let raw = vec![Vec3::X, Vec3::Y, Vec3::Z];
+        let (vals, mode) =
+            resolve_keyframes(raw.clone(), 3, Interpolation::Linear, "clip", "translation")
+                .expect("linear keeps all values");
+        assert_eq!(vals, raw, "LINEAR passes raw values through");
+        assert_eq!(mode, Interp::Linear);
+
+        let (vals, mode) =
+            resolve_keyframes(raw.clone(), 3, Interpolation::Step, "clip", "translation")
+                .expect("step keeps all values");
+        assert_eq!(vals, raw, "STEP passes raw values through");
+        assert_eq!(mode, Interp::Step);
+    }
+
+    #[test]
+    fn resolve_keyframes_cubicspline_extracts_value_element_as_linear() {
+        // Two keyframes, each a [in-tangent, value, out-tangent] triple. The
+        // extracted track must be the VALUE element of each triple (index 3k+1),
+        // which here differs from the surrounding tangent elements — pinning that
+        // we keep the value, not a tangent.
+        let in_t0 = Vec3::new(-1.0, -1.0, -1.0);
+        let val0 = Vec3::new(5.0, 5.0, 5.0);
+        let out_t0 = Vec3::new(9.0, 9.0, 9.0);
+        let in_t1 = Vec3::new(-2.0, -2.0, -2.0);
+        let val1 = Vec3::new(7.0, 7.0, 7.0);
+        let out_t1 = Vec3::new(8.0, 8.0, 8.0);
+        let raw = vec![in_t0, val0, out_t0, in_t1, val1, out_t1];
+
+        let (vals, mode) =
+            resolve_keyframes(raw, 2, Interpolation::CubicSpline, "clip", "rotation")
+                .expect("well-formed cubic triple extracts values");
+        assert_eq!(
+            vals,
+            vec![val0, val1],
+            "extracts the value element of each triple"
+        );
+        assert_ne!(vals[0], in_t0, "extracted value is not the in-tangent");
+        assert_ne!(vals[0], out_t0, "extracted value is not the out-tangent");
+        assert_eq!(mode, Interp::Linear, "cubic degrades to LINEAR");
+    }
+
+    #[test]
+    fn resolve_keyframes_cubicspline_wrong_shape_skips_channel() {
+        // 5 outputs against 2 keyframes is not a valid 3x cubic triple shape:
+        // skip the channel (None) rather than storing a length-mismatched track.
+        let raw = vec![Vec3::ZERO; 5];
+        let result = resolve_keyframes(raw, 2, Interpolation::CubicSpline, "clip", "scale");
+        assert!(
+            result.is_none(),
+            "malformed cubic (outputs != 3x keys) skips the channel"
+        );
     }
 
     // --- Error handling (automated AC: malformed input returns Err, no panic) ---
@@ -989,5 +1118,167 @@ mod tests {
         // The `None` arm (no `extras` block at all) yields no tags.
         let extras: gltf::json::Extras = None;
         assert!(read_model_tags(&extras).is_empty());
+    }
+
+    // --- Multi-clip fixture: full load path ----------------------------------
+    //
+    // A hand-authored two-joint glTF with two named clips of distinct durations,
+    // exercising the LINEAR / STEP / CUBICSPLINE channel paths end-to-end. The
+    // buffer is a base64 data-URI (no sidecar `.bin`), resolved by the loader's
+    // `import_buffers` data-URI entry. Authored layout (verified byte-for-byte
+    // against the encoded buffer):
+    //   joints: skin = [node1 (root), node2 (child of node1)] → topo [0, 1].
+    //   clip "idle"  (dur 1.0): LINEAR rotation on the root joint, keys at
+    //                t=0,1 = identity, then Z+90°.
+    //   clip "walk"  (dur 2.0): STEP translation on the root joint, keys at
+    //                t=0,1,2 = (0,0,0),(10,0,0),(20,0,0); plus a CUBICSPLINE
+    //                translation on the child joint, keys at t=0,1 with value
+    //                elements (5,5,5),(7,7,7) and tangents that differ from
+    //                those values (in=-1/-2, out=9/8) so the value-vs-tangent
+    //                extraction is observable.
+
+    use crate::model::anim::sample_clip;
+    use glam::Mat4;
+
+    const SAMPLE_EPS: f32 = 1.0e-4;
+
+    fn multi_clip_fixture_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_clip/multi_clip.gltf")
+    }
+
+    /// Sample a clip against the model's skeleton at `time` and return joint
+    /// `joint`'s composed local translation (extracted from its skinning matrix;
+    /// inverse-bind matrices in the fixture are identity, so the skinning matrix
+    /// is the world-space joint transform).
+    fn sampled_joint_translation(
+        model: &LoadedModel,
+        clip_idx: usize,
+        joint: usize,
+        time: f32,
+    ) -> Vec3 {
+        let mut out = Vec::new();
+        sample_clip(&model.clips[clip_idx], &model.skeleton, time, &mut out);
+        Mat4::from_cols_array_2d(&out[joint].matrix)
+            .w_axis
+            .truncate()
+    }
+
+    fn assert_vec3_close(got: Vec3, want: Vec3, ctx: &str) {
+        assert!(
+            (got - want).length() < SAMPLE_EPS,
+            "{ctx}: expected {want:?}, got {got:?}",
+        );
+    }
+
+    #[test]
+    fn multi_clip_fixture_loads_all_clips_with_authored_names_and_durations() {
+        let model = load_model(&multi_clip_fixture_path()).expect("multi-clip fixture loads");
+
+        // Two joints in topo order (root before child).
+        assert_eq!(model.skeleton.joints.len(), 2, "skin has two joints");
+        assert_eq!(
+            model.skeleton.joints[0].parent, None,
+            "topo joint 0 is the root"
+        );
+        assert_eq!(
+            model.skeleton.joints[1].parent,
+            Some(0),
+            "topo joint 1 is the root's child",
+        );
+
+        // More than one clip; every authored clip retained in glTF order, each
+        // reporting its own duration.
+        assert_eq!(model.clips.len(), 2, "both animations load as clips");
+        assert_eq!(model.clips[0].name, "idle");
+        assert_eq!(model.clips[1].name, "walk");
+        assert!(
+            (model.clips[0].duration - 1.0).abs() < SAMPLE_EPS,
+            "'idle' duration is its own latest keyframe (1.0), got {}",
+            model.clips[0].duration,
+        );
+        assert!(
+            (model.clips[1].duration - 2.0).abs() < SAMPLE_EPS,
+            "'walk' duration is its own latest keyframe (2.0), got {}",
+            model.clips[1].duration,
+        );
+    }
+
+    #[test]
+    fn multi_clip_fixture_step_channel_holds_lower_keyframe_value() {
+        // "walk" clip index 1: STEP translation on the root joint (topo 0), keys
+        // (0,0,0)@0, (10,0,0)@1, (20,0,0)@2. A STEP channel holds the earlier
+        // keyframe's value between keys and snaps at/after a keyframe time.
+        let model = load_model(&multi_clip_fixture_path()).expect("multi-clip fixture loads");
+
+        // Between keys 0 and 1: holds the lower key exactly (NOT the (5,0,0) a
+        // LINEAR track would lerp to at the midpoint).
+        assert_vec3_close(
+            sampled_joint_translation(&model, 1, 0, 0.5),
+            Vec3::new(0.0, 0.0, 0.0),
+            "STEP holds the earlier keyframe value mid-span",
+        );
+        // At a keyframe time: snaps to that keyframe's value.
+        assert_vec3_close(
+            sampled_joint_translation(&model, 1, 0, 1.0),
+            Vec3::new(10.0, 0.0, 0.0),
+            "STEP snaps to the keyframe value at its time",
+        );
+        // After that keyframe, before the next: still holds it.
+        assert_vec3_close(
+            sampled_joint_translation(&model, 1, 0, 1.5),
+            Vec3::new(10.0, 0.0, 0.0),
+            "STEP holds the keyframe value until the next key",
+        );
+    }
+
+    #[test]
+    fn multi_clip_fixture_cubicspline_channel_samples_keyframe_values_not_tangents() {
+        // "walk" clip index 1: CUBICSPLINE translation on the child joint (topo
+        // 1). The loader degrades cubic to LINEAR by extracting each keyframe's
+        // VALUE element — (5,5,5)@0 and (7,7,7)@1 — discarding the in/out
+        // tangents (-1/-2 and 9/8). Sampling at the keys must return the values,
+        // which are distinct from any adjacent tangent element.
+        let model = load_model(&multi_clip_fixture_path()).expect("multi-clip fixture loads");
+
+        // At t=0: keyframe-0 value (5,5,5) — not the in-tangent (-1,-1,-1) nor
+        // the out-tangent (9,9,9).
+        assert_vec3_close(
+            sampled_joint_translation(&model, 1, 1, 0.0),
+            Vec3::new(5.0, 5.0, 5.0),
+            "CUBICSPLINE sample is keyframe-0 value, not its tangents",
+        );
+        // The stored track holds exactly the two extracted VALUE elements — no
+        // tangents — and is marked LINEAR (cubic degraded). Asserting the track
+        // contents directly pins keyframe-1's value (7,7,7); sampling at t=1 is
+        // avoided because the root's STEP translation channel snaps at t=1, which
+        // would compose into the child's world translation and obscure the check.
+        let child_translation = &model.clips[1].joints[1].translation;
+        assert_eq!(
+            child_translation.mode,
+            Interp::Linear,
+            "CUBICSPLINE channel is stored as LINEAR (cubic degraded at load)",
+        );
+        assert_eq!(
+            child_translation.values.len(),
+            2,
+            "two keyframes → two extracted values (tangents discarded)",
+        );
+        assert_vec3_close(
+            child_translation.values[0],
+            Vec3::new(5.0, 5.0, 5.0),
+            "extracted keyframe-0 value, not a tangent",
+        );
+        assert_vec3_close(
+            child_translation.values[1],
+            Vec3::new(7.0, 7.0, 7.0),
+            "extracted keyframe-1 value, not a tangent",
+        );
+        // The midpoint lerps between the extracted VALUES (linear degrade), so it
+        // lands between (5,5,5) and (7,7,7) — never near a tangent magnitude.
+        assert_vec3_close(
+            sampled_joint_translation(&model, 1, 1, 0.5),
+            Vec3::new(6.0, 6.0, 6.0),
+            "CUBICSPLINE degrades to LINEAR: midpoint lerps between extracted values",
+        );
     }
 }

@@ -1,60 +1,163 @@
-// Animation sampling: clip + time + skeleton → world bone palette (CPU math).
+// CPU pose-sampling library: single-clip and two-source blended sampling, loop
+// policies (wrap/clamp), snapshot capture, and animation clock helpers.
 // See: context/lib/rendering_pipeline.md §9
-//
-// CPU-only (no wgpu): glam math here, palette UPLOAD lives in the render pass.
-// Single clip, LINEAR interpolation, no blend, no state machine — the slice's
-// scope. Reuse-friendly: `sample_clip` writes into a caller-owned `Vec` and
-// keeps a thread-local scratch for the world-pose sweep, so steady-state frames
-// allocate nothing; per-frame `sample_clip` cost is tracked by the renderer's
-// rolling pose-sample stats (see `render/mod.rs`).
 
 use std::cell::RefCell;
 
 use glam::{Mat4, Quat, Vec3};
 
 use super::BonePaletteEntry;
-use super::skeleton::{AnimationClip, JointTracks, RestLocal, Skeleton, Track};
+use super::skeleton::{AnimationClip, Interp, Joint, JointTracks, RestLocal, Skeleton, Track};
 
 thread_local! {
     /// Reusable world-pose scratch (one `Mat4` per joint) for the forward sweep.
     /// Cleared and refilled per call; grows to the largest skeleton seen and is
     /// reused thereafter so steady-state sampling does not allocate.
     static WORLD_POSE_SCRATCH: RefCell<Vec<Mat4>> = const { RefCell::new(Vec::new()) };
+
+    /// Reusable per-joint local-TRS scratch for the blended sampler. The blend
+    /// pass resolves each joint's blended local TRS into this buffer, then the
+    /// existing forward sweep composes it once — so the blend path runs the
+    /// hierarchy compose + inverse-bind sweep exactly once, like the single-clip
+    /// path. Grows to the largest skeleton seen and is reused thereafter, so
+    /// steady-state blended sampling allocates nothing.
+    static BLEND_LOCAL_SCRATCH: RefCell<Vec<LocalTrs>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Sample `clip` at `time` (seconds) against `skeleton`, writing one
-/// [`BonePaletteEntry`] per joint (in skeleton/topo order) into `out`.
+/// How a clip's time is mapped onto its duration at the sampling boundary.
 ///
-/// Each output entry is the joint's **skinning matrix**: the composed world
-/// joint transform multiplied by the joint's inverse-bind matrix, ready to
-/// upload as one contiguous palette run. `out` is cleared then filled, so its
-/// final length equals `skeleton.joints.len()`.
+/// This is the per-sampled-clip loop policy: a looping clip wraps so it repeats,
+/// a one-shot clip clamps and holds its final keyframe forever after the clip
+/// ends. Which policy applies is the *caller's* decision (a state's loop flag);
+/// this type only names the two behaviors so the sampler can apply them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Loop {
+    /// Wrap time into `[0, duration)` (`rem_euclid`) — the clip repeats.
+    Wrap,
+    /// Clamp time into `[0, duration]` — the clip holds its final keyframe after
+    /// it ends (one-shot clips: attack, death).
+    Clamp,
+}
+
+/// One joint's local-space transform in TRS form: the intermediate representation
+/// the blended sampler blends in, and the element type of a captured "smooth"
+/// snapshot buffer.
 ///
-/// Per channel: LINEAR interpolation (component lerp for translation/scale,
-/// shortest-path slerp for rotation). A channel with **no keyframes** holds the
-/// joint's rest-pose component (NOT identity) — the shipped clip omits scale, so
-/// scale falls back to `Joint::rest_local.scale`. `time` is wrapped into
-/// `[0, duration)` so the clip loops; a non-positive duration samples at `t = 0`.
+/// TRS, never a baked matrix: rotation must stay a quaternion so it can slerp.
+/// A matrix snapshot could not be re-blended without decomposing it (and the
+/// decompose is lossy / ambiguous for non-uniform scale), so the snapshot buffer
+/// the "smooth" interrupt captures stores TRS directly. Small and `Copy` so a
+/// per-joint buffer is cheap to fill and read.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LocalTrs {
+    /// Local translation (parent-relative).
+    pub translation: Vec3,
+    /// Local rotation (parent-relative unit quaternion).
+    pub rotation: Quat,
+    /// Local scale.
+    pub scale: Vec3,
+}
+
+impl LocalTrs {
+    /// Compose this local TRS to a `Mat4` in glTF node order
+    /// (`translation * rotation * scale`), matching the single-clip path.
+    fn to_mat4(self) -> Mat4 {
+        Mat4::from_scale_rotation_translation(self.scale, self.rotation, self.translation)
+    }
+}
+
+/// One side of a blend: either a clip to sample (with its time and loop policy)
+/// or a borrowed per-joint local-TRS snapshot.
 ///
-/// Reuse: pass the same `out` every frame. A thread-local scratch holds the
-/// world-pose sweep, so a steady-state call performs no heap allocation.
-pub fn sample_clip(
-    clip: &AnimationClip,
+/// The `Snapshot` arm is the "smooth" interrupt's captured pose — a static
+/// per-joint local TRS that re-feeds as a blend source so an interrupted fade
+/// resumes from the live blended pose with no discontinuity. The borrowed slice
+/// must be parallel to the skeleton's joints (entry `i` is joint `i`); a joint
+/// past the slice's end falls back to rest, mirroring a short clip.
+pub enum BlendSource<'a> {
+    /// Sample `clip` at `time` (seconds) under `loop_policy`.
+    Clip {
+        clip: &'a AnimationClip,
+        time: f32,
+        loop_policy: Loop,
+    },
+    /// Use this caller-provided per-joint local-TRS buffer directly.
+    Snapshot(&'a [LocalTrs]),
+}
+
+impl BlendSource<'_> {
+    /// Resolve this source's local TRS for joint `i` (parallel to the skeleton).
+    /// A clip samples its tracks (holding `rest` for absent channels); a snapshot
+    /// reads its buffer (holding `rest` past the buffer's end).
+    fn local_at(&self, i: usize, rest: &RestLocal) -> LocalTrs {
+        match self {
+            BlendSource::Clip {
+                clip,
+                time,
+                loop_policy,
+            } => {
+                let t = resolve_time(clip.duration, *time, *loop_policy);
+                sample_local_trs(clip.joints.get(i), rest, t)
+            }
+            BlendSource::Snapshot(buf) => buf.get(i).copied().unwrap_or(LocalTrs {
+                translation: rest.translation,
+                rotation: rest.rotation,
+                scale: rest.scale,
+            }),
+        }
+    }
+}
+
+/// Map a raw clip time onto the clip's duration under `loop_policy`. A
+/// non-positive duration (static or malformed clip) always samples the first
+/// frame. `Wrap` repeats the clip; `Clamp` holds the final keyframe past the end.
+fn resolve_time(duration: f32, time: f32, loop_policy: Loop) -> f32 {
+    if duration > 0.0 {
+        match loop_policy {
+            Loop::Wrap => time.rem_euclid(duration),
+            Loop::Clamp => time.clamp(0.0, duration),
+        }
+    } else {
+        0.0
+    }
+}
+
+/// Blend two local TRS values at `weight` (`0.0` → `a`, `1.0` → `b`).
+/// Translation and scale lerp component-wise; rotation slerps along the shortest
+/// path. The quats are put in the same hemisphere first (negate `b` if the dot is
+/// negative) so a `1.0`/`0.0` weight reproduces the endpoint exactly and the
+/// midpoint never takes the long way around.
+fn blend_local(a: LocalTrs, b: LocalTrs, weight: f32) -> LocalTrs {
+    let rot_a = a.rotation.normalize();
+    let mut rot_b = b.rotation.normalize();
+    if rot_a.dot(rot_b) < 0.0 {
+        rot_b = -rot_b;
+    }
+    LocalTrs {
+        translation: a.translation.lerp(b.translation, weight),
+        rotation: rot_a.slerp(rot_b, weight).normalize(),
+        scale: a.scale.lerp(b.scale, weight),
+    }
+}
+
+/// Compose a per-joint local-matrix function into the skinning palette: run the
+/// parent-before-child forward sweep and apply each joint's inverse-bind matrix,
+/// writing one [`BonePaletteEntry`] per joint into `out`.
+///
+/// `local_of(i, joint)` returns joint `i`'s composed local transform (the
+/// single-clip path samples + composes a clip; the blend path composes an
+/// already-blended TRS). Both `out` and the world-pose scratch are cleared then
+/// filled, so a steady-state call with a reused `out` performs no heap
+/// allocation. The hierarchy compose + inverse-bind sweep happens **once** here —
+/// the blend path resolves its per-joint blend before this, never inside it.
+fn compose_palette(
     skeleton: &Skeleton,
-    time: f32,
     out: &mut Vec<BonePaletteEntry>,
+    mut local_of: impl FnMut(usize, &Joint) -> Mat4,
 ) {
     let joint_count = skeleton.joints.len();
     out.clear();
     out.reserve(joint_count);
-
-    // Loop the clip: sample at `time mod duration`. Guard a zero/negative
-    // duration (a static or malformed clip) by sampling the first frame.
-    let t = if clip.duration > 0.0 {
-        time.rem_euclid(clip.duration)
-    } else {
-        0.0
-    };
 
     WORLD_POSE_SCRATCH.with(|cell| {
         let mut world = cell.borrow_mut();
@@ -62,10 +165,7 @@ pub fn sample_clip(
         world.reserve(joint_count);
 
         for (i, joint) in skeleton.joints.iter().enumerate() {
-            // The clip's per-joint tracks are parallel to skeleton joints, but a
-            // static-model / mismatched clip may be shorter — fall back to rest.
-            let tracks = clip.joints.get(i);
-            let local = sample_local_pose(tracks, &joint.rest_local, t);
+            let local = local_of(i, joint);
 
             // Forward sweep: parent-before-child topo order guarantees the
             // parent's world matrix is already in `world` when we reach a child.
@@ -84,11 +184,136 @@ pub fn sample_clip(
     });
 }
 
+/// Sample `clip` at `time` (seconds) against `skeleton`, writing one
+/// [`BonePaletteEntry`] per joint (in skeleton/topo order) into `out`.
+///
+/// `Loop::Wrap` shorthand over [`sample_clip_looped`]: time is always wrapped
+/// into `[0, duration)` so the clip loops. Production render paths carry an
+/// explicit per-state loop policy and call [`sample_clip_looped`] directly;
+/// this shorthand is retained for callers that always want the wrapping default.
+///
+/// Each output entry is the joint's **skinning matrix**: the composed world
+/// joint transform multiplied by the joint's inverse-bind matrix, ready to
+/// upload as one contiguous palette run. `out` is cleared then filled, so its
+/// final length equals `skeleton.joints.len()`.
+///
+/// Per channel: interpolation follows the track's [`Interp`] mode — `Linear`
+/// (component lerp for translation/scale, shortest-path slerp for rotation) or
+/// `Step` (hold the lower bracketing key's value). A channel with **no keyframes** holds the
+/// joint's rest-pose component (NOT identity) — the shipped clip omits scale, so
+/// scale falls back to `Joint::rest_local.scale`. A non-positive duration samples
+/// at `t = 0`.
+///
+/// Reuse: pass the same `out` every frame. A thread-local scratch holds the
+/// world-pose sweep, so a steady-state call performs no heap allocation.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn sample_clip(
+    clip: &AnimationClip,
+    skeleton: &Skeleton,
+    time: f32,
+    out: &mut Vec<BonePaletteEntry>,
+) {
+    sample_clip_looped(clip, skeleton, time, Loop::Wrap, out);
+}
+
+/// Sample `clip` at `time` (seconds) under `loop_policy` against `skeleton`,
+/// writing the skinning palette into `out` (see [`sample_clip`] for the per-entry
+/// contract).
+///
+/// The loop-aware single-clip path: `Loop::Wrap` repeats the clip (today's
+/// behavior), `Loop::Clamp` holds the final keyframe forever after the clip ends
+/// (one-shot states — attack, death). A non-positive duration samples at `t = 0`.
+pub fn sample_clip_looped(
+    clip: &AnimationClip,
+    skeleton: &Skeleton,
+    time: f32,
+    loop_policy: Loop,
+    out: &mut Vec<BonePaletteEntry>,
+) {
+    let t = resolve_time(clip.duration, time, loop_policy);
+    compose_palette(skeleton, out, |i, joint| {
+        // The clip's per-joint tracks are parallel to skeleton joints, but a
+        // static-model / mismatched clip may be shorter — fall back to rest.
+        sample_local_pose(clip.joints.get(i), &joint.rest_local, t)
+    });
+}
+
+/// Blend two sources at `weight` (`0.0` → `a`, `1.0` → `b`) into one skinning
+/// palette, writing one [`BonePaletteEntry`] per joint into `out`.
+///
+/// Each source is a [`BlendSource`] — a clip to sample (with its own time and
+/// loop policy) or a borrowed per-joint local-TRS snapshot. Per joint the two
+/// sources' **local** TRS are blended (component lerp for translation/scale,
+/// shortest-path slerp for rotation; see [`blend_local`]); the hierarchy
+/// compose-and-inverse-bind sweep then runs **once** over the blended locals — so
+/// this costs at most two clip samples per joint, never two full palette composes.
+///
+/// At `weight == 0.0` the palette equals `a`'s pose; at `1.0`, `b`'s; in between,
+/// the per-joint blend. Reuse `out` across frames: a thread-local TRS scratch and
+/// the world-pose scratch are both reused, so steady-state blended sampling
+/// allocates nothing.
+pub fn sample_blended(
+    a: &BlendSource,
+    b: &BlendSource,
+    weight: f32,
+    skeleton: &Skeleton,
+    out: &mut Vec<BonePaletteEntry>,
+) {
+    BLEND_LOCAL_SCRATCH.with(|cell| {
+        let mut locals = cell.borrow_mut();
+        resolve_blend_into(a, b, weight, skeleton, &mut locals);
+        compose_palette(skeleton, out, |i, _joint| locals[i].to_mat4());
+    });
+}
+
+/// Blend two sources at `weight` (`0.0` → `a`, `1.0` → `b`) into a per-joint
+/// local-TRS buffer (one [`LocalTrs`] per skeleton joint), writing into `out`.
+///
+/// This is the "smooth" interrupt's one-time snapshot capture: it evaluates the
+/// same per-joint blend [`sample_blended`] composes, but stops at the local TRS
+/// instead of composing to matrices — so the captured pose can be fed back as a
+/// [`BlendSource::Snapshot`] and re-blended (a matrix snapshot could not slerp).
+/// Either source may itself be a snapshot, so a snapshot-fade interrupted again
+/// captures `blend(snapshot, clip)` through this same path.
+///
+/// `out` is cleared then filled to `skeleton.joints.len()`. Capture is a
+/// one-time event (not a steady-state per-frame call), so a growing `out` here is
+/// not on the hot path — but reuse is still safe and free of churn.
+pub fn capture_blend(
+    a: &BlendSource,
+    b: &BlendSource,
+    weight: f32,
+    skeleton: &Skeleton,
+    out: &mut Vec<LocalTrs>,
+) {
+    resolve_blend_into(a, b, weight, skeleton, out);
+}
+
+/// Resolve the per-joint blend of two sources at `weight` into `out` (one
+/// [`LocalTrs`] per skeleton joint). The shared core of [`sample_blended`] (which
+/// then composes the result once) and [`capture_blend`] (which returns it as the
+/// snapshot buffer), so both paths run identical per-joint blend math.
+fn resolve_blend_into(
+    a: &BlendSource,
+    b: &BlendSource,
+    weight: f32,
+    skeleton: &Skeleton,
+    out: &mut Vec<LocalTrs>,
+) {
+    out.clear();
+    out.reserve(skeleton.joints.len());
+    for (i, joint) in skeleton.joints.iter().enumerate() {
+        let la = a.local_at(i, &joint.rest_local);
+        let lb = b.local_at(i, &joint.rest_local);
+        out.push(blend_local(la, lb, weight));
+    }
+}
+
 /// Resolve one joint's local TRS at time `t`: each channel interpolates its
-/// keyframes if present, else holds the rest-pose component. Composed to a
-/// `Mat4` in TRS order (`translation * rotation * scale`), matching glTF's node
-/// transform convention.
-fn sample_local_pose(tracks: Option<&JointTracks>, rest: &RestLocal, t: f32) -> Mat4 {
+/// keyframes if present, else holds the rest-pose component. Returns the raw TRS
+/// so the blend path can blend two of them as quaternions before composing; the
+/// single-clip path composes one to a `Mat4` via [`sample_local_pose`].
+fn sample_local_trs(tracks: Option<&JointTracks>, rest: &RestLocal, t: f32) -> LocalTrs {
     let (translation, rotation, scale) = match tracks {
         Some(tr) => (
             sample_vec3_track(&tr.translation, t).unwrap_or(rest.translation),
@@ -97,7 +322,19 @@ fn sample_local_pose(tracks: Option<&JointTracks>, rest: &RestLocal, t: f32) -> 
         ),
         None => (rest.translation, rest.rotation, rest.scale),
     };
-    Mat4::from_scale_rotation_translation(scale, rotation, translation)
+    LocalTrs {
+        translation,
+        rotation,
+        scale,
+    }
+}
+
+/// Resolve one joint's local TRS at time `t` and compose it to a `Mat4` in TRS
+/// order (`translation * rotation * scale`), matching glTF's node transform
+/// convention. The composing wrapper over [`sample_local_trs`] for the
+/// single-clip path.
+fn sample_local_pose(tracks: Option<&JointTracks>, rest: &RestLocal, t: f32) -> Mat4 {
+    sample_local_trs(tracks, rest, t).to_mat4()
 }
 
 /// Find the keyframe span bracketing `t` and the fraction within it.
@@ -131,21 +368,28 @@ fn locate_span(times: &[f32], t: f32) -> Option<(usize, usize, f32)> {
     Some((i0, i1, frac))
 }
 
-/// Sample a `Vec3` track (translation/scale) with component-wise LINEAR lerp.
+/// Sample a `Vec3` track (translation/scale). `Linear` lerps component-wise
+/// between the bracketing keys; `Step` holds the lower key (`i0`) with no blend.
 fn sample_vec3_track(track: &Track<Vec3>, t: f32) -> Option<Vec3> {
     let (i0, i1, frac) = locate_span(&track.times, t)?;
     let a = track.values[i0];
-    let b = track.values[i1];
-    Some(a.lerp(b, frac))
+    match track.mode {
+        Interp::Step => Some(a),
+        Interp::Linear => {
+            let b = track.values[i1];
+            Some(a.lerp(b, frac))
+        }
+    }
 }
 
-/// Sample a `Quat` rotation track with shortest-path slerp. Endpoints are
-/// normalized (authored quats may drift) and slerp handles the dot-sign flip
-/// internally, so the interpolation never takes the long way around.
+/// Sample a `Quat` rotation track. `Linear` slerps (shortest-path) between the
+/// bracketing keys — endpoints are normalized (authored quats may drift) and
+/// glam's `slerp` handles the dot-sign flip internally, so the interpolation
+/// never takes the long way around. `Step` holds the lower key (`i0`).
 fn sample_quat_track(track: &Track<Quat>, t: f32) -> Option<Quat> {
     let (i0, i1, frac) = locate_span(&track.times, t)?;
     let a = track.values[i0].normalize();
-    if i0 == i1 {
+    if i0 == i1 || track.mode == Interp::Step {
         return Some(a);
     }
     let b = track.values[i1].normalize();
@@ -271,6 +515,7 @@ mod tests {
             translation: Track {
                 times: vec![0.0, 2.0],
                 values: vec![Vec3::new(0.0, 0.0, 0.0), Vec3::new(10.0, -4.0, 2.0)],
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -295,6 +540,7 @@ mod tests {
             rotation: Track {
                 times: vec![0.0, 1.0],
                 values: vec![q0, q1],
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -325,6 +571,7 @@ mod tests {
             translation: Track {
                 times: vec![0.0, 1.0],
                 values: vec![Vec3::new(1.0, 2.0, 3.0), Vec3::new(1.0, 2.0, 3.0)],
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -354,6 +601,7 @@ mod tests {
             translation: Track {
                 times: vec![0.0, 2.0],
                 values: vec![Vec3::new(0.0, 0.0, 0.0), Vec3::new(8.0, 0.0, 0.0)],
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -434,6 +682,94 @@ mod tests {
         assert!(out.len() == skeleton.joints.len());
     }
 
+    /// A STEP translation track holds the lower keyframe's value between keys and
+    /// snaps to a keyframe's value at/after that keyframe's time — no lerp.
+    #[test]
+    fn step_translation_track_holds_lower_keyframe() {
+        let skeleton = Skeleton {
+            joints: vec![joint(None, Mat4::IDENTITY, RestLocal::default())],
+        };
+        // Three keys so the snap-at-key assertion lands on an interior key (t=2),
+        // away from t = duration where `sample_clip` wraps the time to 0.
+        let k0 = Vec3::new(0.0, 0.0, 0.0);
+        let k1 = Vec3::new(10.0, 0.0, 0.0);
+        let k2 = Vec3::new(20.0, 0.0, 0.0);
+        let tracks = JointTracks {
+            translation: Track {
+                times: vec![0.0, 2.0, 4.0],
+                values: vec![k0, k1, k2],
+                mode: Interp::Step,
+            },
+            ..Default::default()
+        };
+        let clip = translation_clip("step", 4.0, vec![tracks]);
+
+        let sample_at = |t: f32| {
+            let mut out = Vec::new();
+            sample_clip(&clip, &skeleton, t, &mut out);
+            Mat4::from_cols_array_2d(&out[0].matrix).w_axis.truncate()
+        };
+        // Between two keys: holds the LOWER key, not the midpoint lerp a LINEAR
+        // track would yield ((5,0,0) on [k0,k1]).
+        assert_vec3_eq(sample_at(1.0), k0, "STEP holds lower key mid-span");
+        assert_vec3_eq(sample_at(1.99), k0, "STEP holds lower key just before next");
+        // At and after the (interior) keyframe time: snaps to that key's value.
+        assert_vec3_eq(sample_at(2.0), k1, "STEP snaps at the keyframe time");
+        assert_vec3_eq(sample_at(3.0), k1, "STEP holds k1 until the next key");
+    }
+
+    /// LINEAR remains the default and still interpolates (regression guard that
+    /// adding the mode field did not change default behavior).
+    #[test]
+    fn linear_default_track_still_lerps() {
+        let skeleton = Skeleton {
+            joints: vec![joint(None, Mat4::IDENTITY, RestLocal::default())],
+        };
+        // Field-elided construction: `mode` defaults to Interp::Linear.
+        let tracks = JointTracks {
+            translation: Track {
+                times: vec![0.0, 2.0],
+                values: vec![Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0)],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            tracks.translation.mode,
+            Interp::Linear,
+            "mode defaults LINEAR"
+        );
+        let clip = translation_clip("lin", 2.0, vec![tracks]);
+        let mut out = Vec::new();
+        sample_clip(&clip, &skeleton, 1.0, &mut out);
+        let p = Mat4::from_cols_array_2d(&out[0].matrix).w_axis.truncate();
+        assert_vec3_eq(p, Vec3::new(5.0, 0.0, 0.0), "LINEAR midpoint lerps");
+    }
+
+    /// A STEP rotation track holds the lower keyframe (no slerp between keys).
+    #[test]
+    fn step_rotation_track_holds_lower_keyframe() {
+        let skeleton = Skeleton {
+            joints: vec![joint(None, Mat4::IDENTITY, RestLocal::default())],
+        };
+        let q0 = Quat::IDENTITY;
+        let q1 = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+        let tracks = JointTracks {
+            rotation: Track {
+                times: vec![0.0, 1.0],
+                values: vec![q0, q1],
+                mode: Interp::Step,
+            },
+            ..Default::default()
+        };
+        let clip = translation_clip("stepr", 1.0, vec![tracks]);
+        let mut out = Vec::new();
+        // Midpoint: a LINEAR track would slerp to 45°; STEP holds q0 (0°).
+        sample_clip(&clip, &skeleton, 0.5, &mut out);
+        let sampled = Quat::from_mat4(&Mat4::from_cols_array_2d(&out[0].matrix));
+        assert_quat_eq(sampled, q0, "STEP rotation holds lower key (no slerp)");
+    }
+
     /// `out` is cleared and refilled, and reuse across calls does not change the
     /// result — the steady-state allocation-free reuse path the renderer uses.
     #[test]
@@ -460,5 +796,361 @@ mod tests {
         sample_clip(&clip, &skeleton, 0.0, &mut out);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0], first, "reuse is deterministic");
+    }
+
+    // --- Blended and loop-policy sampling ---
+
+    /// Decompose a palette entry's skinning matrix back to (translation,
+    /// rotation, scale). The blend tests use identity inverse-binds and a single
+    /// root joint, so the skinning matrix *is* the joint's local transform.
+    fn decompose(entry: BonePaletteEntry) -> (Vec3, Quat, Vec3) {
+        let (s, r, t) = Mat4::from_cols_array_2d(&entry.matrix).to_scale_rotation_translation();
+        (t, r, s)
+    }
+
+    /// A single-root skeleton with identity inverse-bind, so a sampled palette
+    /// entry decomposes straight back to the joint's local TRS.
+    fn single_root_skeleton() -> Skeleton {
+        Skeleton {
+            joints: vec![joint(None, Mat4::IDENTITY, RestLocal::default())],
+        }
+    }
+
+    /// A one-joint clip that holds a constant local TRS (single key on each
+    /// channel), so it samples to exactly `(t, r, s)` at any time.
+    fn constant_pose_clip(name: &str, t: Vec3, r: Quat, s: Vec3) -> AnimationClip {
+        let tracks = JointTracks {
+            translation: Track {
+                times: vec![0.0],
+                values: vec![t],
+                ..Default::default()
+            },
+            rotation: Track {
+                times: vec![0.0],
+                values: vec![r],
+                ..Default::default()
+            },
+            scale: Track {
+                times: vec![0.0],
+                values: vec![s],
+                ..Default::default()
+            },
+        };
+        AnimationClip {
+            name: name.to_string(),
+            duration: 1.0,
+            joints: vec![tracks],
+        }
+    }
+
+    /// Blend weight 0 reproduces source A's pose; weight 1 reproduces source B's;
+    /// the midpoint differs from both. The endpoints must be exact (slerp
+    /// hemisphere handling) — a blend is not allowed to perturb an endpoint.
+    #[test]
+    fn blend_endpoints_reproduce_each_source_midpoint_differs() {
+        let skeleton = single_root_skeleton();
+        let pose_a = (Vec3::new(1.0, 0.0, 0.0), Quat::IDENTITY, Vec3::splat(1.0));
+        let pose_b = (
+            Vec3::new(0.0, 4.0, 0.0),
+            Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+            Vec3::splat(2.0),
+        );
+        let clip_a = constant_pose_clip("a", pose_a.0, pose_a.1, pose_a.2);
+        let clip_b = constant_pose_clip("b", pose_b.0, pose_b.1, pose_b.2);
+        let src_a = BlendSource::Clip {
+            clip: &clip_a,
+            time: 0.0,
+            loop_policy: Loop::Wrap,
+        };
+        let src_b = BlendSource::Clip {
+            clip: &clip_b,
+            time: 0.0,
+            loop_policy: Loop::Wrap,
+        };
+
+        let mut out = Vec::new();
+
+        sample_blended(&src_a, &src_b, 0.0, &skeleton, &mut out);
+        let (t0, r0, s0) = decompose(out[0]);
+        assert_vec3_eq(t0, pose_a.0, "weight 0 → A translation");
+        assert_quat_eq(r0, pose_a.1, "weight 0 → A rotation");
+        assert_vec3_eq(s0, pose_a.2, "weight 0 → A scale");
+
+        sample_blended(&src_a, &src_b, 1.0, &skeleton, &mut out);
+        let (t1, r1, s1) = decompose(out[0]);
+        assert_vec3_eq(t1, pose_b.0, "weight 1 → B translation");
+        assert_quat_eq(r1, pose_b.1, "weight 1 → B rotation");
+        assert_vec3_eq(s1, pose_b.2, "weight 1 → B scale");
+
+        sample_blended(&src_a, &src_b, 0.5, &skeleton, &mut out);
+        let (tm, rm, sm) = decompose(out[0]);
+        // Translation/scale lerp; rotation slerps to the half angle.
+        assert_vec3_eq(
+            tm,
+            pose_a.0.lerp(pose_b.0, 0.5),
+            "midpoint translation lerp",
+        );
+        assert_vec3_eq(sm, pose_a.2.lerp(pose_b.2, 0.5), "midpoint scale lerp");
+        assert_quat_eq(
+            rm,
+            Quat::from_rotation_z(std::f32::consts::FRAC_PI_4),
+            "midpoint rotation = half angle",
+        );
+        // And the midpoint is genuinely between, not at either endpoint.
+        assert!((tm - pose_a.0).length() > EPS, "midpoint differs from A");
+        assert!((tm - pose_b.0).length() > EPS, "midpoint differs from B");
+    }
+
+    /// Shortest-path slerp: blending 170° and −170° about Z goes the short way
+    /// (through 180°), not the long way (through 0°). The midpoint is 180°.
+    /// The endpoints being in opposite hemispheres is the case the manual flip guards.
+    #[test]
+    fn blend_rotation_takes_shortest_path() {
+        let skeleton = single_root_skeleton();
+        // 170° each side of zero about Z: shortest arc between them passes through
+        // 180°, the long arc through 0°. Midpoint must land near 180°, not 0°.
+        let r_a = Quat::from_rotation_z(170f32.to_radians());
+        let r_b = Quat::from_rotation_z(-170f32.to_radians());
+        let clip_a = constant_pose_clip("a", Vec3::ZERO, r_a, Vec3::ONE);
+        let clip_b = constant_pose_clip("b", Vec3::ZERO, r_b, Vec3::ONE);
+        let src_a = BlendSource::Clip {
+            clip: &clip_a,
+            time: 0.0,
+            loop_policy: Loop::Wrap,
+        };
+        let src_b = BlendSource::Clip {
+            clip: &clip_b,
+            time: 0.0,
+            loop_policy: Loop::Wrap,
+        };
+
+        let mut out = Vec::new();
+        sample_blended(&src_a, &src_b, 0.5, &skeleton, &mut out);
+        let (_, rm, _) = decompose(out[0]);
+        // Shortest arc midpoint is ±180° about Z (through the back), NOT identity:
+        // 170° and -170° are 20° apart the short way, so their midpoint is 180°.
+        assert_quat_eq(
+            rm,
+            Quat::from_rotation_z(180f32.to_radians()),
+            "shortest-path midpoint of 170°/-170° is 180°, not 0°",
+        );
+    }
+
+    /// A looping clip wraps past its duration; a non-looping clip clamps and holds
+    /// its final keyframe forever after the clip ends.
+    #[test]
+    fn loop_policy_wraps_or_clamps_past_duration() {
+        let skeleton = single_root_skeleton();
+        // Translation 0 → 8 over [0, 2]. After the end: Wrap repeats (t=2.1 ≡ 0.1),
+        // Clamp holds the final key (8).
+        let tracks = JointTracks {
+            translation: Track {
+                times: vec![0.0, 2.0],
+                values: vec![Vec3::ZERO, Vec3::new(8.0, 0.0, 0.0)],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let clip = translation_clip("loopclamp", 2.0, vec![tracks]);
+
+        let pos = |time: f32, policy: Loop| {
+            let mut out = Vec::new();
+            sample_clip_looped(&clip, &skeleton, time, policy, &mut out);
+            Mat4::from_cols_array_2d(&out[0].matrix).w_axis.truncate()
+        };
+
+        // Just past the end.
+        let wrapped = pos(2.1, Loop::Wrap);
+        let clamped = pos(2.1, Loop::Clamp);
+        // Wrap ≡ sampling at 0.1 (linearly 0.4 along x).
+        assert_vec3_eq(wrapped, pos(0.1, Loop::Wrap), "Wrap repeats the clip");
+        // Clamp holds the final keyframe value (8,0,0).
+        assert_vec3_eq(
+            clamped,
+            Vec3::new(8.0, 0.0, 0.0),
+            "Clamp holds final keyframe",
+        );
+        // Far past the end the clamp still holds — the death pose persists.
+        assert_vec3_eq(
+            pos(100.0, Loop::Clamp),
+            Vec3::new(8.0, 0.0, 0.0),
+            "Clamp holds indefinitely",
+        );
+
+        // `sample_clip` (the Wrap shorthand) matches `sample_clip_looped(Wrap)`.
+        let mut shorthand = Vec::new();
+        sample_clip(&clip, &skeleton, 2.1, &mut shorthand);
+        assert_vec3_eq(
+            Mat4::from_cols_array_2d(&shorthand[0].matrix)
+                .w_axis
+                .truncate(),
+            wrapped,
+            "sample_clip defaults to Wrap",
+        );
+    }
+
+    /// `capture_blend` produces a per-joint local-TRS buffer that, fed back as a
+    /// `Snapshot` blend source, reproduces the captured pose exactly — so a
+    /// "smooth" interrupt resumes from the live blended pose with no discontinuity.
+    #[test]
+    fn captured_snapshot_reproduces_blended_pose() {
+        let skeleton = single_root_skeleton();
+        let clip_a = constant_pose_clip(
+            "a",
+            Vec3::new(1.0, 2.0, 3.0),
+            Quat::from_rotation_y(0.3),
+            Vec3::splat(1.5),
+        );
+        let clip_b = constant_pose_clip(
+            "b",
+            Vec3::new(-4.0, 0.0, 5.0),
+            Quat::from_rotation_x(1.1),
+            Vec3::splat(0.5),
+        );
+        let src_a = BlendSource::Clip {
+            clip: &clip_a,
+            time: 0.0,
+            loop_policy: Loop::Wrap,
+        };
+        let src_b = BlendSource::Clip {
+            clip: &clip_b,
+            time: 0.0,
+            loop_policy: Loop::Wrap,
+        };
+
+        // The live blended palette at an arbitrary mid-fade weight.
+        let mut live = Vec::new();
+        sample_blended(&src_a, &src_b, 0.4, &skeleton, &mut live);
+
+        // Capture that same blend into a snapshot buffer.
+        let mut snapshot = Vec::new();
+        capture_blend(&src_a, &src_b, 0.4, &skeleton, &mut snapshot);
+        assert_eq!(snapshot.len(), skeleton.joints.len());
+
+        // Feeding the snapshot back at weight 0 (snapshot vs anything) reproduces
+        // the captured pose — the interrupt has no discontinuity.
+        let snap_src = BlendSource::Snapshot(&snapshot);
+        let mut resumed = Vec::new();
+        sample_blended(&snap_src, &src_a, 0.0, &skeleton, &mut resumed);
+        for (l, r) in live.iter().zip(resumed.iter()) {
+            assert_mat4_eq(
+                Mat4::from_cols_array_2d(&r.matrix),
+                Mat4::from_cols_array_2d(&l.matrix),
+                "snapshot reproduces live blended pose",
+            );
+        }
+    }
+
+    /// A snapshot-fade interrupted again captures `blend(snapshot, clip)` through
+    /// the same path — the snapshot arm works as either blend operand.
+    #[test]
+    fn capture_blends_snapshot_against_clip() {
+        let skeleton = single_root_skeleton();
+        let snapshot = vec![LocalTrs {
+            translation: Vec3::new(2.0, 0.0, 0.0),
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+        }];
+        let clip = constant_pose_clip("c", Vec3::new(0.0, 6.0, 0.0), Quat::IDENTITY, Vec3::ONE);
+        let snap_src = BlendSource::Snapshot(&snapshot);
+        let clip_src = BlendSource::Clip {
+            clip: &clip,
+            time: 0.0,
+            loop_policy: Loop::Wrap,
+        };
+
+        let mut captured = Vec::new();
+        capture_blend(&snap_src, &clip_src, 0.5, &skeleton, &mut captured);
+        // Component lerp of the two translations at 0.5.
+        assert_vec3_eq(
+            captured[0].translation,
+            Vec3::new(1.0, 3.0, 0.0),
+            "snapshot×clip translation lerp",
+        );
+    }
+
+    /// A snapshot source shorter than the skeleton falls back to rest for the
+    /// joints past its end (mirroring a short clip) — no panic, no garbage.
+    #[test]
+    fn snapshot_shorter_than_skeleton_holds_rest() {
+        // Two joints; rest scale 0.5 on the second so a rest fallback is visible.
+        let rest_child = RestLocal {
+            translation: Vec3::new(0.0, 7.0, 0.0),
+            rotation: Quat::IDENTITY,
+            scale: Vec3::splat(0.5),
+        };
+        let skeleton = Skeleton {
+            joints: vec![
+                joint(None, Mat4::IDENTITY, RestLocal::default()),
+                joint(Some(0), Mat4::IDENTITY, rest_child),
+            ],
+        };
+        // Snapshot covers only joint 0.
+        let snapshot = vec![LocalTrs {
+            translation: Vec3::new(3.0, 0.0, 0.0),
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+        }];
+        let snap_src = BlendSource::Snapshot(&snapshot);
+
+        let mut captured = Vec::new();
+        // Blend snapshot against itself at weight 0 so the output equals the
+        // snapshot's resolved locals (rest fallback included for joint 1).
+        capture_blend(&snap_src, &snap_src, 0.0, &skeleton, &mut captured);
+        assert_eq!(captured.len(), 2);
+        assert_vec3_eq(
+            captured[0].translation,
+            Vec3::new(3.0, 0.0, 0.0),
+            "joint 0 from snapshot",
+        );
+        assert_vec3_eq(
+            captured[1].translation,
+            rest_child.translation,
+            "joint 1 holds rest translation",
+        );
+        assert_vec3_eq(
+            captured[1].scale,
+            rest_child.scale,
+            "joint 1 holds rest scale",
+        );
+    }
+
+    /// Steady-state blended sampling reuses both thread-locals and the caller's
+    /// `out`, so a warmed call allocates nothing. Probed by capacity stability:
+    /// after a warm-up the buffers are sized, and a subsequent call neither grows
+    /// `out`'s capacity nor changes the result.
+    #[test]
+    fn blended_sampling_reuses_scratch_steady_state() {
+        let skeleton = single_root_skeleton();
+        let clip_a = constant_pose_clip("a", Vec3::new(1.0, 0.0, 0.0), Quat::IDENTITY, Vec3::ONE);
+        let clip_b = constant_pose_clip("b", Vec3::new(0.0, 1.0, 0.0), Quat::IDENTITY, Vec3::ONE);
+        let src_a = BlendSource::Clip {
+            clip: &clip_a,
+            time: 0.0,
+            loop_policy: Loop::Wrap,
+        };
+        let src_b = BlendSource::Clip {
+            clip: &clip_b,
+            time: 0.0,
+            loop_policy: Loop::Wrap,
+        };
+
+        let mut out = Vec::new();
+        // Warm-up: grows `out` and the thread-locals to skeleton size once.
+        sample_blended(&src_a, &src_b, 0.5, &skeleton, &mut out);
+        let cap_after_warm = out.capacity();
+        let first = out[0];
+
+        // Steady state: the reused `out` must not reallocate.
+        for _ in 0..16 {
+            sample_blended(&src_a, &src_b, 0.5, &skeleton, &mut out);
+        }
+        assert_eq!(
+            out.capacity(),
+            cap_after_warm,
+            "out not reallocated in steady state"
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0], first, "blended reuse is deterministic");
     }
 }

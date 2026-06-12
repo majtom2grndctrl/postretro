@@ -57,27 +57,50 @@ pub struct Skeleton {
     pub joints: Vec<Joint>,
 }
 
+/// Keyframe interpolation mode for a [`Track`], mapped from the glTF sampler's
+/// interpolation algorithm.
+///
+/// glTF defines three modes; the engine evaluates two:
+/// - `Linear` — lerp (translation/scale) / slerp (rotation) between bracketing keys.
+/// - `Step` — hold the lower bracketing key's value (no fraction) until the next key.
+///
+/// glTF's third mode, CUBICSPLINE, is **not** a `Track` variant: the loader
+/// extracts each keyframe's value element (discarding tangents) and stores the
+/// track as `Linear`, degrading cubic to linear. True cubic evaluation is out of
+/// scope (tangent storage and hermite blending are not implemented), so no runtime code ever sees a cubic mode here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Interp {
+    /// Linearly interpolate between bracketing keyframes (lerp / slerp).
+    #[default]
+    Linear,
+    /// Hold the lower bracketing keyframe's value until the next keyframe.
+    Step,
+}
+
 /// One keyframe track: time samples (seconds, ascending) paired with values.
 ///
 /// The two `Vec`s are parallel — `times[i]` is the sample time of `values[i]` —
 /// and always the same length. Empty = the channel is not animated for this
 /// joint (the sampler falls back to the joint's bind-pose component).
 ///
-/// glTF mixamo clips author LINEAR interpolation for translation and rotation
-/// and omit scale; the loader stores the raw samples and `crate::model::anim::sample_clip`
-/// interpolates (lerp for translation/scale, slerp (normalized) for rotation). Interpolation mode is
-/// not stored — the slice samples LINEAR; a STEP/CUBICSPLINE-carrying clip is the
-/// broadening task's concern and would add a mode tag here.
+/// `mode` records how `crate::model::anim::sample_clip` blends between keys:
+/// `Linear` interpolates (lerp for translation/scale, normalized slerp for
+/// rotation); `Step` holds the lower bracketing key. The loader maps the glTF
+/// sampler's interpolation here; CUBICSPLINE channels are degraded to `Linear`
+/// with their value elements (tangents discarded) at load time.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Track<T> {
     pub times: Vec<f32>,
     pub values: Vec<T>,
+    /// How to interpolate between keyframes. [`Interp::Linear`] is the meaningful
+    /// default: field-elided construction and `Track::default()` both interpolate
+    /// rather than step, which is the common case for authored animation clips.
+    pub mode: Interp,
 }
 
 impl<T> Track<T> {
-    /// True when no samples were authored for this channel.
-    // Kept for the sampler-broadening task that handles unanimated-channel fallback.
-    #[allow(dead_code)]
+    /// True when the track carries no keyframes.
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.times.is_empty()
     }
@@ -107,7 +130,9 @@ pub struct JointTracks {
 pub struct AnimationClip {
     /// Clip name as authored (e.g. the glTF animation name "mixamo.com").
     pub name: String,
-    /// Total clip length in seconds — the latest keyframe time across all tracks.
+    /// Total clip length in seconds — the latest input time across all channels,
+    /// including channels that are subsequently skipped (e.g. malformed CUBICSPLINE
+    /// channels). A skipped channel still advances the duration before being rejected.
     pub duration: f32,
     /// Per-joint TRS tracks, parallel to [`Skeleton::joints`]. Joints with no
     /// channel in the clip carry empty tracks (held at bind pose by the sampler).

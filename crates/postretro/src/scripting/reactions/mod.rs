@@ -5,6 +5,7 @@
 use thiserror::Error;
 
 pub(crate) mod registry;
+pub(crate) mod set_animation_state;
 pub(crate) mod set_emitter_rate;
 pub(crate) mod set_fog_animation;
 pub(crate) mod set_fog_density;

@@ -110,6 +110,12 @@ fn rust_to_ts(ty_name: &str) -> String {
         "BillboardEmitterComponent" => "BillboardEmitterComponent".to_string(),
         "SpinAnimation" => "SpinAnimation".to_string(),
         "LightDescriptor" => "LightDescriptor".to_string(),
+        "MeshDescriptor" => "MeshDescriptor".to_string(),
+        "AnimationStateDescriptor" => "AnimationStateDescriptor".to_string(),
+        "InterruptPolicy" => "InterruptPolicy".to_string(),
+        "MeshAnimationStates" => {
+            "{ readonly [state: string]: AnimationStateDescriptor }".to_string()
+        }
         "EntityTypeDescriptor" => "EntityTypeDescriptor".to_string(),
         "EntityTypeComponents" => "EntityTypeComponents".to_string(),
         "WeaponDescriptor" => "WeaponDescriptor".to_string(),
@@ -210,6 +216,10 @@ fn rust_to_luau(ty_name: &str) -> String {
         "BillboardEmitterComponent" => "BillboardEmitterComponent".to_string(),
         "SpinAnimation" => "SpinAnimation".to_string(),
         "LightDescriptor" => "LightDescriptor".to_string(),
+        "MeshDescriptor" => "MeshDescriptor".to_string(),
+        "AnimationStateDescriptor" => "AnimationStateDescriptor".to_string(),
+        "InterruptPolicy" => "InterruptPolicy".to_string(),
+        "MeshAnimationStates" => "{ [string]: AnimationStateDescriptor }".to_string(),
         "EntityTypeDescriptor" => "EntityTypeDescriptor".to_string(),
         "EntityTypeComponents" => "EntityTypeComponents".to_string(),
         "WeaponDescriptor" => "WeaponDescriptor".to_string(),
@@ -564,7 +574,7 @@ const TS_SDK_LIB_BLOCK: &str = r#"
     progress: { tag: string; at: number; fire: string };
   };
 
-  /** Primitive reaction body: invokes the named Rust primitive on entities tagged `tag`, optionally firing `onComplete` when it finishes. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`). */
+  /** Primitive reaction body: invokes the named Rust primitive on entities tagged `tag`, optionally firing `onComplete` when it finishes. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ state: "attack" }` for `setAnimationState`). */
   export type PrimitiveReactionDescriptor = {
     primitive: string;
     tag: string;
@@ -974,7 +984,7 @@ export type ProgressReactionDescriptor = {
 --- Primitive reaction body: invokes the named Rust primitive on entities
 --- tagged `tag`, optionally firing `onComplete` when it finishes. `args`
 --- carries the primitive's typed payload (e.g. `{ rate = 0 }` for
---- `setEmitterRate`).
+--- `setEmitterRate`, `{ state = "attack" }` for `setAnimationState`).
 export type PrimitiveReactionDescriptor = {
   primitive: string,
   tag: string,
@@ -1175,6 +1185,35 @@ declare module "postretro" {
     is_dynamic: boolean;
   };
 
+  /** How a fade *into* an animation state takes over when another fade is already in flight. Absent in a descriptor defaults to `"smooth"`. */
+  export type InterruptPolicy =
+    /** Capture the in-flight blended pose once and blend the new fade from it — no discontinuity. */
+    | "smooth"
+    /** Blend the new fade from the interrupted state's clip; the in-flight blend drops — a deliberate, fade-window-bounded pop. */
+    | "snap";
+
+  /** One declared animation state: a named clip plus loop and crossfade policy. `clip` is resolved against the model's clip metadata at level load. */
+  export type AnimationStateDescriptor = {
+    /** Clip name this state plays. Must be non-empty; resolved against the model's clips at level load. */
+    clip: string;
+    /** Whether the clip loops. Optional; defaults to false. */
+    loop?: boolean;
+    /** Crossfade duration into this state, in milliseconds. Optional; must be finite and >= 0. Defaults to 150 ms. */
+    crossfadeMs?: number;
+    /** How a fade into this state takes over an in-flight fade. Optional; defaults to "smooth". */
+    interrupt?: InterruptPolicy;
+  };
+
+  /** Authored mesh component preset attached to `EntityTypeDescriptor.components.mesh`. A descriptor carrying `components.mesh` is directly map-placeable via `canonicalName`. `model` is the skinned-model handle; `animations` declares the per-entity logical animation-state map (state name → clip + loop + crossfade + interrupt). When `animations` is present it must be non-empty and `defaultState` must name a declared state; omit both for a stateless mesh. */
+  export type MeshDescriptor = {
+    /** Skinned-model handle this entity renders. Must be non-empty. */
+    model: string;
+    /** Declared animation states keyed by author-defined state name (e.g. idle/locomotion/attack/death). Optional; when present, must be non-empty and accompanied by a `defaultState` naming one of these states. Omit for a stateless mesh. */
+    animations?: { readonly [state: string]: AnimationStateDescriptor };
+    /** The state entered at spawn. Required exactly when `animations` is present; must name a declared state. */
+    defaultState?: string;
+  };
+
   /** Entity archetype registered through `ModManifest.entities` from `setupMod()`. `defineEntity()` is a typed identity helper for constructing this object. The descriptor is engine-global and survives level unloads. */
   export type EntityTypeDescriptor = {
     /** Stable archetype name used by map classname routing and descriptor references. Required for direct map placement and for weapon descriptors referenced by `defaultWeapon`; omit only for archetypes that are never addressed by name. */
@@ -1284,6 +1323,8 @@ declare module "postretro" {
     movement?: PlayerMovementDescriptor | null;
     /** Weapon tuning preset. Weapon archetypes are instantiated as wieldable entities when referenced by `defaultWeapon`. */
     weapon?: WeaponDescriptor | null;
+    /** Animated skinned-mesh preset: model handle plus an optional per-state animation map. A descriptor carrying this is directly map-placeable by canonicalName. */
+    mesh?: MeshDescriptor | null;
   };
 
   export type FireMode =
@@ -1516,6 +1557,35 @@ export type LightDescriptor = {
   is_dynamic: boolean,
 }
 
+--- How a fade *into* an animation state takes over when another fade is already in flight. Absent in a descriptor defaults to `"smooth"`.
+export type InterruptPolicy =
+  --- Capture the in-flight blended pose once and blend the new fade from it — no discontinuity.
+  "smooth"
+  --- Blend the new fade from the interrupted state's clip; the in-flight blend drops — a deliberate, fade-window-bounded pop.
+  | "snap"
+
+--- One declared animation state: a named clip plus loop and crossfade policy. `clip` is resolved against the model's clip metadata at level load.
+export type AnimationStateDescriptor = {
+  --- Clip name this state plays. Must be non-empty; resolved against the model's clips at level load.
+  clip: string,
+  --- Whether the clip loops. Optional; defaults to false.
+  loop: boolean?,
+  --- Crossfade duration into this state, in milliseconds. Optional; must be finite and >= 0. Defaults to 150 ms.
+  crossfadeMs: number?,
+  --- How a fade into this state takes over an in-flight fade. Optional; defaults to "smooth".
+  interrupt: InterruptPolicy?,
+}
+
+--- Authored mesh component preset attached to `EntityTypeDescriptor.components.mesh`. A descriptor carrying `components.mesh` is directly map-placeable via `canonicalName`. `model` is the skinned-model handle; `animations` declares the per-entity logical animation-state map (state name → clip + loop + crossfade + interrupt). When `animations` is present it must be non-empty and `defaultState` must name a declared state; omit both for a stateless mesh.
+export type MeshDescriptor = {
+  --- Skinned-model handle this entity renders. Must be non-empty.
+  model: string,
+  --- Declared animation states keyed by author-defined state name (e.g. idle/locomotion/attack/death). Optional; when present, must be non-empty and accompanied by a `defaultState` naming one of these states. Omit for a stateless mesh.
+  animations: { [string]: AnimationStateDescriptor }?,
+  --- The state entered at spawn. Required exactly when `animations` is present; must name a declared state.
+  defaultState: string?,
+}
+
 --- Entity archetype registered through `ModManifest.entities` from `setupMod()`. `defineEntity()` is a typed identity helper for constructing this object. The descriptor is engine-global and survives level unloads.
 export type EntityTypeDescriptor = {
   --- Stable archetype name used by map classname routing and descriptor references. Required for direct map placement and for weapon descriptors referenced by `defaultWeapon`; omit only for archetypes that are never addressed by name.
@@ -1625,6 +1695,8 @@ export type EntityTypeComponents = {
   movement: PlayerMovementDescriptor?,
   --- Weapon tuning preset. Weapon archetypes are instantiated as wieldable entities when referenced by `defaultWeapon`.
   weapon: WeaponDescriptor?,
+  --- Animated skinned-mesh preset: model handle plus an optional per-state animation map. A descriptor carrying this is directly map-placeable by canonicalName.
+  mesh: MeshDescriptor?,
 }
 
 export type FireMode =

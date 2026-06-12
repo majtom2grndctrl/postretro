@@ -208,11 +208,22 @@ fn nearest_entity_hit(
     for (id, value) in registry.iter_with_kind(ComponentKind::Health) {
         let ComponentValue::Health(HealthComponent {
             hitbox: Some(hitbox),
+            current,
             ..
         }) = value
         else {
             continue;
         };
+
+        // Zero-HP entities are pending-despawn this tick (the death sweep runs
+        // after weapon fire / after the reaction drain); skip them so a corpse
+        // cannot absorb a shot and block the wall behind it for one frame.
+        // `current` is floored at exactly 0.0 by the apply_damage chokepoint —
+        // exact equality is sound here, zero is latched, never approached from
+        // below.
+        if *current == 0.0 {
+            continue;
+        }
 
         let Ok(transform) = registry.get_component::<crate::scripting::registry::Transform>(id)
         else {
@@ -887,6 +898,50 @@ mod tests {
 
         let impact = events.impact.expect("wall hit should emit impact");
         assert_eq!(impact.target, None, "near miss falls through to the wall");
+        assert_vec3_approx(impact.point, Vec3::new(0.0, 0.0, -5.0));
+    }
+
+    // Regression: a zero-HP entity that has not yet been swept from the registry
+    // (death sweep runs after weapon fire) was absorbing shots for one frame,
+    // blocking the wall behind it.
+    #[test]
+    fn zero_hp_entity_on_ray_is_not_targeted_wall_behind_wins() {
+        // Entity with current == 0.0 sits directly on the ray in front of the
+        // wall. The wall should win; the corpse must not absorb the shot.
+        let mut registry = EntityRegistry::new();
+        let weapon_id = spawn_weapon(&mut registry, weapon_component(FireMode::Semi, 100.0));
+        let corpse = spawn_hitbox_entity(
+            &mut registry,
+            Vec3::new(0.0, 0.0, -3.0),
+            Vec3::splat(0.5),
+            Vec3::ZERO,
+        );
+        // Drive health to zero to simulate the pending-despawn state.
+        let mut health = registry
+            .get_component::<HealthComponent>(corpse)
+            .expect("health component should exist")
+            .clone();
+        health.current = 0.0;
+        registry
+            .set_component(corpse, health)
+            .expect("health component update should succeed");
+
+        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let world = wall_world();
+        let mut input = input_system();
+        let pressed = shoot_snapshot(&mut input, true);
+
+        let events = tick(
+            &mut registry,
+            Some(weapon_id),
+            &pressed,
+            &camera,
+            &world,
+            1.0 / 60.0,
+        );
+
+        let impact = events.impact.expect("wall hit should emit impact");
+        assert_eq!(impact.target, None, "zero-HP corpse is skipped; wall wins");
         assert_vec3_approx(impact.point, Vec3::new(0.0, 0.0, -5.0));
     }
 }

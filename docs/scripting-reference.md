@@ -44,7 +44,7 @@ end
 - TypeScript: standard ES module `import` of relative paths. The script compiler bundles all relative imports into `start-script.js` at build time. Bare-specifier imports of `"postretro"` symbols are stripped (the symbols arrive as runtime globals).
 - Luau: `require("./path")` resolves relative to the mod root. `require("./actors/player")` reads `<mod_root>/actors/player.luau` (the `.luau` extension is appended automatically). `..` traversal and absolute paths are rejected. Module caching, init-file conventions, and upward search are not implemented.
 
-**Lifecycle.** Entity types registered from `start-script` (and any domain scripts it imports) survive level loads — they live in the engine-global type registry. Reactions are not registered here; those belong in per-level data scripts via `registerLevelManifest`. The mod-init VM is dropped after `setupMod` returns; no script state persists past that point.
+**Lifecycle.** Entity types registered from `start-script` (and any domain scripts it imports) survive level loads — they live in the engine-global type registry. Reactions are not registered here; those belong in per-level data scripts via `setupLevel(ctx)`. The mod-init VM is dropped after `setupMod` returns; no script state persists past that point.
 
 ---
 
@@ -126,9 +126,9 @@ archetype, an entity carrying `components.health` is placed by `canonicalName` �
 
 ---
 
-## registerLevelManifest
+## setupLevel
 
-Per-level data scripts register reactions and other level-scoped state via `registerLevelManifest`. These run when the level starts and apply only to that level.
+Per-level data scripts export a `setupLevel(ctx)` function to register reactions and other level-scoped state. The engine calls it when the level starts; its effects apply only to that level.
 
 ---
 

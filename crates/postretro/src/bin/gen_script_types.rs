@@ -13,9 +13,6 @@
 mod scripting;
 
 // The scripting tree's health chokepoint references `crate::weapon::DamagePayload`.
-// Pull in only that dependency-free damage primitive — not the full weapon
-// subsystem, which needs renderer/collision modules this generator bin lacks.
-// The scripting tree's health chokepoint references `crate::weapon::DamagePayload`.
 // Map a `weapon` module to only that dependency-free damage primitive — not the
 // full weapon subsystem, which needs renderer/collision modules this generator
 // bin lacks.

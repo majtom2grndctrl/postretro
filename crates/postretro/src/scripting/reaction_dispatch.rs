@@ -120,8 +120,8 @@ pub(crate) fn fire_named_event(event_name: &str, data_registry: &DataRegistry) -
                 // Tracked independently via ProgressTracker; no-op here prevents double-fire.
             }
             ReactionDescriptor::Primitive(p) => {
-                log::info!(
-                    "[Scripting] dispatch primitive '{}' on tag '{}'",
+                log::debug!(
+                    "[Scripting] primitive '{}' matched on tag '{}'; deferred — handlers run only via the sequence-aware drain",
                     p.primitive,
                     p.tag,
                 );

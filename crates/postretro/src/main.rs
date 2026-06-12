@@ -517,13 +517,10 @@ struct App {
     /// light state. See: context/lib/scripting.md
     script_ctx: ScriptCtx,
 
-    /// Temporary engine-side stand-in producer for the HUD store. Writes the
-    /// engine-owned `player.*` slots (`player.health`, `player.ammo`) and the
-    /// demo `intro.flashColor` through the store's engine write path each
-    /// frame. The M10 entity-health work will replace it with real game-logic
-    /// producers; the binding side is unaffected by that swap. Its flash timer
-    /// resets on each level load. See: context/lib/scripting.md §5 for the
-    /// store contract.
+    /// Publishes live pawn HP into the `player.health` slot each frame.
+    /// `player.ammo` and `intro.flashColor` remain stand-in values until their
+    /// real producers land. Flash timer resets on each level load.
+    /// See: context/lib/scripting.md §5 for the store contract.
     ui_proxy: scripting_systems::ui_proxy::StaticUiProxy,
 
     /// Gates the one-time persistence overlay and clean-exit save.
@@ -1180,6 +1177,7 @@ impl ApplicationHandler for App {
                             }
                         }
 
+                        // Order 2: weapon fire tick.
                         let weapon_events = self.run_weapon_fire_tick(snapshot, tick_dt);
                         pending_weapon_events.extend(weapon_events);
 

@@ -8,7 +8,7 @@ use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
 use crate::scripting::data_descriptors::HealthDescriptor;
-use crate::scripting::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
+use crate::scripting::registry::{ComponentKind, EntityId, EntityRegistry};
 use crate::weapon::DamagePayload;
 
 /// One world-aligned AABB hitbox, fixed per archetype. An entity is
@@ -26,8 +26,8 @@ pub(crate) struct HealthComponent {
     pub(crate) current: f32,
     pub(crate) hitbox: Option<Hitbox>,
     /// One-shot latch: set when a persisting zero-HP player's death is reported
-    /// so the `playerDied` event fires exactly once. The death sweep (a later
-    /// task) is this field's only writer; nothing here mutates it.
+    /// so the `playerDied` event fires exactly once. The death sweep
+    /// (`systems/health.rs`) is this field's only writer; nothing here mutates it.
     #[serde(default)]
     pub(crate) death_handled: bool,
 }
@@ -70,7 +70,7 @@ impl HealthComponent {
 pub(crate) fn pawn_with_health(registry: &EntityRegistry) -> Option<(EntityId, HealthComponent)> {
     let (pawn, _) = registry
         .iter_with_kind(ComponentKind::PlayerMovement)
-        .find(|(_, value)| matches!(value, ComponentValue::PlayerMovement(_)))?;
+        .next()?;
     registry
         .get_component::<HealthComponent>(pawn)
         .ok()

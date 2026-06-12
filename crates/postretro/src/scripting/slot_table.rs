@@ -578,6 +578,26 @@ mod tests {
                 .unwrap_err(),
             SlotRangeError::UnknownSlot { .. }
         ));
+        // Engine-owned but non-numeric slot: range mutation requires a number type.
+        table
+            .insert(
+                "engine.flag".to_string(),
+                SlotRecord::new(SlotSchema {
+                    slot_type: SlotType::Boolean,
+                    default: Some(SlotValue::Boolean(false)),
+                    range: None,
+                    persist: false,
+                    readonly: true,
+                    ownership: SlotOwnership::Engine,
+                }),
+            )
+            .unwrap();
+        assert!(matches!(
+            table
+                .set_engine_numeric_range("engine.flag", NumericRange { min: 0.0, max: 1.0 })
+                .unwrap_err(),
+            SlotRangeError::NotNumeric { .. }
+        ));
     }
 
     #[test]

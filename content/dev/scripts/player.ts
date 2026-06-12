@@ -4,6 +4,14 @@ export const playerEntity = defineEntity({
   canonicalName: "player",
   defaultWeapon: "reference_pistol",
   components: {
+    // The player pawn carries health but DELIBERATELY no `hitbox`: a hitbox is
+    // what makes an entity hitscan-targetable, so omitting it keeps the player
+    // out of weapon ray-targeting (and forecloses self-hit). HP is driven only
+    // through the `apply_damage` chokepoint — e.g. the combat-demo level's
+    // `applyDamage` reaction. Without this block the engine `player.health`
+    // producer, its `[0, max]` slot range, and any player-damage reaction all
+    // silently no-op. `max: 100` is the conventional full-health baseline.
+    health: { max: 100 },
     movement: {
       capsule: { radius: 0.2, halfHeight: 0.8, eyeHeight: 0.5 },
       ground: {

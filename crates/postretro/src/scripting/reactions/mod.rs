@@ -4,6 +4,7 @@
 
 use thiserror::Error;
 
+pub(crate) mod apply_damage;
 pub(crate) mod registry;
 pub(crate) mod set_animation_state;
 pub(crate) mod set_emitter_rate;

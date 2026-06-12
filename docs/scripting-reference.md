@@ -44,7 +44,7 @@ end
 - TypeScript: standard ES module `import` of relative paths. The script compiler bundles all relative imports into `start-script.js` at build time. Bare-specifier imports of `"postretro"` symbols are stripped (the symbols arrive as runtime globals).
 - Luau: `require("./path")` resolves relative to the mod root. `require("./actors/player")` reads `<mod_root>/actors/player.luau` (the `.luau` extension is appended automatically). `..` traversal and absolute paths are rejected. Module caching, init-file conventions, and upward search are not implemented.
 
-**Lifecycle.** Entity types registered from `start-script` (and any domain scripts it imports) survive level loads — they live in the engine-global type registry. Reactions are not registered here; those belong in per-level data scripts via `registerLevelManifest`. The mod-init VM is dropped after `setupMod` returns; no script state persists past that point.
+**Lifecycle.** Entity types registered from `start-script` (and any domain scripts it imports) survive level loads — they live in the engine-global type registry. Reactions are not registered here; those belong in per-level data scripts via `setupLevel(ctx)`. The mod-init VM is dropped after `setupMod` returns; no script state persists past that point.
 
 ---
 
@@ -85,9 +85,50 @@ registerEntity({
 
 ---
 
-## registerLevelManifest
+## `components.health`
 
-Per-level data scripts register reactions and other level-scoped state via `registerLevelManifest`. These run when the level starts and apply only to that level.
+Attach a `health` block to an entity descriptor to give it hit points. An entity
+with health can take damage through the engine's single damage chokepoint and is
+removed by the death sweep once its HP reaches zero.
+
+```typescript
+defineEntity({
+  canonicalName: "target_dummy",
+  components: {
+    mesh: { model: "models/grunt/scene.gltf" },
+    health: {
+      max: 30,
+      hitbox: {
+        halfExtents: [0.4, 0.9, 0.4],
+        offset: [0, 0.9, 0],
+      },
+    },
+  },
+});
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `max` | `number` | Hit-point ceiling. Must be finite and `> 0` — otherwise the descriptor is rejected at load with a descriptive error. The component materializes with `current == max` at spawn. |
+| `hitbox` | `{ halfExtents, offset? }` (optional) | One world-aligned AABB. **Present ⇒ the entity is hitscan-targetable** (a weapon ray can hit it and route damage through the chokepoint). **Absent ⇒ it cannot be ray-targeted at all.** Fixed per archetype. |
+| `hitbox.halfExtents` | `[x, y, z]` | Box half-size on each axis, in meters. The engine is Y-up, so the middle component is the vertical half-height. Each element must be finite and `> 0`. |
+| `hitbox.offset` | `[x, y, z]` (optional) | Shifts the box center from the entity's transform origin. Each element must be finite. A common use is lifting the box up by its half-height (e.g. `offset: [0, 0.9, 0]` for a `0.9` vertical half-extent) so it rises from a foot-level origin to span the body. |
+
+**Why the hitbox is the targetability switch.** Carrying a hitbox is exactly what
+makes an entity shootable. A shooting target declares both `max` and a `hitbox`.
+The player pawn, by contrast, declares health with **no** hitbox — so the weapon
+ray never targets the player (and a player can't shoot itself); the player's HP
+is driven only through an `applyDamage` reaction.
+
+**A health-bearing descriptor is map-placeable.** Like any `defineEntity`
+archetype, an entity carrying `components.health` is placed by `canonicalName` —
+`"classname" "target_dummy"` in a `.map` spawns one.
+
+---
+
+## setupLevel
+
+Per-level data scripts export a `setupLevel(ctx)` function to register reactions and other level-scoped state. The engine calls it when the level starts; its effects apply only to that level.
 
 ---
 
@@ -444,6 +485,34 @@ Combined partial-update primitive. Any subset of the six fields may be present. 
 
 Use `setFogParams` when an author wants to change two or more fields atomically — adjacent single-field steps would briefly observe a partial update on the GPU.
 
+### `applyDamage`
+
+```typescript
+defineReaction("dummiesCleared", {
+  primitive: "applyDamage",
+  tag: "player",
+  args: { amount: 35 },
+});
+```
+
+Routes a fixed `amount` of damage through the engine's damage chokepoint for
+every entity that matches the reaction's `tag` and carries a health component.
+Tag-targeted like the fog primitives: the `tag` resolves to a list of entities
+and each match takes the hit. This is the only non-weapon damage producer — use
+it to script scene damage (a trap, a collapsing floor, a retaliation strike).
+
+`amount` must be **finite and `>= 0`** (the chokepoint only ever reduces HP;
+healing is out of scope). The handler never despawns — a target driven to zero HP
+is resolved by the next death sweep, the same path a weapon kill takes.
+
+**This reaction only fires through the death-event drain.** Name the reaction
+(the first `defineReaction` argument) to match the event that triggers it. A
+`progress` reaction's `fire` event reaches `applyDamage`; the plain movement /
+weapon event drains do not, and `levelLoad` fires before the first frame (so a
+drop there is invisible). The canonical use is a `progress` threshold that fires
+an event of the same name — see [the combat-demo
+walkthrough](../content/dev/maps/combat-demo.README.md).
+
 ---
 
 ## Constraints and errors
@@ -455,3 +524,28 @@ Use `setFogParams` when an author wants to change two or more fields atomically 
 | Non-unit direction vectors | Silently normalized by the engine. |
 | Fog reaction primitive targets a tag with no matching entities | Debug-log no-op. |
 | Fog reaction primitive targets an entity lacking `FogVolumeComponent` | Skipped with `log::warn!` (tag-typo guard). |
+| `applyDamage` `amount` is negative or non-finite | The whole dispatch is a `log::warn!` no-op — no target takes damage (healing is out of scope). |
+| `applyDamage` targets an entity lacking a health component | Skipped with `log::warn!` (tag-typo guard); other matched targets still take damage. |
+
+---
+
+## Player events and slots
+
+### The `playerDied` event
+
+When the player pawn's HP reaches zero, the death sweep fires the `playerDied`
+event **exactly once** — it is latched, so a pawn that lingers at zero HP never
+re-fires it. Unlike a non-player entity, the player is not despawned by the sweep.
+Bind a named reaction to `playerDied` to script the death sequence (a HUD fade, a
+respawn prompt, a level restart).
+
+### The readonly `player.health` slot
+
+`player.health` is a readonly, engine-owned HUD store slot. The engine publishes
+the live pawn HP into it every frame, and the slot's range is `[0, max]`, where
+`max` is the player descriptor's authored `health.max`. A HUD widget binds to it
+to draw the health readout; the slot follows automatically as the player takes
+damage (e.g. from an `applyDamage` reaction). It is **read-only from scripts** —
+the engine is its sole producer, so a script reads it to drive UI but cannot
+write it. If the player descriptor declares no `health` block, no HP is published
+and the slot keeps its prior range.

@@ -292,6 +292,7 @@ fn component_kind_name(k: ComponentKind) -> &'static str {
         ComponentKind::Weapon => "weapon",
         ComponentKind::DescriptorProvenance => "descriptor_provenance",
         ComponentKind::Mesh => "mesh",
+        ComponentKind::Health => "health",
     }
 }
 
@@ -558,6 +559,10 @@ impl<'js> IntoJs<'js> for ComponentValue {
                 ctx,
                 "Mesh component is engine-managed and not exposed to scripts",
             )),
+            ComponentValue::Health(_) => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "Health component is engine-managed and not exposed to scripts",
+            )),
         }
     }
 }
@@ -721,6 +726,9 @@ impl IntoLua for ComponentValue {
             )),
             ComponentValue::Mesh(_) => Err(mlua::Error::RuntimeError(
                 "Mesh component is engine-managed and not exposed to scripts".to_string(),
+            )),
+            ComponentValue::Health(_) => Err(mlua::Error::RuntimeError(
+                "Health component is engine-managed and not exposed to scripts".to_string(),
             )),
         }
     }

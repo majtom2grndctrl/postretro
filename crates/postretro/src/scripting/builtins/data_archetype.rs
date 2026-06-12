@@ -18,6 +18,7 @@ use glam::Vec3;
 
 use super::MapEntity;
 use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
+use crate::scripting::components::health::HealthComponent;
 use crate::scripting::components::light::{FalloffKind, LightComponent, LightKind};
 use crate::scripting::components::mesh::{MeshAnimation, MeshComponent};
 use crate::scripting::components::player_movement::PlayerMovementComponent;
@@ -236,6 +237,7 @@ fn is_directly_map_placeable(descriptor: &EntityTypeDescriptor) -> bool {
         || descriptor.emitter.is_some()
         || descriptor.movement.is_some()
         || descriptor.mesh.is_some()
+        || descriptor.health.is_some()
 }
 
 /// Attach descriptor components to an already-spawned entity. `initial_*` KVP
@@ -322,6 +324,12 @@ fn attach_descriptor_components(
         };
         let _ = registry.set_component(id, component);
         owned_components.insert(DescriptorComponentKind::Mesh);
+    }
+
+    if let Some(health_desc) = descriptor.health.as_ref() {
+        let component = HealthComponent::from_descriptor(health_desc);
+        let _ = registry.set_component(id, component);
+        owned_components.insert(DescriptorComponentKind::Health);
     }
 
     if attach_weapon {
@@ -627,6 +635,7 @@ mod tests {
             movement: None,
             weapon: None,
             mesh: None,
+            health: None,
         }
     }
 
@@ -676,6 +685,7 @@ mod tests {
                 animations,
                 default_state,
             }),
+            health: None,
         }
     }
 
@@ -748,6 +758,46 @@ mod tests {
             })
             .expect("descriptor-spawned mesh exposes its model to the sweep");
         assert_eq!(model, "decraniated");
+    }
+
+    #[test]
+    fn descriptor_spawn_attaches_health_component_with_current_equal_to_max() {
+        use crate::scripting::components::health::HealthComponent;
+        use crate::scripting::data_descriptors::{HealthDescriptor, HitboxDescriptor};
+
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![EntityTypeDescriptor {
+            canonical_name: Some("target_dummy".to_string()),
+            default_weapon: None,
+            light: None,
+            emitter: None,
+            movement: None,
+            weapon: None,
+            mesh: None,
+            health: Some(HealthDescriptor {
+                max: 75.0,
+                hitbox: Some(HitboxDescriptor {
+                    half_extents: [0.5, 1.0, 0.5],
+                    offset: None,
+                }),
+            }),
+        }];
+        let placements = vec![placement("target_dummy", &[])];
+        let handled =
+            apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+        assert_eq!(handled.len(), 1, "health-only descriptor is map-placeable");
+
+        let (id, _) = reg
+            .iter_with_kind(crate::scripting::registry::ComponentKind::Health)
+            .next()
+            .expect("health component spawned");
+        let health = reg.get_component::<HealthComponent>(id).unwrap();
+        assert_eq!(health.max, 75.0);
+        assert_eq!(health.current, 75.0, "current initializes to max at spawn");
+        assert!(health.hitbox.is_some());
+
+        let provenance = reg.get_component::<DescriptorProvenance>(id).unwrap();
+        assert!(provenance.owns(DescriptorComponentKind::Health));
     }
 
     #[test]
@@ -1094,6 +1144,7 @@ mod tests {
             movement: None,
             weapon: None,
             mesh: None,
+            health: None,
         }];
         let placements = vec![placement(
             "campfire",
@@ -1136,6 +1187,7 @@ mod tests {
             movement: None,
             weapon: None,
             mesh: None,
+            health: None,
         }];
         let placements = vec![placement("campfire", &[("velocity", "9.0 9.0 9.0")])];
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
@@ -1175,6 +1227,7 @@ mod tests {
             movement: None,
             weapon: None,
             mesh: None,
+            health: None,
         }];
         let placements = vec![placement("campfire", &[("initial_rate", "20.5")])];
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
@@ -1211,6 +1264,7 @@ mod tests {
             movement: None,
             weapon: None,
             mesh: None,
+            health: None,
         }];
         let placements = vec![placement("burstfire", &[("initial_burst", "24")])];
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
@@ -1249,6 +1303,7 @@ mod tests {
             movement: None,
             weapon: None,
             mesh: None,
+            health: None,
         }];
         let placements = vec![placement(
             "smolder",
@@ -1297,6 +1352,7 @@ mod tests {
             movement: None,
             weapon: None,
             mesh: None,
+            health: None,
         }];
 
         let placements = vec![placement("billboard_emitter", &[])];
@@ -1357,6 +1413,7 @@ mod tests {
             movement: None,
             weapon: None,
             mesh: None,
+            health: None,
         }];
         let placements = vec![placement("ghost", &[]), placement("ghost", &[])];
         let handled =
@@ -1454,6 +1511,7 @@ mod tests {
             movement: None,
             weapon: None,
             mesh: None,
+            health: None,
         }
     }
 
@@ -1472,6 +1530,7 @@ mod tests {
                 resolution: ResolutionMode::Hitscan,
             }),
             mesh: None,
+            health: None,
         }
     }
 
@@ -1484,6 +1543,7 @@ mod tests {
             movement: None,
             weapon: None,
             mesh: None,
+            health: None,
         }
     }
 

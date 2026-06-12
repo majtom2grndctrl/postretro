@@ -65,6 +65,7 @@ use crate::scripting::builtins::{
     apply_data_archetype_dispatch, register_builtins as register_builtin_classnames,
     spawn_from_player_starts,
 };
+use crate::scripting::components::health::apply_damage;
 use crate::scripting::ctx::ScriptCtx;
 use crate::scripting::primitives::light::register_sequenced_light_primitives;
 use crate::scripting::primitives::register_all;
@@ -526,13 +527,10 @@ struct App {
     /// light state. See: context/lib/scripting.md
     script_ctx: ScriptCtx,
 
-    /// Temporary engine-side stand-in producer for the HUD store. Writes the
-    /// engine-owned `player.*` slots (`player.health`, `player.ammo`) and the
-    /// demo `intro.flashColor` through the store's engine write path each
-    /// frame. The M10 entity-health work will replace it with real game-logic
-    /// producers; the binding side is unaffected by that swap. Its flash timer
-    /// resets on each level load. See: context/lib/scripting.md §5 for the
-    /// store contract.
+    /// Publishes live pawn HP into the `player.health` slot each frame.
+    /// `player.ammo` and `intro.flashColor` remain stand-in values until their
+    /// real producers land. Flash timer resets on each level load.
+    /// See: context/lib/scripting.md §5 for the store contract.
     ui_proxy: scripting_systems::ui_proxy::StaticUiProxy,
 
     /// Gates the one-time persistence overlay and clean-exit save.
@@ -1077,6 +1075,11 @@ impl ApplicationHandler for App {
                 // context/lib/entity_model.md §5
                 let mut pending_movement_events: Vec<&'static str> = Vec::new();
                 let mut pending_weapon_events: Vec<&'static str> = Vec::new();
+                // Death-event names accumulate here and drain through the
+                // sequence-aware dispatcher (a separate sibling loop below), so a
+                // `progress` reaction naming a sequence resolves — unlike the
+                // plain `fire_named_event` drains, which would no-op it.
+                let mut pending_death_events: Vec<String> = Vec::new();
 
                 if let Some(snapshot) = gameplay_snapshot.as_ref() {
                     for _ in 0..ticks {
@@ -1184,8 +1187,18 @@ impl ApplicationHandler for App {
                             }
                         }
 
+                        // Order 2: weapon fire tick.
                         let weapon_events = self.run_weapon_fire_tick(snapshot, tick_dt);
                         pending_weapon_events.extend(weapon_events);
+
+                        // Order 3: death sweep — resolve every entity at zero HP
+                        // after this tick's damage has settled. Reports kills and
+                        // player death back as owned data; we feed kill tags
+                        // through the progress tracker (which returns any events
+                        // that crossed their threshold) and accumulate those plus
+                        // `playerDied` for the sequence-aware drain below.
+                        let death_events = self.run_death_sweep();
+                        pending_death_events.extend(death_events);
 
                         self.frame_timing
                             .push_state(InterpolableState::new(self.camera.position));
@@ -1200,6 +1213,19 @@ impl ApplicationHandler for App {
                 }
                 for event_name in &pending_weapon_events {
                     let _ = fire_named_event(event_name, &self.script_ctx.data_registry.borrow());
+                }
+                // Death events drain through the sequence-aware dispatcher in
+                // their OWN loop: a `progress` reaction that names a sequence
+                // would no-op under plain `fire_named_event`. Chained-event names
+                // are discarded (`let _ =`), matching the drains above.
+                for event_name in &pending_death_events {
+                    let _ = fire_named_event_with_sequences(
+                        event_name,
+                        &self.script_ctx.data_registry.borrow(),
+                        &self.sequence_registry,
+                        &self.reaction_registry,
+                        &self.script_ctx,
+                    );
                 }
 
                 // Static UI proxy: republish the HUD store slots from
@@ -2386,6 +2412,37 @@ impl App {
                         (None, None)
                     }
                 };
+
+            // Attach the `player.health` slot's declared range `[0, max]` now
+            // that the pawn (and its health component) has materialized. `max`
+            // is mod data, so it cannot be declared at `SlotTable` construction.
+            //
+            // Borrow discipline: `registry` is the live `borrow_mut` taken at
+            // the top of this block; read `max` THROUGH it here, before the
+            // `drop(registry)` below. A second `self.script_ctx.registry.borrow()`
+            // while this `borrow_mut` is live would panic (RefCell). The slot
+            // table is a separate `RefCell`, so its `borrow_mut` does not
+            // conflict with the registry borrow.
+            if let Some((_, health)) =
+                crate::scripting::components::health::pawn_with_health(&registry)
+            {
+                use crate::scripting::slot_table::NumericRange;
+                if let Err(err) = self
+                    .script_ctx
+                    .slot_table
+                    .borrow_mut()
+                    .set_engine_numeric_range(
+                        "player.health",
+                        NumericRange {
+                            min: 0.0,
+                            max: health.max,
+                        },
+                    )
+                {
+                    log::warn!("[Loader] failed to set player.health range: {err}");
+                }
+            }
+
             // Drop the registry borrow before touching `self.level` / `self.camera`.
             drop(registry);
             self.active_wieldable = active_wieldable;
@@ -2643,8 +2700,46 @@ impl App {
         );
         if let Some(impact) = events.impact {
             weapon::spawn_impact_effect_at(&mut registry, impact.point, impact.normal);
+            // Additive to the impact burst: when the nearest hit was an entity
+            // hitbox, route the payload through the damage chokepoint. Spatial
+            // targeting rides on the impact (`target`), never inside the
+            // payload. The death sweep (run after this tick) resolves any kill.
+            if let (Some(target), weapon::ActivationOutcome::Hit(payload)) =
+                (impact.target, impact.outcome)
+            {
+                apply_damage(&mut registry, target, &payload);
+            }
         }
         events.event_names()
+    }
+
+    /// Resolve every zero-HP entity for this tick and surface the events its
+    /// deaths trigger. The sweep itself only mutates the registry (despawn /
+    /// latch) and returns owned data — it cannot reach the progress tracker or
+    /// the event-dispatch path. Here on the app side we close that loop:
+    ///
+    /// - Each killed non-player's tags flow through
+    ///   `ProgressTracker::on_entity_killed`, whose returned event names (a
+    ///   `progress` reaction crossing its declared fraction) join the drain.
+    /// - A player death contributes the `playerDied` event exactly once (the
+    ///   sweep's `death_handled` latch guarantees the single report).
+    ///
+    /// The returned names are accumulated by the caller and drained after the
+    /// tick loop via `fire_named_event_with_sequences`.
+    fn run_death_sweep(&mut self) -> Vec<String> {
+        let report = {
+            let mut registry = self.script_ctx.registry.borrow_mut();
+            scripting_systems::health::sweep_deaths(&mut registry)
+        };
+
+        let mut events = Vec::new();
+        for tags in &report.killed_tags {
+            events.extend(self.progress_tracker.on_entity_killed(tags));
+        }
+        if report.player_died {
+            events.push(scripting_systems::health::PLAYER_DIED_EVENT.to_string());
+        }
+        events
     }
 
     /// Transition input focus, acquiring or releasing the cursor as required

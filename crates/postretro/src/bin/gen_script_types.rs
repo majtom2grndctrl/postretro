@@ -12,6 +12,13 @@
 #[path = "../scripting/mod.rs"]
 mod scripting;
 
+// The scripting tree's health chokepoint references `crate::weapon::DamagePayload`.
+// Map a `weapon` module to only that dependency-free damage primitive — not the
+// full weapon subsystem, which needs renderer/collision modules this generator
+// bin lacks.
+#[path = "../weapon/damage.rs"]
+mod weapon;
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 

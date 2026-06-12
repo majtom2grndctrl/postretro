@@ -1,16 +1,16 @@
-// Temporary stand-in slot producer: writes engine-owned `player.*` and demo
-// `intro.flashColor` each frame until M10 entity-health replaces it.
+// Slot producer for the HUD store slots. Publishes the live pawn HP into the
+// readonly engine-owned `player.health` slot each frame; `player.ammo` and demo
+// `intro.flashColor` remain proxy stand-ins until their own producers land.
 // See: context/lib/scripting.md §5 "Durable State Store"
 
+use crate::scripting::components::health::pawn_with_health;
 use crate::scripting::ctx::ScriptCtx;
 use crate::scripting::primitives::store::write_store_slot;
+use crate::scripting::registry::EntityRegistry;
 use crate::scripting::slot_table::SlotValue;
 
-/// Stand-in demo health published into the readonly engine-owned
-/// `player.health` slot every frame. Replaced by M10 entity health later.
-const DEMO_HEALTH: f32 = 100.0;
-
-/// Stand-in demo ammo published into `player.ammo` every frame.
+/// Stand-in demo ammo published into `player.ammo` every frame. The ammo
+/// producer is a separate future task; this remains a proxy stand-in.
 const DEMO_AMMO: f32 = 50.0;
 
 /// Dotted name of the mod-declared flash slot. Absent until the demo mod
@@ -53,7 +53,19 @@ fn flash_color_at(elapsed_ms: f32) -> [f32; 4] {
     }
 }
 
-/// Engine-side stand-in producer for the HUD store slots.
+/// Read the current HP of the player pawn — the first entity carrying
+/// `PlayerMovement` (entity_model.md: "a player by virtue of carrying
+/// `PlayerMovement`"). Returns `None` when there is no pawn or the pawn carries
+/// no `Health` component; the caller then skips the `player.health` write and
+/// the slot keeps its last value (accepted slot-staleness contract).
+///
+/// Pure read against the registry: no slot table, no GPU, so it is unit-testable
+/// without the proxy's `ScriptCtx`.
+fn pawn_health_current(registry: &EntityRegistry) -> Option<f32> {
+    pawn_with_health(registry).map(|(_, health)| health.current)
+}
+
+/// Engine-side producer for the HUD store slots.
 ///
 /// Owns a clone of `App`'s `ScriptCtx` (cheap `Rc` bump) and an injected-dt
 /// timer. Constructed during `App` setup; its timer is reset on every level
@@ -92,23 +104,35 @@ impl StaticUiProxy {
     /// Advance the timer by the injected frame delta (seconds) and republish the
     /// store slots for this frame.
     ///
-    /// Always writes `player.health` / `player.ammo` (engine-owned, always
-    /// declared). Writes `intro.flashColor` only when the slot exists; when the
-    /// demo mod has not declared it the write returns `Err` and is skipped with
-    /// a single warning.
+    /// Publishes the live pawn HP into `player.health` when a pawn with a
+    /// `Health` component exists; with no pawn or no health component the write
+    /// is skipped and the slot keeps its last value (accepted slot-staleness
+    /// contract). Always writes `player.ammo` (engine-owned demo stand-in).
+    /// Writes `intro.flashColor` only when the slot exists; when the demo mod
+    /// has not declared it the write returns `Err` and is skipped with a single
+    /// warning.
     ///
     /// Runs in the frame loop after game logic and before the UI read-snapshot
     /// build, so the snapshot picks up these values the same frame.
     pub(crate) fn tick(&mut self, dt: f32) {
         self.elapsed_ms += dt * 1000.0;
 
-        // `player.*` are engine-owned and always declared, so these writes
-        // succeed; an error here would be a real bug, hence no skip-with-warn.
-        if let Err(err) =
-            write_store_slot(&self.ctx, "player.health", SlotValue::Number(DEMO_HEALTH))
-        {
-            log::warn!("[Proxy] failed to write player.health: {err}");
+        // `player.health` mirrors the live pawn HP. No pawn / no health
+        // component → skip; the readonly slot retains its previous value. The
+        // registry borrow is scoped to the read so it drops before the
+        // `write_store_slot` (which borrows the slot table, a separate cell).
+        let pawn_hp = pawn_health_current(&self.ctx.registry.borrow());
+        if let Some(current) = pawn_hp {
+            // Engine-owned and always declared, so this write succeeds; an error
+            // here would be a real bug, hence no skip-with-warn.
+            if let Err(err) =
+                write_store_slot(&self.ctx, "player.health", SlotValue::Number(current))
+            {
+                log::warn!("[Proxy] failed to write player.health: {err}");
+            }
         }
+        // `player.ammo` is engine-owned and always declared, so this write
+        // succeeds; an error here would be a real bug, hence no skip-with-warn.
         if let Err(err) = write_store_slot(&self.ctx, "player.ammo", SlotValue::Number(DEMO_AMMO)) {
             log::warn!("[Proxy] failed to write player.ammo: {err}");
         }
@@ -131,6 +155,74 @@ impl StaticUiProxy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scripting::components::health::HealthComponent;
+    use crate::scripting::components::player_movement::PlayerMovementComponent;
+    use crate::scripting::data_descriptors::{
+        AirParams, CapsuleParams, FallParams, GroundParams, HealthDescriptor,
+        PlayerMovementDescriptor, SpeedParams,
+    };
+    use crate::scripting::registry::{EntityId, Transform};
+
+    /// A minimal movement descriptor so a spawned entity qualifies as the pawn
+    /// (carries `PlayerMovement`). Only the fields `from_descriptor` reads need
+    /// to be sane for this test's purpose.
+    fn movement_descriptor() -> PlayerMovementDescriptor {
+        PlayerMovementDescriptor {
+            capsule: CapsuleParams {
+                radius: 0.35,
+                half_height: 0.9,
+                eye_height: 1.1,
+            },
+            ground: GroundParams {
+                speed: SpeedParams {
+                    walk: 7.0,
+                    run: 11.0,
+                    crouch: 3.0,
+                },
+                accel: 12.0,
+                step_height: 0.35,
+                max_slope: 45.0,
+            },
+            air: AirParams {
+                forward_steer: 0.3,
+                accel: 2.0,
+                max_control_speed: 4.0,
+                bunny_hop: true,
+                jumps: 1,
+                jump_velocity: 5.0,
+                jump_ceiling: 2.0,
+            },
+            fall: FallParams {
+                terminal_velocity: 50.0,
+            },
+            stuck_stop_enabled: true,
+            stuck_stop_threshold: 0.001,
+            dash: None,
+            forgiveness: None,
+            crouch: None,
+            view_feel: None,
+        }
+    }
+
+    /// Spawn a pawn (carries `PlayerMovement`) with a `Health` component whose
+    /// `current` HP is `current`. Returns the pawn id.
+    fn spawn_pawn_with_health(ctx: &ScriptCtx, current: f32) -> EntityId {
+        let mut registry = ctx.registry.borrow_mut();
+        let id = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                id,
+                PlayerMovementComponent::from_descriptor(&movement_descriptor()),
+            )
+            .unwrap();
+        let mut health = HealthComponent::from_descriptor(&HealthDescriptor {
+            max: 100.0,
+            hitbox: None,
+        });
+        health.current = current;
+        registry.set_component(id, health).unwrap();
+        id
+    }
 
     #[test]
     fn flash_starts_on_solid_endpoint() {
@@ -201,17 +293,19 @@ mod tests {
     }
 
     #[test]
-    fn tick_advances_timer_and_writes_player_slots() {
+    fn tick_advances_timer_and_publishes_live_pawn_health() {
         use crate::scripting::primitives::store::read_store_slot;
 
         let ctx = ScriptCtx::new();
+        spawn_pawn_with_health(&ctx, 73.0);
         let mut proxy = StaticUiProxy::new(ctx.clone());
 
-        // player.* start with no value; one tick publishes the demo constants.
+        // player.* start with no value; one tick publishes the live pawn HP and
+        // the demo ammo constant.
         proxy.tick(0.016);
         assert_eq!(
             read_store_slot(&ctx, "player.health").unwrap(),
-            SlotValue::Number(DEMO_HEALTH)
+            SlotValue::Number(73.0)
         );
         assert_eq!(
             read_store_slot(&ctx, "player.ammo").unwrap(),
@@ -220,6 +314,85 @@ mod tests {
 
         // dt is in seconds; the timer accumulates milliseconds.
         assert!((proxy.elapsed_ms - 16.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn tick_tracks_pawn_hp_frame_over_frame() {
+        use crate::scripting::primitives::store::read_store_slot;
+
+        // The producer republishes the live pawn HP each frame, so a damage
+        // mutation between ticks shows up in the slot the next frame (the M13
+        // HUD readout would then show the new value).
+        let ctx = ScriptCtx::new();
+        let pawn = spawn_pawn_with_health(&ctx, 100.0);
+        let mut proxy = StaticUiProxy::new(ctx.clone());
+
+        proxy.tick(0.016);
+        assert_eq!(
+            read_store_slot(&ctx, "player.health").unwrap(),
+            SlotValue::Number(100.0)
+        );
+
+        // Mutate the live HP, then tick again: the slot follows.
+        {
+            let mut registry = ctx.registry.borrow_mut();
+            let mut health = *registry.get_component::<HealthComponent>(pawn).unwrap();
+            health.current = 40.0;
+            registry.set_component(pawn, health).unwrap();
+        }
+        proxy.tick(0.016);
+        assert_eq!(
+            read_store_slot(&ctx, "player.health").unwrap(),
+            SlotValue::Number(40.0)
+        );
+    }
+
+    #[test]
+    fn tick_skips_health_write_with_no_pawn_keeping_last_value() {
+        use crate::scripting::primitives::store::read_store_slot;
+        use crate::scripting::primitives::store::write_store_slot;
+
+        // Slot-staleness contract: with no pawn the producer skips the health
+        // write entirely, so the slot keeps whatever value it last held.
+        let ctx = ScriptCtx::new();
+        write_store_slot(&ctx, "player.health", SlotValue::Number(55.0)).unwrap();
+        let mut proxy = StaticUiProxy::new(ctx.clone());
+
+        proxy.tick(0.016);
+        assert_eq!(
+            read_store_slot(&ctx, "player.health").unwrap(),
+            SlotValue::Number(55.0),
+            "no pawn → health slot unchanged"
+        );
+    }
+
+    #[test]
+    fn pawn_health_current_none_without_pawn_or_health_component() {
+        // No entities at all → None.
+        let empty = ScriptCtx::new();
+        assert_eq!(pawn_health_current(&empty.registry.borrow()), None);
+
+        // A pawn without a Health component → None.
+        let no_health = ScriptCtx::new();
+        {
+            let mut registry = no_health.registry.borrow_mut();
+            let id = registry.spawn(Transform::default());
+            registry
+                .set_component(
+                    id,
+                    PlayerMovementComponent::from_descriptor(&movement_descriptor()),
+                )
+                .unwrap();
+        }
+        assert_eq!(pawn_health_current(&no_health.registry.borrow()), None);
+
+        // A pawn carrying Health → reads its current HP.
+        let with_health = ScriptCtx::new();
+        spawn_pawn_with_health(&with_health, 88.0);
+        assert_eq!(
+            pawn_health_current(&with_health.registry.borrow()),
+            Some(88.0)
+        );
     }
 
     #[test]
@@ -239,6 +412,7 @@ mod tests {
 
         // Default ScriptCtx has no `intro` namespace, so flashColor writes fail.
         let ctx = ScriptCtx::new();
+        spawn_pawn_with_health(&ctx, 64.0);
         let mut proxy = StaticUiProxy::new(ctx.clone());
 
         proxy.tick(0.016);
@@ -252,7 +426,7 @@ mod tests {
         assert!(proxy.flash_warned);
         assert_eq!(
             read_store_slot(&ctx, "player.health").unwrap(),
-            SlotValue::Number(DEMO_HEALTH)
+            SlotValue::Number(64.0)
         );
         assert!(read_store_slot(&ctx, "intro.flashColor").is_err());
     }

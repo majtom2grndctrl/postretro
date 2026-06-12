@@ -14,15 +14,17 @@ pub(crate) enum DescriptorComponentKind {
     Light,
     Emitter,
     Mesh,
+    Health,
 }
 
 impl DescriptorComponentKind {
-    pub(crate) const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 6] = [
         Self::Weapon,
         Self::Movement,
         Self::Light,
         Self::Emitter,
         Self::Mesh,
+        Self::Health,
     ];
 
     pub(crate) fn component_kind(self) -> ComponentKind {
@@ -32,6 +34,7 @@ impl DescriptorComponentKind {
             Self::Light => ComponentKind::Light,
             Self::Emitter => ComponentKind::BillboardEmitter,
             Self::Mesh => ComponentKind::Mesh,
+            Self::Health => ComponentKind::Health,
         }
     }
 
@@ -42,6 +45,7 @@ impl DescriptorComponentKind {
             Self::Light => "light",
             Self::Emitter => "emitter",
             Self::Mesh => "mesh",
+            Self::Health => "health",
         }
     }
 }

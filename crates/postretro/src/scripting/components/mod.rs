@@ -6,6 +6,7 @@
 
 pub(crate) mod billboard_emitter;
 pub(crate) mod fog_volume;
+pub(crate) mod health;
 pub(crate) mod light;
 pub(crate) mod mesh;
 pub(crate) mod particle;

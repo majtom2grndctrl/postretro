@@ -263,6 +263,48 @@ impl SlotTable {
         Ok(())
     }
 
+    /// Attach (or replace) the inclusive numeric range on an engine-owned
+    /// number slot, re-clamping any current value into the new bounds.
+    ///
+    /// Engine-only by contract: the slot must be `SlotOwnership::Engine` and
+    /// `SlotType::Number`. This exists because some engine ranges are mod data
+    /// (e.g. `player.health`'s `[0, max]`, where `max` is an authored health
+    /// descriptor) and so cannot be declared at `SlotTable` construction — they
+    /// attach when the producing component materializes, and re-attach on hot
+    /// reload. Subsequent `write_store_slot` calls enforce the range via the
+    /// existing validation/clamp path; this mutation only installs it (and
+    /// re-clamps the value already present, if any).
+    pub(crate) fn set_engine_numeric_range(
+        &mut self,
+        name: &str,
+        range: NumericRange,
+    ) -> Result<(), SlotRangeError> {
+        let record = self
+            .slots
+            .get_mut(name)
+            .ok_or_else(|| SlotRangeError::UnknownSlot {
+                name: name.to_string(),
+            })?;
+        if record.schema.ownership != SlotOwnership::Engine {
+            return Err(SlotRangeError::NotEngineOwned {
+                name: name.to_string(),
+            });
+        }
+        if record.schema.slot_type != SlotType::Number {
+            return Err(SlotRangeError::NotNumeric {
+                name: name.to_string(),
+            });
+        }
+        record.schema.range = Some(range);
+        // Re-clamp an already-published value so the table never holds a value
+        // outside the freshly-installed bounds (e.g. an authored `max`
+        // reduction on hot reload that drops below the live HP read last frame).
+        if let Some(SlotValue::Number(value)) = record.value {
+            record.value = Some(SlotValue::Number(value.clamp(range.min, range.max)));
+        }
+        Ok(())
+    }
+
     pub(crate) fn get(&self, name: &str) -> Option<&SlotRecord> {
         self.slots.get(name)
     }
@@ -357,6 +399,16 @@ fn engine_player_slots() -> Vec<(String, SlotRecord)> {
 #[error("state slot `{name}` is already defined")]
 pub(crate) struct SlotInsertError {
     pub(crate) name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum SlotRangeError {
+    #[error("state slot `{name}` is not declared")]
+    UnknownSlot { name: String },
+    #[error("state slot `{name}` is not engine-owned; range mutation is engine-only")]
+    NotEngineOwned { name: String },
+    #[error("state slot `{name}` is not a number slot; only numeric slots carry a range")]
+    NotNumeric { name: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -470,6 +522,82 @@ mod tests {
                 .and_then(|slot| slot.value.as_ref()),
             Some(&SlotValue::Number(0.25))
         );
+    }
+
+    #[test]
+    fn set_engine_numeric_range_installs_range_and_reclamps_current_value() {
+        // The `player.health` model: an engine-owned readonly number slot gains
+        // its `[0, max]` range only when the producer materializes. Installing
+        // the range must re-clamp a value already present (here, above the new
+        // max) so the table never holds an out-of-range value.
+        let mut table = SlotTable::new();
+        table.get_mut("player.health").unwrap().value = Some(SlotValue::Number(150.0));
+
+        table
+            .set_engine_numeric_range(
+                "player.health",
+                NumericRange {
+                    min: 0.0,
+                    max: 100.0,
+                },
+            )
+            .unwrap();
+
+        let slot = table.get("player.health").unwrap();
+        assert_eq!(
+            slot.schema.range,
+            Some(NumericRange {
+                min: 0.0,
+                max: 100.0
+            })
+        );
+        assert_eq!(
+            slot.value,
+            Some(SlotValue::Number(100.0)),
+            "current value re-clamps into the freshly-installed range"
+        );
+    }
+
+    #[test]
+    fn set_engine_numeric_range_rejects_non_engine_and_non_numeric_slots() {
+        let mut table = SlotTable::new();
+        // Mod-owned slot: range mutation is engine-only.
+        table
+            .insert("audio.master".to_string(), number_slot(0.5))
+            .unwrap();
+        assert!(matches!(
+            table
+                .set_engine_numeric_range("audio.master", NumericRange { min: 0.0, max: 1.0 })
+                .unwrap_err(),
+            SlotRangeError::NotEngineOwned { .. }
+        ));
+        // Unknown slot.
+        assert!(matches!(
+            table
+                .set_engine_numeric_range("player.missing", NumericRange { min: 0.0, max: 1.0 })
+                .unwrap_err(),
+            SlotRangeError::UnknownSlot { .. }
+        ));
+        // Engine-owned but non-numeric slot: range mutation requires a number type.
+        table
+            .insert(
+                "engine.flag".to_string(),
+                SlotRecord::new(SlotSchema {
+                    slot_type: SlotType::Boolean,
+                    default: Some(SlotValue::Boolean(false)),
+                    range: None,
+                    persist: false,
+                    readonly: true,
+                    ownership: SlotOwnership::Engine,
+                }),
+            )
+            .unwrap();
+        assert!(matches!(
+            table
+                .set_engine_numeric_range("engine.flag", NumericRange { min: 0.0, max: 1.0 })
+                .unwrap_err(),
+            SlotRangeError::NotNumeric { .. }
+        ));
     }
 
     #[test]

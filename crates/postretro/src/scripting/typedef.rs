@@ -111,6 +111,8 @@ fn rust_to_ts(ty_name: &str) -> String {
         "SpinAnimation" => "SpinAnimation".to_string(),
         "LightDescriptor" => "LightDescriptor".to_string(),
         "MeshDescriptor" => "MeshDescriptor".to_string(),
+        "HealthDescriptor" => "HealthDescriptor".to_string(),
+        "HitboxDescriptor" => "HitboxDescriptor".to_string(),
         "AnimationStateDescriptor" => "AnimationStateDescriptor".to_string(),
         "InterruptPolicy" => "InterruptPolicy".to_string(),
         "MeshAnimationStates" => {
@@ -217,6 +219,8 @@ fn rust_to_luau(ty_name: &str) -> String {
         "SpinAnimation" => "SpinAnimation".to_string(),
         "LightDescriptor" => "LightDescriptor".to_string(),
         "MeshDescriptor" => "MeshDescriptor".to_string(),
+        "HealthDescriptor" => "HealthDescriptor".to_string(),
+        "HitboxDescriptor" => "HitboxDescriptor".to_string(),
         "AnimationStateDescriptor" => "AnimationStateDescriptor".to_string(),
         "InterruptPolicy" => "InterruptPolicy".to_string(),
         "MeshAnimationStates" => "{ [string]: AnimationStateDescriptor }".to_string(),
@@ -1520,6 +1524,8 @@ declare module "postretro" {
     weapon?: WeaponDescriptor | null;
     /** Animated skinned-mesh preset: model handle plus an optional per-state animation map. A descriptor carrying this is directly map-placeable by canonicalName. */
     mesh?: MeshDescriptor | null;
+    /** Hit points plus an optional hitscan hitbox. A descriptor carrying this is directly map-placeable by canonicalName. */
+    health?: HealthDescriptor | null;
   };
 
   export type FireMode =
@@ -1544,6 +1550,22 @@ declare module "postretro" {
     fireMode: FireMode;
     /** Shot resolution mode. Currently supports hitscan only. */
     resolution: ResolutionMode;
+  };
+
+  /** One world-aligned AABB hitbox. Carrying one makes the entity hitscan-targetable. `halfExtents` is the box half-size on each axis; `offset` shifts the box center from the entity's transform position. */
+  export type HitboxDescriptor = {
+    /** Box half-size on each axis, in metres. Each element must be finite and > 0. */
+    halfExtents: readonly [number, number, number];
+    /** Center offset from the entity's transform position, in metres. Each element must be finite. Optional; defaults to [0, 0, 0]. */
+    offset?: readonly [number, number, number];
+  };
+
+  /** Authored health component preset attached to `EntityTypeDescriptor.components.health`. `max` is the entity's hit-point ceiling; the optional `hitbox` makes the entity hitscan-targetable (one world-aligned AABB, fixed per archetype). Materializes into a Health component with `current == max` at spawn. */
+  export type HealthDescriptor = {
+    /** Maximum hit points. Must be finite and > 0; `current` initializes to this value at spawn. */
+    max: number;
+    /** Optional hitscan hitbox. Present ⇒ the entity can be ray-targeted by weapons; absent ⇒ it cannot. */
+    hitbox?: HitboxDescriptor;
   };
 
   /** Authored player-movement preset. `capsule`, `ground`, `air`, and `fall` are required. `dash`, `crouch`, and `viewFeel` are opt-in features; `forgiveness` has engine defaults when omitted. Distances use metres and time uses seconds unless a key is suffixed `Ms`. */
@@ -1892,6 +1914,8 @@ export type EntityTypeComponents = {
   weapon: WeaponDescriptor?,
   --- Animated skinned-mesh preset: model handle plus an optional per-state animation map. A descriptor carrying this is directly map-placeable by canonicalName.
   mesh: MeshDescriptor?,
+  --- Hit points plus an optional hitscan hitbox. A descriptor carrying this is directly map-placeable by canonicalName.
+  health: HealthDescriptor?,
 }
 
 export type FireMode =
@@ -1916,6 +1940,22 @@ export type WeaponDescriptor = {
   fireMode: FireMode,
   --- Shot resolution mode. Currently supports hitscan only.
   resolution: ResolutionMode,
+}
+
+--- One world-aligned AABB hitbox. Carrying one makes the entity hitscan-targetable. `halfExtents` is the box half-size on each axis; `offset` shifts the box center from the entity's transform position.
+export type HitboxDescriptor = {
+  --- Box half-size on each axis, in metres. Each element must be finite and > 0.
+  halfExtents: {number},
+  --- Center offset from the entity's transform position, in metres. Each element must be finite. Optional; defaults to [0, 0, 0].
+  offset: {number}?,
+}
+
+--- Authored health component preset attached to `EntityTypeDescriptor.components.health`. `max` is the entity's hit-point ceiling; the optional `hitbox` makes the entity hitscan-targetable (one world-aligned AABB, fixed per archetype). Materializes into a Health component with `current == max` at spawn.
+export type HealthDescriptor = {
+  --- Maximum hit points. Must be finite and > 0; `current` initializes to this value at spawn.
+  max: number,
+  --- Optional hitscan hitbox. Present ⇒ the entity can be ray-targeted by weapons; absent ⇒ it cannot.
+  hitbox: HitboxDescriptor?,
 }
 
 --- Authored player-movement preset. `capsule`, `ground`, `air`, and `fall` are required. `dash`, `crouch`, and `viewFeel` are opt-in features; `forgiveness` has engine defaults when omitted. Distances use metres and time uses seconds unless a key is suffixed `Ms`.

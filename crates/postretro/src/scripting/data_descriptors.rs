@@ -278,6 +278,7 @@ pub(crate) struct EntityTypeDescriptor {
     pub(crate) movement: Option<PlayerMovementDescriptor>,
     pub(crate) weapon: Option<WeaponDescriptor>,
     pub(crate) mesh: Option<MeshDescriptor>,
+    pub(crate) health: Option<HealthDescriptor>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -332,6 +333,69 @@ impl WeaponDescriptor {
                     self.cooldown_ms
                 ),
             });
+        }
+        Ok(self)
+    }
+}
+
+/// Authored health component preset attached to an [`EntityTypeDescriptor`].
+/// `max` is the entity's hit-point ceiling; the optional `hitbox` makes the
+/// entity hitscan-targetable (one world-aligned AABB, fixed per archetype).
+/// Wire keys are camelCase. The data-archetype spawn path materializes this
+/// into a [`super::components::health::HealthComponent`] with `current == max`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HealthDescriptor {
+    pub(crate) max: f32,
+    #[serde(default)]
+    pub(crate) hitbox: Option<HitboxDescriptor>,
+}
+
+/// Authored hitbox sub-block: one world-aligned AABB. `half_extents` is the
+/// box half-size on each axis; `offset` shifts the box center from the entity's
+/// transform position (defaults to zero when absent).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HitboxDescriptor {
+    pub(crate) half_extents: [f32; 3],
+    #[serde(default)]
+    pub(crate) offset: Option<[f32; 3]>,
+}
+
+impl HealthDescriptor {
+    /// Validate bounds serde cannot enforce (the `LightDescriptor::validate`
+    /// precedent): `max` finite and `> 0`; each `halfExtents` element finite and
+    /// `> 0`; each `offset` element finite.
+    pub(crate) fn validate(self) -> Result<Self, DescriptorError> {
+        if !self.max.is_finite() || self.max <= 0.0 {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`components.health.max` must be a finite value > 0.0, got {}",
+                    self.max
+                ),
+            });
+        }
+        if let Some(hitbox) = self.hitbox.as_ref() {
+            for (axis, value) in ["x", "y", "z"].iter().zip(hitbox.half_extents) {
+                if !value.is_finite() || value <= 0.0 {
+                    return Err(DescriptorError::InvalidShape {
+                        reason: format!(
+                            "`components.health.hitbox.halfExtents.{axis}` must be a finite value > 0.0, got {value}"
+                        ),
+                    });
+                }
+            }
+            if let Some(offset) = hitbox.offset {
+                for (axis, value) in ["x", "y", "z"].iter().zip(offset) {
+                    if !value.is_finite() {
+                        return Err(DescriptorError::InvalidShape {
+                            reason: format!(
+                                "`components.health.hitbox.offset.{axis}` must be a finite value, got {value}"
+                            ),
+                        });
+                    }
+                }
+            }
         }
         Ok(self)
     }
@@ -907,6 +971,7 @@ pub(crate) fn entity_descriptor_from_js<'js>(
     let mut movement = None;
     let mut weapon = None;
     let mut mesh = None;
+    let mut health = None;
 
     if obj.contains_key("components").map_err(js_err)? {
         let components_val: JsValue = obj.get("components").map_err(js_err)?;
@@ -946,6 +1011,19 @@ pub(crate) fn entity_descriptor_from_js<'js>(
                             }
                         })?;
                     weapon = Some(descriptor.validate()?);
+                }
+            }
+            if components_obj.contains_key("health").map_err(js_err)? {
+                let raw: JsValue = components_obj.get("health").map_err(js_err)?;
+                if !raw.is_null() && !raw.is_undefined() {
+                    let json = super::conv::js_to_json(ctx, raw).map_err(js_err)?;
+                    let descriptor: HealthDescriptor =
+                        serde_json::from_value(json).map_err(|e| {
+                            DescriptorError::InvalidShape {
+                                reason: format!("`components.health` invalid: {e}"),
+                            }
+                        })?;
+                    health = Some(descriptor.validate()?);
                 }
             }
             if components_obj.contains_key("light").map_err(js_err)? {
@@ -990,6 +1068,7 @@ pub(crate) fn entity_descriptor_from_js<'js>(
         movement,
         weapon,
         mesh,
+        health,
     })
 }
 
@@ -1874,6 +1953,7 @@ pub(crate) fn entity_descriptor_from_lua(
     let mut movement = None;
     let mut weapon = None;
     let mut mesh = None;
+    let mut health = None;
 
     if table.contains_key("components").map_err(lua_err)? {
         let raw: LuaValue = table.get("components").map_err(lua_err)?;
@@ -1933,6 +2013,19 @@ pub(crate) fn entity_descriptor_from_lua(
                     weapon = Some(descriptor.validate()?);
                 }
             }
+            if components_table.contains_key("health").map_err(lua_err)? {
+                let raw: LuaValue = components_table.get("health").map_err(lua_err)?;
+                if !matches!(raw, LuaValue::Nil) {
+                    let json = super::conv::lua_to_json(raw).map_err(lua_err)?;
+                    let descriptor: HealthDescriptor =
+                        serde_json::from_value(json).map_err(|e| {
+                            DescriptorError::InvalidShape {
+                                reason: format!("`components.health` invalid: {e}"),
+                            }
+                        })?;
+                    health = Some(descriptor.validate()?);
+                }
+            }
             if components_table.contains_key("light").map_err(lua_err)? {
                 let raw: LuaValue = components_table.get("light").map_err(lua_err)?;
                 if !matches!(raw, LuaValue::Nil) {
@@ -1975,6 +2068,7 @@ pub(crate) fn entity_descriptor_from_lua(
         movement,
         weapon,
         mesh,
+        health,
     })
 }
 
@@ -4952,6 +5046,64 @@ mod tests {
             animations = { idle = { clip = "c", crossfadeMs = -2.0 } }
         } } }"#;
         let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    // --- health component (both parsers) ------------------------------------
+
+    #[test]
+    fn js_entity_descriptor_parses_health_with_hitbox() {
+        let src = r#"({
+            canonicalName: "dummy",
+            components: { health: { max: 80, hitbox: { halfExtents: [0.5, 1.0, 0.5], offset: [0, 0.9, 0] } } }
+        })"#;
+        let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+        let health = d.health.expect("health parsed");
+        assert_eq!(health.max, 80.0);
+        let hitbox = health.hitbox.expect("hitbox parsed");
+        assert_eq!(hitbox.half_extents, [0.5, 1.0, 0.5]);
+        assert_eq!(hitbox.offset, Some([0.0, 0.9, 0.0]));
+    }
+
+    #[test]
+    fn lua_entity_descriptor_parses_health_without_hitbox() {
+        // Luau parity: a missing arm would silently drop `health`. Assert the
+        // arm exists and a hitbox-less block parses (offset/hitbox optional).
+        let src = r#"return {
+            canonicalName = "player",
+            components = { health = { max = 100 } }
+        }"#;
+        let d = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap());
+        let health = d.health.expect("health parsed by the Luau arm");
+        assert_eq!(health.max, 100.0);
+        assert!(health.hitbox.is_none());
+    }
+
+    #[test]
+    fn js_health_non_positive_max_is_rejected() {
+        let src = r#"({ components: { health: { max: 0 } } })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_health_non_finite_max_is_rejected() {
+        let src = r#"return { components = { health = { max = 1/0 } } }"#;
+        let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_health_non_positive_hitbox_extent_is_rejected() {
+        let src = r#"({ components: { health: { max: 50, hitbox: { halfExtents: [0.5, 0.0, 0.5] } } } })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_health_non_finite_offset_is_rejected() {
+        let src = r#"({ components: { health: { max: 50, hitbox: { halfExtents: [0.5, 0.5, 0.5], offset: [0, 1/0, 0] } } } })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
         assert!(matches!(err, DescriptorError::InvalidShape { .. }));
     }
 }

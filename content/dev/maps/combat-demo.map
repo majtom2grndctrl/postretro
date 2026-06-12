@@ -1,0 +1,116 @@
+// Game: Postretro
+// Format: Standard
+// DEMO MAP — M10 entity health + damage runtime.
+// Compile: cargo run -p postretro-level-compiler -- content/dev/maps/combat-demo.map -o content/dev/maps/combat-demo.prl
+// Run:     cargo run -p postretro -- content/dev/maps/combat-demo.prl
+// See content/dev/maps/combat-demo.README.md for what to look for.
+// entity 0
+{
+"classname" "worldspawn"
+"initialGravity" "-9.81"
+"wad" ""
+"data_script" "../scripts/combat-demo-reaction.ts"
+"_tb_mod" "dev"
+// floor
+{
+( 272 -16 -16 ) ( 272 272 0 ) ( 272 272 -16 ) concrete_pavement_036 0 0 0 1 1
+( -16 272 -16 ) ( -16 -16 0 ) ( -16 -16 -16 ) concrete_pavement_036 0 0 0 1 1
+( 272 272 -16 ) ( -16 272 0 ) ( -16 272 -16 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 -16 ) ( 272 -16 0 ) ( 272 -16 -16 ) concrete_pavement_036 0 0 0 1 1
+( -16 272 0 ) ( 272 -16 0 ) ( -16 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 -16 ) ( 272 272 -16 ) ( -16 272 -16 ) concrete_pavement_036 0 0 0 1 1
+}
+// ceiling
+{
+( 272 -16 128 ) ( 272 272 144 ) ( 272 272 128 ) concrete_pavement_036 0 0 0 1 1
+( -16 272 128 ) ( -16 -16 144 ) ( -16 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( 272 272 128 ) ( -16 272 144 ) ( -16 272 128 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 128 ) ( 272 -16 144 ) ( 272 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( -16 272 144 ) ( 272 -16 144 ) ( -16 -16 144 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 128 ) ( 272 272 128 ) ( -16 272 128 ) concrete_pavement_036 0 0 0 1 1
+}
+// west wall
+{
+( 0 -16 0 ) ( 0 272 128 ) ( 0 272 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 272 0 ) ( -16 -16 128 ) ( -16 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 272 0 ) ( -16 272 128 ) ( -16 272 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 0 ) ( 0 -16 128 ) ( 0 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 272 128 ) ( 0 -16 128 ) ( -16 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 0 ) ( 0 272 0 ) ( -16 272 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// east wall
+{
+( 272 -16 0 ) ( 272 272 128 ) ( 272 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 256 272 0 ) ( 256 -16 128 ) ( 256 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 272 272 0 ) ( 256 272 128 ) ( 256 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 256 -16 0 ) ( 272 -16 128 ) ( 272 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 256 272 128 ) ( 272 -16 128 ) ( 256 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( 256 -16 0 ) ( 272 272 0 ) ( 256 272 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// south wall
+{
+( 256 -16 0 ) ( 256 0 128 ) ( 256 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 0 -16 128 ) ( 0 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 256 0 0 ) ( 0 0 128 ) ( 0 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 -16 0 ) ( 256 -16 128 ) ( 256 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 128 ) ( 256 -16 128 ) ( 0 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( 0 -16 0 ) ( 256 0 0 ) ( 0 0 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// north wall
+{
+( 256 256 0 ) ( 256 272 128 ) ( 256 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 272 0 ) ( 0 256 128 ) ( 0 256 0 ) concrete_pavement_036 0 0 0 1 1
+( 256 272 0 ) ( 0 272 128 ) ( 0 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 256 0 ) ( 256 256 128 ) ( 256 256 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 272 128 ) ( 256 256 128 ) ( 0 256 128 ) concrete_pavement_036 0 0 0 1 1
+( 0 256 0 ) ( 256 272 0 ) ( 0 272 0 ) concrete_pavement_036 0 0 0 1 1
+}
+}
+// entity 1 — player spawn (facing +X toward the dummy line). Tagged `player`,
+// the EXCLUSIVE target of the combat-demo-reaction.ts `applyDamage` reaction.
+// The player archetype declares health (max 100) but NO hitbox, so this tag is
+// never matched by a weapon ray — only by the named retaliation reaction.
+{
+"classname" "player_spawn"
+"origin" "48 128 24"
+"angles" "0 0 0"
+"_tags" "player"
+}
+// entity 2 — target dummy. Carries health (max 30) + hitbox, so the reference
+// pistol's hitscan ray can target it; three 12-damage hits despawn it. Tagged
+// `dummy` (EXCLUSIVE to the dummies) so it counts toward the progress threshold.
+{
+"classname" "target_dummy"
+"origin" "176 64 16"
+"angles" "0 180 0"
+"_tags" "dummy"
+}
+// entity 3 — target dummy.
+{
+"classname" "target_dummy"
+"origin" "176 112 16"
+"angles" "0 180 0"
+"_tags" "dummy"
+}
+// entity 4 — target dummy.
+{
+"classname" "target_dummy"
+"origin" "176 160 16"
+"angles" "0 180 0"
+"_tags" "dummy"
+}
+// entity 5 — target dummy. Four dummies, fraction 0.5 means two kills fire
+// `dummiesCleared`, which routes 35 damage to the `player` tag.
+{
+"classname" "target_dummy"
+"origin" "176 208 16"
+"angles" "0 180 0"
+"_tags" "dummy"
+}
+// entity 6 — light so the dummies are visible
+{
+"classname" "light"
+"origin" "128 128 100"
+"light" "300"
+"_falloff_range" "2048"
+}

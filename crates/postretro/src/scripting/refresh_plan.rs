@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
+use crate::scripting::components::health::HealthComponent;
 use crate::scripting::components::light::{FalloffKind, LightComponent, LightKind};
 use crate::scripting::components::mesh::MeshComponent;
 use crate::scripting::components::player_movement::{MovementState, PlayerMovementComponent};
@@ -366,6 +367,7 @@ fn descriptor_declares(
         DescriptorComponentKind::Light => descriptor.light.is_some(),
         DescriptorComponentKind::Emitter => descriptor.emitter.is_some(),
         DescriptorComponentKind::Mesh => descriptor.mesh.is_some(),
+        DescriptorComponentKind::Health => descriptor.health.is_some(),
     }
 }
 
@@ -386,6 +388,9 @@ fn live_component_exists(
             .get_component::<BillboardEmitterComponent>(entity)
             .is_ok(),
         DescriptorComponentKind::Mesh => registry.get_component::<MeshComponent>(entity).is_ok(),
+        DescriptorComponentKind::Health => {
+            registry.get_component::<HealthComponent>(entity).is_ok()
+        }
     }
 }
 
@@ -414,6 +419,7 @@ fn plan_component_replace(
         // existing live component (no replace action). A dedicated mesh-refresh
         // path can land later if hot-reload of the animation surface is needed.
         DescriptorComponentKind::Mesh => Err("mesh component refresh is not supported".to_string()),
+        DescriptorComponentKind::Health => plan_health_replace(entity, new_descriptor, registry),
     };
 
     match result {
@@ -450,6 +456,27 @@ fn plan_weapon_replace(
     let mut refreshed = live.clone();
     refreshed.refresh_from_descriptor(descriptor);
     Ok(ComponentValue::Weapon(refreshed))
+}
+
+fn plan_health_replace(
+    entity: EntityId,
+    new_descriptor: &EntityTypeDescriptor,
+    registry: &EntityRegistry,
+) -> Result<ComponentValue, String> {
+    let descriptor = new_descriptor
+        .health
+        .as_ref()
+        .ok_or_else(|| "new descriptor has no health component".to_string())?;
+    let live = registry
+        .get_component::<HealthComponent>(entity)
+        .map_err(|err| format!("live health component unavailable: {err}"))?;
+    // Clone the live component and refresh in-place so `HealthComponent` stays
+    // the single source of truth for which fields are live state (`current`,
+    // `death_handled`) versus authored data (`max`, `hitbox`). `current` clamps
+    // to the new max; the death latch is preserved.
+    let mut refreshed = *live;
+    refreshed.refresh_from_descriptor(descriptor);
+    Ok(ComponentValue::Health(refreshed))
 }
 
 fn plan_movement_replace(
@@ -758,6 +785,7 @@ mod tests {
                 resolution: ResolutionMode::Hitscan,
             }),
             mesh: None,
+            health: None,
         }
     }
 
@@ -775,6 +803,7 @@ mod tests {
             movement: None,
             weapon: None,
             mesh: None,
+            health: None,
         }
     }
 
@@ -805,6 +834,7 @@ mod tests {
             movement: None,
             weapon: None,
             mesh: None,
+            health: None,
         }
     }
 
@@ -861,6 +891,7 @@ mod tests {
             }),
             weapon: None,
             mesh: None,
+            health: None,
         }
     }
 
@@ -893,6 +924,47 @@ mod tests {
             map_overrides: BTreeSet::new(),
             spawn_path: DescriptorSpawnPath::MapPlacement,
         }
+    }
+
+    fn health_descriptor(name: &str, max: f32) -> EntityTypeDescriptor {
+        use crate::scripting::data_descriptors::HealthDescriptor;
+        EntityTypeDescriptor {
+            canonical_name: Some(name.to_string()),
+            default_weapon: None,
+            light: None,
+            emitter: None,
+            movement: None,
+            weapon: None,
+            mesh: None,
+            health: Some(HealthDescriptor { max, hitbox: None }),
+        }
+    }
+
+    #[test]
+    fn health_refresh_updates_max_and_clamps_current() {
+        let old = vec![health_descriptor("dummy", 100.0)];
+        let new = vec![health_descriptor("dummy", 40.0)];
+        let mut registry = EntityRegistry::new();
+        let id = registry.spawn(Transform::default());
+        let mut live = HealthComponent::from_descriptor(old[0].health.as_ref().unwrap());
+        live.current = 90.0;
+        registry.set_component(id, live).unwrap();
+        registry
+            .set_component(id, provenance("dummy", &[DescriptorComponentKind::Health]))
+            .unwrap();
+
+        let plan = plan_descriptor_refresh(&old, &new, &registry);
+
+        assert!(plan.diagnostics.is_empty(), "{:?}", plan.diagnostics);
+        let DescriptorRefreshAction::Replace {
+            component: ComponentValue::Health(component),
+            ..
+        } = &plan.actions[0]
+        else {
+            panic!("expected health replacement");
+        };
+        assert_eq!(component.max, 40.0);
+        assert_eq!(component.current, 40.0, "current clamps to the new max");
     }
 
     #[test]
@@ -1427,6 +1499,7 @@ mod tests {
             movement: None,
             weapon: None,
             mesh: Some(mesh_descriptor.clone()),
+            health: None,
         };
 
         let old = vec![make_descriptor("robot")];

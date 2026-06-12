@@ -39,6 +39,7 @@ Capabilities attach via component columns in the registry. Current engine compon
 | FogVolume | Runtime fog-volume parameters |
 | Weapon | Runtime weapon params and per-instance cooldown state |
 | MeshComponent | Skinned model handle (`model: String`) plus optional declared animation states and per-entity animation state; spawned via `prop_mesh` or a descriptor carrying a mesh component |
+| Health | Hit points (`max`, `current`) plus optional hitscan hitbox (one world-aligned AABB, fixed per archetype); declared via the `components.health` descriptor block. Hitscan-targetable iff the hitbox is present. |
 
 Type-specific data lives in the component. An entity is "a player" by virtue of carrying `PlayerMovement`, not by belonging to a typed collection. Future entity types (enemies, doors, projectiles, pickups) follow the same pattern — illustrative, not current scope.
 
@@ -66,6 +67,7 @@ All entities update each fixed-timestep game logic tick. See section 5 for updat
 Entities are destroyed when:
 
 - A scripted or engine bridge condition fires (expired particle, emitter despawn, level unload).
+- Health reaches zero: a per-tick death sweep despawns non-player entities at zero HP (and reports kills to the progress tracker). The player pawn never despawns from damage — HP latches at zero and a one-shot death event fires.
 - Level unloads (all entities destroyed).
 
 Destruction is immediate: the entity's slot is cleared and its generation bumped (or the slot retired on generation overflow) in the same call that removes the entity. Callers must not hold entity IDs across points where destruction can occur.

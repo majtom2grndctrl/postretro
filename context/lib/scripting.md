@@ -262,6 +262,8 @@ Start the node set minimal: named-input leaves, arithmetic, `clamp`, `lerp`, `se
 
 **The typedef is the contract.** The generated `.d.ts` / `.d.luau` (§7) *is* the vocabulary — and therefore the documentation of its limits. If a node is not in the typedef the author cannot type it, so the boundary is clear by construction. No separate "what's allowed" list to drift out of sync.
 
+**Author-facing naming.** Scripts see the vocabulary as the `runtime` namespace — one builder per opcode, `read(name)` for the named-input leaf — and the emitted union type `RuntimeValue`. Builder arguments accept bare number/boolean literals, auto-wrapped into constant nodes. SDK naming rule: `State` in a name means stored (slots, `StateValue`); `Runtime` means computed by the engine, never stored. Rust internals keep the IR names (`IrNode`, `BakedIr`); the adopting plan's boundary inventory records the mapping.
+
 **Scope.** This is a cross-cutting engine pattern. Movement is the first adopter (M14 plan 3). Plans are sequential: substrate → movement adopter → consolidation (demand-driven). Each plan consumes the prior plan's settled output.
 
 ---

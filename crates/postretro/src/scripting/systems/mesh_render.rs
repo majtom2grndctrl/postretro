@@ -12,18 +12,18 @@ use crate::render::mesh_pass::mesh_visible;
 use crate::scripting::registry::{ComponentKind, ComponentValue, EntityRegistry, Transform};
 use crate::visibility::VisibleCells;
 
-/// Animation time-slicing distance thresholds + per-bucket resample strides
-/// (Task 6). DISTANT skinned instances re-sample their pose every Nth frame and
-/// re-upload a cached palette on the skipped frames, trading pose freshness for
-/// CPU sampling cost. Off-screen instances already cost nothing (culled before
-/// planning); this cuts the steady-state per-instance sample rate for the ones
-/// that are visible but far.
+/// Animation time-slicing distance thresholds + per-bucket resample strides.
+/// DISTANT skinned instances re-sample their pose every Nth frame and re-upload a
+/// cached palette on the skipped frames, trading pose freshness for CPU sampling
+/// cost. Off-screen instances already cost nothing (culled before planning); this
+/// cuts the steady-state per-instance sample rate for the ones that are visible
+/// but far.
 ///
 /// TUNABLE, not a contract: the ~20 m / ~40 m split and the 1 / 2 / 4 strides are
-/// the plan's starting proposal, picked so a near monster stays frame-fresh while
-/// a distant crowd de-syncs its sampling. Adjust against the camera FOV and the
-/// representative wave size; the acceptance test pins the *shape* (near every
-/// frame, far at stride) and survives a retune of the exact numbers.
+/// picked so a near monster stays frame-fresh while a distant crowd de-syncs its
+/// sampling. Adjust against the camera FOV and the representative wave size; the
+/// acceptance test pins the *shape* (near every frame, far at stride) and
+/// survives a retune of the exact numbers.
 const RESAMPLE_NEAR_DISTANCE: f32 = 20.0;
 /// Upper distance threshold (meters): beyond this an instance falls in the
 /// farthest bucket ([`RESAMPLE_STRIDE_FAR`]). TUNABLE — see
@@ -53,7 +53,7 @@ fn resample_stride(distance: f32) -> u64 {
     }
 }
 
-/// Whether an instance re-samples its pose this frame (Task 6 time-slicing).
+/// Whether an instance re-samples its pose this frame (time-slicing).
 /// `force` short-circuits the stride test (a just-changed state or an active
 /// crossfade must resample so the transition is never frozen on a skipped frame).
 /// Otherwise the per-entity phase `(frame_index + seed) % stride == 0` decides:
@@ -105,7 +105,7 @@ pub(crate) struct MeshRenderCollector {
     /// `last_state` so a steady-state frame reuses both allocations (no per-frame
     /// map churn).
     last_state_scratch: HashMap<u32, u64>,
-    /// Count of instances that resampled this frame (Task 6 acceptance metric).
+    /// Count of instances that resampled this frame (the time-slicing metric).
     /// Tallied at the bucketing decision — the game-side counter a collector unit
     /// test asserts the reduced rate against without a GPU device.
     resample_count: u32,
@@ -131,9 +131,9 @@ impl MeshRenderCollector {
     /// animation state) and its `Transform`. The cull tests the entity's
     /// **current-tick** transform translation (stable per-tick visibility) via
     /// the pure `mesh_pass::mesh_visible`; survivors emit their **interpolated**
-    /// transform (Task A's accessor at the frame `alpha`, the same alpha the
-    /// player camera reads from `frame_timing`) so the model renders smoothly
-    /// between ticks.
+    /// transform (the registry's interpolated-transform accessor at the frame
+    /// `alpha`, the same alpha the player camera reads from `frame_timing`) so the
+    /// model renders smoothly between ticks.
     ///
     /// Animation: `anim_time` is the accumulated game-layer animation clock
     /// (`frame_dt × time_scale`); `tables` is the level-load clip table set. For
@@ -148,7 +148,7 @@ impl MeshRenderCollector {
     /// (looping states only — one-shot states play from entry, no phase). It also
     /// keys the snapshot store on a `"smooth"` capture.
     ///
-    /// Animation time-slicing (Task 6): `camera_pos` is this frame's camera eye
+    /// Animation time-slicing: `camera_pos` is this frame's camera eye
     /// position. Each survivor's distance to it picks a resample stride bucket
     /// ([`resample_stride`]); the per-entity phase `(frame_index + seed) % stride`
     /// then decides whether the instance re-samples this frame. A state change
@@ -249,7 +249,7 @@ impl MeshRenderCollector {
         &self.instances
     }
 
-    /// Count of instances that resampled their pose this frame (Task 6). The
+    /// Count of instances that resampled their pose this frame. The
     /// game-side acceptance metric: near instances tally every frame, far ones at
     /// the bucket stride, and a state-changing / crossfading distant instance is
     /// counted on the frame it transitions. Reset at the top of each [`collect`].
@@ -803,7 +803,7 @@ mod tests {
         );
     }
 
-    // --- Animation time-slicing (Task 6) ---------------------------------------
+    // --- Animation time-slicing -------------------------------------------------
 
     /// A camera position far enough that an instance at the origin lands past
     /// `RESAMPLE_FAR_DISTANCE` (the stride-4 far bucket). Placed along +X.

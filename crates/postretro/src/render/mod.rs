@@ -3336,28 +3336,6 @@ impl Renderer {
         Some(tags)
     }
 
-    /// Look up an animation clip by authored `name` for a cached skinned model,
-    /// keyed by the same `model_handle` string `load_skinned_model` cached it
-    /// under (the verbatim `MeshComponent.model` path). Returns `None` when the
-    /// model is not cached or carries no clip of that name — absence is normal,
-    /// never an error or panic. On duplicate authored names the first (lowest
-    /// glTF index) clip wins.
-    ///
-    /// `pub` forwarder over the private `mesh_pass`: the level-load model sweep
-    /// (`main.rs`) and the future skinned-animation runtime plan query the clip
-    /// set through here, since `mesh_pass` is not reachable directly. The seam
-    /// awaits those consumers; `allow(dead_code)` until then (the
-    /// `ModelHandle::as_str` precedent).
-    #[allow(dead_code)]
-    pub fn skinned_model_clip_by_name(
-        &self,
-        model_handle: &str,
-        name: &str,
-    ) -> Option<&crate::model::skeleton::AnimationClip> {
-        self.mesh_pass
-            .model_clip_by_name(&crate::model::ModelHandle::from(model_handle), name)
-    }
-
     /// The clip metadata (name + duration) for a cached skinned model, in glTF
     /// (authored) index order, keyed by the same `model_handle` string
     /// `load_skinned_model` cached it under. Returns an empty `Vec` when the model
@@ -3384,10 +3362,9 @@ impl Renderer {
 
     /// Reset per-level transient mesh-pass state at level load. `pub` forwarder
     /// over the private `mesh_pass`; called from the level-load model sweep at the
-    /// model-cache install site (where each distinct model uploads). Today it
-    /// empties the `"smooth"`-interrupt snapshot store — entity seeds are not
-    /// stable across levels, so a stale snapshot must not survive. Task 6 extends
-    /// the pass-side hook to clear the palette cache.
+    /// model-cache install site (where each distinct model uploads). Empties the
+    /// `"smooth"`-interrupt snapshot store and the per-entity palette cache —
+    /// entity seeds are not stable across levels, so stale state must not survive.
     pub fn clear_mesh_pass_for_level_load(&mut self) {
         self.mesh_pass.clear_for_level_load();
     }

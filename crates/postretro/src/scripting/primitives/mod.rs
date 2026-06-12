@@ -91,7 +91,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .doc("One declared animation state: a named clip plus loop and crossfade policy. `clip` is resolved against the model's clip metadata at level load.")
         .field("clip", "String", "Clip name this state plays. Must be non-empty; resolved against the model's clips at level load.")
         .field("loop?", "bool", "Whether the clip loops. Optional; defaults to false.")
-        .field("crossfadeMs?", "f32", "Crossfade duration into this state, in milliseconds. Optional; must be finite and >= 0. Defaults to the engine crossfade default.")
+        .field("crossfadeMs?", "f32", "Crossfade duration into this state, in milliseconds. Optional; must be finite and >= 0. Defaults to 150 ms.")
         .field("interrupt?", "InterruptPolicy", "How a fade into this state takes over an in-flight fade. Optional; defaults to \"smooth\".")
         .finish();
     registry

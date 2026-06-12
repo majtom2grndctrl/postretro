@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::scripting::registry::{EntityId, EntityRegistry, RegistryError};
 
 /// Default crossfade duration (milliseconds) for a state entry that does not
-/// declare `crossfadeMs`. Cosmetic; tuned on device (plan Open questions).
+/// declare `crossfadeMs`. Cosmetic; a device-tuned default, not a contract.
 pub(crate) const DEFAULT_CROSSFADE_MS: f32 = 150.0;
 
 /// How a fade *into* a state takes over when another fade is already in flight.
@@ -77,6 +77,32 @@ pub(crate) enum FadeSourceKind {
 /// complete.
 pub(crate) type AnimStamp = Option<f64>;
 
+/// The outgoing source of a fade that a `"smooth"` interrupt took over, stashed
+/// across the switch so the capture can reconstruct the in-flight blended pose.
+///
+/// When a switch interrupts an active OUT→IN fade, IN becomes the new
+/// `previous_state` (the interrupted incoming) but OUT — the leg the interrupted
+/// fade was blending *out of* — would otherwise be dropped (`previous_state` is
+/// overwritten). This stash preserves OUT so the collector can sample the exact
+/// pose the entity showed at the interrupt instant: `blend(OUT, IN, w)`.
+///
+/// Runtime-only: set at switch time and cleared once the new fade resolves. Never
+/// persisted (mirrors how `entered_at`/`fade_source` carry no durable meaning).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum InterruptedOutgoing {
+    /// The interrupted fade blended out of a clip: its state name and the entry
+    /// stamp that clip advanced on. Sampled at the interrupt instant on its own
+    /// timeline to reproduce the leg.
+    Clip { state: String, entered_at: f64 },
+    /// The interrupted fade was itself a `"smooth"` snapshot fade: the prior
+    /// snapshot, referenced by its store tag (the renderer's `SnapshotTag` — an
+    /// `entered_at` bit pattern; kept as a plain `u64` here so this component
+    /// stays free of any renderer dependency). The capture blends against that
+    /// stored pose (a store hit), or degrades to the carried incoming fallback if
+    /// its capture frame was culled.
+    Snapshot { tag: u64 },
+}
+
 /// Per-entity animation runtime state, present only on descriptor-spawned
 /// entities that declared an `animations` block. `prop_mesh` entities leave
 /// [`MeshComponent::animation`] as `None` and stay stateless (today's behavior:
@@ -107,6 +133,14 @@ pub(crate) struct MeshAnimation {
     /// What the active fade blends from (interrupted-state clip vs snapshot).
     /// Set by [`switch_animation_state`] per the entered state's interrupt policy.
     pub(crate) fade_source: FadeSourceKind,
+    /// The outgoing source of the fade a `"smooth"` interrupt took over, stashed
+    /// so the capture can reconstruct the in-flight blended pose at the interrupt
+    /// instant. `Some` only between a smooth interrupt and the new fade's
+    /// resolution; cleared on a non-interrupt switch, a hard cut/collapse, and
+    /// when the fade completes. Runtime-only — `#[serde(skip)]` like
+    /// `clip_index`, since it carries no durable meaning across a reload.
+    #[serde(skip, default)]
+    pub(crate) interrupted_outgoing: Option<InterruptedOutgoing>,
 }
 
 impl MeshAnimation {
@@ -123,6 +157,7 @@ impl MeshAnimation {
             previous_state: None,
             previous_entered_at: None,
             fade_source: FadeSourceKind::Clip,
+            interrupted_outgoing: None,
         }
     }
 
@@ -175,12 +210,14 @@ impl MeshAnimation {
     }
 
     /// Clear a completed fade back to steady state: no previous state, no
-    /// previous stamp, fade source reset to its `Clip` default. After this the
-    /// collector samples the single new clip (the pose at weight 1.0).
+    /// previous stamp, fade source reset to its `Clip` default, and the
+    /// interrupt-outgoing stash dropped. After this the collector samples the
+    /// single new clip (the pose at weight 1.0).
     fn clear_completed_fade(&mut self) {
         self.previous_state = None;
         self.previous_entered_at = None;
         self.fade_source = FadeSourceKind::Clip;
+        self.interrupted_outgoing = None;
     }
 }
 
@@ -231,13 +268,16 @@ pub(crate) enum SwitchResult {
 /// `setAnimationState` reaction, the future AI plan, and future command-buffer
 /// guards all route through.
 ///
-/// Records the target state, a pending entry stamp, the previous state, and the
-/// new fade's SOURCE KIND (per the entered state's interrupt policy): a smooth
+/// Records the target state, a pending entry stamp, the previous state, the new
+/// fade's SOURCE KIND (per the entered state's interrupt policy: a smooth
 /// interrupt of an active fade records `Snapshot`, every other switch records
-/// `Clip`. The per-frame capture inputs (the in-flight blend the snapshot
-/// freezes) are computed downstream by the render-frame collector, after the
-/// resolve pass fills the pending stamps — so the last same-tick target wins
-/// trivially and the resolved stamps give clip-local times a concrete origin.
+/// `Clip`), and — on a smooth interrupt only — the interrupted fade's OUTGOING
+/// source in `interrupted_outgoing` (the leg that would otherwise be dropped when
+/// `previous_state` is overwritten). The per-frame capture inputs (the in-flight
+/// blend the snapshot freezes) are computed downstream by the render-frame
+/// collector, after the resolve pass fills the pending stamps — so the last
+/// same-tick target wins trivially and the resolved stamps give clip-local times
+/// a concrete origin.
 ///
 /// Pending-stamp collapse: if the current state's entry stamp is still pending
 /// (a switch landed this same tick and the resolve pass has not run), the
@@ -282,6 +322,38 @@ pub(crate) fn switch_animation_state(
         .get(target)
         .map(|s| s.interrupt)
         .unwrap_or_default();
+    let smooth_interrupt = was_fading && target_policy == InterruptPolicy::Smooth;
+
+    // On a smooth interrupt, stash the interrupted fade's OUTGOING source BEFORE
+    // it is overwritten below. The interrupted fade was OUT→IN where IN is the
+    // current state (about to become `previous_state`) and OUT is the current
+    // `previous_state` (the leg that would otherwise be dropped). Capturing OUT
+    // here is what lets the collector reconstruct the in-flight blended pose
+    // `blend(OUT, IN, w)` at the interrupt instant — without it OUT is
+    // unrecoverable. If the interrupted fade was itself a snapshot fade, OUT is
+    // that prior snapshot, referenced by its store tag (the interrupted fade's
+    // entered stamp = the current state's `entered_at`, the tag it was stored
+    // under). Otherwise OUT is the prior clip leg on its own timeline.
+    let stash = if smooth_interrupt {
+        match anim.fade_source {
+            FadeSourceKind::Snapshot => anim
+                .entered_at
+                .map(|t| InterruptedOutgoing::Snapshot { tag: t.to_bits() }),
+            FadeSourceKind::Clip => {
+                match (anim.previous_state.clone(), anim.previous_entered_at) {
+                    (Some(state), Some(entered_at)) => {
+                        Some(InterruptedOutgoing::Clip { state, entered_at })
+                    }
+                    // A clip fade with no resolved previous stamp cannot be
+                    // reproduced; degrade by stashing nothing (the capture then
+                    // falls back to the interrupted incoming's clip).
+                    _ => None,
+                }
+            }
+        }
+    } else {
+        None
+    };
 
     if current_pending || !current_usable {
         // No outgoing pose to preserve: collapse the never-rendered intermediate
@@ -309,11 +381,14 @@ pub(crate) fn switch_animation_state(
     // sees the active-fade status (`was_fading`) and the entered state's
     // interrupt policy. The resolve pass clears `previous_state` once a fade
     // completes, so `was_fading` here genuinely means an in-flight fade.
-    anim.fade_source = if was_fading && target_policy == InterruptPolicy::Smooth {
+    anim.fade_source = if smooth_interrupt {
         FadeSourceKind::Snapshot
     } else {
         FadeSourceKind::Clip
     };
+    // The stash is live only for a smooth interrupt; any other switch clears it
+    // (no in-flight blend to preserve).
+    anim.interrupted_outgoing = stash;
 
     anim.current_state = target.to_string();
     // Pending: the resolve pass fills this from the frame's post-advance clock.

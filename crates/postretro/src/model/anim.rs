@@ -901,14 +901,14 @@ mod tests {
         assert!((tm - pose_b.0).length() > EPS, "midpoint differs from B");
     }
 
-    /// Shortest-path slerp: blending two rotations almost a full turn apart goes
-    /// the short way (through ~0), not the long way (through ~180°). The endpoints
-    /// being in opposite hemispheres is the case the manual flip guards.
+    /// Shortest-path slerp: blending 170° and −170° about Z goes the short way
+    /// (through 180°), not the long way (through 0°). The midpoint is 180°.
+    /// The endpoints being in opposite hemispheres is the case the manual flip guards.
     #[test]
     fn blend_rotation_takes_shortest_path() {
         let skeleton = single_root_skeleton();
         // 170° each side of zero about Z: shortest arc between them passes through
-        // 0°, the long arc through 180°. Midpoint must land near 0°, not 180°.
+        // 180°, the long arc through 0°. Midpoint must land near 180°, not 0°.
         let r_a = Quat::from_rotation_z(170f32.to_radians());
         let r_b = Quat::from_rotation_z(-170f32.to_radians());
         let clip_a = constant_pose_clip("a", Vec3::ZERO, r_a, Vec3::ONE);

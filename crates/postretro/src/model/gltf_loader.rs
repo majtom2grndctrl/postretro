@@ -573,7 +573,7 @@ fn normalize_weights(weights: [u8; 4]) -> [u8; 4] {
 /// - CUBICSPLINE stores three elements per keyframe — `[in-tangent, value,
 ///   out-tangent]` — so the value of keyframe `k` is `raw[3k + 1]`. We extract
 ///   those, discard the tangents, store the track as `Linear` (degrading cubic to
-///   linear; see the M10 plan), and warn. If the triple shape does not hold
+///   linear; tangent storage and hermite blending are not implemented), and warn. If the triple shape does not hold
 ///   (`raw.len() != 3 * key_count`) the channel is malformed for cubic, so we warn
 ///   and skip it — this also guards the parallel-length invariant `Track`
 ///   requires (otherwise 3N values would be paired with N times).
@@ -634,7 +634,7 @@ fn load_clip(
         // The sampler's interpolation algorithm drives how the runtime blends
         // keyframes: LINEAR/STEP map straight to [`Interp`], while CUBICSPLINE is
         // degraded to LINEAR by extracting each key's value element (tangents
-        // discarded) — true cubic evaluation is out of scope (see the M10 plan).
+        // discarded) — true cubic evaluation is out of scope (tangent storage and hermite blending are not implemented).
         let interpolation = channel.sampler().interpolation();
 
         let reader = channel.reader(buffer_data);
@@ -1120,7 +1120,7 @@ mod tests {
         assert!(read_model_tags(&extras).is_empty());
     }
 
-    // --- Multi-clip fixture: full load path (M10 Task 3) --------------------
+    // --- Multi-clip fixture: full load path ----------------------------------
     //
     // A hand-authored two-joint glTF with two named clips of distinct durations,
     // exercising the LINEAR / STEP / CUBICSPLINE channel paths end-to-end. The
@@ -1249,8 +1249,9 @@ mod tests {
         );
         // The stored track holds exactly the two extracted VALUE elements — no
         // tangents — and is marked LINEAR (cubic degraded). Asserting the track
-        // contents directly pins keyframe-1's value (7,7,7) without the wrap that
-        // sampling at t=duration would trigger.
+        // contents directly pins keyframe-1's value (7,7,7); sampling at t=1 is
+        // avoided because the root's STEP translation channel snaps at t=1, which
+        // would compose into the child's world translation and obscure the check.
         let child_translation = &model.clips[1].joints[1].translation;
         assert_eq!(
             child_translation.mode,

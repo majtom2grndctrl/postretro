@@ -1,13 +1,6 @@
-// Game-side animation clip table + per-instance sample-time computation for
-// skinned meshes. The bridge between declared `MeshAnimation` state (component
-// data) and the renderer's per-instance `MeshSampleParams` (what the Phase-1
-// sampler feeds the bone palette).
+// Game-side mesh-animation data logic: clip tables, per-instance sample times,
+// crossfade weights, and smooth-interrupt capture instructions (GPU-free).
 // See: context/lib/scripting.md §10.3 (Mesh Animation) · rendering_pipeline.md §9
-//
-// GPU-free by contract: this is pure data logic (clip name→index resolution,
-// clip-local times, crossfade weights, interrupt capture instructions, the
-// state-elapsed query). No wgpu types; the renderer consumes the emitted
-// `MeshSampleParams`/`CaptureInstruction` and owns the actual pose sampling.
 
 use std::collections::HashMap;
 
@@ -16,7 +9,9 @@ use crate::model::anim::Loop;
 use crate::render::mesh_instances::{
     CaptureInstruction, ClipSample, FadeSource, MeshFade, MeshSampleParams,
 };
-use crate::scripting::components::mesh::{AnimationState, FadeSourceKind, MeshAnimation};
+use crate::scripting::components::mesh::{
+    AnimationState, FadeSourceKind, InterruptedOutgoing, MeshAnimation,
+};
 
 /// One model's clip table: authored clip name → glTF index, plus each clip's
 /// duration by index (parallel to the glTF clip list). Built at level load from
@@ -100,7 +95,7 @@ impl MeshClipTables {
 /// Resolve a state map's `clip_index` fields against a model's clip table.
 /// Returns the names of states whose clip is absent from the model (so the
 /// caller can warn once at level load). A state naming a missing clip keeps
-/// `clip_index = None` (unusable — switching to it warns + no-ops via Phase 1).
+/// `clip_index = None` (unusable — `switch_animation_state` warns + no-ops).
 ///
 /// Pure data logic over the component's state map; the caller (level-load
 /// validation in `main.rs`) writes the mutated component back.
@@ -174,7 +169,7 @@ fn clip_sample(
     })
 }
 
-/// The Phase-1 loop policy for a state: `Wrap` for looping, `Clamp` for one-shot.
+/// The loop policy for a state: `Wrap` for looping, `Clamp` for one-shot.
 fn loop_policy(state: &AnimationState) -> Loop {
     if state.looping {
         Loop::Wrap
@@ -211,14 +206,15 @@ pub(crate) fn animate_entity(
 
     // Is a crossfade active? Only when a previous state is recorded AND its
     // stamp resolved AND the current entry stamp resolved (a still-pending
-    // stamp contributes no fade — Phase 1 collapse semantics).
+    // stamp contributes no fade — the same-tick collapse semantics).
     let fade = active_fade(anim, anim_time, phase, entered_at, current);
 
     // A `"smooth"` interrupt emits a one-time capture instruction when the
-    // entered state's interrupt policy is Smooth AND a fade is active AND the
-    // entered fade source is a snapshot (the resolve pass recorded
-    // `FadeSourceKind::Snapshot`). The capture freezes the in-flight blend.
-    let capture = build_capture(anim, anim_time, phase, current, &fade);
+    // entered state's interrupt policy is Smooth AND a fade is active (the
+    // resolve pass recorded `FadeSourceKind::Snapshot`). The capture freezes the
+    // in-flight blended pose `S` sampled at the FROZEN interrupt instant, so it
+    // is idempotent across re-emission and reconstructable on a late first frame.
+    let capture = build_capture(anim, phase, &fade);
 
     Some(AnimResult {
         sample: MeshSampleParams { primary, fade },
@@ -285,53 +281,87 @@ fn fade_from_source(anim: &MeshAnimation, anim_time: f64, phase: f32) -> Option<
 /// Emit the one-time snapshot-capture instruction for a `"smooth"` interrupt
 /// frame, or `None` when no capture is due. A capture is due when the entered
 /// state recorded a snapshot fade source (`FadeSourceKind::Snapshot`) and a fade
-/// is active: the pass evaluates `blend(outgoing, incoming)` at the interrupt
-/// weight into the store, tagged by the entered (NEW) stamp — idempotent on
-/// re-emission, and a fresh entry that supersedes the prior one.
+/// is active. The pass evaluates the in-flight blended pose `S` into the store,
+/// tagged by the entered (NEW) stamp — idempotent on re-emission, a fresh entry
+/// that supersedes the prior one.
 ///
-/// The capture's OUTGOING references the PRIOR fade's snapshot (tagged by the
-/// `previous_entered_at` stamp), carrying the outgoing clip as the fallback. The
-/// store hit/miss disambiguates the two cases uniformly: if the interrupted fade
-/// was ITSELF a snapshot fade, the store holds that snapshot (HIT → freeze
-/// `blend(prior_snapshot, incoming)`, no discontinuity even over a snapshot
-/// source); if it was a normal clip fade (or the prior capture was culled), the
-/// store MISSES and the pass degrades to `blend(fallback_clip, incoming)`. Either
-/// way the capture equals the pose the entity was showing.
+/// `S` is the exact pose the entity showed at the interrupt instant `t2`
+/// (= `entered_at`), namely `blend(OUT@t2, IN@t2, w_interrupted)`, where the
+/// interrupted fade was OUT→IN:
+/// - `IN` = the state that was current before the switch — now `previous_state` —
+///   sampled at `t2` on its own timeline from `previous_entered_at`,
+/// - `OUT` = the leg the interrupted fade was blending *out of*, carried across
+///   the switch in `interrupted_outgoing` (a clip leg sampled at `t2` on its own
+///   timeline, or a reference to the prior snapshot for a chained interrupt),
+/// - `w_interrupted` = `((t2 - in_stamp) / IN.crossfade_seconds).clamp(0,1)`.
+///
+/// All legs are sampled at the FROZEN `entered_at`, not the moving `anim_time`.
+/// That makes the capture idempotent and recomputable: a frame whose capture was
+/// culled, re-evaluated on the first planned frame, reconstructs the SAME `S`
+/// (it is the interrupt-instant pose by construction, independent of how far the
+/// clock has since advanced). The pass's tag check then no-ops every later
+/// re-emission.
+///
+/// The chained-snapshot case: when `OUT` references a prior snapshot, the store
+/// hit/miss disambiguates uniformly — a HIT freezes `blend(prior_snapshot, IN)`
+/// (no discontinuity even over a snapshot source); a MISS (the prior capture
+/// frame was culled) degrades to the carried fallback clip leg, exactly as the
+/// sampling miss path does.
 fn build_capture(
     anim: &MeshAnimation,
-    anim_time: f64,
     phase: f32,
-    current: &AnimationState,
     fade: &Option<MeshFade>,
 ) -> Option<CaptureInstruction> {
     if anim.fade_source != FadeSourceKind::Snapshot {
         return None;
     }
     // No fade in flight → nothing to capture (window closed or hard cut).
-    let fade = fade.as_ref()?;
-    // The interrupted fade's outgoing clip leg is the fallback; reuse whatever
-    // `fade_from_source` resolved (its fallback or its clip leg) so timelines match.
-    let fallback = match fade.from {
-        FadeSource::Snapshot { fallback, .. } => fallback,
-        FadeSource::Clip(leg) => leg,
+    fade.as_ref()?;
+
+    // The interrupt instant: the entered (NEW) state's frozen entry stamp.
+    let t2 = anim.entered_at?;
+
+    // IN: the interrupted incoming — the state that was current before the switch
+    // (now `previous_state`), sampled at t2 on its own timeline.
+    let prev_name = anim.previous_state.as_ref()?;
+    let prev = anim.states.get(prev_name)?;
+    let in_stamp = anim.previous_entered_at?;
+    let incoming = clip_sample(prev, in_stamp, t2, phase)?;
+
+    // w_interrupted: how far the interrupted OUT→IN fade had progressed at t2,
+    // measured against IN's own crossfade window. Clamped so a finished or
+    // zero-window interrupted fade reads as fully IN.
+    let in_crossfade = crossfade_seconds(prev.crossfade_ms);
+    let weight = if in_crossfade > 0.0 {
+        (((t2 - in_stamp) as f32) / in_crossfade).clamp(0.0, 1.0)
+    } else {
+        // A hard-cut IN window means the entity was showing IN alone — capture it.
+        1.0
     };
-    // The incoming leg is the entered (NEW) state's clip at its entry stamp.
-    let incoming = clip_sample(current, anim.entered_at?, anim_time, phase)?;
-    // The new entry's tag is the entered state's stamp (supersedes the prior one).
-    let new_tag = snapshot_tag(anim.entered_at?);
-    // The outgoing references the PRIOR fade's snapshot (the interrupted state's
-    // own entry stamp): a store HIT chains snapshot→snapshot, a MISS degrades to
-    // the fallback clip — the pass resolves this uniformly via `apply_capture`.
-    let prior_tag = snapshot_tag(anim.previous_entered_at?);
+
+    // OUT: the stashed outgoing source of the interrupted fade, sampled at t2.
+    // A clip leg advances on its own timeline; a prior-snapshot reference carries
+    // the incoming as its fallback so a culled prior capture degrades to IN.
+    let outgoing = match anim.interrupted_outgoing.as_ref() {
+        Some(InterruptedOutgoing::Clip { state, entered_at }) => {
+            let out_state = anim.states.get(state)?;
+            FadeSource::Clip(clip_sample(out_state, *entered_at, t2, phase)?)
+        }
+        Some(InterruptedOutgoing::Snapshot { tag }) => FadeSource::Snapshot {
+            tag: *tag,
+            fallback: incoming,
+        },
+        // No stashed outgoing (e.g. a clip fade whose previous stamp was pending):
+        // degrade OUT to IN so the capture freezes the IN pose — no panic.
+        None => FadeSource::Clip(incoming),
+    };
+
     Some(CaptureInstruction {
         seed: 0, // filled by the collector (per-instance EntityId)
-        tag: new_tag,
-        outgoing: FadeSource::Snapshot {
-            tag: prior_tag,
-            fallback,
-        },
+        tag: snapshot_tag(t2),
+        outgoing,
         incoming,
-        weight: fade.weight,
+        weight,
     })
 }
 
@@ -339,8 +369,8 @@ fn build_capture(
 /// since entry, and (for non-looping states) whether the clip has completed.
 /// A pending stamp reads `elapsed = 0`, `complete = false`; a looping state
 /// never completes; a non-looping state completes exactly when its clip duration
-/// has elapsed. Tests consume this now; the Enemy-AI plan is the named future
-/// consumer — `allow(dead_code)` off the test build until that lands.
+/// has elapsed. Tests consume this now; the future AI state-selection layer is
+/// the named consumer — `allow(dead_code)` off the test build until that lands.
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct StateElapsed {
@@ -460,7 +490,6 @@ mod tests {
 
     #[test]
     fn default_state_samples_its_clip_at_spawn() {
-        let table = ModelClipTable::from_metadata(&meta(&[("idle", 2.0)]));
         let anim = anim_with(
             &[("idle", state("idle", true, 150.0, Some(0)))],
             "idle",
@@ -480,7 +509,6 @@ mod tests {
 
     #[test]
     fn looping_state_adds_phase_one_shot_does_not() {
-        let table = ModelClipTable::from_metadata(&meta(&[("idle", 2.0), ("attack", 1.0)]));
         let looping = anim_with(
             &[("idle", state("idle", true, 0.0, Some(0)))],
             "idle",
@@ -512,7 +540,6 @@ mod tests {
 
     #[test]
     fn crossfade_weight_progresses_over_window_then_clears() {
-        let table = ModelClipTable::from_metadata(&meta(&[("idle", 2.0), ("walk", 2.0)]));
         let mut anim = anim_with(
             &[
                 ("idle", state("idle", true, 0.0, Some(0))),
@@ -550,7 +577,6 @@ mod tests {
     fn outgoing_clip_advances_on_its_own_timeline() {
         // The outgoing leg's time derives from previous_entered_at, NOT the new
         // entry stamp — so it keeps playing as it fades out.
-        let table = ModelClipTable::from_metadata(&meta(&[("idle", 5.0), ("walk", 5.0)]));
         let mut anim = anim_with(
             &[
                 ("idle", state("idle", true, 0.0, Some(0))),
@@ -581,7 +607,6 @@ mod tests {
 
     #[test]
     fn pending_stamp_contributes_no_fade() {
-        let table = ModelClipTable::from_metadata(&meta(&[("idle", 2.0), ("walk", 2.0)]));
         let mut anim = anim_with(
             &[
                 ("idle", state("idle", true, 0.0, Some(0))),
@@ -598,7 +623,10 @@ mod tests {
 
     #[test]
     fn snapshot_fade_carries_tag_and_fallback() {
-        let table = ModelClipTable::from_metadata(&meta(&[("idle", 2.0), ("walk", 2.0)]));
+        // A recorded snapshot fade: current=walk faded from previous_state=idle.
+        // The interrupted incoming (IN) is `previous_state` = idle, so the
+        // runtime fade leg blends FROM the snapshot tagged by the new (walk) entry
+        // stamp, with idle as the degrade fallback.
         let mut anim = anim_with(
             &[
                 ("idle", state("idle", true, 0.0, Some(0))),
@@ -616,17 +644,28 @@ mod tests {
         let FadeSource::Snapshot { tag, fallback } = fade.from else {
             panic!("snapshot fade source expected");
         };
-        assert_eq!(tag, 1.0_f64.to_bits(), "tag is the entered stamp bits");
-        // Fallback is the outgoing idle leg (its own timeline).
+        assert_eq!(
+            tag,
+            1.0_f64.to_bits(),
+            "tag is the entered (walk) stamp bits"
+        );
+        // Fallback is the interrupted-incoming idle leg (its own timeline).
         assert_eq!(fallback.clip_index, 0);
         assert!((fallback.time - 1.05).abs() < EPS);
 
         // And a one-time capture instruction is emitted on the smooth interrupt.
+        // The capture's incoming is the interrupted incoming IN = previous_state
+        // (idle), sampled at the FROZEN entered_at (t2 = 1.0), not the moving clock.
         let capture = result
             .capture
             .expect("smooth snapshot interrupt emits capture");
         assert_eq!(capture.tag, 1.0_f64.to_bits());
-        assert_eq!(capture.incoming.clip_index, 1, "incoming is walk");
+        assert_eq!(
+            capture.incoming.clip_index, 0,
+            "incoming is the interrupted incoming (previous_state = idle)"
+        );
+        // IN sampled at t2 = 1.0 on its own timeline (in_stamp = 0.0) → time 1.0.
+        assert!((capture.incoming.time - 1.0).abs() < EPS);
     }
 
     #[test]
@@ -675,7 +714,6 @@ mod tests {
 
     #[test]
     fn unresolved_current_state_does_not_animate() {
-        let table = ModelClipTable::from_metadata(&meta(&[("idle", 1.0)]));
         let anim = anim_with(
             &[("broken", state("missing", true, 0.0, None))],
             "broken",

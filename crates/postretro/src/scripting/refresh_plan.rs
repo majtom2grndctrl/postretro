@@ -1471,6 +1471,7 @@ mod tests {
             previous_state: Some("idle".into()),
             previous_entered_at: Some(10.0),
             fade_source: FadeSourceKind::Clip,
+            interrupted_outgoing: None,
         };
         let live = MeshComponent {
             model: "decraniated".into(),

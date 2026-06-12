@@ -133,7 +133,7 @@ fn distinct_mesh_models(registry: &crate::scripting::registry::EntityRegistry) -
 /// clip tables, filling each `AnimationState.clip_index` (name → glTF index). A
 /// state naming a clip the model does not carry warns ONCE here (at level load)
 /// and stays `clip_index = None` (unusable: switching to it warns + no-ops,
-/// switching out of it hard-cuts — both via Phase 1). Stateless `prop_mesh`
+/// switching out of it hard-cuts — both handled by the animation state machine). Stateless `prop_mesh`
 /// entities (no animation block) are skipped.
 ///
 /// Runs at level load with a mutable registry, after the model sweep built the
@@ -1531,7 +1531,7 @@ impl ApplicationHandler for App {
                                 &self.mesh_clip_tables,
                                 // Camera eye position — the same value that seeds
                                 // the portal flood-fill — drives the per-instance
-                                // animation time-slicing distance bucket (Task 6).
+                                // animation time-slicing distance bucket.
                                 interp.position,
                             );
                             renderer.set_mesh_draws(self.mesh_render.instances());
@@ -2465,10 +2465,9 @@ impl App {
         // (which can run `setAnimationState`, requiring resolved clip indices).
         if let Some(renderer) = self.renderer.as_mut() {
             // Clear per-level transient mesh-pass state (the `"smooth"`-interrupt
-            // snapshot store — entity seeds are not stable across levels) at the
-            // model-cache install seam, and reset the game-side clip tables before
-            // rebuilding them for this level. Task 6 extends the pass hook to the
-            // palette cache.
+            // snapshot store and the per-entity palette cache — entity seeds are not
+            // stable across levels) at the model-cache install seam, and reset the
+            // game-side clip tables before rebuilding them for this level.
             renderer.clear_mesh_pass_for_level_load();
             self.mesh_clip_tables.clear();
 
@@ -2497,7 +2496,7 @@ impl App {
             // clip table: fill each `AnimationState.clip_index` (name → index). A
             // state naming a clip the model does not carry warns ONCE here and stays
             // `clip_index = None` (unusable — switching to it warns + no-ops, and
-            // switching out of it hard-cuts, both via Phase 1).
+            // switching out of it hard-cuts — both handled by the animation state machine).
             resolve_mesh_entity_clips(
                 &mut self.script_ctx.registry.borrow_mut(),
                 &self.mesh_clip_tables,

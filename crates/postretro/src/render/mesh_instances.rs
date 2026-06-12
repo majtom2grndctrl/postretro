@@ -47,7 +47,7 @@ pub(crate) struct ClipSample {
     /// Index into the model's glTF-order clip list.
     pub(crate) clip_index: usize,
     /// Clip-local time (seconds) to sample at — the GPU layer feeds this to the
-    /// Phase-1 sampler, which applies the wrap/clamp itself.
+    /// pose sampler, which applies the wrap/clamp itself.
     pub(crate) time: f32,
     /// Loop policy: `Wrap` for looping states, `Clamp` for one-shot states.
     pub(crate) loop_policy: Loop,
@@ -75,7 +75,7 @@ pub(crate) enum FadeSource {
 }
 
 /// Per-instance animation sample parameters — what the GPU layer feeds the
-/// Phase-1 sampler this frame. `Copy` plain-old-data; the default
+/// pose sampler this frame. `Copy` plain-old-data; the default
 /// ([`MeshSampleParams::stateless`]) reproduces today's stateless behavior
 /// (first clip, looped, phase-offset time).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -147,7 +147,7 @@ pub(crate) struct MeshInstanceInput {
     /// if the entity crossed an interrupt this frame. Evaluated by the pass into
     /// the per-entity snapshot store before sampling (idempotent by tag).
     pub(crate) capture: Option<CaptureInstruction>,
-    /// Animation time-slicing decision (Task 6): `true` → re-sample this
+    /// Animation time-slicing decision: `true` → re-sample this
     /// instance's pose this frame; `false` → the pass may re-upload its cached
     /// palette run and skip sampling. Decided game-side from the instance's
     /// camera distance bucket + frame-stride phase, forced `true` on a state
@@ -184,19 +184,19 @@ pub(crate) struct PlannedInstance {
     pub(crate) phase_seed: u32,
     /// The instance's model's LOCAL-space AABB (bind-pose bound), stamped from
     /// the renderer's model cache at plan time. The per-light caster cull
-    /// (Task 2/4) transforms this by `transform` and tests it against a light's
+    /// transforms this by `transform` and tests it against a light's
     /// cone/face frustum to decide whether the instance casts into that light's
     /// shadow map. Surfaced CPU-side here; the GPU draw never reads it.
     pub(crate) bounds: Aabb,
     /// Resolved per-frame sample parameters carried verbatim from the collector
-    /// — the GPU layer feeds these to the Phase-1 sampler (single / blended /
+    /// — the GPU layer feeds these to the pose sampler (single / blended /
     /// snapshot-blended), replacing the hardcoded first-clip-at-render-clock path.
     pub(crate) sample: MeshSampleParams,
     /// One-time `"smooth"`-interrupt capture instruction for this frame, if any.
     /// The GPU layer evaluates it into the snapshot store (idempotent by tag)
     /// before sampling this frame's pose.
     pub(crate) capture: Option<CaptureInstruction>,
-    /// Animation time-slicing decision (Task 6), carried verbatim from the
+    /// Animation time-slicing decision, carried verbatim from the
     /// instance input. `true` → the pass samples this instance's pose AND
     /// refreshes its palette cache; `false` → the pass re-uploads the cached
     /// palette run with no sampling. A renderer-side cache MISS upgrades a

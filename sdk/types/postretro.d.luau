@@ -38,7 +38,7 @@ export type AnimationStateDescriptor = {
   clip: string,
   --- Whether the clip loops. Optional; defaults to false.
   loop: boolean?,
-  --- Crossfade duration into this state, in milliseconds. Optional; must be finite and >= 0. Defaults to the engine crossfade default.
+  --- Crossfade duration into this state, in milliseconds. Optional; must be finite and >= 0. Defaults to 150 ms.
   crossfadeMs: number?,
   --- How a fade into this state takes over an in-flight fade. Optional; defaults to "smooth".
   interrupt: InterruptPolicy?,

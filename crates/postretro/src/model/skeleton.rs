@@ -67,7 +67,7 @@ pub struct Skeleton {
 /// glTF's third mode, CUBICSPLINE, is **not** a `Track` variant: the loader
 /// extracts each keyframe's value element (discarding tangents) and stores the
 /// track as `Linear`, degrading cubic to linear. True cubic evaluation is out of
-/// scope (see the M10 plan), so no runtime code ever sees a cubic mode here.
+/// scope (tangent storage and hermite blending are not implemented), so no runtime code ever sees a cubic mode here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Interp {
     /// Linearly interpolate between bracketing keyframes (lerp / slerp).
@@ -130,7 +130,9 @@ pub struct JointTracks {
 pub struct AnimationClip {
     /// Clip name as authored (e.g. the glTF animation name "mixamo.com").
     pub name: String,
-    /// Total clip length in seconds — the latest keyframe time across all tracks.
+    /// Total clip length in seconds — the latest input time across all channels,
+    /// including channels that are subsequently skipped (e.g. malformed CUBICSPLINE
+    /// channels). A skipped channel still advances the duration before being rejected.
     pub duration: f32,
     /// Per-joint TRS tracks, parallel to [`Skeleton::joints`]. Joints with no
     /// channel in the clip carry empty tracks (held at bind pose by the sampler).

@@ -8,13 +8,19 @@
 // node model + value type + envelope; `scope` owns the binding seam; `bind`
 // owns the once-per-program type-check + name-resolution pass.
 
+#[cfg(test)]
+pub(crate) mod alloc_probe;
 pub(crate) mod bind;
+pub(crate) mod eval;
 pub(crate) mod scope;
+pub(crate) mod scopes;
 
 use serde::{Deserialize, Serialize};
 
 pub(crate) use bind::{BindError, BoundNode, BoundProgram, bind};
+pub(crate) use eval::{eval_and_write, eval_value};
 pub(crate) use scope::{BindingScope, ResolvedInput, ResolvedOutput};
+pub(crate) use scopes::{StoreCapability, StoreScope};
 
 /// Current IR wire-format version. Stamped into every [`BakedIr`] envelope.
 ///

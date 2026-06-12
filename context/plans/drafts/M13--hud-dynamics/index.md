@@ -102,8 +102,11 @@ namespace, two execution arms.
 
 ### Task 3: crossing detector
 
-Engine-side watcher registered at load (`onStateCrossing(slot, condition,
-reactions)` primitive in both runtimes, stored in `DataRegistry`). After the
+Engine-side watcher declared at load: `onStateCrossing(slot, condition,
+reactions)` in both runtimes is a builder whose results return through the
+setup-function manifest (the `scripting.md` §12 FFI rule — no side-effect
+registration); the manifest gains a `crossings` field beside `reactions`, and
+`DataRegistry` widens to carry it. After the
 game-logic stage writes slots, the detector compares each watched slot's
 current value to its previous: `below: x` fires on `prev >= x && cur < x`,
 `above: x` on `prev <= x && cur > x` (thresholds are fractions of the
@@ -126,9 +129,13 @@ tracked in the input stage. `flashScreen { color, durationMs }` → engine-owned
 `screen.flash` RGBA slot, written via the engine write path; the drained
 `FlashScreen` command feeds an App-side flash-decay state (start color,
 `durationMs`, start time) that writes the slot each tick at the game-logic
-stage. `showDialog { tree }` / `openMenu { tree }` /
+stage. `showDialog { tree, onCommit? }` / `openMenu { tree }` /
 `closeDialog {}` → PushTree/PopTree commands (consumed by F's stack; inert
-warn until it lands). `showDialog` and `openMenu` are aliases in v1 —
+warn until it lands). `PushTree` carries only the registered tree name plus
+the optional `onCommit` reaction name (fired by a commit on the pushed tree —
+the text-entry plan's consumer); the tree's capture mode and other behavior
+travel on its registered `AnchoredTree` envelope (F's named-tree registry),
+not on the command. `showDialog` and `openMenu` are aliases in v1 —
 identical `PushTree` behavior, both names kept per research-§15 API; semantic
 divergence (e.g. pause policy) is deferred to BIS. SDK constructors in `sdk/lib/ui/reactions.{ts,luau}`,
 typedef emission, docs, and a demo: health-bar panel with styleRanges + a
@@ -153,8 +160,9 @@ Coordinate `descriptor.rs` / `tree.rs` edits with F (see
 - Commands: `scripting/reactions/system_commands.rs` (new) —
   `SystemReactionCommand` enum + queue handle on `ScriptCtx`; drain call in
   the app tick after reaction dispatch.
-- Detector: `scripting/state_crossings.rs` (new), registrations parsed in
-  `data_descriptors.rs` alongside `NamedReaction`.
+- Detector: `scripting/state_crossings.rs` (new); crossing descriptors are
+  parsed in `data_descriptors.rs` alongside `NamedReaction` from the widened
+  setup-manifest return (`{ reactions, crossings }`).
 - `screen.flash` registered like the `player.*` engine-owned slots; an
   App-side flash-decay state (start color, `durationMs`, start time) writes
   the slot each tick at the game-logic stage.
@@ -167,15 +175,15 @@ Coordinate `descriptor.rs` / `tree.rs` edits with F (see
 | range entry bound | `up_to` | `"upTo"` | `upTo` | `upTo` |
 | pulse effect | `Pulse { period_ms }` | `"pulse": { "periodMs" }` | `pulse.periodMs` | `pulse.periodMs` |
 | flash effect | `Flash { duration_ms }` | `"flash": { "durationMs" }` | `flash.durationMs` | `flash.durationMs` |
-| crossing primitive | n/a (DataRegistry entry) | n/a | `onStateCrossing` | `onStateCrossing` |
-| crossing condition | `CrossingCondition::{Below, Above}` | `{ "below" }` / `{ "above" }` | `{ below }` / `{ above }` | `{ below }` / `{ above }` |
+| crossing primitive | `CrossingDescriptor` (DataRegistry) | manifest `"crossings"`: `{ "slot", "below"\|"above", "max"?, "fire": [names] }` | `onStateCrossing` | `onStateCrossing` |
+| crossing condition | `CrossingCondition::{Below, Above}` | `{ "below", "max"? }` / `{ "above", "max"? }` | `{ below, max? }` / `{ above, max? }` | same |
 | styleRanges max | `StyleRanges { max }` | `"max"` | `max` | `max` |
 | styleRanges entries | `StyleRanges { entries }` | `"entries"` | `entries` | `entries` |
 | helpers | command variants | reaction args camelCase | `flashScreen` `playSound` `rumble` `showDialog` `closeDialog` `openMenu` | same |
 | flashScreen args | — | `{ "color", "durationMs" }` | `flashScreen { color, durationMs }` | same |
 | playSound args | — | `{ "sound", "bus"? }` | `playSound { sound, bus? }` | same |
 | rumble args | — | `{ "strong", "weak"?, "durationMs" }` | `rumble { strong, weak?, durationMs }` | same |
-| showDialog/openMenu args | — | `{ "tree" }` | `showDialog { tree }` / `openMenu { tree }` | same |
+| showDialog/openMenu args | — | `{ "tree", "onCommit"? }` / `{ "tree" }` | `showDialog { tree, onCommit? }` / `openMenu { tree }` | same |
 | flash slot | n/a | n/a | `screen.flash` | `screen.flash` |
 
 ## Open questions

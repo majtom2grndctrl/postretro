@@ -33,8 +33,12 @@ write path). Draftable now; orchestrate after both.
   done — `grid` + `focus: "spatial"`, every key a `button` firing
   `appendText`/`backspaceText`; `done` fires `closeDialog` plus a commit
   reaction.
-- Target-slot convention: text entry edits one writable string slot
-  (`ui.textEntry`); openers copy in/out around `showDialog`/commit.
+- Target-slot convention: text entry edits one **engine-declared writable**
+  string slot (`ui.textEntry`) — guaranteed to exist for the engine-shipped
+  keyboard asset, and a valid write target under F's readonly-based gate.
+  Consumers bind it directly; there is no copy-in/copy-out (no mechanism can
+  move slot→slot at fire time without a live VM — a `copyState` command
+  waits for a real two-slot consumer).
 - Demo: a screen with a `text` widget bound to a string slot and a button
   that opens text entry; works typed on hardware keys and via gamepad on the
   on-screen keyboard.
@@ -100,18 +104,27 @@ Round-trip-stable.
 
 ### Task 3: hardware-key routing
 
-While the top stack tree declares an active text-entry target (descriptor
-flag naming the slot), the input stage converts winit key text events into
-Task 1 edit commands against that slot and maps Backspace/Enter/Escape to
-backspace/commit/cancel; all other UI dispatch is unchanged. Keystrokes are
-consumed (never forwarded to game logic) per the capture contract. No IME.
+While the top stack tree declares an active text-entry target
+(`textEntryTarget` on its `AnchoredTree` envelope, naming the slot), the
+input stage enqueues winit key text events as F's `Text(String)` intent
+variant (F Task 1 defines it; this task produces it); the focus engine
+resolves `Text` intents into Task 1 edit commands against the target slot,
+and Backspace into `backspaceText`. Commit/cancel mechanics, pinned here and
+shared with Task 4's keys: **commit** (Enter, or the `done` key) fires the
+opener's `onCommit` reaction (the `showDialog { tree, onCommit? }` arg from
+E) then `PopTree`; **cancel** (Escape / `nav.cancel`) is `PopTree` only,
+edits discarded by the opener simply not acting. All other UI dispatch is
+unchanged; keystrokes are consumed (never forwarded to game logic) per the
+capture contract. No IME.
 
 ### Task 4: keyboard asset + demo + docs
 
-The `keyboard` descriptor JSON asset (registered named tree), the
-`ui.textEntry` slot convention, the demo screen (bound text field + open
-button + commit reaction) exercising both input paths, SDK pattern helpers,
-docs.
+The `keyboard` descriptor JSON asset, registered in F's named-tree registry
+at boot, declaring `captureMode: "capture"` and its `textEntryTarget` on its
+own envelope; its `done` key triggers Task 3's commit path. The demo screen
+binds its text field to `ui.textEntry` directly and opens the keyboard via
+`showDialog { tree: "keyboard", onCommit }`, exercising both input paths.
+SDK pattern helpers, docs.
 
 ## Sequencing
 
@@ -132,9 +145,8 @@ orchestrate immediately after.
   without IME).
 - `repeatOnHold` rides F's repeat timer in the focus engine — no second
   timer.
-- Asset under the engine content tree next to other engine-shipped
-  descriptors (location per where C/F put registered trees); loaded/registered
-  at boot with the built-in trees.
+- Asset under the engine content tree, loaded into F's named-tree registry
+  at boot with the other built-in trees.
 
 ## Boundary inventory
 
@@ -144,7 +156,7 @@ orchestrate immediately after.
 | backspace | `…::BackspaceText` | `"backspaceText"` | `backspaceText` | `backspaceText` |
 | clear | `…::ClearText` | `"clearText"` | `clearText` | `clearText` |
 | repeat flag | `repeat_on_hold` | `"repeatOnHold": { "initialDelayMs", "intervalMs" }` | `repeatOnHold` | `repeatOnHold` |
-| text-entry target | `text_entry_target` (tree-level) | `"textEntryTarget": "<slot>"` | `textEntryTarget` | `textEntryTarget` |
+| text-entry target | `text_entry_target` on `AnchoredTree` | `"textEntryTarget": "<slot>"` (envelope field, beside `captureMode`) | `textEntryTarget` | `textEntryTarget` |
 | entry slot | n/a | n/a | `ui.textEntry` | `ui.textEntry` |
 
 ## Open questions
@@ -152,9 +164,6 @@ orchestrate immediately after.
 - Grapheme segmentation: add the `unicode-segmentation` crate vs. `char`-pop
   floor — decide at implementation against dependency policy; AC accepts the
   floor.
-- Whether `done`'s commit reaction name is a fixed convention or a
-  `showDialog` arg — lean: arg on the opener (`showDialog { tree, onCommit }`
-  is additive to E's shape); confirm when wiring the demo.
 - Whether the on-screen keyboard auto-opens on focus-mode activation of a
   text-entry opener vs. always explicit — ship explicit; auto-open is a BIS
   polish question.

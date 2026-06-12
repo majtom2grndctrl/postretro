@@ -13,8 +13,10 @@ reaction sliders require. Realizes `ui-layer.md` §11–§12, §15 (focus model)
 
 ### In scope
 
-- Nav-intent vocabulary (closed Rust enum, wire names per `ui-layer.md` §16)
-  carried as the `UiIntent` payload through the existing N→N+1 queue.
+- Kinded `UiIntent` payload through the existing N→N+1 queue:
+  `Nav(NavIntent)` (closed enum, wire names per `ui-layer.md` §16),
+  `PointerClick { pos }`, and `Text(String)` (reserved here, produced by the
+  text-entry plan). Pointer *position* is tracked state, not a queued event.
 - Modal stack: snapshot + retained tree go from one gameplay tree to a stack;
   top tree's capture mode wins; `InputFocus::Menu` gets its consumer; E's
   PushTree/PopTree commands operate it.
@@ -63,7 +65,8 @@ reaction sliders require. Realizes `ui-layer.md` §11–§12, §15 (focus model)
   (`"linear"`), wraps when `wrap: true`, and moves nearest-neighbor by
   direction in a `grid` (`"spatial"`); `focusNeighbors` overrides win;
   `initialFocus` selects the starting node; the focus ring draws around the
-  focused node's rect using theme tokens.
+  focused node's rect using theme tokens (ring display may trail a focus
+  change by one frame — the N→N+1 contract).
 - [ ] Holding a nav direction repeats at the container's declared
   delay/interval in dt-accumulated time; releasing stops; confirm/cancel
   fire once per press regardless of hold, absent a per-button
@@ -93,37 +96,58 @@ reaction sliders require. Realizes `ui-layer.md` §11–§12, §15 (focus model)
 
 ### Task 1: nav-intent vocabulary + dispatch payload
 
-Closed Rust `NavIntent` enum (`Up Down Left Right Next Prev Confirm Cancel
-Menu Options`) with wire names `"nav.up"` … `"nav.options"`; input stage maps
-actions (keyboard arrows/enter/escape, D-pad, stick-past-deadzone edge,
-mouse click/position) to intents and enqueues them as the `UiIntent` payload
-in `input/ui_dispatch.rs` (replacing the opaque seq-only marker; keep `seq`).
-Track cursor position from winit `CursorMoved` while the cursor is released.
-TS template-literal type + Luau string union emitted in typedefs.
+`UiIntent` gains a kinded payload (replacing the opaque seq-only marker; keep
+`seq`): `Nav(NavIntent)` | `PointerClick { pos }` | `Text(String)`. The
+closed Rust `NavIntent` enum (`Up Down Left Right Next Prev Confirm Cancel
+Menu Options`) carries wire names `"nav.up"` … `"nav.options"`; the input
+stage maps actions (keyboard arrows/enter/escape, D-pad,
+stick-past-deadzone edge) to `Nav` intents and mouse clicks to
+`PointerClick`, enqueued in `input/ui_dispatch.rs`. `Text` is defined here
+(one queue, one contract) but produced only by the text-entry plan. Cursor
+position is tracked from winit `CursorMoved` while the cursor is released
+and exposed as state — hover never enqueues. TS template-literal type +
+Luau string union emitted in typedefs.
 
 ### Task 2: modal stack
 
 `UiReadSnapshot.gameplay_tree: Option<AnchoredTree>` →
-`trees: Vec<UiTreeEntry>` (descriptor + capture mode + name); retained side
+`trees: Vec<UiTreeEntry>` (name + descriptor + capture mode); retained side
 becomes a Vec of per-tree retained state with per-tree dirty gating; draw
-bottom→top. App-side stack owner consumes E's PushTree/PopTree commands and
-named-tree registrations; engine push/pop API for pause/dialog. Top tree's
-`UiCaptureMode` drives `UiDispatch::set_mode` and `InputFocus::Menu`
-(cursor release). Splash becomes the degenerate one-entry stack.
+bottom→top. This task also ships the **named-tree registry** the wave's other
+plans reference: the app-side stack owner holds `name → AnchoredTree`
+registrations (engine built-ins registered at boot; script registration
+arrives with G1), resolves E's PushTree commands by name (unknown name warns,
+no panic), and exposes an engine push/pop API for pause/dialog. A tree's
+capture mode is declared on its `AnchoredTree` envelope (new wire field
+`captureMode`, default passthrough) so a JSON-authored tree declares its own
+behavior; `UiTreeEntry` carries it from there. Top tree's `UiCaptureMode`
+drives `UiDispatch::set_mode` and `InputFocus::Menu` (cursor release). The
+splash stays on its dedicated fresh path — boot predates the store and game
+logic the stack machinery assumes; the stack is gameplay-UI only.
 
 ### Task 3: hit-test + focus engine
 
 Draw-data build exports a flat list `(node_id, device_rect, z)` for
-focusable/interactive nodes (stable string `id` field added to widget
-descriptors, auto-generated when absent — runtime-only, never serialized,
+focusable/interactive nodes — a renderer→app read handle mirroring the
+app→renderer snapshot: published once per frame with the draw list, consumed
+by the focus engine the following input/game-logic stage (the N→N+1 contract
+applied in reverse). Stable string `id` field added to widget descriptors
+(auto-generated when absent — runtime-only, never serialized,
 preserving the byte-identical round-trip; regenerated deterministically
 from tree position on rebuild; focus restore across structural rebuilds
-relies on authored ids). Focus engine (CPU, renderer-local
-state keyed per tree): policies `linear` (tree order, wrap) and `spatial`
-(nearest node center in the directional half-plane), `focusNeighbors`
-override, `initialFocus`, `restoreOnReturn`. Pointer hits resolve by topmost
-z. Focus ring drawn by the UI pass around the focused rect (theme-token color
-+ spacing inset). Hold-to-repeat timer per container policy, dt-clocked.
+relies on authored ids). The focus engine is **app-side** (frame-order rule:
+it consumes queued intents, fires reactions, and writes slots — game-logic
+work, not presentation; the renderer only displays). It runs in the
+input/game-logic stage against the published rect list and tracked cursor
+position, with state keyed per stack tree: policies `linear` (tree order,
+wrap) and `spatial` (nearest node center in the directional half-plane),
+`focusNeighbors` override, `initialFocus`, `restoreOnReturn`. Pointer hover
+moves focus in pointer mode; `PointerClick` hits resolve by topmost z. The
+focused node id rides the next `UiReadSnapshot`; the UI pass draws the focus
+ring around that node's rect (theme-token color + spacing inset) — ring
+display may trail a focus change by one frame, the same N→N+1 latency every
+UI event carries. The hold-to-repeat timer lives in the focus engine
+(container policy delivered with the rect list), dt-clocked.
 
 ### Task 4: `setState` + interactive widgets
 
@@ -141,9 +165,12 @@ optional tween). All additive to the
 
 ### Task 5: input-mode slot + gamepad polish + demo
 
-Engine-owned `input.mode` enum slot (`pointer` / `focus`) written by the
-input stage on mode transitions (mouse motion vs. nav input; small dt
-debounce so jitter doesn't flap); OS cursor visibility follows it while a
+Engine-owned `input.mode` enum slot (`pointer` / `focus`) written by
+App-side code during the input phase on mode transitions (mouse motion vs.
+nav input; small dt debounce so jitter doesn't flap) — the input subsystem's
+contract output stays the action snapshot; the store write is app
+composition, like the `audio.master` bus consumer. (`input.md` gains a note
+on this at promote time.) OS cursor visibility follows the mode while a
 capturing tree is on the stack. Gamepad stick-as-D-pad edge detection for nav
 (press past deadzone = one intent, repeat handled by Task 3's timer). Demo: a pause-style menu tree (buttons + an `audio.master`-bound slider)
 pushed onto the stack, fully gamepad-navigable; HUD `bar` bound to the health
@@ -167,11 +194,12 @@ E Task 1 and F Task 4 in the same orchestration phase.
 
 ## Rough sketch
 
-- Intents/mode: `input/ui_dispatch.rs` (payload), `input/ui_nav.rs` (new —
-  action→intent mapping, repeat timer, mode detection).
-- Stack: `render/ui/mod.rs` snapshot types; app-side owner near the existing
-  snapshot publisher.
-- Focus/hit-test: `render/ui/focus.rs` (new), rect export from `tree.rs`.
+- Intents/mode: `input/ui_dispatch.rs` (kinded payload), `input/ui_nav.rs`
+  (new — action→intent mapping, mode detection).
+- Stack + named-tree registry: `render/ui/mod.rs` snapshot types; app-side
+  owner near the existing snapshot publisher.
+- Focus engine (app-side, with the repeat timer): `input/ui_focus.rs` (new);
+  rect-list export from `tree.rs`; ring draw in the UI pass.
 - Widgets: `render/ui/descriptor.rs` + `tree.rs`; `tree.rs` is large — if it
   passes ~800-line cohesion judgment poorly at implementation time, split
   widget draw-build into `tree/widgets.rs` first (split-before-extend).
@@ -180,7 +208,9 @@ E Task 1 and F Task 4 in the same orchestration phase.
 
 | Name | Rust | Wire / serde | JS / TS | Luau |
 |---|---|---|---|---|
+| intent payload | `UiIntent::{Nav, PointerClick, Text}` | n/a (engine-internal) | n/a | n/a |
 | nav intent | `NavIntent::Up` … | `"nav.up"` … | `"nav.up"` literal union | string |
+| tree capture mode | `capture_mode` on `AnchoredTree` | `"captureMode": "capture" \| "passthrough"` (default passthrough) | `captureMode` | `captureMode` |
 | focus policy | `FocusPolicy` | `"focus": "linear" \| { … }` | `focus` | `focus` |
 | repeat | `RepeatPolicy { initial_delay_ms, interval_ms }` | `"repeat": { "initialDelayMs", "intervalMs" }` | same | same |
 | neighbors | `focus_neighbors` | `"focusNeighbors"` | `focusNeighbors` | `focusNeighbors` |

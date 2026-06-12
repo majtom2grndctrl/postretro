@@ -52,9 +52,12 @@ pub(crate) struct ViewFeelState {
     /// Current strafe-tilt roll angular velocity (degrees/sec), the spring's
     /// velocity. Carried across frames so the spring settles smoothly.
     pub(crate) tilt_roll_velocity: f32,
-    /// Head-bob oscillator phase (radians). Advanced by distance travelled; held
-    /// when bob is gated off so the cycle resumes in phase rather than popping.
-    pub(crate) bob_phase: f32,
+    /// Vertical head-bob oscillator phase (radians). Advanced by distance
+    /// travelled; held when bob is gated off.
+    pub(crate) bob_vertical_phase: f32,
+    /// Lateral head-bob oscillator phase (radians). Independent from the
+    /// vertical cadence and held when bob is gated off.
+    pub(crate) bob_lateral_phase: f32,
     /// Ambient-sway clock (seconds). Advanced by frame time only.
     pub(crate) sway_clock: f32,
 }
@@ -64,7 +67,8 @@ impl Default for ViewFeelState {
         Self {
             tilt_roll: 0.0,
             tilt_roll_velocity: 0.0,
-            bob_phase: 0.0,
+            bob_vertical_phase: 0.0,
+            bob_lateral_phase: 0.0,
             sway_clock: 0.0,
         }
     }
@@ -184,7 +188,7 @@ pub(crate) fn view_feel_inputs(velocity: Vec3, camera_right: Vec3) -> (f32, f32)
 }
 
 /// Map a [`ViewFeelOutput`] onto the camera basis, producing the arguments the
-/// render chokepoint (`InterpolableState::view_projection`) consumes. Kept pure
+/// render chokepoint (`camera::RenderCamera`) consumes. Kept pure
 /// and separate from the render loop so the angle conversions, channel sums, and
 /// offset basis mapping are unit-testable.
 ///
@@ -229,20 +233,20 @@ fn evaluate_bob(
         return (0.0, 0.0);
     }
 
-    // Advance phase by distance travelled this frame. `frequency` is cycles per
-    // metre, so a full cycle (TAU radians) elapses per `1/frequency` metres:
-    // dphase = distance * frequency * TAU.
+    // Advance each phase by distance travelled this frame. Frequencies are
+    // cycles per metre, so a full cycle elapses per `1/frequency` metres.
     let distance = horizontal_speed * frame_dt;
-    state.bob_phase = (state.bob_phase + distance * bob.frequency * TAU).rem_euclid(TAU);
+    state.bob_vertical_phase =
+        (state.bob_vertical_phase + distance * bob.vertical_frequency * TAU).rem_euclid(TAU);
+    state.bob_lateral_phase =
+        (state.bob_lateral_phase + distance * bob.lateral_frequency * TAU).rem_euclid(TAU);
 
     // Ease in from 0 at the threshold to 1 over BOB_EASE_IN_BAND m/s above it,
     // so amplitude ramps in rather than popping on at the gate.
     let ease = ((horizontal_speed - bob.speed_threshold) / BOB_EASE_IN_BAND).clamp(0.0, 1.0);
 
-    // Lateral runs at half the vertical rate: the classic figure-eight gait
-    // (one lateral sway per two vertical bobs).
-    let vertical = state.bob_phase.sin() * bob.vertical_amplitude * ease;
-    let lateral = (state.bob_phase * 0.5).sin() * bob.lateral_amplitude * ease;
+    let vertical = state.bob_vertical_phase.sin() * bob.vertical_amplitude * ease;
+    let lateral = state.bob_lateral_phase.sin() * bob.lateral_amplitude * ease;
     (vertical, lateral)
 }
 
@@ -411,7 +415,8 @@ mod tests {
 
     fn bob(grounded_only: bool) -> BobParams {
         BobParams {
-            frequency: 1.0, // 1 cycle per metre
+            vertical_frequency: 1.0,
+            lateral_frequency: 0.5,
             vertical_amplitude: 0.1,
             lateral_amplitude: 0.05,
             speed_threshold: 0.5,
@@ -541,15 +546,35 @@ mod tests {
     }
 
     #[test]
+    fn bob_vertical_and_lateral_frequencies_advance_independently() {
+        let params = bob_only(bob(true));
+        let mut state = ViewFeelState::default();
+
+        // At 2 m/s for 0.25 s, distance is 0.5 m. The fixture's vertical
+        // frequency (1 cycle/m) reaches PI while its lateral frequency
+        // (0.5 cycles/m) reaches PI/2.
+        let out = evaluate(&params, 2.0, 0.0, true, &mut state, 0.25, 1.0);
+
+        assert!(approx_eq(out.bob_vertical, 0.0));
+        assert!(approx_eq(out.bob_lateral, 0.05));
+        assert!(approx_eq(state.bob_vertical_phase, std::f32::consts::PI));
+        assert!(approx_eq(
+            state.bob_lateral_phase,
+            std::f32::consts::FRAC_PI_2
+        ));
+    }
+
+    #[test]
     fn bob_holds_phase_and_outputs_zero_when_airborne_and_grounded_only() {
         let params = bob_only(bob(true));
         let mut state = ViewFeelState::default();
         // Advance a few grounded frames to build a non-trivial phase.
         run_frames(&params, 3.0, 0.0, true, &mut state, 1.0 / 60.0, 1.0, 5);
-        let held_phase = state.bob_phase;
+        let held_vertical_phase = state.bob_vertical_phase;
+        let held_lateral_phase = state.bob_lateral_phase;
         assert!(
-            held_phase != 0.0,
-            "phase should have advanced while grounded"
+            held_vertical_phase != 0.0 && held_lateral_phase != 0.0,
+            "phases should have advanced while grounded"
         );
 
         // Airborne: outputs zero AND phase does not advance.
@@ -557,8 +582,9 @@ mod tests {
         assert!(approx_eq(air.bob_vertical, 0.0));
         assert!(approx_eq(air.bob_lateral, 0.0));
         assert!(
-            approx_eq(state.bob_phase, held_phase),
-            "phase must hold airborne"
+            approx_eq(state.bob_vertical_phase, held_vertical_phase)
+                && approx_eq(state.bob_lateral_phase, held_lateral_phase),
+            "phases must hold airborne"
         );
     }
 
@@ -870,7 +896,11 @@ mod tests {
 
         // A zero-dt frame must not advance bob phase, the spring, or the sway clock.
         evaluate(&params, 5.0, 3.0, true, &mut state, 0.0, 1.0);
-        assert!(approx_eq(state.bob_phase, before.bob_phase));
+        assert!(approx_eq(
+            state.bob_vertical_phase,
+            before.bob_vertical_phase
+        ));
+        assert!(approx_eq(state.bob_lateral_phase, before.bob_lateral_phase));
         assert!(approx_eq(state.tilt_roll, before.tilt_roll));
         assert!(approx_eq(
             state.tilt_roll_velocity,

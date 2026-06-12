@@ -13,15 +13,15 @@ export type ComponentKind = "transform" | "light" | "billboard_emitter" | "parti
 
 export type ComponentValue = (Transform & { kind: "transform" }) | (LightComponent & { kind: "light" }) | (BillboardEmitterComponent & { kind: "billboard_emitter" }) | (ParticleState & { kind: "particle_state" }) | (SpriteVisual & { kind: "sprite_visual" }) | (FogVolumeComponent & { kind: "fog_volume" })
 
---- Authored light component preset attached to `EntityTypeDescriptor.components.light`. Field names are snake_case across the FFI.
+--- Authored dynamic-light preset attached to `EntityTypeDescriptor.components.light`. Field names are snake_case on the script surface. Descriptor-spawned lights are runtime-only and do not participate in baked indirect lighting.
 export type LightDescriptor = {
-  --- RGB color in [0, 1].
+  --- Linear RGB light color multiplier. Components are conventionally in [0, 1], though HDR values above 1 are accepted.
   color: Vec3,
-  --- Static intensity scalar.
+  --- Unitless brightness multiplier. Must be finite and ≥ 0; 0 produces no light.
   intensity: number,
-  --- Falloff range (maps onto LightComponent.falloffRange at spawn).
+  --- Falloff range in metres. Must be finite and ≥ 0; 0 gives the light no spatial reach.
   range: number,
-  --- Author hint; descriptor-spawned lights are always treated as dynamic at spawn (baked indirect not supported).
+  --- Authoring hint retained in the descriptor. Descriptor-spawned lights are currently always materialized as dynamic because they cannot contribute to baked lighting.
   is_dynamic: boolean,
 }
 
@@ -54,36 +54,53 @@ export type MeshDescriptor = {
   defaultState: string?,
 }
 
---- Entity-type registration carried on `ModManifest.entities` from `setupMod()`. `components` is an optional sub-object carrying typed component presets.
+--- Entity archetype registered through `ModManifest.entities` from `setupMod()`. `defineEntity()` is a typed identity helper for constructing this object. The descriptor is engine-global and survives level unloads.
 export type EntityTypeDescriptor = {
-  --- Canonical descriptor name. Map placement also requires a placeable component; weapon-only descriptors use this name as equip targets.
+  --- Stable archetype name used by map classname routing and descriptor references. Required for direct map placement and for weapon descriptors referenced by `defaultWeapon`; omit only for archetypes that are never addressed by name.
   canonicalName: string?,
-  --- Canonical weapon descriptor name equipped when this entity is spawned through a player_spawn marker.
+  --- The `canonicalName` of a registered weapon archetype to instantiate and equip when this descriptor is selected by a `player_spawn` marker. Other spawn paths ignore this key.
   defaultWeapon: string?,
-  --- Optional component presets attached at level-load spawn.
+  --- Optional component presets. Direct map placement materializes light, emitter, and movement presets; `player_spawn` does the same and may also equip `defaultWeapon`; weapon presets materialize on the separate wieldable entity created by that route.
   components: EntityTypeComponents?,
 }
 
---- Engine-managed billboard emitter component shape. Carried by `BillboardEmitter` ECS entities and produced by SDK `emitter()`/`smokeEmitter()`/etc.
+--- Engine-managed billboard-particle emitter preset. Field names are snake_case on the script surface. Prefer the SDK `emitter()` builder or a preset such as `smokeEmitter()` when defaults are suitable.
 export type BillboardEmitterComponent = {
-  --- Continuous spawn rate (particles/sec). 0 = inactive.
+  --- Continuous spawn rate in particles/sec. Must be finite and ≥ 0; 0 disables continuous spawning.
   rate: number,
+  --- Optional one-time particle count emitted when the component is materialized. null disables the burst.
   burst: number?,
+  --- Random angular spread around `velocity`, in radians. Must be finite and ≥ 0; 0 emits in one direction.
   spread: number,
+  --- Lifetime of each particle in seconds. Must be finite and > 0.
   lifetime: number,
+  --- Initial particle velocity vector in metres/sec before random spread is applied.
   velocity: Vec3,
+  --- Unitless gravity multiplier using `verticalAcceleration = worldGravity * -buoyancy`: -1 falls at normal gravity, 0 floats, values between -1 and 0 sink more slowly, and positive values rise.
   buoyancy: number,
+  --- Velocity damping coefficient in 1/sec. Must be finite and ≥ 0; 0 preserves velocity apart from buoyancy.
   drag: number,
+  --- Non-empty normalized-lifetime curve of billboard size multipliers. Samples are evenly spaced from spawn to death.
   size_over_lifetime: {number},
+  --- Non-empty normalized-lifetime curve of opacity multipliers. Samples are evenly spaced from spawn to death.
   opacity_over_lifetime: {number},
+  --- RGB multiplier applied to every emitted particle. Components are conventionally in [0, 1], with values above 1 available for HDR tinting.
   color: Vec3,
+  --- Non-empty sprite/material identifier resolved by the billboard renderer.
   sprite: string,
+  --- Initial billboard angular velocity in radians/sec. Positive and negative values rotate in opposite directions.
   spin_rate: number,
+  --- Optional spin-rate tween. null keeps `spin_rate` constant.
   spin_animation: SpinAnimation?,
 }
 
---- Spin tween shape consumed by `setSpinRate`.
-export type SpinAnimation = { duration: number, rate_curve: {number} }
+--- Spin-rate tween carried by a billboard emitter and consumed by `setSpinRate`.
+export type SpinAnimation = {
+  --- Tween duration in seconds. Must be finite and > 0.
+  duration: number,
+  --- Non-empty curve of spin rates in radians/sec, sampled evenly across `duration`.
+  rate_curve: {number},
+}
 
 --- Animation curves attached to a fog volume by the `setFogAnimation` reaction primitive. Four independent channels share `periodMs` / `phase` / `playCount`: `density` modulates volumetric density, `saturation` modulates SH-irradiance saturation, `minBrightness` modulates the scatter brightness floor, and `lightRange` scales how far lights reach inside the fog. At least one curve must be present when `playCount` is finite — otherwise the animation has nothing to settle to. `phase` is normalized into `[0, 1)`. `playCount = null` loops forever; finite counts have the bridge write back each channel's final keyframe as static state on completion. There is no `startActive` flag — fog has no GPU descriptor for the curve, so absence (`null`) is the only inactive state.
 export type FogAnimation = {
@@ -136,8 +153,19 @@ export type FogVolumeEntity = {
   component: FogVolumeComponent,
 }
 
---- Optional bag of component presets carried by `EntityTypeDescriptor.components`.
-export type EntityTypeComponents = { light: LightDescriptor?, emitter: BillboardEmitterComponent?, movement: PlayerMovementDescriptor?, weapon: WeaponDescriptor?, mesh: MeshDescriptor? }
+--- Component presets carried by `EntityTypeDescriptor.components`. Each key is optional and independent; present values are validated when `setupMod()` loads.
+export type EntityTypeComponents = {
+  --- Dynamic-light preset materialized on each spawned instance.
+  light: LightDescriptor?,
+  --- Billboard-particle emitter preset materialized on each spawned instance.
+  emitter: BillboardEmitterComponent?,
+  --- Player movement, collision capsule, and first-person view-feel preset.
+  movement: PlayerMovementDescriptor?,
+  --- Weapon tuning preset. Weapon archetypes are instantiated as wieldable entities when referenced by `defaultWeapon`.
+  weapon: WeaponDescriptor?,
+  --- Animated skinned-mesh preset: model handle plus an optional per-state animation map. A descriptor carrying this is directly map-placeable by canonicalName.
+  mesh: MeshDescriptor?,
+}
 
 export type FireMode =
   --- One shot per press.
@@ -151,11 +179,11 @@ export type ResolutionMode =
 
 --- Authored weapon component preset. Descriptor-owned tuning data; maps do not override these params. Spawn-time player equip materializes a separate wieldable instance entity from this descriptor.
 export type WeaponDescriptor = {
-  --- Base damage payload amount.
+  --- Base damage payload per resolved shot. Must be finite and ≥ 0.
   damage: number,
-  --- Maximum hitscan range in world units.
+  --- Maximum hitscan distance in metres. Must be finite and > 0.
   range: number,
-  --- Inter-shot cooldown in milliseconds.
+  --- Minimum interval between shots in milliseconds. Must be finite and > 0.
   fireRateMs: number,
   --- Semi or automatic input gate.
   fireMode: FireMode,
@@ -163,15 +191,15 @@ export type WeaponDescriptor = {
   resolution: ResolutionMode,
 }
 
---- Authored player-movement component preset. The four core sub-objects (`capsule`/`ground`/`air`/`fall`) are required when `movement` is present; `dash` is optional — its absence disables dash entirely; `crouch` is optional — its absence disables crouch entirely. The data-archetype spawn path materializes the runtime movement component from this.
+--- Authored player-movement preset. `capsule`, `ground`, `air`, and `fall` are required. `dash`, `crouch`, and `viewFeel` are opt-in features; `forgiveness` has engine defaults when omitted. Distances use metres and time uses seconds unless a key is suffixed `Ms`.
 export type PlayerMovementDescriptor = {
-  --- Collision capsule shape.
+  --- Required collision capsule and camera attachment geometry, in metres.
   capsule: CapsuleParams,
-  --- On-ground locomotion parameters.
+  --- Required on-ground speed, acceleration, stepping, and slope limits.
   ground: GroundParams,
-  --- Mid-air control parameters.
+  --- Required jump and mid-air steering parameters.
   air: AirParams,
-  --- Falling parameters.
+  --- Required terminal falling-speed limit.
   fall: FallParams,
   --- Optional dash tuning. When omitted, dash is disabled. When present, all of its fields are required.
   dash: DashParams?,
@@ -189,33 +217,33 @@ export type PlayerMovementDescriptor = {
 
 --- Player collision capsule. `halfHeight` is the cylinder half-height; total capsule height is `2 * (halfHeight + radius)`. `eyeHeight` is the camera attachment point measured upward from the capsule center.
 export type CapsuleParams = {
-  --- Capsule radius in world units. Must be > 0.
+  --- Capsule radius in metres. Must be finite and > 0.
   radius: number,
-  --- Cylinder half-height in world units. Must be > 0.
+  --- Cylinder half-height in metres, excluding the rounded caps. Must be finite and > 0.
   halfHeight: number,
-  --- Camera attachment point measured upward from the capsule center in world units. Must lie in (0, halfHeight + radius].
+  --- Camera attachment point measured upward from the capsule center in metres. Must be finite and lie in (0, halfHeight + radius].
   eyeHeight: number,
 }
 
 --- On-ground locomotion parameters. `maxSlope` is in degrees on the wire and converted to a cosine at materialization.
 export type GroundParams = {
-  --- Walk/run ground speeds in world units/sec.
+  --- Horizontal walk, run, and crouch target speeds in metres/sec.
   speed: SpeedParams,
-  --- Ground acceleration in world units/sec².
+  --- Ground acceleration in metres/sec². Must be finite and ≥ 0.
   accel: number,
-  --- Maximum step-up height in world units.
+  --- Maximum automatic step-up height in metres. Must be finite and ≥ 0; 0 disables stepping.
   stepHeight: number,
-  --- Maximum walkable slope in degrees; must lie in [0, 90].
+  --- Steepest walkable surface angle in degrees. Must be finite and lie in [0, 90].
   maxSlope: number,
 }
 
---- Walk, run, and crouch ground speeds in world units/sec. The movement tick uses `run` while sprint is held, `crouch` while crouched, and `walk` otherwise, applied omnidirectionally. All required and must be finite and ≥ 0.
+--- Walk, run, and crouch ground speeds in metres/sec. The movement tick uses `run` while sprint is held, `crouch` while crouched, and `walk` otherwise, applied omnidirectionally. All required and must be finite and ≥ 0.
 export type SpeedParams = {
-  --- Steady-state ground speed when not sprinting.
+  --- Steady-state horizontal speed in metres/sec when not sprinting. Must be finite and ≥ 0.
   walk: number,
-  --- Steady-state ground speed while the sprint input is held.
+  --- Steady-state horizontal speed in metres/sec while sprint is held. Must be finite and ≥ 0.
   run: number,
-  --- Steady-state ground speed while crouched.
+  --- Steady-state horizontal speed in metres/sec while crouched. Must be finite and ≥ 0.
   crouch: number,
 }
 
@@ -223,35 +251,35 @@ export type SpeedParams = {
 export type AirParams = {
   --- Forward steering authority in [0, 1].
   forwardSteer: number,
-  --- Air acceleration in world units/sec².
+  --- Air acceleration in metres/sec². Must be finite and ≥ 0.
   accel: number,
-  --- Speed cap that air-accel can push toward.
+  --- Horizontal speed cap in metres/sec that air acceleration can push toward. Must be finite and ≥ 0.
   maxControlSpeed: number,
   --- Permit chained jumps on landing without releasing the jump input.
   bunnyHop: boolean,
   --- Additional jumps allowed in air after the initial ground jump. 0 disables air jumps.
   jumps: number,
-  --- Vertical launch velocity applied on jump.
+  --- Upward velocity in metres/sec applied by a ground jump. Must be finite and ≥ 0.
   jumpVelocity: number,
-  --- Maximum upward velocity an air jump can reach; required when `jumps > 0`.
+  --- Air-jump activation threshold in metres/sec: an air jump may fire only while current vertical velocity is ≤ this value, after which velocity is set to `jumpVelocity`. Required when `jumps > 0`; 0 is conventional when air jumps are disabled.
   jumpCeiling: number,
 }
 
 --- Falling parameters.
 export type FallParams = {
-  --- Terminal downward fall speed in world units/sec. Must be > 0.
+  --- Maximum downward fall speed magnitude in metres/sec. Must be finite and > 0.
   terminalVelocity: number,
 }
 
 --- Dash tuning. Optional on `PlayerMovementDescriptor` — when omitted, dash is disabled. When present, all fields are required and validated.
 export type DashParams = {
-  --- Impulse magnitude applied on dash in world units/sec. Must be finite > 0.
+  --- Impulse magnitude applied on dash in metres/sec. Must be finite > 0.
   boostSpeed: number,
   --- Fraction of pre-dash momentum folded into the dash, unitless in [0, 1].
   momentumRetention: number,
   --- In-dash steering authority, unitless in [0, 1].
   steerControl: number,
-  --- Decay rate of the dash impulse in world units/sec². Must be finite and ≥ 0.
+  --- Decay rate of the dash impulse in metres/sec². Must be finite and ≥ 0.
   dashDrag: number,
   --- Cooldown between dashes in milliseconds. Must be finite and ≥ 0.
   cooldownMs: number,
@@ -281,17 +309,19 @@ export type ViewFeelParams = {
   sway: SwayParams?,
 }
 
---- Head-bob tuning. When present on `viewFeel`, all fields are required and validated except `groundedOnly`, which is optional and defaults to true.
+--- Distance-phased head-bob tuning. Vertical and lateral motion have independent cadences. All fields are required except `groundedOnly`, which defaults to true.
 export type BobParams = {
-  --- Bob cycles per metre travelled. Must be finite > 0.
-  frequency: number,
-  --- Vertical bob amplitude. Must be finite and ≥ 0.
+  --- Vertical oscillation cycles per metre travelled. Must be finite and > 0; larger values produce quicker up/down steps.
+  verticalFrequency: number,
+  --- Lateral oscillation cycles per metre travelled. Must be finite and > 0. Half of `verticalFrequency` produces the classic one side-to-side cycle per two vertical cycles.
+  lateralFrequency: number,
+  --- Peak vertical eye displacement in metres. Must be finite and ≥ 0; 0 disables vertical displacement.
   verticalAmplitude: number,
-  --- Lateral bob amplitude. Must be finite and ≥ 0.
+  --- Peak side-to-side eye displacement in metres. Must be finite and ≥ 0; 0 disables lateral displacement.
   lateralAmplitude: number,
-  --- Horizontal speed below which bob is suppressed. Must be finite and ≥ 0.
+  --- Horizontal speed in metres/sec at or below which bob outputs zero and holds both phases. Must be finite and ≥ 0; amplitude eases in over the next 1 m/s.
   speedThreshold: number,
-  --- Whether bob applies only while grounded. Optional; defaults to true.
+  --- When true, airborne bob outputs zero and holds both phases. Optional; defaults to true.
   groundedOnly: boolean?,
 }
 
@@ -299,9 +329,9 @@ export type BobParams = {
 export type TiltParams = {
   --- Maximum tilt angle in degrees. Must be finite in [0, 90].
   maxAngle: number,
-  --- Lateral speed at which the tilt reaches its reference. Must be finite > 0.
+  --- Lateral speed in metres/sec at which tilt reaches `maxAngle`. Must be finite and > 0.
   speedReference: number,
-  --- Spring tension governing how quickly tilt tracks lateral motion. Must be finite > 0.
+  --- Spring natural-frequency tuning in 1/sec. Must be finite and > 0; larger values track direction changes more quickly.
   tension: number,
   --- Whether tilt applies only while grounded. Optional; defaults to true.
   groundedOnly: boolean?,
@@ -313,7 +343,7 @@ export type SwayParams = {
   amplitude: number,
   --- Sway oscillation frequency in Hz. Must be finite > 0.
   frequency: number,
-  --- Scales how much movement speed modulates sway. Must be finite and ≥ 0.
+  --- Additional sway multiplier per metre/sec of horizontal speed. Must be finite and ≥ 0; 0 makes sway independent of movement speed.
   speedScale: number,
   --- Whether sway applies only while grounded. Optional; defaults to false.
   groundedOnly: boolean?,

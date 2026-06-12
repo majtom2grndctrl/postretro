@@ -38,10 +38,11 @@ export const playerEntity = defineEntity({
       },
       viewFeel: {
         bob: {
-          frequency: 0.25,
-          verticalAmplitude: 0.1,
-          lateralAmplitude: 0,
-          speedThreshold: 2.0,
+          verticalFrequency: 0.25,
+          lateralFrequency: 0.125,
+          verticalAmplitude: 0.05,
+          lateralAmplitude: 0.075,
+          speedThreshold: 10.0,
         },
         tilt: {
           speedReference: 10,

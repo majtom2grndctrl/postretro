@@ -83,7 +83,7 @@ impl Camera {
     }
 
     /// Combined view-projection matrix. Used by tests; production rendering
-    /// uses `InterpolableState::view_projection` for interpolated state.
+    /// uses `InterpolableState::render_camera` for interpolated state.
     #[cfg(test)]
     pub fn view_projection(&self) -> Mat4 {
         let view = self.view_matrix();

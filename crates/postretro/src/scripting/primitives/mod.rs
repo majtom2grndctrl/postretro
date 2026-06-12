@@ -60,57 +60,65 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("LightDescriptor")
-        .doc("Authored light component preset attached to `EntityTypeDescriptor.components.light`. Field names are snake_case across the FFI.")
-        .field("color", "Vec3", "RGB color in [0, 1].")
-        .field("intensity", "f32", "Static intensity scalar.")
+        .doc("Authored dynamic-light preset attached to `EntityTypeDescriptor.components.light`. Field names are snake_case on the script surface. Descriptor-spawned lights are runtime-only and do not participate in baked indirect lighting.")
+        .field("color", "Vec3", "Linear RGB light color multiplier. Components are conventionally in [0, 1], though HDR values above 1 are accepted.")
+        .field("intensity", "f32", "Unitless brightness multiplier. Must be finite and ≥ 0; 0 produces no light.")
         .field(
             "range",
             "f32",
-            "Falloff range (maps onto LightComponent.falloffRange at spawn).",
+            "Falloff range in metres. Must be finite and ≥ 0; 0 gives the light no spatial reach.",
         )
         .field(
             "is_dynamic",
             "bool",
-            "Author hint; descriptor-spawned lights are always treated as dynamic at spawn (baked indirect not supported).",
+            "Authoring hint retained in the descriptor. Descriptor-spawned lights are currently always materialized as dynamic because they cannot contribute to baked lighting.",
         )
         .finish();
     registry
         .register_type("EntityTypeDescriptor")
-        .doc("Entity-type registration carried on `ModManifest.entities` from `setupMod()`. `components` is an optional sub-object carrying typed component presets.")
-        .field("canonicalName?", "String", "Canonical descriptor name. Map placement also requires a placeable component; weapon-only descriptors use this name as equip targets.")
+        .doc("Entity archetype registered through `ModManifest.entities` from `setupMod()`. `defineEntity()` is a typed identity helper for constructing this object. The descriptor is engine-global and survives level unloads.")
+        .field("canonicalName?", "String", "Stable archetype name used by map classname routing and descriptor references. Required for direct map placement and for weapon descriptors referenced by `defaultWeapon`; omit only for archetypes that are never addressed by name.")
         .field(
             "defaultWeapon?",
             "String",
-            "Canonical weapon descriptor name equipped when this entity is spawned through a player_spawn marker.",
+            "The `canonicalName` of a registered weapon archetype to instantiate and equip when this descriptor is selected by a `player_spawn` marker. Other spawn paths ignore this key.",
         )
         .field(
             "components?",
             "EntityTypeComponents",
-            "Optional component presets attached at level-load spawn.",
+            "Optional component presets. Direct map placement materializes light, emitter, and movement presets; `player_spawn` does the same and may also equip `defaultWeapon`; weapon presets materialize on the separate wieldable entity created by that route.",
         )
         .finish();
     registry
         .register_type("BillboardEmitterComponent")
-        .doc("Engine-managed billboard emitter component shape. Carried by `BillboardEmitter` ECS entities and produced by SDK `emitter()`/`smokeEmitter()`/etc.")
-        .field("rate", "f32", "Continuous spawn rate (particles/sec). 0 = inactive.")
-        .field("burst", "Option<u32>", "")
-        .field("spread", "f32", "")
-        .field("lifetime", "f32", "")
-        .field("velocity", "Vec3", "")
-        .field("buoyancy", "f32", "")
-        .field("drag", "f32", "")
-        .field("size_over_lifetime", "Vec<f32>", "")
-        .field("opacity_over_lifetime", "Vec<f32>", "")
-        .field("color", "Vec3", "")
-        .field("sprite", "String", "")
-        .field("spin_rate", "f32", "")
-        .field("spin_animation", "Option<SpinAnimation>", "")
+        .doc("Engine-managed billboard-particle emitter preset. Field names are snake_case on the script surface. Prefer the SDK `emitter()` builder or a preset such as `smokeEmitter()` when defaults are suitable.")
+        .field("rate", "f32", "Continuous spawn rate in particles/sec. Must be finite and ≥ 0; 0 disables continuous spawning.")
+        .field("burst", "Option<u32>", "Optional one-time particle count emitted when the component is materialized. null disables the burst.")
+        .field("spread", "f32", "Random angular spread around `velocity`, in radians. Must be finite and ≥ 0; 0 emits in one direction.")
+        .field("lifetime", "f32", "Lifetime of each particle in seconds. Must be finite and > 0.")
+        .field("velocity", "Vec3", "Initial particle velocity vector in metres/sec before random spread is applied.")
+        .field("buoyancy", "f32", "Unitless gravity multiplier using `verticalAcceleration = worldGravity * -buoyancy`: -1 falls at normal gravity, 0 floats, values between -1 and 0 sink more slowly, and positive values rise.")
+        .field("drag", "f32", "Velocity damping coefficient in 1/sec. Must be finite and ≥ 0; 0 preserves velocity apart from buoyancy.")
+        .field("size_over_lifetime", "Vec<f32>", "Non-empty normalized-lifetime curve of billboard size multipliers. Samples are evenly spaced from spawn to death.")
+        .field("opacity_over_lifetime", "Vec<f32>", "Non-empty normalized-lifetime curve of opacity multipliers. Samples are evenly spaced from spawn to death.")
+        .field("color", "Vec3", "RGB multiplier applied to every emitted particle. Components are conventionally in [0, 1], with values above 1 available for HDR tinting.")
+        .field("sprite", "String", "Non-empty sprite/material identifier resolved by the billboard renderer.")
+        .field("spin_rate", "f32", "Initial billboard angular velocity in radians/sec. Positive and negative values rotate in opposite directions.")
+        .field("spin_animation", "Option<SpinAnimation>", "Optional spin-rate tween. null keeps `spin_rate` constant.")
         .finish();
     registry
         .register_type("SpinAnimation")
-        .doc("Spin tween shape consumed by `setSpinRate`.")
-        .field("duration", "f32", "")
-        .field("rate_curve", "Vec<f32>", "")
+        .doc("Spin-rate tween carried by a billboard emitter and consumed by `setSpinRate`.")
+        .field(
+            "duration",
+            "f32",
+            "Tween duration in seconds. Must be finite and > 0.",
+        )
+        .field(
+            "rate_curve",
+            "Vec<f32>",
+            "Non-empty curve of spin rates in radians/sec, sampled evenly across `duration`.",
+        )
         .finish();
     registry
         .register_type("FogAnimation")
@@ -182,11 +190,11 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("EntityTypeComponents")
-        .doc("Optional bag of component presets carried by `EntityTypeDescriptor.components`.")
-        .field("light?", "Option<LightDescriptor>", "")
-        .field("emitter?", "Option<BillboardEmitterComponent>", "")
-        .field("movement?", "Option<PlayerMovementDescriptor>", "")
-        .field("weapon?", "Option<WeaponDescriptor>", "")
+        .doc("Component presets carried by `EntityTypeDescriptor.components`. Each key is optional and independent; present values are validated when `setupMod()` loads.")
+        .field("light?", "Option<LightDescriptor>", "Dynamic-light preset materialized on each spawned instance.")
+        .field("emitter?", "Option<BillboardEmitterComponent>", "Billboard-particle emitter preset materialized on each spawned instance.")
+        .field("movement?", "Option<PlayerMovementDescriptor>", "Player movement, collision capsule, and first-person view-feel preset.")
+        .field("weapon?", "Option<WeaponDescriptor>", "Weapon tuning preset. Weapon archetypes are instantiated as wieldable entities when referenced by `defaultWeapon`.")
         .finish();
     registry
         .register_enum("FireMode")
@@ -203,19 +211,19 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
     registry
         .register_type("WeaponDescriptor")
         .doc("Authored weapon component preset. Descriptor-owned tuning data; maps do not override these params. Spawn-time player equip materializes a separate wieldable instance entity from this descriptor.")
-        .field("damage", "f32", "Base damage payload amount.")
-        .field("range", "f32", "Maximum hitscan range in world units.")
-        .field("fireRateMs", "f32", "Inter-shot cooldown in milliseconds.")
+        .field("damage", "f32", "Base damage payload per resolved shot. Must be finite and ≥ 0.")
+        .field("range", "f32", "Maximum hitscan distance in metres. Must be finite and > 0.")
+        .field("fireRateMs", "f32", "Minimum interval between shots in milliseconds. Must be finite and > 0.")
         .field("fireMode", "FireMode", "Semi or automatic input gate.")
         .field("resolution", "ResolutionMode", "Shot resolution mode. Currently supports hitscan only.")
         .finish();
     registry
         .register_type("PlayerMovementDescriptor")
-        .doc("Authored player-movement component preset. The four core sub-objects (`capsule`/`ground`/`air`/`fall`) are required when `movement` is present; `dash` is optional — its absence disables dash entirely; `crouch` is optional — its absence disables crouch entirely. The data-archetype spawn path materializes the runtime movement component from this.")
-        .field("capsule", "CapsuleParams", "Collision capsule shape.")
-        .field("ground", "GroundParams", "On-ground locomotion parameters.")
-        .field("air", "AirParams", "Mid-air control parameters.")
-        .field("fall", "FallParams", "Falling parameters.")
+        .doc("Authored player-movement preset. `capsule`, `ground`, `air`, and `fall` are required. `dash`, `crouch`, and `viewFeel` are opt-in features; `forgiveness` has engine defaults when omitted. Distances use metres and time uses seconds unless a key is suffixed `Ms`.")
+        .field("capsule", "CapsuleParams", "Required collision capsule and camera attachment geometry, in metres.")
+        .field("ground", "GroundParams", "Required on-ground speed, acceleration, stepping, and slope limits.")
+        .field("air", "AirParams", "Required jump and mid-air steering parameters.")
+        .field("fall", "FallParams", "Required terminal falling-speed limit.")
         .field(
             "dash?",
             "DashParams",
@@ -250,35 +258,35 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
     registry
         .register_type("CapsuleParams")
         .doc("Player collision capsule. `halfHeight` is the cylinder half-height; total capsule height is `2 * (halfHeight + radius)`. `eyeHeight` is the camera attachment point measured upward from the capsule center.")
-        .field("radius", "f32", "Capsule radius in world units. Must be > 0.")
-        .field("halfHeight", "f32", "Cylinder half-height in world units. Must be > 0.")
-        .field("eyeHeight", "f32", "Camera attachment point measured upward from the capsule center in world units. Must lie in (0, halfHeight + radius].")
+        .field("radius", "f32", "Capsule radius in metres. Must be finite and > 0.")
+        .field("halfHeight", "f32", "Cylinder half-height in metres, excluding the rounded caps. Must be finite and > 0.")
+        .field("eyeHeight", "f32", "Camera attachment point measured upward from the capsule center in metres. Must be finite and lie in (0, halfHeight + radius].")
         .finish();
     registry
         .register_type("GroundParams")
         .doc("On-ground locomotion parameters. `maxSlope` is in degrees on the wire and converted to a cosine at materialization.")
-        .field("speed", "SpeedParams", "Walk/run ground speeds in world units/sec.")
-        .field("accel", "f32", "Ground acceleration in world units/sec².")
-        .field("stepHeight", "f32", "Maximum step-up height in world units.")
-        .field("maxSlope", "f32", "Maximum walkable slope in degrees; must lie in [0, 90].")
+        .field("speed", "SpeedParams", "Horizontal walk, run, and crouch target speeds in metres/sec.")
+        .field("accel", "f32", "Ground acceleration in metres/sec². Must be finite and ≥ 0.")
+        .field("stepHeight", "f32", "Maximum automatic step-up height in metres. Must be finite and ≥ 0; 0 disables stepping.")
+        .field("maxSlope", "f32", "Steepest walkable surface angle in degrees. Must be finite and lie in [0, 90].")
         .finish();
     registry
         .register_type("SpeedParams")
-        .doc("Walk, run, and crouch ground speeds in world units/sec. The movement tick uses `run` while sprint is held, `crouch` while crouched, and `walk` otherwise, applied omnidirectionally. All required and must be finite and ≥ 0.")
-        .field("walk", "f32", "Steady-state ground speed when not sprinting.")
-        .field("run", "f32", "Steady-state ground speed while the sprint input is held.")
-        .field("crouch", "f32", "Steady-state ground speed while crouched.")
+        .doc("Walk, run, and crouch ground speeds in metres/sec. The movement tick uses `run` while sprint is held, `crouch` while crouched, and `walk` otherwise, applied omnidirectionally. All required and must be finite and ≥ 0.")
+        .field("walk", "f32", "Steady-state horizontal speed in metres/sec when not sprinting. Must be finite and ≥ 0.")
+        .field("run", "f32", "Steady-state horizontal speed in metres/sec while sprint is held. Must be finite and ≥ 0.")
+        .field("crouch", "f32", "Steady-state horizontal speed in metres/sec while crouched. Must be finite and ≥ 0.")
         .finish();
     registry
         .register_type("AirParams")
         .doc("Mid-air control parameters. `forwardSteer` blends forward steering authority between 0 (pure strafe-only Quake air control) and 1 (full forward authority). `jumpCeiling` is required when `jumps > 0`.")
         .field("forwardSteer", "f32", "Forward steering authority in [0, 1].")
-        .field("accel", "f32", "Air acceleration in world units/sec².")
-        .field("maxControlSpeed", "f32", "Speed cap that air-accel can push toward.")
+        .field("accel", "f32", "Air acceleration in metres/sec². Must be finite and ≥ 0.")
+        .field("maxControlSpeed", "f32", "Horizontal speed cap in metres/sec that air acceleration can push toward. Must be finite and ≥ 0.")
         .field("bunnyHop", "bool", "Permit chained jumps on landing without releasing the jump input.")
         .field("jumps", "u32", "Additional jumps allowed in air after the initial ground jump. 0 disables air jumps.")
-        .field("jumpVelocity", "f32", "Vertical launch velocity applied on jump.")
-        .field("jumpCeiling", "f32", "Maximum upward velocity an air jump can reach; required when `jumps > 0`.")
+        .field("jumpVelocity", "f32", "Upward velocity in metres/sec applied by a ground jump. Must be finite and ≥ 0.")
+        .field("jumpCeiling", "f32", "Air-jump activation threshold in metres/sec: an air jump may fire only while current vertical velocity is ≤ this value, after which velocity is set to `jumpVelocity`. Required when `jumps > 0`; 0 is conventional when air jumps are disabled.")
         .finish();
     registry
         .register_type("FallParams")
@@ -286,16 +294,16 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field(
             "terminalVelocity",
             "f32",
-            "Terminal downward fall speed in world units/sec. Must be > 0.",
+            "Maximum downward fall speed magnitude in metres/sec. Must be finite and > 0.",
         )
         .finish();
     registry
         .register_type("DashParams")
         .doc("Dash tuning. Optional on `PlayerMovementDescriptor` — when omitted, dash is disabled. When present, all fields are required and validated.")
-        .field("boostSpeed", "f32", "Impulse magnitude applied on dash in world units/sec. Must be finite > 0.")
+        .field("boostSpeed", "f32", "Impulse magnitude applied on dash in metres/sec. Must be finite > 0.")
         .field("momentumRetention", "f32", "Fraction of pre-dash momentum folded into the dash, unitless in [0, 1].")
         .field("steerControl", "f32", "In-dash steering authority, unitless in [0, 1].")
-        .field("dashDrag", "f32", "Decay rate of the dash impulse in world units/sec². Must be finite and ≥ 0.")
+        .field("dashDrag", "f32", "Decay rate of the dash impulse in metres/sec². Must be finite and ≥ 0.")
         .field("cooldownMs", "f32", "Cooldown between dashes in milliseconds. Must be finite and ≥ 0.")
         .field("airDashes", "u32", "Number of air dashes allowed before landing.")
         .field("preserveVertical", "bool", "Whether the dash preserves the pre-dash vertical velocity.")
@@ -316,19 +324,20 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("BobParams")
-        .doc("Head-bob tuning. When present on `viewFeel`, all fields are required and validated except `groundedOnly`, which is optional and defaults to true.")
-        .field("frequency", "f32", "Bob cycles per metre travelled. Must be finite > 0.")
-        .field("verticalAmplitude", "f32", "Vertical bob amplitude. Must be finite and ≥ 0.")
-        .field("lateralAmplitude", "f32", "Lateral bob amplitude. Must be finite and ≥ 0.")
-        .field("speedThreshold", "f32", "Horizontal speed below which bob is suppressed. Must be finite and ≥ 0.")
-        .field("groundedOnly?", "bool", "Whether bob applies only while grounded. Optional; defaults to true.")
+        .doc("Distance-phased head-bob tuning. Vertical and lateral motion have independent cadences. All fields are required except `groundedOnly`, which defaults to true.")
+        .field("verticalFrequency", "f32", "Vertical oscillation cycles per metre travelled. Must be finite and > 0; larger values produce quicker up/down steps.")
+        .field("lateralFrequency", "f32", "Lateral oscillation cycles per metre travelled. Must be finite and > 0. Half of `verticalFrequency` produces the classic one side-to-side cycle per two vertical cycles.")
+        .field("verticalAmplitude", "f32", "Peak vertical eye displacement in metres. Must be finite and ≥ 0; 0 disables vertical displacement.")
+        .field("lateralAmplitude", "f32", "Peak side-to-side eye displacement in metres. Must be finite and ≥ 0; 0 disables lateral displacement.")
+        .field("speedThreshold", "f32", "Horizontal speed in metres/sec at or below which bob outputs zero and holds both phases. Must be finite and ≥ 0; amplitude eases in over the next 1 m/s.")
+        .field("groundedOnly?", "bool", "When true, airborne bob outputs zero and holds both phases. Optional; defaults to true.")
         .finish();
     registry
         .register_type("TiltParams")
         .doc("Strafe-tilt tuning. When present on `viewFeel`, all fields are required and validated except `groundedOnly`, which is optional and defaults to true.")
         .field("maxAngle", "f32", "Maximum tilt angle in degrees. Must be finite in [0, 90].")
-        .field("speedReference", "f32", "Lateral speed at which the tilt reaches its reference. Must be finite > 0.")
-        .field("tension", "f32", "Spring tension governing how quickly tilt tracks lateral motion. Must be finite > 0.")
+        .field("speedReference", "f32", "Lateral speed in metres/sec at which tilt reaches `maxAngle`. Must be finite and > 0.")
+        .field("tension", "f32", "Spring natural-frequency tuning in 1/sec. Must be finite and > 0; larger values track direction changes more quickly.")
         .field("groundedOnly?", "bool", "Whether tilt applies only while grounded. Optional; defaults to true.")
         .finish();
     registry
@@ -336,7 +345,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .doc("Ambient-sway tuning. When present on `viewFeel`, all fields are required and validated except `groundedOnly`, which is optional and defaults to false.")
         .field("amplitude", "f32", "Sway amplitude in degrees. Must be finite and ≥ 0.")
         .field("frequency", "f32", "Sway oscillation frequency in Hz. Must be finite > 0.")
-        .field("speedScale", "f32", "Scales how much movement speed modulates sway. Must be finite and ≥ 0.")
+        .field("speedScale", "f32", "Additional sway multiplier per metre/sec of horizontal speed. Must be finite and ≥ 0; 0 makes sway independent of movement speed.")
         .field("groundedOnly?", "bool", "Whether sway applies only while grounded. Optional; defaults to false.")
         .finish();
     registry

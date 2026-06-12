@@ -390,12 +390,14 @@ pub(crate) struct ViewFeelParams {
 
 /// Head-bob tuning. When present on `viewFeel`, all fields are required and
 /// validated except `grounded_only`, which is optional and defaults to `true`.
-/// Field names are camelCase on the wire (`frequency`, `verticalAmplitude`, …)
-/// and snake_case in Rust.
+/// Field names are camelCase on the wire (`verticalFrequency`,
+/// `lateralFrequency`, `verticalAmplitude`, …) and snake_case in Rust.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub(crate) struct BobParams {
-    /// Bob cycles per metre travelled. Must be finite > 0.
-    pub(crate) frequency: f32,
+    /// Vertical bob cycles per metre travelled. Must be finite > 0.
+    pub(crate) vertical_frequency: f32,
+    /// Lateral bob cycles per metre travelled. Must be finite > 0.
+    pub(crate) lateral_frequency: f32,
     /// Vertical bob amplitude. Must be finite ≥ 0.
     pub(crate) vertical_amplitude: f32,
     /// Lateral bob amplitude. Must be finite ≥ 0.
@@ -1080,9 +1082,13 @@ fn view_feel_params_from_js<'js>(obj: &Object<'js>) -> Result<ViewFeelParams, De
 }
 
 fn bob_params_from_js<'js>(obj: &Object<'js>) -> Result<BobParams, DescriptorError> {
-    let frequency = validate_positive_finite(
-        get_required_f32_js(obj, "frequency")?,
-        "movement.viewFeel.bob.frequency",
+    let vertical_frequency = validate_positive_finite(
+        get_required_f32_js(obj, "verticalFrequency")?,
+        "movement.viewFeel.bob.verticalFrequency",
+    )?;
+    let lateral_frequency = validate_positive_finite(
+        get_required_f32_js(obj, "lateralFrequency")?,
+        "movement.viewFeel.bob.lateralFrequency",
     )?;
     let vertical_amplitude = validate_non_negative_finite(
         get_required_f32_js(obj, "verticalAmplitude")?,
@@ -1099,7 +1105,8 @@ fn bob_params_from_js<'js>(obj: &Object<'js>) -> Result<BobParams, DescriptorErr
     let grounded_only =
         get_optional_bool_js(obj, "groundedOnly")?.unwrap_or(BobParams::DEFAULT_GROUNDED_ONLY);
     Ok(BobParams {
-        frequency,
+        vertical_frequency,
+        lateral_frequency,
         vertical_amplitude,
         lateral_amplitude,
         speed_threshold,
@@ -1960,9 +1967,13 @@ fn read_optional_subtable_lua(
 }
 
 fn bob_params_from_lua(table: &Table) -> Result<BobParams, DescriptorError> {
-    let frequency = validate_positive_finite(
-        get_required_f32_lua(table, "frequency")?,
-        "movement.viewFeel.bob.frequency",
+    let vertical_frequency = validate_positive_finite(
+        get_required_f32_lua(table, "verticalFrequency")?,
+        "movement.viewFeel.bob.verticalFrequency",
+    )?;
+    let lateral_frequency = validate_positive_finite(
+        get_required_f32_lua(table, "lateralFrequency")?,
+        "movement.viewFeel.bob.lateralFrequency",
     )?;
     let vertical_amplitude = validate_non_negative_finite(
         get_required_f32_lua(table, "verticalAmplitude")?,
@@ -1979,7 +1990,8 @@ fn bob_params_from_lua(table: &Table) -> Result<BobParams, DescriptorError> {
     let grounded_only =
         get_optional_bool_lua(table, "groundedOnly")?.unwrap_or(BobParams::DEFAULT_GROUNDED_ONLY);
     Ok(BobParams {
-        frequency,
+        vertical_frequency,
+        lateral_frequency,
         vertical_amplitude,
         lateral_amplitude,
         speed_threshold,
@@ -4014,7 +4026,7 @@ mod tests {
         )
     }
 
-    const JS_BOB_FULL: &str = r#"{ frequency: 1.8, verticalAmplitude: 0.06, lateralAmplitude: 0.04, speedThreshold: 0.5 }"#;
+    const JS_BOB_FULL: &str = r#"{ verticalFrequency: 1.8, lateralFrequency: 0.9, verticalAmplitude: 0.06, lateralAmplitude: 0.04, speedThreshold: 0.5 }"#;
     const JS_TILT_FULL: &str = r#"{ maxAngle: 3.0, speedReference: 8.0, tension: 12.0 }"#;
     const JS_SWAY_FULL: &str = r#"{ amplitude: 0.5, frequency: 0.4, speedScale: 0.2 }"#;
 
@@ -4077,7 +4089,8 @@ mod tests {
         let d = eval_js(&src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
         let vf = d.movement.unwrap().view_feel.expect("viewFeel present");
         let bob = vf.bob.expect("bob present");
-        assert_eq!(bob.frequency, 1.8);
+        assert_eq!(bob.vertical_frequency, 1.8);
+        assert_eq!(bob.lateral_frequency, 0.9);
         assert_eq!(bob.vertical_amplitude, 0.06);
         assert_eq!(bob.lateral_amplitude, 0.04);
         assert_eq!(bob.speed_threshold, 0.5);
@@ -4098,7 +4111,7 @@ mod tests {
     fn lua_movement_view_feel_full_shape_parses_with_grounded_only_defaults() {
         let src = lua_movement_with_view_feel(
             r#"{
-                bob = { frequency = 1.8, verticalAmplitude = 0.06, lateralAmplitude = 0.04, speedThreshold = 0.5 },
+                bob = { verticalFrequency = 1.8, lateralFrequency = 0.9, verticalAmplitude = 0.06, lateralAmplitude = 0.04, speedThreshold = 0.5 },
                 tilt = { maxAngle = 3.0, speedReference = 8.0, tension = 12.0 },
                 sway = { amplitude = 0.5, frequency = 0.4, speedScale = 0.2 }
             }"#,
@@ -4106,7 +4119,8 @@ mod tests {
         let d = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap());
         let vf = d.movement.unwrap().view_feel.expect("viewFeel present");
         let bob = vf.bob.expect("bob present");
-        assert_eq!(bob.frequency, 1.8);
+        assert_eq!(bob.vertical_frequency, 1.8);
+        assert_eq!(bob.lateral_frequency, 0.9);
         assert!(bob.grounded_only, "bob groundedOnly defaults true");
         let tilt = vf.tilt.expect("tilt present");
         assert_eq!(tilt.tension, 12.0);
@@ -4120,7 +4134,7 @@ mod tests {
 
     #[test]
     fn js_movement_view_feel_grounded_only_explicit_overrides_default() {
-        let body = r#"{ bob: { frequency: 1.8, verticalAmplitude: 0.06, lateralAmplitude: 0.04, speedThreshold: 0.5, groundedOnly: false }, sway: { amplitude: 0.5, frequency: 0.4, speedScale: 0.2, groundedOnly: true } }"#;
+        let body = r#"{ bob: { verticalFrequency: 1.8, lateralFrequency: 0.9, verticalAmplitude: 0.06, lateralAmplitude: 0.04, speedThreshold: 0.5, groundedOnly: false }, sway: { amplitude: 0.5, frequency: 0.4, speedScale: 0.2, groundedOnly: true } }"#;
         let src = js_movement_with_view_feel(body);
         let d = eval_js(&src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
         let vf = d.movement.unwrap().view_feel.unwrap();
@@ -4137,7 +4151,7 @@ mod tests {
     #[test]
     fn lua_movement_view_feel_grounded_only_explicit_overrides_default() {
         let src = lua_movement_with_view_feel(
-            r#"{ bob = { frequency = 1.8, verticalAmplitude = 0.06, lateralAmplitude = 0.04, speedThreshold = 0.5, groundedOnly = false }, sway = { amplitude = 0.5, frequency = 0.4, speedScale = 0.2, groundedOnly = true } }"#,
+            r#"{ bob = { verticalFrequency = 1.8, lateralFrequency = 0.9, verticalAmplitude = 0.06, lateralAmplitude = 0.04, speedThreshold = 0.5, groundedOnly = false }, sway = { amplitude = 0.5, frequency = 0.4, speedScale = 0.2, groundedOnly = true } }"#,
         );
         let d = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap());
         let vf = d.movement.unwrap().view_feel.unwrap();
@@ -4147,7 +4161,7 @@ mod tests {
 
     #[test]
     fn js_movement_view_feel_grounded_only_non_boolean_is_rejected() {
-        let body = r#"{ bob: { frequency: 1.8, verticalAmplitude: 0.06, lateralAmplitude: 0.04, speedThreshold: 0.5, groundedOnly: "yes" } }"#;
+        let body = r#"{ bob: { verticalFrequency: 1.8, lateralFrequency: 0.9, verticalAmplitude: 0.06, lateralAmplitude: 0.04, speedThreshold: 0.5, groundedOnly: "yes" } }"#;
         let src = js_movement_with_view_feel(body);
         let err = eval_js(&src, |ctx, v| {
             entity_descriptor_from_js(ctx, v).unwrap_err()
@@ -4158,7 +4172,7 @@ mod tests {
     #[test]
     fn lua_movement_view_feel_grounded_only_non_boolean_is_rejected() {
         let src = lua_movement_with_view_feel(
-            r#"{ bob = { frequency = 1.8, verticalAmplitude = 0.06, lateralAmplitude = 0.04, speedThreshold = 0.5, groundedOnly = "yes" } }"#,
+            r#"{ bob = { verticalFrequency = 1.8, lateralFrequency = 0.9, verticalAmplitude = 0.06, lateralAmplitude = 0.04, speedThreshold = 0.5, groundedOnly = "yes" } }"#,
         );
         let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
         assert!(matches!(err, DescriptorError::InvalidShape { .. }));
@@ -4168,14 +4182,18 @@ mod tests {
 
     #[test]
     fn js_movement_view_feel_bob_missing_field_reports_missing_field() {
-        // frequency omitted from bob.
-        let body =
-            r#"{ bob: { verticalAmplitude: 0.06, lateralAmplitude: 0.04, speedThreshold: 0.5 } }"#;
+        // verticalFrequency omitted from bob.
+        let body = r#"{ bob: { lateralFrequency: 0.9, verticalAmplitude: 0.06, lateralAmplitude: 0.04, speedThreshold: 0.5 } }"#;
         let src = js_movement_with_view_feel(body);
         let err = eval_js(&src, |ctx, v| {
             entity_descriptor_from_js(ctx, v).unwrap_err()
         });
-        assert_eq!(err, DescriptorError::MissingField { field: "frequency" });
+        assert_eq!(
+            err,
+            DescriptorError::MissingField {
+                field: "verticalFrequency"
+            }
+        );
     }
 
     #[test]
@@ -4207,8 +4225,8 @@ mod tests {
     // tilt.maxAngle [0,90] range, symmetric across JS and Luau.
 
     #[test]
-    fn js_movement_view_feel_bob_frequency_zero_is_rejected() {
-        let body = r#"{ bob: { frequency: 0.0, verticalAmplitude: 0.06, lateralAmplitude: 0.04, speedThreshold: 0.5 } }"#;
+    fn js_movement_view_feel_bob_vertical_frequency_zero_is_rejected() {
+        let body = r#"{ bob: { verticalFrequency: 0.0, lateralFrequency: 0.9, verticalAmplitude: 0.06, lateralAmplitude: 0.04, speedThreshold: 0.5 } }"#;
         let src = js_movement_with_view_feel(body);
         let err = eval_js(&src, |ctx, v| {
             entity_descriptor_from_js(ctx, v).unwrap_err()
@@ -4218,7 +4236,7 @@ mod tests {
 
     #[test]
     fn js_movement_view_feel_bob_negative_amplitude_is_rejected() {
-        let body = r#"{ bob: { frequency: 1.8, verticalAmplitude: -0.01, lateralAmplitude: 0.04, speedThreshold: 0.5 } }"#;
+        let body = r#"{ bob: { verticalFrequency: 1.8, lateralFrequency: 0.9, verticalAmplitude: -0.01, lateralAmplitude: 0.04, speedThreshold: 0.5 } }"#;
         let src = js_movement_with_view_feel(body);
         let err = eval_js(&src, |ctx, v| {
             entity_descriptor_from_js(ctx, v).unwrap_err()
@@ -4229,7 +4247,7 @@ mod tests {
     #[test]
     fn js_movement_view_feel_bob_zero_amplitude_is_accepted() {
         // Amplitudes and speedThreshold permit 0 (non-negative finite).
-        let body = r#"{ bob: { frequency: 1.8, verticalAmplitude: 0.0, lateralAmplitude: 0.0, speedThreshold: 0.0 } }"#;
+        let body = r#"{ bob: { verticalFrequency: 1.8, lateralFrequency: 0.9, verticalAmplitude: 0.0, lateralAmplitude: 0.0, speedThreshold: 0.0 } }"#;
         let src = js_movement_with_view_feel(body);
         let d = eval_js(&src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
         let bob = d.movement.unwrap().view_feel.unwrap().bob.unwrap();
@@ -4315,17 +4333,26 @@ mod tests {
 
     #[test]
     fn lua_movement_view_feel_bob_missing_field_reports_missing_field() {
-        // speedThreshold omitted from bob.
+        // lateralFrequency omitted from bob.
         let src = lua_movement_with_view_feel(
-            r#"{ bob = { frequency = 1.8, verticalAmplitude = 0.06, lateralAmplitude = 0.04 } }"#,
+            r#"{ bob = { verticalFrequency = 1.8, verticalAmplitude = 0.06, lateralAmplitude = 0.04, speedThreshold = 0.5 } }"#,
         );
         let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
         assert_eq!(
             err,
             DescriptorError::MissingField {
-                field: "speedThreshold",
+                field: "lateralFrequency",
             }
         );
+    }
+
+    #[test]
+    fn lua_movement_view_feel_bob_lateral_frequency_zero_is_rejected() {
+        let src = lua_movement_with_view_feel(
+            r#"{ bob = { verticalFrequency = 1.8, lateralFrequency = 0.0, verticalAmplitude = 0.06, lateralAmplitude = 0.04, speedThreshold = 0.5 } }"#,
+        );
+        let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
     }
 
     // Wrong-typed sub-object is rejected (a present sub-object must be an object/table).

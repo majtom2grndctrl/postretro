@@ -1847,7 +1847,8 @@ mod tests {
         let mut desc = canonical_descriptor();
         let view_feel = ViewFeelParams {
             bob: Some(BobParams {
-                frequency: 1.8,
+                vertical_frequency: 1.8,
+                lateral_frequency: 0.9,
                 vertical_amplitude: 0.06,
                 lateral_amplitude: 0.04,
                 speed_threshold: 0.5,

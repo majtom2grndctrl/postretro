@@ -18,9 +18,33 @@ pub struct InterpolableState {
     pub position: Vec3,
 }
 
+/// Camera values assembled from one render-state snapshot and one set of
+/// render-only view effects. Consumers must use both fields together so
+/// visibility and GPU rendering share the same eye.
+#[derive(Debug, Clone, Copy)]
+pub struct RenderCamera {
+    pub eye_position: Vec3,
+    pub view_projection: Mat4,
+}
+
 impl InterpolableState {
     pub fn new(position: Vec3) -> Self {
         Self { position }
+    }
+
+    /// Effective camera origin for render-stage consumers. View-feel offsets
+    /// must move visibility, lighting, and the view matrix together; otherwise
+    /// portal traversal can use an apex on the opposite side of a portal from
+    /// the eye that actually rendered the frame.
+    ///
+    /// Keep the exact-zero branch aligned with [`Self::view_matrix`] so the
+    /// no-view-feel path returns the original position without arithmetic.
+    pub fn eye_position(&self, eye_offset: Vec3) -> Vec3 {
+        if eye_offset == Vec3::ZERO {
+            self.position
+        } else {
+            self.position + eye_offset
+        }
     }
 
     /// Linearly interpolate position between two tick-state snapshots.
@@ -66,19 +90,23 @@ impl InterpolableState {
         let up = glam::Quat::from_axis_angle(look_dir, roll) * Vec3::Y;
         // Translate the eye, keeping the look direction unchanged by shifting
         // the target by the same offset.
-        let eye = self.position + eye_offset;
+        let eye = self.eye_position(eye_offset);
         let target = eye + look_dir;
         Mat4::look_at_rh(eye, target, up)
     }
 
-    pub fn view_projection(
+    /// Assemble the matrix and effective eye used by the entire render stage.
+    /// Keeping these values in one return type prevents visibility or lighting
+    /// call sites from accidentally falling back to the unoffset tick position.
+    pub fn render_camera(
         &self,
         aspect: f32,
         yaw: f32,
         pitch: f32,
         roll: f32,
         eye_offset: Vec3,
-    ) -> Mat4 {
+    ) -> RenderCamera {
+        let eye_position = self.eye_position(eye_offset);
         let view = self.view_matrix(yaw, pitch, roll, eye_offset);
 
         // Clamp aspect to avoid degenerate projection (near-zero aspect produces
@@ -87,7 +115,10 @@ impl InterpolableState {
         let vfov = 2.0 * ((camera::HFOV / 2.0).tan() / safe_aspect).atan();
         let projection = Mat4::perspective_rh(vfov, safe_aspect, camera::NEAR, camera::FAR);
 
-        projection * view
+        RenderCamera {
+            eye_position,
+            view_projection: projection * view,
+        }
     }
 }
 
@@ -571,7 +602,9 @@ mod tests {
     #[test]
     fn view_projection_produces_finite_matrix() {
         let state = InterpolableState::new(Vec3::new(0.0, 200.0, 500.0));
-        let vp = state.view_projection(16.0 / 9.0, 0.0, 0.0, 0.0, Vec3::ZERO);
+        let vp = state
+            .render_camera(16.0 / 9.0, 0.0, 0.0, 0.0, Vec3::ZERO)
+            .view_projection;
         for (i, val) in vp.to_cols_array().iter().enumerate() {
             assert!(val.is_finite(), "view_proj[{i}] is not finite: {val}");
         }
@@ -580,9 +613,53 @@ mod tests {
     #[test]
     fn view_projection_handles_zero_aspect_without_nan() {
         let state = InterpolableState::new(Vec3::ZERO);
-        let vp = state.view_projection(0.0, 0.0, 0.0, 0.0, Vec3::ZERO);
+        let vp = state
+            .render_camera(0.0, 0.0, 0.0, 0.0, Vec3::ZERO)
+            .view_projection;
         for (i, val) in vp.to_cols_array().iter().enumerate() {
             assert!(!val.is_nan(), "view_proj[{i}] with zero aspect is NaN");
+        }
+    }
+
+    // Regression: head bob moved the view matrix but left portal visibility at
+    // the unoffset tick position, causing transient clear-color geometry holes.
+    #[test]
+    fn render_camera_assembles_view_projection_and_effective_eye_from_same_offset() {
+        let state = InterpolableState::new(Vec3::new(3.0, 4.0, 5.0));
+        let offset = Vec3::new(-0.5, 0.25, 0.75);
+        let aspect = 16.0 / 9.0;
+        let yaw: f32 = 0.7;
+        let pitch: f32 = -0.3;
+        let roll: f32 = 0.2;
+
+        let camera = state.render_camera(aspect, yaw, pitch, roll, offset);
+
+        let look_dir = Vec3::new(
+            -yaw.sin() * pitch.cos(),
+            pitch.sin(),
+            -yaw.cos() * pitch.cos(),
+        );
+        let up = glam::Quat::from_axis_angle(look_dir, roll) * Vec3::Y;
+        let expected_eye = state.position + offset;
+        let view = Mat4::look_at_rh(expected_eye, expected_eye + look_dir, up);
+        let vfov = 2.0 * ((crate::camera::HFOV / 2.0).tan() / aspect).atan();
+        let projection =
+            Mat4::perspective_rh(vfov, aspect, crate::camera::NEAR, crate::camera::FAR);
+
+        assert_eq!(camera.eye_position, expected_eye);
+        assert_eq!(
+            camera.view_projection.to_cols_array(),
+            (projection * view).to_cols_array(),
+        );
+    }
+
+    #[test]
+    fn eye_position_zero_offset_returns_original_position_bit_exact() {
+        let state = InterpolableState::new(Vec3::new(-0.0, 4.0, -5.0));
+        let actual = state.eye_position(Vec3::ZERO);
+
+        for (actual, expected) in actual.to_array().into_iter().zip(state.position.to_array()) {
+            assert_eq!(actual.to_bits(), expected.to_bits());
         }
     }
 
@@ -624,8 +701,12 @@ mod tests {
 
         // Two calls with the no-op effect args must be identical, and the
         // projection composition must not perturb the bit-exact view.
-        let a = state.view_projection(aspect, yaw, pitch, 0.0, Vec3::ZERO);
-        let b = state.view_projection(aspect, yaw, pitch, 0.0, Vec3::ZERO);
+        let a = state
+            .render_camera(aspect, yaw, pitch, 0.0, Vec3::ZERO)
+            .view_projection;
+        let b = state
+            .render_camera(aspect, yaw, pitch, 0.0, Vec3::ZERO)
+            .view_projection;
         assert_eq!(a.to_cols_array(), b.to_cols_array());
     }
 

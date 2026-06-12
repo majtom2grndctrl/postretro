@@ -1220,20 +1220,28 @@ impl ApplicationHandler for App {
                         (0.0, 0.0, 0.0, Vec3::ZERO)
                     };
 
-                let view_proj = interp.view_projection(
+                let render_camera = interp.render_camera(
                     self.camera.aspect(),
                     self.camera.yaw + vf_yaw_offset,
                     self.camera.pitch + vf_pitch_offset,
                     vf_roll,
                     vf_eye_offset,
                 );
+                let view_proj = render_camera.view_projection;
+                // The render eye and matrix are assembled together.
+                // Portal traversal, camera uniforms, and every render-stage
+                // distance/leaf query must use the same point. Using the
+                // unbobbed interpolated position here can put the visibility
+                // apex in a different BSP leaf or on the opposite side of a
+                // portal plane, causing one-frame clear-color holes.
+                let render_eye_position = render_camera.eye_position;
 
                 let capture_portal_walk = std::mem::take(&mut self.capture_portal_walk_next_frame);
 
                 // Portal DFS → cell IDs → visible-cell bitmask → indirect draw buffer.
                 let (vis_result, _frustum) = match self.level.as_ref() {
                     Some(world) => visibility::determine_visible_cells(
-                        interp.position,
+                        render_eye_position,
                         view_proj,
                         world,
                         capture_portal_walk,
@@ -1371,7 +1379,7 @@ impl ApplicationHandler for App {
 
                     renderer.update_per_frame_uniforms(
                         view_proj,
-                        interp.position,
+                        render_eye_position,
                         self.script_time as f32,
                     );
 
@@ -1477,7 +1485,7 @@ impl ApplicationHandler for App {
                                 if let Some(debug_ui) = self.debug_ui.as_ref() {
                                     renderer.emit_sh_diagnostics(
                                         &debug_ui.sh_diagnostics_state,
-                                        interp.position,
+                                        render_eye_position,
                                         world,
                                         &light_reachable_leaf_mask,
                                     );
@@ -1565,7 +1573,7 @@ impl ApplicationHandler for App {
                     self.scratch_cells = cells;
                 }
 
-                let pos = interp.position;
+                let pos = render_eye_position;
                 let region_label = "leaf";
                 let path_label = match stats.path {
                     VisibilityPath::PrlPortal { .. } => "prl-portal",
@@ -2673,7 +2681,7 @@ mod tests {
 
     /// On a frame with zero ticks, accumulated mouse delta must rotate the
     /// camera *and* change the rendered view-projection matrix. Both checks
-    /// are required: `view_projection` takes yaw/pitch as arguments, so an
+    /// are required: `render_camera` takes yaw/pitch as arguments, so an
     /// updated `camera.yaw` alone does not prove rendering sees it.
     #[test]
     fn mouse_delta_applied_on_zero_tick_frame() {
@@ -2718,9 +2726,12 @@ mod tests {
         // cases, so any element-wise difference must come from the rotation.
         let render_state = InterpolableState::new(Vec3::ZERO);
         let aspect = camera.aspect();
-        let baseline = render_state.view_projection(aspect, 0.0, 0.0, 0.0, Vec3::ZERO);
-        let rotated =
-            render_state.view_projection(aspect, camera.yaw, camera.pitch, 0.0, Vec3::ZERO);
+        let baseline = render_state
+            .render_camera(aspect, 0.0, 0.0, 0.0, Vec3::ZERO)
+            .view_projection;
+        let rotated = render_state
+            .render_camera(aspect, camera.yaw, camera.pitch, 0.0, Vec3::ZERO)
+            .view_projection;
 
         let baseline_cols = baseline.to_cols_array();
         let rotated_cols = rotated.to_cols_array();
@@ -2730,7 +2741,7 @@ mod tests {
             .any(|(a, b)| (a - b).abs() > EPSILON);
         assert!(
             any_differs,
-            "view_projection must differ after applying mouse-driven yaw; \
+            "render_camera view projection must differ after applying mouse-driven yaw; \
              baseline={:?} rotated={:?}",
             baseline_cols, rotated_cols,
         );

@@ -55,10 +55,10 @@ const FOG_VOLUMES_LUAU_SRC: &str = include_str!("../../../../sdk/lib/entities/fo
 /// no FFI happens until `setupMod` or `setupLevel` returns.
 const DATA_SCRIPT_LUAU_SRC: &str = include_str!("../../../../sdk/lib/data_script.luau");
 
-/// SDK library prelude — `ir.luau` returns the behavior-IR builder table,
-/// promoted whole to global `ir` (mirroring `world`). Pure data assembly: a
+/// SDK library prelude — `runtime.luau` returns the runtime-value builder table,
+/// promoted whole to global `runtime` (mirroring `world`). Pure data assembly: a
 /// builder returns an `IrNode` table and never calls back into Rust.
-const IR_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ir.luau");
+const RUNTIME_LUAU_SRC: &str = include_str!("../../../../sdk/lib/runtime.luau");
 
 /// Lights SDK fields lifted to globals after evaluating
 /// `entities/lights.luau`. Empty: the public vocabulary lives on the handle
@@ -278,21 +278,21 @@ pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
             })?;
     }
 
-    // Step 8: evaluate `ir.luau` and promote its table to global `ir`. The
-    // builders are pure (no primitive dependency), so ordering relative to the
-    // other steps is irrelevant.
-    let ir: mlua::Value = lua
-        .load(IR_LUAU_SRC)
-        .set_name("postretro/sdk/ir.luau")
+    // Step 8: evaluate `runtime.luau` and promote its table to global `runtime`.
+    // The builders are pure (no primitive dependency), so ordering relative to
+    // the other steps is irrelevant.
+    let runtime: mlua::Value = lua
+        .load(RUNTIME_LUAU_SRC)
+        .set_name("postretro/sdk/runtime.luau")
         .eval()
         .map_err(|e| ScriptError::ScriptThrew {
-            msg: format!("failed to evaluate SDK prelude `ir.luau`: {e}"),
-            source_name: "sdk/lib/ir.luau".to_string(),
+            msg: format!("failed to evaluate SDK prelude `runtime.luau`: {e}"),
+            source_name: "sdk/lib/runtime.luau".to_string(),
         })?;
     globals
-        .set("ir", ir)
+        .set("runtime", runtime)
         .map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("failed to install global `ir`: {e}"),
+            reason: format!("failed to install global `runtime`: {e}"),
         })?;
 
     Ok(())

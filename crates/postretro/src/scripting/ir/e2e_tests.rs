@@ -12,7 +12,7 @@
 // from an authored program and asserts the value that falls out the far end.
 //
 // Crossing path: identical to `parity_tests.rs` — each runtime authors the
-// expression with the `ir.*` builder vocabulary installed by the SDK prelude
+// expression with the `runtime.*` builder vocabulary installed by the SDK prelude
 // and returns the node through the existing `run_script` / `run_source` value
 // path. QuickJS returns `JSON.stringify(node)` (deserialized with `serde_json`);
 // Luau returns the node table (deserialized via the `conv`/mlua serde bridge).
@@ -101,14 +101,12 @@ fn eval_against_stub(root: IrNode) -> IrValue {
 
 // `clamp(speed + 1, 0, 100)`. `StubScope::new()` seeds `speed = 4.0`, so by
 // hand: add(4.0, 1) = 5.0; clamp(5.0, 0, 100) = 5.0.
-const CLAMP_EXPR: &str =
-    "ir.clamp(ir.add(ir.input(\"speed\"), ir.constant(1)), ir.constant(0), ir.constant(100))";
+const CLAMP_EXPR: &str = "runtime.clamp(runtime.add(runtime.read(\"speed\"), runtime.constant(1)), runtime.constant(0), runtime.constant(100))";
 const CLAMP_EXPECTED: f32 = 5.0;
 
 // `select(speed > 5, 10, 20)`. `speed = 4.0`, so `4.0 > 5` is false and the
 // `select` takes its `b` arm: the value is 20.0.
-const SELECT_EXPR: &str =
-    "ir.select(ir.gt(ir.input(\"speed\"), ir.constant(5)), ir.constant(10), ir.constant(20))";
+const SELECT_EXPR: &str = "runtime.select(runtime.gt(runtime.read(\"speed\"), runtime.constant(5)), runtime.constant(10), runtime.constant(20))";
 const SELECT_EXPECTED: f32 = 20.0;
 
 #[test]
@@ -218,7 +216,7 @@ fn authored_program_with_output_writes_evaluated_value_to_stub() {
     use crate::scripting::ir::scopes::StubWrite;
 
     // `add(speed, 1)` over `speed = 4.0` → 5.0, written to the granted output.
-    let root = author_in_quickjs("ir.add(ir.input(\"speed\"), ir.constant(1))");
+    let root = author_in_quickjs("runtime.add(runtime.read(\"speed\"), runtime.constant(1))");
     let envelope = BakedIr {
         version: CURRENT_IR_VERSION,
         output: Some("out_speed".to_string()),

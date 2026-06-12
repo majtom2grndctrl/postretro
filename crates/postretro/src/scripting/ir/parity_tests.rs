@@ -2,7 +2,7 @@
 // (QuickJS) and Luau must produce byte-identical IR once canonicalized through
 // the `IrNode` serde form. See: context/lib/scripting.md §11.
 //
-// Crossing path: each runtime authors the expression with the `ir` builder
+// Crossing path: each runtime authors the expression with the `runtime` builder
 // vocabulary installed by the SDK prelude and returns the node through the
 // existing `run_script` / `run_source` value path — no new collection sink.
 // The QuickJS side returns `JSON.stringify(node)` (deserialized with
@@ -64,9 +64,9 @@ fn luau_canonical(expr_src: &str) -> String {
 
 /// Asserts the TS and Luau spellings of the same expression canonicalize to
 /// byte-identical IR. `expr_src` must be valid as both a JS and a Luau
-/// expression — the `ir.*` builders share an identical surface, so a string
-/// using only `ir.<op>(...)` and numeric/boolean/string literals works in
-/// both.
+/// expression — the `runtime.*` builders share an identical surface, so a
+/// string using only `runtime.<op>(...)` and numeric/boolean/string literals
+/// works in both.
 fn assert_parity(expr_src: &str) {
     let ts = quickjs_canonical(expr_src);
     let luau = luau_canonical(expr_src);
@@ -80,7 +80,7 @@ fn assert_parity(expr_src: &str) {
 fn nested_arithmetic_expression_is_byte_identical_across_runtimes() {
     // shield = clamp(base + charges * 10, 0, 100) authored against named inputs.
     assert_parity(
-        "ir.clamp(ir.add(ir.input(\"base\"), ir.mul(ir.input(\"charges\"), ir.constant(10))), ir.constant(0), ir.constant(100))",
+        "runtime.clamp(runtime.add(runtime.read(\"base\"), runtime.mul(runtime.read(\"charges\"), runtime.constant(10))), runtime.constant(0), runtime.constant(100))",
     );
 }
 
@@ -89,32 +89,72 @@ fn select_with_comparison_is_byte_identical_across_runtimes() {
     // select(speed > threshold, lerp(a, b, t), const) — exercises select,
     // comparison, lerp, const, and a boolean literal leaf.
     assert_parity(
-        "ir.select(ir.gt(ir.input(\"speed\"), ir.constant(5)), ir.lerp(ir.constant(0), ir.constant(1), ir.input(\"t\")), ir.constant(true))",
+        "runtime.select(runtime.gt(runtime.read(\"speed\"), runtime.constant(5)), runtime.lerp(runtime.constant(0), runtime.constant(1), runtime.read(\"t\")), runtime.constant(true))",
+    );
+}
+
+#[test]
+fn bare_literal_operands_canonicalize_to_explicit_constant_form() {
+    // The literal-wrap sugar must canonicalize byte-identically to the
+    // explicit-`constant` spelling — and identically across runtimes. A bare
+    // `5` / `true` operand auto-wraps into `{ op: "const", value }`, the same
+    // node `runtime.constant(...)` emits. Each pairing asserts both halves:
+    // the sugared form equals the explicit form (within a runtime), and both
+    // forms agree across runtimes (`assert_parity`).
+    let explicit = "runtime.clamp(runtime.add(runtime.read(\"speed\"), runtime.constant(1)), runtime.constant(0), runtime.constant(100))";
+    let sugared = "runtime.clamp(runtime.add(runtime.read(\"speed\"), 1), 0, 100)";
+
+    assert_parity(explicit);
+    assert_parity(sugared);
+    assert_eq!(
+        quickjs_canonical(explicit),
+        quickjs_canonical(sugared),
+        "bare-literal sugar diverged from explicit `constant` form (QuickJS)"
+    );
+    assert_eq!(
+        luau_canonical(explicit),
+        luau_canonical(sugared),
+        "bare-literal sugar diverged from explicit `constant` form (Luau)"
+    );
+
+    // A bare boolean operand wraps the same way.
+    let explicit_bool =
+        "runtime.select(runtime.constant(true), runtime.constant(10), runtime.constant(20))";
+    let sugared_bool = "runtime.select(true, 10, 20)";
+    assert_eq!(
+        quickjs_canonical(explicit_bool),
+        quickjs_canonical(sugared_bool),
+        "bare boolean sugar diverged from explicit `constant` form (QuickJS)"
+    );
+    assert_eq!(
+        luau_canonical(explicit_bool),
+        luau_canonical(sugared_bool),
+        "bare boolean sugar diverged from explicit `constant` form (Luau)"
     );
 }
 
 #[test]
 fn every_opcode_round_trips_identically_across_runtimes() {
     // One assertion per opcode so a divergence names the offending builder.
-    let n = "ir.constant(1)";
+    let n = "runtime.constant(1)";
     let leaves = format!("{n}, {n}");
     for expr in [
-        "ir.constant(3.5)".to_string(),
-        "ir.constant(true)".to_string(),
-        "ir.input(\"speed\")".to_string(),
-        format!("ir.add({leaves})"),
-        format!("ir.sub({leaves})"),
-        format!("ir.mul({leaves})"),
-        format!("ir.div({leaves})"),
-        format!("ir.clamp({n}, {n}, {n})"),
-        format!("ir.lerp({n}, {n}, {n})"),
-        format!("ir.lt({leaves})"),
-        format!("ir.le({leaves})"),
-        format!("ir.gt({leaves})"),
-        format!("ir.ge({leaves})"),
-        format!("ir.eq({leaves})"),
-        format!("ir.ne({leaves})"),
-        format!("ir.select(ir.constant(true), {n}, {n})"),
+        "runtime.constant(3.5)".to_string(),
+        "runtime.constant(true)".to_string(),
+        "runtime.read(\"speed\")".to_string(),
+        format!("runtime.add({leaves})"),
+        format!("runtime.sub({leaves})"),
+        format!("runtime.mul({leaves})"),
+        format!("runtime.div({leaves})"),
+        format!("runtime.clamp({n}, {n}, {n})"),
+        format!("runtime.lerp({n}, {n}, {n})"),
+        format!("runtime.lt({leaves})"),
+        format!("runtime.le({leaves})"),
+        format!("runtime.gt({leaves})"),
+        format!("runtime.ge({leaves})"),
+        format!("runtime.eq({leaves})"),
+        format!("runtime.ne({leaves})"),
+        format!("runtime.select(runtime.constant(true), {n}, {n})"),
     ] {
         assert_parity(&expr);
     }

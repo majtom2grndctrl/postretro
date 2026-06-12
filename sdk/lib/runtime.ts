@@ -1,91 +1,105 @@
-// Behavior IR vocabulary: pure constructors for the typed command buffer.
-// Each builder assembles an `IrNode` object as plain data and returns it —
+// Runtime-value vocabulary: pure constructors for the typed command buffer.
+// Each builder assembles a `RuntimeValue` object as plain data and returns it —
 // no FFI side effect. Nodes cross the boundary through the normal `setupMod`
 // / `setupLevel` return path, never as a primitive call. The constructors are
-// namespaced under a single `ir` global (mirroring `world`) so generic op
+// namespaced under a single `runtime` global (mirroring `world`) so generic op
 // names like `add` / `eq` / `select` do not collide with author symbols.
 // See: context/lib/scripting.md §11 (Typed Command Buffer), §12.
 
 import type {
-  IrNode,
-  IrConst,
-  IrInput,
-  IrAdd,
-  IrSub,
-  IrMul,
-  IrDiv,
-  IrClamp,
-  IrLerp,
-  IrLt,
-  IrLe,
-  IrGt,
-  IrGe,
-  IrEq,
-  IrNe,
-  IrSelect,
+  RuntimeValue,
+  RuntimeConst,
+  RuntimeRead,
+  RuntimeAdd,
+  RuntimeSub,
+  RuntimeMul,
+  RuntimeDiv,
+  RuntimeClamp,
+  RuntimeLerp,
+  RuntimeLt,
+  RuntimeLe,
+  RuntimeGt,
+  RuntimeGe,
+  RuntimeEq,
+  RuntimeNe,
+  RuntimeSelect,
 } from "postretro";
 
-/** Pure builder vocabulary for the behavior IR. See the `Ir` interface in
+/** A builder argument: either an already-built node or a bare literal that is
+ * auto-wrapped into a `const` node. */
+type Operand = RuntimeValue | number | boolean;
+
+/** Wrap a bare `number`/`boolean` literal into a `const` node; pass an existing
+ * node through unchanged. The wrapping rule is identical in `runtime.luau` so
+ * the two runtimes canonicalize to byte-identical IR. */
+function wrap(value: Operand): RuntimeValue {
+  if (typeof value === "number" || typeof value === "boolean") {
+    return { op: "const", value };
+  }
+  return value;
+}
+
+/** Pure builder vocabulary for runtime values. See the `Runtime` interface in
  * `postretro.d.ts` for the per-builder contracts. */
-export const ir = {
+export const runtime = {
   /** Literal scalar leaf. `const` is reserved, so the builder is `constant`. */
-  constant(value: number | boolean): IrConst {
+  constant(value: number | boolean): RuntimeConst {
     return { op: "const", value };
   },
   /** Named-input leaf, bound to live state by name in the Rust evaluator. */
-  input(name: string): IrInput {
+  read(name: string): RuntimeRead {
     return { op: "input", name };
   },
   /** `a + b` (number). */
-  add(a: IrNode, b: IrNode): IrAdd {
-    return { op: "add", a, b };
+  add(a: Operand, b: Operand): RuntimeAdd {
+    return { op: "add", a: wrap(a), b: wrap(b) };
   },
   /** `a - b` (number). */
-  sub(a: IrNode, b: IrNode): IrSub {
-    return { op: "sub", a, b };
+  sub(a: Operand, b: Operand): RuntimeSub {
+    return { op: "sub", a: wrap(a), b: wrap(b) };
   },
   /** `a * b` (number). */
-  mul(a: IrNode, b: IrNode): IrMul {
-    return { op: "mul", a, b };
+  mul(a: Operand, b: Operand): RuntimeMul {
+    return { op: "mul", a: wrap(a), b: wrap(b) };
   },
   /** `a / b` (number). */
-  div(a: IrNode, b: IrNode): IrDiv {
-    return { op: "div", a, b };
+  div(a: Operand, b: Operand): RuntimeDiv {
+    return { op: "div", a: wrap(a), b: wrap(b) };
   },
   /** Clamp `x` to `[lo, hi]` (number). */
-  clamp(x: IrNode, lo: IrNode, hi: IrNode): IrClamp {
-    return { op: "clamp", x, lo, hi };
+  clamp(x: Operand, lo: Operand, hi: Operand): RuntimeClamp {
+    return { op: "clamp", x: wrap(x), lo: wrap(lo), hi: wrap(hi) };
   },
   /** Linear interpolation between `a` and `b` by `t` (number). */
-  lerp(a: IrNode, b: IrNode, t: IrNode): IrLerp {
-    return { op: "lerp", a, b, t };
+  lerp(a: Operand, b: Operand, t: Operand): RuntimeLerp {
+    return { op: "lerp", a: wrap(a), b: wrap(b), t: wrap(t) };
   },
   /** `a < b` (boolean). */
-  lt(a: IrNode, b: IrNode): IrLt {
-    return { op: "lt", a, b };
+  lt(a: Operand, b: Operand): RuntimeLt {
+    return { op: "lt", a: wrap(a), b: wrap(b) };
   },
   /** `a <= b` (boolean). */
-  le(a: IrNode, b: IrNode): IrLe {
-    return { op: "le", a, b };
+  le(a: Operand, b: Operand): RuntimeLe {
+    return { op: "le", a: wrap(a), b: wrap(b) };
   },
   /** `a > b` (boolean). */
-  gt(a: IrNode, b: IrNode): IrGt {
-    return { op: "gt", a, b };
+  gt(a: Operand, b: Operand): RuntimeGt {
+    return { op: "gt", a: wrap(a), b: wrap(b) };
   },
   /** `a >= b` (boolean). */
-  ge(a: IrNode, b: IrNode): IrGe {
-    return { op: "ge", a, b };
+  ge(a: Operand, b: Operand): RuntimeGe {
+    return { op: "ge", a: wrap(a), b: wrap(b) };
   },
   /** `a == b` (boolean). */
-  eq(a: IrNode, b: IrNode): IrEq {
-    return { op: "eq", a, b };
+  eq(a: Operand, b: Operand): RuntimeEq {
+    return { op: "eq", a: wrap(a), b: wrap(b) };
   },
   /** `a != b` (boolean). */
-  ne(a: IrNode, b: IrNode): IrNe {
-    return { op: "ne", a, b };
+  ne(a: Operand, b: Operand): RuntimeNe {
+    return { op: "ne", a: wrap(a), b: wrap(b) };
   },
   /** Branchless select: `cond ? a : b`. `a` and `b` share a type. */
-  select(cond: IrNode, a: IrNode, b: IrNode): IrSelect {
-    return { op: "select", cond, a, b };
+  select(cond: Operand, a: Operand, b: Operand): RuntimeSelect {
+    return { op: "select", cond: wrap(cond), a: wrap(a), b: wrap(b) };
   },
 };

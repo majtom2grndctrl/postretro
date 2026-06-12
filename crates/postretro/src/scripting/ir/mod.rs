@@ -8,7 +8,11 @@
 // node model + value type + envelope; `scope` owns the binding seam; `bind`
 // owns the once-per-program type-check + name-resolution pass.
 
+// Owner-approved, test-only exception to the subsystem's `#![deny(unsafe_code)]`:
+// the counting global allocator forwards verbatim to `System`. See the SAFETY
+// rationale in `alloc_probe.rs` and development_guide.md §3.5.
 #[cfg(test)]
+#[allow(unsafe_code)]
 pub(crate) mod alloc_probe;
 pub(crate) mod bind;
 pub(crate) mod eval;
@@ -21,13 +25,19 @@ mod parity_tests;
 
 use serde::{Deserialize, Serialize};
 
+// The substrate's public surface. This plan ships the IR substrate with no
+// behavior adopting it yet (the first adopter is plan 3, movement), so these
+// re-exports have no in-crate consumer outside tests — `allow(unused_imports)`
+// holds the API stable until an adopter lands rather than deleting it now.
+#[allow(unused_imports)]
 pub(crate) use bind::{BindError, BoundNode, BoundProgram, bind};
+#[allow(unused_imports)]
 pub(crate) use eval::{eval_and_write, eval_value};
-// Re-exported as the sole load-time version seam; the first adopter (Task 5)
-// has not landed yet, so suppress the no-consumer-yet warning until then.
 #[allow(unused_imports)]
 pub(crate) use load::load_baked_ir;
+#[allow(unused_imports)]
 pub(crate) use scope::{BindingScope, ResolvedInput, ResolvedOutput};
+#[allow(unused_imports)]
 pub(crate) use scopes::{StoreCapability, StoreScope};
 
 /// Current IR wire-format version. Stamped into every [`BakedIr`] envelope.

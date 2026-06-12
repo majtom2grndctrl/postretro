@@ -120,7 +120,9 @@ impl BindingScope for StoreScope {
     fn read(&self, handle: &StoreHandle) -> IrValue {
         // Alloc-free re-hash through the existing `get(&str)`; no new store API.
         let table = self.ctx.slot_table.borrow();
-        let value = table.get(&handle.name).and_then(|record| record.value.as_ref());
+        let value = table
+            .get(&handle.name)
+            .and_then(|record| record.value.as_ref());
         match (handle.ir_type, value) {
             (IrType::Number, Some(SlotValue::Number(n))) => IrValue::Number(*n),
             (IrType::Bool, Some(SlotValue::Boolean(b))) => IrValue::Bool(*b),
@@ -303,8 +305,8 @@ impl BindingScope for StubScope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::ir::{bind, BakedIr, BindError, IrNode, CURRENT_IR_VERSION};
     use crate::scripting::ir::eval::{eval_and_write, eval_value};
+    use crate::scripting::ir::{BakedIr, BindError, CURRENT_IR_VERSION, IrNode, bind};
     use crate::scripting::slot_table::{
         NumericRange, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
     };
@@ -444,14 +446,20 @@ mod tests {
 
     #[test]
     fn engine_mode_writes_readonly_slot_through_validated_path() {
-        // Engine policy bypasses readonly: it resolves a write handle for the
-        // built-in readonly `player.health` and writes a clamped value.
-        let ctx = seeded_ctx();
+        // Engine policy bypasses readonly: it resolves a write handle for a
+        // readonly engine-owned slot and writes through the validated path,
+        // which range-clamps. The slot carries a known [0, 100] range so the
+        // clamp is asserted against a pinned bound.
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("engine.shield".to_string(), number_slot(50.0, true))
+            .unwrap();
         let mut scope = StoreScope::engine(ctx.clone());
         let baked = BakedIr {
             version: CURRENT_IR_VERSION,
-            output: Some("player.health".to_string()),
-            // 200 exceeds the slot range [0,100]; the validated path clamps.
+            output: Some("engine.shield".to_string()),
+            // 200 exceeds the slot range [0, 100]; the validated path clamps.
             root: *num(200.0),
         };
         let program = bind(&baked, &scope).expect("engine grants readonly write handle");
@@ -459,7 +467,7 @@ mod tests {
         assert_eq!(
             ctx.slot_table
                 .borrow()
-                .get("player.health")
+                .get("engine.shield")
                 .and_then(|r| r.value.clone()),
             Some(SlotValue::Number(100.0)),
             "engine write is validated and range-clamped"

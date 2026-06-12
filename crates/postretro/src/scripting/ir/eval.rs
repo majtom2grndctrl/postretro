@@ -20,9 +20,9 @@
 // No per-tick logging: numeric edge cases are absorbed silently per the
 // semantics above. The only fallible phase is bind, which runs once.
 
+use super::IrValue;
 use super::bind::{BoundNode, BoundProgram};
 use super::scope::BindingScope;
-use super::IrValue;
 
 /// Evaluate a bound program's root and return its value, reading inputs through
 /// `scope`. Pure and read-only — it never writes back, even when the program
@@ -152,7 +152,7 @@ fn values_equal(left: IrValue, right: IrValue) -> bool {
 mod tests {
     use super::*;
     use crate::scripting::ir::scopes::{StubScope, StubWrite};
-    use crate::scripting::ir::{bind, BakedIr, IrNode, CURRENT_IR_VERSION};
+    use crate::scripting::ir::{BakedIr, CURRENT_IR_VERSION, IrNode, bind};
 
     const EPSILON: f32 = 1e-6;
 

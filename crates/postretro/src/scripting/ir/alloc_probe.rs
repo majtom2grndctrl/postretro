@@ -92,7 +92,7 @@ mod tests {
     use super::*;
     use crate::scripting::ir::eval::eval_value;
     use crate::scripting::ir::scopes::StubScope;
-    use crate::scripting::ir::{bind, BakedIr, IrNode, IrValue, CURRENT_IR_VERSION};
+    use crate::scripting::ir::{BakedIr, CURRENT_IR_VERSION, IrNode, IrValue, bind};
 
     fn num(v: f32) -> Box<IrNode> {
         Box::new(IrNode::Const {
@@ -139,29 +139,34 @@ mod tests {
             hi: num(100.0),
         };
 
-        // Boolean subtree exercising lt/le/gt/ge/eq/ne, nested under select.
-        let condition = IrNode::Select {
-            cond: Box::new(IrNode::Ne {
-                a: Box::new(IrNode::Eq {
-                    a: input("grounded"),
-                    b: boolean(true),
-                }),
+        // Boolean subtree exercising lt/le/gt/ge plus eq/ne, ≥2 deep. The four
+        // ordered comparisons take number operands and yield booleans; eq/ne
+        // then combine those booleans (eq/ne accept any matching operand type),
+        // so the whole subtree stays well-typed down to a single boolean.
+        let condition = IrNode::Ne {
+            a: Box::new(IrNode::Eq {
+                a: input("grounded"),
                 b: Box::new(IrNode::Lt {
-                    a: Box::new(IrNode::Le {
-                        a: num(1.0),
+                    a: num(1.0),
+                    b: num(2.0),
+                }),
+            }),
+            b: Box::new(IrNode::Eq {
+                a: Box::new(IrNode::Le {
+                    a: num(1.0),
+                    b: num(2.0),
+                }),
+                b: Box::new(IrNode::Ne {
+                    a: Box::new(IrNode::Gt {
+                        a: num(3.0),
                         b: num(2.0),
                     }),
-                    b: Box::new(IrNode::Gt {
-                        a: Box::new(IrNode::Ge {
-                            a: num(3.0),
-                            b: num(2.0),
-                        }),
-                        b: boolean(false),
+                    b: Box::new(IrNode::Ge {
+                        a: num(3.0),
+                        b: num(2.0),
                     }),
                 }),
             }),
-            a: boolean(true),
-            b: boolean(false),
         };
 
         // Root selects between the arithmetic value and 0 based on `condition`,

@@ -255,16 +255,18 @@ fn bind_node<S: BindingScope>(
     }
 }
 
+/// A bound-node constructor for a two-operand opcode (`Add`, `Lt`, `Eq`, …):
+/// takes the two bound child boxes and returns the parent bound node. Aliased so
+/// the `bind_*` helper signatures stay readable.
+type BinaryCtor<H> = fn(Box<BoundNode<H>>, Box<BoundNode<H>>) -> BoundNode<H>;
+
 /// Bind a binary arithmetic op: both operands number, result number.
 fn bind_arithmetic<S: BindingScope>(
     scope: &S,
     a: &IrNode,
     b: &IrNode,
     op: &'static str,
-    build: fn(
-        Box<BoundNode<S::InputHandle>>,
-        Box<BoundNode<S::InputHandle>>,
-    ) -> BoundNode<S::InputHandle>,
+    build: BinaryCtor<S::InputHandle>,
 ) -> Result<(BoundNode<S::InputHandle>, IrType), BindError> {
     let a = bind_expect(scope, a, IrType::Number, operand_context(op, 'a'))?;
     let b = bind_expect(scope, b, IrType::Number, operand_context(op, 'b'))?;
@@ -277,10 +279,7 @@ fn bind_comparison<S: BindingScope>(
     a: &IrNode,
     b: &IrNode,
     op: &'static str,
-    build: fn(
-        Box<BoundNode<S::InputHandle>>,
-        Box<BoundNode<S::InputHandle>>,
-    ) -> BoundNode<S::InputHandle>,
+    build: BinaryCtor<S::InputHandle>,
 ) -> Result<(BoundNode<S::InputHandle>, IrType), BindError> {
     let a = bind_expect(scope, a, IrType::Number, operand_context(op, 'a'))?;
     let b = bind_expect(scope, b, IrType::Number, operand_context(op, 'b'))?;
@@ -293,10 +292,7 @@ fn bind_equality<S: BindingScope>(
     a: &IrNode,
     b: &IrNode,
     op: &'static str,
-    build: fn(
-        Box<BoundNode<S::InputHandle>>,
-        Box<BoundNode<S::InputHandle>>,
-    ) -> BoundNode<S::InputHandle>,
+    build: BinaryCtor<S::InputHandle>,
 ) -> Result<(BoundNode<S::InputHandle>, IrType), BindError> {
     let (a, a_ty) = bind_node(a, scope)?;
     let (b, b_ty) = bind_node(b, scope)?;

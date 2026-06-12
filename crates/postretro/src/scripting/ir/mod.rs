@@ -21,6 +21,8 @@ pub(crate) mod scope;
 pub(crate) mod scopes;
 
 #[cfg(test)]
+mod e2e_tests;
+#[cfg(test)]
 mod parity_tests;
 
 use serde::{Deserialize, Serialize};

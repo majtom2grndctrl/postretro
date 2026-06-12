@@ -1,4 +1,4 @@
-import { defineEntity } from "postretro";
+import { defineEntity, runtime } from "postretro";
 
 export const playerEntity = defineEntity({
   canonicalName: "player",
@@ -32,8 +32,22 @@ export const playerEntity = defineEntity({
       fall: { terminalVelocity: 40.0 },
       dash: {
         boostSpeed: 22.0,
-        momentumRetention: 0.5,
-        steerControl: 0.3,
+        // Runtime expression (entry-moment): keep less ground momentum than air
+        // momentum. Grounded dashes feel snappier/more committed; airborne dashes
+        // preserve more of the incoming arc. `grounded` is a boolean input, so
+        // `select` branches on it directly.
+        momentumRetention: runtime.select(runtime.read("grounded"), 0.4, 0.7),
+        // Runtime expression (per-tick): steering authority ramps from 0 up to
+        // full across the first 150 ms of the dash, so the burst starts committed
+        // and becomes steerable as it settles. 150 ms sits inside the engine's
+        // 200 ms `DASH_MAX_MS` hard bound, so the whole ramp is observable before
+        // the dash exits. `clamp` holds the ratio in [0, 1] once `elapsedMs`
+        // passes the ramp window.
+        steerControl: runtime.clamp(
+          runtime.div(runtime.read("elapsedMs"), 150.0),
+          0.0,
+          1.0,
+        ),
         dashDrag: 0,
         cooldownMs: 600,
         airDashes: 1,

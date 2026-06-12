@@ -4408,6 +4408,37 @@ mod tests {
     }
 
     #[test]
+    fn js_dev_player_dash_expressions_bind() {
+        // Guards the dev player descriptor (`content/dev/scripts/player.ts`): the
+        // exact IR the authored `runtime.*` builders emit for `momentumRetention`
+        // and `steerControl` must bind without a `DescriptorError`. If the scope
+        // names, op vocabulary, or root types ever drift, this fails before the
+        // dev map does. `momentumRetention` is a `select` on the boolean
+        // `grounded` input; `steerControl` clamps an `elapsedMs / 150` ramp into
+        // [0, 1] — the 150 ms window sits inside the engine's 200 ms DASH_MAX_MS
+        // bound so the ramp stays observable.
+        let src = js_movement_with_dash(
+            r#"{
+                boostSpeed: 22.0,
+                momentumRetention: { op: "select", cond: { op: "input", name: "grounded" }, a: { op: "const", value: 0.4 }, b: { op: "const", value: 0.7 } },
+                steerControl: { op: "clamp", x: { op: "div", a: { op: "input", name: "elapsedMs" }, b: { op: "const", value: 150.0 } }, lo: { op: "const", value: 0.0 }, hi: { op: "const", value: 1.0 } },
+                dashDrag: 0,
+                cooldownMs: 600,
+                airDashes: 1,
+                preserveVertical: false
+            }"#,
+        );
+        let d = eval_js(&src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+        let dash = d.movement.unwrap().dash.expect("dash present");
+        // Both authored fields bind as expressions; the literal fields keep sugar.
+        assert!(matches!(dash.momentum_retention, NumberOrIr::Ir(_)));
+        assert!(matches!(dash.steer_control, NumberOrIr::Ir(_)));
+        assert_eq!(dash.boost_speed, 22.0);
+        assert_eq!(dash.air_dashes, 1);
+        assert_eq!(dash.preserve_vertical, false);
+    }
+
+    #[test]
     fn lua_movement_dash_number_field_accepts_expression() {
         let src = lua_movement_with_dash(
             r#"{ boostSpeed = { op = "clamp", x = { op = "input", name = "speed" }, lo = { op = "const", value = 0.0 }, hi = { op = "const", value = 30.0 } }, momentumRetention = 0.5, steerControl = 0.25, dashDrag = 60.0, cooldownMs = 800.0, airDashes = 1, preserveVertical = false }"#,

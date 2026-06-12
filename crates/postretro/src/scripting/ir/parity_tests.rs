@@ -1,6 +1,6 @@
 // Dual-runtime parity: the same behavior-IR expression authored in TypeScript
 // (QuickJS) and Luau must produce byte-identical IR once canonicalized through
-// the Task 1 `IrNode` serde form. See: context/lib/scripting.md §11.
+// the `IrNode` serde form. See: context/lib/scripting.md §11.
 //
 // Crossing path: each runtime authors the expression with the `ir` builder
 // vocabulary installed by the SDK prelude and returns the node through the

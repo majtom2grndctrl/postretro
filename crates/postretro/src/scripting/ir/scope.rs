@@ -1,6 +1,6 @@
 // The binding seam: a pluggable namespace the IR `bind` pass resolves names
 // against and the eval pass reads/writes live state through.
-// See: context/lib/scripting.md §12 (IR substrate — pluggable scope abstraction)
+// See: context/lib/scripting.md §11 (IR substrate — pluggable scope abstraction)
 
 // Names bind through a scope, not a hardwired global namespace. The mod state
 // store is one scope; a movement-local input set is another. The trait is the

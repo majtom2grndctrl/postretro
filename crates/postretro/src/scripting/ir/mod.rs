@@ -1,6 +1,6 @@
 // Behavior IR substrate: the typed, serializable command-buffer node tree,
 // its value model, and the `BakedIr` wire envelope.
-// See: context/lib/scripting.md §11 (Typed Command Buffer) and §12 (IR substrate)
+// See: context/lib/scripting.md §11 (Typed Command Buffer / IR substrate)
 
 // Authored behavior that depends on live state crosses the FFI as this IR tree.
 // The VM drops; a Rust total evaluator binds named leaves to live state (the
@@ -45,9 +45,10 @@ pub(crate) use scopes::{StoreCapability, StoreScope};
 /// Current IR wire-format version. Stamped into every [`BakedIr`] envelope.
 ///
 /// The load-time version *check* (reject/ignore unsupported versions with a
-/// warning and fall back to native behavior) lands in Task 4 — this constant is
-/// the seam it validates against. Bumping it requires a defined migration path,
-/// shared with the state-store persist format (`state_persistence`).
+/// warning, the adopter falls back to native behavior) lives in
+/// `load::load_baked_ir`; this constant is the seam it validates against.
+/// Bumping it requires a defined migration path, shared with the state-store
+/// persist format (`state_persistence`).
 pub(crate) const CURRENT_IR_VERSION: u32 = 1;
 
 /// The two value types the evaluator computes over. Every node has a static
@@ -64,11 +65,9 @@ pub(crate) enum IrType {
 /// bool, never an object. `Const { value }` therefore serializes as
 /// `{ "op": "const", "value": 3.5 }` / `{ "op": "const", "value": true }`.
 ///
-/// Deserialization order matters under `untagged`: serde tries variants top to
-/// bottom. `Bool` must precede `Number` because serde_json will happily coerce
-/// `true`/`false` into neither a number, but a bare `1`/`0` would match
-/// `Number` first — listing `Bool` first keeps JSON `true`/`false` mapping to
-/// `Bool` and all numeric literals to `Number`.
+/// Under `untagged`, serde_json treats `Bool` and `Number` as disjoint: JSON
+/// `true`/`false` never match the `Number` variant, and a bare numeric literal
+/// never matches `Bool`, so variant ordering is not load-bearing here.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub(crate) enum IrValue {

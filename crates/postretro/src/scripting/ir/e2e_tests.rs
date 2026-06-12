@@ -1,9 +1,10 @@
 // End-to-end composition gate for the behavior-IR substrate: it proves the
-// pieces Tasks 1–4 shipped compose along the *whole* authored-behavior path —
-// SDK builders author an expression in each runtime, the node crosses the FFI,
-// `load_baked_ir`/`bind`/`eval_value` turn it into a value, and that value
-// matches the one computed by hand from the stub scope's known inputs.
-// See: context/lib/scripting.md §11 (Typed Command Buffer) and §12 (IR substrate)
+// builders, evaluator, and versioned envelope compose along the *whole*
+// authored-behavior path — SDK builders author an expression in each runtime,
+// the node crosses the FFI, `load_baked_ir`/`bind`/`eval_value` turn it into
+// a value, and that value matches the one computed by hand from the stub
+// scope's known inputs.
+// See: context/lib/scripting.md §11 (Typed Command Buffer / IR substrate)
 //
 // This is the *composition* gate, not a re-run of the low-level units. The node
 // wire round-trip lives in `mod.rs::wire_format_tests`, the version check in
@@ -95,7 +96,7 @@ fn eval_against_stub(root: IrNode) -> IrValue {
 }
 
 // ---------------------------------------------------------------------------
-// AC #1 — builders → cross FFI → bind → eval → asserted value, BOTH runtimes.
+// Read-path value test — builders → cross FFI → bind → eval → asserted value, BOTH runtimes.
 // ---------------------------------------------------------------------------
 
 // `clamp(speed + 1, 0, 100)`. `StubScope::new()` seeds `speed = 4.0`, so by
@@ -147,7 +148,7 @@ fn both_runtimes_author_the_same_evaluated_value() {
 }
 
 // ---------------------------------------------------------------------------
-// AC #2 — wire-format round-trip at the composition (envelope + eval) level.
+// Envelope round-trip — wire-format round-trip at the composition (envelope + eval) level.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -167,8 +168,8 @@ fn authored_envelope_survives_serialize_load_bind_eval_round_trip() {
 }
 
 // ---------------------------------------------------------------------------
-// AC #3 — version stamp: current loads+evaluates; unsupported is rejected and
-// the consumer falls back (no panic), tying load → bind → eval together.
+// Version-stamp round-trip/rejection — current loads+evaluates; unsupported is
+// rejected and the consumer falls back (no panic), tying load → bind → eval together.
 // ---------------------------------------------------------------------------
 
 #[test]

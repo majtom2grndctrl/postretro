@@ -1,13 +1,13 @@
 // The eval pass: a pure, total, bounded, allocation-free walk over a
 // `BoundProgram`, plus the optional write-back step.
-// See: context/lib/scripting.md §11 (Typed Command Buffer) and §12 (IR substrate)
+// See: context/lib/scripting.md §11 (Typed Command Buffer / IR substrate)
 
 // Eval is the per-tick phase of the two-phase evaluator. Bind already
 // type-checked the tree and resolved every leaf to a scope handle, so eval
 // makes no allocations and never fails: it recurses the bound tree, reads
 // `Input` leaves through the scope, and folds each op to an `IrValue`.
 //
-// Totality is pinned (see the module-level test suite and scripting.md §12):
+// Totality is pinned (see the module-level test suite and scripting.md §11):
 //   - a missing-value read returns the scope's type-zero (the scope maps
 //     `None → 0.0 / false`; eval trusts the value it receives);
 //   - `div` by zero yields `0.0`;

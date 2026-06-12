@@ -1,13 +1,13 @@
 // The bind pass: type-checks an IR tree once and resolves named leaves to scope
 // handles, producing an eval-ready `BoundProgram`.
-// See: context/lib/scripting.md §11 (Typed Command Buffer) and §12 (IR substrate)
+// See: context/lib/scripting.md §11 (Typed Command Buffer / IR substrate)
 
 // Bind is the once-per-program phase of the two-phase evaluator. It walks the
 // `IrNode` tree against the static type table (the rows in §11), resolves every
 // `Input` name and the envelope's optional `output` through the `BindingScope`
 // seam, and verifies the root's result type matches the output's projection.
 // It returns a `BoundProgram` whose leaves hold resolved handles, not strings —
-// the form Task 2's eval pass walks allocation-free. Every fault is a typed
+// the form the eval pass (`eval.rs`) walks allocation-free. Every fault is a typed
 // `BindError`; bind never panics. Logging the error once is the caller's job.
 
 use thiserror::Error;
@@ -114,7 +114,7 @@ pub(crate) enum BoundNode<H> {
 /// (value-producing) buffer whose result the adopter reads directly.
 ///
 /// Generic over the scope so it carries the scope's concrete handle types. The
-/// eval pass (Task 2) walks `root`, reads inputs via the scope, and — when
+/// eval pass (`eval.rs`) walks `root`, reads inputs via the scope, and — when
 /// `output` is `Some` — writes the result back through the same scope.
 pub(crate) struct BoundProgram<S: BindingScope> {
     pub(crate) root: BoundNode<S::InputHandle>,
@@ -144,9 +144,9 @@ where
 /// named leaf through `scope`, producing an eval-ready [`BoundProgram`].
 ///
 /// Returns a typed [`BindError`] on the first structural / type / name /
-/// projection fault. Bind never panics. The version *check* on `baked.version`
-/// is intentionally not performed here — it lands in Task 4 at load, against
-/// [`super::CURRENT_IR_VERSION`].
+/// projection fault. Bind never panics. The version check on `baked.version`
+/// is performed at load by `load::load_baked_ir`, not here — bind receives only
+/// already-validated `BakedIr` values.
 pub(crate) fn bind<S: BindingScope>(
     baked: &BakedIr,
     scope: &S,
@@ -369,7 +369,7 @@ mod tests {
     /// named (type) entries; non-projectable names are simply absent (the real
     /// store scope folds `String`/`Enum`/`Array` slots into the same `None`).
     /// Handles are owned names so a test can assert which leaf bound to what.
-    /// Task 2 builds the richer concrete store adapter; this stub stays local.
+    /// The concrete store adapter lives in `scopes.rs`; this stub stays local.
     struct StubScope {
         inputs: HashMap<&'static str, IrType>,
         outputs: HashMap<&'static str, IrType>,
@@ -410,7 +410,7 @@ mod tests {
         }
 
         fn read(&self, _handle: &String) -> IrValue {
-            // Eval is Task 2; bind never calls this.
+            // Eval lives in `eval.rs`; bind never calls this.
             IrValue::Number(0.0)
         }
 

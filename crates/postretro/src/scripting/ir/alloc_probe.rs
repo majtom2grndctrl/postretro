@@ -4,7 +4,7 @@
 //      exception is the System delegation below) and §1.4 (performance).
 
 // The IR eval pass must perform ZERO heap allocation per tick (scripting.md
-// §12). To prove it, this module installs a global allocator that delegates
+// §11). To prove it, this module installs a global allocator that delegates
 // verbatim to `std::alloc::System` and bumps a *per-thread* counter on every
 // allocation. A test arms the probe *after* bind, snapshots its own thread's
 // counter, runs `eval_value`, and asserts the alloc delta is zero. Bind and the

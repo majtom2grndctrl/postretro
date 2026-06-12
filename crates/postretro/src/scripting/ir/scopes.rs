@@ -1,7 +1,7 @@
 // Concrete `BindingScope` implementations: the store-backed adapter the engine
 // and scripts bind real behavior IR against, plus an indexed test stub that
 // proves the namespace seam is pluggable (not store-shaped).
-// See: context/lib/scripting.md §12 (IR substrate — pluggable scope abstraction)
+// See: context/lib/scripting.md §11 (IR substrate — pluggable scope abstraction)
 
 // Two scopes live here. `StoreScope` bridges the IR evaluator to the live
 // `SlotTable` through a captured `ScriptCtx`; it projects `Number`/`Boolean`
@@ -62,7 +62,7 @@ impl StoreScope {
     }
 
     /// A script-capability scope: readonly slots are denied a write handle at
-    /// bind, and writes flow through the script-gated validation path.
+    /// bind; granted writes flow through the same validated engine write path.
     pub(crate) fn script(ctx: ScriptCtx) -> Self {
         Self {
             ctx,
@@ -185,7 +185,7 @@ struct StubOutput {
 /// shown portable across differently-shaped namespaces. Seeds a movement-like
 /// input set and a configurable output set; supports read and write.
 ///
-/// Reusable by integration / Task-5 end-to-end tests via [`StubScope::new`] and
+/// Reusable by the end-to-end composition tests via [`StubScope::new`] and
 /// [`StubScope::with_writes`].
 #[cfg(test)]
 pub(crate) struct StubScope {
@@ -435,8 +435,6 @@ mod tests {
 
     #[test]
     fn store_scope_reads_absent_value_as_type_zero() {
-        // A freshly declared number slot with no write yet still reads 0.0 when
-        // its default is cleared.
         let ctx = ScriptCtx::new();
         let scope = StoreScope::engine(ctx);
         // `player.health` is readonly with no default/value → reads 0.0.
@@ -515,7 +513,7 @@ mod tests {
     #[test]
     fn stub_scope_grants_writes_only_for_declared_outputs() {
         // An envelope targeting a granted output binds and writes; one targeting
-        // an ungranted output fails to bind (AC #7).
+        // an ungranted output fails to bind (write capability is a bind-time grant).
         let mut scope = StubScope::with_writes(&[("out_number", StubWrite::Number)]);
         let granted = BakedIr {
             version: CURRENT_IR_VERSION,
@@ -544,31 +542,28 @@ mod tests {
 
     #[test]
     fn same_tree_binds_against_store_and_stub_scopes() {
-        // AC #6: one IR tree, two scopes with distinct handle types (owned-name
-        // vs index), each reading its own `speed` value.
-        let tree = IrNode::Add {
+        // One IR tree, two scopes with distinct handle types (owned-name vs
+        // index), each reading its own `speed` value. The slot table imposes no
+        // dotted-name requirement, so inserting under the plain name "speed"
+        // makes both scopes resolvable from the identical tree.
+        let tree = read_only(IrNode::Add {
             a: input("speed"),
             b: num(1.0),
-        };
+        });
 
-        // Store scope: declare a `mover.speed` number slot at value 10.
+        // Store scope: declare a `speed` number slot at value 10.
         let ctx = ScriptCtx::new();
         ctx.slot_table
             .borrow_mut()
-            .insert("mover.speed".to_string(), number_slot(10.0, false))
+            .insert("speed".to_string(), number_slot(10.0, false))
             .unwrap();
-        // The store tree must name the dotted slot.
-        let store_tree = IrNode::Add {
-            a: input("mover.speed"),
-            b: num(1.0),
-        };
         let store_scope = StoreScope::engine(ctx);
-        let store_program = bind(&read_only(store_tree), &store_scope).expect("store binds");
+        let store_program = bind(&tree, &store_scope).expect("store binds");
         assert_number(eval_value(&store_program, &store_scope), 11.0);
 
-        // Stub scope: `speed` is 4.0 by construction.
+        // Stub scope: `speed` is 4.0 by construction — same tree, different scope.
         let stub_scope = StubScope::new();
-        let stub_program = bind(&read_only(tree), &stub_scope).expect("stub binds");
+        let stub_program = bind(&tree, &stub_scope).expect("stub binds");
         assert_number(eval_value(&stub_program, &stub_scope), 5.0);
     }
 

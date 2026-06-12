@@ -687,6 +687,11 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   // Rust `IrNode` wire format byte-for-byte (`a`/`b`, `x`/`lo`/`hi`, `cond`,
   // `name`, `value`) so builder output deserializes straight into `IrNode`.
   // Source of truth: crates/postretro/src/scripting/ir/mod.rs + sdk/lib/ir.ts.
+  // Static block (not registry-emitted): `register_tagged_union` /
+  // `TypeShape::TaggedUnion` renders one payload *type name* per variant under
+  // a fixed tag key — it cannot express per-variant inline struct fields (e.g.
+  // `value`, `a`/`b`, `cond`) or the recursive `IrNode` self-reference that
+  // every non-leaf variant requires.
 
   /** Literal scalar leaf: `{ op: "const", value }`. `value` is a number or boolean. */
   export type IrConst = { op: "const"; value: number | boolean };
@@ -1191,6 +1196,11 @@ declare function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescr
 -- Rust `IrNode` wire format byte-for-byte (`a`/`b`, `x`/`lo`/`hi`, `cond`,
 -- `name`, `value`) so builder output deserializes straight into `IrNode`.
 -- Source of truth: crates/postretro/src/scripting/ir/mod.rs + sdk/lib/ir.luau.
+-- Static block (not registry-emitted): `register_tagged_union` /
+-- `TypeShape::TaggedUnion` renders one payload type name per variant under a
+-- fixed tag key — it cannot express per-variant inline struct fields (e.g.
+-- `value`, `a`/`b`, `cond`) or the recursive `IrNode` self-reference that
+-- every non-leaf variant requires.
 
 --- Literal scalar leaf: `{ op = "const", value }`. `value` is a number or boolean.
 export type IrConst = { op: "const", value: number | boolean }
@@ -2456,19 +2466,25 @@ export type Event = {
         let luau = generate_luau(&r);
 
         // The closed opcode set, matching `IrNode`'s snake_case wire tags.
+        // Assertions are anchored on the discriminant field form, not a bare
+        // quoted string, so they can only pass when the opcode appears as the
+        // `op` field value in the emitted union variant:
+        //   TS:   `op: "const";`  (semicolon-separated struct field)
+        //   Luau: `op: "const",`  (comma-separated struct field)
         const OPCODES: &[&str] = &[
             "const", "input", "add", "sub", "mul", "div", "clamp", "lerp", "select", "lt", "le",
             "gt", "ge", "eq", "ne",
         ];
         for op in OPCODES {
-            let literal = format!("\"{op}\"");
+            let ts_discriminant = format!("op: \"{op}\";");
+            let luau_discriminant = format!("op: \"{op}\",");
             assert!(
-                ts.contains(&literal),
-                "ts d.ts missing IR opcode tag {literal}"
+                ts.contains(&ts_discriminant),
+                "ts d.ts missing IR opcode discriminant `{ts_discriminant}`"
             );
             assert!(
-                luau.contains(&literal),
-                "luau d.luau missing IR opcode tag {literal}"
+                luau.contains(&luau_discriminant),
+                "luau d.luau missing IR opcode discriminant `{luau_discriminant}`"
             );
         }
 

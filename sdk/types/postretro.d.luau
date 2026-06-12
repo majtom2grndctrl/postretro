@@ -685,6 +685,11 @@ declare function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescr
 -- Rust `IrNode` wire format byte-for-byte (`a`/`b`, `x`/`lo`/`hi`, `cond`,
 -- `name`, `value`) so builder output deserializes straight into `IrNode`.
 -- Source of truth: crates/postretro/src/scripting/ir/mod.rs + sdk/lib/ir.luau.
+-- Static block (not registry-emitted): `register_tagged_union` /
+-- `TypeShape::TaggedUnion` renders one payload type name per variant under a
+-- fixed tag key — it cannot express per-variant inline struct fields (e.g.
+-- `value`, `a`/`b`, `cond`) or the recursive `IrNode` self-reference that
+-- every non-leaf variant requires.
 
 --- Literal scalar leaf: `{ op = "const", value }`. `value` is a number or boolean.
 export type IrConst = { op: "const", value: number | boolean }

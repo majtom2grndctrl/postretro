@@ -42,8 +42,8 @@ const INPUTS: [(&str, IrType); 6] = [
 /// internal — the script-facing slot table is never consulted, so the
 /// script-opacity invariant (entity_model.md §7b) holds by construction.
 ///
-/// `Clone` is derived (a six-value array): a later task's derive-resolution path
-/// relies on it.
+/// `Clone` is derived: `DashPrograms` holds `BoundProgram<MovementScope>`, whose
+/// `Clone` requires `MovementScope`'s handle type (`usize`) to be `Clone`.
 #[derive(Clone, Debug)]
 pub(crate) struct MovementScope {
     /// The snapshot the bound expressions read. Slot `i` holds the value for
@@ -52,8 +52,8 @@ pub(crate) struct MovementScope {
     values: [IrValue; 6],
 }
 
-// The dash-adopter tasks (descriptor validation, `DashPrograms`) that call these
-// land in later M14 tasks; until then only the unit tests exercise them.
+// `for_validation`/`refresh` are called from `data_descriptors` and `player_movement`
+// in non-test builds; the cfg_attr keeps the dead-code lint honest if future adopters drop them.
 #[cfg_attr(not(test), allow(dead_code))]
 impl MovementScope {
     /// A scope with no live values, for declaration-time validation. Bind only
@@ -62,7 +62,8 @@ impl MovementScope {
     /// slots are type-correct zeros (`0.0` / `false`) so an accidental read would
     /// still be total.
     ///
-    /// Task 2 calls this at descriptor declaration time.
+    /// Used at descriptor declaration time (dash expression validation) and at
+    /// component construction (`DashPrograms`).
     pub(crate) fn for_validation() -> Self {
         Self {
             values: [

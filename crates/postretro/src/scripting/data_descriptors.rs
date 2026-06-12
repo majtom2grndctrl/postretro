@@ -573,9 +573,8 @@ pub(crate) enum BoolOrIr {
 }
 
 impl NumberOrIr {
-    /// The literal value when this field is a bare scalar, else `None`. Interim
-    /// callers (the movement intent path until Task 4's resolve helpers land)
-    /// read literals through this; an expression reads as `None`.
+    /// The literal value when this field is a bare scalar, else `None`.
+    /// Tests use this to assert expression fields round-trip as `None`.
     pub(crate) fn literal(&self) -> Option<f32> {
         match self {
             NumberOrIr::Literal(v) => Some(*v),
@@ -1650,6 +1649,9 @@ fn read_dash_number_js<'js>(
     if raw.is_null() || raw.is_undefined() {
         return Err(DescriptorError::MissingField { field });
     }
+    // Arrays fall through here (is_array() excludes them) and hit the final
+    // InvalidShape below. The Luau reader routes arrays into ir_node_from_json
+    // instead — same InvalidShape variant, different message text by design.
     if raw.is_object() && !raw.is_array() {
         let json = super::conv::js_to_json(ctx, raw).map_err(js_err)?;
         let node = ir_node_from_json(json, path)?;
@@ -1766,7 +1768,7 @@ fn get_required_bool_js<'js>(
 ///
 /// The explicit root-type check is load-bearing: `bind` with no `output` never
 /// checks the root's type, so without it a bool-rooted expression in a number
-/// field would silently bind and (Task 4) evaluate as a type-zero value.
+/// field would silently bind and evaluate as a type-zero value.
 fn validate_dash_expr(
     node: IrNode,
     expected: IrType,

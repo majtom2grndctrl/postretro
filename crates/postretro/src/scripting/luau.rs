@@ -57,7 +57,7 @@ const DATA_SCRIPT_LUAU_SRC: &str = include_str!("../../../../sdk/lib/data_script
 
 /// SDK library prelude — `runtime.luau` returns the runtime-value builder table,
 /// promoted whole to global `runtime` (mirroring `world`). Pure data assembly: a
-/// builder returns an `IrNode` table and never calls back into Rust.
+/// builder assembles a `RuntimeValue` table and never calls back into Rust.
 const RUNTIME_LUAU_SRC: &str = include_str!("../../../../sdk/lib/runtime.luau");
 
 /// Lights SDK fields lifted to globals after evaluating

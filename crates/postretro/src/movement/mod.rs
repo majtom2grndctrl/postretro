@@ -10,10 +10,8 @@ use parry3d::shape::Capsule;
 mod carry;
 mod scope;
 
-// Re-exported for the dash-adopter tasks (descriptor validation, `DashPrograms`)
-// that bind against it. `allow(unused_imports)`: the consumers land in later M14
-// tasks, so this re-export has no in-crate use site yet.
-#[allow(unused_imports)]
+// Re-exported so scripting subsystem modules (`data_descriptors`, `player_movement`)
+// can import `crate::movement::MovementScope` without pulling in the full movement subsystem.
 pub(crate) use scope::MovementScope;
 
 use crate::collision::{CollisionWorld, SKIN_DISTANCE, cast_capsule, cast_ray};
@@ -3468,7 +3466,7 @@ mod tests {
         }
     }
 
-    // ---- Dash (Task 4) ----------------------------------------------------
+    // ---- Dash -------------------------------------------------------------
 
     /// Build a `DashParams` with the three orthogonal knobs explicit so each
     /// dash test can place itself on the rigid↔fluid spectrum (D3).
@@ -4655,7 +4653,7 @@ mod tests {
         );
     }
 
-    // ----- Dash expression eval (Task 4) -----------------------------------
+    // ----- Dash expression eval --------------------------------------------
     //
     // These cover the expression form of the dash value fields: an authored IR
     // expression resolves against a live `MovementScope` snapshot at the
@@ -5062,6 +5060,7 @@ mod tests {
         };
         let (next, _ev) = tick(&mut comp, &enter, &world, GRAVITY, DT, pos);
         pos = next;
+        let _ = pos;
         assert!(
             matches!(comp.movement_state, MovementState::Dash { .. }),
             "should be dashing so dash_intent runs"

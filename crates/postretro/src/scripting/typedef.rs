@@ -678,6 +678,110 @@ const TS_SDK_LIB_BLOCK: &str = r#"
 
   /** Pure identity builder for entity-type descriptors. Returns the descriptor as-is; its sole purpose is a typed construction site. */
   export function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor;
+
+  // -------------------------------------------------------------------------
+  // Behavior IR vocabulary — the typed command buffer (scripting.md §11). The
+  // `ir.*` builders assemble these node objects as plain data; constructing a
+  // node has no FFI side effect. The union below is the *closure* of the
+  // vocabulary: an author cannot name an op outside it. Field names match the
+  // Rust `IrNode` wire format byte-for-byte (`a`/`b`, `x`/`lo`/`hi`, `cond`,
+  // `name`, `value`) so builder output deserializes straight into `IrNode`.
+  // Source of truth: crates/postretro/src/scripting/ir/mod.rs + sdk/lib/ir.ts.
+  // Static block (not registry-emitted): `register_tagged_union` /
+  // `TypeShape::TaggedUnion` renders one payload *type name* per variant under
+  // a fixed tag key — it cannot express per-variant inline struct fields (e.g.
+  // `value`, `a`/`b`, `cond`) or the recursive `IrNode` self-reference that
+  // every non-leaf variant requires.
+
+  /** Literal scalar leaf: `{ op: "const", value }`. `value` is a number or boolean. */
+  export type IrConst = { op: "const"; value: number | boolean };
+  /** Named-input leaf: `{ op: "input", name }`. Bound to live state by the Rust evaluator. */
+  export type IrInput = { op: "input"; name: string };
+  /** Addition: `a + b` (number). */
+  export type IrAdd = { op: "add"; a: IrNode; b: IrNode };
+  /** Subtraction: `a - b` (number). */
+  export type IrSub = { op: "sub"; a: IrNode; b: IrNode };
+  /** Multiplication: `a * b` (number). */
+  export type IrMul = { op: "mul"; a: IrNode; b: IrNode };
+  /** Division: `a / b` (number). */
+  export type IrDiv = { op: "div"; a: IrNode; b: IrNode };
+  /** Clamp `x` to `[lo, hi]` (number). */
+  export type IrClamp = { op: "clamp"; x: IrNode; lo: IrNode; hi: IrNode };
+  /** Linear interpolation between `a` and `b` by `t` (number). */
+  export type IrLerp = { op: "lerp"; a: IrNode; b: IrNode; t: IrNode };
+  /** Less-than comparison (boolean). */
+  export type IrLt = { op: "lt"; a: IrNode; b: IrNode };
+  /** Less-than-or-equal comparison (boolean). */
+  export type IrLe = { op: "le"; a: IrNode; b: IrNode };
+  /** Greater-than comparison (boolean). */
+  export type IrGt = { op: "gt"; a: IrNode; b: IrNode };
+  /** Greater-than-or-equal comparison (boolean). */
+  export type IrGe = { op: "ge"; a: IrNode; b: IrNode };
+  /** Equality comparison (boolean). */
+  export type IrEq = { op: "eq"; a: IrNode; b: IrNode };
+  /** Inequality comparison (boolean). */
+  export type IrNe = { op: "ne"; a: IrNode; b: IrNode };
+  /** Branchless select: `cond ? a : b`. `a` and `b` share a type. */
+  export type IrSelect = { op: "select"; cond: IrNode; a: IrNode; b: IrNode };
+
+  /** A node in the authored behavior IR tree. Closed vocabulary: every node
+   * the evaluator accepts is one of these variants. New opcodes extend this
+   * union in lockstep with the Rust `IrNode` enum. */
+  export type IrNode =
+    | IrConst
+    | IrInput
+    | IrAdd
+    | IrSub
+    | IrMul
+    | IrDiv
+    | IrClamp
+    | IrLerp
+    | IrLt
+    | IrLe
+    | IrGt
+    | IrGe
+    | IrEq
+    | IrNe
+    | IrSelect;
+
+  /** Pure builder vocabulary for the behavior IR, installed as `globalThis.ir`.
+   * Every method returns a plain `IrNode` object; constructing a node has no
+   * FFI side effect. Import via `import { ir } from "postretro"`. */
+  export interface Ir {
+    /** Literal scalar leaf. `const` is reserved, so the builder is `constant`. */
+    constant(value: number | boolean): IrConst;
+    /** Named-input leaf, bound to live state by name in the Rust evaluator. */
+    input(name: string): IrInput;
+    /** `a + b` (number). */
+    add(a: IrNode, b: IrNode): IrAdd;
+    /** `a - b` (number). */
+    sub(a: IrNode, b: IrNode): IrSub;
+    /** `a * b` (number). */
+    mul(a: IrNode, b: IrNode): IrMul;
+    /** `a / b` (number). */
+    div(a: IrNode, b: IrNode): IrDiv;
+    /** Clamp `x` to `[lo, hi]` (number). */
+    clamp(x: IrNode, lo: IrNode, hi: IrNode): IrClamp;
+    /** Linear interpolation between `a` and `b` by `t` (number). */
+    lerp(a: IrNode, b: IrNode, t: IrNode): IrLerp;
+    /** `a < b` (boolean). */
+    lt(a: IrNode, b: IrNode): IrLt;
+    /** `a <= b` (boolean). */
+    le(a: IrNode, b: IrNode): IrLe;
+    /** `a > b` (boolean). */
+    gt(a: IrNode, b: IrNode): IrGt;
+    /** `a >= b` (boolean). */
+    ge(a: IrNode, b: IrNode): IrGe;
+    /** `a == b` (boolean). */
+    eq(a: IrNode, b: IrNode): IrEq;
+    /** `a != b` (boolean). */
+    ne(a: IrNode, b: IrNode): IrNe;
+    /** Branchless select: `cond ? a : b`. `a` and `b` share a type. */
+    select(cond: IrNode, a: IrNode, b: IrNode): IrSelect;
+  }
+
+  /** Behavior IR builder vocabulary global. */
+  export const ir: Ir;
 "#;
 
 // ---------------------------------------------------------------------------
@@ -1083,6 +1187,97 @@ declare function defineReaction(
 --- Pure identity builder for entity-type descriptors. Returns the
 --- descriptor as-is; its sole purpose is a typed construction site.
 declare function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor
+
+-- ---------------------------------------------------------------------------
+-- Behavior IR vocabulary — the typed command buffer (scripting.md §11). The
+-- `ir.*` builders assemble these node tables as plain data; constructing a
+-- node has no FFI side effect. The `IrNode` union is the *closure* of the
+-- vocabulary: an author cannot name an op outside it. Field names match the
+-- Rust `IrNode` wire format byte-for-byte (`a`/`b`, `x`/`lo`/`hi`, `cond`,
+-- `name`, `value`) so builder output deserializes straight into `IrNode`.
+-- Source of truth: crates/postretro/src/scripting/ir/mod.rs + sdk/lib/ir.luau.
+-- Static block (not registry-emitted): `register_tagged_union` /
+-- `TypeShape::TaggedUnion` renders one payload type name per variant under a
+-- fixed tag key — it cannot express per-variant inline struct fields (e.g.
+-- `value`, `a`/`b`, `cond`) or the recursive `IrNode` self-reference that
+-- every non-leaf variant requires.
+
+--- Literal scalar leaf: `{ op = "const", value }`. `value` is a number or boolean.
+export type IrConst = { op: "const", value: number | boolean }
+--- Named-input leaf: `{ op = "input", name }`. Bound to live state by the Rust evaluator.
+export type IrInput = { op: "input", name: string }
+--- Addition: `a + b` (number).
+export type IrAdd = { op: "add", a: IrNode, b: IrNode }
+--- Subtraction: `a - b` (number).
+export type IrSub = { op: "sub", a: IrNode, b: IrNode }
+--- Multiplication: `a * b` (number).
+export type IrMul = { op: "mul", a: IrNode, b: IrNode }
+--- Division: `a / b` (number).
+export type IrDiv = { op: "div", a: IrNode, b: IrNode }
+--- Clamp `x` to `[lo, hi]` (number).
+export type IrClamp = { op: "clamp", x: IrNode, lo: IrNode, hi: IrNode }
+--- Linear interpolation between `a` and `b` by `t` (number).
+export type IrLerp = { op: "lerp", a: IrNode, b: IrNode, t: IrNode }
+--- Less-than comparison (boolean).
+export type IrLt = { op: "lt", a: IrNode, b: IrNode }
+--- Less-than-or-equal comparison (boolean).
+export type IrLe = { op: "le", a: IrNode, b: IrNode }
+--- Greater-than comparison (boolean).
+export type IrGt = { op: "gt", a: IrNode, b: IrNode }
+--- Greater-than-or-equal comparison (boolean).
+export type IrGe = { op: "ge", a: IrNode, b: IrNode }
+--- Equality comparison (boolean).
+export type IrEq = { op: "eq", a: IrNode, b: IrNode }
+--- Inequality comparison (boolean).
+export type IrNe = { op: "ne", a: IrNode, b: IrNode }
+--- Branchless select: `cond ? a : b`. `a` and `b` share a type.
+export type IrSelect = { op: "select", cond: IrNode, a: IrNode, b: IrNode }
+
+--- A node in the authored behavior IR tree. Closed vocabulary: every node the
+--- evaluator accepts is one of these variants. New opcodes extend this union
+--- in lockstep with the Rust `IrNode` enum.
+export type IrNode = IrConst | IrInput | IrAdd | IrSub | IrMul | IrDiv | IrClamp | IrLerp | IrLt | IrLe | IrGt | IrGe | IrEq | IrNe | IrSelect
+
+--- Pure builder vocabulary for the behavior IR, installed as global `ir`.
+--- Every method returns a plain `IrNode` table; constructing a node has no
+--- FFI side effect.
+--- Builders are dot-called (`ir.add(...)`), not method-called, so the
+--- signatures take no `self` parameter.
+export type Ir = {
+  --- Literal scalar leaf. `const` is reserved, so the builder is `constant`.
+  constant: (value: number | boolean) -> IrConst,
+  --- Named-input leaf, bound to live state by name in the Rust evaluator.
+  input: (name: string) -> IrInput,
+  --- `a + b` (number).
+  add: (a: IrNode, b: IrNode) -> IrAdd,
+  --- `a - b` (number).
+  sub: (a: IrNode, b: IrNode) -> IrSub,
+  --- `a * b` (number).
+  mul: (a: IrNode, b: IrNode) -> IrMul,
+  --- `a / b` (number).
+  div: (a: IrNode, b: IrNode) -> IrDiv,
+  --- Clamp `x` to `[lo, hi]` (number).
+  clamp: (x: IrNode, lo: IrNode, hi: IrNode) -> IrClamp,
+  --- Linear interpolation between `a` and `b` by `t` (number).
+  lerp: (a: IrNode, b: IrNode, t: IrNode) -> IrLerp,
+  --- `a < b` (boolean).
+  lt: (a: IrNode, b: IrNode) -> IrLt,
+  --- `a <= b` (boolean).
+  le: (a: IrNode, b: IrNode) -> IrLe,
+  --- `a > b` (boolean).
+  gt: (a: IrNode, b: IrNode) -> IrGt,
+  --- `a >= b` (boolean).
+  ge: (a: IrNode, b: IrNode) -> IrGe,
+  --- `a == b` (boolean).
+  eq: (a: IrNode, b: IrNode) -> IrEq,
+  --- `a ~= b` (boolean).
+  ne: (a: IrNode, b: IrNode) -> IrNe,
+  --- Branchless select: `cond ? a : b`. `a` and `b` share a type.
+  select: (cond: IrNode, a: IrNode, b: IrNode) -> IrSelect,
+}
+
+--- Behavior IR builder vocabulary global.
+declare ir: Ir
 "#;
 
 // ---------------------------------------------------------------------------
@@ -2253,6 +2448,54 @@ export type Event = {
         assert_eq!(
             committed_luau, luau,
             "sdk/types/postretro.d.luau is out of date — re-run `cargo run -p postretro --bin gen-script-types` and commit the result"
+        );
+    }
+
+    /// The behavior-IR vocabulary (scripting.md §11) is a closed union: every
+    /// opcode tag must be typed in both `.d.ts` and `.d.luau` so an author
+    /// cannot name an op outside it. Asserts each tag appears in both outputs
+    /// generated through the same path the `gen-script-types` bin uses.
+    #[test]
+    fn ir_opcode_vocabulary_appears_in_both_type_outputs() {
+        use crate::scripting::ctx::ScriptCtx;
+        use crate::scripting::primitives::register_all;
+
+        let mut r = PrimitiveRegistry::new();
+        register_all(&mut r, ScriptCtx::new());
+        let ts = generate_typescript(&r);
+        let luau = generate_luau(&r);
+
+        // The closed opcode set, matching `IrNode`'s snake_case wire tags.
+        // Assertions are anchored on the discriminant field form, not a bare
+        // quoted string, so they can only pass when the opcode appears as the
+        // `op` field value in the emitted union variant:
+        //   TS:   `op: "const";`  (semicolon-separated struct field)
+        //   Luau: `op: "const",`  (comma-separated struct field)
+        const OPCODES: &[&str] = &[
+            "const", "input", "add", "sub", "mul", "div", "clamp", "lerp", "select", "lt", "le",
+            "gt", "ge", "eq", "ne",
+        ];
+        for op in OPCODES {
+            let ts_discriminant = format!("op: \"{op}\";");
+            let luau_discriminant = format!("op: \"{op}\",");
+            assert!(
+                ts.contains(&ts_discriminant),
+                "ts d.ts missing IR opcode discriminant `{ts_discriminant}`"
+            );
+            assert!(
+                luau.contains(&luau_discriminant),
+                "luau d.luau missing IR opcode discriminant `{luau_discriminant}`"
+            );
+        }
+
+        // The union alias itself must surface so the closure is nameable.
+        assert!(
+            ts.contains("export type IrNode ="),
+            "ts missing IrNode union"
+        );
+        assert!(
+            luau.contains("export type IrNode ="),
+            "luau missing IrNode union"
         );
     }
 }

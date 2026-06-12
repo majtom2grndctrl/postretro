@@ -16,6 +16,7 @@ pub(crate) mod ctx;
 pub(crate) mod data_descriptors;
 pub(crate) mod data_registry;
 pub(crate) mod error;
+pub(crate) mod ir;
 pub(crate) mod luau;
 pub(crate) mod map_entity;
 pub(crate) mod primitives;

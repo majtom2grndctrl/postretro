@@ -61,12 +61,15 @@ reaction lists (`onStateCrossing`), and the UI reaction helpers (`flashScreen`,
   `screen.flash` and a full-screen panel bound to it renders the flash
   decaying to transparent.
 - [ ] `showDialog` / `openMenu` push a named registered tree onto the modal
-  stack and `closeDialog` pops it (verified once F's stack exists — see
-  Sequencing); unknown tree name warns, no panic.
+  stack and `closeDialog` pops it (verified once F's stack lands; warn-once
+  "no stack" sink until then); unknown tree name warns, no panic.
 - [ ] Both runtimes (TS + Luau) declare identical `onStateCrossing` + helper
-  surfaces; `styleRanges` is wire-format + typedef only (descriptor ingestion
-  arrives with G1); typedefs emitted; round-trip wire test: a descriptor
-  without `styleRanges` keeps its pre-E wire form byte-identical.
+  surfaces as SDK-authored types in `sdk/lib/ui/reactions.{ts,luau}`
+  (registry-driven typedefs only where a primitive is actually registered);
+  `styleRanges` is wire-format + typedef only — script-facing registration
+  arrives with G1; the evaluator is live for Rust-built trees; round-trip
+  wire test: a descriptor without `styleRanges` keeps its pre-E wire form
+  byte-identical.
 - [ ] The health-bar panel with `styleRanges` plus the 20% crossing firing
   flash + sound runs in the dev map (manual verification of Task 4's demo).
 - [ ] `docs/scripting-reference.md` covers the new surface.
@@ -76,7 +79,8 @@ reaction lists (`onStateCrossing`), and the UI reaction helpers (`flashScreen`,
 ### Task 1: styleRanges descriptor + evaluator
 
 Add `styleRanges: Option<StyleRanges>` to `TextWidget` and `PanelWidget`
-(sibling of `bind`; warn when present without `bind`). `StyleRanges { max,
+(sibling of `bind`; warn once per tree build when present without `bind`,
+per the theme-fallback precedent). `StyleRanges { max,
 entries }`; entry `{ upTo: Option<f32>, color: Option<ColorValue>, pulse,
 flash }`, ordered, first match on `value/max`, trailing no-`upTo` entry is
 default. Evaluator is a pure function (value in → resolved style out, no
@@ -92,22 +96,27 @@ descriptors without `styleRanges`.
 Today's `ReactionPrimitiveRegistry` handlers mutate `EntityRegistry` only. Add
 a command-queue arm: system reaction handlers push typed
 `SystemReactionCommand` values (PlaySound, Rumble, FlashScreen, PushTree,
-PopTree) onto a queue owned by the scripting context, drained once per tick by
-the app after dispatch — audio/input/UI subsystems consume their commands
-without threading `&mut` engine services into scripting. Registration,
-named-event resolution (`fire_named_event` /
+PopTree) onto a queue owned by the scripting context, drained once per frame
+by the app after the post-tick event drains — audio/input/UI subsystems
+consume their commands without threading `&mut` engine services into
+scripting. Registration, named-event resolution (`fire_named_event` /
 `fire_named_event_with_sequences`), and the descriptor vocabulary
 (`ReactionDescriptor::Primitive`) are shared with entity reactions — one event
-namespace, two execution arms.
+namespace, two execution arms. System reactions target no entities: make
+`tag` optional on `PrimitiveDescriptor` (absent = system-targeted) and update
+both manifest parse paths (JS + Luau) and the SDK descriptor type in the same
+pass — no mandatory dummy tag in the author API.
 
 ### Task 3: crossing detector
 
 Engine-side watcher declared at load: `onStateCrossing(slot, condition,
 reactions)` in both runtimes is a builder whose results return through the
 setup-function manifest (the `scripting.md` §12 FFI rule — no side-effect
-registration); the manifest gains a `crossings` field beside `reactions`, and
-`DataRegistry` widens to carry it. After the
-game-logic stage writes slots, the detector compares each watched slot's
+registration); the manifest gains a `crossings` field beside `reactions`
+(entry shape: `{ slot, below|above, max?, fire: [reaction names] }`), and
+`DataRegistry` widens to carry it. After the frame's slot writes (concretely:
+after `ui_proxy.tick`, before the snapshot build), the detector compares each
+watched slot's
 current value to its previous: `below: x` fires on `prev >= x && cur < x`,
 `above: x` on `prev <= x && cur > x` (thresholds are fractions of the
 registration's `max`, carried in the condition object, default 1.0 for
@@ -116,7 +125,9 @@ start — no fire on initial state; a slot with no value yet initializes its
 previous value on first observed value and cannot fire before one exists.
 Registration against a non-`Number` slot warns and skips at registration time.
 Firing dispatches the reaction list synchronously via Task 2's path. Watchers
-clear on level unload with the rest of the data registry.
+clear on level unload with the rest of the data registry. Ships the AC-3
+contract test driving the styleRanges evaluator and the detector against the
+same tweened slot.
 
 ### Task 4: helper primitives + SDK + demo
 
@@ -140,7 +151,9 @@ identical `PushTree` behavior apart from `showDialog`'s optional `onCommit`,
 both names kept per research-§15 API; semantic divergence (e.g. pause
 policy) is deferred to BIS. SDK constructors in `sdk/lib/ui/reactions.{ts,luau}`,
 typedef emission, docs, and a demo: health-bar panel with styleRanges + a
-crossing at 20% firing flash + sound.
+crossing at 20% firing flash + sound (demo homes: the hardcoded gameplay tree
+in `render/ui/demo.rs`, a `setupLevel` data script and registered sound in
+the dev map).
 
 ## Sequencing
 

@@ -68,7 +68,8 @@ write path). Draftable now; orchestrate after both.
 - [ ] With a hardware keyboard: open text entry, type (including shifted
   characters), Backspace deletes, Enter commits, Escape cancels — same
   observable result as the gamepad path; keystrokes never leak to game logic
-  while the modal is open.
+  while the modal is open (this sub-claim also gets an automated
+  `UiDispatch`-level test, not only the manual check).
 - [ ] `appendText` appends its string arg to the target slot;
   `backspaceText` removes the last char (no-op + no warning on empty);
   `clearText` empties it; all reject readonly slots with the `setState`
@@ -78,7 +79,8 @@ write path). Draftable now; orchestrate after both.
   (Hardware-key repeat comes from the OS key-repeat events.)
 - [ ] Unicode-safe: backspace removes one extended grapheme cluster (floor:
   one `char`, never splits a UTF-8 sequence — pin at implementation, test
-  with a multi-byte string).
+  with a precomposed multi-byte char, not a multi-codepoint cluster, so the
+  test passes under the permitted floor).
 - [ ] The on-screen keyboard ships as a descriptor JSON asset that
   deserializes through the standard wire path — deleting one key from the
   JSON and reloading changes the keyboard with no Rust change.
@@ -94,7 +96,10 @@ write path). Draftable now; orchestrate after both.
 `appendText { slot, text }`, `backspaceText { slot }`, `clearText { slot }`
 as system-reaction primitives on E's command path, applied at the game-logic
 stage through the same writable-slot gate as `setState` (readonly → warn,
-no-op). Grapheme-aware backspace. Both runtimes + typedefs.
+no-op). Grapheme-aware backspace (char-pop floor acceptable per the Unicode
+AC). Declares the engine-owned, writable `String` slot `ui.textEntry` in
+`SlotTable::default` beside the `player` namespace. Both runtimes +
+typedefs.
 
 ### Task 2: `repeatOnHold` button flag
 
@@ -110,7 +115,10 @@ While the top stack tree declares an active text-entry target
 input stage enqueues winit key text events as F's `Text(String)` intent
 variant (F Task 1 defines it; this task produces it); the focus engine
 resolves `Text` intents into Task 1 edit commands against the target slot,
-and Backspace into `backspaceText`. Commit/cancel mechanics, pinned here and
+and Backspace into `backspaceText`. Match the logical key for
+Backspace/Enter/Escape and use `KeyEvent.text` only for printable input —
+Backspace can also arrive as text `\u{8}` on some platforms and must never
+route through the text channel. Commit/cancel mechanics, pinned here and
 shared with Task 4's keys: **commit** (Enter, or the `done` key) fires the
 opener's `onCommit` reaction (the `showDialog { tree, onCommit? }` arg from
 E) then `PopTree`; **cancel** (Escape / `nav.cancel`) is `PopTree` only,
@@ -120,9 +128,10 @@ capture contract. No IME.
 
 ### Task 4: keyboard asset + demo + docs
 
-The `keyboard` descriptor JSON asset, registered in F's named-tree registry
-at boot, declaring `captureMode: "capture"` and its `textEntryTarget` on its
-own envelope; its `done` key triggers Task 3's commit path. The demo screen
+The `keyboard` descriptor JSON asset — a file on disk under the engine
+content tree, read at boot (not `include_str!`-embedded, so AC 6's
+edit-and-reload holds) and registered in F's named-tree registry — declaring
+`captureMode: "capture"` and its `textEntryTarget` on its own envelope; its `done` key triggers Task 3's commit path. The demo screen
 binds its text field to `ui.textEntry` directly and opens the keyboard via
 `showDialog { tree: "keyboard", onCommit }`, exercising both input paths;
 the demo's `onCommit` fires an observable confirmation (a `playSound`), so

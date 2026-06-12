@@ -74,8 +74,10 @@ reaction sliders require. Realizes `ui-layer.md` §11–§12, §15 (focus model)
   `repeatOnHold` opt-in (added by the text-entry plan).
 - [ ] Mouse motion sets `input.mode` to `pointer` (cursor visible, ring
   hidden); any stick/D-pad/nav-key input sets `focus` (cursor hidden, ring
-  visible); a widget bound to `input.mode` toggles visibility accordingly;
-  mode is inert while no capturing tree is on the stack.
+  visible); a `text` widget bound to `input.mode` displays the current mode
+  (no visibility bind exists or ships in F); mode detection and cursor/ring
+  decisions are CPU-asserted, OS cursor visibility itself is manual; mode is
+  inert while no capturing tree is on the stack.
 - [ ] Pointer hover + click on a `button` and gamepad confirm on a focused
   `button` both fire its `onPress` named reaction through the reaction
   registry — identical observable effect.
@@ -89,7 +91,7 @@ reaction sliders require. Realizes `ui-layer.md` §11–§12, §15 (focus model)
 - [ ] Focus traversal, hit-testing, repeat timing, and stack capture are
   covered by CPU-side tests (layout-tree / draw-list assertions, no GPU
   goldens); descriptors without new fields keep pre-F wire form
-  byte-identical.
+  byte-identical (every new field ships `skip_serializing_if` defaults).
 - [ ] The pause-menu demo is fully gamepad-navigable in the dev map and the
   `audio.master` slider audibly changes volume (manual verification of
   Task 5's demo).
@@ -109,8 +111,14 @@ stick-past-deadzone edge) to `Nav` intents and mouse clicks to
 `PointerClick`, enqueued in `input/ui_dispatch.rs`. `Text` is defined here
 (one queue, one contract) but produced only by the text-entry plan. Cursor
 position is tracked from winit `CursorMoved` while the cursor is released
-and exposed as state — hover never enqueues. TS template-literal type +
-Luau string union emitted in typedefs.
+and exposed as state — hover never enqueues. Gamepad intents must be
+enqueued before the frame's `take_ready`/`advance_frame` pair (the gilrs
+poll currently runs after it — move the poll or enqueue from a pre-promotion
+site) so both sources share the N→N+1 contract. Bindings: `nav.menu` =
+Start (gamepad) and Escape-from-gameplay (keyboard, no capturing tree on the
+stack — Escape inside captured UI is `nav.cancel`); `nav.options` =
+Select/Back. TS template-literal type + Luau string union emitted in
+typedefs.
 
 ### Task 2: modal stack
 
@@ -122,7 +130,10 @@ bottom→top. This task also ships the **named-tree registry** the wave's other
 plans reference: the app-side stack owner holds `name → AnchoredTree`
 registrations (engine built-ins registered at boot; script registration
 arrives with G1), resolves E's PushTree commands by name (unknown name warns,
-no panic), and exposes an engine push/pop API for pause/dialog. A tree's
+no panic), and exposes an engine push/pop API for pause/dialog. If E's
+`SystemReactionCommand` enum is not yet in the tree, ship the registry, the
+engine push/pop API, and the by-name resolve; the drain wiring lands with
+whichever task arrives second. A tree's
 capture mode is declared on its `AnchoredTree` envelope (new wire field
 `captureMode`, default passthrough) so a JSON-authored tree declares its own
 behavior; `UiTreeEntry` carries it from there. Top tree's `UiCaptureMode`
@@ -146,10 +157,16 @@ work, not presentation; the renderer only displays). It runs in the
 input/game-logic stage against the published rect list and tracked cursor
 position, with state keyed per stack tree: policies `linear` (tree order,
 wrap) and `spatial` (nearest node center in the directional half-plane),
-`focusNeighbors` override, `initialFocus`, `restoreOnReturn`. Pointer hover
+`focusNeighbors` override, `initialFocus`, `restoreOnReturn`. Wire form,
+pinned here because the keyboard asset and JSON authors consume it: container
+widgets gain additive serde fields with skip-serializing defaults —
+`focus: "linear" | "spatial" | { "policy", "wrap"?, "repeat"? }` and
+`restoreOnReturn`; nodes gain `focusNeighbors`; `initialFocus` lives on the
+`AnchoredTree` envelope (screen-level, beside `captureMode`). Pointer hover
 moves focus in pointer mode; `PointerClick` hits resolve by topmost z. The
 focused node id rides the next `UiReadSnapshot`; the UI pass draws the focus
-ring around that node's rect (theme-token color + spacing inset) — ring
+ring around that node's rect (new engine-default color token `focus.ring`,
+`xs` spacing inset) — ring
 display may trail a focus change by one frame, the same N→N+1 latency every
 UI event carries. The hold-to-repeat timer lives in the focus engine
 (container policy delivered with the rect list), dt-clocked.
@@ -158,10 +175,15 @@ UI event carries. The hold-to-repeat timer lives in the focus engine
 
 `setState` system-reaction primitive (E's command path): `{ slot, value }`
 applied to writable slots (modder- or engine-declared — writability, not
-ownership, gates) at the game-logic stage, readonly rejected with a warning. Widgets: `button { id, label, onPress }` — focusable,
+ownership, gates) at the game-logic stage, readonly rejected with a warning.
+Expose a readonly-gated JSON-value write beside `write_store_slot` in
+`primitives/store.rs` (the existing readonly-gated path is private and typed
+over script values); never the engine bypass path. Widgets: `button { id, label, onPress }` — focusable,
 activation fires the named reaction; `slider { id, label, bind, min, max,
 step, capturesNav }` — consumed nav steps the value and emits `setState`;
-the slider renders its current numeric value as text beside its label;
+`capturesNav` is an array of nav wire names
+(`"capturesNav": ["nav.left", "nav.right"]`), not a bool; the slider renders
+its current numeric value as text beside its label;
 `bar { bind, max, fill, background, styleRanges? }` — fill fraction from
 bound value, calls E's styleRanges evaluator when present, tween-compatible;
 `bind` follows the `PanelBind`/`TextBind` shape precedent (slot name +
@@ -178,11 +200,12 @@ composition, like the `audio.master` bus consumer. (`input.md` gains a note
 on this at promote time.) OS cursor visibility follows the mode while a
 capturing tree is on the stack. Gamepad stick-as-D-pad edge detection for nav
 (press past deadzone = one intent, repeat handled by Task 3's timer). Demo: a pause-style menu tree (buttons + an `audio.master`-bound slider)
-pushed onto the stack, fully gamepad-navigable; HUD `bar` bound to the health
-proxy. `audio.master` does not exist in engine code — the demo mod declares it
-via `defineStore` (writable), and Task 5 wires an App-side consumer that
-applies its value to the audio master bus volume on change, making the slider
-audible.
+pushed/popped via `nav.menu` wired to Task 2's engine push/pop API, fully
+gamepad-navigable; HUD `bar` bound to the health proxy. `audio.master` does
+not exist in engine code — the demo mod declares it via `defineStore`
+(writable), and Task 5 wires an App-side consumer that applies its value to
+the audio master bus volume on change (amplitude [0,1] → dB conversion, 0
+maps to the mute floor), making the slider audible.
 
 ## Sequencing
 

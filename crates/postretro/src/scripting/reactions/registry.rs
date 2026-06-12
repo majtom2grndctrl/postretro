@@ -92,6 +92,13 @@ pub(crate) fn register_emitter_reaction_primitives(registry: &mut ReactionPrimit
             })?;
         super::set_animation_state::dispatch(reg, targets, &parsed)
     });
+    registry.register("applyDamage", |reg, targets, args| {
+        let parsed: super::apply_damage::ApplyDamageArgs = serde_json::from_value(args.clone())
+            .map_err(|e| ReactionError::InvalidArgument {
+                reason: format!("applyDamage: failed to deserialize args: {e}"),
+            })?;
+        super::apply_damage::dispatch(reg, targets, &parsed)
+    });
 }
 
 pub(crate) fn register_fog_reaction_primitives(registry: &mut ReactionPrimitiveRegistry) {
@@ -232,6 +239,7 @@ mod tests {
         assert!(r.contains("setEmitterRate"));
         assert!(r.contains("setSpinRate"));
         assert!(r.contains("setAnimationState"));
+        assert!(r.contains("applyDamage"));
         assert!(!r.contains("setLightAnimation"));
     }
 

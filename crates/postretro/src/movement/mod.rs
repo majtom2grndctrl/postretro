@@ -8,6 +8,13 @@ use parry3d::math::{Point, Vector};
 use parry3d::shape::Capsule;
 
 mod carry;
+mod scope;
+
+// Re-exported for the dash-adopter tasks (descriptor validation, `DashPrograms`)
+// that bind against it. `allow(unused_imports)`: the consumers land in later M14
+// tasks, so this re-export has no in-crate use site yet.
+#[allow(unused_imports)]
+pub(crate) use scope::MovementScope;
 
 use crate::collision::{CollisionWorld, SKIN_DISTANCE, cast_capsule, cast_ray};
 use crate::movement::carry::{CarryRule, apply_boost, apply_horizontal};

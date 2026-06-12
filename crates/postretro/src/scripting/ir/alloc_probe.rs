@@ -5,10 +5,12 @@
 
 // The IR eval pass must perform ZERO heap allocation per tick (scripting.md
 // §12). To prove it, this module installs a global allocator that delegates
-// verbatim to `std::alloc::System` and bumps atomic counters on every alloc /
-// dealloc. A test arms the probe *after* bind, snapshots the counter, runs
-// `eval_value`, and asserts the alloc delta is zero. Bind and the write path
-// are excluded from the assertion window.
+// verbatim to `std::alloc::System` and bumps a *per-thread* counter on every
+// allocation. A test arms the probe *after* bind, snapshots its own thread's
+// counter, runs `eval_value`, and asserts the alloc delta is zero. Bind and the
+// write path are excluded from the assertion window. Counting per thread (not a
+// process-global atomic) keeps the assertion stable under `cargo test`'s
+// parallel pool — concurrent test threads cannot inflate the measured window.
 //
 // This file is compiled only under `#[cfg(test)]` (it is declared from the IR
 // module behind a `cfg(test)` gate). The `#[global_allocator]` static itself
@@ -16,35 +18,48 @@
 // attribute must sit on a crate-root static; it points at [`CountingAllocator`].
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::cell::Cell;
 
-/// Number of `alloc` calls observed since process start. Monotonic.
-pub(crate) static ALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
-/// Number of `dealloc` calls observed since process start. Monotonic.
-pub(crate) static DEALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    /// Per-thread allocation count. The probe measures the delta on the
+    /// measuring thread alone, which keeps the *global* counting allocator
+    /// robust under `cargo test`'s parallel thread pool: allocations on other
+    /// test threads land in *their* thread-local and never pollute the window.
+    ///
+    /// `const`-initialized so the first access on a thread performs no lazy heap
+    /// init — a plain TLS read that cannot re-enter the allocator. `Cell<usize>`
+    /// has no destructor, so writes during thread teardown stay valid too.
+    static THREAD_ALLOC_COUNT: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Increment the current thread's allocation counter. Allocation-free: `with`
+/// over a `const`-initialized `Cell` is a plain thread-local read/write.
+fn bump_thread_alloc_count() {
+    THREAD_ALLOC_COUNT.with(|count| count.set(count.get().wrapping_add(1)));
+}
 
 /// A global allocator that forwards every request verbatim to the system
-/// allocator and only adds atomic bookkeeping. Installing it lets a test count
-/// allocations across a precise window.
+/// allocator and only adds per-thread bookkeeping. Installing it lets a test
+/// count allocations across a precise window.
 pub(crate) struct CountingAllocator;
 
 // SAFETY: every method forwards the *identical* `ptr`/`layout` to the
 // corresponding `std::alloc::System` method — the System allocator already
-// upholds the `GlobalAlloc` contract, and we add nothing but a relaxed atomic
-// counter increment around the verbatim call. No pointer is fabricated,
-// reinterpreted, or freed by us; the layout passed to `dealloc`/`realloc` is the
-// one the caller paired with the original allocation. The atomics impose no
-// ordering requirement on the allocation itself, so they cannot violate any
-// safety invariant the System allocator relies on.
+// upholds the `GlobalAlloc` contract, and we add nothing but a `const`-init
+// thread-local counter increment around the verbatim call. That increment
+// performs no allocation (so it cannot re-enter the allocator). No pointer is
+// fabricated, reinterpreted, or freed by us; the layout passed to
+// `dealloc`/`realloc` is the one the caller paired with the original
+// allocation. The bookkeeping cannot violate any safety invariant the System
+// allocator relies on.
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+        bump_thread_alloc_count();
         // SAFETY: forwards the caller's layout unchanged to the system allocator.
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        DEALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
         // SAFETY: `ptr`/`layout` are the verbatim pair the caller received from
         // a prior `alloc`/`realloc` on this same allocator (which forwarded to
         // System), so this is a valid System deallocation.
@@ -52,13 +67,13 @@ unsafe impl GlobalAlloc for CountingAllocator {
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+        bump_thread_alloc_count();
         // SAFETY: forwards the caller's layout unchanged to the system allocator.
         unsafe { System.alloc_zeroed(layout) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+        bump_thread_alloc_count();
         // SAFETY: `ptr`/`layout` are the verbatim pair from a prior allocation
         // and `new_size` is the caller's; all forwarded unchanged to System.
         unsafe { System.realloc(ptr, layout, new_size) }
@@ -73,17 +88,18 @@ pub(crate) struct AllocSnapshot {
 }
 
 impl AllocSnapshot {
-    /// Capture the current allocation count. Call this AFTER bind, immediately
-    /// before the work whose allocations must be zero.
+    /// Capture the current thread's allocation count. Call this AFTER bind,
+    /// immediately before the work whose allocations must be zero, and read it
+    /// back via [`AllocSnapshot::allocs_since`] on the *same* thread.
     pub(crate) fn arm() -> Self {
         Self {
-            allocs: ALLOC_COUNT.load(Ordering::Relaxed),
+            allocs: THREAD_ALLOC_COUNT.with(Cell::get),
         }
     }
 
-    /// Number of `alloc`-family calls since [`AllocSnapshot::arm`].
+    /// Number of `alloc`-family calls on this thread since [`AllocSnapshot::arm`].
     pub(crate) fn allocs_since(self) -> usize {
-        ALLOC_COUNT.load(Ordering::Relaxed) - self.allocs
+        THREAD_ALLOC_COUNT.with(Cell::get).wrapping_sub(self.allocs)
     }
 }
 

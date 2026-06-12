@@ -906,13 +906,13 @@ mod tests {
     ) -> EntityTypeDescriptor {
         let mut descriptor = movement_descriptor(name, jumps);
         descriptor.movement.as_mut().unwrap().dash = Some(DashParams {
-            boost_speed: 12.0,
-            momentum_retention: 0.5,
-            steer_control: 0.5,
-            dash_drag: 8.0,
-            cooldown_ms: 600.0,
+            boost_speed: 12.0.into(),
+            momentum_retention: 0.5.into(),
+            steer_control: 0.5.into(),
+            dash_drag: 8.0.into(),
+            cooldown_ms: 600.0.into(),
             air_dashes,
-            preserve_vertical: false,
+            preserve_vertical: false.into(),
         });
         descriptor
     }

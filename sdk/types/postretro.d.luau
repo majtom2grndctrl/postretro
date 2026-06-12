@@ -291,20 +291,20 @@ export type FallParams = {
 
 --- Dash tuning. Optional on `PlayerMovementDescriptor` — when omitted, dash is disabled. When present, all fields are required and validated.
 export type DashParams = {
-  --- Impulse magnitude applied on dash in metres/sec. Must be finite > 0.
-  boostSpeed: number,
-  --- Fraction of pre-dash momentum folded into the dash, unitless in [0, 1].
-  momentumRetention: number,
-  --- In-dash steering authority, unitless in [0, 1].
-  steerControl: number,
-  --- Decay rate of the dash impulse in metres/sec². Must be finite and ≥ 0.
-  dashDrag: number,
-  --- Cooldown between dashes in milliseconds. Must be finite and ≥ 0.
-  cooldownMs: number,
+  --- Impulse magnitude applied on dash in metres/sec. A literal must be finite > 0. Accepts a runtime expression, evaluated at dash entry.
+  boostSpeed: number | RuntimeValue,
+  --- Fraction of pre-dash momentum folded into the dash, unitless in [0, 1]. Accepts a runtime expression, evaluated at dash entry.
+  momentumRetention: number | RuntimeValue,
+  --- In-dash steering authority, unitless in [0, 1]. Accepts a runtime expression, evaluated per tick during the dash.
+  steerControl: number | RuntimeValue,
+  --- Decay rate of the dash impulse in metres/sec². A literal must be finite and ≥ 0. Accepts a runtime expression, evaluated per tick during the dash.
+  dashDrag: number | RuntimeValue,
+  --- Cooldown between dashes in milliseconds. A literal must be finite and ≥ 0. Accepts a runtime expression, evaluated at dash entry.
+  cooldownMs: number | RuntimeValue,
   --- Number of air dashes allowed before landing.
   airDashes: number,
-  --- Whether the dash preserves the pre-dash vertical velocity.
-  preserveVertical: boolean,
+  --- Whether the dash preserves the pre-dash vertical velocity. Accepts a runtime expression, evaluated at dash entry.
+  preserveVertical: boolean | RuntimeValue,
 }
 
 --- Crouch tuning. Optional on `PlayerMovementDescriptor` — when omitted, crouch is disabled. When present, all fields are required and validated.

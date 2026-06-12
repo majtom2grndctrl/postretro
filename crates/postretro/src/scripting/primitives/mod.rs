@@ -349,13 +349,13 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
     registry
         .register_type("DashParams")
         .doc("Dash tuning. Optional on `PlayerMovementDescriptor` — when omitted, dash is disabled. When present, all fields are required and validated.")
-        .field("boostSpeed", "f32", "Impulse magnitude applied on dash in metres/sec. Must be finite > 0.")
-        .field("momentumRetention", "f32", "Fraction of pre-dash momentum folded into the dash, unitless in [0, 1].")
-        .field("steerControl", "f32", "In-dash steering authority, unitless in [0, 1].")
-        .field("dashDrag", "f32", "Decay rate of the dash impulse in metres/sec². Must be finite and ≥ 0.")
-        .field("cooldownMs", "f32", "Cooldown between dashes in milliseconds. Must be finite and ≥ 0.")
+        .field("boostSpeed", "NumberOrIr", "Impulse magnitude applied on dash in metres/sec. A literal must be finite > 0. Accepts a runtime expression, evaluated at dash entry.")
+        .field("momentumRetention", "NumberOrIr", "Fraction of pre-dash momentum folded into the dash, unitless in [0, 1]. Accepts a runtime expression, evaluated at dash entry.")
+        .field("steerControl", "NumberOrIr", "In-dash steering authority, unitless in [0, 1]. Accepts a runtime expression, evaluated per tick during the dash.")
+        .field("dashDrag", "NumberOrIr", "Decay rate of the dash impulse in metres/sec². A literal must be finite and ≥ 0. Accepts a runtime expression, evaluated per tick during the dash.")
+        .field("cooldownMs", "NumberOrIr", "Cooldown between dashes in milliseconds. A literal must be finite and ≥ 0. Accepts a runtime expression, evaluated at dash entry.")
         .field("airDashes", "u32", "Number of air dashes allowed before landing.")
-        .field("preserveVertical", "bool", "Whether the dash preserves the pre-dash vertical velocity.")
+        .field("preserveVertical", "BoolOrIr", "Whether the dash preserves the pre-dash vertical velocity. Accepts a runtime expression, evaluated at dash entry.")
         .finish();
     registry
         .register_type("CrouchParams")

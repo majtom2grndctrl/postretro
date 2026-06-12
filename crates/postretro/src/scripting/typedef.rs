@@ -130,6 +130,11 @@ fn rust_to_ts(ty_name: &str) -> String {
         "AirParams" => "AirParams".to_string(),
         "FallParams" => "FallParams".to_string(),
         "DashParams" => "DashParams".to_string(),
+        // A dash value field accepts a bare literal or a runtime expression: the
+        // expression-capable union the typed command buffer (scripting.md §11)
+        // makes available on movement descriptor fields.
+        "NumberOrIr" => "number | RuntimeValue".to_string(),
+        "BoolOrIr" => "boolean | RuntimeValue".to_string(),
         "CrouchParams" => "CrouchParams".to_string(),
         "ViewFeelParams" => "ViewFeelParams".to_string(),
         "BobParams" => "BobParams".to_string(),
@@ -236,6 +241,9 @@ fn rust_to_luau(ty_name: &str) -> String {
         "AirParams" => "AirParams".to_string(),
         "FallParams" => "FallParams".to_string(),
         "DashParams" => "DashParams".to_string(),
+        // See the TS mapping: a dash value field is a literal-or-expression union.
+        "NumberOrIr" => "number | RuntimeValue".to_string(),
+        "BoolOrIr" => "boolean | RuntimeValue".to_string(),
         "CrouchParams" => "CrouchParams".to_string(),
         "ViewFeelParams" => "ViewFeelParams".to_string(),
         "BobParams" => "BobParams".to_string(),
@@ -1665,20 +1673,20 @@ declare module "postretro" {
 
   /** Dash tuning. Optional on `PlayerMovementDescriptor` — when omitted, dash is disabled. When present, all fields are required and validated. */
   export type DashParams = {
-    /** Impulse magnitude applied on dash in metres/sec. Must be finite > 0. */
-    boostSpeed: number;
-    /** Fraction of pre-dash momentum folded into the dash, unitless in [0, 1]. */
-    momentumRetention: number;
-    /** In-dash steering authority, unitless in [0, 1]. */
-    steerControl: number;
-    /** Decay rate of the dash impulse in metres/sec². Must be finite and ≥ 0. */
-    dashDrag: number;
-    /** Cooldown between dashes in milliseconds. Must be finite and ≥ 0. */
-    cooldownMs: number;
+    /** Impulse magnitude applied on dash in metres/sec. A literal must be finite > 0. Accepts a runtime expression, evaluated at dash entry. */
+    boostSpeed: number | RuntimeValue;
+    /** Fraction of pre-dash momentum folded into the dash, unitless in [0, 1]. Accepts a runtime expression, evaluated at dash entry. */
+    momentumRetention: number | RuntimeValue;
+    /** In-dash steering authority, unitless in [0, 1]. Accepts a runtime expression, evaluated per tick during the dash. */
+    steerControl: number | RuntimeValue;
+    /** Decay rate of the dash impulse in metres/sec². A literal must be finite and ≥ 0. Accepts a runtime expression, evaluated per tick during the dash. */
+    dashDrag: number | RuntimeValue;
+    /** Cooldown between dashes in milliseconds. A literal must be finite and ≥ 0. Accepts a runtime expression, evaluated at dash entry. */
+    cooldownMs: number | RuntimeValue;
     /** Number of air dashes allowed before landing. */
     airDashes: number;
-    /** Whether the dash preserves the pre-dash vertical velocity. */
-    preserveVertical: boolean;
+    /** Whether the dash preserves the pre-dash vertical velocity. Accepts a runtime expression, evaluated at dash entry. */
+    preserveVertical: boolean | RuntimeValue;
   };
 
   /** Crouch tuning. Optional on `PlayerMovementDescriptor` — when omitted, crouch is disabled. When present, all fields are required and validated. */
@@ -2055,20 +2063,20 @@ export type FallParams = {
 
 --- Dash tuning. Optional on `PlayerMovementDescriptor` — when omitted, dash is disabled. When present, all fields are required and validated.
 export type DashParams = {
-  --- Impulse magnitude applied on dash in metres/sec. Must be finite > 0.
-  boostSpeed: number,
-  --- Fraction of pre-dash momentum folded into the dash, unitless in [0, 1].
-  momentumRetention: number,
-  --- In-dash steering authority, unitless in [0, 1].
-  steerControl: number,
-  --- Decay rate of the dash impulse in metres/sec². Must be finite and ≥ 0.
-  dashDrag: number,
-  --- Cooldown between dashes in milliseconds. Must be finite and ≥ 0.
-  cooldownMs: number,
+  --- Impulse magnitude applied on dash in metres/sec. A literal must be finite > 0. Accepts a runtime expression, evaluated at dash entry.
+  boostSpeed: number | RuntimeValue,
+  --- Fraction of pre-dash momentum folded into the dash, unitless in [0, 1]. Accepts a runtime expression, evaluated at dash entry.
+  momentumRetention: number | RuntimeValue,
+  --- In-dash steering authority, unitless in [0, 1]. Accepts a runtime expression, evaluated per tick during the dash.
+  steerControl: number | RuntimeValue,
+  --- Decay rate of the dash impulse in metres/sec². A literal must be finite and ≥ 0. Accepts a runtime expression, evaluated per tick during the dash.
+  dashDrag: number | RuntimeValue,
+  --- Cooldown between dashes in milliseconds. A literal must be finite and ≥ 0. Accepts a runtime expression, evaluated at dash entry.
+  cooldownMs: number | RuntimeValue,
   --- Number of air dashes allowed before landing.
   airDashes: number,
-  --- Whether the dash preserves the pre-dash vertical velocity.
-  preserveVertical: boolean,
+  --- Whether the dash preserves the pre-dash vertical velocity. Accepts a runtime expression, evaluated at dash entry.
+  preserveVertical: boolean | RuntimeValue,
 }
 
 --- Crouch tuning. Optional on `PlayerMovementDescriptor` — when omitted, crouch is disabled. When present, all fields are required and validated.

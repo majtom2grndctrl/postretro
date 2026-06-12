@@ -1038,10 +1038,14 @@ fn try_enter_dash(
         component.air_dashes_remaining -= 1;
     }
 
-    let boost_speed = dash.boost_speed;
-    let momentum_retention = dash.momentum_retention;
-    let cooldown_ms = dash.cooldown_ms;
-    let preserve_vertical = dash.preserve_vertical;
+    // INTERIM literal reads: expression-capable dash fields are read as their
+    // literal value here. Task 4 replaces these with resolve helpers that bind
+    // and evaluate the expression form; until then an expression field falls back
+    // to the zero placeholder. Literal-only behavior is unchanged.
+    let boost_speed = dash.boost_speed.literal().unwrap_or(0.0);
+    let momentum_retention = dash.momentum_retention.literal().unwrap_or(0.0);
+    let cooldown_ms = dash.cooldown_ms.literal().unwrap_or(0.0);
+    let preserve_vertical = dash.preserve_vertical.literal().unwrap_or(false);
 
     // Dash direction: the player's input `wish_dir` when non-zero (already
     // rotated into world space and normalized by `wish_dir_from_input`), else
@@ -1129,8 +1133,9 @@ fn dash_intent(
             carry: CarryRule::KEEP_ALL,
         });
     };
-    let steer_control = dash.steer_control;
-    let dash_drag = dash.dash_drag;
+    // INTERIM literal reads — see the note in `try_enter_dash`.
+    let steer_control = dash.steer_control.literal().unwrap_or(0.0);
+    let dash_drag = dash.dash_drag.literal().unwrap_or(0.0);
 
     // Gravity runs normally (FPS-shaped: the dash does not suspend it).
     if !component.is_grounded {
@@ -3357,13 +3362,13 @@ mod tests {
         preserve_vertical: bool,
     ) -> DashParams {
         DashParams {
-            boost_speed,
-            momentum_retention,
-            steer_control,
-            dash_drag,
-            cooldown_ms,
+            boost_speed: boost_speed.into(),
+            momentum_retention: momentum_retention.into(),
+            steer_control: steer_control.into(),
+            dash_drag: dash_drag.into(),
+            cooldown_ms: cooldown_ms.into(),
             air_dashes,
-            preserve_vertical,
+            preserve_vertical: preserve_vertical.into(),
         }
     }
 

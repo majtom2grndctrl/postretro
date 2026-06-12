@@ -3,6 +3,7 @@
 Short sentences. Clear words. No waste.
 
 > **Read this when:** writing or updating any text agents consume — context files, skills, plans, specs, code comments. Agents read this text to make decisions without re-deriving from source; brief, direct prose costs them less context and less ambiguity. The prose principles apply everywhere. Sections tagged _context/ files_ govern the durable library only.
+> **Not for:** human-facing docs — `README`, `docs/`. Written for readers, not agents.
 > **Key invariant:** context files describe what survives refactoring. If a sentence breaks when a module is reorganized or a function is renamed, it belongs in a task description or code comment — not in `context/`.
 
 ---

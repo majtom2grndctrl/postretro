@@ -1,7 +1,12 @@
 # Research — M13 Goal F: Input breadth (grounding for /draft-plan)
 
-> **Status:** pre-spec research. No `index.md` exists yet — this file grounds the
-> drafting session. It is not a spec; do not implement from it.
+> **Status:** spec drafted (2026-06) — see sibling `index.md`. This file is
+> grounding + decision context only; it is not a spec. §5's open questions are
+> resolved in the spec. Owner decisions (2026-06): sliders are **in scope**,
+> which puts `setState` in F; text entry is **out of F** — it lands as its own
+> spec (`drafts/M13--text-entry/`): an on-screen keyboard as the gamepad
+> accessibility accommodation plus hardware-key routing onto the same
+> text-edit surface, with only IME composition deferred.
 > **Read this when:** drafting or reviewing the Goal F spec (hit-testing, focus,
 > nav intents, hold-to-repeat, input-mode switching, modal stack, gamepad UI nav,
 > button/input activation, `bar` widget).

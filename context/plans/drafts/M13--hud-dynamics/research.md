@@ -1,7 +1,10 @@
 # Research — M13 Goal E: HUD dynamics (grounding for /draft-plan)
 
-> **Status:** pre-spec research. No `index.md` exists yet — this file grounds the
-> drafting session. It is not a spec; do not implement from it.
+> **Status:** spec drafted (2026-06) — see sibling `index.md`. This file is
+> grounding + decision context only; it is not a spec. §5's open questions are
+> resolved in the spec (notably: `setState` → Goal F; `showDialog`/`openMenu`
+> stay in E with `closeDialog` added, gated on F's modal stack). If something
+> here reads as a live "decision needed," check the spec first.
 > **Read this when:** drafting or reviewing the Goal E spec (`styleRanges` +
 > `onStateCrossing` + UI reaction helpers).
 > **Wave context:** Goal E and Goal F (`drafts/M13--input-breadth/`) are the next

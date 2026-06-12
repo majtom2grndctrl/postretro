@@ -9,11 +9,16 @@
 // owns the once-per-program type-check + name-resolution pass.
 
 pub(crate) mod bind;
+pub(crate) mod load;
 pub(crate) mod scope;
 
 use serde::{Deserialize, Serialize};
 
 pub(crate) use bind::{BindError, BoundNode, BoundProgram, bind};
+// Re-exported as the sole load-time version seam; the first adopter (Task 5)
+// has not landed yet, so suppress the no-consumer-yet warning until then.
+#[allow(unused_imports)]
+pub(crate) use load::load_baked_ir;
 pub(crate) use scope::{BindingScope, ResolvedInput, ResolvedOutput};
 
 /// Current IR wire-format version. Stamped into every [`BakedIr`] envelope.

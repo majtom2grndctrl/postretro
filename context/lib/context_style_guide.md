@@ -2,14 +2,15 @@
 
 Short sentences. Clear words. No waste.
 
-> **Read this when:** writing or updating any file in `context/`. These files are agent context — they exist so AI agents (and future-you) can make informed decisions about the codebase without re-deriving everything from source.
-> **Key invariant:** context describes what survives refactoring. If a sentence breaks when a module is reorganized or a function is renamed, it belongs in a task description or code comment — not in `context/`.
+> **Read this when:** writing or updating any text agents consume — context files, skills, plans, specs, code comments. Agents read this text to make decisions without re-deriving from source; brief, direct prose costs them less context and less ambiguity. The prose principles apply everywhere. Sections tagged _context/ files_ govern the durable library only.
+> **Not for:** human-facing docs — `README`, `docs/`. Written for readers, not agents.
+> **Key invariant:** context files describe what survives refactoring. If a sentence breaks when a module is reorganized or a function is renamed, it belongs in a task description or code comment — not in `context/`.
 
 ---
 
 ## Writing Principles
 
-**Follow these principles for all prose in context library.**
+**Follow these principles for all agent-consumed prose** — context files, skills, plans, specs, and code comments.
 
 - **Direct and brief.** Active voice, short sentences, no filler. One idea per sentence. Fragments in lists. Drop articles where natural. See *Prose* below for examples.
 - **Durable.** Context files describe what survives refactoring. If a sentence breaks when a file is renamed or a struct is extracted, it belongs in a task description or code comment — not a context file. See *Durable vs. Ephemeral Content* below.
@@ -60,6 +61,8 @@ Headers are short nouns, not questions.
 
 ## Code and Paths
 
+_Scope: context/ files._
+
 Name boundary modules and entry points. Describe contract semantics and invariants in prose. Struct layouts live in code — don't reproduce them.
 
 **Point to boundary modules** (use actual paths once they exist — never invent paths in examples):
@@ -85,6 +88,8 @@ After implementation, point to real code. A stale struct definition in a context
 Internal types (`pub(crate)`, module-private) belong in code comments, not context files.
 
 ## Durable vs. Ephemeral Content
+
+_Scope: context/ files._
 
 Context files describe what survives refactoring. Task descriptions describe what to change right now.
 
@@ -125,6 +130,8 @@ baked into the vertex buffer during level load.
 ```
 
 ## Spec Completeness
+
+_Scope: specs & plans._
 
 Define what you're defining, completely. A spec with scattered "TBD" markers pushes ambiguity to the implementing agent — who has less context than the spec author.
 
@@ -176,6 +183,8 @@ Missing section is not an error — it's a valid, lower-fidelity path.
 The "after" is longer. That's fine — the optional-lump contract and its degradation behavior earn the extra sentences. Brevity means no wasted words, not fewest words.
 
 ## Documentation Lifecycle
+
+_Scope: context/ files & plans._
 
 Context files are the durable layer. Plans are the ephemeral layer.
 

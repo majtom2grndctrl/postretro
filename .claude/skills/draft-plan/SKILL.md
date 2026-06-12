@@ -40,6 +40,8 @@ Use subagents for exploration — codebase reading, pattern discovery, doc looku
 
 **Code-grounding is non-negotiable.** Every Rust/TS/Lua identifier the spec will name — function, struct, type, field, enum variant — must be confirmed against current source before the spec asserts anything about it. Don't write "X returns Y" or "X has fields A, B" from memory. Open the file, read the signature, then write. Memory drift is the largest single source of spec inaccuracy.
 
+**Oversized-file watch.** Watch source-file size while grounding. Flag any file already past ~800 lines that the plan will extend — a soft smell, not a gate. A cohesive 900-line table is fine; a tangled 600-line module may not be. Carry the flag forward as a split-first task (§3).
+
 **Research notes stay out of the spec.** If findings are useful but don't drive decisions, put them in a sibling `research.md` in the plan folder. The spec captures decisions and behavior, not the investigation that produced them.
 
 ### 3. Write the spec
@@ -103,6 +105,8 @@ Unresolved items, risks, alternatives considered.
 **Length smell:** most plans land at 50–200 lines. Past 250 lines usually means the spec carries research notes (→ `research.md`) or scope should split into multiple plans.
 
 **Plumbing rule.** Every "edit X to do Y" instruction must say how X gets access to what it needs. New side-tables need owners. New struct fields need writer call-sites. Function signature changes need their callers enumerated. Don't punt access plumbing to the implementer — the implementer has less context than the spec author.
+
+**Split-before-extend rule.** When the plan adds functionality to a source file already past ~800 lines, split it first — a behavior-preserving task that breaks the file along seams you already see. Sequence the split right before the task that extends that file; don't drag an off-critical-path file forward. Splitting and extending in one task buries a refactor inside a feature diff — keep them separate.
 
 ### 4. Acceptance criteria
 

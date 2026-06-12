@@ -4324,7 +4324,7 @@ mod tests {
         );
     }
 
-    // --- Dash expression-capable fields (Task 2) ---------------------------
+    // --- Dash expression-capable fields ------------------------------------
 
     #[test]
     fn js_movement_dash_number_field_accepts_expression() {
@@ -4394,6 +4394,32 @@ mod tests {
         let err = eval_js(&src, |ctx, v| {
             entity_descriptor_from_js(ctx, v).unwrap_err()
         });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_movement_dash_expression_number_rooted_in_bool_field_is_rejected() {
+        // A number-rooted expression in the Boolean field `preserveVertical`
+        // must be rejected: `validate_dash_expr` checks the root type against
+        // `IrType::Bool` and returns `InvalidShape` on mismatch.
+        let src = js_movement_with_dash(
+            r#"{ boostSpeed: 18.0, momentumRetention: 0.5, steerControl: 0.25, dashDrag: 60.0, cooldownMs: 800.0, airDashes: 1, preserveVertical: { op: "input", name: "speed" } }"#,
+        );
+        let err = eval_js(&src, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_movement_dash_expression_number_rooted_in_bool_field_is_rejected() {
+        // Mirror of the JS case: a number-rooted expression placed in the
+        // Boolean field `preserveVertical` is rejected via the same
+        // `validate_dash_expr(node, IrType::Bool, …)` arm.
+        let src = lua_movement_with_dash(
+            r#"{ boostSpeed = 18.0, momentumRetention = 0.5, steerControl = 0.25, dashDrag = 60.0, cooldownMs = 800.0, airDashes = 1, preserveVertical = { op = "input", name = "speed" } }"#,
+        );
+        let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
         assert!(matches!(err, DescriptorError::InvalidShape { .. }));
     }
 

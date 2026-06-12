@@ -1181,7 +1181,7 @@ mod tests {
         // AC: hot-reloading an edited expression in the player descriptor updates
         // live dash behavior. The refresh-plan path rebuilds the component via
         // `from_descriptor`, which rebinds the dash programs from the NEW
-        // descriptor — no dedicated refresh hook is needed (plan item 8). A
+        // descriptor — no dedicated refresh hook is needed. A
         // literal `boostSpeed` reloads to an expression form: the refreshed
         // component must carry a bound `boost_speed` program (was `None`).
         use crate::scripting::data_descriptors::NumberOrIr;

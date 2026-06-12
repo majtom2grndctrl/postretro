@@ -4717,9 +4717,8 @@ mod tests {
         // Airborne dash: leave the ground, then dash. Retention resolves to 1, so
         // the boost stacks on the retained horizontal velocity.
         let (mut comp, mut pos) = settle_and_run(&desc, &world, 60);
-        // Jump is disabled in canonical (air.jumps=0); instead lift off by walking
-        // off nothing is impossible here — fake airborne by clearing grounded and
-        // adding upward velocity so the next tick is airborne at dash time.
+        // No jump is available and there is no ledge to walk off, so fake the
+        // airborne state by clearing `is_grounded` and adding upward velocity.
         comp.is_grounded = false;
         comp.velocity.y = 3.0;
         let dash_input = MovementInput {
@@ -4952,7 +4951,7 @@ mod tests {
 
     #[test]
     fn boost_speed_expression_evaluating_zero_yields_zero_boost_dash() {
-        // Deliberate divergence (plan item 7): `boostSpeed`'s literal bound is
+        // Deliberate divergence: `boostSpeed`'s literal bound is
         // exclusive (> 0) and rejects a literal 0 at declaration, but an
         // EXPRESSION evaluating to 0 is floored at 0 and yields a zero-boost dash.
         let world = flat_floor_and_wall_world();

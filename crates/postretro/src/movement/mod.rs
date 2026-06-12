@@ -19,6 +19,8 @@ pub(crate) use scope::MovementScope;
 use crate::collision::{CollisionWorld, SKIN_DISTANCE, cast_capsule, cast_ray};
 use crate::movement::carry::{CarryRule, apply_boost, apply_horizontal};
 use crate::scripting::components::player_movement::{MovementState, PlayerMovementComponent};
+use crate::scripting::data_descriptors::{BoolOrIr, NumberOrIr};
+use crate::scripting::ir::{BoundProgram, IrValue, eval_value};
 
 /// Exponential-style ground deceleration (`v *= max(0, 1 - k*dt)`) — not the Q3
 /// stop/slide-threshold friction model. Value matches Quake's default
@@ -1013,6 +1015,56 @@ fn normal_intent(
     None
 }
 
+/// Resolve a dash NUMBER field to its consumption value against a refreshed
+/// `scope`. A literal returns its bare value bit-identically (no eval); an
+/// expression evaluates its bound program and clamps the result to `[lo, hi]`.
+///
+/// `eval_value`'s per-node finite guard already excludes `NaN`/`±Inf`, so the
+/// clamp only bounds the field's authored range. `program` is `Some` exactly
+/// when `field` is an expression — the pairing is set up by `from_descriptor`.
+fn resolve_number(
+    field: &NumberOrIr,
+    program: &Option<BoundProgram<MovementScope>>,
+    scope: &MovementScope,
+    lo: f32,
+    hi: f32,
+) -> f32 {
+    match field {
+        // Literal path stays bit-identical to the pre-expression behavior.
+        NumberOrIr::Literal(v) => *v,
+        NumberOrIr::Ir(_) => match program {
+            Some(p) => match eval_value(p, scope) {
+                IrValue::Number(n) => n.clamp(lo, hi),
+                // Bind proved a number root; a bool here is a bind bug. Stay
+                // total by clamping the type-zero rather than panicking.
+                IrValue::Bool(_) => 0.0_f32.clamp(lo, hi),
+            },
+            // An expression field with no bound program means dash was disabled
+            // at bind time; this resolve site is unreachable then. Floor to `lo`.
+            None => lo,
+        },
+    }
+}
+
+/// Boolean analogue of [`resolve_number`]: a literal returns its bare value; an
+/// expression evaluates its bound program. Booleans carry no range to clamp.
+fn resolve_bool(
+    field: &BoolOrIr,
+    program: &Option<BoundProgram<MovementScope>>,
+    scope: &MovementScope,
+) -> bool {
+    match field {
+        BoolOrIr::Literal(v) => *v,
+        BoolOrIr::Ir(_) => match program {
+            Some(p) => match eval_value(p, scope) {
+                IrValue::Bool(b) => b,
+                IrValue::Number(_) => false,
+            },
+            None => false,
+        },
+    }
+}
+
 /// Attempt the `Normal` → `Dash` transition this tick. Returns the seeded `Dash`
 /// state paired with its carry-rule when the dash fires, or `None` when it is
 /// suppressed (dash disabled, cooldown active, or airborne with no charge left).
@@ -1026,7 +1078,7 @@ fn try_enter_dash(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
 ) -> Option<Transition> {
-    let dash = component.dash.as_ref()?;
+    component.dash.as_ref()?;
     if component.dash_cooldown_ms > 0.0 {
         return None;
     }
@@ -1038,14 +1090,52 @@ fn try_enter_dash(
         component.air_dashes_remaining -= 1;
     }
 
-    // INTERIM literal reads: expression-capable dash fields are read as their
-    // literal value here. Task 4 replaces these with resolve helpers that bind
-    // and evaluate the expression form; until then an expression field falls back
-    // to the zero placeholder. Literal-only behavior is unchanged.
-    let boost_speed = dash.boost_speed.literal().unwrap_or(0.0);
-    let momentum_retention = dash.momentum_retention.literal().unwrap_or(0.0);
-    let cooldown_ms = dash.cooldown_ms.literal().unwrap_or(0.0);
-    let preserve_vertical = dash.preserve_vertical.literal().unwrap_or(false);
+    // Resolve the four entry-moment dash values BEFORE any velocity mutation.
+    // The snapshot is refreshed AFTER the air-charge spend above, so an authored
+    // `chargesRemaining` reads the POST-spend value; `elapsedMs` is 0 at entry.
+    // Each value is evaluated into a local here; the velocity writes below see
+    // only those locals, so the program borrows never overlap the mutation.
+    // Literal fields skip eval and stay bit-identical to the pre-expression path.
+    let (boost_speed, momentum_retention, cooldown_ms, preserve_vertical) = {
+        let dash = component.dash.as_ref()?;
+        let programs = &component.dash_programs;
+        let mut scope = MovementScope::for_validation();
+        scope.refresh(component, 0.0);
+        // `boostSpeed`: floor 0 (an EXPRESSION evaluating to 0 yields a
+        // zero-boost dash; a literal 0 was already rejected at declaration — its
+        // bound is exclusive `> 0`, which no clamp can reproduce, so the eval
+        // floor is the open bound's reflection). `momentumRetention` ∈ [0, 1].
+        let boost_speed = resolve_number(
+            &dash.boost_speed,
+            &programs.boost_speed,
+            &scope,
+            0.0,
+            f32::INFINITY,
+        );
+        let momentum_retention = resolve_number(
+            &dash.momentum_retention,
+            &programs.momentum_retention,
+            &scope,
+            0.0,
+            1.0,
+        );
+        // `cooldownMs` ≥ 0.
+        let cooldown_ms = resolve_number(
+            &dash.cooldown_ms,
+            &programs.cooldown_ms,
+            &scope,
+            0.0,
+            f32::INFINITY,
+        );
+        let preserve_vertical =
+            resolve_bool(&dash.preserve_vertical, &programs.preserve_vertical, &scope);
+        (
+            boost_speed,
+            momentum_retention,
+            cooldown_ms,
+            preserve_vertical,
+        )
+    };
 
     // Dash direction: the player's input `wish_dir` when non-zero (already
     // rotated into world space and normalized by `wish_dir_from_input`), else
@@ -1127,15 +1217,44 @@ fn dash_intent(
     // Dash params must exist to be in this state (entry required `Some`). A
     // descriptor swap that cleared `dash` mid-dash drops back to `Normal` rather
     // than panicking.
-    let Some(dash) = component.dash.as_ref() else {
+    if component.dash.is_none() {
         return Some(Transition {
             next: MovementState::Normal,
             carry: CarryRule::KEEP_ALL,
         });
+    }
+
+    // Resolve the two per-tick dash values BEFORE any velocity mutation. The
+    // snapshot's `elapsedMs` reads the dash state's `elapsed_ms` as it stands at
+    // the TOP of the intent — 0 on the first dash tick, accumulating thereafter;
+    // the increment of `*elapsed_ms` happens later in this tick. Eval into locals
+    // here so the program borrows never overlap the velocity writes. Literal
+    // fields skip eval and stay bit-identical to the pre-expression path.
+    let (steer_control, dash_drag) = {
+        let dash = component
+            .dash
+            .as_ref()
+            .expect("dash present (checked above)");
+        let programs = &component.dash_programs;
+        let mut scope = MovementScope::for_validation();
+        scope.refresh(component, *elapsed_ms);
+        // `steerControl` ∈ [0, 1]; `dashDrag` ≥ 0.
+        let steer_control = resolve_number(
+            &dash.steer_control,
+            &programs.steer_control,
+            &scope,
+            0.0,
+            1.0,
+        );
+        let dash_drag = resolve_number(
+            &dash.dash_drag,
+            &programs.dash_drag,
+            &scope,
+            0.0,
+            f32::INFINITY,
+        );
+        (steer_control, dash_drag)
     };
-    // INTERIM literal reads — see the note in `try_enter_dash`.
-    let steer_control = dash.steer_control.literal().unwrap_or(0.0);
-    let dash_drag = dash.dash_drag.literal().unwrap_or(0.0);
 
     // Gravity runs normally (FPS-shaped: the dash does not suspend it).
     if !component.is_grounded {
@@ -1798,6 +1917,7 @@ mod tests {
         ForgivenessParams, GroundParams, PlayerMovementDescriptor, SpeedParams, SwayParams,
         TiltParams, ViewFeelParams,
     };
+    use crate::scripting::ir::IrNode;
     use parry3d::math::Isometry;
     use parry3d::shape::TriMesh;
 
@@ -4532,6 +4652,443 @@ mod tests {
             horiz_speed(&comp) <= band + VEL_EPS,
             "post-dash horizontal speed should settle into the band, got {}",
             horiz_speed(&comp)
+        );
+    }
+
+    // ----- Dash expression eval (Task 4) -----------------------------------
+    //
+    // These cover the expression form of the dash value fields: an authored IR
+    // expression resolves against a live `MovementScope` snapshot at the
+    // engine-pinned moment (entry vs per-tick), clamps to the field range, and
+    // observably changes dash behavior versus a literal.
+
+    fn ir_num(v: f32) -> IrNode {
+        IrNode::Const {
+            value: IrValue::Number(v),
+        }
+    }
+
+    fn ir_input(name: &str) -> IrNode {
+        IrNode::Input {
+            name: name.to_string(),
+        }
+    }
+
+    /// Dash entry once: settle, optionally run, then issue a single dash tick and
+    /// return the resulting horizontal speed plus the post-dash component.
+    fn dash_once_from_run(
+        desc: &PlayerMovementDescriptor,
+        world: &CollisionWorld,
+        run_ticks_n: usize,
+    ) -> (PlayerMovementComponent, f32) {
+        let (mut comp, pos) = settle_and_run(desc, world, run_ticks_n);
+        let dash_input = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: false,
+            dash_pressed: true,
+            running: true,
+            crouch_intent: false,
+            facing_yaw: 0.0,
+        };
+        let (_next, _ev) = tick(&mut comp, &dash_input, world, GRAVITY, DT, pos);
+        let speed = horiz_speed(&comp);
+        (comp, speed)
+    }
+
+    #[test]
+    fn momentum_retention_select_on_grounded_differs_grounded_vs_airborne() {
+        // AC: a `momentumRetention` select on `grounded` produces different entry
+        // velocities grounded vs airborne. Grounded → retain 0 (pure boost);
+        // airborne → retain 1 (boost stacks on prior horizontal velocity). With a
+        // running entry, the airborne dash must peak strictly higher.
+        let world = flat_floor_and_wall_world();
+        // select(grounded, 0.0, 1.0): grounded ⇒ 0 retention, airborne ⇒ 1.
+        let retention_expr = IrNode::Select {
+            cond: Box::new(ir_input("grounded")),
+            a: Box::new(ir_num(0.0)),
+            b: Box::new(ir_num(1.0)),
+        };
+        let mut dash = dash_params(8.0, 0.0, 0.0, 0.0, 0.0, 3, false);
+        dash.momentum_retention = NumberOrIr::Ir(retention_expr);
+        let desc = dash_descriptor(dash);
+
+        // Grounded dash: retention resolves to 0, so peak ≈ boost_speed (8.0),
+        // not stacking the ~run-cap prior velocity.
+        let (_grounded_comp, grounded_peak) = dash_once_from_run(&desc, &world, 60);
+
+        // Airborne dash: leave the ground, then dash. Retention resolves to 1, so
+        // the boost stacks on the retained horizontal velocity.
+        let (mut comp, mut pos) = settle_and_run(&desc, &world, 60);
+        // Jump is disabled in canonical (air.jumps=0); instead lift off by walking
+        // off nothing is impossible here — fake airborne by clearing grounded and
+        // adding upward velocity so the next tick is airborne at dash time.
+        comp.is_grounded = false;
+        comp.velocity.y = 3.0;
+        let dash_input = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: false,
+            dash_pressed: true,
+            running: true,
+            crouch_intent: false,
+            facing_yaw: 0.0,
+        };
+        let prior = horiz_speed(&comp);
+        let (next, _ev) = tick(&mut comp, &dash_input, &world, GRAVITY, DT, pos);
+        pos = next;
+        let _ = pos;
+        let airborne_peak = horiz_speed(&comp);
+
+        assert!(
+            prior > desc.ground.speed.walk,
+            "setup: airborne dash should start above walk speed, got {prior}"
+        );
+        assert!(
+            airborne_peak > grounded_peak + 1.0,
+            "airborne (retain=1) must stack over grounded (retain=0): airborne={airborne_peak}, grounded={grounded_peak}"
+        );
+    }
+
+    #[test]
+    fn steer_control_ramp_over_elapsed_ms_grows_steer_authority() {
+        // AC: a `steerControl` ramp over `elapsedMs` produces increasing steer
+        // authority across a dash. steerControl = clamp(elapsedMs / 200, 0, 1):
+        // 0 on the first dash tick (committed), rising as the dash ages. We dash
+        // forward (-Z) then steer hard sideways (+X) and confirm the lateral
+        // velocity gained per tick GROWS as elapsed_ms accumulates.
+        let world = flat_floor_and_wall_world();
+        let steer_expr = IrNode::Clamp {
+            x: Box::new(IrNode::Div {
+                a: Box::new(ir_input("elapsedMs")),
+                b: Box::new(ir_num(200.0)),
+            }),
+            lo: Box::new(ir_num(0.0)),
+            hi: Box::new(ir_num(1.0)),
+        };
+        // High boost, zero drag so the dash stays alive long enough to ramp.
+        let mut dash = dash_params(30.0, 1.0, 0.0, 0.0, 0.0, 3, false);
+        dash.steer_control = NumberOrIr::Ir(steer_expr);
+        let desc = dash_descriptor(dash);
+
+        let (mut comp, mut pos) = settle_and_run(&desc, &world, 60);
+        let enter = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: false,
+            dash_pressed: true,
+            running: true,
+            crouch_intent: false,
+            facing_yaw: 0.0,
+        };
+        let (next, _ev) = tick(&mut comp, &enter, &world, GRAVITY, DT, pos);
+        pos = next;
+        assert!(
+            matches!(comp.movement_state, MovementState::Dash { .. }),
+            "should have entered Dash"
+        );
+
+        // Steer hard +X each subsequent tick; lateral velocity gain per tick must
+        // increase as steerControl ramps with elapsed_ms.
+        let steer = MovementInput {
+            wish_dir: Vec2::new(1.0, 0.0),
+            jump_pressed: false,
+            dash_pressed: false,
+            running: true,
+            crouch_intent: false,
+            facing_yaw: 0.0,
+        };
+        let mut prev_vx = comp.velocity.x;
+        let mut gains: Vec<f32> = Vec::new();
+        for _ in 0..4 {
+            if !matches!(comp.movement_state, MovementState::Dash { .. }) {
+                break;
+            }
+            let (next, _ev) = tick(&mut comp, &steer, &world, GRAVITY, DT, pos);
+            pos = next;
+            gains.push(comp.velocity.x - prev_vx);
+            prev_vx = comp.velocity.x;
+        }
+        assert!(
+            gains.len() >= 3,
+            "dash should persist for several steer ticks, got {} gains",
+            gains.len()
+        );
+        // The first steer tick (elapsed_ms small) gains the least authority; a
+        // later tick gains more. Compare first against last collected gain.
+        let first = gains.first().copied().unwrap();
+        let last = gains.last().copied().unwrap();
+        assert!(
+            last > first,
+            "steer authority should grow with elapsed_ms: first-tick gain={first}, later gain={last}"
+        );
+    }
+
+    #[test]
+    fn momentum_retention_expression_clamps_above_one_to_one() {
+        // AC: a `momentumRetention` evaluating to 3.0 behaves as 1.0 (clamped to
+        // the [0, 1] range). Compare against an explicit literal-1.0 dash: equal
+        // entry peaks prove the over-range expression clamped to 1.
+        let world = flat_floor_and_wall_world();
+        let mut over = dash_params(8.0, 0.0, 0.0, 0.0, 0.0, 3, false);
+        over.momentum_retention = NumberOrIr::Ir(ir_num(3.0));
+        let over_desc = dash_descriptor(over);
+        let one_desc = dash_descriptor(dash_params(8.0, 1.0, 0.0, 0.0, 0.0, 3, false));
+
+        let (_o, over_peak) = dash_once_from_run(&over_desc, &world, 60);
+        let (_l, one_peak) = dash_once_from_run(&one_desc, &world, 60);
+        assert!(
+            (over_peak - one_peak).abs() < VEL_EPS,
+            "retention 3.0 must behave as 1.0: over={over_peak}, literal-one={one_peak}"
+        );
+    }
+
+    #[test]
+    fn cooldown_ms_expression_negative_arms_as_zero() {
+        // AC: a `cooldownMs` evaluating negative arms as 0 (clamped to >= 0).
+        let world = flat_floor_and_wall_world();
+        let mut dash = dash_params(8.0, 0.0, 0.0, 5.0, 0.0, 3, false);
+        // cooldownMs = 0 - 500 = -500, clamped to 0.
+        dash.cooldown_ms = NumberOrIr::Ir(IrNode::Sub {
+            a: Box::new(ir_num(0.0)),
+            b: Box::new(ir_num(500.0)),
+        });
+        let desc = dash_descriptor(dash);
+        let (comp, _speed) = dash_once_from_run(&desc, &world, 60);
+        // The entry tick decrements the armed cooldown by one dt*1000; a negative
+        // arm clamped to 0 cannot go positive, so the cooldown is non-positive.
+        assert!(
+            comp.dash_cooldown_ms <= 0.0,
+            "negative cooldownMs must arm as 0 (got {})",
+            comp.dash_cooldown_ms
+        );
+    }
+
+    #[test]
+    fn charges_remaining_reads_post_spend_value_at_entry() {
+        // AC / snapshot semantics: `chargesRemaining` at entry reads the
+        // POST-spend value. With air_dashes=2, an airborne dash spends one charge
+        // BEFORE the snapshot, so the expression sees 1. Author boostSpeed =
+        // chargesRemaining * 4 and confirm the boost reflects 1 charge (4), not 2.
+        let world = flat_floor_and_wall_world();
+        let mut dash = dash_params(99.0, 0.0, 0.0, 5.0, 0.0, 2, false);
+        dash.boost_speed = NumberOrIr::Ir(IrNode::Mul {
+            a: Box::new(ir_input("chargesRemaining")),
+            b: Box::new(ir_num(4.0)),
+        });
+        let desc = dash_descriptor(dash);
+
+        let (mut comp, mut pos) = settle_player(&desc);
+        run_ticks(&mut comp, &world, &mut pos, 10, &idle_input());
+        // Force a clean airborne state with zero horizontal velocity so the dash
+        // boost is observed directly (retention 0).
+        comp.is_grounded = false;
+        comp.velocity = Vec3::new(0.0, 2.0, 0.0);
+        comp.air_dashes_remaining = 2;
+        let dash_input = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: false,
+            dash_pressed: true,
+            running: false,
+            crouch_intent: false,
+            facing_yaw: 0.0,
+        };
+        let _ = tick(&mut comp, &dash_input, &world, GRAVITY, DT, pos);
+        // One charge spent before the snapshot ⇒ chargesRemaining read as 1 ⇒
+        // boost_speed = 4. Horizontal speed at entry ≈ 4 (pure boost, no prior
+        // horizontal velocity), NOT 8 (which a pre-spend read of 2 would give).
+        let speed = horiz_speed(&comp);
+        assert!(
+            (speed - 4.0).abs() < 0.2,
+            "boost should reflect POST-spend charges (1*4=4), got {speed}"
+        );
+        assert_eq!(comp.air_dashes_remaining, 1, "one charge spent");
+    }
+
+    #[test]
+    fn elapsed_ms_reads_zero_at_entry_and_live_per_tick() {
+        // AC / snapshot semantics: `elapsedMs` reads 0 at entry and the live value
+        // per-tick. dashDrag = elapsedMs (an expression): on the entry tick the
+        // boost decays by 0 (elapsed_ms = 0 at the top of the first intent), so the
+        // boost is undiminished; subsequent ticks decay by the accumulating value.
+        let world = flat_floor_and_wall_world();
+        let mut dash = dash_params(30.0, 0.0, 0.0, 0.0, 0.0, 3, false);
+        dash.dash_drag = NumberOrIr::Ir(ir_input("elapsedMs"));
+        let desc = dash_descriptor(dash);
+
+        let (mut comp, mut pos) = settle_and_run(&desc, &world, 60);
+        let enter = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: false,
+            dash_pressed: true,
+            running: true,
+            crouch_intent: false,
+            facing_yaw: 0.0,
+        };
+        let (next, _ev) = tick(&mut comp, &enter, &world, GRAVITY, DT, pos);
+        pos = next;
+        // On the entry tick the dash intent runs with elapsed_ms = 0 at its top,
+        // so dash_drag resolves to 0 — the boost is not decayed on entry. The dash
+        // therefore peaks high. (A nonzero-at-entry read would have decayed it.)
+        let entry_speed = horiz_speed(&comp);
+        assert!(
+            entry_speed > 25.0,
+            "elapsedMs must read 0 at entry (no drag), peak should stay high, got {entry_speed}"
+        );
+        // Hold the dash a few ticks: now elapsedMs is live (> 0) so dash_drag bites
+        // and horizontal speed falls.
+        let hold = MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: false,
+            dash_pressed: false,
+            running: true,
+            crouch_intent: false,
+            facing_yaw: 0.0,
+        };
+        let (next, _ev) = tick(&mut comp, &hold, &world, GRAVITY, DT, pos);
+        pos = next;
+        let _ = pos;
+        assert!(
+            horiz_speed(&comp) < entry_speed,
+            "live elapsedMs (>0) should decay the boost after entry: entry={entry_speed}, after={}",
+            horiz_speed(&comp)
+        );
+    }
+
+    #[test]
+    fn boost_speed_expression_evaluating_zero_yields_zero_boost_dash() {
+        // Deliberate divergence (plan item 7): `boostSpeed`'s literal bound is
+        // exclusive (> 0) and rejects a literal 0 at declaration, but an
+        // EXPRESSION evaluating to 0 is floored at 0 and yields a zero-boost dash.
+        let world = flat_floor_and_wall_world();
+        let mut dash = dash_params(8.0, 0.0, 0.0, 5.0, 0.0, 3, false);
+        dash.boost_speed = NumberOrIr::Ir(ir_num(0.0));
+        let desc = dash_descriptor(dash);
+        // Dash from standstill so the only horizontal velocity could come from the
+        // boost. A zero boost with retention 0 leaves horizontal speed ≈ 0.
+        let (mut comp, mut pos) = settle_player(&desc);
+        run_ticks(&mut comp, &world, &mut pos, 10, &idle_input());
+        let dash_input = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: false,
+            dash_pressed: true,
+            running: false,
+            crouch_intent: false,
+            facing_yaw: 0.0,
+        };
+        let _ = tick(&mut comp, &dash_input, &world, GRAVITY, DT, pos);
+        assert!(
+            horiz_speed(&comp) < VEL_EPS,
+            "an expression boostSpeed of 0 yields a zero-boost dash, got {}",
+            horiz_speed(&comp)
+        );
+        assert!(
+            matches!(comp.movement_state, MovementState::Dash { .. }),
+            "the dash still fires (the field bound to a program, not a rejected literal)"
+        );
+    }
+
+    #[test]
+    fn literal_only_dash_leaves_programs_unbound() {
+        // Literal-only behavior must stay bit-identical: a fully-literal dash binds
+        // NO programs (every slot None), so the resolve helpers take the literal
+        // path and never eval.
+        let desc = dash_descriptor(dash_params(8.0, 0.5, 0.3, 2.0, 100.0, 3, false));
+        let comp = PlayerMovementComponent::from_descriptor(&desc);
+        let p = &comp.dash_programs;
+        assert!(p.boost_speed.is_none());
+        assert!(p.momentum_retention.is_none());
+        assert!(p.steer_control.is_none());
+        assert!(p.dash_drag.is_none());
+        assert!(p.cooldown_ms.is_none());
+        assert!(p.preserve_vertical.is_none());
+    }
+
+    #[test]
+    fn from_descriptor_binds_expression_fields_into_programs() {
+        // An expression field materializes a bound program in the matching slot;
+        // literal siblings stay None.
+        let mut dash = dash_params(8.0, 0.5, 0.3, 2.0, 100.0, 3, false);
+        dash.boost_speed = NumberOrIr::Ir(ir_input("speed"));
+        dash.steer_control = NumberOrIr::Ir(ir_num(0.5));
+        let desc = dash_descriptor(dash);
+        let comp = PlayerMovementComponent::from_descriptor(&desc);
+        assert!(comp.dash_programs.boost_speed.is_some());
+        assert!(comp.dash_programs.steer_control.is_some());
+        assert!(comp.dash_programs.momentum_retention.is_none());
+        assert!(comp.dash_programs.preserve_vertical.is_none());
+    }
+
+    #[test]
+    fn dash_intent_eval_pass_is_zero_allocation_with_all_fields_authored() {
+        // AC: zero heap allocations across the eval pass of a dash tick with all
+        // six fields authored as expressions. Arm the alloc probe around the full
+        // `dash_intent` call — the snapshot refresh is itself alloc-free, so the
+        // wider window is a strictly stronger assertion.
+        use crate::scripting::ir::alloc_probe::AllocSnapshot;
+
+        let world = flat_floor_and_wall_world();
+        // Author every expression-capable field as an expression so all six bound
+        // programs evaluate during the tick.
+        let mut dash = dash_params(30.0, 0.5, 0.3, 1.0, 50.0, 3, false);
+        dash.boost_speed = NumberOrIr::Ir(IrNode::Add {
+            a: Box::new(ir_input("speed")),
+            b: Box::new(ir_num(20.0)),
+        });
+        dash.momentum_retention = NumberOrIr::Ir(IrNode::Clamp {
+            x: Box::new(ir_input("verticalSpeed")),
+            lo: Box::new(ir_num(0.0)),
+            hi: Box::new(ir_num(1.0)),
+        });
+        dash.steer_control = NumberOrIr::Ir(IrNode::Div {
+            a: Box::new(ir_input("elapsedMs")),
+            b: Box::new(ir_num(200.0)),
+        });
+        dash.dash_drag = NumberOrIr::Ir(IrNode::Mul {
+            a: Box::new(ir_input("cooldownMs")),
+            b: Box::new(ir_num(0.0)),
+        });
+        dash.cooldown_ms = NumberOrIr::Ir(ir_num(50.0));
+        dash.preserve_vertical = BoolOrIr::Ir(ir_input("grounded"));
+        let desc = dash_descriptor(dash);
+
+        // Enter the dash so the per-tick `dash_intent` path runs (steer_control +
+        // dash_drag eval). Then warm one more tick before arming the probe.
+        let (mut comp, mut pos) = settle_and_run(&desc, &world, 60);
+        let enter = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            jump_pressed: false,
+            dash_pressed: true,
+            running: true,
+            crouch_intent: false,
+            facing_yaw: 0.0,
+        };
+        let (next, _ev) = tick(&mut comp, &enter, &world, GRAVITY, DT, pos);
+        pos = next;
+        assert!(
+            matches!(comp.movement_state, MovementState::Dash { .. }),
+            "should be dashing so dash_intent runs"
+        );
+
+        // Drive the dash_intent path directly so the measured window is the intent
+        // (snapshot refresh + eval into locals + velocity mutation) with no
+        // collision-substrate allocation noise.
+        let steer = MovementInput {
+            wish_dir: Vec2::new(1.0, 0.0),
+            jump_pressed: false,
+            dash_pressed: false,
+            running: true,
+            crouch_intent: false,
+            facing_yaw: 0.0,
+        };
+        let mut elapsed_ms = 16.0_f32;
+        let mut boost = Vec3::new(comp.velocity.x, 0.0, comp.velocity.z);
+        // Warm: run the intent once before arming so any one-time lazy state is hot.
+        let _ = dash_intent(&mut comp, &steer, GRAVITY, DT, &mut elapsed_ms, &mut boost);
+
+        let snapshot = AllocSnapshot::arm();
+        let _ = dash_intent(&mut comp, &steer, GRAVITY, DT, &mut elapsed_ms, &mut boost);
+        let allocs = snapshot.allocs_since();
+        assert_eq!(
+            allocs, 0,
+            "dash_intent eval pass must perform zero heap allocations"
         );
     }
 

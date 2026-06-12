@@ -531,7 +531,7 @@ fn plan_movement_replace(
     // is what makes an authored change to `air.jumps` (or the dash budget) take
     // effect immediately on save instead of only after the next landing.
     refreshed.movement_state = MovementState::Normal;
-    Ok(ComponentValue::PlayerMovement(refreshed))
+    Ok(ComponentValue::PlayerMovement(Box::new(refreshed)))
 }
 
 fn plan_light_replace(
@@ -1174,6 +1174,70 @@ mod tests {
         assert_eq!(component.velocity, Vec3::new(1.0, 2.0, 3.0));
         assert!(component.is_grounded);
         assert_eq!(component.air_ticks, 7);
+    }
+
+    #[test]
+    fn movement_refresh_rebinds_edited_dash_expression() {
+        // AC: hot-reloading an edited expression in the player descriptor updates
+        // live dash behavior. The refresh-plan path rebuilds the component via
+        // `from_descriptor`, which rebinds the dash programs from the NEW
+        // descriptor — no dedicated refresh hook is needed (plan item 8). A
+        // literal `boostSpeed` reloads to an expression form: the refreshed
+        // component must carry a bound `boost_speed` program (was `None`).
+        use crate::scripting::data_descriptors::NumberOrIr;
+        use crate::scripting::ir::{IrNode, IrValue};
+
+        let old = vec![movement_descriptor_with_dash("player", 2, 2)];
+        // New descriptor: boostSpeed authored as an expression `speed + 5`.
+        let mut new = vec![movement_descriptor_with_dash("player", 2, 2)];
+        new[0]
+            .movement
+            .as_mut()
+            .unwrap()
+            .dash
+            .as_mut()
+            .unwrap()
+            .boost_speed = NumberOrIr::Ir(IrNode::Add {
+            a: Box::new(IrNode::Input {
+                name: "speed".to_string(),
+            }),
+            b: Box::new(IrNode::Const {
+                value: IrValue::Number(5.0),
+            }),
+        });
+
+        let mut registry = EntityRegistry::new();
+        let id = registry.spawn(standing_pawn_transform());
+        let live = PlayerMovementComponent::from_descriptor(old[0].movement.as_ref().unwrap());
+        // Old (literal) component binds no boost_speed program.
+        assert!(live.dash_programs.boost_speed.is_none());
+        registry.set_component(id, live).unwrap();
+        registry
+            .set_component(
+                id,
+                provenance("player", &[DescriptorComponentKind::Movement]),
+            )
+            .unwrap();
+
+        let plan = plan_descriptor_refresh(&old, &new, &registry);
+        assert!(plan.diagnostics.is_empty(), "{:?}", plan.diagnostics);
+        let DescriptorRefreshAction::Replace {
+            component: ComponentValue::PlayerMovement(component),
+            ..
+        } = &plan.actions[0]
+        else {
+            panic!("expected movement replacement");
+        };
+        // The edited expression rebinds on reload: the refreshed component now
+        // carries a bound boost_speed program, and the dash field is the Ir form.
+        assert!(
+            component.dash_programs.boost_speed.is_some(),
+            "refreshed component must rebind the edited dash expression"
+        );
+        assert!(matches!(
+            component.dash.as_ref().unwrap().boost_speed,
+            NumberOrIr::Ir(_)
+        ));
     }
 
     #[test]

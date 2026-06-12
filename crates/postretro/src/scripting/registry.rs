@@ -160,7 +160,12 @@ pub(crate) enum ComponentValue {
     ParticleState(ParticleState),
     SpriteVisual(SpriteVisual),
     FogVolume(FogVolumeComponent),
-    PlayerMovement(PlayerMovementComponent),
+    // Boxed: `PlayerMovementComponent` is by far the largest component
+    // (~400+ bytes, and the dash `DashPrograms` bound trees grow it further),
+    // so an unboxed variant would inflate every `ComponentValue` to its size
+    // (clippy::large_enum_variant). Boxing keeps the enum compact; the player
+    // pawn is a singleton, so the extra indirection is paid once.
+    PlayerMovement(Box<PlayerMovementComponent>),
     Weapon(WeaponComponent),
     DescriptorProvenance(DescriptorProvenance),
     Mesh(MeshComponent),
@@ -351,13 +356,13 @@ impl Component for PlayerMovementComponent {
 
     fn from_value(value: &ComponentValue) -> Option<&Self> {
         match value {
-            ComponentValue::PlayerMovement(p) => Some(p),
+            ComponentValue::PlayerMovement(p) => Some(p.as_ref()),
             _ => None,
         }
     }
 
     fn into_value(self) -> ComponentValue {
-        ComponentValue::PlayerMovement(self)
+        ComponentValue::PlayerMovement(Box::new(self))
     }
 }
 

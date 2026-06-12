@@ -471,6 +471,7 @@ mod tests {
             movement: None,
             weapon: None,
             mesh: None,
+            health: None,
         });
 
         let resolved = resolve_entity_type("grunt", &data);
@@ -484,6 +485,7 @@ mod tests {
                 movement: None,
                 weapon: None,
                 mesh: None,
+                health: None,
             })
         );
     }

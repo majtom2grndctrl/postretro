@@ -10,6 +10,7 @@ use thiserror::Error;
 
 use super::components::billboard_emitter::BillboardEmitterComponent;
 use super::components::fog_volume::FogAnimation;
+use super::components::health::HealthComponent;
 use super::components::light::LightComponent;
 use super::components::mesh::MeshComponent;
 use super::components::particle::ParticleState;
@@ -97,6 +98,7 @@ pub(crate) enum ComponentKind {
     Weapon = 7,
     DescriptorProvenance = 8,
     Mesh = 9,
+    Health = 10,
 }
 
 impl ComponentKind {
@@ -116,6 +118,7 @@ impl ComponentKind {
             ComponentKind::Weapon,
             ComponentKind::DescriptorProvenance,
             ComponentKind::Mesh,
+            ComponentKind::Health,
         ];
         VARIANTS.len()
     };
@@ -161,6 +164,7 @@ pub(crate) enum ComponentValue {
     Weapon(WeaponComponent),
     DescriptorProvenance(DescriptorProvenance),
     Mesh(MeshComponent),
+    Health(HealthComponent),
 }
 
 impl ComponentValue {
@@ -176,6 +180,7 @@ impl ComponentValue {
             ComponentValue::Weapon(_) => ComponentKind::Weapon,
             ComponentValue::DescriptorProvenance(_) => ComponentKind::DescriptorProvenance,
             ComponentValue::Mesh(_) => ComponentKind::Mesh,
+            ComponentValue::Health(_) => ComponentKind::Health,
         }
     }
 }
@@ -398,6 +403,21 @@ impl Component for MeshComponent {
 
     fn into_value(self) -> ComponentValue {
         ComponentValue::Mesh(self)
+    }
+}
+
+impl Component for HealthComponent {
+    const KIND: ComponentKind = ComponentKind::Health;
+
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::Health(h) => Some(h),
+            _ => None,
+        }
+    }
+
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::Health(self)
     }
 }
 

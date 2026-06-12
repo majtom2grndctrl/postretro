@@ -11,15 +11,12 @@ use crate::scripting::components::weapon::WeaponComponent;
 use crate::scripting::data_descriptors::{FireMode, ResolutionMode};
 use crate::scripting::registry::{EntityId, EntityRegistry};
 
+mod damage;
 mod impact;
 
+pub(crate) use damage::DamagePayload;
 pub(crate) use impact::sprite_collection as impact_sprite_collection;
 pub(crate) use impact::{lifetime as impact_lifetime, spawn_impact_effect_at};
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct DamagePayload {
-    pub(crate) amount: f32,
-}
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -1674,6 +1674,7 @@ mod tests {
             movement: None,
             weapon: None,
             mesh: None,
+            health: None,
         }
     }
 

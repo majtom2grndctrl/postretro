@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::layout::Anchor;
+use super::style_ranges::StyleRanges;
 
 /// A color slot on a widget: either a literal linear-RGBA value or a named theme
 /// token resolved against the active theme (resolution is a later step — the wire
@@ -96,6 +97,15 @@ pub struct TextWidget {
     pub font: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bind: Option<TextBind>,
+    /// Optional continuous value→style map (M13 Goal E). When present, the
+    /// rendered value (the display value mid-tween) is mapped to a band color +
+    /// pulse/flash effect, overriding `color`. Meaningful only alongside `bind`
+    /// (the bound slot supplies the value); present without `bind` it warns once
+    /// per tree build and never fires. Absent on every pre-E widget, so a
+    /// styleRange-less widget keeps its old wire form (the key is omitted, not
+    /// `null`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style_ranges: Option<StyleRanges>,
 }
 
 /// State binding for a `text` widget. `slot` is a dotted slot name (e.g.
@@ -164,6 +174,14 @@ pub struct PanelWidget {
     pub border: Option<Border>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bind: Option<PanelBind>,
+    /// Optional continuous value→style map (M13 Goal E). When present, the
+    /// rendered value (the display value mid-tween) is mapped to a band color +
+    /// pulse/flash effect, overriding `fill`. Meaningful only alongside `bind`;
+    /// present without `bind` it warns once per tree build and never fires.
+    /// Absent on every pre-E panel, so a styleRange-less panel round-trips
+    /// unchanged (the key is omitted, not `null`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style_ranges: Option<StyleRanges>,
 }
 
 /// State binding for a `panel` widget. `slot` is a dotted slot name whose value
@@ -544,5 +562,45 @@ mod tests {
         // And each parses back from its literal.
         let parsed: Easing = serde_json::from_str(r#""easeInOut""#).unwrap();
         assert_eq!(parsed, Easing::EaseInOut);
+    }
+
+    #[test]
+    fn style_range_less_text_round_trips_byte_identically() {
+        // A pre-E `text` widget carrying no `styleRanges` must keep its EXACT wire
+        // form: the new field skip-serializes when absent (default), so a
+        // styleRanges-less descriptor is byte-identical across a round-trip. This
+        // is the locked-wire-format guarantee for Goal E's additive field.
+        let json = r#"{"kind":"text","content":"0","fontSize":18.0,"color":[1.0,1.0,1.0,1.0],"bind":{"slot":"player.health"}}"#;
+        let widget: Widget = serde_json::from_str(json).expect("must deserialize");
+        let reserialized = serde_json::to_string(&widget).expect("must serialize");
+        assert_eq!(reserialized, json);
+        assert!(
+            !reserialized.contains("styleRanges"),
+            "absent styleRanges emits no key"
+        );
+    }
+
+    #[test]
+    fn style_range_less_panel_round_trips_byte_identically() {
+        // The panel-side twin: a styleRanges-less panel keeps its pre-E wire form.
+        let json = r#"{"kind":"panel","fill":[0.1,0.2,0.3,1.0],"border":null}"#;
+        let widget: Widget = serde_json::from_str(json).expect("must deserialize");
+        let reserialized = serde_json::to_string(&widget).expect("must serialize");
+        assert_eq!(reserialized, json);
+        assert!(
+            !reserialized.contains("styleRanges"),
+            "absent styleRanges emits no key"
+        );
+    }
+
+    #[test]
+    fn text_with_style_ranges_round_trips_in_camel_case() {
+        // A `text` widget carrying `styleRanges` keeps its camelCase wire form
+        // byte-for-byte. Field order: content, fontSize, color, bind, then
+        // styleRanges { max, entries: [{ upTo, color }, { color }] }.
+        let json = r#"{"kind":"text","content":"0","fontSize":18.0,"color":[1.0,1.0,1.0,1.0],"bind":{"slot":"player.health"},"styleRanges":{"max":100.0,"entries":[{"upTo":0.25,"color":"critical"},{"color":"ok"}]}}"#;
+        let widget: Widget = serde_json::from_str(json).expect("must deserialize");
+        let reserialized = serde_json::to_string(&widget).expect("must serialize");
+        assert_eq!(reserialized, json);
     }
 }

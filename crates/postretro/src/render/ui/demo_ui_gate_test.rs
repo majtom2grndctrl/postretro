@@ -553,6 +553,7 @@ fn srgb_of(linear: [f32; 4]) -> [u8; 4] {
             color: ColorValue::Literal(linear),
             font: None,
             bind: None,
+            style_ranges: None,
         }),
     };
     let mut ui = UiTree::from_descriptor(&tree, &UiTheme::engine_default());

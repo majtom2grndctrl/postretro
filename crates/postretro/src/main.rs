@@ -78,6 +78,9 @@ use crate::scripting::reactions::registry::{
     ReactionPrimitiveRegistry, register_emitter_reaction_primitives,
     register_fog_reaction_primitives, register_sequenced_fog_primitives,
 };
+use crate::scripting::reactions::system_commands::{
+    SystemReactionRegistry, register_system_reaction_primitives,
+};
 use crate::scripting::runtime::{ReloadSummary, ScriptRuntime, ScriptRuntimeConfig};
 use crate::scripting::sequence::SequencedPrimitiveRegistry;
 use crate::scripting::state_persistence::{
@@ -275,6 +278,13 @@ fn main() -> Result<()> {
     register_emitter_reaction_primitives(&mut reaction_registry);
     register_fog_reaction_primitives(&mut reaction_registry);
 
+    // System-reaction handlers (no entity targets) — the second arm of the
+    // shared named-reaction vocabulary. They enqueue typed commands onto
+    // `script_ctx.system_commands`, drained once per frame after the post-tick
+    // event drains. See: context/lib/scripting.md §10.4.
+    let mut system_registry = SystemReactionRegistry::new();
+    register_system_reaction_primitives(&mut system_registry);
+
     // Built-in classname dispatch — survives level unload because handlers
     // describe engine types, not per-level state. See: context/lib/scripting.md
     let mut classname_dispatch = ClassnameDispatch::new();
@@ -359,6 +369,7 @@ fn main() -> Result<()> {
         state_store_lifecycle: StateStoreLifecycle::default(),
         sequence_registry,
         reaction_registry,
+        system_registry,
         progress_tracker: ProgressTracker::new(),
         classname_dispatch,
         light_bridge: scripting_systems::light_bridge::LightBridge::new(),
@@ -544,6 +555,12 @@ struct App {
     /// Resolved by name when a `Primitive` reaction fires.
     /// See: context/lib/scripting.md §2
     reaction_registry: ReactionPrimitiveRegistry,
+
+    /// Resolved by name when a `Primitive` reaction with no `tag` fires — the
+    /// system-reaction arm. Handlers enqueue typed commands onto
+    /// `script_ctx.system_commands`, drained once per frame.
+    /// See: context/lib/scripting.md §10.4
+    system_registry: SystemReactionRegistry,
 
     /// Per-tag kill-count subscriptions. Cleared on level unload; survives
     /// hot-reload. See: context/lib/scripting.md §2
@@ -1224,8 +1241,19 @@ impl ApplicationHandler for App {
                         &self.script_ctx.data_registry.borrow(),
                         &self.sequence_registry,
                         &self.reaction_registry,
+                        &self.system_registry,
                         &self.script_ctx,
                     );
+                }
+
+                // System-reaction command drain — runs AFTER every post-tick
+                // event drain so commands enqueued by movement/weapon/death
+                // reactions (and, later, crossing watchers) are taken in one
+                // batch. The typed queue keeps audio/input/UI services out of
+                // the scripting surface; consumers land in Task 4 / Goal F, so
+                // for now the drain logs each command. See: scripting.md §10.4.
+                if !self.script_ctx.system_commands.is_empty() {
+                    self.script_ctx.system_commands.drain_to_log();
                 }
 
                 // Static UI proxy: republish the HUD store slots from
@@ -2585,6 +2613,7 @@ impl App {
             &self.script_ctx.data_registry.borrow(),
             &self.sequence_registry,
             &self.reaction_registry,
+            &self.system_registry,
             &self.script_ctx,
         );
         self.level_timings.record("level_load_event");

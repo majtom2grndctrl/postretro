@@ -141,7 +141,7 @@ mod tests {
                 name: "wave1Complete".to_string(),
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "moveGeometry".to_string(),
-                    tag: "reactorChambers".to_string(),
+                    tag: Some("reactorChambers".to_string()),
                     on_complete: None,
                     args: serde_json::Value::Object(Default::default()),
                 }),

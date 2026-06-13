@@ -343,7 +343,16 @@ mod tests {
         });
 
         let reaction_reg = ReactionPrimitiveRegistry::new();
-        fire_named_event_with_sequences("levelLoad", &data, &seq_reg, &reaction_reg, &script_ctx);
+        let system_reg =
+            crate::scripting::reactions::system_commands::SystemReactionRegistry::new();
+        fire_named_event_with_sequences(
+            "levelLoad",
+            &data,
+            &seq_reg,
+            &reaction_reg,
+            &system_reg,
+            &script_ctx,
+        );
 
         let after = script_ctx
             .registry

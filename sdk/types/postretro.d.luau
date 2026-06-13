@@ -592,13 +592,15 @@ export type ProgressReactionDescriptor = {
   progress: { tag: string, at: number, fire: string },
 }
 
---- Primitive reaction body: invokes the named Rust primitive on entities
---- tagged `tag`, optionally firing `onComplete` when it finishes. `args`
+--- Primitive reaction body: invokes the named Rust primitive. With `tag`, it
+--- targets entities carrying that tag and mutates them. Without `tag`, it is a
+--- system reaction (no entities) that enqueues a typed engine command —
+--- `playSound`, `rumble`, `flashScreen`, the UI-stack reactions. `args`
 --- carries the primitive's typed payload (e.g. `{ rate = 0 }` for
---- `setEmitterRate`, `{ state = "attack" }` for `setAnimationState`).
+--- `setEmitterRate`, `{ sound = "alarm" }` for `playSound`).
 export type PrimitiveReactionDescriptor = {
   primitive: string,
-  tag: string,
+  tag: string?,
   args: { [string]: any }?,
   onComplete: string?,
 }
@@ -675,7 +677,7 @@ export type SequenceReactionDescriptor = {
 --- into the descriptor at the top level so the Rust deserializer reads
 --- both fields from one flat table.
 export type ProgressNamedReactionDescriptor = { name: string, progress: { tag: string, at: number, fire: string } }
-export type PrimitiveNamedReactionDescriptor = { name: string, primitive: string, tag: string, args: { [string]: any }?, onComplete: string? }
+export type PrimitiveNamedReactionDescriptor = { name: string, primitive: string, tag: string?, args: { [string]: any }?, onComplete: string? }
 export type SequenceNamedReactionDescriptor = { name: string, sequence: {SequenceStep} }
 export type NamedReactionDescriptor = ProgressNamedReactionDescriptor | PrimitiveNamedReactionDescriptor | SequenceNamedReactionDescriptor
 

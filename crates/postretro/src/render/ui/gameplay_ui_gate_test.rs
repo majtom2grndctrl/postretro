@@ -68,6 +68,7 @@ fn text(content: &str, font_size: f32) -> Widget {
         color: ColorValue::Literal([1.0, 1.0, 1.0, 1.0]),
         font: None,
         bind: None,
+        style_ranges: None,
     })
 }
 

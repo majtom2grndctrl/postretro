@@ -3,6 +3,7 @@
 // back into the device-pixel `UiDrawList` + shaped-text draw entries through the
 // `layout` projection path. taffy/layout lives entirely here (renderer-owns-GPU).
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use taffy::prelude::{
@@ -15,6 +16,7 @@ use super::descriptor::{
     PanelBind, PanelWidget, SpacingValue, TextBind, TextWidget, Widget,
 };
 use super::layout::{Anchor, REFERENCE_HEIGHT, REFERENCE_WIDTH};
+use super::style_ranges::{StyleEffectState, StyleRanges, evaluate};
 use super::theme::UiTheme;
 use crate::scripting::slot_table::SlotValue;
 use glyphon::FontSystem;
@@ -86,7 +88,7 @@ fn lerp_rgba(from: [f32; 4], to: [f32; 4], e: f32) -> [f32; 4] {
 /// a `Token` looks the name up in the theme. An unknown token degrades to opaque
 /// magenta and logs exactly one warning (per tree build, not per frame — this
 /// runs at build time, which on the retained path is once per rebuild).
-fn resolve_color(value: &ColorValue, theme: &UiTheme) -> [f32; 4] {
+pub(crate) fn resolve_color(value: &ColorValue, theme: &UiTheme) -> [f32; 4] {
     match value {
         ColorValue::Literal(rgba) => *rgba,
         ColorValue::Token(name) => theme.color(name).unwrap_or_else(|| {
@@ -146,6 +148,54 @@ fn resolve_border(border: Option<&Border>, theme: &UiTheme) -> Option<Border> {
         slice: b.slice,
         tint: ColorValue::Literal(resolve_color(&b.tint, theme)),
     })
+}
+
+/// Pre-resolve a `StyleRanges`' band-color tokens against the theme at build
+/// time, returning a literal-only `StyleRanges`. Each band's optional `color`
+/// token degrades through `resolve_color` (unknown → opaque magenta + one warn),
+/// so the once-per-build warning rule holds and the per-frame draw walk stays
+/// theme-free: the draw-time evaluator only ever sees `ColorValue::Literal`
+/// bands. `up_to`/`pulse`/`flash` carry through unchanged.
+fn resolve_style_ranges(ranges: &StyleRanges, theme: &UiTheme) -> StyleRanges {
+    use super::style_ranges::StyleEntry;
+    StyleRanges {
+        max: ranges.max,
+        entries: ranges
+            .entries
+            .iter()
+            .map(|entry| StyleEntry {
+                up_to: entry.up_to,
+                color: entry
+                    .color
+                    .as_ref()
+                    .map(|c| ColorValue::Literal(resolve_color(c, theme))),
+                pulse: entry.pulse,
+                flash: entry.flash,
+            })
+            .collect(),
+    }
+}
+
+/// Resolve a widget's optional `style_ranges` for the retained node at build
+/// time: pre-resolve its band-color tokens (theme-free draw walk) and enforce the
+/// `bind` precondition. styleRanges maps the widget's bound value, so without a
+/// `bind` there is no value to map — warn exactly once per tree build (the
+/// theme-fallback precedent) and drop it (the node carries `None`, no effect
+/// fires). `kind` names the widget in the warning.
+fn build_node_style_ranges(
+    style_ranges: Option<&StyleRanges>,
+    has_bind: bool,
+    theme: &UiTheme,
+    kind: &str,
+) -> Option<StyleRanges> {
+    let ranges = style_ranges?;
+    if !has_bind {
+        log::warn!(
+            "[UI] {kind} widget declares styleRanges without a bind — no value to map; ignoring"
+        );
+        return None;
+    }
+    Some(resolve_style_ranges(ranges, theme))
 }
 
 /// Asset key → natural reference size (logical-reference px, `[width, height]`)
@@ -213,6 +263,13 @@ enum NodeContext {
         /// formatted display string (so the measure seam shapes the displayed
         /// value).
         tween: Option<TweenState<f32>>,
+        /// Continuous value→style map (M13 Goal E). When `Some`, the rendered
+        /// numeric value drives a band color + pulse/flash effect that overrides
+        /// `color`. `style_state` holds the per-node effect clock (flash entry,
+        /// active band) the evaluator advances each draw build. Both `None` on a
+        /// styleRange-less node.
+        style_ranges: Option<StyleRanges>,
+        style_state: RefCell<StyleEffectState>,
     },
     /// Solid-fill panel quad, optionally framed by a 9-slice `border`. `fill`
     /// stays linear `[f32; 4]` — no sRGB conversion on the quad path. Carried by
@@ -238,6 +295,12 @@ enum NodeContext {
         /// binds and before the first array resolution. While `Some`, the driver
         /// eases `display` (the rendered fill) per-channel toward `target`.
         tween: Option<TweenState<[f32; 4]>>,
+        /// Continuous value→style map (M13 Goal E). When `Some`, the rendered
+        /// numeric value (from `bind`'s slot) drives a band color + pulse/flash
+        /// effect that overrides `fill`. `style_state` holds the per-node effect
+        /// clock. Both `None` on a styleRange-less node and on container backdrops.
+        style_ranges: Option<StyleRanges>,
+        style_state: RefCell<StyleEffectState>,
     },
     /// Textured image quad. `asset` is the texture key the renderer binds; the
     /// rect comes from layout. The image sizes from the asset's natural reference
@@ -455,7 +518,10 @@ impl UiTree {
             self.recompute_count += 1;
         }
 
-        self.collect_draw_data(device_size, slot_values)
+        // Fresh/splash path: no retained clock, so styleRange effects evaluate at
+        // a steady `0.0`. The splash path carries no styleRanges; gameplay uses the
+        // retained path, which threads the real `time_seconds`.
+        self.collect_draw_data(device_size, slot_values, 0.0)
     }
 
     /// Read the cached taffy layout back into a fresh `UiDrawData`, resolving any
@@ -463,11 +529,13 @@ impl UiTree {
     /// assumes layout is already computed for `device_size` (the caller's gate
     /// ran the compute when needed). Shared by the fresh path (`build_draw_data`,
     /// which calls it every frame) and the retained path (which calls it only
-    /// when the draw list needs rebuilding).
+    /// when the draw list needs rebuilding). `time_seconds` is the frame's
+    /// dt-accumulated clock the styleRange pulse/flash effects advance against.
     fn collect_draw_data(
         &self,
         device_size: [u32; 2],
         slot_values: &HashMap<String, SlotValue>,
+        time_seconds: f64,
     ) -> UiDrawData {
         // Place the root in reference space: anchor it on the canvas, then back
         // the root's top-left out by the anchor fraction of the root's size (the
@@ -486,15 +554,22 @@ impl UiTree {
         let scale = super::layout::device_scale(device_size);
         let canvas_origin = canvas_origin(device_size, scale);
 
-        let mut data = UiDrawData::default();
-        self.collect_node(
-            self.root,
-            root_origin,
+        // styleRange band colors were pre-resolved to literals at build time, so
+        // the draw-time evaluator never looks a token up; this inert theme satisfies
+        // its `&UiTheme` parameter (the Goal F / Task 3 evaluator contract) without
+        // re-introducing the theme to the per-frame walk.
+        let inert_theme = UiTheme::engine_default();
+
+        let walk = DrawWalkCtx {
             canvas_origin,
             scale,
             slot_values,
-            &mut data,
-        );
+            time_seconds,
+            inert_theme: &inert_theme,
+        };
+
+        let mut data = UiDrawData::default();
+        self.collect_node(self.root, root_origin, &walk, &mut data);
         data
     }
 
@@ -577,7 +652,7 @@ impl UiTree {
             || self.cached_draw_data.is_none();
 
         if needs_rebuild {
-            let data = self.collect_draw_data(device_size, slot_values);
+            let data = self.collect_draw_data(device_size, slot_values, time_seconds);
             #[cfg(test)]
             {
                 self.draw_rebuild_count += 1;
@@ -709,11 +784,16 @@ impl UiTree {
         &self,
         node: NodeId,
         ref_origin: [f32; 2],
-        canvas_origin: [f32; 2],
-        scale: f32,
-        slot_values: &HashMap<String, SlotValue>,
+        walk: &DrawWalkCtx<'_>,
         data: &mut UiDrawData,
     ) {
+        let DrawWalkCtx {
+            canvas_origin,
+            scale,
+            slot_values,
+            time_seconds,
+            inert_theme,
+        } = *walk;
         let layout = self.taffy.layout(node).expect("node has computed layout");
         let context = self.taffy.get_node_context(node);
 
@@ -724,6 +804,8 @@ impl UiTree {
                 bind,
                 last_resolved,
                 tween,
+                style_ranges,
+                style_state,
             }) => {
                 // A bound panel resolves its fill from the slot snapshot; an
                 // absent/malformed slot falls back to the literal `fill`. For a
@@ -732,10 +814,27 @@ impl UiTree {
                 // eased fill instead of re-resolving the raw slot — so the
                 // per-channel easing reaches the draw. The fresh/splash path never
                 // populates `tween`, so it resolves the target directly (inert).
-                let fill = match (tween, last_resolved) {
+                let mut fill = match (tween, last_resolved) {
                     (Some(_), Some(eased)) => *eased,
                     _ => resolve_panel_fill(bind.as_ref(), *fill, slot_values),
                 };
+                // styleRanges (M13 Goal E) overrides the fill: the bound numeric
+                // value maps to a band color + pulse/flash. Its band colors were
+                // pre-resolved to literals at build, so the evaluator's theme arg
+                // is inert here. The base color is the resolved `fill` above (a
+                // band with no color keeps it).
+                if let Some(ranges) = style_ranges {
+                    if let Some(value) = style_value(bind.as_ref(), slot_values) {
+                        fill = evaluate(
+                            ranges,
+                            value,
+                            fill,
+                            inert_theme,
+                            &mut style_state.borrow_mut(),
+                            time_seconds,
+                        );
+                    }
+                }
                 data.quads.push(project_quad(
                     ref_origin,
                     layout,
@@ -761,6 +860,8 @@ impl UiTree {
                 bind,
                 last_resolved,
                 tween,
+                style_ranges,
+                style_state,
             }) => {
                 // A bound text node resolves its drawn string from the slot
                 // snapshot (through the optional `{}` format template); an absent
@@ -779,6 +880,26 @@ impl UiTree {
                     (Some(_), Some(displayed)) => displayed.clone(),
                     _ => resolve_text(bind.as_ref(), content, slot_values),
                 };
+                // styleRanges (M13 Goal E) overrides the run's color: the bound
+                // value (the eased tween display when a tween is active, else the
+                // raw slot number) maps to a band color + pulse/flash. Band colors
+                // were pre-resolved to literals at build, so the theme arg is inert.
+                let color = match style_ranges {
+                    Some(ranges) => {
+                        match style_text_value(bind.as_ref(), tween.as_ref(), slot_values) {
+                            Some(value) => evaluate(
+                                ranges,
+                                value,
+                                *color,
+                                inert_theme,
+                                &mut style_state.borrow_mut(),
+                                time_seconds,
+                            ),
+                            None => *color,
+                        }
+                    }
+                    None => *color,
+                };
                 // Device-pixel top-left + device-scaled font size; color converts
                 // linear RGBA -> sRGB [u8; 4] at draw-list build time. The run is
                 // laid out in flow (its container's `align` centers it on the
@@ -788,7 +909,7 @@ impl UiTree {
                     resolved,
                     [rect[0], rect[1]],
                     font_size * scale,
-                    linear_rgba_to_srgb_u8(*color),
+                    linear_rgba_to_srgb_u8(color),
                     // The theme-resolved family carried on the node (from the
                     // widget's `font` token, or `body` when it names none), so the
                     // drawn line shapes against the same registered face the
@@ -807,9 +928,20 @@ impl UiTree {
                 ref_origin[0] + child_layout.location.x,
                 ref_origin[1] + child_layout.location.y,
             ];
-            self.collect_node(child, child_origin, canvas_origin, scale, slot_values, data);
+            self.collect_node(child, child_origin, walk, data);
         }
     }
+}
+
+/// Walk-invariant context threaded through `collect_node`'s recursion: the
+/// device-pixel projection, the slot snapshot the draw reads, the dt-accumulated
+/// UI clock, and the inert theme the (pre-resolved) styleRanges evaluator takes.
+struct DrawWalkCtx<'a> {
+    canvas_origin: [f32; 2],
+    scale: f32,
+    slot_values: &'a HashMap<String, SlotValue>,
+    time_seconds: f64,
+    inert_theme: &'a UiTheme,
 }
 
 /// Result of one retained-frame bound-value diff. Each flag is set when at least
@@ -1137,7 +1269,10 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget, theme: &UiThe
             color,
             font,
             bind,
+            style_ranges,
         }) => {
+            let style_ranges =
+                build_node_style_ranges(style_ranges.as_ref(), bind.is_some(), theme, "text");
             // Text nodes are sized by the measure closure in `build_draw_data`,
             // which shapes `content` at `font_size` through glyphon and returns
             // the real shaped-run extent. The node carries no explicit style size.
@@ -1161,11 +1296,20 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget, theme: &UiThe
                         // at build: the fresh path never tweens, and the retained
                         // diff initializes it when the slot first reads a `Number`.
                         tween: None,
+                        style_ranges,
+                        style_state: RefCell::new(StyleEffectState::default()),
                     },
                 )
                 .expect("taffy leaf creation must succeed")
         }
-        Widget::Panel(PanelWidget { fill, border, bind }) => {
+        Widget::Panel(PanelWidget {
+            fill,
+            border,
+            bind,
+            style_ranges,
+        }) => {
+            let style_ranges =
+                build_node_style_ranges(style_ranges.as_ref(), bind.is_some(), theme, "panel");
             // A panel leaf sizes to fill its flex/grid slot (it has no intrinsic
             // size). Container backdrops are expressed on the container instead.
             // `bind` rides along for draw-time fill resolution.
@@ -1180,6 +1324,8 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget, theme: &UiThe
                         last_resolved: None,
                         // Born on the first length-4 array resolution (see above).
                         tween: None,
+                        style_ranges,
+                        style_state: RefCell::new(StyleEffectState::default()),
                     },
                 )
                 .expect("taffy leaf creation must succeed")
@@ -1227,6 +1373,9 @@ fn container_backdrop(fill: Option<[f32; 4]>, border: Option<&Border>) -> Option
             bind: None,
             last_resolved: None,
             tween: None,
+            // Backdrops carry no styleRanges (styleRanges live on bound leaves).
+            style_ranges: None,
+            style_state: RefCell::new(StyleEffectState::default()),
         }),
     }
 }
@@ -1495,6 +1644,41 @@ fn resolve_panel_fill(
     }
 }
 
+/// The scalar value a `text` node's styleRanges maps: the eased tween *display*
+/// value when a tween is active on the bind (the styleRanges contract — it
+/// evaluates the value the widget renders, which mid-tween is the display value),
+/// else the bound slot's `Number`. `None` when there is no bind, the slot is
+/// absent, or it is not a `Number` (no value to map — the node keeps its base
+/// color). The tween's display is the same eased value the rendered string shows,
+/// so the color tracks the displayed number.
+fn style_text_value(
+    bind: Option<&TextBind>,
+    tween: Option<&TweenState<f32>>,
+    slot_values: &HashMap<String, SlotValue>,
+) -> Option<f32> {
+    if let Some(state) = tween {
+        return Some(state.display);
+    }
+    let bind = bind?;
+    match slot_values.get(&bind.slot) {
+        Some(SlotValue::Number(n)) => Some(*n),
+        _ => None,
+    }
+}
+
+/// The scalar value a `panel` node's styleRanges maps: the bound slot's `Number`.
+/// `None` when there is no bind, the slot is absent, or it is not a `Number`. A
+/// panel's RGBA fill-tween carries no scalar, so styleRanges on a panel reads the
+/// raw numeric slot (a styleRanges panel binds a numeric slot, not the length-4
+/// fill array) — the two bind uses are distinct.
+fn style_value(bind: Option<&PanelBind>, slot_values: &HashMap<String, SlotValue>) -> Option<f32> {
+    let bind = bind?;
+    match slot_values.get(&bind.slot) {
+        Some(SlotValue::Number(n)) => Some(*n),
+        _ => None,
+    }
+}
+
 /// Convert a linear-RGBA `[f32; 4]` color to glyphon's sRGB-encoded `[u8; 4]`.
 /// RGB channels go through the sRGB transfer function; alpha is linear (stays a
 /// straight 0..1 → 0..255 scale). Matches the `UiText` color contract.
@@ -1593,6 +1777,7 @@ mod tests {
             color: ColorValue::Literal([1.0, 1.0, 1.0, 1.0]),
             font: None,
             bind: None,
+            style_ranges: None,
         })
     }
 
@@ -1788,6 +1973,7 @@ mod tests {
                 color: ColorValue::Literal([1.0; 4]),
                 font: None,
                 bind: None,
+                style_ranges: None,
             })
         };
         let tree = AnchoredTree {
@@ -1847,6 +2033,7 @@ mod tests {
                 color: ColorValue::Literal([1.0, 1.0, 1.0, 1.0]),
                 font: None,
                 bind: None,
+                style_ranges: None,
             }),
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
@@ -2173,6 +2360,7 @@ mod tests {
                 format: format.map(str::to_string),
                 tween: None,
             }),
+            style_ranges: None,
         })
     }
 
@@ -2193,6 +2381,7 @@ mod tests {
                     slot: slot.into(),
                     tween: None,
                 }),
+                style_ranges: None,
             })],
         })
     }
@@ -2552,6 +2741,7 @@ mod tests {
                 color,
                 font: font.map(str::to_string),
                 bind: None,
+                style_ranges: None,
             }),
         }
     }
@@ -2761,6 +2951,7 @@ mod tests {
                 format: format.map(str::to_string),
                 tween: Some(tween),
             }),
+            style_ranges: None,
         })
     }
 
@@ -2780,6 +2971,7 @@ mod tests {
                     slot: slot.into(),
                     tween: Some(tween),
                 }),
+                style_ranges: None,
             })],
         })
     }
@@ -3336,5 +3528,213 @@ mod tests {
         } else {
             panic!("root must be a text node");
         }
+    }
+
+    // --- styleRanges evaluator through the draw build (Goal E, Task 1) --------
+
+    use super::super::style_ranges::{StyleEntry, StyleRanges};
+
+    /// A bound `text` leaf carrying a `styleRanges` map. The bind supplies the
+    /// value the map evaluates; the literal `color` is the base color a no-color
+    /// or no-match band keeps.
+    fn styled_text(base: [f32; 4], slot: &str, ranges: StyleRanges) -> Widget {
+        Widget::Text(TextWidget {
+            content: "0".into(),
+            font_size: 20.0,
+            color: ColorValue::Literal(base),
+            font: None,
+            bind: Some(TextBind {
+                slot: slot.into(),
+                format: None,
+                tween: None,
+            }),
+            style_ranges: Some(ranges),
+        })
+    }
+
+    /// The three-band health map used across the integration tests: red ≤ 0.25,
+    /// amber ≤ 0.5, default green. Band colors are token literals so the draw
+    /// build's resolved sRGB is predictable.
+    fn health_style_ranges() -> StyleRanges {
+        StyleRanges {
+            max: 100.0,
+            entries: vec![
+                StyleEntry {
+                    up_to: Some(0.25),
+                    color: Some(ColorValue::Literal([1.0, 0.0, 0.0, 1.0])),
+                    pulse: None,
+                    flash: None,
+                },
+                StyleEntry {
+                    up_to: Some(0.5),
+                    color: Some(ColorValue::Literal([1.0, 1.0, 0.0, 1.0])),
+                    pulse: None,
+                    flash: None,
+                },
+                StyleEntry {
+                    up_to: None,
+                    color: Some(ColorValue::Literal([0.0, 1.0, 0.0, 1.0])),
+                    pulse: None,
+                    flash: None,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn style_ranges_change_text_color_at_the_declared_fraction() {
+        // A `text` bound to `player.health` with the three-band map draws red at a
+        // low value (10/100 = 0.10 → first band) and green at a high value
+        // (90/100 = 0.90 → trailing default). The drawn color tracks the band.
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: styled_text([1.0, 1.0, 1.0, 1.0], "player.health", health_style_ranges()),
+        };
+        let mut fs = font_system();
+
+        let mut ui_low = UiTree::from_descriptor(&tree, &theme());
+        let low = ui_low.build_draw_data(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &number_slots("player.health", 10.0),
+        );
+        assert_eq!(
+            low.texts[0].color,
+            srgb_of([1.0, 0.0, 0.0, 1.0]),
+            "low health (fraction 0.10) draws the first band's red",
+        );
+
+        let mut ui_high = UiTree::from_descriptor(&tree, &theme());
+        let high = ui_high.build_draw_data(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &number_slots("player.health", 90.0),
+        );
+        assert_eq!(
+            high.texts[0].color,
+            srgb_of([0.0, 1.0, 0.0, 1.0]),
+            "high health (fraction 0.90) draws the trailing default green",
+        );
+    }
+
+    #[test]
+    fn style_ranges_band_color_token_degrades_to_magenta_in_draw_list() {
+        // A band naming an unknown color token degrades to opaque magenta through
+        // the existing theme rule — pre-resolved to a literal at build, so the
+        // drawn run carries magenta.
+        let ranges = StyleRanges {
+            max: 100.0,
+            entries: vec![StyleEntry {
+                up_to: None,
+                color: Some(ColorValue::Token("no.such.color".into())),
+                pulse: None,
+                flash: None,
+            }],
+        };
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: styled_text([1.0, 1.0, 1.0, 1.0], "player.health", ranges),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let data = ui.build_draw_data(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &number_slots("player.health", 50.0),
+        );
+        assert_eq!(
+            data.texts[0].color,
+            srgb_of([1.0, 0.0, 1.0, 1.0]),
+            "unknown band token degrades to opaque magenta",
+        );
+    }
+
+    #[test]
+    fn style_ranges_without_a_bind_are_dropped_and_keep_the_base_color() {
+        // styleRanges without a `bind` have no value to map: the build drops them
+        // (warning once) and the node draws its plain base color, never a band.
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: Widget::Text(TextWidget {
+                content: "X".into(),
+                font_size: 20.0,
+                color: ColorValue::Literal([0.2, 0.4, 0.6, 1.0]),
+                font: None,
+                bind: None,
+                style_ranges: Some(health_style_ranges()),
+            }),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+        assert_eq!(
+            data.texts[0].color,
+            srgb_of([0.2, 0.4, 0.6, 1.0]),
+            "a bindless styleRanges is dropped; the base color is drawn",
+        );
+        // The node carries no styleRanges (it was dropped at build).
+        if let Some(NodeContext::Text { style_ranges, .. }) = ui.taffy.get_node_context(ui.root) {
+            assert!(
+                style_ranges.is_none(),
+                "bindless styleRanges is dropped from the node",
+            );
+        } else {
+            panic!("root must be a text node");
+        }
+    }
+
+    #[test]
+    fn style_ranges_evaluate_the_eased_display_value_mid_tween() {
+        // styleRanges evaluate the value the widget RENDERS — the eased display
+        // value mid-tween, not the authoritative target. A tween easing 0→100
+        // (target 100) renders a low display early, so the band is red even though
+        // the target's fraction (1.0) would resolve to green.
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: Widget::Text(TextWidget {
+                content: "0".into(),
+                font_size: 20.0,
+                color: ColorValue::Literal([1.0, 1.0, 1.0, 1.0]),
+                font: None,
+                bind: Some(TextBind {
+                    slot: "player.health".into(),
+                    format: None,
+                    tween: Some(TextTween {
+                        duration_ms: 1000.0,
+                        easing: Easing::Linear,
+                        from: Some(0.0),
+                    }),
+                }),
+                style_ranges: Some(health_style_ranges()),
+            }),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let slots = number_slots("player.health", 100.0);
+
+        // Frame 0: display is at `from` = 0 (fraction 0) → red band, NOT the
+        // target's green. The eased display value drives the band.
+        let f0 = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
+        assert_eq!(
+            f0.texts[0].color,
+            srgb_of([1.0, 0.0, 0.0, 1.0]),
+            "mid-tween the band tracks the eased display value (0 → red), not the target",
+        );
+
+        // At t == duration the display equals the target (100, fraction 1.0) →
+        // the trailing green band.
+        let f_end = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 1.0);
+        assert_eq!(
+            f_end.texts[0].color,
+            srgb_of([0.0, 1.0, 0.0, 1.0]),
+            "settled at the target, the band resolves to the default green",
+        );
     }
 }

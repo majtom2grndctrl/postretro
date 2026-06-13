@@ -97,6 +97,7 @@ fn token_text(token: &str) -> AnchoredTree {
             color: ColorValue::Token(token.into()),
             font: None,
             bind: None,
+            style_ranges: None,
         }),
     }
 }
@@ -113,6 +114,7 @@ fn srgb_of(linear: [f32; 4]) -> [u8; 4] {
             color: ColorValue::Literal(linear),
             font: None,
             bind: None,
+            style_ranges: None,
         }),
     };
     let mut ui = UiTree::from_descriptor(&tree, &UiTheme::engine_default());
@@ -265,6 +267,7 @@ fn unknown_font_token_warns_exactly_once_per_build() {
             color: ColorValue::Literal([1.0; 4]),
             font: Some("no.such.font".into()),
             bind: None,
+            style_ranges: None,
         }),
     };
     if let Some(n) = warns_for_build(&desc) {

@@ -45,16 +45,22 @@ pub(crate) struct ProgressDescriptor {
     pub(crate) fire: String,
 }
 
-/// Primitive-action reaction: invokes a named Rust primitive on entities
-/// matching `tag`, optionally firing `on_complete` when the primitive finishes.
+/// Primitive-action reaction. One descriptor shape, two execution arms (M13
+/// HUD dynamics): when `tag` is `Some`, the primitive resolves the tag to
+/// entities and mutates the `EntityRegistry`; when `tag` is `None`, it is a
+/// **system reaction** — it targets no entities and instead enqueues a typed
+/// `SystemReactionCommand` for the app's per-frame drain. The two arms share
+/// one named-event namespace; the dispatcher picks the arm by `tag` presence.
 ///
 /// `args` carries the primitive-specific payload (e.g. `{ "rate": 0.0 }` for
-/// `setEmitterRate`). Defaults to an empty JSON object when the descriptor
-/// omits the field, so primitives that take no args parse cleanly.
+/// `setEmitterRate`, `{ "sound": "alarm" }` for `playSound`). Defaults to an
+/// empty JSON object when the descriptor omits the field, so primitives that
+/// take no args parse cleanly.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PrimitiveDescriptor {
     pub(crate) primitive: String,
-    pub(crate) tag: String,
+    /// Entity tag to target. `None` ⇒ system-targeted (no entities).
+    pub(crate) tag: Option<String>,
     pub(crate) on_complete: Option<String>,
     pub(crate) args: serde_json::Value,
 }
@@ -924,7 +930,17 @@ fn primitive_descriptor_from_js<'js>(
 ) -> Result<PrimitiveDescriptor, DescriptorError> {
     let primitive = get_required_string_js(obj, "primitive")?;
     let primitive = validate_primitive_name(primitive)?;
-    let tag = get_required_string_js(obj, "tag")?;
+    // `tag` is optional: absent ⇒ system-targeted reaction (no entities).
+    let tag = if obj.contains_key("tag").map_err(js_err)? {
+        let raw: JsValue = obj.get("tag").map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            None
+        } else {
+            Some(String::from_js_value_required(raw, "tag")?)
+        }
+    } else {
+        None
+    };
 
     let on_complete = if obj.contains_key("onComplete").map_err(js_err)? {
         let raw: JsValue = obj.get("onComplete").map_err(js_err)?;
@@ -2012,7 +2028,21 @@ fn progress_descriptor_from_lua(table: &Table) -> Result<ProgressDescriptor, Des
 fn primitive_descriptor_from_lua(table: &Table) -> Result<PrimitiveDescriptor, DescriptorError> {
     let primitive = get_required_string_lua(table, "primitive")?;
     let primitive = validate_primitive_name(primitive)?;
-    let tag = get_required_string_lua(table, "tag")?;
+    // `tag` is optional: absent ⇒ system-targeted reaction (no entities).
+    let tag = if table.contains_key("tag").map_err(lua_err)? {
+        let raw: LuaValue = table.get("tag").map_err(lua_err)?;
+        match raw {
+            LuaValue::Nil => None,
+            LuaValue::String(s) => Some(s.to_str().map_err(lua_err)?.to_string()),
+            other => {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!("'tag' must be a string, got {}", other.type_name()),
+                });
+            }
+        }
+    } else {
+        None
+    };
 
     let on_complete = if table.contains_key("onComplete").map_err(lua_err)? {
         let raw: LuaValue = table.get("onComplete").map_err(lua_err)?;
@@ -2976,7 +3006,7 @@ mod tests {
         match &manifest.reactions[1].descriptor {
             ReactionDescriptor::Primitive(p) => {
                 assert_eq!(p.primitive, "moveGeometry");
-                assert_eq!(p.tag, "reactorChambers");
+                assert_eq!(p.tag.as_deref(), Some("reactorChambers"));
                 assert_eq!(p.on_complete.as_deref(), Some("wave2Revealed"));
             }
             other => panic!("expected primitive, got {other:?}"),
@@ -2991,6 +3021,39 @@ mod tests {
         let m = eval_js(src, |ctx, v| LevelManifest::from_js_value(ctx, v).unwrap());
         match &m.reactions[0].descriptor {
             ReactionDescriptor::Primitive(p) => assert!(p.on_complete.is_none()),
+            other => panic!("expected primitive, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn js_primitive_with_tag_parses_as_entity_targeted() {
+        // An entity-targeted descriptor (with `tag`) still parses byte-identically:
+        // `tag` round-trips as `Some`.
+        let src = r#"({
+            reactions: [{ name: "x", primitive: "setEmitterRate", tag: "smoke", args: { rate: 0.0 } }]
+        })"#;
+        let m = eval_js(src, |ctx, v| LevelManifest::from_js_value(ctx, v).unwrap());
+        match &m.reactions[0].descriptor {
+            ReactionDescriptor::Primitive(p) => {
+                assert_eq!(p.primitive, "setEmitterRate");
+                assert_eq!(p.tag.as_deref(), Some("smoke"));
+            }
+            other => panic!("expected primitive, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn js_primitive_without_tag_is_system_targeted() {
+        // A system reaction omits `tag` entirely; it parses with `tag == None`.
+        let src = r#"({
+            reactions: [{ name: "lowHealth", primitive: "playSound", args: { sound: "alarm" } }]
+        })"#;
+        let m = eval_js(src, |ctx, v| LevelManifest::from_js_value(ctx, v).unwrap());
+        match &m.reactions[0].descriptor {
+            ReactionDescriptor::Primitive(p) => {
+                assert_eq!(p.primitive, "playSound");
+                assert!(p.tag.is_none());
+            }
             other => panic!("expected primitive, got {other:?}"),
         }
     }
@@ -3155,7 +3218,7 @@ mod tests {
         match &m.reactions[1].descriptor {
             ReactionDescriptor::Primitive(p) => {
                 assert_eq!(p.primitive, "moveGeometry");
-                assert_eq!(p.tag, "reactorChambers");
+                assert_eq!(p.tag.as_deref(), Some("reactorChambers"));
                 assert_eq!(p.on_complete.as_deref(), Some("wave2Revealed"));
             }
             other => panic!("expected primitive, got {other:?}"),
@@ -3170,6 +3233,36 @@ mod tests {
         let m = eval_lua(src, |v| LevelManifest::from_lua_value(v).unwrap());
         match &m.reactions[0].descriptor {
             ReactionDescriptor::Primitive(p) => assert!(p.on_complete.is_none()),
+            other => panic!("expected primitive, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lua_primitive_with_tag_parses_as_entity_targeted() {
+        let src = r#"return {
+            reactions = { { name = "x", primitive = "setEmitterRate", tag = "smoke", args = { rate = 0.0 } } }
+        }"#;
+        let m = eval_lua(src, |v| LevelManifest::from_lua_value(v).unwrap());
+        match &m.reactions[0].descriptor {
+            ReactionDescriptor::Primitive(p) => {
+                assert_eq!(p.primitive, "setEmitterRate");
+                assert_eq!(p.tag.as_deref(), Some("smoke"));
+            }
+            other => panic!("expected primitive, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lua_primitive_without_tag_is_system_targeted() {
+        let src = r#"return {
+            reactions = { { name = "lowHealth", primitive = "playSound", args = { sound = "alarm" } } }
+        }"#;
+        let m = eval_lua(src, |v| LevelManifest::from_lua_value(v).unwrap());
+        match &m.reactions[0].descriptor {
+            ReactionDescriptor::Primitive(p) => {
+                assert_eq!(p.primitive, "playSound");
+                assert!(p.tag.is_none());
+            }
             other => panic!("expected primitive, got {other:?}"),
         }
     }

@@ -37,6 +37,12 @@ pub(crate) mod tree;
 /// data — widgets (later tasks) reference tokens by name; the merge is per-token.
 pub(crate) mod theme;
 
+/// Continuous value→style mapping (M13 Goal E `styleRanges`): the `StyleRanges`
+/// descriptor types and the widget-agnostic pure evaluator (value → resolved
+/// color + pulse/flash). Consumed from `tree`'s draw-data build; Goal F's `bar`
+/// reuses the same evaluator. Pure data — no taffy, no GPU.
+pub(crate) mod style_ranges;
+
 pub(crate) use self::text::UiText;
 
 /// Hardcoded splash content descriptor behind the one named builder seam

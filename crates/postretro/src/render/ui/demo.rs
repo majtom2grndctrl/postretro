@@ -97,6 +97,7 @@ pub(crate) fn build_demo_descriptor() -> AnchoredTree {
                 from: Some(0.0),
             }),
         }),
+        style_ranges: None,
     });
 
     let ammo = Widget::Text(TextWidget {
@@ -109,6 +110,7 @@ pub(crate) fn build_demo_descriptor() -> AnchoredTree {
             format: Some("AMMO {}".to_string()),
             tween: None,
         }),
+        style_ranges: None,
     });
 
     // The flash swatch: a bound panel paired with a measured label in a 2-column
@@ -131,6 +133,7 @@ pub(crate) fn build_demo_descriptor() -> AnchoredTree {
                 from: None,
             }),
         }),
+        style_ranges: None,
     });
     let swatch_label = Widget::Text(TextWidget {
         content: SWATCH_LABEL.to_string(),
@@ -141,6 +144,7 @@ pub(crate) fn build_demo_descriptor() -> AnchoredTree {
         // used by the readouts above.
         font: Some("mono".into()),
         bind: None,
+        style_ranges: None,
     });
     let swatch = Widget::Grid(GridWidget {
         gap: SpacingValue::Literal(SWATCH_GAP),

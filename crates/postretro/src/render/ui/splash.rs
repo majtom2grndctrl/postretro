@@ -124,6 +124,7 @@ pub(crate) fn build_splash_descriptor(version_line: &str) -> SplashDescriptor {
         color: ColorValue::Literal(TEXT_COLOR),
         font: None,
         bind: None,
+        style_ranges: None,
     });
     let inner = Widget::VStack(ContainerWidget {
         gap: SpacingValue::Literal(LOGO_TEXT_GAP),

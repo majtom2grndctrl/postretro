@@ -78,8 +78,12 @@ use crate::scripting::reactions::registry::{
     ReactionPrimitiveRegistry, register_emitter_reaction_primitives,
     register_fog_reaction_primitives, register_sequenced_fog_primitives,
 };
+use crate::scripting::reactions::system_commands::{
+    SystemReactionCommand, SystemReactionRegistry, register_system_reaction_primitives,
+};
 use crate::scripting::runtime::{ReloadSummary, ScriptRuntime, ScriptRuntimeConfig};
 use crate::scripting::sequence::SequencedPrimitiveRegistry;
+use crate::scripting::state_crossings::CrossingDetector;
 use crate::scripting::state_persistence::{
     STATE_FILE_PATH, StateStoreLifecycle, collect_persisted_state, load_persisted_state,
     overlay_persisted_state, save_persisted_state,
@@ -275,6 +279,13 @@ fn main() -> Result<()> {
     register_emitter_reaction_primitives(&mut reaction_registry);
     register_fog_reaction_primitives(&mut reaction_registry);
 
+    // System-reaction handlers (no entity targets) — the second arm of the
+    // shared named-reaction vocabulary. They enqueue typed commands onto
+    // `script_ctx.system_commands`, drained once per frame after the post-tick
+    // event drains. See: context/lib/scripting.md §10.4.
+    let mut system_registry = SystemReactionRegistry::new();
+    register_system_reaction_primitives(&mut system_registry);
+
     // Built-in classname dispatch — survives level unload because handlers
     // describe engine types, not per-level state. See: context/lib/scripting.md
     let mut classname_dispatch = ClassnameDispatch::new();
@@ -345,6 +356,8 @@ fn main() -> Result<()> {
         input_focus: InputFocus::Gameplay,
         ui_dispatch: input::UiDispatch::new(),
         gamepad_system: input::gamepad::GamepadSystem::new(),
+        cursor_pos: None,
+        nav_stick_tracker: input::StickNavTracker::new(),
         frame_timing: FrameTiming::new(initial_state),
         view_feel_state: view_feel::ViewFeelState::default(),
         diagnostic_inputs: input::DiagnosticInputs::new(input::default_diagnostic_chords()),
@@ -355,11 +368,53 @@ fn main() -> Result<()> {
         last_title_update: Instant::now(),
         script_runtime,
         ui_proxy: scripting_systems::ui_proxy::StaticUiProxy::new(script_ctx.clone()),
+        flash_decay: scripting_systems::flash_decay::FlashDecay::new(script_ctx.clone()),
+        modal_stack: {
+            // Register engine built-in trees at boot. Script-side registration
+            // arrives with a later goal; today the engine HUD descriptor is the
+            // one built-in, registered by name so a `showDialog`/`openMenu`
+            // reaction can target it through the stack registry (the modal-stack
+            // drain path). The HUD is also republished as the always-on bottom
+            // layer each frame independently of this registration.
+            let mut stack = render::ui::modal_stack::ModalStack::new();
+            stack
+                .registry_mut()
+                .register("hud", render::ui::demo::build_demo_descriptor());
+            // Register the demo pause menu (M13 Goal F, Task 5) so `nav.menu`
+            // (gamepad Start / Escape-from-gameplay) can push it onto the stack.
+            stack.registry_mut().register(
+                render::ui::demo::PAUSE_MENU_NAME,
+                render::ui::demo::build_pause_menu_descriptor(),
+            );
+            // Register the engine-shipped on-screen keyboard (M13 Text-Entry, Task
+            // 4), loaded from `content/base/ui/keyboard.json` on disk so a layout
+            // edit + reload changes it with no Rust change. A `showDialog { tree:
+            // "keyboard", onCommit }` resolves this name. A missing/malformed asset
+            // warns and skips the registration — gameplay still boots.
+            if let Some(keyboard) = render::ui::keyboard_asset::load_keyboard_descriptor() {
+                stack
+                    .registry_mut()
+                    .register(render::ui::keyboard_asset::KEYBOARD_TREE_NAME, keyboard);
+            }
+            stack
+        },
+        ui_focus: input::UiFocusEngine::new(),
+        ui_focus_rects: None,
+        ui_input_mode: input::InputMode::default(),
+        input_mode_tracker: scripting_systems::input_mode::InputModeTracker::new(
+            script_ctx.clone(),
+        ),
+        audio_master: scripting_systems::audio_master::AudioMasterConsumer::new(script_ctx.clone()),
+        pending_mode_signal: None,
+        pending_menu_toggle: false,
+        ui_focused_id: None,
         script_ctx,
         state_store_lifecycle: StateStoreLifecycle::default(),
         sequence_registry,
         reaction_registry,
+        system_registry,
         progress_tracker: ProgressTracker::new(),
+        crossing_detector: CrossingDetector::new(),
         classname_dispatch,
         light_bridge: scripting_systems::light_bridge::LightBridge::new(),
         fog_volume_bridge: scripting_systems::fog_volume_bridge::FogVolumeBridge::new(),
@@ -489,6 +544,21 @@ struct App {
     /// Goal A makes no live focus change. See: context/lib/input.md
     ui_dispatch: input::UiDispatch,
     gamepad_system: Option<input::gamepad::GamepadSystem>,
+
+    /// Last cursor position in device pixels, tracked from winit `CursorMoved`
+    /// while the cursor is released (UI mode). Tracked *state*, never queued:
+    /// hover never enqueues an intent — the focus engine (Task 3) reads this
+    /// position for hit-testing, and a mouse *click* pairs it into a
+    /// `PointerClick` intent. `None` until the first `CursorMoved`.
+    /// See: context/lib/input.md §7
+    cursor_pos: Option<input::PointerPos>,
+
+    /// Edge detector turning the gamepad nav stick (left stick) into discrete
+    /// D-pad-style nav intents: one intent per push past the dead zone. Polled
+    /// in the input stage before the `take_ready`/`advance_frame` pair so
+    /// gamepad nav shares the keyboard's N→N+1 contract. See: context/lib/input.md §7
+    nav_stick_tracker: input::StickNavTracker,
+
     frame_timing: FrameTiming,
 
     /// Per-camera view-feel integrator (head-bob phase, strafe-tilt spring,
@@ -528,10 +598,80 @@ struct App {
     script_ctx: ScriptCtx,
 
     /// Publishes live pawn HP into the `player.health` slot each frame.
-    /// `player.ammo` and `intro.flashColor` remain stand-in values until their
-    /// real producers land. Flash timer resets on each level load.
-    /// See: context/lib/scripting.md §5 for the store contract.
+    /// `player.ammo` is a stand-in value until its real producer lands.
+    /// `intro.flashColor` is NOT a stand-in — this proxy's flash timer produces it
+    /// (and `screen.flash` is produced by `flash_decay`). Flash timer resets on
+    /// each level load. See: context/lib/scripting.md §5 for the store contract.
     ui_proxy: scripting_systems::ui_proxy::StaticUiProxy,
+
+    /// App-side flash-decay state for the engine-owned `screen.flash` surface.
+    /// A drained `FlashScreen` system-reaction command starts a flash; this
+    /// writes the decaying RGBA into `screen.flash` each game-logic tick (beside
+    /// `ui_proxy.tick`). Reset on level load. See: context/lib/ui.md §3.
+    flash_decay: scripting_systems::flash_decay::FlashDecay,
+
+    /// Gameplay-UI modal stack + named-tree registry. Consumes Goal E's
+    /// `PushTree`/`PopTree` system commands (resolving names through its registry,
+    /// unknown name warns + no-op) and exposes an engine push/pop API for
+    /// pause/dialog. The HUD is republished as the stack's bottom layer each
+    /// frame; the top tree's capture mode drives the input seam + `InputFocus`.
+    /// Engine built-in trees register at boot. See: context/lib/ui.md §1.
+    modal_stack: render::ui::modal_stack::ModalStack,
+
+    /// App-side UI focus engine (M13 Goal F, Task 3). Runs in the game-logic
+    /// phase: consumes the drained nav intents + tracked cursor, moves focus
+    /// through the top stack tree by policy, runs the dt-clocked hold-to-repeat
+    /// timer, and yields the focused node id that rides the next snapshot to drive
+    /// the focus ring. See: context/lib/ui.md §4.
+    ui_focus: input::UiFocusEngine,
+
+    /// The focus rect list the renderer exported for the top stack tree LAST
+    /// frame — the reverse twin of the app→renderer snapshot. The focus engine
+    /// consumes it the following game-logic phase (N→N+1 applied in reverse), so
+    /// the focus ring may trail a focus change by one frame. `None` until the
+    /// first gameplay frame exports one.
+    ui_focus_rects: Option<render::ui::tree::FocusRectList>,
+
+    /// Pointer-vs-focus interaction mode taken as an input by the focus engine
+    /// (hover moves focus only in `Pointer` mode). Driven each input phase from
+    /// `input_mode_tracker` (mouse motion → `Pointer`; nav input → `Focus`).
+    ui_input_mode: input::InputMode,
+
+    /// App-side input-mode tracker (M13 Goal F, Task 5). Observes the input
+    /// phase's mode signals (mouse motion vs. nav input), debounces them, writes
+    /// the engine-owned `input.mode` enum slot, and drives `ui_input_mode`. The
+    /// store write is app composition — the input subsystem's contract output
+    /// stays the action snapshot. Reset on level load. See: context/lib/input.md §7.
+    input_mode_tracker: scripting_systems::input_mode::InputModeTracker,
+
+    /// App-side `audio.master` consumer (M13 Goal F, Task 5). Reads the
+    /// mod-declared `audio.master` amplitude slot and applies it to the audio
+    /// main-track volume (amplitude → dB) on change, making the demo pause-menu
+    /// volume slider audible. No-op when no mod declares the slot. Reset on level
+    /// load. See: context/lib/audio.md §1.
+    audio_master: scripting_systems::audio_master::AudioMasterConsumer,
+
+    /// The mode signal observed during THIS frame's input phase, resolved into
+    /// `input_mode_tracker` at the head of the game-logic phase. Mouse motion
+    /// (`CursorMoved`) votes `Pointer`; any nav input (stick edge / D-pad / nav
+    /// key) votes `Focus`. Nav wins when both occur in one frame (a deliberate
+    /// nav press dominates incidental cursor drift). Cleared each frame after the
+    /// tracker consumes it. See: context/lib/input.md §7.
+    pending_mode_signal: Option<scripting_systems::input_mode::ModeSignal>,
+
+    /// Punch-through `nav.menu` toggle (M13 Goal F, Task 5): set when a `nav.menu`
+    /// intent (gamepad Start, or keyboard Escape-from-gameplay) is produced in the
+    /// input phase, then consumed in the game-logic phase to push (open) or pop
+    /// (close) the demo pause menu via the engine push/pop API. `nav.menu` opens
+    /// the menu from gameplay where the UI-dispatch seam is `Passthrough` and so
+    /// queues nothing — hence the dedicated punch-through, mirroring how
+    /// `ToggleDebugPanel` bypasses the capture gate. See: context/lib/input.md §7.
+    pending_menu_toggle: bool,
+
+    /// The focused node id the focus engine resolved THIS frame's game-logic
+    /// phase, published on this frame's snapshot so the UI pass draws the focus
+    /// ring around it. `None` when nothing is focused.
+    ui_focused_id: Option<String>,
 
     /// Gates the one-time persistence overlay and clean-exit save.
     state_store_lifecycle: StateStoreLifecycle,
@@ -545,9 +685,22 @@ struct App {
     /// See: context/lib/scripting.md §2
     reaction_registry: ReactionPrimitiveRegistry,
 
+    /// Resolved by name when a `Primitive` reaction with no `tag` fires — the
+    /// system-reaction arm. Handlers enqueue typed commands onto
+    /// `script_ctx.system_commands`, drained once per frame.
+    /// See: context/lib/scripting.md §10.4
+    system_registry: SystemReactionRegistry,
+
     /// Per-tag kill-count subscriptions. Cleared on level unload; survives
     /// hot-reload. See: context/lib/scripting.md §2
     progress_tracker: ProgressTracker,
+
+    /// State-crossing watchers (M13 HUD dynamics). Built from the data
+    /// registry's `crossings` at level load; checked each frame after
+    /// `ui_proxy.tick` (slot writes settled) and before the UI snapshot build.
+    /// Cleared on level unload with the rest of the per-level state.
+    /// See: context/lib/scripting.md §10.4
+    crossing_detector: CrossingDetector,
 
     /// Maps `classname` strings to engine spawn handlers. Survives level
     /// unload — built-in handlers carry no per-level state.
@@ -850,7 +1003,16 @@ impl ApplicationHandler for App {
                         ..
                     },
                 ..
-            } => {
+            } if input::escape_is_dev_quit_chord(self.diagnostic_inputs.shift_held()) => {
+                // Escape routing rule: `Shift+Esc` is the dev quit chord (this arm) and
+                // takes precedence — even while text entry is open, Shift makes it the
+                // developer's unambiguous quit, never a stray menu/cancel. PLAIN `Esc`
+                // (no Shift) is NOT a quit: it falls through to the general keyboard arm,
+                // which routes Escape-from-gameplay to `nav.menu` (toggles the pause menu,
+                // exactly like gamepad Start) and Escape inside a capturing tree —
+                // including an open text-entry modal — to `nav.cancel`. The Shift state is
+                // the diagnostic resolver's modifier tracking (the Shift key-down was seen
+                // by the general arm before this Esc). See: context/lib/input.md §7.
                 self.release_cursor_for_exit();
                 log::info!("[Engine] Shutting down");
                 event_loop.exit();
@@ -919,10 +1081,112 @@ impl ApplicationHandler for App {
                     // layer is in Capture mode the event is consumed (queued
                     // for next-frame game logic) and NOT forwarded to the
                     // action system this frame. `InputFocus::Menu` is the
-                    // intended structural home for this capture; Goal A makes
-                    // no live focus change, so the decision is the mode flag.
-                    // See: context/lib/input.md
-                    if self.ui_dispatch.dispatch_event().forwards_to_gameplay()
+                    // intended structural home for this capture.
+                    //
+                    // Key-down edges resolve to a nav intent (arrows / enter /
+                    // escape / tab); the kinded payload rides the queue. Held
+                    // repeats and non-nav keys carry no intent (the seam still
+                    // suppresses the gameplay forward). Escape's menu-vs-cancel
+                    // split needs the "is a capturing tree on the stack?" flag —
+                    // owned by Task 2's modal stack; passed `false` here until
+                    // that wiring lands. See: context/lib/input.md
+                    // A directional key RELEASE stops the focus engine's
+                    // hold-to-repeat (the press-edge queue carries no release, so
+                    // the focus ring's repeat clock is cleared here). Cancel never
+                    // repeats, so only directional keys matter for nav repeat.
+                    if !pressed
+                        && matches!(
+                            code,
+                            winit::keyboard::KeyCode::ArrowUp
+                                | winit::keyboard::KeyCode::ArrowDown
+                                | winit::keyboard::KeyCode::ArrowLeft
+                                | winit::keyboard::KeyCode::ArrowRight
+                        )
+                    {
+                        self.ui_focus.release_repeat();
+                    }
+                    // A confirm key (Enter) RELEASE stops the activation-repeat clock
+                    // (M13 Text-Entry, Task 2): a held `repeatOnHold` button stops
+                    // re-firing once the confirm key is released, mirroring the
+                    // directional release above.
+                    if !pressed
+                        && matches!(
+                            code,
+                            winit::keyboard::KeyCode::Enter | winit::keyboard::KeyCode::NumpadEnter
+                        )
+                    {
+                        self.ui_focus.release_confirm_repeat();
+                    }
+                    // Text-entry routing (M13 Text-Entry, Task 3): while a text-entry
+                    // tree is the top of the modal stack, hardware key-down events
+                    // drive the edit surface instead of nav. The LOGICAL key resolves
+                    // Backspace/Enter/Escape first (so a `\u{8}` Backspace text or a
+                    // `\r` Enter text never leaks through the printable channel); only
+                    // a non-control printable `KeyEvent.text` becomes a `Text` intent.
+                    // Enter/Escape ride the queue as `nav.confirm`/`nav.cancel`, which
+                    // the focus-resolution stage intercepts for commit/cancel.
+                    let text_entry_open = self.modal_stack.active_text_entry_target().is_some();
+                    // Text entry intentionally honors OS key-repeat (Text-Entry AC4:
+                    // hardware-key repeat comes from the OS): a held Backspace/letter
+                    // appends/deletes on each auto-repeat. All OTHER UI input stays
+                    // edge-only (`!key_event.repeat`) — nav intents must not re-fire on
+                    // a held key, since the focus engine's own dt clock owns nav repeat.
+                    let nav_intent = if pressed && (!key_event.repeat || text_entry_open) {
+                        if text_entry_open {
+                            // A key inside text entry is always a `focus`-mode signal.
+                            self.record_mode_signal(
+                                scripting_systems::input_mode::ModeSignal::NavInput,
+                            );
+                            match input::text_entry_key(
+                                &key_event.logical_key,
+                                key_event.text.as_deref(),
+                            ) {
+                                Some(input::TextEntryKey::Append(s)) => {
+                                    Some(input::UiIntentPayload::Text(s))
+                                }
+                                Some(input::TextEntryKey::Backspace) => {
+                                    Some(input::UiIntentPayload::Backspace)
+                                }
+                                Some(input::TextEntryKey::Commit) => {
+                                    Some(input::UiIntentPayload::Nav(input::NavIntent::Confirm))
+                                }
+                                Some(input::TextEntryKey::Cancel) => {
+                                    Some(input::UiIntentPayload::Nav(input::NavIntent::Cancel))
+                                }
+                                None => None,
+                            }
+                        } else {
+                            // Escape's menu-vs-cancel split: a capturing tree on the
+                            // stack routes Escape to `nav.cancel`; from gameplay it
+                            // opens the menu (`nav.menu`). The seam's `Capture` mode is
+                            // set by `reconcile_ui_focus` from the modal stack's top
+                            // capture mode, so it IS the "capturing tree present"
+                            // predicate. See: context/lib/input.md §7
+                            let capturing =
+                                self.ui_dispatch.mode() == input::UiCaptureMode::Capture;
+                            let intent = input::nav_intent_for_key(code, capturing);
+                            if intent.is_some() {
+                                // A nav key (arrows/enter/escape/tab) is a `focus`-mode
+                                // signal — it switches the interaction mode off pointer.
+                                self.record_mode_signal(
+                                    scripting_systems::input_mode::ModeSignal::NavInput,
+                                );
+                            }
+                            // Escape-from-gameplay maps to `nav.menu` (opens the pause
+                            // menu). The seam is `Passthrough` from gameplay and queues
+                            // nothing, so route the toggle through the punch-through flag.
+                            if intent == Some(input::NavIntent::Menu) {
+                                self.pending_menu_toggle = true;
+                            }
+                            intent.map(input::UiIntentPayload::Nav)
+                        }
+                    } else {
+                        None
+                    };
+                    if self
+                        .ui_dispatch
+                        .dispatch_event(nav_intent)
+                        .forwards_to_gameplay()
                         && self.input_focus == InputFocus::Gameplay
                     {
                         // Only Gameplay forwards keys to the action system. When
@@ -939,8 +1203,19 @@ impl ApplicationHandler for App {
                 }
                 // Same UI-dispatch seam as the keyboard path: a captured event
                 // is consumed by the UI layer and not forwarded to the action
-                // system this frame.
-                if !self.ui_dispatch.dispatch_event().forwards_to_gameplay() {
+                // system this frame. A *press* (not release) at the tracked
+                // cursor position queues a `PointerClick` for hit-testing; a
+                // release captures with no payload (suppresses the gameplay
+                // forward, queues nothing).
+                let click_intent = match (state.is_pressed(), self.cursor_pos) {
+                    (true, Some(pos)) => Some(input::UiIntentPayload::PointerClick { pos }),
+                    _ => None,
+                };
+                if !self
+                    .ui_dispatch
+                    .dispatch_event(click_intent)
+                    .forwards_to_gameplay()
+                {
                     return;
                 }
                 // Same focus gate as the keyboard path: mouse-button actions
@@ -950,6 +1225,27 @@ impl ApplicationHandler for App {
                     self.input_system
                         .handle_mouse_button(button, state.is_pressed());
                 }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                // Track cursor *position* (not delta) for UI hit-testing while
+                // the cursor is released. This is tracked state, never queued —
+                // hover never enqueues an intent. A later mouse click pairs this
+                // position into a `PointerClick`. Gameplay look uses raw deltas
+                // from `device_event`, not this position, so tracking here is
+                // independent of the focus gate. See: context/lib/input.md §7
+                self.cursor_pos = Some(input::PointerPos {
+                    x: position.x,
+                    y: position.y,
+                });
+                // Mouse motion is the `pointer`-mode signal. Recorded as tracked
+                // state (resolved into `input.mode` at the game-logic phase head);
+                // a same-frame nav press still wins (see `record_mode_signal`).
+                self.record_mode_signal(scripting_systems::input_mode::ModeSignal::MouseMotion);
+            }
+            WindowEvent::CursorLeft { .. } => {
+                // Cursor left the window: drop the tracked position so a stale
+                // coordinate can't seed a click after re-entry.
+                self.cursor_pos = None;
             }
             WindowEvent::Focused(focused) => {
                 if focused {
@@ -1029,23 +1325,192 @@ impl ApplicationHandler for App {
                     }
                 }
 
+                // Tail of the Input stage: poll the gamepad. This must run
+                // BEFORE the `take_ready`/`advance_frame` pair below so gamepad
+                // nav intents land in `pending` ahead of promotion and share the
+                // keyboard's N→N+1 contract — a gamepad nav consumed this frame
+                // first reaches game logic next frame, never same-frame. (gilrs
+                // previously polled *after* promotion, which would have leaked
+                // gamepad intents a frame early.) The intents are enqueued only
+                // while a capturing tree owns input (`Capture` mode); under
+                // `Passthrough` they are dropped here, exactly as keyboard
+                // events forward through the seam. See: context/lib/input.md §7
+                if let Some(gp) = &mut self.gamepad_system {
+                    let gp_nav = gp.update(&mut self.input_system, &mut self.nav_stick_tracker);
+                    // Advance any active rumble's timeout in the input stage and
+                    // stop it once its duration elapses (the rumble started by a
+                    // drained `Rumble` command on a prior frame).
+                    gp.tick_rumble(frame_dt);
+                    // A confirm (South) RELEASE stops the focus engine's
+                    // activation-repeat clock (M13 Text-Entry, Task 2): a held
+                    // `repeatOnHold` button stops re-firing once South releases, the
+                    // gamepad twin of the keyboard Enter-release path above.
+                    if gp_nav.confirm_released {
+                        self.ui_focus.release_confirm_repeat();
+                    }
+                    // No directional input held (D-pad up + stick in the dead zone)
+                    // RELEASES the focus engine's directional hold-to-repeat clock,
+                    // mirroring the keyboard arrow-key-up path above. Without it a
+                    // press that armed the clock would free-run on dt until the next
+                    // stack/intent change (runaway focus-scroll on a `repeat` tree).
+                    if gp_nav.directional_released {
+                        self.ui_focus.release_repeat();
+                    }
+                    // Any gamepad nav intent (stick edge, D-pad, face/system
+                    // button) is a `focus`-mode signal — recorded regardless of
+                    // capture mode so a `nav.menu` opened from gameplay also flips
+                    // the interaction mode off pointer.
+                    if !gp_nav.nav_intents.is_empty() {
+                        self.record_mode_signal(
+                            scripting_systems::input_mode::ModeSignal::NavInput,
+                        );
+                    }
+                    // `nav.menu` (gamepad Start) toggles the pause menu. It must
+                    // work from gameplay, where the seam is `Passthrough` and queues
+                    // nothing — route it through the punch-through flag regardless of
+                    // capture mode. Other nav intents only enqueue while a capturing
+                    // tree owns input.
+                    let capture = self.ui_dispatch.mode() == input::UiCaptureMode::Capture;
+                    for intent in gp_nav.nav_intents {
+                        if intent == input::NavIntent::Menu {
+                            // `pending_menu_toggle` fully handles the toggle; the
+                            // focus engine treats a queued `Nav(Menu)` as a no-op, so
+                            // enqueuing it would be a dead intent. Skip the enqueue.
+                            self.pending_menu_toggle = true;
+                            continue;
+                        }
+                        if capture {
+                            self.ui_dispatch
+                                .enqueue_intent(input::UiIntentPayload::Nav(intent));
+                        }
+                    }
+                }
+
+                // Resolve this frame's input-mode signal into the engine-owned
+                // `input.mode` slot (app composition — the input subsystem's
+                // contract output stays the action snapshot). Mouse motion votes
+                // `pointer`, nav input votes `focus`, debounced so jitter doesn't
+                // flap. Drives `ui_input_mode` (the focus engine's hover gate). The
+                // mode is observation-only here; its cursor/ring EFFECT is gated on
+                // a capturing tree being on the stack (applied in `reconcile_ui_focus`).
+                // See: context/lib/input.md §7.
+                self.ui_input_mode = self
+                    .input_mode_tracker
+                    .update(self.pending_mode_signal.take(), frame_dt);
+
                 // Game-logic phase begins here. Read the UI captures made
                 // available by the *previous* frame, THEN promote this frame's
                 // freshly captured events for the next frame. Taking before
                 // advancing is what enforces the N→N+1 contract: events captured
-                // during THIS frame's Input stage land in `pending` and are only
+                // during THIS frame's Input stage (keyboard via `dispatch_event`,
+                // gamepad via the poll just above) land in `pending` and are only
                 // promoted to `ready` by this `advance_frame` call — so they
                 // first become visible at the next frame's `take_ready`, never
                 // this frame. This holds regardless of winit's event/redraw
-                // ordering because both calls run here at game-logic time. Goal A
-                // has no intent consumer yet (Goal F defines the vocabulary), so
-                // the drained intents are dropped; the drain marks the seam where
-                // game logic reads them. See: context/lib/input.md
-                let _ui_intents = self.ui_dispatch.take_ready();
+                // ordering because both calls run here at game-logic time. The
+                // modal stack (Task 2/Task 3) consumes the drained intents; until
+                // then they are dropped, and the drain marks the seam where game
+                // logic reads them. See: context/lib/input.md
+                let ui_intents = self.ui_dispatch.take_ready();
                 self.ui_dispatch.advance_frame();
 
-                if let Some(gp) = &mut self.gamepad_system {
-                    gp.update(&mut self.input_system);
+                // Text-entry resolution (M13 Text-Entry, Task 3): while a text-entry
+                // tree is the top of the modal stack, the drained intents drive the
+                // edit surface. `Text` appends and `Backspace` deletes against the
+                // tree's `text_entry_target` slot (through Task 1's text-edit command
+                // path); `nav.confirm` commits (fires the opener's `on_commit`, then
+                // pops) and `nav.cancel` cancels (pops, no commit). Those confirm /
+                // cancel intents are CONSUMED here so they never reach the focus
+                // engine (no stray key-button activation) or the pause-menu logic
+                // below. Returns whether a commit or cancel fired so the pause-menu
+                // path is skipped this frame.
+                let text_entry_consumed_nav = self.resolve_text_entry_intents(&ui_intents);
+
+                // Focus engine (game-logic phase): split the drained intents into
+                // nav (directional/confirm/cancel/next/prev) and pointer clicks,
+                // then move focus through the TOP stack tree against the focus rect
+                // list the renderer exported LAST frame (reverse N→N+1). The
+                // focused id is published on this frame's snapshot below so the UI
+                // pass draws the ring (it may trail a focus change by one frame).
+                // Only the top tree takes focus; lower trees freeze. While text entry
+                // is open, confirm/cancel were consumed above and are filtered out so
+                // the focus engine sees only directional/next/prev moves (Task 4's
+                // on-screen keyboard still navigates between keys).
+                let mut nav_intents: Vec<input::NavIntent> = Vec::new();
+                let mut click_positions: Vec<input::PointerPos> = Vec::new();
+                for intent in &ui_intents {
+                    match &intent.payload {
+                        input::UiIntentPayload::Nav(nav) => {
+                            if text_entry_consumed_nav
+                                && matches!(
+                                    nav,
+                                    input::NavIntent::Confirm | input::NavIntent::Cancel
+                                )
+                            {
+                                // Consumed by the text-entry commit/cancel above.
+                                continue;
+                            }
+                            nav_intents.push(*nav);
+                        }
+                        input::UiIntentPayload::PointerClick { pos } => click_positions.push(*pos),
+                        // Text / Backspace are text-entry edits, resolved above.
+                        input::UiIntentPayload::Text(_) | input::UiIntentPayload::Backspace => {}
+                    }
+                }
+                // Slider nav-capture (M13 Goal F, Task 4): the focused slider gets
+                // first refusal on its `capturesNav` wire names. A captured nav step
+                // adjusts the slider's bound value by `step` within `[min, max]` and
+                // emits a `setState` write (applied at the game-logic command drain
+                // below → the bound slot changes on the N+1 frame). Captured intents
+                // are removed so the focus engine never sees them (focus stays put).
+                self.apply_slider_nav_capture(&mut nav_intents);
+
+                // The active (top) tree key: the modal stack's top entry name, else
+                // the always-on HUD. `None` is never the gameplay case (the HUD is
+                // always present), but the engine handles it.
+                let active_key = self
+                    .modal_stack
+                    .active_name()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| "hud".to_string());
+                let cursor = self.cursor_pos;
+                let focus_result = self.ui_focus.tick(
+                    Some(active_key.as_str()),
+                    self.ui_focus_rects.as_ref(),
+                    &nav_intents,
+                    cursor,
+                    &click_positions,
+                    self.ui_input_mode,
+                    frame_dt,
+                );
+                self.ui_focused_id = focus_result.focused.clone();
+
+                // Button activation (M13 Goal F, Task 4): a `confirm` (gamepad
+                // confirm or pointer click — the focus engine reports both as
+                // `confirmed`) on a focused button fires its `onPress` named reaction
+                // through the same reaction path entity/system reactions use, so a
+                // click and a gamepad confirm have an identical observable effect.
+                if focus_result.confirmed {
+                    self.fire_focused_button_activation(focus_result.focused.as_deref());
+                }
+
+                // Pause-menu toggle (M13 Goal F, Task 5): `nav.menu` (gamepad Start
+                // / Escape-from-gameplay) opens or closes the demo pause menu via
+                // the engine push/pop API. A `nav.cancel` (Escape / B inside the
+                // menu) also closes it. The capture-mode + cursor effect follows on
+                // this frame's `reconcile_ui_focus` below. The toggle flag is a
+                // punch-through (it works from gameplay, where the seam queues
+                // nothing); `cancelled` rides the captured-intent queue. Guard the
+                // cancel close to the pause menu so it never pops an unrelated
+                // top tree.
+                if self.pending_menu_toggle {
+                    self.pending_menu_toggle = false;
+                    self.toggle_pause_menu();
+                } else if focus_result.cancelled
+                    && !text_entry_consumed_nav
+                    && self.modal_stack.active_name() == Some(render::ui::demo::PAUSE_MENU_NAME)
+                {
+                    self.modal_stack.pop();
                 }
 
                 // drain_look_inputs() must precede snapshot(); both touch
@@ -1224,8 +1689,22 @@ impl ApplicationHandler for App {
                         &self.script_ctx.data_registry.borrow(),
                         &self.sequence_registry,
                         &self.reaction_registry,
+                        &self.system_registry,
                         &self.script_ctx,
                     );
+                }
+
+                // System-reaction command drain — runs AFTER every post-tick
+                // event drain so commands enqueued by movement/weapon/death
+                // reactions (and, later, crossing watchers) are taken in one
+                // batch. The typed queue keeps audio/input/UI services out of
+                // the scripting surface; the dispatcher routes each command to
+                // its subsystem consumer. See: scripting.md §10.4.
+                // NOTE: a SECOND drain runs later this frame, after the state
+                // crossings fire (see the crossing-detection block below), so
+                // crossing-enqueued commands land this frame, not the next.
+                if !self.script_ctx.system_commands.is_empty() {
+                    self.dispatch_system_commands();
                 }
 
                 // Static UI proxy: republish the HUD store slots from
@@ -1235,6 +1714,47 @@ impl ApplicationHandler for App {
                 // `frame_dt` (not wall-clock) so the flash animation is
                 // deterministic. See: context/lib/scripting.md §5.
                 self.ui_proxy.tick(frame_dt);
+                // Flash-decay state writes the engine-owned `screen.flash`
+                // surface at the same game-logic stage as `ui_proxy.tick`, so
+                // the UI snapshot below freezes this frame's flash color. Runs
+                // after the first command drain so a flash started this frame
+                // publishes immediately; the crossing drain below may start
+                // another, decayed starting next frame.
+                self.flash_decay.tick(frame_dt);
+
+                // State-crossing detection (M13 HUD dynamics). Runs AFTER the
+                // frame's slot writes (game logic + `ui_proxy.tick`) settle, so
+                // it compares the authoritative slot value — distinct from the
+                // eased display value styleRanges read mid-tween. Each watched
+                // slot's threshold crossing fires its reaction list synchronously
+                // through Task 2's shared named-reaction path; any system
+                // reactions thereby enqueued are drained immediately below so
+                // crossing-fired commands land in this frame, not the next.
+                let crossing_events = self
+                    .crossing_detector
+                    .detect(&self.script_ctx.slot_table.borrow());
+                for event_name in &crossing_events {
+                    let _ = fire_named_event_with_sequences(
+                        event_name,
+                        &self.script_ctx.data_registry.borrow(),
+                        &self.sequence_registry,
+                        &self.reaction_registry,
+                        &self.system_registry,
+                        &self.script_ctx,
+                    );
+                }
+                if !self.script_ctx.system_commands.is_empty() {
+                    self.dispatch_system_commands();
+                }
+
+                // Reconcile the input seam + focus with the modal stack's top
+                // capture mode, now that every command drain this frame has
+                // settled the stack. A capturing top tree freezes gameplay input
+                // (UI-dispatch capture) and releases the cursor (`InputFocus::Menu`);
+                // an empty/passthrough top hands input back to gameplay. Runs in
+                // the game-logic phase so the capture decision is in force for the
+                // next frame's Input stage (the N→N+1 ordering the seam guarantees).
+                self.reconcile_ui_focus();
 
                 // Audio step — third in frame order (Input → Game logic →
                 // Audio → Render → Present, development_guide.md §4.3). Runs after
@@ -1245,6 +1765,16 @@ impl ApplicationHandler for App {
                 // `forward()`, and `up` is world up per the `ListenerState`
                 // contract. Guarded for the silent (init-failed) case.
                 if let Some(audio) = &mut self.audio {
+                    // App-side `audio.master` consumer (M13 Goal F, Task 5): apply
+                    // the mod-declared master amplitude (set by the demo pause-menu
+                    // slider via `setState`) to the audio main-track volume on
+                    // change — amplitude → dB, `0` → mute floor. No-op when no mod
+                    // declares the slot or the value is unchanged. Runs in the audio
+                    // phase, after the frame's slot writes settle.
+                    if let Some(db) = self.audio_master.poll() {
+                        audio.set_main_volume(db);
+                    }
+
                     let listener = audio::ListenerState {
                         position: self.camera.position.to_array(),
                         forward: self.camera.aim_ray().1.to_array(),
@@ -1658,21 +2188,44 @@ impl ApplicationHandler for App {
                         // audio have already run this frame, so the slot snapshot
                         // freezes the settled store state (frame order: Input →
                         // Game logic → Audio → Render). The renderer reads these
-                        // cloned values, never the live `SlotTable`. The demo HUD
-                        // descriptor is the gameplay UI producer: it is published as
-                        // the gameplay tree alongside the slot values, and the
-                        // renderer's retained gameplay path lays it out and
-                        // resolves its `player.health`/`player.ammo`/`intro.flashColor`
-                        // binds against the snapshot. The descriptor is structurally
-                        // identical every frame, so the retained tree reuses it and
-                        // only the bound values drive the diff.
+                        // cloned values, never the live `SlotTable`.
+                        //
+                        // Modal stack: the demo HUD is the always-on bottom layer
+                        // (`trees[0]`), and any pushed modal trees stack above it,
+                        // drawn bottom→top. The renderer's retained path lays each
+                        // layer out and resolves its binds against the snapshot;
+                        // each layer's descriptor is structurally stable, so the
+                        // retained tree per layer reuses it and only bound values
+                        // drive the diff. The HUD is passthrough, so with no modal
+                        // open the top mode is passthrough (gameplay keeps input).
                         let slot_values =
                             Self::build_ui_slot_snapshot(&self.script_ctx.slot_table.borrow());
-                        let demo_tree = render::ui::demo::build_demo_descriptor();
-                        renderer.set_ui_snapshot(render::ui::UiReadSnapshot::with_gameplay_tree(
-                            demo_tree,
+                        let mut trees = vec![render::ui::UiTreeEntry {
+                            name: "hud".to_string(),
+                            descriptor: render::ui::demo::build_demo_descriptor(),
+                            capture_mode: input::UiCaptureMode::Passthrough,
+                            on_commit: None,
+                        }];
+                        trees.extend(self.modal_stack.entries());
+                        // Ring-visibility follows the interaction mode WHILE a
+                        // capturing tree is on the stack (M13 Goal F, Task 5):
+                        // `focus` mode shows the ring, `pointer` mode hides it (the
+                        // cursor is the indicator). Inert otherwise — with no
+                        // capturing tree the focused id always rides through (the
+                        // HUD has no focusable nodes, so it is `None` anyway).
+                        let ring_id = if self.modal_stack.top_capture_mode()
+                            == input::UiCaptureMode::Capture
+                            && !self.ui_input_mode.ring_visible()
+                        {
+                            None
+                        } else {
+                            self.ui_focused_id.clone()
+                        };
+                        renderer.set_ui_snapshot(render::ui::UiReadSnapshot::with_trees(
+                            trees,
                             slot_values,
                             self.script_time,
+                            ring_id,
                         ));
 
                         let surface_texture = match renderer.render_frame_indirect(
@@ -1691,6 +2244,12 @@ impl ApplicationHandler for App {
                                 return;
                             }
                         };
+                        // Read back the focus rect list the renderer just exported
+                        // for the top stack layer (the gameplay render above laid it
+                        // out). The focus engine consumes it next frame's game-logic
+                        // phase — the reverse N→N+1 the focus ring's one-frame trail
+                        // comes from. See: context/lib/ui.md §4.
+                        self.ui_focus_rects = Some(renderer.export_ui_focus_rects());
                         if let Some(surface_texture) = surface_texture {
                             #[cfg(feature = "dev-tools")]
                             {
@@ -1806,8 +2365,10 @@ impl ApplicationHandler for App {
     ) {
         // UI-dispatch seam, ahead of the gameplay forward: a captured raw
         // delta is consumed by the UI layer and must not reach the look path.
-        // Mirrors the `window_event` seam; the decision is the mode flag.
-        if !self.ui_dispatch.dispatch_event().forwards_to_gameplay() {
+        // Mirrors the `window_event` seam; the decision is the mode flag. A raw
+        // delta carries no queueable intent (hover/look is not nav), so the
+        // capture suppresses the forward but queues nothing.
+        if !self.ui_dispatch.dispatch_event(None).forwards_to_gameplay() {
             return;
         }
         // Raw mouse deltas only rotate the camera while gameplay owns input.
@@ -2170,6 +2731,329 @@ impl App {
             .collect()
     }
 
+    /// Apply slider nav-capture for the focused slider (M13 Goal F, Task 4).
+    ///
+    /// The currently focused node
+    /// (last frame's `ui_focused_id`, the focus going into this frame) is matched
+    /// against the exported focus rects; if it is a `slider`, each nav intent whose
+    /// wire name is in the slider's `captures_nav` is REMOVED from `nav_intents`
+    /// (the focus engine never sees it) and, when directional, steps the bound value
+    /// by `step` clamped to the slider's min/max, enqueuing a `setState` write
+    /// applied at the game-logic command drain (the bound slot changes on N+1).
+    fn apply_slider_nav_capture(&mut self, nav_intents: &mut Vec<input::NavIntent>) {
+        use render::ui::tree::NodeInteraction;
+
+        let Some(focused_id) = self.ui_focused_id.as_deref() else {
+            return;
+        };
+        let Some(rects) = self.ui_focus_rects.as_ref() else {
+            return;
+        };
+        // Resolve the focused slider's interaction + its bound slot (clone out so
+        // the immutable borrow of the rect list drops before the slot/queue work).
+        let slider = rects
+            .rects
+            .iter()
+            .find(|r| r.id == focused_id)
+            .and_then(|r| match &r.interaction {
+                Some(interaction @ NodeInteraction::Slider { slot, min, .. }) => {
+                    Some((interaction.clone(), slot.clone(), *min))
+                }
+                _ => None,
+            });
+        let Some((interaction, slot, min)) = slider else {
+            return;
+        };
+
+        // The slider's current value: its bound slot reading, or `min` as a floor
+        // when the slot is unset or non-numeric (a sane starting point).
+        let current = {
+            let table = self.script_ctx.slot_table.borrow();
+            match table.get(&slot).and_then(|r| r.value.as_ref()) {
+                Some(crate::scripting::slot_table::SlotValue::Number(n)) => *n,
+                _ => min,
+            }
+        };
+
+        // Peel off captured nav intents (mutating `nav_intents`) and compute the
+        // stepped value; emit one `setState` for the new clamped value.
+        if let Some(next) = input::capture_slider_step(&interaction, current, nav_intents) {
+            self.script_ctx
+                .system_commands
+                .push(SystemReactionCommand::SetState {
+                    slot,
+                    value: serde_json::json!(next),
+                });
+        }
+    }
+
+    /// Fire a focused button's `onPress` named reaction on activation (M13 Goal F,
+    /// Task 4). `focused_id` is the focus engine's reported focused node this tick;
+    /// when it resolves to a `button` interaction on the exported rect list, the
+    /// `onPress` reaction fires through the shared named-reaction path — the same
+    /// vocabulary entity/system reactions use — so a gamepad confirm and a pointer
+    /// click produce an identical observable effect.
+    fn fire_focused_button_activation(&mut self, focused_id: Option<&str>) {
+        use render::ui::tree::NodeInteraction;
+
+        let Some(focused_id) = focused_id else {
+            return;
+        };
+        let Some(rects) = self.ui_focus_rects.as_ref() else {
+            return;
+        };
+        let on_press = rects
+            .rects
+            .iter()
+            .find(|r| r.id == focused_id)
+            .and_then(|r| match &r.interaction {
+                Some(NodeInteraction::Button { on_press, .. }) => Some(on_press.clone()),
+                _ => None,
+            });
+        if let Some(on_press) = on_press {
+            // The on-screen keyboard's `done` key carries a reserved sentinel
+            // `onPress` (never a registered reaction). Intercept it here and route
+            // to the shared commit seam — the same `commit_text_entry` the hardware
+            // Enter key reaches (Task 3) — so commit is not keyboard-only and the
+            // keyboard stays fully data-driven (the `done` key references the
+            // sentinel as data; no Rust change to edit the layout).
+            if on_press == render::ui::keyboard_asset::COMMIT_TEXT_ENTRY_SENTINEL {
+                self.commit_text_entry();
+                return;
+            }
+            let _ = fire_named_event_with_sequences(
+                &on_press,
+                &self.script_ctx.data_registry.borrow(),
+                &self.sequence_registry,
+                &self.reaction_registry,
+                &self.system_registry,
+                &self.script_ctx,
+            );
+        }
+    }
+
+    /// Resolve drained UI intents against the open text-entry surface (M13
+    /// Text-Entry, Task 3). Returns `true` when a `nav.confirm` (commit) or
+    /// `nav.cancel` (cancel) was consumed by text entry this frame, so the caller
+    /// filters those intents out of the focus engine and skips the pause-menu path.
+    ///
+    /// No-op (returns `false`) when text entry is closed — the top tree declares no
+    /// `text_entry_target`. While open:
+    /// - `Text(s)` → an `AppendText { slot, text: s }` edit against the target slot,
+    /// - `Backspace` → a `BackspaceText { slot }` edit against the target slot,
+    /// - `nav.confirm` → commit: fire the opener's `on_commit`, then `PopTree`,
+    /// - `nav.cancel` → cancel: `PopTree` only (edits stay in the slot; the opener
+    ///   simply does not act on them — no rollback).
+    ///
+    /// Edits ride Task 1's text-edit command path (pushed onto the system-command
+    /// queue, drained at `dispatch_system_commands`), so they land on the bound slot
+    /// on the N+1 frame — the system's defining N→N+1 ordering. Commit and cancel act
+    /// on the stack immediately at this game-logic phase; the seam reconciles next.
+    fn resolve_text_entry_intents(&mut self, ui_intents: &[input::UiIntent]) -> bool {
+        let Some(target) = self
+            .modal_stack
+            .active_text_entry_target()
+            .map(str::to_string)
+        else {
+            return false;
+        };
+
+        // Thread the currently-focused node's interaction (last frame's exported
+        // focus, the focus going into this frame — same source `apply_slider_nav_capture`
+        // reads) so `resolve_text_entry` can distinguish a confirm that lands on an
+        // on-screen keyboard key from a keyboardless hardware Enter. A confirm on a
+        // focusable button must flow to the focus engine (Task 4 fires the key's
+        // `on_press` — `kbAppend_*` to type, or `done`'s commit sentinel); only a
+        // confirm NOT on a button commits here. Without this the confirm was consumed
+        // as Commit before the focus engine ran and the keyboard closed instead of
+        // typing.
+        let confirm_on_button = self.focused_node_is_activatable_button();
+
+        // Pure resolution: drained intents → ordered edits + a terminal disposition.
+        let resolution = input::resolve_text_entry(ui_intents, confirm_on_button);
+
+        // Apply the edits through Task 1's text-edit command path (the bound slot
+        // changes on the N+1 frame). Edits are queued before commit/cancel acts so a
+        // committing reaction observes the slot as last edited.
+        for edit in &resolution.edits {
+            let command = match edit {
+                input::TextEntryEdit::Append(text) => SystemReactionCommand::AppendText {
+                    slot: target.clone(),
+                    text: text.clone(),
+                },
+                input::TextEntryEdit::Backspace => SystemReactionCommand::BackspaceText {
+                    slot: target.clone(),
+                },
+            };
+            self.script_ctx.system_commands.push(command);
+        }
+
+        match resolution.disposition {
+            input::TextEntryDisposition::Commit => self.commit_text_entry(),
+            input::TextEntryDisposition::Cancel => self.cancel_text_entry(),
+            input::TextEntryDisposition::Open => {}
+        }
+        resolution.consumed_commit_or_cancel()
+    }
+
+    /// Whether the currently-focused node (last frame's `ui_focused_id` on the
+    /// exported rect list) is an activatable `button`. The on-screen keyboard's
+    /// keys are buttons, so this is the predicate `resolve_text_entry_intents` uses
+    /// to keep a `nav.confirm` flowing to the focus engine (the key activates)
+    /// rather than consuming it as a text-entry commit. Reads the same
+    /// `ui_focused_id` + `ui_focus_rects` pair `apply_slider_nav_capture` does.
+    fn focused_node_is_activatable_button(&self) -> bool {
+        use render::ui::tree::NodeInteraction;
+        let Some(focused_id) = self.ui_focused_id.as_deref() else {
+            return false;
+        };
+        let Some(rects) = self.ui_focus_rects.as_ref() else {
+            return false;
+        };
+        rects
+            .rects
+            .iter()
+            .find(|r| r.id == focused_id)
+            .is_some_and(|r| matches!(r.interaction, Some(NodeInteraction::Button { .. })))
+    }
+
+    /// Commit the open text-entry surface (M13 Text-Entry, Task 3): fire the top
+    /// tree's carried `on_commit` reaction (from the `PushTree` that opened it),
+    /// THEN pop the tree. This is the shared commit seam — the hardware Enter key
+    /// routes here, and Task 4's on-screen `done` button activation calls this same
+    /// method so commit is not keyboard-only. A no-op when no tree is open.
+    ///
+    /// The `on_commit` reaction reads the bound slot's value (the entered text); the
+    /// reaction fires synchronously here so it observes the slot as last edited.
+    fn commit_text_entry(&mut self) {
+        if let Some(on_commit) = self.modal_stack.active_on_commit().map(str::to_string) {
+            let _ = fire_named_event_with_sequences(
+                &on_commit,
+                &self.script_ctx.data_registry.borrow(),
+                &self.sequence_registry,
+                &self.reaction_registry,
+                &self.system_registry,
+                &self.script_ctx,
+            );
+        }
+        self.modal_stack.pop();
+    }
+
+    /// Cancel the open text-entry surface (M13 Text-Entry, Task 3): pop the tree
+    /// WITHOUT firing `on_commit`. Edits already applied to the bound slot are
+    /// discarded simply by the opener not acting on them — there is no rollback.
+    fn cancel_text_entry(&mut self) {
+        self.modal_stack.pop();
+    }
+
+    /// Drain the system-reaction command queue and route each typed command to
+    /// its subsystem consumer. Runs once per frame after the post-tick event
+    /// drains (and again after the crossing detector fires), so audio / input /
+    /// UI services stay out of the scripting surface — the queue is the seam.
+    /// See: context/lib/scripting.md §10.4.
+    ///
+    /// - `PlaySound` → the M12 audio module `play()` on the named bus (default
+    ///   `sfx`); silent when audio init failed.
+    /// - `Rumble` → gilrs force feedback on the active gamepad; warn-once no-op
+    ///   when force feedback is unavailable.
+    /// - `FlashScreen` → starts the App-side flash-decay state, which writes
+    ///   `screen.flash` each game-logic tick.
+    /// - `PushTree` / `PopTree` → push/pop the gameplay-UI modal stack, resolving
+    ///   `PushTree`'s name through the stack's registry (unknown name warns +
+    ///   no-op, never a panic). The top tree's capture mode is reconciled with the
+    ///   input seam + focus afterward by `reconcile_ui_focus`.
+    /// - `SetState` → readonly-gated JSON write to a writable store slot at the
+    ///   game-logic stage (readonly warns + no-ops; unknown/type-mismatch logs).
+    /// - `AppendText` / `BackspaceText` / `ClearText` → readonly-gated text edits
+    ///   to a writable String slot at the game-logic stage, through the same
+    ///   writable-slot gate as `SetState` (readonly warns + no-ops; empty
+    ///   backspace is a silent no-op; unknown/non-String slot logs). M13 Text
+    ///   Entry, Task 1.
+    fn dispatch_system_commands(&mut self) {
+        for command in self.script_ctx.system_commands.take() {
+            match command {
+                SystemReactionCommand::PlaySound { sound, bus } => {
+                    if let Some(audio) = &mut self.audio {
+                        // The reaction surface has no per-voice volume or looping
+                        // yet (deferred); a one-shot on the named bus is the whole
+                        // contract. Default to the SFX bus when none is named.
+                        let bus = bus.unwrap_or_else(|| "sfx".to_string());
+                        // `play` warns-and-drops on an unknown bus or sound, so an
+                        // unregistered sound name never panics.
+                        let _ = audio.play(audio::SoundRequest {
+                            bus,
+                            sound,
+                            looping: false,
+                        });
+                    }
+                    // Audio init failed ⇒ silent (the game runs without sound).
+                }
+                SystemReactionCommand::Rumble {
+                    strong,
+                    weak,
+                    duration_ms,
+                } => {
+                    if let Some(gp) = &mut self.gamepad_system {
+                        gp.rumble(strong, weak, duration_ms);
+                    }
+                    // No gamepad subsystem ⇒ nothing to vibrate.
+                }
+                SystemReactionCommand::FlashScreen { color, duration_ms } => {
+                    self.flash_decay.start(color, duration_ms);
+                }
+                SystemReactionCommand::PushTree { tree, on_commit } => {
+                    // Resolve the registered tree by name onto the modal stack.
+                    // An unknown name warns and is a no-op (no panic). The carried
+                    // `on_commit` rides the stack entry for a later goal to fire on
+                    // commit; the stack does not fire it. The capture mode lives on
+                    // the registered tree's envelope (read after the drain by
+                    // `reconcile_ui_focus`), not on the command.
+                    self.modal_stack.push_named(&tree, on_commit);
+                }
+                SystemReactionCommand::PopTree => {
+                    self.modal_stack.pop();
+                }
+                SystemReactionCommand::SetState { slot, value } => {
+                    // Readonly-gated JSON write at the game-logic stage: a readonly
+                    // slot warns and no-ops; an unknown slot or type mismatch logs
+                    // and is skipped — never a panic. NEVER the engine bypass.
+                    if let Err(err) = crate::scripting::primitives::store::write_state_slot_json(
+                        &self.script_ctx,
+                        &slot,
+                        &value,
+                    ) {
+                        log::warn!("[Scripting] setState write to `{slot}` failed: {err}");
+                    }
+                }
+                SystemReactionCommand::AppendText { slot, text } => {
+                    // Readonly-gated text edit at the game-logic stage (same
+                    // writable-slot gate as setState): readonly warns + no-ops;
+                    // unknown/non-String slot logs — never a panic.
+                    use crate::scripting::primitives::store::{TextEdit, apply_text_edit};
+                    if let Err(err) =
+                        apply_text_edit(&self.script_ctx, &slot, TextEdit::Append(&text))
+                    {
+                        log::warn!("[Scripting] appendText to `{slot}` failed: {err}");
+                    }
+                }
+                SystemReactionCommand::BackspaceText { slot } => {
+                    // Empty backspace is a silent no-op inside `apply_text_edit`.
+                    use crate::scripting::primitives::store::{TextEdit, apply_text_edit};
+                    if let Err(err) = apply_text_edit(&self.script_ctx, &slot, TextEdit::Backspace)
+                    {
+                        log::warn!("[Scripting] backspaceText to `{slot}` failed: {err}");
+                    }
+                }
+                SystemReactionCommand::ClearText { slot } => {
+                    use crate::scripting::primitives::store::{TextEdit, apply_text_edit};
+                    if let Err(err) = apply_text_edit(&self.script_ctx, &slot, TextEdit::Clear) {
+                        log::warn!("[Scripting] clearText to `{slot}` failed: {err}");
+                    }
+                }
+            }
+        }
+    }
+
     /// Install a delivered level payload on the main thread: GPU texture
     /// upload (from baked `.prm` mip sidecars), UV normalization, GPU geometry
     /// upload, bridge / fog / collision populate, classname dispatch, data
@@ -2191,6 +3075,14 @@ impl App {
         // Restart the static UI proxy's flash timer so `intro.flashColor`
         // replays its level-load pulse from the start on this fresh level.
         self.ui_proxy.reset_timer();
+        // Clear any in-flight `screen.flash` decay so a flash never bleeds
+        // across a level load.
+        self.flash_decay.reset();
+        // Reset the input-mode tracker (re-seeds `input.mode` to `focus`) and the
+        // `audio.master` consumer (re-applies the freshly-declared volume) so a
+        // mid-transition mode or a stale master volume never bleeds across levels.
+        self.input_mode_tracker.reset();
+        self.audio_master.reset();
         self.active_wieldable = None;
         self.active_wieldable_descriptor = None;
 
@@ -2366,6 +3258,15 @@ impl App {
                 self.progress_tracker.initialize(
                     &self.script_ctx.data_registry.borrow(),
                     &self.script_ctx.registry.borrow(),
+                );
+                // Build the crossing watchers from this level's `crossings`.
+                // Clear first so a re-load (or hot reload) does not stack
+                // duplicate watchers; the previous value initializes to each
+                // slot's value at level start so the initial state never fires.
+                self.crossing_detector.clear();
+                self.crossing_detector.initialize(
+                    &self.script_ctx.data_registry.borrow(),
+                    &self.script_ctx.slot_table.borrow(),
                 );
             }
         }
@@ -2585,6 +3486,7 @@ impl App {
             &self.script_ctx.data_registry.borrow(),
             &self.sequence_registry,
             &self.reaction_registry,
+            &self.system_registry,
             &self.script_ctx,
         );
         self.level_timings.record("level_load_event");
@@ -2770,6 +3672,87 @@ impl App {
         self.input_system.clear_all();
         self.gameplay_input_latch.clear();
         self.diagnostic_inputs.clear_modifiers();
+    }
+
+    /// Record this frame's input-mode signal, with nav input dominating mouse
+    /// motion when both occur in one frame: a deliberate nav press should win
+    /// over incidental cursor drift, so a `NavInput` vote overwrites a pending
+    /// `MouseMotion` but not vice-versa. Cleared each frame after the tracker
+    /// consumes it. See: context/lib/input.md §7.
+    fn record_mode_signal(&mut self, signal: scripting_systems::input_mode::ModeSignal) {
+        use scripting_systems::input_mode::ModeSignal;
+        self.pending_mode_signal = match (self.pending_mode_signal, signal) {
+            // Nav always wins (overwrite a pending pointer vote; keep nav).
+            (_, ModeSignal::NavInput) => Some(ModeSignal::NavInput),
+            (Some(ModeSignal::NavInput), ModeSignal::MouseMotion) => Some(ModeSignal::NavInput),
+            (_, ModeSignal::MouseMotion) => Some(ModeSignal::MouseMotion),
+        };
+    }
+
+    /// Toggle the demo pause menu (M13 Goal F, Task 5): pop it if it is the top
+    /// tree, otherwise push it via the engine push/pop API (the registered
+    /// `pauseMenu` tree). Wired to `nav.menu` (gamepad Start / Escape-from-
+    /// gameplay) through `pending_menu_toggle`. The capture-mode + cursor effect
+    /// follows on the next `reconcile_ui_focus` (this game-logic phase).
+    fn toggle_pause_menu(&mut self) {
+        if self.modal_stack.active_name() == Some(render::ui::demo::PAUSE_MENU_NAME) {
+            self.modal_stack.pop();
+        } else {
+            self.modal_stack
+                .push_named(render::ui::demo::PAUSE_MENU_NAME, None);
+        }
+    }
+
+    /// Reconcile the input-dispatch seam and coarse focus with the modal stack's
+    /// top capture mode. Called in the game-logic phase after the system-command
+    /// drains settle the stack, so the decision is in force for the NEXT frame's
+    /// Input stage (the N→N+1 ordering the seam guarantees: a UI event consumed on
+    /// frame N reaches game logic no earlier than N+1, and the capture/cursor side
+    /// flips here, one game-logic phase before that read).
+    ///
+    /// - A capturing top tree drives `UiCaptureMode::Capture` (the seam queues
+    ///   events for next-frame game logic instead of forwarding to gameplay) and
+    ///   `InputFocus::Menu` (cursor released, gameplay input frozen).
+    /// - An empty or passthrough top hands input back: `Passthrough` at the seam,
+    ///   and focus returns to `Gameplay` if it was `Menu`.
+    ///
+    /// While a capturing tree is up (Menu focus), the OS cursor's VISIBILITY then
+    /// follows the interaction mode (M13 Goal F, Task 5): `pointer` shows it,
+    /// `focus` hides it. This is inert when no capturing tree is up — gameplay
+    /// owns the cursor (locked + hidden) and dev-tools owns its own.
+    ///
+    /// DevTools owns focus while the debug panel is open (it released the cursor
+    /// and set `DevTools`); this reconcile never overrides that — the modal stack
+    /// is gameplay UI, and the debug overlay is a separate, dev-only consumer.
+    fn reconcile_ui_focus(&mut self) {
+        let mode = self.modal_stack.top_capture_mode();
+        self.ui_dispatch.set_mode(mode);
+
+        // The debug overlay owns focus while open — don't fight it.
+        if self.input_focus == InputFocus::DevTools {
+            return;
+        }
+
+        let want_menu = matches!(mode, input::UiCaptureMode::Capture);
+        match (want_menu, self.input_focus) {
+            // A capturing tree opened (or stayed open): enter Menu, release cursor.
+            (true, InputFocus::Gameplay) => self.set_input_focus(InputFocus::Menu),
+            // The capturing tree(s) closed: hand the cursor back to gameplay.
+            (false, InputFocus::Menu) => self.set_input_focus(InputFocus::Gameplay),
+            // Already in the right focus for the current capture mode.
+            _ => {}
+        }
+
+        // Cursor visibility follows the interaction mode WHILE a capturing tree
+        // is up. `set_input_focus(Menu)` released the cursor (visible) above; in
+        // `focus` mode we additionally hide it so directional nav isn't cluttered
+        // by a stray pointer. Mode is inert otherwise (no capturing tree).
+        if want_menu && self.input_focus == InputFocus::Menu {
+            if let Some(ws) = self.window_state.as_ref() {
+                ws.window
+                    .set_cursor_visible(self.ui_input_mode.cursor_visible());
+            }
+        }
     }
 
     /// Release pointer lock as part of the exit path. Does not mutate
@@ -3306,10 +4289,11 @@ mod tests {
     fn ui_slot_snapshot_clones_present_values_and_skips_valueless_slots() {
         use crate::scripting::slot_table::SlotValue;
 
-        // The default table carries engine `player.*` slots with `None` values.
-        // Setting one slot is enough to assert the boundary contract: the
-        // snapshot clones value-bearing slots and omits value-less ones, so the
-        // renderer reads a present key only when it carries a resolved value.
+        // The default table carries engine `player.*` slots with `None` values
+        // plus two value-bearing engine surfaces: `screen.flash` (resting
+        // transparent) and `input.mode` (defaults to `focus`). Setting one of the
+        // value-less slots asserts the boundary contract: the snapshot clones
+        // value-bearing slots and omits value-less ones.
         let mut table = crate::scripting::slot_table::SlotTable::new();
         table
             .get_mut("player.health")
@@ -3323,12 +4307,36 @@ mod tests {
             Some(&SlotValue::Number(75.0)),
             "value-bearing slot is cloned into the snapshot",
         );
-        // Every other default slot starts value-less and must be excluded, so
-        // the only present key is the one we set.
+        // `screen.flash` carries its default transparent value, so it is present.
+        assert_eq!(
+            snapshot.get("screen.flash"),
+            Some(&SlotValue::Array(vec![0.0, 0.0, 0.0, 0.0])),
+            "engine-owned screen.flash defaults to transparent and is cloned",
+        );
+        // `input.mode` defaults to `focus`, so it is value-bearing and present.
+        assert_eq!(
+            snapshot.get("input.mode"),
+            Some(&SlotValue::Enum("focus".to_string())),
+            "engine-owned input.mode defaults to focus and is cloned",
+        );
+        // `ui.textEntry` defaults to an empty string, so it is value-bearing and
+        // present (the text-edit reactions' writable target).
+        assert_eq!(
+            snapshot.get("ui.textEntry"),
+            Some(&SlotValue::String(String::new())),
+            "engine-owned ui.textEntry defaults to empty string and is cloned",
+        );
+        // `player.ammo` starts value-less and must be excluded, so only the slot
+        // we set plus the always-valued `screen.flash`, `input.mode`, and
+        // `ui.textEntry` appear.
+        assert!(
+            snapshot.get("player.ammo").is_none(),
+            "value-less slots are skipped",
+        );
         assert_eq!(
             snapshot.len(),
-            1,
-            "value-less slots are skipped; only the set slot appears",
+            4,
+            "only the set player.health and the default-valued screen.flash + input.mode + ui.textEntry appear",
         );
     }
 

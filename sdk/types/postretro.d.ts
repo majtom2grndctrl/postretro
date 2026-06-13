@@ -571,10 +571,10 @@ declare module "postretro" {
     progress: { tag: string; at: number; fire: string };
   };
 
-  /** Primitive reaction body: invokes the named Rust primitive on entities tagged `tag`, optionally firing `onComplete` when it finishes. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ state: "attack" }` for `setAnimationState`). */
+  /** Primitive reaction body: invokes the named Rust primitive. With `tag`, it targets entities carrying that tag and mutates them. Without `tag`, it is a system reaction (no entities) that enqueues a typed engine command — `playSound`, `rumble`, `flashScreen`, the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
   export type PrimitiveReactionDescriptor = {
     primitive: string;
-    tag: string;
+    tag?: string;
     args?: Record<string, unknown>;
     onComplete?: string;
   };
@@ -659,9 +659,22 @@ declare module "postretro" {
     | SequenceReactionDescriptor
   );
 
+  /** Crossing condition: fires when the watched slot crosses the threshold in one direction. Exactly one of `below`/`above` is given. `max` is the denominator the threshold is a fraction of; omit it for a raw-value comparison (`max` defaults to `1.0`). */
+  export type CrossingCondition =
+    | { below: number; max?: number }
+    | { above: number; max?: number };
+
+  /** A state-crossing watcher entry as it appears in `setupLevel`'s manifest `crossings` array. The condition fields are flattened in beside `slot` and `fire`; `fire` lists the named reactions dispatched (through the shared named-reaction vocabulary) when the crossing occurs. */
+  export type CrossingDescriptor = {
+    slot: string;
+    max?: number;
+    fire: string[];
+  } & ({ below: number } | { above: number });
+
   /** Bundle returned from `setupLevel`. The engine deserializes this shape in one pass at level load. */
   export type LevelManifest = {
     reactions: NamedReactionDescriptor[];
+    crossings?: CrossingDescriptor[];
   };
 
   /** Build a named reaction descriptor. Pure: returns a plain object, no FFI. */
@@ -672,6 +685,72 @@ declare module "postretro" {
       | PrimitiveReactionDescriptor
       | SequenceReactionDescriptor,
   ): NamedReactionDescriptor;
+
+  /** Build a state-crossing watcher. Pure: returns a plain object, no FFI. Place the result in `setupLevel`'s returned `crossings` array. The engine fires every reaction in `fire` exactly once on a crossing in the condition's direction, re-arming only after a crossing back; a registration against a non-Number slot warns and is skipped at load. */
+  export function onStateCrossing(
+    slot: string,
+    condition: CrossingCondition,
+    fire: string[],
+  ): CrossingDescriptor;
+
+  /** System-reaction body: play `sound` through the M12 audio module on the optional named `bus` (omitted when undefined → engine default bus). Pure: returns a `PrimitiveReactionDescriptor`, no FFI. Pass to `defineReaction("name", playSound(...))`. */
+  export function playSound(sound: string, bus?: string): PrimitiveReactionDescriptor;
+
+  /** System-reaction body: drive gilrs gamepad force feedback. `strong`/optional `weak` (omitted when undefined) are 0–1 motor intensities; `durationMs` is the rumble length. Warn-once no-op without force-feedback hardware. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
+  export function rumble(strong: number, durationMs: number, weak?: number): PrimitiveReactionDescriptor;
+
+  /** System-reaction body: flash the screen by writing the engine-owned `screen.flash` RGBA slot, which decays to transparent. `color` is `[r, g, b, a]` (0–1); `durationMs` is the decay time. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
+  export function flashScreen(color: [number, number, number, number], durationMs: number): PrimitiveReactionDescriptor;
+
+  /** System-reaction body: push the dialog UI tree `tree` onto the modal stack, with an optional `onCommit` reaction (omitted when undefined). Warn-once "no stack" until Goal F's modal stack lands. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
+  export function showDialog(tree: string, onCommit?: string): PrimitiveReactionDescriptor;
+
+  /** The engine-shipped on-screen keyboard's registry name (M13 Text Entry). `openTextEntry` opens this tree; the engine loads its descriptor from `content/base/ui/keyboard.json` at boot. The keyboard edits the `ui.textEntry` writable String slot. */
+  export const KEYBOARD_TREE: "keyboard";
+
+  /** System-reaction body (M13 Text Entry): open the engine-shipped on-screen keyboard, a capturing modal that edits the `ui.textEntry` slot. Optional `onCommit` names a reaction fired on commit (the on-screen `done` key or hardware Enter); `nav.cancel` closes without firing it. The same `ui.textEntry` slot also receives the hardware-keyboard path's edits. Wraps `showDialog("keyboard", onCommit)`. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
+  export function openTextEntry(onCommit?: string): PrimitiveReactionDescriptor;
+
+  /** System-reaction body: push the menu UI tree `tree` onto the modal stack. A v1 alias of `showDialog` (identical push behavior) without `onCommit`. Warn-once "no stack" until Goal F's modal stack lands. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
+  export function openMenu(tree: string): PrimitiveReactionDescriptor;
+
+  /** System-reaction body: pop the top UI tree off the modal stack. Warn-once "no stack" until Goal F's modal stack lands. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
+  export function closeDialog(): PrimitiveReactionDescriptor;
+
+  /** System-reaction body (M13 Goal F): write `value` to the writable store slot `slot` at the game-logic stage. Readonly-gated — a readonly slot warns and stays unchanged; an engine-owned writable slot is valid. `value` is coerced to the slot's declared type. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
+  export function setState(slot: string, value: number | boolean | string | number[]): PrimitiveReactionDescriptor;
+
+  /** System-reaction body (M13 Text Entry): append `text` to the current string value of the writable String slot `slot` at the game-logic stage. Readonly-gated through the same writable-slot gate as `setState` — a readonly slot warns and stays unchanged; an engine-owned writable slot (e.g. `ui.textEntry`) is valid. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
+  export function appendText(slot: string, text: string): PrimitiveReactionDescriptor;
+
+  /** System-reaction body (M13 Text Entry): remove the last grapheme cluster (char-pop floor — never splits a UTF-8 sequence) from the writable String slot `slot` at the game-logic stage. Empty is a no-op with no warning. Readonly-gated like `setState`. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
+  export function backspaceText(slot: string): PrimitiveReactionDescriptor;
+
+  /** System-reaction body (M13 Text Entry): empty the writable String slot `slot` at the game-logic stage. Readonly-gated like `setState`. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
+  export function clearText(slot: string): PrimitiveReactionDescriptor;
+
+  // -------------------------------------------------------------------------
+  // Interactive UI widget descriptors (M13 Goal F, Task 4). Authored as JSON in
+  // a UI tree descriptor; the engine builds the retained tree from them. These
+  // type-only aliases pin the wire shape (camelCase, internally tagged on `kind`).
+
+  /** A widget color slot: an inline linear-RGBA tuple or a theme token name. */
+  export type WidgetColor = [number, number, number, number] | string;
+
+  /** A slot binding shared by `slider`/`bar`: a dotted slot name plus optional value-tween (number shape). */
+  export type SliderBind = { slot: string; tween?: { durationMs: number; easing: "linear" | "easeIn" | "easeOut" | "easeInOut"; from?: number } };
+
+  /** Continuous value→style map (M13 Goal E): fill fraction `value/max` maps to the first covering band; a trailing no-`upTo` band is the default. */
+  export type WidgetStyleRanges = { max: number; entries: { upTo?: number; color?: WidgetColor; pulse?: { periodMs: number }; flash?: { durationMs: number } }[] };
+
+  /** Interactive button widget. Focusable; activation (gamepad confirm or pointer click) fires the `onPress` named reaction through the reaction registry. `id` is required (activation resolves the focused node id back to `onPress`). */
+  export type ButtonWidget = { kind: "button"; id: string; label: string; onPress: string; focusNeighbors?: Record<string, string> };
+
+  /** Interactive slider widget. Focusable; nav wires named in `capturesNav` (e.g. `["nav.left", "nav.right"]` — an array, not a bool) step the bound value by `step` within `[min, max]` and emit a `setState` write on the N+1 frame. */
+  export type SliderWidget = { kind: "slider"; id: string; label: string; bind: SliderBind; min: number; max: number; step: number; capturesNav?: string[]; focusNeighbors?: Record<string, string> };
+
+  /** Passive horizontal value bar. Fill fraction is `value/max` clamped to [0, 1]; `styleRanges` recolors the fill; a bind tween eases the displayed fraction. */
+  export type BarWidget = { kind: "bar"; bind: SliderBind; max: number; fill: WidgetColor; background: WidgetColor; id?: string; styleRanges?: WidgetStyleRanges };
 
   /** Pure identity builder for entity-type descriptors. Returns the descriptor as-is; its sole purpose is a typed construction site. */
   export function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor;
@@ -787,4 +866,23 @@ declare module "postretro" {
 
   /** Runtime-value builder vocabulary global. */
   export const runtime: Runtime;
+
+  // -------------------------------------------------------------------------
+  // UI navigation intents — the closed gamepad-first nav vocabulary the input
+  // stage produces (keyboard arrows/enter/escape, D-pad, stick edges) and that
+  // UI authors reference in `capturesNav` and focus policy. Wire names mirror
+  // the Rust `NavIntent` enum (input/ui_nav.rs). Template-literal-typed so a
+  // typo in a `"nav.*"` string is a compile error.
+  // See: context/research/ui-layer.md §16.
+
+  /** The bare nav-intent names without the `nav.` prefix. */
+  export type NavIntentName =
+    | "up" | "down" | "left" | "right"
+    | "next" | "prev"
+    | "confirm" | "cancel"
+    | "menu" | "options";
+
+  /** A UI navigation intent wire name. Template-literal type over the closed
+   * `NavIntentName` set, so only `"nav.up"` … `"nav.options"` type-check. */
+  export type NavIntent = `nav.${NavIntentName}`;
 }

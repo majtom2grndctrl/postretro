@@ -60,6 +60,12 @@ const DATA_SCRIPT_LUAU_SRC: &str = include_str!("../../../../sdk/lib/data_script
 /// builder assembles a `RuntimeValue` table and never calls back into Rust.
 const RUNTIME_LUAU_SRC: &str = include_str!("../../../../sdk/lib/runtime.luau");
 
+/// SDK library prelude — `ui/reactions.luau` returns a table whose field
+/// (`onStateCrossing`) is destructured into a global so data-script authors
+/// call it by bare name. A pure descriptor builder; its result lands in
+/// `setupLevel`'s `crossings` array — no FFI until the script returns.
+const UI_REACTIONS_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/reactions.luau");
+
 /// Lights SDK fields lifted to globals after evaluating
 /// `entities/lights.luau`. Empty: the public vocabulary lives on the handle
 /// returned from `wrapLightEntity`, which is itself installed as a
@@ -85,6 +91,30 @@ const FOG_VOLUMES_LUAU_FIELDS: &[&str] = &[];
 /// Data-script SDK fields lifted to globals after evaluating
 /// `data_script.luau`.
 const DATA_SCRIPT_FIELDS: &[&str] = &["defineReaction", "defineEntity"];
+
+/// UI-reactions SDK fields lifted to globals after evaluating
+/// `ui/reactions.luau`. `onStateCrossing` builds a state-crossing watcher; the
+/// rest are system-reaction body constructors that pair with `defineReaction` to
+/// emit `playSound` / `rumble` / `flashScreen`, the UI-stack (`showDialog` /
+/// `openMenu` / `closeDialog`) primitives, the `setState` slot write (Goal F),
+/// the text-entry helpers (`openTextEntry` wraps `showDialog` for the engine
+/// keyboard; `KEYBOARD_TREE` is its registry name constant), and the text-edit
+/// reactions (`appendText` / `backspaceText` / `clearText`, M13 Text Entry).
+const UI_REACTIONS_FIELDS: &[&str] = &[
+    "onStateCrossing",
+    "playSound",
+    "rumble",
+    "flashScreen",
+    "showDialog",
+    "openMenu",
+    "closeDialog",
+    "openTextEntry",
+    "KEYBOARD_TREE",
+    "setState",
+    "appendText",
+    "backspaceText",
+    "clearText",
+];
 
 /// Evaluate the Luau SDK prelude in `lua` and promote the return values to
 /// globals. Must be called after primitives are installed and before
@@ -270,6 +300,31 @@ pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
                 .get(*field)
                 .map_err(|e| ScriptError::InvalidArgument {
                     reason: format!("data_script.luau missing `{field}`: {e}"),
+                })?;
+        globals
+            .set(*field, value)
+            .map_err(|e| ScriptError::InvalidArgument {
+                reason: format!("failed to install global `{field}`: {e}"),
+            })?;
+    }
+
+    // Step 7b: evaluate `ui/reactions.luau` and lift its fields to globals.
+    // Pure builders (no primitive dependency); ordering relative to the other
+    // steps is irrelevant.
+    let ui_reactions_sdk: Table = lua
+        .load(UI_REACTIONS_LUAU_SRC)
+        .set_name("postretro/sdk/ui/reactions.luau")
+        .eval()
+        .map_err(|e| ScriptError::ScriptThrew {
+            msg: format!("failed to evaluate SDK prelude `ui/reactions.luau`: {e}"),
+            source_name: "sdk/lib/ui/reactions.luau".to_string(),
+        })?;
+    for field in UI_REACTIONS_FIELDS {
+        let value: mlua::Value =
+            ui_reactions_sdk
+                .get(*field)
+                .map_err(|e| ScriptError::InvalidArgument {
+                    reason: format!("ui/reactions.luau missing `{field}`: {e}"),
                 })?;
         globals
             .set(*field, value)
@@ -1292,5 +1347,41 @@ mod tests {
             canonical_require_dependency(&dir.canonicalize().unwrap(), &outside_file, "./module")
                 .expect_err("outside canonical path must be rejected");
         assert!(err.contains("outside mod root"), "got: {err}");
+    }
+
+    #[test]
+    fn ui_reactions_fields_contains_complete_sdk_surface() {
+        // Regression: openTextEntry/KEYBOARD_TREE were declared in the typedef
+        // + SDK but not lifted, so Luau callers hit a nil global at runtime
+        // while TS callers worked fine (TS installs them via globalThis rewrite).
+        //
+        // This test guards against the same gap recurring: every name exposed by
+        // `sdk/lib/ui/reactions.luau` as a UiReactionsSdk field must appear in
+        // UI_REACTIONS_FIELDS so the field is actually promoted to a bare global.
+        let expected: &[&str] = &[
+            "onStateCrossing",
+            "playSound",
+            "rumble",
+            "flashScreen",
+            "showDialog",
+            "openMenu",
+            "closeDialog",
+            "openTextEntry",
+            "KEYBOARD_TREE",
+            "setState",
+            "appendText",
+            "backspaceText",
+            "clearText",
+        ];
+        let actual: std::collections::BTreeSet<&str> =
+            UI_REACTIONS_FIELDS.iter().copied().collect();
+        for name in expected {
+            assert!(
+                actual.contains(name),
+                "UI_REACTIONS_FIELDS is missing `{name}` — it is declared in \
+                sdk/lib/ui/reactions.luau and the Luau typedef but was not lifted \
+                to a bare global, so Luau callers hit nil at runtime",
+            );
+        }
     }
 }

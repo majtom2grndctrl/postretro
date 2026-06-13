@@ -7,7 +7,9 @@
 
 use std::collections::HashMap;
 
-use super::data_descriptors::{EntityTypeDescriptor, LevelManifest, NamedReaction};
+use super::data_descriptors::{
+    CrossingDescriptor, EntityTypeDescriptor, LevelManifest, NamedReaction,
+};
 
 /// Data registries collected from data-context script execution.
 /// `reactions` are per-level and cleared on unload; `entities` are
@@ -17,6 +19,10 @@ pub(crate) struct DataRegistry {
     /// Reactions registered for this level. Each entry pairs an event name
     /// with the descriptor body the script supplied.
     pub(crate) reactions: Vec<NamedReaction>,
+    /// State-crossing watchers registered for this level (M13 HUD dynamics).
+    /// Per-level — cleared on unload with `reactions`. The crossing detector
+    /// reads these to know which slots to watch and what to fire on a crossing.
+    pub(crate) crossings: Vec<CrossingDescriptor>,
     /// Entity-type descriptors. Engine-global — survive level unload.
     /// Populated by the boot caller after `run_mod_init`: it drains the
     /// `entities` field of the validated `setupMod()` return value into here
@@ -35,8 +41,12 @@ impl DataRegistry {
     /// arrive separately via `setupMod()`'s `entities` return field (they
     /// outlive level unload).
     pub(crate) fn populate_from_manifest(&mut self, manifest: LevelManifest) {
-        let LevelManifest { reactions } = manifest;
+        let LevelManifest {
+            reactions,
+            crossings,
+        } = manifest;
         self.reactions.extend(reactions);
+        self.crossings.extend(crossings);
     }
 
     /// Insert (or overwrite) an entity-type descriptor. Identical re-inserts
@@ -117,6 +127,7 @@ impl DataRegistry {
     /// See [`Self::upsert_entity_type`].
     pub(crate) fn clear(&mut self) {
         self.reactions.clear();
+        self.crossings.clear();
     }
 
     /// Returns `true` only when both collections are empty. After level unload,
@@ -124,7 +135,7 @@ impl DataRegistry {
     /// should use `reactions.is_empty()` for level-unload checks.
     #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
-        self.reactions.is_empty() && self.entities.is_empty()
+        self.reactions.is_empty() && self.crossings.is_empty() && self.entities.is_empty()
     }
 }
 
@@ -141,11 +152,12 @@ mod tests {
                 name: "wave1Complete".to_string(),
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "moveGeometry".to_string(),
-                    tag: "reactorChambers".to_string(),
+                    tag: Some("reactorChambers".to_string()),
                     on_complete: None,
                     args: serde_json::Value::Object(Default::default()),
                 }),
             }],
+            crossings: Vec::new(),
         }
     }
 

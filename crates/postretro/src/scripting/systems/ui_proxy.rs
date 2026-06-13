@@ -1,6 +1,7 @@
 // Slot producer for the HUD store slots. Publishes the live pawn HP into the
-// readonly engine-owned `player.health` slot each frame; `player.ammo` and demo
-// `intro.flashColor` remain proxy stand-ins until their own producers land.
+// readonly engine-owned `player.health` slot each frame. `player.ammo` is a
+// proxy stand-in; `intro.flashColor` is driven by a timer animation this proxy
+// owns — its real producer, not a placeholder.
 // See: context/lib/scripting.md §5 "Durable State Store"
 
 use crate::scripting::components::health::pawn_with_health;

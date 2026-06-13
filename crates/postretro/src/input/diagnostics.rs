@@ -125,6 +125,14 @@ impl DiagnosticInputs {
             .map(|c| c.action)
     }
 
+    /// Whether Shift is currently held (left or right — they're equivalent).
+    /// Read by the App's Escape routing: `Shift+Esc` is the dev quit chord,
+    /// plain `Esc` falls through to the menu/cancel path. Reuses the same
+    /// modifier tracking the diagnostic chords drive.
+    pub fn shift_held(&self) -> bool {
+        self.modifier_state.shift
+    }
+
     /// Reset all modifier state. Called when the window loses focus so a
     /// modifier released off-window doesn't leave the resolver thinking it's
     /// still held.

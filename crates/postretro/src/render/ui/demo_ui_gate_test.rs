@@ -39,7 +39,7 @@
 use std::collections::HashMap;
 
 use super::demo::build_demo_descriptor;
-use super::descriptor::{AnchoredTree, ColorValue, TextWidget, Widget};
+use super::descriptor::{AnchoredTree, CaptureMode, ColorValue, TextWidget, Widget};
 use super::layout::Anchor;
 use super::text::{UI_FONT_FAMILY, UI_MONO_FONT_FAMILY, measure_run};
 use super::theme::UiTheme;
@@ -553,7 +553,13 @@ fn srgb_of(linear: [f32; 4]) -> [u8; 4] {
             color: ColorValue::Literal(linear),
             font: None,
             bind: None,
+            style_ranges: None,
+            id: None,
+            focus_neighbors: Default::default(),
         }),
+        capture_mode: CaptureMode::Passthrough,
+        initial_focus: None,
+        text_entry_target: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &UiTheme::engine_default());
     let mut fs = font_system();

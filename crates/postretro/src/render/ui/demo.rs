@@ -517,6 +517,39 @@ pub(crate) fn build_pause_menu_descriptor() -> AnchoredTree {
 mod tests {
     use super::*;
 
+    /// Read a committed UI fixture JSON anchored to the repo root (NOT runtime
+    /// cwd, so it passes under `cargo test`, which runs from the crate dir). Mirrors
+    /// the `keyboard_asset` test precedent: `CARGO_MANIFEST_DIR` + `../..` reaches
+    /// the workspace root, then `content/base/ui/<name>`.
+    fn load_ui_fixture(name: &str) -> AnchoredTree {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("content/base/ui")
+            .join(name);
+        let bytes = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("fixture '{}' exists: {e}", path.display()));
+        serde_json::from_str(&bytes)
+            .unwrap_or_else(|e| panic!("fixture '{}' deserializes: {e}", path.display()))
+    }
+
+    /// `content/base/ui/hud.json` deserializes to a descriptor equal to the demo
+    /// HUD builder's output — the JSON is the modder-facing twin of the oracle
+    /// builder, generated from it once and pinned here at the descriptor level.
+    #[test]
+    fn hud_json_matches_demo_builder_descriptor() {
+        assert_eq!(load_ui_fixture("hud.json"), build_demo_descriptor());
+    }
+
+    /// `content/base/ui/pauseMenu.json` deserializes to a descriptor equal to the
+    /// pause-menu builder's output (capturing modal, initial focus, full widget set).
+    #[test]
+    fn pause_menu_json_matches_pause_menu_builder_descriptor() {
+        assert_eq!(
+            load_ui_fixture("pauseMenu.json"),
+            build_pause_menu_descriptor(),
+        );
+    }
+
     /// The demo descriptor binds the three expected slots: `player.health` and
     /// `player.ammo` on text nodes, `intro.flashColor` on a panel fill. This pins
     /// the wiring at the descriptor level; the gate test drives it through layout.

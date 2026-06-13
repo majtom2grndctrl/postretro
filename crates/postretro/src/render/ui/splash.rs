@@ -226,6 +226,30 @@ mod tests {
         sizes
     }
 
+    /// `content/base/ui/splash.json` deserializes to a descriptor equal to the
+    /// splash builder's output. The oracle is `build_splash_descriptor("{version}")`:
+    /// the JSON carries a `"{version}"` sentinel in the version text node (Task 3
+    /// substitutes the real version at load), so the fixture asserts against that
+    /// sentinel on both sides. The logo `image` node (asset `"splash/logo"`) is
+    /// reproduced alongside the version text. Path anchored to the repo root off
+    /// `CARGO_MANIFEST_DIR` (mirrors the `keyboard_asset` test precedent), NOT
+    /// runtime cwd, so it passes under `cargo test`.
+    #[test]
+    fn splash_json_matches_splash_builder_descriptor_with_version_sentinel() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("content/base/ui/splash.json");
+        let bytes = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("fixture '{}' exists: {e}", path.display()));
+        let from_json: AnchoredTree = serde_json::from_str(&bytes)
+            .unwrap_or_else(|e| panic!("fixture '{}' deserializes: {e}", path.display()));
+        assert_eq!(
+            from_json,
+            *build_splash_descriptor("{version}").tree(),
+            "splash.json equals the builder output for the {{version}} sentinel oracle",
+        );
+    }
+
     #[test]
     fn descriptor_is_passthrough() {
         // The splash is non-interactive — the dispatch seam must stay passthrough.

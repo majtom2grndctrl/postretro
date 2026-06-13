@@ -1,6 +1,7 @@
 // Gamepad input via gilrs: polling, dead zones, trigger thresholds.
 // See: context/lib/input.md §5
 
+use gilrs::ff::{BaseEffect, BaseEffectType, Effect, EffectBuilder, Replay, Ticks};
 use gilrs::{Axis, Button, Event, EventType, GamepadId, Gilrs};
 
 use super::InputSystem;
@@ -26,6 +27,21 @@ pub struct GamepadSystem {
     gilrs: Gilrs,
     /// Most-recently-used gamepad. Updated when any gamepad produces input.
     active_gamepad: Option<GamepadId>,
+    /// The currently-playing rumble effect and how long it has left to run
+    /// (milliseconds). gilrs reference-counts the [`Effect`] handle, so holding
+    /// it keeps the effect alive; dropping it (when the timeout elapses or a new
+    /// rumble replaces it) stops the vibration. `None` when nothing is rumbling.
+    active_rumble: Option<ActiveRumble>,
+    /// Latches once after a force-feedback no-op so the unsupported-backend
+    /// warning is logged at most once, not on every `rumble` call.
+    ff_warned: bool,
+}
+
+/// A live rumble effect plus its remaining duration. The effect handle is kept
+/// alive for `remaining_ms`; `tick_rumble` drops it once the time elapses.
+struct ActiveRumble {
+    effect: Effect,
+    remaining_ms: f32,
 }
 
 impl GamepadSystem {
@@ -45,6 +61,8 @@ impl GamepadSystem {
                 Some(GamepadSystem {
                     gilrs,
                     active_gamepad: None,
+                    active_rumble: None,
+                    ff_warned: false,
                 })
             }
             Err(err) => {
@@ -132,6 +150,121 @@ impl GamepadSystem {
             input_system.set_physical_input(PhysicalInput::GamepadButton(button), pressed);
         }
     }
+
+    /// Start a force-feedback rumble on the active gamepad: `strong`/`weak` are
+    /// the strong/weak motor magnitudes in `[0, 1]`, `duration_ms` the play
+    /// length. An absent `weak` mirrors `strong` (the system-command contract).
+    /// A fresh rumble replaces any in-flight one (latest wins).
+    ///
+    /// No-ops (warn-once) when there is no active gamepad or the active gamepad's
+    /// backend does not support force feedback — vibration is best-effort, never
+    /// an error. Driven by the drained `Rumble` system-reaction command.
+    pub fn rumble(&mut self, strong: f32, weak: Option<f32>, duration_ms: f32) {
+        let Some(gamepad_id) = self.active_gamepad else {
+            // No gamepad has produced input yet; nothing to vibrate.
+            self.warn_ff_once("no active gamepad");
+            return;
+        };
+
+        if !self.gilrs.gamepad(gamepad_id).is_ff_supported() {
+            self.warn_ff_once("active gamepad does not support force feedback");
+            return;
+        }
+
+        if !(duration_ms.is_finite() && duration_ms > 0.0) {
+            log::warn!("[Input] rumble ignored: non-positive/non-finite durationMs {duration_ms}");
+            return;
+        }
+
+        let strong_mag = magnitude_u16(strong);
+        // `weak` absent ⇒ mirror `strong`, per the Rumble command contract.
+        let weak_mag = magnitude_u16(weak.unwrap_or(strong));
+        let play_for = Ticks::from_ms(duration_ms.max(0.0) as u32);
+
+        let effect = EffectBuilder::new()
+            .add_effect(BaseEffect {
+                kind: BaseEffectType::Strong {
+                    magnitude: strong_mag,
+                },
+                scheduling: Replay {
+                    play_for,
+                    ..Default::default()
+                },
+                envelope: Default::default(),
+            })
+            .add_effect(BaseEffect {
+                kind: BaseEffectType::Weak {
+                    magnitude: weak_mag,
+                },
+                scheduling: Replay {
+                    play_for,
+                    ..Default::default()
+                },
+                envelope: Default::default(),
+            })
+            .gamepads(&[gamepad_id])
+            .finish(&mut self.gilrs);
+
+        let effect = match effect {
+            Ok(effect) => effect,
+            Err(err) => {
+                self.warn_ff_once(&format!("effect build failed: {err}"));
+                return;
+            }
+        };
+
+        if let Err(err) = effect.play() {
+            self.warn_ff_once(&format!("effect play failed: {err}"));
+            return;
+        }
+
+        // Replacing `active_rumble` drops the previous effect handle, stopping
+        // any prior vibration so the new one is the only force feedback playing.
+        self.active_rumble = Some(ActiveRumble {
+            effect,
+            remaining_ms: duration_ms,
+        });
+    }
+
+    /// Advance the active rumble's timeout by the frame delta (seconds) and stop
+    /// it once its duration elapses. Called once per frame in the input stage,
+    /// where the rumble duration timeout is tracked. A no-op when nothing is
+    /// rumbling.
+    pub fn tick_rumble(&mut self, dt: f32) {
+        let Some(rumble) = self.active_rumble.as_mut() else {
+            return;
+        };
+        rumble.remaining_ms -= dt * 1000.0;
+        if rumble.remaining_ms <= 0.0 {
+            // Stop explicitly, then drop the handle. gilrs's `play_for` already
+            // bounds the motor output, but stopping releases the effect promptly
+            // rather than waiting on the server's own scheduling.
+            let _ = rumble.effect.stop();
+            self.active_rumble = None;
+        }
+    }
+
+    /// Log the force-feedback unsupported/no-op warning at most once. Subsequent
+    /// no-ops are silent so a rumble-heavy script does not spam the log on a
+    /// gamepad-less or ff-less machine.
+    fn warn_ff_once(&mut self, reason: &str) {
+        if !self.ff_warned {
+            log::warn!("[Input] rumble no-op: {reason} (force feedback unavailable)");
+            self.ff_warned = true;
+        }
+    }
+}
+
+/// Map a force-feedback motor magnitude in `[0, 1]` to gilrs's `u16` motor
+/// range. Out-of-range or non-finite inputs clamp into `[0, 1]` first so a stray
+/// command can never wrap the cast.
+fn magnitude_u16(value: f32) -> u16 {
+    let clamped = if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (clamped * u16::MAX as f32).round() as u16
 }
 
 /// Whether a gilrs event represents user input (vs. connection/disconnection).
@@ -271,6 +404,24 @@ mod tests {
     }
 
     // --- Trigger threshold tests ---
+
+    // --- Rumble magnitude mapping tests ---
+
+    #[test]
+    fn magnitude_maps_unit_range_to_u16_endpoints() {
+        assert_eq!(magnitude_u16(0.0), 0);
+        assert_eq!(magnitude_u16(1.0), u16::MAX);
+        // Midpoint rounds to ~half scale.
+        assert_eq!(magnitude_u16(0.5), (u16::MAX as f32 * 0.5).round() as u16);
+    }
+
+    #[test]
+    fn magnitude_clamps_out_of_range_and_non_finite() {
+        assert_eq!(magnitude_u16(2.0), u16::MAX, "above 1.0 clamps to full");
+        assert_eq!(magnitude_u16(-1.0), 0, "below 0.0 clamps to zero");
+        assert_eq!(magnitude_u16(f32::NAN), 0, "NaN coerces to zero");
+        assert_eq!(magnitude_u16(f32::INFINITY), 0, "infinity coerces to zero");
+    }
 
     #[test]
     fn trigger_below_threshold_is_inactive() {

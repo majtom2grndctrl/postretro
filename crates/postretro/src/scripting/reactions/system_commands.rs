@@ -12,9 +12,9 @@ use std::rc::Rc;
 use super::ReactionError;
 
 /// A single deferred system-reaction effect. Variants carry their full args so
-/// the drain seam is typed end to end; the actual subsystem consumers
-/// (audio/gilrs/UI stack) land in later tasks. Until a consumer is wired, the
-/// drain logs the command (see [`SystemCommandQueue::drain_to_log`]).
+/// the drain seam is typed end to end. The app's `dispatch_system_commands`
+/// routes each to its subsystem consumer (audio `play`, gilrs rumble, the
+/// `screen.flash` decay, and the warn-once UI-stack sink until Goal F lands).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum SystemReactionCommand {
     /// Play a one-shot sound on an optional named audio bus.
@@ -66,15 +66,6 @@ impl SystemCommandQueue {
 
     pub(crate) fn is_empty(&self) -> bool {
         self.commands.borrow().is_empty()
-    }
-
-    /// Drain to a log sink. Stand-in for the not-yet-wired subsystem consumers
-    /// (audio/gilrs/UI stack land in Task 4 / Goal F); keeps the typed queue
-    /// and drain hook exercised end to end until those land.
-    pub(crate) fn drain_to_log(&self) {
-        for command in self.take() {
-            log::debug!("[Scripting] system reaction command (no consumer yet): {command:?}");
-        }
     }
 }
 
@@ -187,10 +178,16 @@ pub(crate) fn register_system_reaction_primitives(registry: &mut SystemReactionR
         });
         Ok(())
     });
-    registry.register("pushTree", |args, queue| {
-        let parsed: PushTreeArgs =
+    // `showDialog` / `openMenu` are v1 aliases: both push a `PushTree` for a
+    // named registered tree. `showDialog` carries the optional `onCommit`
+    // reaction fired when the pushed tree commits; `openMenu` never does (a menu
+    // has no commit payload), so its handler ignores any `onCommit` key. The
+    // capture mode etc. travel on the tree's registered envelope (F's concern),
+    // not the command. `closeDialog` pops the top tree.
+    registry.register("showDialog", |args, queue| {
+        let parsed: ShowDialogArgs =
             serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
-                reason: format!("pushTree: failed to deserialize args: {e}"),
+                reason: format!("showDialog: failed to deserialize args: {e}"),
             })?;
         queue.push(SystemReactionCommand::PushTree {
             tree: parsed.tree,
@@ -198,7 +195,19 @@ pub(crate) fn register_system_reaction_primitives(registry: &mut SystemReactionR
         });
         Ok(())
     });
-    registry.register("popTree", |_args, queue| {
+    registry.register("openMenu", |args, queue| {
+        let parsed: OpenMenuArgs =
+            serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
+                reason: format!("openMenu: failed to deserialize args: {e}"),
+            })?;
+        queue.push(SystemReactionCommand::PushTree {
+            tree: parsed.tree,
+            // A menu carries no commit payload; the alias never sets `on_commit`.
+            on_commit: None,
+        });
+        Ok(())
+    });
+    registry.register("closeDialog", |_args, queue| {
         queue.push(SystemReactionCommand::PopTree);
         Ok(())
     });
@@ -233,10 +242,16 @@ struct FlashScreenArgs {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct PushTreeArgs {
+struct ShowDialogArgs {
     tree: String,
     #[serde(default)]
     on_commit: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenMenuArgs {
+    tree: String,
 }
 
 #[cfg(test)]
@@ -250,8 +265,9 @@ mod tests {
         assert!(r.contains("playSound"));
         assert!(r.contains("rumble"));
         assert!(r.contains("flashScreen"));
-        assert!(r.contains("pushTree"));
-        assert!(r.contains("popTree"));
+        assert!(r.contains("showDialog"));
+        assert!(r.contains("openMenu"));
+        assert!(r.contains("closeDialog"));
         // Defensive: system reactions are a distinct arm; entity primitives
         // are NOT registered here.
         assert!(!r.contains("setEmitterRate"));
@@ -311,13 +327,13 @@ mod tests {
     }
 
     #[test]
-    fn push_tree_dispatch_enqueues_command_with_on_commit() {
+    fn show_dialog_dispatch_enqueues_push_tree_with_on_commit() {
         let mut r = SystemReactionRegistry::new();
         register_system_reaction_primitives(&mut r);
         let queue = SystemCommandQueue::new();
 
         let args = serde_json::json!({ "tree": "pauseMenu", "onCommit": "resumeGame" });
-        assert!(r.dispatch("pushTree", &args, &queue).unwrap());
+        assert!(r.dispatch("showDialog", &args, &queue).unwrap());
         assert_eq!(
             queue.take(),
             vec![SystemReactionCommand::PushTree {
@@ -328,13 +344,49 @@ mod tests {
     }
 
     #[test]
-    fn pop_tree_dispatch_enqueues_command() {
+    fn show_dialog_defaults_absent_on_commit_to_none() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "tree": "hint" });
+        assert!(r.dispatch("showDialog", &args, &queue).unwrap());
+        assert_eq!(
+            queue.take(),
+            vec![SystemReactionCommand::PushTree {
+                tree: "hint".to_string(),
+                on_commit: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn open_menu_dispatch_enqueues_push_tree_without_on_commit() {
+        // `openMenu` is a v1 alias of `showDialog` that never carries onCommit —
+        // a menu has no commit payload, so the alias drops any onCommit key.
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "tree": "mainMenu" });
+        assert!(r.dispatch("openMenu", &args, &queue).unwrap());
+        assert_eq!(
+            queue.take(),
+            vec![SystemReactionCommand::PushTree {
+                tree: "mainMenu".to_string(),
+                on_commit: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn close_dialog_dispatch_enqueues_pop_tree() {
         let mut r = SystemReactionRegistry::new();
         register_system_reaction_primitives(&mut r);
         let queue = SystemCommandQueue::new();
 
         assert!(
-            r.dispatch("popTree", &serde_json::Value::Null, &queue)
+            r.dispatch("closeDialog", &serde_json::json!({}), &queue)
                 .unwrap()
         );
         assert_eq!(queue.take(), vec![SystemReactionCommand::PopTree]);

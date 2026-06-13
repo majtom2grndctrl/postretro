@@ -79,7 +79,7 @@ use crate::scripting::reactions::registry::{
     register_fog_reaction_primitives, register_sequenced_fog_primitives,
 };
 use crate::scripting::reactions::system_commands::{
-    SystemReactionRegistry, register_system_reaction_primitives,
+    SystemReactionCommand, SystemReactionRegistry, register_system_reaction_primitives,
 };
 use crate::scripting::runtime::{ReloadSummary, ScriptRuntime, ScriptRuntimeConfig};
 use crate::scripting::sequence::SequencedPrimitiveRegistry;
@@ -366,6 +366,8 @@ fn main() -> Result<()> {
         last_title_update: Instant::now(),
         script_runtime,
         ui_proxy: scripting_systems::ui_proxy::StaticUiProxy::new(script_ctx.clone()),
+        flash_decay: scripting_systems::flash_decay::FlashDecay::new(script_ctx.clone()),
+        warned_no_modal_stack: false,
         script_ctx,
         state_store_lifecycle: StateStoreLifecycle::default(),
         sequence_registry,
@@ -545,6 +547,17 @@ struct App {
     /// real producers land. Flash timer resets on each level load.
     /// See: context/lib/scripting.md §5 for the store contract.
     ui_proxy: scripting_systems::ui_proxy::StaticUiProxy,
+
+    /// App-side flash-decay state for the engine-owned `screen.flash` surface.
+    /// A drained `FlashScreen` system-reaction command starts a flash; this
+    /// writes the decaying RGBA into `screen.flash` each game-logic tick (beside
+    /// `ui_proxy.tick`). Reset on level load. See: context/lib/ui.md §3.
+    flash_decay: scripting_systems::flash_decay::FlashDecay,
+
+    /// Latches once after the first PushTree/PopTree system command is drained
+    /// without a modal-stack consumer (Goal F not landed), so the "no stack"
+    /// warning is logged once rather than every drain. See: scripting.md §10.4.
+    warned_no_modal_stack: bool,
 
     /// Gates the one-time persistence overlay and clean-exit save.
     state_store_lifecycle: StateStoreLifecycle,
@@ -1072,6 +1085,10 @@ impl ApplicationHandler for App {
 
                 if let Some(gp) = &mut self.gamepad_system {
                     gp.update(&mut self.input_system);
+                    // Advance any active rumble's timeout in the input stage and
+                    // stop it once its duration elapses (the rumble started by a
+                    // drained `Rumble` command on a prior frame).
+                    gp.tick_rumble(frame_dt);
                 }
 
                 // drain_look_inputs() must precede snapshot(); both touch
@@ -1259,10 +1276,10 @@ impl ApplicationHandler for App {
                 // event drain so commands enqueued by movement/weapon/death
                 // reactions (and, later, crossing watchers) are taken in one
                 // batch. The typed queue keeps audio/input/UI services out of
-                // the scripting surface; consumers land in Task 4 / Goal F, so
-                // for now the drain logs each command. See: scripting.md §10.4.
+                // the scripting surface; the dispatcher routes each command to
+                // its subsystem consumer. See: scripting.md §10.4.
                 if !self.script_ctx.system_commands.is_empty() {
-                    self.script_ctx.system_commands.drain_to_log();
+                    self.dispatch_system_commands();
                 }
 
                 // Static UI proxy: republish the HUD store slots from
@@ -1272,6 +1289,13 @@ impl ApplicationHandler for App {
                 // `frame_dt` (not wall-clock) so the flash animation is
                 // deterministic. See: context/lib/scripting.md §5.
                 self.ui_proxy.tick(frame_dt);
+                // Flash-decay state writes the engine-owned `screen.flash`
+                // surface at the same game-logic stage as `ui_proxy.tick`, so
+                // the UI snapshot below freezes this frame's flash color. Runs
+                // after the first command drain so a flash started this frame
+                // publishes immediately; the crossing drain below may start
+                // another, decayed starting next frame.
+                self.flash_decay.tick(frame_dt);
 
                 // State-crossing detection (M13 HUD dynamics). Runs AFTER the
                 // frame's slot writes (game logic + `ui_proxy.tick`) settle, so
@@ -1295,7 +1319,7 @@ impl ApplicationHandler for App {
                     );
                 }
                 if !self.script_ctx.system_commands.is_empty() {
-                    self.script_ctx.system_commands.drain_to_log();
+                    self.dispatch_system_commands();
                 }
 
                 // Audio step — third in frame order (Input → Game logic →
@@ -2232,6 +2256,81 @@ impl App {
             .collect()
     }
 
+    /// Drain the system-reaction command queue and route each typed command to
+    /// its subsystem consumer. Runs once per frame after the post-tick event
+    /// drains (and again after the crossing detector fires), so audio / input /
+    /// UI services stay out of the scripting surface — the queue is the seam.
+    /// See: context/lib/scripting.md §10.4.
+    ///
+    /// - `PlaySound` → the M12 audio module `play()` on the named bus (default
+    ///   `sfx`); silent when audio init failed.
+    /// - `Rumble` → gilrs force feedback on the active gamepad; warn-once no-op
+    ///   when force feedback is unavailable.
+    /// - `FlashScreen` → starts the App-side flash-decay state, which writes
+    ///   `screen.flash` each game-logic tick.
+    /// - `PushTree` / `PopTree` → warn-once "no stack" sink until Goal F's modal
+    ///   stack lands; the commands exist, they just warn for now.
+    fn dispatch_system_commands(&mut self) {
+        for command in self.script_ctx.system_commands.take() {
+            match command {
+                SystemReactionCommand::PlaySound { sound, bus } => {
+                    if let Some(audio) = &mut self.audio {
+                        // The reaction surface has no per-voice volume or looping
+                        // yet (deferred); a one-shot on the named bus is the whole
+                        // contract. Default to the SFX bus when none is named.
+                        let bus = bus.unwrap_or_else(|| "sfx".to_string());
+                        // `play` warns-and-drops on an unknown bus or sound, so an
+                        // unregistered sound name never panics.
+                        let _ = audio.play(audio::SoundRequest {
+                            bus,
+                            sound,
+                            looping: false,
+                        });
+                    }
+                    // Audio init failed ⇒ silent (the game runs without sound).
+                }
+                SystemReactionCommand::Rumble {
+                    strong,
+                    weak,
+                    duration_ms,
+                } => {
+                    if let Some(gp) = &mut self.gamepad_system {
+                        gp.rumble(strong, weak, duration_ms);
+                    }
+                    // No gamepad subsystem ⇒ nothing to vibrate.
+                }
+                SystemReactionCommand::FlashScreen { color, duration_ms } => {
+                    self.flash_decay.start(color, duration_ms);
+                }
+                SystemReactionCommand::PushTree { tree, on_commit } => {
+                    // F's modal stack is not landed yet; warn-once so a script
+                    // that opens dialogs is diagnosable without spamming the log.
+                    self.warn_no_modal_stack_once();
+                    log::debug!(
+                        "[Scripting] pushTree('{tree}', onCommit={on_commit:?}) — no modal stack consumer yet"
+                    );
+                }
+                SystemReactionCommand::PopTree => {
+                    self.warn_no_modal_stack_once();
+                    log::debug!("[Scripting] popTree — no modal stack consumer yet");
+                }
+            }
+        }
+    }
+
+    /// Log the "no modal stack" sink warning at most once. The PushTree/PopTree
+    /// commands are real (scripts can enqueue them) but their consumer — Goal F's
+    /// modal stack — has not landed, so the drain warns once and discards them.
+    fn warn_no_modal_stack_once(&mut self) {
+        if !self.warned_no_modal_stack {
+            log::warn!(
+                "[Scripting] UI-stack reactions (showDialog/openMenu/closeDialog) enqueue commands, \
+                 but the modal stack is not landed yet — ignoring until Goal F"
+            );
+            self.warned_no_modal_stack = true;
+        }
+    }
+
     /// Install a delivered level payload on the main thread: GPU texture
     /// upload (from baked `.prm` mip sidecars), UV normalization, GPU geometry
     /// upload, bridge / fog / collision populate, classname dispatch, data
@@ -2253,6 +2352,9 @@ impl App {
         // Restart the static UI proxy's flash timer so `intro.flashColor`
         // replays its level-load pulse from the start on this fresh level.
         self.ui_proxy.reset_timer();
+        // Clear any in-flight `screen.flash` decay so a flash never bleeds
+        // across a level load.
+        self.flash_decay.reset();
         self.active_wieldable = None;
         self.active_wieldable_descriptor = None;
 
@@ -3378,10 +3480,11 @@ mod tests {
     fn ui_slot_snapshot_clones_present_values_and_skips_valueless_slots() {
         use crate::scripting::slot_table::SlotValue;
 
-        // The default table carries engine `player.*` slots with `None` values.
-        // Setting one slot is enough to assert the boundary contract: the
-        // snapshot clones value-bearing slots and omits value-less ones, so the
-        // renderer reads a present key only when it carries a resolved value.
+        // The default table carries engine `player.*` slots with `None` values
+        // plus the engine-owned `screen.flash` surface, which defaults to a
+        // resting transparent value (so it is value-bearing from the start).
+        // Setting one of the value-less slots asserts the boundary contract: the
+        // snapshot clones value-bearing slots and omits value-less ones.
         let mut table = crate::scripting::slot_table::SlotTable::new();
         table
             .get_mut("player.health")
@@ -3395,12 +3498,22 @@ mod tests {
             Some(&SlotValue::Number(75.0)),
             "value-bearing slot is cloned into the snapshot",
         );
-        // Every other default slot starts value-less and must be excluded, so
-        // the only present key is the one we set.
+        // `screen.flash` carries its default transparent value, so it is present.
+        assert_eq!(
+            snapshot.get("screen.flash"),
+            Some(&SlotValue::Array(vec![0.0, 0.0, 0.0, 0.0])),
+            "engine-owned screen.flash defaults to transparent and is cloned",
+        );
+        // `player.ammo` starts value-less and must be excluded, so only the slot
+        // we set plus the always-valued `screen.flash` appear.
+        assert!(
+            snapshot.get("player.ammo").is_none(),
+            "value-less slots are skipped",
+        );
         assert_eq!(
             snapshot.len(),
-            1,
-            "value-less slots are skipped; only the set slot appears",
+            2,
+            "only the set player.health and the default-valued screen.flash appear",
         );
     }
 

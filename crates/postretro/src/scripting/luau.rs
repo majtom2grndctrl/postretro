@@ -93,8 +93,19 @@ const FOG_VOLUMES_LUAU_FIELDS: &[&str] = &[];
 const DATA_SCRIPT_FIELDS: &[&str] = &["defineReaction", "defineEntity"];
 
 /// UI-reactions SDK fields lifted to globals after evaluating
-/// `ui/reactions.luau`.
-const UI_REACTIONS_FIELDS: &[&str] = &["onStateCrossing"];
+/// `ui/reactions.luau`. `onStateCrossing` builds a state-crossing watcher; the
+/// remaining six are system-reaction body constructors (M13 Goal E) that pair
+/// with `defineReaction` to emit `playSound` / `rumble` / `flashScreen` and the
+/// UI-stack (`showDialog` / `openMenu` / `closeDialog`) primitives.
+const UI_REACTIONS_FIELDS: &[&str] = &[
+    "onStateCrossing",
+    "playSound",
+    "rumble",
+    "flashScreen",
+    "showDialog",
+    "openMenu",
+    "closeDialog",
+];
 
 /// Evaluate the Luau SDK prelude in `lua` and promote the return values to
 /// globals. Must be called after primitives are installed and before

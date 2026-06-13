@@ -42,3 +42,88 @@ export function onStateCrossing(
 ): CrossingDescriptor {
   return { slot, ...condition, fire } as CrossingDescriptor;
 }
+
+/**
+ * Play a sound through the M12 audio module. Pure — returns a primitive
+ * reaction body, no engine side effect. Pass the result as the descriptor of
+ * `defineReaction("name", playSound(...))`. `sound` is an audio asset id; the
+ * optional `bus` routes to a named mixer bus (omitted when undefined, falling
+ * back to the engine's default bus).
+ */
+export function playSound(
+  sound: string,
+  bus?: string,
+): import("../data_script").PrimitiveReactionDescriptor {
+  const args: { sound: string; bus?: string } = { sound };
+  if (bus !== undefined) args.bus = bus;
+  return { primitive: "playSound", args };
+}
+
+/**
+ * Drive gamepad force feedback through gilrs. Pure — returns a primitive
+ * reaction body, no engine side effect. `strong` and the optional `weak`
+ * (omitted when undefined) are 0–1 motor intensities; `durationMs` is the
+ * rumble length in milliseconds. A warn-once no-op on hardware without force
+ * feedback.
+ */
+export function rumble(
+  strong: number,
+  durationMs: number,
+  weak?: number,
+): import("../data_script").PrimitiveReactionDescriptor {
+  const args: { strong: number; weak?: number; durationMs: number } = {
+    strong,
+    durationMs,
+  };
+  if (weak !== undefined) args.weak = weak;
+  return { primitive: "rumble", args };
+}
+
+/**
+ * Flash the screen by writing the engine-owned `screen.flash` RGBA slot, which
+ * decays back to transparent. Pure — returns a primitive reaction body, no
+ * engine side effect. `color` is an `[r, g, b, a]` tuple (0–1); `durationMs`
+ * is the decay time in milliseconds.
+ */
+export function flashScreen(
+  color: [number, number, number, number],
+  durationMs: number,
+): import("../data_script").PrimitiveReactionDescriptor {
+  return { primitive: "flashScreen", args: { color, durationMs } };
+}
+
+/**
+ * Push a dialog UI tree onto the modal stack. Pure — returns a primitive
+ * reaction body, no engine side effect. `tree` names the UI tree to show; the
+ * optional `onCommit` (omitted when undefined) names a reaction fired when the
+ * dialog commits. Warn-once "no stack" until Goal F's modal stack lands.
+ */
+export function showDialog(
+  tree: string,
+  onCommit?: string,
+): import("../data_script").PrimitiveReactionDescriptor {
+  const args: { tree: string; onCommit?: string } = { tree };
+  if (onCommit !== undefined) args.onCommit = onCommit;
+  return { primitive: "showDialog", args };
+}
+
+/**
+ * Push a menu UI tree onto the modal stack. Pure — returns a primitive
+ * reaction body, no engine side effect. A v1 alias of `showDialog` (identical
+ * push behavior) without the `onCommit` hook. Warn-once "no stack" until
+ * Goal F's modal stack lands.
+ */
+export function openMenu(
+  tree: string,
+): import("../data_script").PrimitiveReactionDescriptor {
+  return { primitive: "openMenu", args: { tree } };
+}
+
+/**
+ * Pop the top UI tree off the modal stack. Pure — returns a primitive reaction
+ * body, no engine side effect. Warn-once "no stack" until Goal F's modal stack
+ * lands.
+ */
+export function closeDialog(): import("../data_script").PrimitiveReactionDescriptor {
+  return { primitive: "closeDialog", args: {} };
+}

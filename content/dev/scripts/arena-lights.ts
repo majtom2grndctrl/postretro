@@ -1,6 +1,9 @@
 import {
   type NamedReactionDescriptor,
   defineReaction,
+  flashScreen,
+  onStateCrossing,
+  playSound,
   world,
 } from "postretro";
 
@@ -132,5 +135,24 @@ export function setupLevel(_ctx: unknown) {
     }
   }
 
-  return { reactions };
+  // M13 Goal E demo: HUD reacts to game state. When the authoritative
+  // `player.health` slot crosses below 20% of its 100 HP max, fire a red
+  // screen flash (engine-decayed `screen.flash` surface) and a one-shot alert
+  // sound on the SFX bus. The same 20% threshold drives the HUD health bar's
+  // critical (red) styleRanges band — the bar shows the band, the crossing
+  // fires the flash + sound. `flashScreen`/`playSound` are system reactions
+  // (no entity tag); they enqueue typed commands the app drains each frame.
+  reactions.push(
+    defineReaction("lowHealthFlash", flashScreen([1.0, 0.0, 0.0, 0.5], 250)),
+    defineReaction("lowHealthAlert", playSound("sfx/test_tone", "sfx")),
+  );
+
+  const crossings = [
+    onStateCrossing("player.health", { below: 20, max: 100 }, [
+      "lowHealthFlash",
+      "lowHealthAlert",
+    ]),
+  ];
+
+  return { reactions, crossings };
 }

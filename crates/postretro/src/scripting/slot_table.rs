@@ -143,6 +143,9 @@ impl Default for SlotTable {
             .insert_namespace("player", engine_player_slots())
             .expect("built-in player store schema must be valid");
         table
+            .insert_namespace("screen", engine_screen_slots())
+            .expect("built-in screen store schema must be valid");
+        table
     }
 }
 
@@ -376,6 +379,27 @@ fn namespaces_overlap(left: &str, right: &str) -> bool {
             .is_some_and(|suffix| suffix.starts_with('.'))
 }
 
+/// Engine-owned UI surface slots. `screen.flash` is the engine-decayed
+/// full-screen flash surface (linear RGBA `[r, g, b, a]`): the App-side
+/// flash-decay state writes it each tick via the engine write path (bypassing
+/// readonly) from `FlashScreen` commands, decaying to transparent; a full-screen
+/// panel binds it. Readonly to scripts — a later wave (post-UI effects, SE)
+/// consumes the same published slot. Default transparent so the panel renders
+/// nothing until a flash fires. See: context/lib/ui.md §3.
+fn engine_screen_slots() -> Vec<(String, SlotRecord)> {
+    vec![(
+        "flash".to_string(),
+        SlotRecord::new(SlotSchema {
+            slot_type: SlotType::Array,
+            default: Some(SlotValue::Array(vec![0.0, 0.0, 0.0, 0.0])),
+            range: None,
+            persist: false,
+            readonly: true,
+            ownership: SlotOwnership::Engine,
+        }),
+    )]
+}
+
 fn engine_player_slots() -> Vec<(String, SlotRecord)> {
     ["health", "ammo"]
         .into_iter()
@@ -451,6 +475,22 @@ mod tests {
             assert_eq!(slot.schema.default, None);
             assert_eq!(slot.value, None);
         }
+    }
+
+    #[test]
+    fn new_registers_engine_screen_flash_slot() {
+        // `screen.flash` is the engine-owned, engine-decayed flash surface: a
+        // readonly (to scripts) Array slot defaulting to transparent so the
+        // bound full-screen panel renders nothing until a flash fires.
+        let table = SlotTable::new();
+        let slot = table
+            .get("screen.flash")
+            .expect("engine screen.flash slot exists");
+        assert_eq!(slot.schema.slot_type, SlotType::Array);
+        assert_eq!(slot.schema.ownership, SlotOwnership::Engine);
+        assert!(slot.schema.readonly);
+        assert!(!slot.schema.persist);
+        assert_eq!(slot.value, Some(SlotValue::Array(vec![0.0, 0.0, 0.0, 0.0])));
     }
 
     #[test]

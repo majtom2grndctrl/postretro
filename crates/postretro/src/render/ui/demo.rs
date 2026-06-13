@@ -20,6 +20,7 @@ use super::descriptor::{
     PanelWidget, SpacingValue, TextBind, TextTween, TextWidget, Widget,
 };
 use super::layout::Anchor;
+use super::style_ranges::{StyleEntry, StyleRanges};
 
 /// HUD text color token. The readouts (`player.health` / `player.ammo`) show a
 /// nominal at-rest state, so the `ok` token (the theme's green) reads as a
@@ -46,6 +47,42 @@ const FLASH_FALLBACK_FILL: [f32; 4] = [0.0, 0.65, 0.75, 1.0];
 /// cell in both axes, so the panel block reads as a visible swatch the height of
 /// the label row.
 const SWATCH_LABEL: &str = "FLASH";
+
+/// The `screen.flash` swatch's label. The engine-owned `screen.flash` surface
+/// is the published flash slot a drained `flashScreen` system reaction feeds
+/// (via the App-side flash-decay state, decaying to transparent). The demo
+/// binds it on a panel here to render the decay end-to-end. Making the flash
+/// literally cover the screen is the post-UI-effects (SE) compositor wave's job;
+/// this demo proves the bind + decay seam, not the full-screen composite.
+const SCREEN_FLASH_LABEL: &str = "SCREEN.FLASH";
+
+/// Fallback fill for the `screen.flash` swatch before the first decay write —
+/// transparent, matching the slot's resting value (the swatch reads as nothing
+/// at rest, then shows the decaying flash color when a flashScreen fires).
+const SCREEN_FLASH_FALLBACK_FILL: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
+
+/// The health-bar swatch's label, shown beside the styleRanges-driven block.
+/// Like the flash swatch, a bare bound `panel` has no intrinsic size, so the
+/// bar is paired with this measured label in a stretch grid to draw a visible
+/// block. (`bar` is Goal F; the demo uses `panel` + `styleRanges` instead.)
+const HEALTH_BAR_LABEL: &str = "HEALTH";
+
+/// Fraction-of-max bounds for the health-bar styleRanges bands. The bar is the
+/// FIRST screen consumer of `styleRanges` on a `panel`: `player.health / max`
+/// drives a three-band color (critical red ≤ 20%, warning amber ≤ 50%, ok green
+/// default), demonstrating the continuous value→style map the crossing watcher
+/// also keys off. The 20% bound matches the demo crossing in the dev map's
+/// `setupLevel` (which fires `flashScreen` + `playSound` on the same threshold).
+const HEALTH_CRITICAL_UP_TO: f32 = 0.2;
+const HEALTH_WARNING_UP_TO: f32 = 0.5;
+
+/// Max health the bar normalizes against (`player.health / max`). Matches the
+/// dev pawn's authored 100 HP ceiling.
+const HEALTH_BAR_MAX: f32 = 100.0;
+
+/// Fallback fill for the health bar before the first `player.health` write or a
+/// no-match value — the `ok` green endpoint so the bar reads healthy at rest.
+const HEALTH_BAR_FALLBACK_FILL: [f32; 4] = [0.0, 0.85, 0.35, 1.0];
 
 /// Vertical gap between the HUD rows (logical-reference px).
 const ROW_GAP: f32 = 10.0;
@@ -154,15 +191,104 @@ pub(crate) fn build_demo_descriptor() -> AnchoredTree {
         children: vec![swatch_panel, swatch_label],
     });
 
-    // Bottom-left HUD column: health over ammo over the flash swatch, padded in
-    // from the anchored corner.
+    // Health bar: a `panel` bound to the numeric `player.health` slot with a
+    // three-band `styleRanges` map driving its color (critical/warning/ok). The
+    // panel's `bind` slot is a NUMBER slot (not the length-4 fill array) — the
+    // styleRanges value path; the band color overrides the literal `fill`. A
+    // styleRanges panel demonstrates Goal E's continuous value→style map without
+    // the Goal-F `bar` widget. Paired with a measured label in a stretch grid so
+    // the intrinsically-sizeless panel draws a visible block.
+    let health_bar_panel = Widget::Panel(PanelWidget {
+        fill: ColorValue::Literal(HEALTH_BAR_FALLBACK_FILL),
+        border: None,
+        bind: Some(PanelBind {
+            // No tween: the band color steps at each threshold (the styleRanges
+            // value is the raw numeric slot, distinct from a fill-array ease).
+            slot: "player.health".to_string(),
+            tween: None,
+        }),
+        style_ranges: Some(StyleRanges {
+            max: HEALTH_BAR_MAX,
+            entries: vec![
+                StyleEntry {
+                    up_to: Some(HEALTH_CRITICAL_UP_TO),
+                    color: Some(ColorValue::Token("critical".into())),
+                    pulse: None,
+                    flash: None,
+                },
+                StyleEntry {
+                    up_to: Some(HEALTH_WARNING_UP_TO),
+                    color: Some(ColorValue::Token("warning".into())),
+                    pulse: None,
+                    flash: None,
+                },
+                StyleEntry {
+                    up_to: None,
+                    color: Some(ColorValue::Token("ok".into())),
+                    pulse: None,
+                    flash: None,
+                },
+            ],
+        }),
+    });
+    let health_bar_label = Widget::Text(TextWidget {
+        content: HEALTH_BAR_LABEL.to_string(),
+        font_size: HUD_FONT_SIZE,
+        color: ColorValue::Token(HUD_TEXT_COLOR_TOKEN.into()),
+        font: Some("mono".into()),
+        bind: None,
+        style_ranges: None,
+    });
+    let health_bar = Widget::Grid(GridWidget {
+        gap: SpacingValue::Literal(SWATCH_GAP),
+        padding: SpacingValue::Literal(0.0),
+        align: Align::Stretch,
+        cols: 2,
+        children: vec![health_bar_panel, health_bar_label],
+    });
+
+    // `screen.flash` swatch: a panel bound to the engine-owned `screen.flash`
+    // surface, rendering the flash-decay state's decaying RGBA. Paired with a
+    // label in a stretch grid for the same sizing reason as the other swatches.
+    let screen_flash_panel = Widget::Panel(PanelWidget {
+        fill: ColorValue::Literal(SCREEN_FLASH_FALLBACK_FILL),
+        border: None,
+        bind: Some(PanelBind {
+            // No tween: the App-side decay already smooths the alpha each tick,
+            // so the panel renders the decayed value directly.
+            slot: "screen.flash".to_string(),
+            tween: None,
+        }),
+        style_ranges: None,
+    });
+    let screen_flash_label = Widget::Text(TextWidget {
+        content: SCREEN_FLASH_LABEL.to_string(),
+        font_size: HUD_FONT_SIZE,
+        color: ColorValue::Token(HUD_TEXT_COLOR_TOKEN.into()),
+        font: Some("mono".into()),
+        bind: None,
+        style_ranges: None,
+    });
+    let screen_flash = Widget::Grid(GridWidget {
+        gap: SpacingValue::Literal(SWATCH_GAP),
+        padding: SpacingValue::Literal(0.0),
+        align: Align::Stretch,
+        cols: 2,
+        children: vec![screen_flash_panel, screen_flash_label],
+    });
+
+    // Bottom-left HUD column: health readout, ammo, the flash swatch, then the
+    // styleRanges health bar, then the `screen.flash` swatch, padded in from the
+    // anchored corner. The `intro.flashColor` swatch stays the first-emitted quad
+    // (the gate tests read `quads[0]` as that swatch); the bar and screen-flash
+    // quads follow it.
     let root = Widget::VStack(ContainerWidget {
         gap: SpacingValue::Literal(ROW_GAP),
         padding: SpacingValue::Literal(HUD_PADDING),
         align: Align::Start,
         fill: None,
         border: None,
-        children: vec![health, ammo, swatch],
+        children: vec![health, ammo, swatch, health_bar, screen_flash],
     });
 
     AnchoredTree {
@@ -185,8 +311,8 @@ mod tests {
         let Widget::VStack(col) = &tree.root else {
             panic!("demo root is a vstack column");
         };
-        // health, ammo, swatch container
-        assert_eq!(col.children.len(), 3, "three HUD rows");
+        // health, ammo, flash swatch, health bar (styleRanges), screen.flash swatch
+        assert_eq!(col.children.len(), 5, "five HUD rows");
 
         let Widget::Text(health) = &col.children[0] else {
             panic!("first row is the health text");
@@ -247,6 +373,64 @@ mod tests {
                 from: None,
             }),
             "swatch panel carries the toggle-smoothing tween (no `from`)",
+        );
+    }
+
+    /// The styleRanges health bar (the M13 Goal E demo bar): a `panel` bound to
+    /// the numeric `player.health` slot carrying a three-band styleRanges map.
+    /// This is the fourth HUD row (after the flash swatch) so the swatch stays
+    /// the first-emitted quad for the gate tests.
+    #[test]
+    fn demo_descriptor_carries_a_styleranges_health_bar() {
+        let tree = build_demo_descriptor();
+        let Widget::VStack(col) = &tree.root else {
+            panic!("demo root is a vstack column");
+        };
+        let Widget::Grid(bar) = &col.children[3] else {
+            panic!("fourth row is the health-bar grid");
+        };
+        let Widget::Panel(bar_panel) = &bar.children[0] else {
+            panic!("health-bar grid's first cell is the bound bar panel");
+        };
+        assert_eq!(
+            bar_panel.bind.as_ref().map(|b| b.slot.as_str()),
+            Some("player.health"),
+            "health bar binds the numeric player.health slot",
+        );
+        let ranges = bar_panel
+            .style_ranges
+            .as_ref()
+            .expect("health bar carries a styleRanges map");
+        assert_eq!(ranges.max, HEALTH_BAR_MAX);
+        assert_eq!(ranges.entries.len(), 3, "critical / warning / ok bands");
+        assert_eq!(ranges.entries[0].up_to, Some(HEALTH_CRITICAL_UP_TO));
+        assert_eq!(ranges.entries[1].up_to, Some(HEALTH_WARNING_UP_TO));
+        assert_eq!(ranges.entries[2].up_to, None, "ok is the trailing default");
+    }
+
+    /// The `screen.flash` swatch (fifth HUD row): a panel bound to the engine-
+    /// owned `screen.flash` surface, rendering the flash-decay state's output.
+    #[test]
+    fn demo_descriptor_binds_screen_flash_surface() {
+        let tree = build_demo_descriptor();
+        let Widget::VStack(col) = &tree.root else {
+            panic!("demo root is a vstack column");
+        };
+        let Widget::Grid(grid) = &col.children[4] else {
+            panic!("fifth row is the screen.flash grid");
+        };
+        let Widget::Panel(panel) = &grid.children[0] else {
+            panic!("screen.flash grid's first cell is the bound panel");
+        };
+        assert_eq!(
+            panel.bind.as_ref().map(|b| b.slot.as_str()),
+            Some("screen.flash"),
+            "the panel binds the engine-owned screen.flash surface",
+        );
+        assert_eq!(
+            panel.fill,
+            ColorValue::Literal(SCREEN_FLASH_FALLBACK_FILL),
+            "screen.flash swatch falls back to transparent at rest",
         );
     }
 }

@@ -28,6 +28,16 @@ export type CrossingDescriptor = {
   fire: {string},
 }
 
+--- Primitive reaction body produced by the system-reaction constructors below.
+--- Mirrors `data_script.luau`'s `PrimitiveReactionDescriptor`; redeclared here
+--- to keep this module self-contained (the Luau prelude has no module loader).
+export type PrimitiveReactionDescriptor = {
+  primitive: string,
+  tag: string?,
+  args: { [string]: any }?,
+  onComplete: string?,
+}
+
 local UiReactionsSdk = {}
 
 --- Build a state-crossing watcher. Pure: returns a plain table, does not
@@ -48,6 +58,66 @@ function UiReactionsSdk.onStateCrossing(
     max = condition.max,
     fire = fire,
   }
+end
+
+--- Play a sound through the M12 audio module. Pure: returns a primitive
+--- reaction body, no engine side effect. Pass the result as the descriptor of
+--- `defineReaction("name", playSound(...))`. `sound` is an audio asset id; the
+--- optional `bus` routes to a named mixer bus (omitted when nil).
+function UiReactionsSdk.playSound(sound: string, bus: string?): PrimitiveReactionDescriptor
+  local args: { [string]: any } = { sound = sound }
+  if bus ~= nil then
+    args.bus = bus
+  end
+  return { primitive = "playSound", args = args }
+end
+
+--- Drive gamepad force feedback through gilrs. Pure: returns a primitive
+--- reaction body, no engine side effect. `strong` and the optional `weak`
+--- (omitted when nil) are 0-1 motor intensities; `durationMs` is the rumble
+--- length in milliseconds. A warn-once no-op when force feedback is
+--- unsupported.
+function UiReactionsSdk.rumble(strong: number, durationMs: number, weak: number?): PrimitiveReactionDescriptor
+  local args: { [string]: any } = { strong = strong, durationMs = durationMs }
+  if weak ~= nil then
+    args.weak = weak
+  end
+  return { primitive = "rumble", args = args }
+end
+
+--- Flash the screen by writing the engine-owned `screen.flash` RGBA slot,
+--- which decays back to transparent. Pure: returns a primitive reaction body,
+--- no engine side effect. `color` is an `{r, g, b, a}` tuple (0-1); `durationMs`
+--- is the decay time in milliseconds.
+function UiReactionsSdk.flashScreen(color: {number}, durationMs: number): PrimitiveReactionDescriptor
+  return { primitive = "flashScreen", args = { color = color, durationMs = durationMs } }
+end
+
+--- Push a dialog UI tree onto the modal stack. Pure: returns a primitive
+--- reaction body, no engine side effect. `tree` names the UI tree to show; the
+--- optional `onCommit` (omitted when nil) names a reaction fired when the
+--- dialog commits. Warn-once "no stack" until Goal F's modal stack lands.
+function UiReactionsSdk.showDialog(tree: string, onCommit: string?): PrimitiveReactionDescriptor
+  local args: { [string]: any } = { tree = tree }
+  if onCommit ~= nil then
+    args.onCommit = onCommit
+  end
+  return { primitive = "showDialog", args = args }
+end
+
+--- Push a menu UI tree onto the modal stack. Pure: returns a primitive
+--- reaction body, no engine side effect. A v1 alias of `showDialog` (identical
+--- push behavior) without the `onCommit` hook. Warn-once "no stack" until
+--- Goal F's modal stack lands.
+function UiReactionsSdk.openMenu(tree: string): PrimitiveReactionDescriptor
+  return { primitive = "openMenu", args = { tree = tree } }
+end
+
+--- Pop the top UI tree off the modal stack. Pure: returns a primitive reaction
+--- body, no engine side effect. Warn-once "no stack" until Goal F's modal
+--- stack lands.
+function UiReactionsSdk.closeDialog(): PrimitiveReactionDescriptor
+  return { primitive = "closeDialog", args = {} }
 end
 
 return UiReactionsSdk

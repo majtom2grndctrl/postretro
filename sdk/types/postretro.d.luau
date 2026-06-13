@@ -721,6 +721,41 @@ declare function onStateCrossing(
   fire: {string}
 ): CrossingDescriptor
 
+--- System-reaction body: play `sound` through the M12 audio module on the
+--- optional named `bus` (omitted when nil -> engine default bus). Pure:
+--- returns a `PrimitiveReactionDescriptor`, no FFI. Pass to
+--- `defineReaction("name", playSound(...))`.
+declare function playSound(sound: string, bus: string?): PrimitiveReactionDescriptor
+
+--- System-reaction body: drive gilrs gamepad force feedback. `strong` and the
+--- optional `weak` (omitted when nil) are 0-1 motor intensities; `durationMs`
+--- is the rumble length. Warn-once no-op without force-feedback hardware.
+--- Pure: returns a `PrimitiveReactionDescriptor`, no FFI.
+declare function rumble(strong: number, durationMs: number, weak: number?): PrimitiveReactionDescriptor
+
+--- System-reaction body: flash the screen by writing the engine-owned
+--- `screen.flash` RGBA slot, which decays to transparent. `color` is
+--- `{r, g, b, a}` (0-1); `durationMs` is the decay time. Pure: returns a
+--- `PrimitiveReactionDescriptor`, no FFI.
+declare function flashScreen(color: {number}, durationMs: number): PrimitiveReactionDescriptor
+
+--- System-reaction body: push the dialog UI tree `tree` onto the modal stack,
+--- with an optional `onCommit` reaction (omitted when nil). Warn-once
+--- "no stack" until Goal F's modal stack lands. Pure: returns a
+--- `PrimitiveReactionDescriptor`, no FFI.
+declare function showDialog(tree: string, onCommit: string?): PrimitiveReactionDescriptor
+
+--- System-reaction body: push the menu UI tree `tree` onto the modal stack. A
+--- v1 alias of `showDialog` (identical push behavior) without `onCommit`.
+--- Warn-once "no stack" until Goal F's modal stack lands. Pure: returns a
+--- `PrimitiveReactionDescriptor`, no FFI.
+declare function openMenu(tree: string): PrimitiveReactionDescriptor
+
+--- System-reaction body: pop the top UI tree off the modal stack. Warn-once
+--- "no stack" until Goal F's modal stack lands. Pure: returns a
+--- `PrimitiveReactionDescriptor`, no FFI.
+declare function closeDialog(): PrimitiveReactionDescriptor
+
 -- ---------------------------------------------------------------------------
 -- Runtime-value vocabulary — the typed command buffer (scripting.md §11). The
 -- `runtime.*` builders assemble these node tables as plain data; constructing a

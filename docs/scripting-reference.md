@@ -663,6 +663,63 @@ walkthrough](../content/dev/maps/combat-demo.README.md).
 
 ---
 
+## System reactions
+
+System reactions are the HUD-dynamics half of the reaction surface (M13 Goal E).
+Unlike the tag-targeted primitives above, they carry **no `tag`**: they touch no
+entities. Instead each enqueues a typed engine command — audio, force feedback, a
+screen flash, or a UI-stack push/pop. The SDK exposes them as pure body builders
+that pair with `defineReaction`; the builder returns a `PrimitiveReactionDescriptor`
+and has no FFI side effect (the boundary is the `return`). Optional arguments are
+omitted from the emitted `args` entirely when not supplied — they are never sent as
+`undefined`/`nil`.
+
+| Helper | Emitted body | Notes |
+|--------|--------------|-------|
+| `playSound(sound, bus?)` | `{ primitive: "playSound", args: { sound, bus? } }` | Routes to the M12 audio module on the optional named mixer `bus` (engine default bus when omitted). |
+| `rumble(strong, durationMs, weak?)` | `{ primitive: "rumble", args: { strong, weak?, durationMs } }` | Drives gilrs gamepad force feedback. `strong`/optional `weak` are 0–1 motor intensities; `durationMs` is the rumble length. Warn-once no-op when force feedback is unsupported. |
+| `flashScreen(color, durationMs)` | `{ primitive: "flashScreen", args: { color, durationMs } }` | Writes the engine-owned `screen.flash` RGBA slot, which decays back to transparent. `color` is `[r, g, b, a]` (0–1); `durationMs` is the decay time. |
+| `showDialog(tree, onCommit?)` | `{ primitive: "showDialog", args: { tree, onCommit? } }` | Pushes the dialog UI `tree` onto the modal stack; optional `onCommit` names a reaction fired on commit. |
+| `openMenu(tree)` | `{ primitive: "openMenu", args: { tree } }` | A v1 alias of `showDialog` (identical push behavior) without the `onCommit` hook. |
+| `closeDialog()` | `{ primitive: "closeDialog", args: {} }` | Pops the top UI tree off the modal stack. |
+
+The three UI-stack helpers (`showDialog` / `openMenu` / `closeDialog`) are v1
+placeholders: `showDialog` and `openMenu` perform the identical `PushTree`
+operation (only `showDialog` carries the optional `onCommit`), and `closeDialog`
+pops. Until Goal F's modal stack lands they **warn once ("no stack") and no-op**.
+
+### Firing system reactions on a state crossing
+
+`onStateCrossing(slot, condition, fire)` is the watcher that drives system
+reactions from live state. It is a pure builder — place its result in
+`setupLevel`'s returned `crossings` array. The engine watches `slot` after each
+frame's slot writes and, on a crossing in the condition's direction (from
+at-or-past the threshold to across it), fires every named reaction in `fire`
+exactly once; it re-arms only after a crossing back. A registration against a
+non-Number slot warns and is skipped at load.
+
+The condition is `{ below: number, max?: number }` or `{ above: number, max?: number }`;
+`max` is the denominator the threshold is a fraction of (`threshold / max` vs
+`value / max`), defaulting to `1.0` for a raw comparison.
+
+The canonical HUD-dynamics pattern — flash red when health drops below 20%:
+
+```typescript
+export function setupLevel(): LevelManifest {
+  return {
+    reactions: [
+      defineReaction("lowHealth", flashScreen([1, 0, 0, 0.5], 250)),
+    ],
+    crossings: [
+      // health is 0–100; cross below 20% of `max` fires "lowHealth" once.
+      onStateCrossing("player.health", { below: 20, max: 100 }, ["lowHealth"]),
+    ],
+  };
+}
+```
+
+---
+
 ## Constraints and errors
 
 | Situation | Result |

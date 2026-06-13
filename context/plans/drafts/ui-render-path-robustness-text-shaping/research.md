@@ -88,6 +88,8 @@ clean-line short-circuit keeps even a forced re-measure cheap. This is the unify
 target; the seam is the same string flowing to both consumers, so one buffer
 per node is the natural shared home.
 
+One reconciliation the unify design must handle: the measure seam shapes at logical-reference px (the caller passes `measure_run` the un-device-scaled size — see text.rs), while the draw seam shapes `UiText` at `font_size * scale` (device px). A single shared buffer cannot serve both at one size unmodified — either shape at device size and divide back for the measure result, or treat a device-scale change as a re-shape trigger for the measure buffer too. This strengthens the device-scale invalidation argument above.
+
 ### Landing threshold
 
 Land the rewrite only when one of these crosses — otherwise defer (design +

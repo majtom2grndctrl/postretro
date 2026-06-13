@@ -766,8 +766,9 @@ mod tests {
         );
     }
 
-    /// End-to-end gamepad navigability of the pause menu (the 🔴 fix): the root's
-    /// linear focus policy must open a `FocusGroup` so directional nav moves focus
+    /// End-to-end gamepad navigability of the pause menu (regression fix for the
+    /// pause-menu gamepad-nav review finding): the root's linear focus policy must
+    /// open a `FocusGroup` so directional nav moves focus
     /// between the interactive widgets. Builds the descriptor, exports its focus
     /// rects through the SAME path the renderer→focus-engine seam uses
     /// (`UiTree::export_focus_rects`), then drives `UiFocusEngine` with `Nav(Down)`

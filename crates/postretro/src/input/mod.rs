@@ -316,8 +316,7 @@ impl InputSystem {
     /// re-emit as `LookYaw` / `LookPitch`.
     ///
     /// Mouse displacement is refreshed from `mouse_delta`, copied out, and
-    /// cleared so a later `snapshot()` in the same frame will not re-emit
-    /// `Displacement`-sourced `LookYaw` / `LookPitch` entries. Gamepad stick
+    /// cleared. Gamepad stick
     /// state in `gamepad_axes` is deliberately left intact — stick deflection
     /// is persistent, not evanescent, and a subsequent `snapshot()` will still
     /// see it. The render loop does not read look axes from `snapshot()`, so

@@ -699,8 +699,8 @@ fn spatial_step(
             Dir::Left => (-dx, dy),
             Dir::Right => (dx, dy),
         };
-        // Guards floating-point ties and excludes candidates exactly level with
-        // the current node on the primary axis (0.5 dp minimum advance).
+        // Guards floating-point ties; a candidate must advance by more than 0.5 dp
+        // on the primary axis (exactly 0.5 is excluded).
         if along <= 0.5 {
             continue;
         }

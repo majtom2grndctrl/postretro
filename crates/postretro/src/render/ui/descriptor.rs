@@ -243,7 +243,8 @@ impl AnchoredTree {
 /// Internally-tagged serde requires struct variants (not tuple variants): the
 /// tag is read by buffering the object through `serde_json::Value`, which a
 /// tuple variant cannot map onto. Container kinds (`vstack`/`hstack`/`grid`)
-/// carry positional `children`; leaf kinds (`text`/`panel`/`image`/`spacer`/`button`/`slider`/`bar`) carry no
+/// carry positional `children`; leaf kinds (`text`/`panel`/`image`/`spacer`/
+/// `button`/`slider`/`bar`) carry no
 /// `children` field. Compare `scripting::data_descriptors::ReactionDescriptor`,
 /// which discriminates by manual key-presence instead — this enum deliberately
 /// uses serde's tag mechanism.

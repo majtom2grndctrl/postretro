@@ -165,7 +165,7 @@ Task 2 (scripting-side) — disjoint files.
 verifies only after F's modal-stack task ships; if E runs first, they land as
 commands with a warn-once "no stack" sink and the AC closes when F lands.
 Coordinate `descriptor.rs` / `tree.rs` edits with F (see
-`drafts/M13--input-breadth/`).
+`ready/M13--input-breadth/`).
 
 ## Rough sketch
 

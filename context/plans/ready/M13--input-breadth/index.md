@@ -42,7 +42,7 @@ reaction sliders require. Realizes `ui-layer.md` §11–§12, §15 (focus model)
 ### Out of scope
 
 - Text entry in any form (`input` widget, IME, caret) — see
-  `drafts/M13--text-entry/` (on-screen keyboard + hardware-key routing).
+  `ready/M13--text-entry/` (on-screen keyboard + hardware-key routing).
 - A drawn (engine-rendered) cursor — OS cursor suffices; revisit with G1.
 - `list` and `viewport` widgets; scrolling.
 - Mouse-driven slider drag (pointer click sets focus; adjustment is

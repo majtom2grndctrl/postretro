@@ -4,13 +4,13 @@
 > grounding + decision context only; it is not a spec. §5's open questions are
 > resolved in the spec. Owner decisions (2026-06): sliders are **in scope**,
 > which puts `setState` in F; text entry is **out of F** — it lands as its own
-> spec (`drafts/M13--text-entry/`): an on-screen keyboard as the gamepad
+> spec (`ready/M13--text-entry/`): an on-screen keyboard as the gamepad
 > accessibility accommodation plus hardware-key routing onto the same
 > text-edit surface, with only IME composition deferred.
 > **Read this when:** drafting or reviewing the Goal F spec (hit-testing, focus,
 > nav intents, hold-to-repeat, input-mode switching, modal stack, gamepad UI nav,
 > button/input activation, `bar` widget).
-> **Wave context:** Goal F and Goal E (`drafts/M13--hud-dynamics/`) are the next
+> **Wave context:** Goal F and Goal E (`ready/M13--hud-dynamics/`) are the next
 > M13 wave — two specs, drafted separately, runnable in one `/orchestrate` wave.
 > See §Cross-spec coordination below for the E/F boundary.
 

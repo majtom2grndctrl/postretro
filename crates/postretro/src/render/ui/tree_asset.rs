@@ -84,11 +84,14 @@ mod tests {
     }
 
     /// The shipped HUD asset deserializes through the standard wire path to a
-    /// well-formed, non-empty tree. JSON is the source of truth for the HUD now
-    /// (no hand-assembled builder remains), so this replaces the Task-1 fixture's
-    /// builder-equality oracle with a load-round-trip check. Anchored off
-    /// `CARGO_MANIFEST_DIR` (the boot loader uses a cwd-relative path; `cargo test`
-    /// runs from the crate dir) — the same precedent the keyboard asset test uses.
+    /// well-formed, non-empty tree. JSON is the source of truth for the HUD now (no
+    /// hand-assembled builder remains), so this is a structural load check, not a
+    /// builder-equality oracle: it proves the asset reaches the registry as a usable
+    /// tree. The exact load-bearing HUD values (slot names, tween durations,
+    /// styleRange thresholds and band tokens) are pinned by `demo`'s tests. Anchored
+    /// off `CARGO_MANIFEST_DIR` (the boot loader uses a cwd-relative path; `cargo
+    /// test` runs from the crate dir) — the same precedent the keyboard asset test
+    /// uses.
     #[test]
     fn hud_asset_loads_to_a_nonempty_tree() {
         use crate::render::ui::descriptor::Widget;
@@ -104,8 +107,10 @@ mod tests {
     }
 
     /// The shipped pause-menu asset deserializes to a well-formed capturing modal.
-    /// Like the HUD test, this is the load-round-trip replacement for the Task-1
-    /// fixture's builder-equality oracle now that JSON is the source of truth.
+    /// Like the HUD test, this is a structural load check now that JSON is the
+    /// source of truth — not a builder-equality oracle. The pause menu's load-
+    /// bearing wiring (captureMode, initialFocus, focus chain, slot binds) is pinned
+    /// by `demo`'s tests.
     #[test]
     fn pause_menu_asset_loads_to_a_capturing_modal() {
         use crate::render::ui::descriptor::CaptureMode;

@@ -76,6 +76,10 @@ mod tests {
     const HEALTH_BAR_MAX: f32 = 100.0;
     const HEALTH_CRITICAL_UP_TO: f32 = 0.2;
     const HEALTH_WARNING_UP_TO: f32 = 0.5;
+    /// The theme color tokens the three health-bar bands carry in `hud.json`.
+    const HEALTH_CRITICAL_COLOR: &str = "critical";
+    const HEALTH_WARNING_COLOR: &str = "warning";
+    const HEALTH_OK_COLOR: &str = "ok";
 
     /// The slider's authored range/step in `pauseMenu.json`.
     const VOLUME_MIN: f32 = 0.0;
@@ -186,6 +190,18 @@ mod tests {
         assert_eq!(ranges.entries[0].up_to, Some(HEALTH_CRITICAL_UP_TO));
         assert_eq!(ranges.entries[1].up_to, Some(HEALTH_WARNING_UP_TO));
         assert_eq!(ranges.entries[2].up_to, None, "ok is the trailing default");
+
+        // Pin the band color tokens too: the thresholds alone are not enough — a
+        // typo in a band's color token (e.g. `"critcal"`) still parses, so the
+        // bands must resolve to the exact theme tokens the HUD intends. Below 20%
+        // is `critical`, below 50% is `warning`, above is `ok`.
+        let band_token = |i: usize| match ranges.entries[i].color.as_ref() {
+            Some(ColorValue::Token(t)) => t.as_str(),
+            other => panic!("band {i} carries a color token, got {other:?}"),
+        };
+        assert_eq!(band_token(0), HEALTH_CRITICAL_COLOR, "critical band token");
+        assert_eq!(band_token(1), HEALTH_WARNING_COLOR, "warning band token");
+        assert_eq!(band_token(2), HEALTH_OK_COLOR, "ok default band token");
     }
 
     /// The pause menu (M13 Goal F, Task 5): a centered capturing modal with a
@@ -219,6 +235,13 @@ mod tests {
             mode.bind.as_ref().map(|b| b.slot.as_str()),
             Some("input.mode"),
             "the readout binds the engine-owned input.mode slot",
+        );
+        // Pin the readout's format too: a typo'd template still parses but renders
+        // the wrong prefix, so the load-bearing `MODE {}` string is asserted.
+        assert_eq!(
+            mode.bind.as_ref().and_then(|b| b.format.as_deref()),
+            Some("MODE {}"),
+            "the input.mode readout formats through `MODE {{}}`",
         );
 
         let Widget::Button(resume) = &col.children[2] else {

@@ -18,17 +18,9 @@
 // instead assert STRUCTURAL ink coverage. S0 and S1 are chosen with deliberately
 // different ink footprints — S0 a short run, S1 a long run — so the lower band's
 // ink mass discriminates "this is S0" from "this is S1" robustly across backends.
-//
-// AC#6 (the discrimination proof): a `#[cfg(test)]` helper replays the historical
-// per-layer loop — two SEPARATE `encode` calls — and shows it clobbers the lower
-// band (the band's ink mass collapses to S1's, failing the S0-not-S1 assertion),
-// while the single-composition path passes. NOTE the Task A debug prepare-guard
-// resets per encode, so it does NOT catch this cross-encode clobber (it only
-// catches a second prepare WITHIN one composition); the READBACK is what catches
-// it. To keep the clobber observable in a debug test build (where each separate
-// encode's lone prepare trips the guard's `<= 1` reset-per-encode, not a panic),
-// the two-encode helper is the documented mechanism and the assertion of interest
-// is the readback band collapse.
+// The `lower < 0.6 * upper` band-ink ratio is the load-bearing discriminator: if
+// the clobber is reintroduced, the lower band picks up S1's heavy ink and the
+// ratio assertion fails.
 //
 // Self-skips when no GPU adapter is present (headless CI) — never fails CI for
 // adapter absence (testing_guide §3).
@@ -190,83 +182,6 @@ fn render_single_composition(ctx: &GpuCtx) -> Readback {
     read_texture_rgba8(ctx, &target, TARGET_W, TARGET_H, encoder)
 }
 
-/// AC#6 — the historical BUG path: drive each layer through its OWN `encode`
-/// call (the pre-Task-A per-layer loop), the only way to reach two glyphon
-/// `prepare`s on the shared renderer. The second encode's `prepare` overwrites
-/// the shared vertex buffer at offset 0, clobbering the first (lower) layer's
-/// glyphs — so the lower band ends up rendering the UPPER layer's text (S1).
-///
-/// The first encode clears to black + draws S0; the second loads (preserving the
-/// surface) + draws S1. Both encodes go into one command buffer per encode, but
-/// the queue-timeline `write_buffer`/`prepare` interplay across the two glyphon
-/// `prepare`s is exactly the historical clobber. The Task A debug prepare-guard
-/// resets at each `encode` entry, so it sees only one `prepare` per encode and
-/// does NOT fire — the readback is what exposes the clobber. We submit each
-/// encode's work via `read_texture_rgba8` semantics by chaining: the first
-/// encode is submitted standalone, the second carries the readback copy.
-fn render_two_separate_encodes(ctx: &GpuCtx) -> Readback {
-    let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-    let mut pass = UiPass::new(&ctx.device, &ctx.queue, format);
-    let (target, view) = make_target(ctx);
-
-    let layers = layout_two_layers(&mut pass);
-    let white = pass.white_bind_group().clone();
-    let images = super::UiImageRegistry::default();
-
-    // Each layer becomes its OWN single-layer composition, encoded separately —
-    // replicating the historical per-layer encode loop. `std::slice::from_ref`
-    // hands each layer's `UiDrawData` to `from_layer_draws` as a 1-element slice.
-    let lower_comp =
-        UiComposition::from_layer_draws(std::slice::from_ref(&layers[0]), &white, &images);
-    let upper_comp =
-        UiComposition::from_layer_draws(std::slice::from_ref(&layers[1]), &white, &images);
-
-    // Encode 1: clear + lower layer (S0). Submitted on its own so its commands
-    // (including its glyphon `prepare`'s vertex-buffer fill) execute before the
-    // second encode's `prepare` overwrites the shared buffer.
-    let mut enc1 = ctx
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("multi_layer_text clobber encode 1 (lower)"),
-        });
-    pass.encode(
-        &ctx.device,
-        &ctx.queue,
-        &mut enc1,
-        &view,
-        [TARGET_W, TARGET_H],
-        wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-        &lower_comp,
-    );
-    ctx.queue.submit(std::iter::once(enc1.finish()));
-
-    // Encode 2: load (preserve the lower layer's pixels) + upper layer (S1). Its
-    // `prepare` overwrites the shared glyphon vertex buffer at offset 0. Because
-    // the lower layer's text draw was already submitted above, the surface holds
-    // S0's pixels in its band — UNLESS the shared-buffer overwrite also corrupts
-    // what the second pass reads while compositing the upper band. The clobber the
-    // historical bug exhibited is that within a SINGLE submitted command buffer the
-    // two prepares collide; replaying it across two submits documents the per-encode
-    // `prepare` boundary the fix removed. The discriminating signal we assert is
-    // the lower band's ink mass relative to the single-composition path.
-    let mut enc2 = ctx
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("multi_layer_text clobber encode 2 (upper)"),
-        });
-    pass.encode(
-        &ctx.device,
-        &ctx.queue,
-        &mut enc2,
-        &view,
-        [TARGET_W, TARGET_H],
-        wgpu::LoadOp::Load,
-        &upper_comp,
-    );
-
-    read_texture_rgba8(ctx, &target, TARGET_W, TARGET_H, enc2)
-}
-
 /// Count "inked" pixels (meaningfully brighter than the black clear) within a
 /// horizontal band `[y0, y1]`. White glyphs over a black clear, so any channel
 /// rising above the threshold marks glyph coverage. This is the structural ink
@@ -329,63 +244,5 @@ fn single_composition_keeps_each_layer_text() {
         "lower band ink ({lower}) is not clearly lighter than upper ({upper}) — \
          the lower layer may have been clobbered with S1's glyphs (S0 should be the \
          short run, far less ink than the long run S1)",
-    );
-}
-
-/// AC#6 discrimination: the two-separate-`encode` path (the historical per-layer
-/// loop) and the single-composition path are the SAME geometry, but only the
-/// single-composition path is guaranteed to keep S0 in the lower band. This test
-/// runs both and asserts the single-composition lower band carries S0's light
-/// ink, demonstrating the assertion in `single_composition_keeps_each_layer_text`
-/// is a real discriminator: were the lower band to pick up S1's heavy ink (the
-/// clobber), the < 0.6*upper assertion above would fail.
-///
-/// Why this is documented as coverage rather than a hard pre/post panic: the
-/// per-encode clobber depends on the backend's queue/vertex-buffer scheduling and
-/// the Task A guard resets per encode, so the two-encode path is exercised to
-/// PROVE the mechanism exists and the single-composition path is the correct one —
-/// the load-bearing guarantee is the single-composition assertion above. We assert
-/// here that the two paths produce a measurably different lower-band signature when
-/// the clobber manifests, and otherwise that both at least render the upper run.
-#[test]
-fn two_encode_loop_is_the_clobber_mechanism_single_composition_is_correct() {
-    let Some(ctx) = try_init_gpu() else {
-        eprintln!("[multi_layer_text_golden_test] skipping: no GPU adapter available");
-        return;
-    };
-
-    // The production path: lower band must be the light S0 signature.
-    let single = render_single_composition(&ctx);
-    let single_lower = band_ink(&single, S0_BAND.0, S0_BAND.1);
-    let single_upper = band_ink(&single, S1_BAND.0, S1_BAND.1);
-    assert!(
-        (single_lower as f32) < (single_upper as f32) * 0.6,
-        "single-composition lower band ({single_lower}) is not the light S0 signature \
-         relative to upper ({single_upper}) — the production path failed to keep S0",
-    );
-
-    // The historical per-layer-loop path. We exercise it to document the
-    // mechanism. The lower band's S0 ink survives ONLY because each encode is
-    // submitted in order here; the load-bearing correctness guarantee is the
-    // single-composition assertion above (and in the sibling test). We assert the
-    // upper run rendered (the path runs end-to-end) and that the lower band, if it
-    // carries heavy (S1-like) ink, would be flagged by the same < 0.6 ratio — i.e.
-    // the ratio assertion is the discriminator that the bug would trip.
-    let looped = render_two_separate_encodes(&ctx);
-    let looped_upper = band_ink(&looped, S1_BAND.0, S1_BAND.1);
-    assert!(
-        looped_upper > 0,
-        "two-encode path rendered no upper text — the clobber harness did not run end-to-end",
-    );
-    let looped_lower = band_ink(&looped, S0_BAND.0, S0_BAND.1);
-    // Discrimination statement: the single-composition lower band is the light S0
-    // signature. The ratio test that protects it (< 0.6 * upper) is exactly what a
-    // clobbered lower band — picking up S1's heavy ink — would violate. Document
-    // the measured lower-band ink of both paths so a regression that reintroduces
-    // the per-layer loop and clobbers the band shows up as the lower band crossing
-    // the ratio threshold.
-    eprintln!(
-        "[multi_layer_text_golden_test] single-composition lower/upper ink = {single_lower}/{single_upper}; \
-         two-encode-loop lower/upper ink = {looped_lower}/{looped_upper}",
     );
 }

@@ -3575,18 +3575,11 @@ impl Renderer {
     }
 
     /// Record the splash through the UI pass into `view`, clearing to black first.
-    /// Builds the splash descriptor (`build_splash_descriptor`) and lays it out
-    /// through `UiTree` (`UiPass::layout_tree`): the tree is nested fill-containers
-    /// (outer border-colored backdrop + inner panel-colored backdrop) above a logo
-    /// `image` node and the version `text`. The oversized background letterbox fill
-    /// is the one quad built outside the tree, drawn first behind everything.
-    ///
-    /// The container backdrops concatenate with the background into the white-texel
-    /// batch; the logo draws as its own image batch resolved through the registry;
-    /// the version line draws as shaped text. `encode` is called unconditionally
-    /// with `LoadOp::Clear(BLACK)`, so on frame 0 (no descriptor installed yet) the
-    /// draw lists are empty and the pass only applies the black clear — preserving
-    /// the boot "frame-0 black" step.
+    /// Calls `build_splash_descriptor` (loads `splash.json`, substitutes the version
+    /// line) and lays the tree out via `UiPass::layout_tree`. The background fill is
+    /// drawn as a separate first quad outside the tree. `encode` is called
+    /// unconditionally with `LoadOp::Clear(BLACK)` — on frame 0 the draw lists are
+    /// empty and the pass only applies the clear.
     fn record_splash_ui(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -5435,9 +5428,9 @@ impl Renderer {
         // with all layers' glyphs concatenated in painter order, sidesteps it.
         let mut layer_draws: Vec<ui::tree::UiDrawData> = Vec::with_capacity(stack.len());
         for (layer, tree) in stack.iter().enumerate() {
-            // The demo gameplay HUD has no `image` nodes, so no image sizes are
-            // threaded; any `image` node would measure to zero. The splash path
-            // supplies the logo size in `record_splash_ui`.
+            // Image sizes are optional for gameplay layers — an `image` node with
+            // no size entry measures to zero. The splash supplies its logo size
+            // separately in `record_splash_ui`.
             // Bound text/panel nodes resolve against the snapshot's slot values
             // (disjoint field borrow from `&mut self.ui`). The cloned `stack`
             // above already released the snapshot, so this borrow is clean.
@@ -5475,12 +5468,6 @@ impl Renderer {
             layer_draws.push(draw);
         }
 
-        // Compose all laid-out layers into one batch list + one text list, in
-        // bottom→top painter order, and record a SINGLE UI pass. Each layer's
-        // quad batch precedes its text in the list, and a later layer's entries
-        // follow an earlier layer's, so painter order (and thus the LoadOp::Load
-        // composite) is preserved within the single pass exactly as the prior
-        // per-layer loop intended — minus the cross-layer text clobber.
         // Fold every laid-out layer into ONE whole-frame composition (bottom→top
         // painter order) and record a SINGLE UI pass. The composition is the unit
         // of encoding — `encode` takes the whole composition, never one layer — so

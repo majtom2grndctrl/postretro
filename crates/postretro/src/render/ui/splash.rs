@@ -1,9 +1,11 @@
-// Splash content descriptor: the hardcoded Rust description of the boot splash,
-// authored in 1280x720 logical-reference space and drawn through the UI pass via
-// the retained descriptor tree (`UiTree`). This is the ONE named seam
-// (`build_splash_descriptor`) built on `AnchoredTree`; script ingestion (G1) will
-// replace the body while keeping the `SplashDescriptor` shape and call sites stable.
-// Fixed Rust content behind this builder — no script ingestion yet.
+// Splash content descriptor for the boot splash, authored in 1280x720
+// logical-reference space and drawn through the UI pass via the retained
+// descriptor tree (`UiTree`). Loads `content/base/ui/splash.json` once via a
+// `LazyLock`, then each call clones the cached tree and substitutes the live
+// `{version}` string; a minimal in-code tree is the fallback when the JSON is
+// absent or malformed. This is the ONE named seam (`build_splash_descriptor`)
+// built on `AnchoredTree`; script ingestion (G1) will replace the body while
+// keeping the `SplashDescriptor` shape and call sites stable.
 // See: context/lib/boot_sequence.md §3a · context/lib/ui.md
 
 use std::path::PathBuf;
@@ -54,25 +56,29 @@ pub(crate) const SPLASH_LOGO_ASSET: &str = "splash/logo";
 /// content. `build_splash_descriptor` finds that node by this exact sentinel
 /// content and substitutes the per-frame `version_line` into it. The sentinel is
 /// the join point (the wire model has no node `id`), and it stays intact in the
-/// cached tree so each frame's clone substitutes against a fresh sentinel. Task
-/// 1's fixture asserts the JSON equals `build_splash_descriptor("{version}")`, so
-/// the sentinel must round-trip when `version_line == "{version}"`.
+/// cached tree so each frame's clone substitutes against a fresh sentinel.
 const VERSION_SENTINEL: &str = "{version}";
 
-/// Engine-shipped splash descriptor path. The runtime load path is the cwd-
-/// relative `content/base/...` convention the splash PNG and keyboard JSON use:
-/// the engine runs from the workspace root, so `content/base/ui/splash.json`
-/// resolves directly. When that cwd-relative path is absent (notably under
-/// `cargo test`, whose working directory is the crate dir, not the workspace
-/// root), fall back to the same `CARGO_MANIFEST_DIR + ../..` workspace anchor the
-/// Task 1 fixture uses, so the engine-shipped asset is still found and the
-/// production builder loads the real tree in tests. The splash ships with the
-/// engine, so it loads from `base` regardless of which mod is active.
+/// Engine-shipped splash descriptor path, relative to the working directory — the
+/// same `content/base/...` convention the splash PNG and keyboard JSON use. The
+/// engine runs from the workspace root, so `content/base/ui/splash.json` resolves
+/// directly; absent, the loader degrades to `fallback_splash_tree`. The splash
+/// ships with the engine, so it loads from `base` regardless of which mod is
+/// active.
+///
+/// In test builds the path is additionally anchored off `CARGO_MANIFEST_DIR`,
+/// because `cargo test` runs from the crate dir where the cwd-relative path does
+/// not resolve — without it the `SPLASH_TREE` LazyLock would load the fallback
+/// under test and the layout assertions would fail. Production never embeds this
+/// build-machine path; the sibling asset loaders gate their manifest anchor the
+/// same way.
+#[cfg(not(test))]
 fn splash_asset_path() -> PathBuf {
-    let runtime = PathBuf::from("content/base/ui/splash.json");
-    if runtime.exists() {
-        return runtime;
-    }
+    PathBuf::from("content/base/ui/splash.json")
+}
+
+#[cfg(test)]
+fn splash_asset_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join("content/base/ui/splash.json")
@@ -98,9 +104,10 @@ pub(crate) fn splash_logo_reference_size(natural_dims: [u32; 2]) -> [f32; 2] {
     [LOGO_REFERENCE_WIDTH, LOGO_REFERENCE_WIDTH / aspect]
 }
 
-/// Hardcoded splash content. Carries the descriptor `AnchoredTree` the renderer
-/// lays out through `UiTree`, the fullscreen background color the caller draws as
-/// the first quad, and the capture/passthrough flag for the input-dispatch seam.
+/// JSON-loaded splash content: carries the descriptor `AnchoredTree` the renderer
+/// lays out through `UiTree`. The fullscreen letterbox fill is drawn separately by
+/// the caller (`background_element`), and the capture/passthrough flag is the free
+/// `splash_capture_mode` — neither lives on this struct.
 ///
 /// This is the seam: built on `AnchoredTree`; script ingestion (G1) will replace
 /// the body while keeping the `SplashDescriptor` shape and call sites stable.
@@ -122,9 +129,8 @@ pub(crate) struct SplashDescriptor {
 ///
 /// The logo `image` node carries only its asset key; its size is content-driven,
 /// resolved from the asset's natural dimensions through the measure seam (the
-/// renderer supplies `splash_logo_reference_size` keyed by `SPLASH_LOGO_ASSET`).
-/// So this builder no longer takes the logo aspect — sizing moved to the
-/// content-driven measure path, matching how text nodes size from shaped glyphs.
+/// renderer supplies `splash_logo_reference_size` keyed by `SPLASH_LOGO_ASSET`),
+/// so the logo sizes from its content like a text node sizes from shaped glyphs.
 pub(crate) fn build_splash_descriptor(version_line: &str) -> SplashDescriptor {
     // Clone the once-loaded cached tree (logo image + version `text` carrying the
     // `{version}` sentinel) and substitute the per-frame version into it. The disk
@@ -282,28 +288,73 @@ mod tests {
         sizes
     }
 
-    /// `content/base/ui/splash.json` deserializes to a descriptor equal to the
-    /// splash builder's output. The oracle is `build_splash_descriptor("{version}")`:
-    /// the JSON carries a `"{version}"` sentinel in the version text node (Task 3
-    /// substitutes the real version at load), so the fixture asserts against that
-    /// sentinel on both sides. The logo `image` node (asset `"splash/logo"`) is
-    /// reproduced alongside the version text. Path anchored to the repo root off
-    /// `CARGO_MANIFEST_DIR` (mirrors the `keyboard_asset` test precedent), NOT
-    /// runtime cwd, so it passes under `cargo test`.
+    /// The authored `content/base/ui/splash.json` carries the structural facts the
+    /// renderer and substitution path depend on: the logo `image` node's asset key,
+    /// the version `text` node's `{version}` sentinel, and the tree's center-anchor
+    /// + passthrough envelope. Deserialized directly through the wire path (not via
+    /// the builder) so the assertions pin the authored layout independently of the
+    /// loader — not a tautology against a tree the builder itself loaded from this
+    /// same file. Path anchored to the repo root off `CARGO_MANIFEST_DIR` (mirrors
+    /// the `keyboard_asset` test precedent), NOT runtime cwd, so it passes under
+    /// `cargo test`.
     #[test]
-    fn splash_json_matches_splash_builder_descriptor_with_version_sentinel() {
+    fn splash_json_carries_logo_asset_version_sentinel_and_envelope() {
+        use crate::render::ui::descriptor::CaptureMode;
+
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .join("content/base/ui/splash.json");
         let bytes = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("fixture '{}' exists: {e}", path.display()));
-        let from_json: AnchoredTree = serde_json::from_str(&bytes)
+        let tree: AnchoredTree = serde_json::from_str(&bytes)
             .unwrap_or_else(|e| panic!("fixture '{}' deserializes: {e}", path.display()));
+
+        // Envelope: the splash centers in the canvas and passes input through (it is
+        // non-interactive), so it never sits as a capturing modal.
         assert_eq!(
-            from_json,
-            *build_splash_descriptor("{version}").tree(),
-            "splash.json equals the builder output for the {{version}} sentinel oracle",
+            tree.anchor,
+            Anchor::Center,
+            "the splash anchors to the canvas center",
         );
+        assert_eq!(
+            tree.capture_mode,
+            CaptureMode::Passthrough,
+            "the splash passes input through (non-interactive)",
+        );
+
+        // The logo image and version text are the two content leaves. Walk the tree
+        // so the assertions hold regardless of how many container layers the authored
+        // layout nests them under.
+        assert!(
+            tree_has_image_asset(&tree.root, SPLASH_LOGO_ASSET),
+            "the logo image node carries the {SPLASH_LOGO_ASSET} asset key",
+        );
+        assert!(
+            tree_has_exact_text(&tree.root, VERSION_SENTINEL),
+            "the version text node carries the {VERSION_SENTINEL} sentinel for substitution",
+        );
+    }
+
+    /// Recursively check the tree for an `image` node with the given asset key.
+    fn tree_has_image_asset(widget: &Widget, asset: &str) -> bool {
+        match widget {
+            Widget::Image(img) => img.asset == asset,
+            Widget::VStack(c) | Widget::HStack(c) => {
+                c.children.iter().any(|w| tree_has_image_asset(w, asset))
+            }
+            _ => false,
+        }
+    }
+
+    /// Recursively check the tree for a `text` node whose content is exactly `text`.
+    fn tree_has_exact_text(widget: &Widget, text: &str) -> bool {
+        match widget {
+            Widget::Text(t) => t.content == text,
+            Widget::VStack(c) | Widget::HStack(c) => {
+                c.children.iter().any(|w| tree_has_exact_text(w, text))
+            }
+            _ => false,
+        }
     }
 
     #[test]

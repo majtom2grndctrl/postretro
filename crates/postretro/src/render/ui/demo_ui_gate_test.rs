@@ -1,11 +1,13 @@
 // Hard-gate CPU assertion for the M13 demo gameplay HUD.
 //
-// `demo::build_demo_descriptor` is the first gameplay UI producer:
-// `main.rs` publishes its `AnchoredTree` on the per-frame read snapshot and the
-// renderer drives it through the retained gameplay `UiTree`
-// (`UiPass::layout_gameplay_tree` → `UiTree::build_draw_data_retained`). These
-// tests drive the REAL demo descriptor (not a hand-built fixture) through that
-// same retained path with a slot-value map, proving the demo wiring end-to-end:
+// The demo HUD's per-frame source of truth is `content/base/ui/hud.json`, loaded
+// at boot via `tree_asset::register_tree_from_disk` and resolved by NAME on the
+// per-frame snapshot (`modal_stack.tree(HUD_NAME)`), then driven through the
+// retained gameplay `UiTree` (`UiPass::layout_gameplay_tree` →
+// `UiTree::build_draw_data_retained`). These tests use
+// `demo::build_demo_descriptor` — a test-only helper that reads the SAME
+// `hud.json` — to drive that retained path end-to-end with a slot-value map,
+// proving the demo wiring through layout:
 //
 //   - Bind resolution: `player.health`/`player.ammo` Number slots resolve into
 //     the formatted text runs ("HP 100" / "AMMO 50") and `intro.flashColor`

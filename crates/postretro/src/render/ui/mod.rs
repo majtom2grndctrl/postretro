@@ -53,9 +53,11 @@ pub(crate) mod modal_stack;
 
 pub(crate) use self::text::UiText;
 
-/// Hardcoded splash content descriptor behind the one named builder seam
-/// (`splash::build_splash_descriptor`). The builder returns an `AnchoredTree` the
-/// renderer lays out via `UiTree`; G1 later swaps the body for script ingestion.
+/// Splash content descriptor loaded from `content/base/ui/splash.json`.
+/// `build_splash_descriptor` clones the once-loaded tree and substitutes the
+/// per-call version line; falls back to a minimal in-code tree when the JSON is
+/// absent or malformed. G1 script-ingestion seam: the body is authored in the
+/// JSON, not in Rust.
 pub(crate) mod splash;
 
 /// Demo gameplay HUD + pause-menu wiring. Both screens are now JSON-authored
@@ -96,11 +98,13 @@ mod splash_golden_test;
 #[cfg(test)]
 mod gameplay_ui_gate_test;
 
-/// Hard-gate CPU assertion for the demo gameplay HUD (`demo::build_demo_descriptor`):
-/// drives the real demo descriptor through the retained gameplay tree and asserts
-/// bind resolution, the appearance-only-vs-content-change relayout split, the
-/// post-settle no-recompute frame, and the subscriber-aware unbound-slot no-op.
-/// Pure CPU — no GPU adapter.
+/// Hard-gate CPU assertion for the demo gameplay HUD. The per-frame source of
+/// truth is `content/base/ui/hud.json` (loaded at boot, resolved by name from
+/// the registry); these tests use `demo::build_demo_descriptor` (test-only —
+/// reads the same JSON) to drive the retained gameplay `UiTree` end-to-end and
+/// assert bind resolution, the appearance-only-vs-content-change relayout split,
+/// the post-settle no-recompute frame, and the subscriber-aware unbound-slot
+/// no-op. Pure CPU — no GPU adapter.
 #[cfg(test)]
 mod demo_ui_gate_test;
 

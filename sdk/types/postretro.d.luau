@@ -745,6 +745,19 @@ declare function flashScreen(color: {number}, durationMs: number): PrimitiveReac
 --- `PrimitiveReactionDescriptor`, no FFI.
 declare function showDialog(tree: string, onCommit: string?): PrimitiveReactionDescriptor
 
+--- The engine-shipped on-screen keyboard's registry name (M13 Text Entry).
+--- `openTextEntry` opens this tree; the engine loads its descriptor from
+--- `content/base/ui/keyboard.json` at boot. Edits the `ui.textEntry` slot.
+declare KEYBOARD_TREE: "keyboard"
+
+--- System-reaction body (M13 Text Entry): open the engine-shipped on-screen
+--- keyboard, a capturing modal that edits the `ui.textEntry` slot. Optional
+--- `onCommit` (omitted when nil) names a reaction fired on commit (the on-screen
+--- `done` key or hardware Enter); `nav.cancel` closes without firing it. The same
+--- `ui.textEntry` slot also receives the hardware-keyboard path's edits. Wraps
+--- `showDialog("keyboard", onCommit)`. Pure: returns a `PrimitiveReactionDescriptor`.
+declare function openTextEntry(onCommit: string?): PrimitiveReactionDescriptor
+
 --- System-reaction body: push the menu UI tree `tree` onto the modal stack. A
 --- v1 alias of `showDialog` (identical push behavior) without `onCommit`.
 --- Warn-once "no stack" until Goal F's modal stack lands. Pure: returns a

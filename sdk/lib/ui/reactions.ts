@@ -108,6 +108,33 @@ export function showDialog(
 }
 
 /**
+ * The engine-shipped on-screen keyboard's registry name. `openTextEntry` opens
+ * this tree; the engine loads its descriptor from `content/base/ui/keyboard.json`
+ * at boot. The keyboard edits the `ui.textEntry` writable String slot.
+ */
+export const KEYBOARD_TREE = "keyboard";
+
+/**
+ * Open the engine-shipped on-screen keyboard for text entry (M13 Text Entry).
+ * Pure — returns a primitive reaction body wrapping `showDialog`. The keyboard is
+ * a capturing modal that edits the `ui.textEntry` slot; bind a `text` widget to
+ * `ui.textEntry` to show the live entry. The optional `onCommit` names a reaction
+ * fired when the player commits (the on-screen `done` key or the hardware Enter
+ * key); `nav.cancel` (Escape / B) closes without firing it.
+ *
+ * This is the canonical opener for the gamepad-accessible text-entry pattern: the
+ * same `ui.textEntry` slot also receives the hardware-keyboard path's edits, so a
+ * field bound to it reflects typing on either input path. Pass the result as the
+ * descriptor of `defineReaction("name", openTextEntry(...))` and reference that
+ * reaction from a `button`'s `onPress`.
+ */
+export function openTextEntry(
+  onCommit?: string,
+): import("../data_script").PrimitiveReactionDescriptor {
+  return showDialog(KEYBOARD_TREE, onCommit);
+}
+
+/**
  * Push a menu UI tree onto the modal stack. Pure — returns a primitive
  * reaction body, no engine side effect. A v1 alias of `showDialog` (identical
  * push behavior) without the `onCommit` hook. Warn-once "no stack" until

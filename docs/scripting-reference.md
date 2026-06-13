@@ -680,6 +680,7 @@ omitted from the emitted `args` entirely when not supplied — they are never se
 | `rumble(strong, durationMs, weak?)` | `{ primitive: "rumble", args: { strong, weak?, durationMs } }` | Drives gilrs gamepad force feedback. `strong`/optional `weak` are 0–1 motor intensities; `durationMs` is the rumble length. Warn-once no-op when force feedback is unsupported. |
 | `flashScreen(color, durationMs)` | `{ primitive: "flashScreen", args: { color, durationMs } }` | Writes the engine-owned `screen.flash` RGBA slot, which decays back to transparent. `color` is `[r, g, b, a]` (0–1); `durationMs` is the decay time. |
 | `showDialog(tree, onCommit?)` | `{ primitive: "showDialog", args: { tree, onCommit? } }` | Pushes the dialog UI `tree` onto the modal stack; optional `onCommit` names a reaction fired on commit. |
+| `openTextEntry(onCommit?)` | `{ primitive: "showDialog", args: { tree: "keyboard", onCommit? } }` | Opens the engine-shipped on-screen keyboard (a capturing modal editing `ui.textEntry`). A `showDialog` wrapper targeting the `keyboard` tree. See the text-entry walkthrough below. |
 | `openMenu(tree)` | `{ primitive: "openMenu", args: { tree } }` | A v1 alias of `showDialog` (identical push behavior) without the `onCommit` hook. |
 | `closeDialog()` | `{ primitive: "closeDialog", args: {} }` | Pops the top UI tree off the modal stack. |
 | `appendText(slot, text)` | `{ primitive: "appendText", args: { slot, text } }` | Appends `text` to the current string value of the writable String slot `slot`. Readonly-gated like `setState`. |
@@ -840,6 +841,63 @@ no write).
 target by default — the shared text-edit surface both the hardware-keyboard path
 and the on-screen-keyboard asset drive. It defaults to an empty string and is a
 valid `setState`/text-edit target (unlike the readonly engine slots).
+
+### Text entry end-to-end (the on-screen keyboard)
+
+Text entry is the gamepad accessibility accommodation: the engine ships an
+on-screen keyboard (a capturing modal, registered under the name `keyboard`),
+built entirely from `button`/`grid`/`focus: "spatial"` primitives plus the
+text-edit reactions above. A player types either on the **hardware keyboard**
+(routed straight into `ui.textEntry`) or on the **on-screen keyboard** via gamepad
+— both edit the same `ui.textEntry` slot, so a field bound to it reflects either
+path.
+
+`openTextEntry(onCommit?)` is the canonical opener — it wraps
+`showDialog("keyboard", onCommit)`. Wire it to a `button`'s `onPress`. The
+keyboard is a capturing modal: while open, gameplay input freezes and the opener
+screen's focus restores on close.
+
+- The keyboard's letter / digit / space keys fire `appendText("ui.textEntry", …)`
+  named reactions; its backspace key fires `backspaceText("ui.textEntry")` and
+  opts into `repeatOnHold` (holding it repeats; holding a letter fires once).
+- The keyboard's **`done`** key and the **hardware Enter** key both **commit**:
+  the engine fires the opener's `onCommit` reaction, then closes the keyboard.
+- **`nav.cancel`** (Escape / gamepad B) closes the keyboard **without** firing
+  `onCommit` — the edits stay in `ui.textEntry`; the opener simply does not act on
+  them.
+
+A bound `text` widget reads the live entry directly (no copy); fire an observable
+reaction (a `playSound`) from `onCommit` so commit and cancel are distinguishable.
+
+```typescript
+export function setupLevel(): LevelManifest {
+  return {
+    reactions: [
+      // The button that opens the keyboard, carrying a commit reaction.
+      defineReaction("openName", openTextEntry("onNameEntered")),
+      // The observable confirmation fired on commit (done / Enter), not on cancel.
+      defineReaction("onNameEntered", playSound("sfx/confirm", "sfx")),
+    ],
+  };
+}
+```
+
+Author the screen with a `text` bound to `ui.textEntry` and a button firing the
+opener:
+
+```jsonc
+{ "kind": "text", "content": "NAME --", "fontSize": 28,
+  "color": "ok", "bind": { "slot": "ui.textEntry", "format": "NAME {}" } },
+{ "kind": "button", "id": "enterName", "label": "ENTER NAME", "onPress": "openName" }
+```
+
+The keyboard layout itself is an engine-shipped JSON asset at
+`content/base/ui/keyboard.json`, loaded from disk at boot. Editing it (adding or
+removing keys, retiming the backspace repeat) and reloading changes the keyboard
+with no engine change — keys are data. Each key's `onPress` names a reaction the
+mod registers (the `appendText` / `backspaceText` reactions above), except the
+`done` key, whose reserved `onPress` (`ui.commitTextEntry`) the engine intercepts
+to reach the shared commit seam.
 
 ### The readonly `input.mode` slot
 

@@ -386,6 +386,16 @@ fn main() -> Result<()> {
                 render::ui::demo::PAUSE_MENU_NAME,
                 render::ui::demo::build_pause_menu_descriptor(),
             );
+            // Register the engine-shipped on-screen keyboard (M13 Text-Entry, Task
+            // 4), loaded from `content/base/ui/keyboard.json` on disk so a layout
+            // edit + reload changes it with no Rust change. A `showDialog { tree:
+            // "keyboard", onCommit }` resolves this name. A missing/malformed asset
+            // warns and skips the registration — gameplay still boots.
+            if let Some(keyboard) = render::ui::keyboard_asset::load_keyboard_descriptor() {
+                stack
+                    .registry_mut()
+                    .register(render::ui::keyboard_asset::KEYBOARD_TREE_NAME, keyboard);
+            }
             stack
         },
         ui_focus: input::UiFocusEngine::new(),
@@ -2775,6 +2785,16 @@ impl App {
                 _ => None,
             });
         if let Some(on_press) = on_press {
+            // The on-screen keyboard's `done` key carries a reserved sentinel
+            // `onPress` (never a registered reaction). Intercept it here and route
+            // to the shared commit seam — the same `commit_text_entry` the hardware
+            // Enter key reaches (Task 3) — so commit is not keyboard-only and the
+            // keyboard stays fully data-driven (the `done` key references the
+            // sentinel as data; no Rust change to edit the layout).
+            if on_press == render::ui::keyboard_asset::COMMIT_TEXT_ENTRY_SENTINEL {
+                self.commit_text_entry();
+                return;
+            }
             let _ = fire_named_event_with_sequences(
                 &on_press,
                 &self.script_ctx.data_registry.borrow(),

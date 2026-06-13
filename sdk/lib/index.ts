@@ -44,6 +44,8 @@ export {
   rumble,
   flashScreen,
   showDialog,
+  openTextEntry,
+  KEYBOARD_TREE,
   openMenu,
   closeDialog,
   setState,

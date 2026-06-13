@@ -105,6 +105,22 @@ function UiReactionsSdk.showDialog(tree: string, onCommit: string?): PrimitiveRe
   return { primitive = "showDialog", args = args }
 end
 
+--- The engine-shipped on-screen keyboard's registry name. `openTextEntry` opens
+--- this tree; the engine loads its descriptor from `content/base/ui/keyboard.json`
+--- at boot. The keyboard edits the `ui.textEntry` writable String slot.
+UiReactionsSdk.KEYBOARD_TREE = "keyboard"
+
+--- Open the engine-shipped on-screen keyboard for text entry (M13 Text Entry).
+--- Pure: returns a primitive reaction body wrapping `showDialog`. The keyboard is
+--- a capturing modal that edits the `ui.textEntry` slot; bind a `text` widget to
+--- `ui.textEntry` to show the live entry. The optional `onCommit` (omitted when
+--- nil) names a reaction fired on commit (the on-screen `done` key or hardware
+--- Enter); `nav.cancel` (Escape / B) closes without firing it. The same
+--- `ui.textEntry` slot also receives the hardware-keyboard path's edits.
+function UiReactionsSdk.openTextEntry(onCommit: string?): PrimitiveReactionDescriptor
+  return UiReactionsSdk.showDialog(UiReactionsSdk.KEYBOARD_TREE, onCommit)
+end
+
 --- Push a menu UI tree onto the modal stack. Pure: returns a primitive
 --- reaction body, no engine side effect. A v1 alias of `showDialog` (identical
 --- push behavior) without the `onCommit` hook. Warn-once "no stack" until

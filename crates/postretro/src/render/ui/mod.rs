@@ -64,6 +64,12 @@ pub(crate) mod splash;
 /// `player.health`/`player.ammo`; one `panel` binds `intro.flashColor`.
 pub(crate) mod demo;
 
+/// Engine-shipped on-screen keyboard descriptor (M13 Text-Entry, Task 4): loads
+/// `content/base/ui/keyboard.json` from disk at boot and registers it under the
+/// `keyboard` name. Read from disk (not embedded) so a layout edit + reload
+/// changes the keyboard with no Rust change.
+pub(crate) mod keyboard_asset;
+
 /// Hard-gate CPU draw-list / layout assertion for the splash: pins the
 /// device-pixel quad rects (anchor, scale, snap, 9-slice corners) the splash
 /// projects to. Pure CPU — no GPU adapter.

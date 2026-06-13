@@ -338,6 +338,18 @@ pub(crate) const PAUSE_MENU_NAME: &str = "pauseMenu";
 const PAUSE_RESUME_ID: &str = "pauseResume";
 const PAUSE_VOLUME_ID: &str = "pauseVolume";
 
+/// The text-entry demo button's id (M13 Text-Entry, Task 4). Activating it opens
+/// the on-screen keyboard via the `openTextEntry` named reaction (`showDialog {
+/// tree: "keyboard", onCommit }`). The bound readout above it binds `ui.textEntry`
+/// directly, so the entered string appears as it is typed.
+const PAUSE_TEXT_ENTRY_ID: &str = "pauseOpenTextEntry";
+
+/// Named reaction fired when the text-entry demo button is activated. The dev
+/// data script (`arena-lights.ts`) registers this as `showDialog { tree:
+/// "keyboard", onCommit: "onTextEntryCommit" }`, which pushes the on-screen
+/// keyboard and carries the commit reaction onto its stack entry.
+const PAUSE_TEXT_ENTRY_REACTION: &str = "openTextEntry";
+
 /// Named reaction fired when Resume is activated (confirm or click). The demo
 /// mod registers this reaction as a `closeDialog` (pop the top tree); firing it
 /// through the reaction registry pops the pause menu, the same path a script
@@ -415,6 +427,35 @@ pub(crate) fn build_pause_menu_descriptor() -> AnchoredTree {
         focus_neighbors: Default::default(),
     });
 
+    // Text-entry demo (M13 Text-Entry, Task 4): a `text` bound to `ui.textEntry`
+    // DIRECTLY (no copyState) so the live entry string shows here as it is typed,
+    // and a button that opens the on-screen keyboard. The button works on BOTH
+    // input paths — a gamepad confirm on the on-screen keyboard's keys and the
+    // hardware-key routing (Task 3) both write `ui.textEntry`, and the same field
+    // reflects both. The bind reads the raw string (no `format`).
+    let text_entry_readout = Widget::Text(TextWidget {
+        content: "ENTRY --".to_string(),
+        font_size: HUD_FONT_SIZE,
+        color: ColorValue::Token(HUD_TEXT_COLOR_TOKEN.into()),
+        font: Some("mono".into()),
+        bind: Some(TextBind {
+            slot: "ui.textEntry".to_string(),
+            format: Some("ENTRY {}".to_string()),
+            tween: None,
+        }),
+        style_ranges: None,
+        id: None,
+        focus_neighbors: Default::default(),
+    });
+
+    let open_text_entry = Widget::Button(ButtonWidget {
+        id: PAUSE_TEXT_ENTRY_ID.to_string(),
+        label: "ENTER TEXT".to_string(),
+        on_press: PAUSE_TEXT_ENTRY_REACTION.to_string(),
+        focus_neighbors: Default::default(),
+        repeat_on_hold: None,
+    });
+
     let root = Widget::VStack(ContainerWidget {
         gap: SpacingValue::Literal(ROW_GAP),
         padding: SpacingValue::Literal(HUD_PADDING),
@@ -425,7 +466,14 @@ pub(crate) fn build_pause_menu_descriptor() -> AnchoredTree {
         focus_neighbors: Default::default(),
         focus: None,
         restore_on_return: false,
-        children: vec![title, mode_readout, resume, volume],
+        children: vec![
+            title,
+            mode_readout,
+            resume,
+            volume,
+            text_entry_readout,
+            open_text_entry,
+        ],
     });
 
     AnchoredTree {
@@ -569,8 +617,9 @@ mod tests {
         let Widget::VStack(col) = &tree.root else {
             panic!("pause menu root is a vstack column");
         };
-        // title, input.mode readout, resume button, volume slider
-        assert_eq!(col.children.len(), 4);
+        // title, input.mode readout, resume button, volume slider, ui.textEntry
+        // readout, open-text-entry button
+        assert_eq!(col.children.len(), 6);
 
         let Widget::Text(mode) = &col.children[1] else {
             panic!("second row is the input.mode readout text");
@@ -600,6 +649,35 @@ mod tests {
         assert_eq!(volume.min, VOLUME_MIN);
         assert_eq!(volume.max, VOLUME_MAX);
         assert_eq!(volume.step, VOLUME_STEP);
+    }
+
+    /// The text-entry demo widgets (M13 Text-Entry, Task 4): a `text` row binding
+    /// `ui.textEntry` DIRECTLY (so the live entry shows here) and a button whose
+    /// `onPress` opens the on-screen keyboard via the `openTextEntry` reaction.
+    #[test]
+    fn pause_menu_demos_direct_text_entry_binding_and_an_open_button() {
+        let tree = build_pause_menu_descriptor();
+        let Widget::VStack(col) = &tree.root else {
+            panic!("pause menu root is a vstack column");
+        };
+
+        let Widget::Text(entry) = &col.children[4] else {
+            panic!("fifth row is the ui.textEntry readout text");
+        };
+        assert_eq!(
+            entry.bind.as_ref().map(|b| b.slot.as_str()),
+            Some("ui.textEntry"),
+            "the readout binds the engine-owned ui.textEntry slot directly (no copyState)",
+        );
+
+        let Widget::Button(open) = &col.children[5] else {
+            panic!("sixth row is the open-text-entry button");
+        };
+        assert_eq!(open.id, PAUSE_TEXT_ENTRY_ID);
+        assert_eq!(
+            open.on_press, PAUSE_TEXT_ENTRY_REACTION,
+            "the button fires the openTextEntry reaction (showDialog keyboard)",
+        );
     }
 
     /// The `nav.menu` toggle pushes/pops the registered pause menu through the

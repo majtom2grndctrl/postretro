@@ -24,7 +24,7 @@ Gating rule for executors: every Phase JSON task is buildable now. No Phase JSON
 ### In scope
 
 - **Phase JSON.**
-  - Author `content/base/ui/hud.json` and `content/base/ui/pauseMenu.json` as `AnchoredTree` JSON byte-equivalent (post-serde) to what `build_demo_descriptor` / `build_pause_menu_descriptor` produce today.
+  - Author `content/base/ui/hud.json` and `content/base/ui/pauseMenu.json` as `AnchoredTree` JSON that deserializes (via `serde_json::from_str::<AnchoredTree>`) to a value `PartialEq` to what `build_demo_descriptor` / `build_pause_menu_descriptor` produce today — descriptor equality, not byte equality.
   - A reusable disk-load + registry-register path generalizing the keyboard's boot wiring (load JSON → `Option<AnchoredTree>` → `registry.register(name, tree)`), so the HUD and pause menu register by name like the keyboard. Graceful degradation on missing/malformed file, matching `load_keyboard_descriptor`.
   - Author `content/base/ui/splash.json` and migrate `build_splash_descriptor` to load + deserialize it into the existing `SplashDescriptor` newtype, keeping the newtype and all call sites stable. Splash stays OUTSIDE the registry/modal stack.
   - Delete the migrated Rust builder bodies once the JSON path is the source of truth (keep the function/newtype seams the splash and call sites need; replace builder bodies, do not leave dead hardcoded trees).
@@ -41,11 +41,11 @@ Gating rule for executors: every Phase JSON task is buildable now. No Phase JSON
 
 ## Acceptance criteria
 
-- [ ] `content/base/ui/hud.json` and `content/base/ui/pauseMenu.json` exist and each deserializes via the standard serde path (`serde_json::from_str::<AnchoredTree>`) to an `AnchoredTree` descriptor-equal to what the corresponding Rust builder produced before migration. A fixture test asserts the equality at the descriptor level. *(Task 1, Task 2)*
+- [ ] `content/base/ui/hud.json` and `content/base/ui/pauseMenu.json` exist and each deserializes via the standard serde path (`serde_json::from_str::<AnchoredTree>`) to an `AnchoredTree` descriptor-equal to what the corresponding Rust builder produced before migration. A fixture test asserts the equality at the descriptor level. *(Task 1)*
 - [ ] The HUD and pause-menu descriptors load from disk and register by name into `UiTreeRegistry` at boot through one shared load-and-register path; a missing or malformed file warns once and degrades (that screen is unavailable, the engine still boots) exactly as the keyboard does today. *(Task 2)*
 - [ ] The pause menu remains pushable/poppable by its registered name through `ModalStack::push_named` (the `nav.menu` toggle path), and the HUD still composes as the bottom passthrough layer — both behaviors unchanged from the hardcoded version, now sourced from JSON. *(Task 2)*
 - [ ] `content/base/ui/splash.json` exists; `build_splash_descriptor` loads and deserializes it into a `SplashDescriptor`, the newtype and every call site (the per-frame `record_splash_ui` site and the tests) compile and behave unchanged; the splash never registers into `UiTreeRegistry`/`ModalStack`. A missing/malformed splash JSON degrades to a stated fallback rather than panicking on the boot path. *(Task 3)*
-- [ ] After migration, no `Widget`/`AnchoredTree` tree is assembled by hand in engine Rust for the HUD, pause menu, or splash — the builder bodies are replaced by the load path. The keyboard's existing JSON path is unchanged. *(Task 1, Task 2, Task 3)*
+- [ ] After migration, no `Widget`/`AnchoredTree` tree is assembled by hand in engine Rust for the HUD, pause menu, or splash — the builder bodies are replaced by the load path. The keyboard's existing JSON path is unchanged. *(Task 2, Task 3)*
 - [ ] The descriptor wire format (`descriptor.rs`) and taffy layout (`tree.rs`) are unchanged by this work — no new widget kinds, no serde-shape change, no layout-computation move. *(all tasks)*
 - [ ] **(Phase SDK, gated on G1)** The HUD and pause menu can be authored and registered as SDK factory functions through G1's register → VM-drop lifecycle, producing the same `AnchoredTree` the JSON path produces; the splash's `SplashDescriptor` body is sourced from the SDK while its newtype + call sites stay stable. *(Task 4 — blocked until G1)*
 
@@ -53,7 +53,7 @@ Gating rule for executors: every Phase JSON task is buildable now. No Phase JSON
 
 ### Task 1: Author HUD + pause-menu + splash JSON fixtures
 
-Produce `content/base/ui/hud.json`, `content/base/ui/pauseMenu.json`, and `content/base/ui/splash.json` as `AnchoredTree` JSON matching the current builders' output. Author against the locked wire model in `descriptor.rs`: `Widget` is internally tagged on `kind` (camelCase variants, except `vstack`/`hstack` pinned lowercase — see Boundary inventory), `AnchoredTree` fields are camelCase (`captureMode`, `initialFocus`, `textEntryTarget`, skip-serialized when default/absent). Each JSON file must deserialize to the descriptor the matching `build_*` function returns today. Add a fixture test per file that round-trips JSON → `AnchoredTree` and asserts descriptor equality against the current builder (the builders stay available as the equality oracle until Task 2/3 replace their bodies). This is the authoring deliverable; wiring is Task 2/3.
+Produce `content/base/ui/hud.json`, `content/base/ui/pauseMenu.json`, and `content/base/ui/splash.json` as `AnchoredTree` JSON matching the current builders' output. Note the splash tree is not text-only: `build_splash_descriptor` emits a logo `image` node (`asset: "splash/logo"`, the `SPLASH_LOGO_ASSET` const, referenced by string id in the wire model) alongside the version `text` node, so `splash.json` must reproduce the logo image node and its asset string. Author against the locked wire model in `descriptor.rs`: `Widget` is internally tagged on `kind` (camelCase variants, except `vstack`/`hstack` pinned lowercase — see Boundary inventory), `AnchoredTree` fields are camelCase (`captureMode`, `initialFocus`, `textEntryTarget`, skip-serialized when default/absent). Each JSON file must deserialize to the descriptor the matching `build_*` function returns today. Add a fixture test per file that round-trips JSON → `AnchoredTree` and asserts descriptor equality against the current builder (the builders stay available as the equality oracle until Task 2/3 replace their bodies). This is the authoring deliverable; wiring is Task 2/3.
 
 ### Task 2: Load-and-register path for HUD + pause menu
 
@@ -63,7 +63,7 @@ The HUD's current call site publishes its tree on the once-per-frame snapshot (i
 
 ### Task 3: Migrate the splash authoring source to JSON
 
-Author `content/base/ui/splash.json` and rewrite `build_splash_descriptor`'s body to load + deserialize it into the existing `SplashDescriptor` newtype. The newtype, the function signature (`build_splash_descriptor(version_line: &str) -> SplashDescriptor`), and every call site stay stable — the per-frame `record_splash_ui` site and the splash tests must compile and behave unchanged. The splash stays OUTSIDE the registry and modal stack; it does NOT register by name. The `version_line` argument is injected into the deserialized tree at load (the version `text` node's content), so the JSON carries a placeholder the builder fills — state in the spec how the version line reaches the text node (e.g. a known node id the loader patches, or the builder composes the version `text` around the JSON-authored frame). On missing/malformed `splash.json`, degrade to a stated fallback (a minimal in-code splash tree, since the splash runs before gameplay and must never panic the boot path) — name the fallback explicitly rather than leaving it to the implementer.
+Rewrite `build_splash_descriptor`'s body to load + deserialize `content/base/ui/splash.json` (authored in Task 1) into the existing `SplashDescriptor` newtype. The newtype, the function signature (`build_splash_descriptor(version_line: &str) -> SplashDescriptor`), and every call site stay stable — the per-frame `record_splash_ui` site and the splash tests must compile and behave unchanged. The splash stays OUTSIDE the registry and modal stack; it does NOT register by name. The `version_line` argument is injected into the deserialized tree at load (the version `text` node's content), so the JSON carries a placeholder the builder fills — state in the spec how the version line reaches the text node (e.g. a known node id the loader patches, or the builder composes the version `text` around the JSON-authored frame). On missing/malformed `splash.json`, degrade to a stated fallback (a minimal in-code splash tree, since the splash runs before gameplay and must never panic the boot path) — name the fallback explicitly rather than leaving it to the implementer.
 
 ### Task 4: SDK factory authoring (Phase SDK — gated on G1)
 
@@ -106,7 +106,7 @@ The registry names are app-side keys (`UiTreeRegistry`'s `HashMap<String, Anchor
 ## Related work
 
 - `ui-render-path-robustness-text-shaping` (this plan's sibling): its Task C cache threshold cites G1's script-authored UI as a label-count multiplier — script-defined screens author more text nodes than the hardcoded builders, which is the convergence Phase SDK delivers.
-- G1 — SDK core + lifecycle (`roadmap.md`): owns the script-side registration and factory API Phase SDK builds on. Phase JSON is explicitly buildable ahead of it.
+- G1 — SDK core + lifecycle (`roadmap.md`): owns the script-side registration and factory API Phase SDK builds on. Phase JSON is explicitly buildable ahead of it. Only Phase SDK (Task 4) is the G1 convergence; where the sibling render-path spec's "(G1)" shorthand labels this whole migration, it means the Phase SDK end state, not the pre-G1 Phase JSON work.
 - UI JSON hot-reload / file-watching: a reload-on-edit story for the migrated trees — separate follow-up, not specced here (load-at-boot only).
 
 ## Open questions

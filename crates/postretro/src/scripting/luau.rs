@@ -97,8 +97,9 @@ const DATA_SCRIPT_FIELDS: &[&str] = &["defineReaction", "defineEntity"];
 /// rest are system-reaction body constructors that pair with `defineReaction` to
 /// emit `playSound` / `rumble` / `flashScreen`, the UI-stack (`showDialog` /
 /// `openMenu` / `closeDialog`) primitives, the `setState` slot write (Goal F),
-/// and the text-edit reactions (`appendText` / `backspaceText` / `clearText`,
-/// M13 Text Entry).
+/// the text-entry helpers (`openTextEntry` wraps `showDialog` for the engine
+/// keyboard; `KEYBOARD_TREE` is its registry name constant), and the text-edit
+/// reactions (`appendText` / `backspaceText` / `clearText`, M13 Text Entry).
 const UI_REACTIONS_FIELDS: &[&str] = &[
     "onStateCrossing",
     "playSound",
@@ -107,6 +108,8 @@ const UI_REACTIONS_FIELDS: &[&str] = &[
     "showDialog",
     "openMenu",
     "closeDialog",
+    "openTextEntry",
+    "KEYBOARD_TREE",
     "setState",
     "appendText",
     "backspaceText",
@@ -1344,5 +1347,41 @@ mod tests {
             canonical_require_dependency(&dir.canonicalize().unwrap(), &outside_file, "./module")
                 .expect_err("outside canonical path must be rejected");
         assert!(err.contains("outside mod root"), "got: {err}");
+    }
+
+    #[test]
+    fn ui_reactions_fields_contains_complete_sdk_surface() {
+        // Regression: openTextEntry/KEYBOARD_TREE were declared in the typedef
+        // + SDK but not lifted, so Luau callers hit a nil global at runtime
+        // while TS callers worked fine (TS installs them via globalThis rewrite).
+        //
+        // This test guards against the same gap recurring: every name exposed by
+        // `sdk/lib/ui/reactions.luau` as a UiReactionsSdk field must appear in
+        // UI_REACTIONS_FIELDS so the field is actually promoted to a bare global.
+        let expected: &[&str] = &[
+            "onStateCrossing",
+            "playSound",
+            "rumble",
+            "flashScreen",
+            "showDialog",
+            "openMenu",
+            "closeDialog",
+            "openTextEntry",
+            "KEYBOARD_TREE",
+            "setState",
+            "appendText",
+            "backspaceText",
+            "clearText",
+        ];
+        let actual: std::collections::BTreeSet<&str> =
+            UI_REACTIONS_FIELDS.iter().copied().collect();
+        for name in expected {
+            assert!(
+                actual.contains(name),
+                "UI_REACTIONS_FIELDS is missing `{name}` — it is declared in \
+                sdk/lib/ui/reactions.luau and the Luau typedef but was not lifted \
+                to a bare global, so Luau callers hit nil at runtime",
+            );
+        }
     }
 }

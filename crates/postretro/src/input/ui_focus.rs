@@ -327,9 +327,11 @@ impl UiFocusEngine {
 
         let mut result = FocusTickResult::default();
 
-        // Pointer mode: hover moves focus, then a click hit-tests by topmost z.
-        // Hover never enqueues an intent (it is tracked cursor state), so it is
-        // applied here directly from the tracked position.
+        // Clicks always hit-test by topmost z (in either mode); hover-to-focus is
+        // the pointer-mode-only part. In Pointer mode cursor motion moves focus
+        // (hover), then any click below hit-tests and activates. Hover never
+        // enqueues an intent (it is tracked cursor state), so it is applied here
+        // directly from the tracked position; the click loop runs regardless of mode.
         if mode == InputMode::Pointer {
             if let Some(cursor) = cursor {
                 if let Some(hit) = hit_test_topmost(rects, cursor) {
@@ -1175,6 +1177,79 @@ mod tests {
     }
 
     #[test]
+    fn tap_release_does_not_drop_a_later_genuine_holds_repeat() {
+        // Pins the release-edge vs N→N+1 press skew (reviewer ask): the gamepad
+        // applies `directional_released` immediately in the input stage while a
+        // press intent is queued a frame. A single-frame press+release TAP must
+        // not poison a subsequent genuine HOLD's repeat. Mechanism: the tap's
+        // release clears the clock that the deferred press re-arms next frame; a
+        // genuine hold keeps the button down so the release edge stays false and
+        // the clock free-runs on dt as designed.
+        let mut fe = UiFocusEngine::new();
+        let list = linear_list(
+            true, // wrap so repeated Down keeps moving
+            Some(RepeatPolicy {
+                initial_delay_ms: 300.0,
+                interval_ms: 100.0,
+            }),
+        );
+        // Init focuses a.
+        fe.tick(
+            Some("t"),
+            Some(&list),
+            &[],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+
+        // Frame N: a TAP. The deferred press intent lands (moves a -> b, arms the
+        // clock), and the tap's release edge fires this same input stage.
+        let r = fe.tick(
+            Some("t"),
+            Some(&list),
+            &[NavIntent::Down],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+        assert_eq!(r.focused.as_deref(), Some("b"), "tap press moves once");
+        fe.release_repeat(); // tap released this frame: clock cleared.
+
+        // Frame N+1: a GENUINE hold begins — its press intent arrives and re-arms
+        // the clock (moves b -> c). The button stays down, so no release edge.
+        let r = fe.tick(
+            Some("t"),
+            Some(&list),
+            &[NavIntent::Down],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+        assert_eq!(r.focused.as_deref(), Some("c"), "hold press moves once");
+
+        // Hold past the initial delay with NO release edge: the repeat fires — the
+        // tap's earlier release did not drop it.
+        let r = fe.tick(
+            Some("t"),
+            Some(&list),
+            &[],
+            None,
+            &[],
+            InputMode::Focus,
+            0.35,
+        );
+        assert_eq!(
+            r.focused.as_deref(),
+            Some("a"),
+            "the genuine hold's repeat fires (c -> a, wrapped) — not dropped by the tap's release"
+        );
+    }
+
+    #[test]
     fn confirm_and_cancel_without_repeat_on_hold_fire_exactly_once() {
         let mut fe = UiFocusEngine::new();
         let list = linear_list(
@@ -1547,5 +1622,132 @@ mod tests {
             1.0,
         );
         assert!(!r.confirmed, "release stops the activation-repeat");
+    }
+
+    // --- M13 Text-Entry, Task 3: on-screen keyboard confirm flows through the
+    //     focus engine (the Fix-1 end-to-end path) ---
+
+    use crate::input::text_entry::{TextEntryDisposition, resolve_text_entry};
+    use crate::input::ui_dispatch::{UiIntent, UiIntentPayload};
+
+    /// A two-key on-screen-keyboard-like focus list: `key_a` (a `kbAppend_a`
+    /// button, like a letter key) and `done` (the commit-sentinel button). Both
+    /// are focusable, activatable buttons in one linear group.
+    fn keyboard_like_list() -> FocusRectList {
+        let mut key_a = rect("key_a", [0.0, 0.0, 40.0, 40.0], 0, Some(0));
+        key_a.interaction = Some(NodeInteraction::Button {
+            on_press: "kbAppend_a".to_string(),
+            repeat_on_hold: None,
+        });
+        let mut done = rect("done", [50.0, 0.0, 40.0, 40.0], 1, Some(0));
+        done.interaction = Some(NodeInteraction::Button {
+            // The reserved commit sentinel the App intercepts in
+            // `fire_focused_button_activation` → `commit_text_entry`.
+            on_press: "ui.commitTextEntry".to_string(),
+            repeat_on_hold: None,
+        });
+        FocusRectList {
+            rects: vec![key_a, done],
+            groups: vec![FocusGroup {
+                kind: FocusKind::Linear,
+                wrap: false,
+                repeat: None,
+                members: vec![0, 1],
+            }],
+            initial_focus: None,
+            restore_on_return: false,
+        }
+    }
+
+    /// The button `on_press` for the currently-focused node, mirroring what the
+    /// App's `fire_focused_button_activation` reads off the focus result.
+    fn focused_on_press<'a>(rects: &'a FocusRectList, focused: Option<&str>) -> Option<&'a str> {
+        let id = focused?;
+        rects
+            .rects
+            .iter()
+            .find(|r| r.id == id)
+            .and_then(|r| match &r.interaction {
+                Some(NodeInteraction::Button { on_press, .. }) => Some(on_press.as_str()),
+                _ => None,
+            })
+    }
+
+    #[test]
+    fn confirm_on_key_button_types_and_keeps_keyboard_open_then_done_commits() {
+        // End-to-end (Fix 1): with a text-entry tree open and an on-screen keyboard
+        // key focused, a `Nav(Confirm)` must NOT be swallowed as a text-entry commit
+        // — it has to flow through the focus engine so the key's `on_press` fires.
+        // Models the App's per-frame order: `resolve_text_entry` first, then the
+        // focus engine, then `fire_focused_button_activation`.
+        let list = keyboard_like_list();
+        let confirm = [UiIntent {
+            seq: 0,
+            payload: UiIntentPayload::Nav(NavIntent::Confirm),
+        }];
+
+        // 1) Focus `key_a` and confirm. `resolve_text_entry` is told focus is on a
+        //    button (confirm_on_button = true): the confirm stays Open (NOT a
+        //    Commit), so the keyboard tree does NOT pop.
+        let res = resolve_text_entry(&confirm, true);
+        assert_eq!(
+            res.disposition,
+            TextEntryDisposition::Open,
+            "confirm on a key button is not a text-entry commit — the tree stays open"
+        );
+        assert!(!res.consumed_commit_or_cancel());
+
+        // The focus engine then sees the (unfiltered) confirm and activates the
+        // focused key — its `on_press` is the append reaction, so `ui.textEntry`
+        // gains "a" and the keyboard stays open.
+        let mut fe = UiFocusEngine::new();
+        fe.tick(
+            Some("keyboard"),
+            Some(&list),
+            &[],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+        let r = fe.tick(
+            Some("keyboard"),
+            Some(&list),
+            &[NavIntent::Confirm],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+        assert!(r.confirmed, "the confirm activates the focused key");
+        assert_eq!(r.focused.as_deref(), Some("key_a"));
+        assert_eq!(
+            focused_on_press(&list, r.focused.as_deref()),
+            Some("kbAppend_a"),
+            "the App fires key_a's kbAppend_a (types 'a') — the tree is NOT popped"
+        );
+
+        // 2) Move focus to `done` and confirm. Again `resolve_text_entry` stays Open
+        //    (focus is still on a button), and the focus engine activates `done` —
+        //    whose `on_press` is the commit sentinel the App routes to
+        //    `commit_text_entry` (fire `on_commit`, then pop).
+        let res = resolve_text_entry(&confirm, true);
+        assert_eq!(res.disposition, TextEntryDisposition::Open);
+        let r = fe.tick(
+            Some("keyboard"),
+            Some(&list),
+            &[NavIntent::Right, NavIntent::Confirm],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+        assert!(r.confirmed);
+        assert_eq!(r.focused.as_deref(), Some("done"));
+        assert_eq!(
+            focused_on_press(&list, r.focused.as_deref()),
+            Some("ui.commitTextEntry"),
+            "done's sentinel routes to commit_text_entry (fires on_commit, pops)"
+        );
     }
 }

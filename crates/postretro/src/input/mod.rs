@@ -38,7 +38,8 @@ pub use ui_nav::{
 // edit/commit/cancel decisions against the open text-entry surface.
 #[allow(unused_imports)]
 pub use text_entry::{
-    TextEntryDisposition, TextEntryEdit, TextEntryResolution, resolve_text_entry,
+    TextEntryDisposition, TextEntryEdit, TextEntryResolution, escape_is_dev_quit_chord,
+    resolve_text_entry,
 };
 // App-side focus engine (M13 Goal F, Task 3): consumes nav intents + cursor, moves
 // focus through the renderer's exported focus rect list, runs the dt-clocked

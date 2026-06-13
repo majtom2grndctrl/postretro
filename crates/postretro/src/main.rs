@@ -1003,11 +1003,16 @@ impl ApplicationHandler for App {
                         ..
                     },
                 ..
-            } if self.modal_stack.active_text_entry_target().is_none() => {
-                // Escape is the dev quit chord ONLY when no text-entry tree is open.
-                // While text entry is open (M13 Text-Entry, Task 3) Escape cancels
-                // the entry instead — it falls through to the general keyboard arm,
-                // which routes it as `nav.cancel` for the cancel path.
+            } if input::escape_is_dev_quit_chord(self.diagnostic_inputs.shift_held()) => {
+                // Escape routing rule: `Shift+Esc` is the dev quit chord (this arm) and
+                // takes precedence — even while text entry is open, Shift makes it the
+                // developer's unambiguous quit, never a stray menu/cancel. PLAIN `Esc`
+                // (no Shift) is NOT a quit: it falls through to the general keyboard arm,
+                // which routes Escape-from-gameplay to `nav.menu` (toggles the pause menu,
+                // exactly like gamepad Start) and Escape inside a capturing tree —
+                // including an open text-entry modal — to `nav.cancel`. The Shift state is
+                // the diagnostic resolver's modifier tracking (the Shift key-down was seen
+                // by the general arm before this Esc). See: context/lib/input.md §7.
                 self.release_cursor_for_exit();
                 log::info!("[Engine] Shutting down");
                 event_loop.exit();
@@ -2726,7 +2731,7 @@ impl App {
             .collect()
     }
 
-    /// Apply slider nav-capture for the focused slider (M13 Goal F, Task four).
+    /// Apply slider nav-capture for the focused slider (M13 Goal F, Task 4).
     ///
     /// The currently focused node
     /// (last frame's `ui_focused_id`, the focus going into this frame) is matched
@@ -2853,8 +2858,19 @@ impl App {
             return false;
         };
 
+        // Thread the currently-focused node's interaction (last frame's exported
+        // focus, the focus going into this frame — same source `apply_slider_nav_capture`
+        // reads) so `resolve_text_entry` can distinguish a confirm that lands on an
+        // on-screen keyboard key from a keyboardless hardware Enter. A confirm on a
+        // focusable button must flow to the focus engine (Task 4 fires the key's
+        // `on_press` — `kbAppend_*` to type, or `done`'s commit sentinel); only a
+        // confirm NOT on a button commits here. Without this the confirm was consumed
+        // as Commit before the focus engine ran and the keyboard closed instead of
+        // typing.
+        let confirm_on_button = self.focused_node_is_activatable_button();
+
         // Pure resolution: drained intents → ordered edits + a terminal disposition.
-        let resolution = input::resolve_text_entry(ui_intents);
+        let resolution = input::resolve_text_entry(ui_intents, confirm_on_button);
 
         // Apply the edits through Task 1's text-edit command path (the bound slot
         // changes on the N+1 frame). Edits are queued before commit/cancel acts so a
@@ -2878,6 +2894,27 @@ impl App {
             input::TextEntryDisposition::Open => {}
         }
         resolution.consumed_commit_or_cancel()
+    }
+
+    /// Whether the currently-focused node (last frame's `ui_focused_id` on the
+    /// exported rect list) is an activatable `button`. The on-screen keyboard's
+    /// keys are buttons, so this is the predicate `resolve_text_entry_intents` uses
+    /// to keep a `nav.confirm` flowing to the focus engine (the key activates)
+    /// rather than consuming it as a text-entry commit. Reads the same
+    /// `ui_focused_id` + `ui_focus_rects` pair `apply_slider_nav_capture` does.
+    fn focused_node_is_activatable_button(&self) -> bool {
+        use render::ui::tree::NodeInteraction;
+        let Some(focused_id) = self.ui_focused_id.as_deref() else {
+            return false;
+        };
+        let Some(rects) = self.ui_focus_rects.as_ref() else {
+            return false;
+        };
+        rects
+            .rects
+            .iter()
+            .find(|r| r.id == focused_id)
+            .is_some_and(|r| matches!(r.interaction, Some(NodeInteraction::Button { .. })))
     }
 
     /// Commit the open text-entry surface (M13 Text-Entry, Task 3): fire the top

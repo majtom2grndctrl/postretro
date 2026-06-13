@@ -20,15 +20,19 @@ pub enum TextEntryEdit {
 }
 
 /// The terminal disposition of a text-entry resolution pass: whether the entry
-/// committed (Enter / `done`), cancelled (Escape), or stayed open. Commit and
-/// cancel are terminal — once one fires, no further intents are resolved (the tree
-/// is about to pop), so the App pops exactly once per pass.
+/// committed (Enter), cancelled (Escape), or stayed open. Commit and cancel are
+/// terminal — once one fires, no further intents are resolved (the tree is about
+/// to pop), so the App pops exactly once per pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextEntryDisposition {
     /// No commit or cancel this pass; the entry stays open.
     Open,
-    /// `nav.confirm` (Enter / the `done` key) fired: the App fires the opener's
-    /// `on_commit`, then pops the tree.
+    /// `nav.confirm` (hardware Enter, with focus NOT on an activatable button)
+    /// fired: the App fires the opener's `on_commit`, then pops the tree. A confirm
+    /// that lands on a focusable button — every on-screen keyboard key, including
+    /// the `done` sentinel key — is NOT a commit here: it flows to the focus engine
+    /// so the key's `on_press` activates (typing `kbAppend_*`, or `done` routing to
+    /// the commit sentinel). See `resolve_text_entry`.
     Commit,
     /// `nav.cancel` (Escape) fired: the App pops the tree without firing `on_commit`.
     Cancel,
@@ -59,7 +63,18 @@ impl TextEntryResolution {
 /// cancels — and commit/cancel are terminal (resolution stops, since the tree is
 /// about to pop). Directional / next-prev nav and pointer clicks are left for the
 /// focus engine (the on-screen keyboard still navigates between keys).
-pub fn resolve_text_entry(ui_intents: &[UiIntent]) -> TextEntryResolution {
+///
+/// `confirm_on_button` reports whether the currently-focused node (last frame's
+/// exported focus, threaded in by the App) is an activatable button. When it is, a
+/// `nav.confirm` is NOT consumed as a `Commit`: it falls through to the focus
+/// engine so the focused on-screen-keyboard key activates its `on_press` (a
+/// `kbAppend_*` to type, or the `done` key's commit sentinel). This is what lets a
+/// gamepad confirm type/commit *through* the keyboard instead of the confirm being
+/// swallowed as a terminal commit before the focus engine runs. A `nav.confirm`
+/// with focus NOT on a button (hardware Enter on a non-button / empty tree) still
+/// commits, the keyboardless Enter path. `nav.cancel` is unaffected — Escape always
+/// cancels regardless of focus.
+pub fn resolve_text_entry(ui_intents: &[UiIntent], confirm_on_button: bool) -> TextEntryResolution {
     let mut edits = Vec::new();
     let mut disposition = TextEntryDisposition::Open;
     for intent in ui_intents {
@@ -67,6 +82,12 @@ pub fn resolve_text_entry(ui_intents: &[UiIntent]) -> TextEntryResolution {
             UiIntentPayload::Text(text) => edits.push(TextEntryEdit::Append(text.clone())),
             UiIntentPayload::Backspace => edits.push(TextEntryEdit::Backspace),
             UiIntentPayload::Nav(NavIntent::Confirm) => {
+                if confirm_on_button {
+                    // Focus is on an on-screen keyboard key (or any activatable
+                    // button): leave the confirm for the focus engine so the key's
+                    // `on_press` fires. Not terminal — keep resolving later edits.
+                    continue;
+                }
                 disposition = TextEntryDisposition::Commit;
                 break;
             }
@@ -80,12 +101,38 @@ pub fn resolve_text_entry(ui_intents: &[UiIntent]) -> TextEntryResolution {
     TextEntryResolution { edits, disposition }
 }
 
+/// Decide whether an Escape key-down is the dev quit chord (`event_loop.exit()`)
+/// or should fall through to the general keyboard arm (menu toggle / text-entry
+/// cancel). Pure so the modifier-gated routing is unit-testable.
+///
+/// Rule: `Shift+Esc` is the dev quit chord — and only then — and it takes
+/// precedence even while text entry is open (Shift makes it unambiguously the
+/// developer's deliberate quit, never a stray menu/cancel). Plain `Esc` (no
+/// Shift) is NOT a quit: it falls through to the general arm, which routes
+/// Escape-from-gameplay to `nav.menu` (toggles the pause menu) and Escape inside
+/// a capturing tree — including an open text-entry modal — to `nav.cancel`.
+pub fn escape_is_dev_quit_chord(shift_held: bool) -> bool {
+    shift_held
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn intent(seq: u64, payload: UiIntentPayload) -> UiIntent {
         UiIntent { seq, payload }
+    }
+
+    #[test]
+    fn shift_esc_is_the_dev_quit_chord_plain_esc_is_not() {
+        // Shift+Esc quits (dev chord); plain Esc falls through to menu/cancel
+        // routing. Text-entry-open does not change the decision — Shift is the
+        // sole discriminator (see `escape_is_dev_quit_chord`).
+        assert!(escape_is_dev_quit_chord(true), "Shift+Esc quits");
+        assert!(
+            !escape_is_dev_quit_chord(false),
+            "plain Esc falls through to menu/cancel"
+        );
     }
 
     #[test]
@@ -96,7 +143,7 @@ mod tests {
             intent(0, UiIntentPayload::Text("a".to_string())),
             intent(1, UiIntentPayload::Text("B".to_string())),
         ];
-        let r = resolve_text_entry(&intents);
+        let r = resolve_text_entry(&intents, false);
         assert_eq!(
             r.edits,
             vec![
@@ -111,7 +158,7 @@ mod tests {
     #[test]
     fn backspace_resolves_to_a_backspace_edit() {
         let intents = [intent(0, UiIntentPayload::Backspace)];
-        let r = resolve_text_entry(&intents);
+        let r = resolve_text_entry(&intents, false);
         assert_eq!(r.edits, vec![TextEntryEdit::Backspace]);
         assert_eq!(r.disposition, TextEntryDisposition::Open);
     }
@@ -125,7 +172,8 @@ mod tests {
             intent(1, UiIntentPayload::Nav(NavIntent::Confirm)),
             intent(2, UiIntentPayload::Text("y".to_string())),
         ];
-        let r = resolve_text_entry(&intents);
+        // Focus NOT on a button (hardware Enter on a non-button): confirm commits.
+        let r = resolve_text_entry(&intents, false);
         assert_eq!(r.edits, vec![TextEntryEdit::Append("x".to_string())]);
         assert_eq!(r.disposition, TextEntryDisposition::Commit);
         assert!(r.consumed_commit_or_cancel());
@@ -137,7 +185,7 @@ mod tests {
             intent(0, UiIntentPayload::Text("z".to_string())),
             intent(1, UiIntentPayload::Nav(NavIntent::Cancel)),
         ];
-        let r = resolve_text_entry(&intents);
+        let r = resolve_text_entry(&intents, false);
         assert_eq!(r.edits, vec![TextEntryEdit::Append("z".to_string())]);
         assert_eq!(r.disposition, TextEntryDisposition::Cancel);
         assert!(r.consumed_commit_or_cancel());
@@ -156,9 +204,34 @@ mod tests {
                 },
             ),
         ];
-        let r = resolve_text_entry(&intents);
+        let r = resolve_text_entry(&intents, false);
         assert!(r.edits.is_empty());
         assert_eq!(r.disposition, TextEntryDisposition::Open);
         assert!(!r.consumed_commit_or_cancel());
+    }
+
+    #[test]
+    fn confirm_on_a_focused_button_is_left_for_the_focus_engine_not_committed() {
+        // Regression: a `Nav(Confirm)` landing on an on-screen keyboard key was
+        // consumed as a terminal Commit BEFORE the focus engine ran, so the key's
+        // `kbAppend_*` activation never fired and the keyboard closed instead of
+        // typing. With focus on an activatable button the confirm now stays Open
+        // (not consumed) so it flows to the focus engine.
+        let intents = [intent(0, UiIntentPayload::Nav(NavIntent::Confirm))];
+        let r = resolve_text_entry(&intents, true);
+        assert_eq!(r.disposition, TextEntryDisposition::Open);
+        assert!(
+            !r.consumed_commit_or_cancel(),
+            "confirm on a key button is not consumed — the focus engine activates it"
+        );
+    }
+
+    #[test]
+    fn cancel_on_a_focused_button_still_cancels() {
+        // Escape always cancels regardless of focus — only confirm is gated on
+        // whether focus is on an activatable button.
+        let intents = [intent(0, UiIntentPayload::Nav(NavIntent::Cancel))];
+        let r = resolve_text_entry(&intents, true);
+        assert_eq!(r.disposition, TextEntryDisposition::Cancel);
     }
 }

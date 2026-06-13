@@ -368,7 +368,7 @@ pub(crate) fn write_state_slot_json(
 pub(crate) enum TextEdit<'a> {
     /// Append `text` to the current string value.
     Append(&'a str),
-    /// Remove the last grapheme cluster (floor: one `char`). No-op on empty.
+    /// Remove the last character (one Unicode scalar value). No-op on empty.
     Backspace,
     /// Empty the slot.
     Clear,
@@ -389,9 +389,8 @@ pub(crate) enum TextEdit<'a> {
 /// `Backspace` on an empty value is a no-op with NO warning — it returns early
 /// before touching the write path, so an empty slot produces neither a write nor
 /// a log line. An unknown slot or a non-String writable slot surfaces an error
-/// the drain logs (never a panic). Backspace removes one extended grapheme
-/// cluster with a `char`-pop floor: it pops one Unicode scalar value, never
-/// splitting a UTF-8 sequence.
+/// the drain logs (never a panic). Backspace pops one `char` (one Unicode scalar
+/// value) — never splits a UTF-8 sequence, but does not segment grapheme clusters.
 pub(crate) fn apply_text_edit(
     ctx: &ScriptCtx,
     name: &str,

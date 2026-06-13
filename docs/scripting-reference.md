@@ -684,7 +684,7 @@ omitted from the emitted `args` entirely when not supplied — they are never se
 | `openMenu(tree)` | `{ primitive: "openMenu", args: { tree } }` | A v1 alias of `showDialog` (identical push behavior) without the `onCommit` hook. |
 | `closeDialog()` | `{ primitive: "closeDialog", args: {} }` | Pops the top UI tree off the modal stack. |
 | `appendText(slot, text)` | `{ primitive: "appendText", args: { slot, text } }` | Appends `text` to the current string value of the writable String slot `slot`. Readonly-gated like `setState`. |
-| `backspaceText(slot)` | `{ primitive: "backspaceText", args: { slot } }` | Removes the last grapheme cluster (char-pop floor — never splits a UTF-8 sequence) from `slot`. Empty is a silent no-op. Readonly-gated like `setState`. |
+| `backspaceText(slot)` | `{ primitive: "backspaceText", args: { slot } }` | Removes the last character (one Unicode scalar value — never splits a UTF-8 sequence, but does not segment grapheme clusters) from `slot`. Empty is a silent no-op. Readonly-gated like `setState`. |
 | `clearText(slot)` | `{ primitive: "clearText", args: { slot } }` | Empties the writable String slot `slot`. Readonly-gated like `setState`. |
 
 The three UI-stack helpers (`showDialog` / `openMenu` / `closeDialog`) are v1
@@ -832,10 +832,9 @@ value.
 `appendText(slot, text)`, `backspaceText(slot)`, and `clearText(slot)` are system
 reactions that edit the current **string** value of a **writable** store slot at
 the game-logic stage. They share `setState`'s **readonly gate**: a write to a
-readonly slot logs a warning and no-ops. `backspaceText` removes one extended
-grapheme cluster with a char-pop floor (it pops one Unicode scalar value, so it
-never splits a UTF-8 sequence); an empty value is a **silent no-op** (no warning,
-no write).
+readonly slot logs a warning and no-ops. `backspaceText` pops one `char` (one Unicode scalar value), so it never splits
+a UTF-8 sequence but does not segment grapheme clusters; an empty value is a
+**silent no-op** (no warning, no write).
 
 `ui.textEntry` is the engine-declared, **writable** String slot these reactions
 target by default — the shared text-edit surface both the hardware-keyboard path

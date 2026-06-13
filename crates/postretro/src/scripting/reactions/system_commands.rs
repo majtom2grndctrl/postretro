@@ -36,6 +36,12 @@ pub(crate) enum SystemReactionCommand {
     },
     /// Pop the top UI tree off the stack.
     PopTree,
+    /// Write a value to a writable store slot at the game-logic stage (M13 Goal F,
+    /// Task 4). The drain applies it through the readonly-gated JSON write
+    /// (`primitives::store::write_state_slot_json`): a readonly slot warns and
+    /// no-ops, an engine-owned writable slot is a valid target. `value` carries the
+    /// raw JSON value coerced to the slot's declared type by the write path.
+    SetState { slot: String, value: serde_json::Value },
 }
 
 /// Shared handle to the per-frame system-command queue. Cloned into the
@@ -211,6 +217,21 @@ pub(crate) fn register_system_reaction_primitives(registry: &mut SystemReactionR
         queue.push(SystemReactionCommand::PopTree);
         Ok(())
     });
+    // `setState` writes a value to a writable store slot at the game-logic stage
+    // (M13 Goal F, Task 4). It carries no `tag` (system-targeted); the drain
+    // applies it through the readonly-gated JSON write. The slider widget emits
+    // this on a captured nav step; scripts may fire it as a named reaction.
+    registry.register("setState", |args, queue| {
+        let parsed: SetStateArgs =
+            serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
+                reason: format!("setState: failed to deserialize args: {e}"),
+            })?;
+        queue.push(SystemReactionCommand::SetState {
+            slot: parsed.slot,
+            value: parsed.value,
+        });
+        Ok(())
+    });
 }
 
 // --- args shapes ------------------------------------------------------------
@@ -254,6 +275,13 @@ struct OpenMenuArgs {
     tree: String,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetStateArgs {
+    slot: String,
+    value: serde_json::Value,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,6 +296,7 @@ mod tests {
         assert!(r.contains("showDialog"));
         assert!(r.contains("openMenu"));
         assert!(r.contains("closeDialog"));
+        assert!(r.contains("setState"));
         // Defensive: system reactions are a distinct arm; entity primitives
         // are NOT registered here.
         assert!(!r.contains("setEmitterRate"));
@@ -390,6 +419,45 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(queue.take(), vec![SystemReactionCommand::PopTree]);
+    }
+
+    #[test]
+    fn set_state_dispatch_enqueues_command_with_slot_and_value() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "slot": "audio.master", "value": 0.5 });
+        assert!(r.dispatch("setState", &args, &queue).unwrap());
+        assert_eq!(
+            queue.take(),
+            vec![SystemReactionCommand::SetState {
+                slot: "audio.master".to_string(),
+                value: serde_json::json!(0.5),
+            }]
+        );
+    }
+
+    #[test]
+    fn set_state_carries_arbitrary_json_value_shapes() {
+        // The command is type-agnostic at the queue layer; the drain's write path
+        // coerces to the slot's declared type. A string, bool, and array all ride.
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+        r.dispatch(
+            "setState",
+            &serde_json::json!({ "slot": "ui.label", "value": "hi" }),
+            &queue,
+        )
+        .unwrap();
+        assert_eq!(
+            queue.take(),
+            vec![SystemReactionCommand::SetState {
+                slot: "ui.label".to_string(),
+                value: serde_json::json!("hi"),
+            }]
+        );
     }
 
     #[test]

@@ -548,6 +548,7 @@ mod tests {
             z,
             group,
             neighbors: FocusNeighbors::default(),
+            interaction: None,
         }
     }
 

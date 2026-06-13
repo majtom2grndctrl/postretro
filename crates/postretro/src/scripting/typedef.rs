@@ -726,6 +726,32 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   /** System-reaction body: pop the top UI tree off the modal stack. Warn-once "no stack" until Goal F's modal stack lands. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
   export function closeDialog(): PrimitiveReactionDescriptor;
 
+  /** System-reaction body (M13 Goal F): write `value` to the writable store slot `slot` at the game-logic stage. Readonly-gated — a readonly slot warns and stays unchanged; an engine-owned writable slot is valid. `value` is coerced to the slot's declared type. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
+  export function setState(slot: string, value: number | boolean | string | number[]): PrimitiveReactionDescriptor;
+
+  // -------------------------------------------------------------------------
+  // Interactive UI widget descriptors (M13 Goal F, Task 4). Authored as JSON in
+  // a UI tree descriptor; the engine builds the retained tree from them. These
+  // type-only aliases pin the wire shape (camelCase, internally tagged on `kind`).
+
+  /** A widget color slot: an inline linear-RGBA tuple or a theme token name. */
+  export type WidgetColor = [number, number, number, number] | string;
+
+  /** A slot binding shared by `slider`/`bar`: a dotted slot name plus optional value-tween (number shape). */
+  export type SliderBind = { slot: string; tween?: { durationMs: number; easing: "linear" | "easeIn" | "easeOut" | "easeInOut"; from?: number } };
+
+  /** Continuous value→style map (M13 Goal E): fill fraction `value/max` maps to the first covering band; a trailing no-`upTo` band is the default. */
+  export type WidgetStyleRanges = { max: number; entries: { upTo?: number; color?: WidgetColor; pulse?: { periodMs: number }; flash?: { durationMs: number } }[] };
+
+  /** Interactive button widget. Focusable; activation (gamepad confirm or pointer click) fires the `onPress` named reaction through the reaction registry. `id` is required (activation resolves the focused node id back to `onPress`). */
+  export type ButtonWidget = { kind: "button"; id: string; label: string; onPress: string; focusNeighbors?: Record<string, string> };
+
+  /** Interactive slider widget. Focusable; nav wires named in `capturesNav` (e.g. `["nav.left", "nav.right"]` — an array, not a bool) step the bound value by `step` within `[min, max]` and emit a `setState` write on the N+1 frame. */
+  export type SliderWidget = { kind: "slider"; id: string; label: string; bind: SliderBind; min: number; max: number; step: number; capturesNav?: string[]; focusNeighbors?: Record<string, string> };
+
+  /** Passive horizontal value bar. Fill fraction is `value/max` clamped to [0, 1]; `styleRanges` recolors the fill; a bind tween eases the displayed fraction. */
+  export type BarWidget = { kind: "bar"; bind: SliderBind; max: number; fill: WidgetColor; background: WidgetColor; id?: string; styleRanges?: WidgetStyleRanges };
+
   /** Pure identity builder for entity-type descriptors. Returns the descriptor as-is; its sole purpose is a typed construction site. */
   export function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor;
 
@@ -1325,6 +1351,41 @@ declare function openMenu(tree: string): PrimitiveReactionDescriptor
 --- "no stack" until Goal F's modal stack lands. Pure: returns a
 --- `PrimitiveReactionDescriptor`, no FFI.
 declare function closeDialog(): PrimitiveReactionDescriptor
+
+--- System-reaction body (M13 Goal F): write `value` to the writable store slot
+--- `slot` at the game-logic stage. Readonly-gated -- a readonly slot warns and
+--- stays unchanged; an engine-owned writable slot is valid. `value` is coerced to
+--- the slot's declared type. Pure: returns a `PrimitiveReactionDescriptor`, no FFI.
+declare function setState(slot: string, value: number | boolean | string | {number}): PrimitiveReactionDescriptor
+
+-- ---------------------------------------------------------------------------
+-- Interactive UI widget descriptors (M13 Goal F, Task 4). Authored as data in a
+-- UI tree descriptor; the engine builds the retained tree from them. These
+-- type-only aliases pin the wire shape (camelCase, internally tagged on `kind`).
+
+--- A widget color slot: an inline linear-RGBA tuple or a theme token name.
+export type WidgetColor = {number} | string
+
+--- A slot binding shared by `slider`/`bar`: a dotted slot name plus optional
+--- value-tween (number shape).
+export type SliderBind = { slot: string, tween: { durationMs: number, easing: string, from: number? }? }
+
+--- Continuous value→style map (M13 Goal E): fill fraction `value/max` maps to the
+--- first covering band; a trailing no-`upTo` band is the default.
+export type WidgetStyleRanges = { max: number, entries: { upTo: number?, color: WidgetColor?, pulse: { periodMs: number }?, flash: { durationMs: number }? } }
+
+--- Interactive button widget. Focusable; activation (gamepad confirm or pointer
+--- click) fires the `onPress` named reaction. `id` is required.
+export type ButtonWidget = { kind: "button", id: string, label: string, onPress: string, focusNeighbors: { [string]: string }? }
+
+--- Interactive slider widget. Focusable; nav wires named in `capturesNav` (an
+--- array, not a bool) step the bound value by `step` within [min, max] and emit a
+--- `setState` write on the N+1 frame.
+export type SliderWidget = { kind: "slider", id: string, label: string, bind: SliderBind, min: number, max: number, step: number, capturesNav: {string}?, focusNeighbors: { [string]: string }? }
+
+--- Passive horizontal value bar. Fill fraction is `value/max` clamped to [0, 1];
+--- `styleRanges` recolors the fill; a bind tween eases the displayed fraction.
+export type BarWidget = { kind: "bar", bind: SliderBind, max: number, fill: WidgetColor, background: WidgetColor, id: string?, styleRanges: WidgetStyleRanges? }
 
 -- ---------------------------------------------------------------------------
 -- Runtime-value vocabulary — the typed command buffer (scripting.md §11). The

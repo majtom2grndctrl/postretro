@@ -120,4 +120,17 @@ function UiReactionsSdk.closeDialog(): PrimitiveReactionDescriptor
   return { primitive = "closeDialog", args = {} }
 end
 
+--- Write `value` to the writable store slot `slot` at the game-logic stage
+--- (M13 Goal F). Pure: returns a primitive reaction body, no engine side effect.
+--- The write is readonly-gated: a readonly slot warns and is left unchanged; an
+--- engine-owned writable slot is a valid target. `value` is coerced to the slot's
+--- declared type by the write path. The slider widget emits this on a captured
+--- nav step; scripts fire it as a named reaction.
+function UiReactionsSdk.setState(
+  slot: string,
+  value: number | boolean | string | {number}
+): PrimitiveReactionDescriptor
+  return { primitive = "setState", args = { slot = slot, value = value } }
+end
+
 return UiReactionsSdk

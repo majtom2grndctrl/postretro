@@ -251,6 +251,12 @@ pub enum Widget {
     HStack(ContainerWidget),
     Grid(GridWidget),
     Spacer(SpacerWidget),
+    // M13 Goal F, Task 4 — the first interactive widgets. `button`/`slider` are
+    // focusable (their focusable marker is plugged into `tree::focus_meta` /
+    // `tree::widget_interaction`); `bar` is a passive bound display widget.
+    Button(ButtonWidget),
+    Slider(SliderWidget),
+    Bar(BarWidget),
 }
 
 /// Leaf text run. `content` is the literal string; `font_size` is logical px;
@@ -504,6 +510,93 @@ pub struct SpacerWidget {
     /// not focusable, but it may still carry an id for neighbor references.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+}
+
+/// Interactive button (M13 Goal F, Task 4). Focusable; activation — a focus-engine
+/// `confirm` on the focused button, or a pointer click — fires the `on_press`
+/// named reaction through the same reaction registry every entity/system reaction
+/// uses. The button renders its `label` as a centered text run.
+///
+/// `id` is required (unlike the optional `id` on passive widgets): activation maps
+/// the focused node id back to this button's `on_press`, so the id must be stable.
+/// `focus_neighbors` carries directional overrides exactly like the passive widgets.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ButtonWidget {
+    pub id: String,
+    pub label: String,
+    /// Named reaction fired on activation (confirm or click). Resolved against the
+    /// reaction registry by the app — the same vocabulary entity/system reactions use.
+    pub on_press: String,
+    /// Directional focus-neighbor overrides (M13 Goal F, Task 3). See
+    /// `TextWidget::focus_neighbors`.
+    #[serde(default, skip_serializing_if = "FocusNeighbors::is_empty")]
+    pub focus_neighbors: FocusNeighbors,
+}
+
+/// Interactive slider (M13 Goal F, Task 4). Focusable; nav steps it captures
+/// (`captures_nav`, e.g. `["nav.left", "nav.right"]`) adjust its value by `step`
+/// within `[min, max]` and emit a `setState` write to the bound slot on the N+1
+/// frame. The slider renders its `label` and current numeric value as text.
+///
+/// `bind` follows the `PanelBind`/`TextBind` shape (slot name + optional tween).
+/// `id` is required for the same reason as `ButtonWidget::id` — nav-capture and
+/// value-step resolve through the focused node id.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SliderWidget {
+    pub id: String,
+    pub label: String,
+    pub bind: SliderBind,
+    pub min: f32,
+    pub max: f32,
+    pub step: f32,
+    /// Nav wire names this slider consumes (e.g. `["nav.left", "nav.right"]`).
+    /// An array, NOT a bool — a slider gives the named nav intents first refusal,
+    /// stepping its value instead of moving focus. Absent/empty means the slider
+    /// captures no nav (focus moves normally). Skip-serialized when empty so a
+    /// capture-less slider omits the key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub captures_nav: Vec<String>,
+    /// Directional focus-neighbor overrides (M13 Goal F, Task 3).
+    #[serde(default, skip_serializing_if = "FocusNeighbors::is_empty")]
+    pub focus_neighbors: FocusNeighbors,
+}
+
+/// State binding for a `slider` widget. Mirrors `PanelBind`'s shape (slot name +
+/// optional tween) so the bind vocabulary stays uniform across bound widgets; a
+/// slider binds a numeric slot, so its tween is the `TextTween` (number) shape.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SliderBind {
+    pub slot: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tween: Option<TextTween>,
+}
+
+/// Passive horizontal value bar (M13 Goal F, Task 4). Not focusable. Renders a
+/// `background` quad with a `fill` quad whose width is `value/max` clamped to
+/// `[0, 1]` of the bar's laid-out width. `bind` follows the `PanelBind`/`TextBind`
+/// shape; the bar uses the eased display value like other bound widgets, and
+/// `style_ranges` (M13 Goal E) recolors the fill when present.
+///
+/// `fill`/`background` are color slots (literal or theme token). `bar` is
+/// horizontal-only in v1 (a vertical field is a later additive change).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BarWidget {
+    pub bind: SliderBind,
+    pub max: f32,
+    pub fill: ColorValue,
+    pub background: ColorValue,
+    /// Authored stable id (M13 Goal F, Task 3). See `TextWidget::id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Optional continuous value→style map (M13 Goal E): recolors the `fill` band
+    /// by `value/max`. Calls the widget-agnostic `style_ranges::evaluate`. Absent
+    /// on a plain bar (skip-serialized), so a styleRange-less bar omits the key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style_ranges: Option<StyleRanges>,
 }
 
 /// Cross-axis alignment of a container's children.
@@ -949,5 +1042,90 @@ mod tests {
         let tree: AnchoredTree = serde_json::from_str(json).expect("deserialize");
         assert_eq!(tree.initial_focus.as_deref(), Some("btnA"));
         assert_eq!(serde_json::to_string(&tree).unwrap(), json);
+    }
+
+    // --- M13 Goal F, Task 4: interactive widgets ---
+
+    #[test]
+    fn button_round_trips_with_on_press_in_camel_case() {
+        // A `button` carrying id/label/onPress keeps its camelCase wire form.
+        // Field order: kind, id, label, onPress (declaration order).
+        let json = r#"{"kind":"button","id":"resume","label":"Resume","onPress":"resumeGame"}"#;
+        let widget: Widget = serde_json::from_str(json).expect("must deserialize");
+        assert!(matches!(widget, Widget::Button(_)));
+        let reserialized = serde_json::to_string(&widget).expect("must serialize");
+        assert_eq!(reserialized, json);
+    }
+
+    #[test]
+    fn button_with_focus_neighbors_round_trips_and_capture_less_omits_keys() {
+        let json = r#"{"kind":"button","id":"a","label":"A","onPress":"fa","focusNeighbors":{"down":"b"}}"#;
+        let widget: Widget = serde_json::from_str(json).expect("must deserialize");
+        assert_eq!(serde_json::to_string(&widget).unwrap(), json);
+        // A neighborless button omits the focusNeighbors key entirely.
+        let plain = r#"{"kind":"button","id":"a","label":"A","onPress":"fa"}"#;
+        let widget: Widget = serde_json::from_str(plain).expect("must deserialize");
+        assert_eq!(serde_json::to_string(&widget).unwrap(), plain);
+    }
+
+    #[test]
+    fn slider_round_trips_with_captures_nav_array() {
+        // `capturesNav` is an ARRAY of nav wire names, not a bool. The slider
+        // round-trips byte-identically. Field order: kind, id, label, bind, min,
+        // max, step, capturesNav.
+        let json = r#"{"kind":"slider","id":"vol","label":"Volume","bind":{"slot":"audio.master"},"min":0.0,"max":1.0,"step":0.1,"capturesNav":["nav.left","nav.right"]}"#;
+        let widget: Widget = serde_json::from_str(json).expect("must deserialize");
+        match &widget {
+            Widget::Slider(s) => {
+                assert_eq!(s.captures_nav, vec!["nav.left", "nav.right"]);
+                assert_eq!(s.min, 0.0);
+                assert_eq!(s.max, 1.0);
+                assert_eq!(s.step, 0.1);
+            }
+            _ => panic!("expected slider"),
+        }
+        assert_eq!(serde_json::to_string(&widget).unwrap(), json);
+    }
+
+    #[test]
+    fn slider_omits_empty_captures_nav_and_supports_bind_tween() {
+        // No capturesNav and no tween: both keys omitted.
+        let plain = r#"{"kind":"slider","id":"vol","label":"Volume","bind":{"slot":"audio.master"},"min":0.0,"max":1.0,"step":0.1}"#;
+        let widget: Widget = serde_json::from_str(plain).expect("must deserialize");
+        let reserialized = serde_json::to_string(&widget).unwrap();
+        assert_eq!(reserialized, plain);
+        assert!(!reserialized.contains("capturesNav"));
+        assert!(!reserialized.contains("tween"));
+
+        // A bind tween (number shape, TextTween) round-trips.
+        let tween = r#"{"kind":"slider","id":"vol","label":"Volume","bind":{"slot":"audio.master","tween":{"durationMs":120.0,"easing":"easeOut"}},"min":0.0,"max":1.0,"step":0.1}"#;
+        let widget: Widget = serde_json::from_str(tween).expect("must deserialize");
+        assert_eq!(serde_json::to_string(&widget).unwrap(), tween);
+    }
+
+    #[test]
+    fn bar_round_trips_with_max_fill_background() {
+        // A `bar` binding `player.health` with max/fill/background. Field order:
+        // kind, bind, max, fill, background.
+        let json = r#"{"kind":"bar","bind":{"slot":"player.health"},"max":100.0,"fill":[0.0,1.0,0.0,1.0],"background":[0.1,0.1,0.1,1.0]}"#;
+        let widget: Widget = serde_json::from_str(json).expect("must deserialize");
+        assert!(matches!(widget, Widget::Bar(_)));
+        assert_eq!(serde_json::to_string(&widget).unwrap(), json);
+    }
+
+    #[test]
+    fn bar_round_trips_with_style_ranges_and_token_colors() {
+        // A bar may use theme-token color slots and a styleRanges map. Both
+        // round-trip byte-identically; absent id/styleRanges omit their keys.
+        let json = r#"{"kind":"bar","bind":{"slot":"player.health"},"max":100.0,"fill":"ok","background":"panel.default","styleRanges":{"max":100.0,"entries":[{"upTo":0.25,"color":"critical"},{"color":"ok"}]}}"#;
+        let widget: Widget = serde_json::from_str(json).expect("must deserialize");
+        assert_eq!(serde_json::to_string(&widget).unwrap(), json);
+
+        let plain = r#"{"kind":"bar","bind":{"slot":"player.health"},"max":100.0,"fill":[0.0,1.0,0.0,1.0],"background":[0.1,0.1,0.1,1.0]}"#;
+        let widget: Widget = serde_json::from_str(plain).expect("must deserialize");
+        let reserialized = serde_json::to_string(&widget).unwrap();
+        assert_eq!(reserialized, plain);
+        assert!(!reserialized.contains("styleRanges"));
+        assert!(!reserialized.contains("\"id\""));
     }
 }

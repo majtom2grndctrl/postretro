@@ -1249,6 +1249,14 @@ impl ApplicationHandler for App {
                         input::UiIntentPayload::Text(_) => {}
                     }
                 }
+                // Slider nav-capture (M13 Goal F, Task 4): the focused slider gets
+                // first refusal on its `capturesNav` wire names. A captured nav step
+                // adjusts the slider's bound value by `step` within `[min, max]` and
+                // emits a `setState` write (applied at the game-logic command drain
+                // below → the bound slot changes on the N+1 frame). Captured intents
+                // are removed so the focus engine never sees them (focus stays put).
+                self.apply_slider_nav_capture(&mut nav_intents);
+
                 // The active (top) tree key: the modal stack's top entry name, else
                 // the always-on HUD. `None` is never the gameplay case (the HUD is
                 // always present), but the engine handles it.
@@ -1267,7 +1275,16 @@ impl ApplicationHandler for App {
                     self.ui_input_mode,
                     frame_dt,
                 );
-                self.ui_focused_id = focus_result.focused;
+                self.ui_focused_id = focus_result.focused.clone();
+
+                // Button activation (M13 Goal F, Task 4): a `confirm` (gamepad
+                // confirm or pointer click — the focus engine reports both as
+                // `confirmed`) on a focused button fires its `onPress` named reaction
+                // through the same reaction path entity/system reactions use, so a
+                // click and a gamepad confirm have an identical observable effect.
+                if focus_result.confirmed {
+                    self.fire_focused_button_activation(focus_result.focused.as_deref());
+                }
 
                 // drain_look_inputs() must precede snapshot(); both touch
                 // mouse_axes and look state belongs to the render-rate path.
@@ -2460,6 +2477,119 @@ impl App {
             .collect()
     }
 
+    /// Apply slider nav-capture for the focused slider (M13 Goal F, Task four).
+    ///
+    /// The currently focused node
+    /// (last frame's `ui_focused_id`, the focus going into this frame) is matched
+    /// against the exported focus rects; if it is a `slider`, each nav intent whose
+    /// wire name is in the slider's `captures_nav` is REMOVED from `nav_intents`
+    /// (the focus engine never sees it) and, when directional, steps the bound value
+    /// by `step` clamped to the slider's min/max, enqueuing a `setState` write
+    /// applied at the game-logic command drain (the bound slot changes on N+1).
+    fn apply_slider_nav_capture(&mut self, nav_intents: &mut Vec<input::NavIntent>) {
+        use render::ui::tree::NodeInteraction;
+
+        let Some(focused_id) = self.ui_focused_id.as_deref() else {
+            return;
+        };
+        let Some(rects) = self.ui_focus_rects.as_ref() else {
+            return;
+        };
+        // Resolve the focused slider's interaction (clone out so the immutable
+        // borrow of the rect list drops before we touch the slot table / queue).
+        let slider = rects.rects.iter().find(|r| r.id == focused_id).and_then(|r| {
+            match &r.interaction {
+                Some(NodeInteraction::Slider {
+                    slot,
+                    min,
+                    max,
+                    step,
+                    captures_nav,
+                }) => Some((slot.clone(), *min, *max, *step, captures_nav.clone())),
+                _ => None,
+            }
+        });
+        let Some((slot, min, max, step, captures_nav)) = slider else {
+            return;
+        };
+        if captures_nav.is_empty() {
+            return;
+        }
+
+        // Partition: captured intents are swallowed (and may step the value);
+        // uncaptured intents stay for the focus engine.
+        let mut retained = Vec::with_capacity(nav_intents.len());
+        let mut delta_steps = 0i32;
+        for &nav in nav_intents.iter() {
+            if captures_nav.iter().any(|name| name == nav.wire_name()) {
+                // Captured: nav.right/up increase, nav.left/down decrease; any other
+                // captured intent is swallowed without moving the value.
+                match nav {
+                    input::NavIntent::Right | input::NavIntent::Up => delta_steps += 1,
+                    input::NavIntent::Left | input::NavIntent::Down => delta_steps -= 1,
+                    _ => {}
+                }
+            } else {
+                retained.push(nav);
+            }
+        }
+        *nav_intents = retained;
+
+        if delta_steps == 0 {
+            return;
+        }
+
+        // Step the bound value from its current slot reading (or the min as a floor
+        // when unset) and emit one `setState` for the new clamped value.
+        let current = {
+            let table = self.script_ctx.slot_table.borrow();
+            match table.get(&slot).and_then(|r| r.value.as_ref()) {
+                Some(crate::scripting::slot_table::SlotValue::Number(n)) => *n,
+                _ => min,
+            }
+        };
+        let next = (current + step * delta_steps as f32).clamp(min, max);
+        self.script_ctx
+            .system_commands
+            .push(SystemReactionCommand::SetState {
+                slot,
+                value: serde_json::json!(next),
+            });
+    }
+
+    /// Fire a focused button's `onPress` named reaction on activation (M13 Goal F,
+    /// Task 4). `focused_id` is the focus engine's reported focused node this tick;
+    /// when it resolves to a `button` interaction on the exported rect list, the
+    /// `onPress` reaction fires through the shared named-reaction path — the same
+    /// vocabulary entity/system reactions use — so a gamepad confirm and a pointer
+    /// click produce an identical observable effect.
+    fn fire_focused_button_activation(&mut self, focused_id: Option<&str>) {
+        use render::ui::tree::NodeInteraction;
+
+        let Some(focused_id) = focused_id else {
+            return;
+        };
+        let Some(rects) = self.ui_focus_rects.as_ref() else {
+            return;
+        };
+        let on_press = rects.rects.iter().find(|r| r.id == focused_id).and_then(|r| {
+            match &r.interaction {
+                Some(NodeInteraction::Button { on_press }) => Some(on_press.clone()),
+                _ => None,
+            }
+        });
+        if let Some(on_press) = on_press {
+            let _ = fire_named_event_with_sequences(
+                &on_press,
+                &self.script_ctx.data_registry.borrow(),
+                &self.sequence_registry,
+                &self.reaction_registry,
+                &self.system_registry,
+                &self.script_ctx,
+            );
+        }
+    }
+
     /// Drain the system-reaction command queue and route each typed command to
     /// its subsystem consumer. Runs once per frame after the post-tick event
     /// drains (and again after the crossing detector fires), so audio / input /
@@ -2476,6 +2606,8 @@ impl App {
     ///   `PushTree`'s name through the stack's registry (unknown name warns +
     ///   no-op, never a panic). The top tree's capture mode is reconciled with the
     ///   input seam + focus afterward by `reconcile_ui_focus`.
+    /// - `SetState` → readonly-gated JSON write to a writable store slot at the
+    ///   game-logic stage (readonly warns + no-ops; unknown/type-mismatch logs).
     fn dispatch_system_commands(&mut self) {
         for command in self.script_ctx.system_commands.take() {
             match command {
@@ -2519,6 +2651,18 @@ impl App {
                 }
                 SystemReactionCommand::PopTree => {
                     self.modal_stack.pop();
+                }
+                SystemReactionCommand::SetState { slot, value } => {
+                    // Readonly-gated JSON write at the game-logic stage: a readonly
+                    // slot warns and no-ops; an unknown slot or type mismatch logs
+                    // and is skipped — never a panic. NEVER the engine bypass.
+                    if let Err(err) = crate::scripting::primitives::store::write_state_slot_json(
+                        &self.script_ctx,
+                        &slot,
+                        &value,
+                    ) {
+                        log::warn!("[Scripting] setState write to `{slot}` failed: {err}");
+                    }
                 }
             }
         }

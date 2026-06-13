@@ -333,6 +333,88 @@ pub(crate) fn write_store_slot(
     Ok(())
 }
 
+/// Readonly-gated write of a JSON value to a slot by dotted name (M13 Goal F,
+/// Task 4 — the `setState` reaction's slot-write path). Unlike [`write_store_slot`]
+/// (the engine bypass), this gates on **writability**: a readonly slot warns and
+/// no-ops, leaving the value unchanged; an engine-owned but writable slot is a
+/// valid target. The JSON value is coerced to the slot's declared type (the same
+/// type/range/enum validation [`write_store_slot`] applies), so `setState` reuses
+/// one validation path. An unknown slot or a type mismatch returns an error the
+/// drain logs — never a panic. NEVER use the engine bypass for `setState`.
+pub(crate) fn write_state_slot_json(
+    ctx: &ScriptCtx,
+    name: &str,
+    value: &Value,
+) -> Result<(), ScriptError> {
+    let mut table = ctx.slot_table.borrow_mut();
+    let slot = table
+        .get_mut(name)
+        .ok_or_else(|| unknown_slot("setState", name))?;
+    if slot.schema.readonly {
+        log::warn!("[Scripting] setState: rejected write to readonly slot `{name}`");
+        return Ok(());
+    }
+    let coerced = json_value_for_slot(name, &slot.schema.slot_type, value)?;
+    slot.value = Some(validate_slot_value(name, &slot.schema, coerced)?);
+    Ok(())
+}
+
+/// Coerce a JSON value to a `SlotValue` matching the slot's declared type for the
+/// `setState` path. Mirrors `script_value_for_slot` but takes a `serde_json::Value`
+/// (the reaction-args representation) instead of a runtime `ScriptSlotValue`.
+fn json_value_for_slot(
+    name: &str,
+    slot_type: &SlotType,
+    value: &Value,
+) -> Result<SlotValue, ScriptError> {
+    match slot_type {
+        SlotType::Number => value
+            .as_f64()
+            .map(|n| n as f32)
+            .map(SlotValue::Number)
+            .ok_or_else(|| wrong_write_type(name, slot_type, json_value_kind(value))),
+        SlotType::Boolean => value
+            .as_bool()
+            .map(SlotValue::Boolean)
+            .ok_or_else(|| wrong_write_type(name, slot_type, json_value_kind(value))),
+        SlotType::String => value
+            .as_str()
+            .map(|s| SlotValue::String(s.to_string()))
+            .ok_or_else(|| wrong_write_type(name, slot_type, json_value_kind(value))),
+        SlotType::Enum { .. } => value
+            .as_str()
+            .map(|s| SlotValue::Enum(s.to_string()))
+            .ok_or_else(|| wrong_write_type(name, slot_type, json_value_kind(value))),
+        SlotType::Array => {
+            let array = value
+                .as_array()
+                .ok_or_else(|| wrong_write_type(name, slot_type, json_value_kind(value)))?;
+            let values = array
+                .iter()
+                .enumerate()
+                .map(|(index, element)| {
+                    let number = element.as_f64().ok_or_else(|| {
+                        wrong_write_type(name, slot_type, json_value_kind(element))
+                    })?;
+                    finite_array_f32(name, index, number)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(SlotValue::Array(values))
+        }
+    }
+}
+
+fn json_value_kind(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
 fn write_script_store_slot(
     ctx: &ScriptCtx,
     name: &str,
@@ -1170,5 +1252,74 @@ mod tests {
         }
         assert!(read_store_slot(&ctx, "test.missing").is_err());
         assert!(write_store_slot(&ctx, "test.missing", SlotValue::Number(1.0)).is_err());
+    }
+
+    // --- M13 Goal F, Task 4: setState readonly-gated JSON write ---
+
+    #[test]
+    fn set_state_json_write_applies_to_writable_slot_with_validation() {
+        let ctx = ScriptCtx::new();
+        define_runtime_test_store(&ctx);
+
+        // A number write coerces and clamps to the declared [0, 1] range.
+        write_state_slot_json(&ctx, "test.number", &serde_json::json!(5)).unwrap();
+        assert_eq!(
+            read_store_slot(&ctx, "test.number").unwrap(),
+            SlotValue::Number(1.0)
+        );
+        // Boolean / string / enum / array all coerce from their JSON forms.
+        write_state_slot_json(&ctx, "test.boolean", &serde_json::json!(true)).unwrap();
+        write_state_slot_json(&ctx, "test.string", &serde_json::json!("after")).unwrap();
+        write_state_slot_json(&ctx, "test.enum", &serde_json::json!("active")).unwrap();
+        write_state_slot_json(&ctx, "test.array", &serde_json::json!([2.0, 3.5])).unwrap();
+        assert_eq!(
+            read_store_slot(&ctx, "test.boolean").unwrap(),
+            SlotValue::Boolean(true)
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "test.enum").unwrap(),
+            SlotValue::Enum("active".to_string())
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "test.array").unwrap(),
+            SlotValue::Array(vec![2.0, 3.5])
+        );
+    }
+
+    #[test]
+    fn set_state_json_write_rejects_readonly_slot_and_leaves_value_unchanged() {
+        // `player.health` is an engine-owned readonly-to-scripts slot. setState
+        // warns and no-ops; the value is unchanged. Distinct from the engine
+        // bypass (`write_store_slot`), which succeeds — proven below.
+        let ctx = ScriptCtx::new();
+        write_store_slot(&ctx, "player.health", SlotValue::Number(50.0)).unwrap();
+
+        write_state_slot_json(&ctx, "player.health", &serde_json::json!(25.0)).unwrap();
+        assert_eq!(
+            read_store_slot(&ctx, "player.health").unwrap(),
+            SlotValue::Number(50.0),
+            "readonly slot is unchanged after setState"
+        );
+
+        // The engine bypass still writes the readonly slot.
+        write_store_slot(&ctx, "player.health", SlotValue::Number(75.0)).unwrap();
+        assert_eq!(
+            read_store_slot(&ctx, "player.health").unwrap(),
+            SlotValue::Number(75.0)
+        );
+    }
+
+    #[test]
+    fn set_state_json_write_errors_on_unknown_slot_and_type_mismatch() {
+        let ctx = ScriptCtx::new();
+        define_runtime_test_store(&ctx);
+        assert!(write_state_slot_json(&ctx, "test.missing", &serde_json::json!(1)).is_err());
+        // A boolean into a number slot is a type mismatch.
+        assert!(write_state_slot_json(&ctx, "test.number", &serde_json::json!(true)).is_err());
+        // The number slot is unchanged after the rejected write.
+        assert_eq!(
+            read_store_slot(&ctx, "test.number").unwrap(),
+            SlotValue::Number(0.5)
+        );
     }
 }

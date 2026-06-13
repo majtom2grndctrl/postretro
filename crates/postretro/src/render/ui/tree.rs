@@ -12,8 +12,9 @@ use taffy::prelude::{
 };
 
 use super::descriptor::{
-    Align, AnchoredTree, Border, ColorValue, ContainerWidget, Easing, GridWidget, ImageWidget,
-    PanelBind, PanelWidget, SpacingValue, TextBind, TextWidget, Widget,
+    Align, AnchoredTree, BarWidget, Border, ButtonWidget, ColorValue, ContainerWidget, Easing,
+    GridWidget, ImageWidget, PanelBind, PanelWidget, SliderBind, SliderWidget, SpacingValue,
+    TextBind, TextWidget, Widget,
 };
 use super::layout::{Anchor, REFERENCE_HEIGHT, REFERENCE_WIDTH};
 use super::style_ranges::{StyleEffectState, StyleRanges, evaluate};
@@ -31,6 +32,16 @@ const UNKNOWN_COLOR_FALLBACK: [f32; 4] = [1.0, 0.0, 1.0, 1.0];
 
 /// Fallback spacing for an unknown spacing token: zero logical px.
 const UNKNOWN_SPACING_FALLBACK: f32 = 0.0;
+
+/// Default text size (logical-reference px) for an interactive `button`/`slider`
+/// label run. The widgets carry no per-instance `font_size` in v1 (a later
+/// additive field could expose it); their labels measure/draw at this size.
+const INTERACTIVE_LABEL_FONT_SIZE: f32 = 18.0;
+
+/// Default bar size (logical-reference px, `[width, height]`). A `bar` has no
+/// intrinsic content to measure, so its leaf carries an explicit style size; a
+/// container's `align`/stretch may still override it. Horizontal-only in v1.
+const DEFAULT_BAR_SIZE: [f32; 2] = [120.0, 12.0];
 
 // --- Value-tween easing (M13 UI Value-Tweening, Task 3) ---------------------
 
@@ -308,6 +319,27 @@ enum NodeContext {
     /// `asset` doubles as the size key. Image batching/binding lands in the
     /// renderer; the tree records the key so the draw step can group by it.
     Image { asset: String },
+    /// Horizontal value bar (M13 Goal F, Task 4). Draws a `background` quad filling
+    /// its laid-out rect, then a `fill` quad whose width is `value/max` clamped to
+    /// `[0, 1]` of the rect width. `value` resolves from `bind`'s slot (the eased
+    /// display fraction on the retained tweened path, via `last_resolved`); a
+    /// styleRanges map recolors the fill the same way bound text/panel do. Passive
+    /// (never focusable activation); `bind`'s tween eases the displayed fraction.
+    Bar {
+        bind: SliderBind,
+        max: f32,
+        fill: [f32; 4],
+        background: [f32; 4],
+        /// Last resolved (or eased) value the diff observed, for change detection
+        /// and to feed the draw the eased display fraction. `None` until first diff.
+        last_resolved: Option<f32>,
+        /// Live tween state when `bind`'s `tween` is `Some` and the slot has
+        /// resolved to a `Number` at least once. While `Some`, the driver eases the
+        /// displayed value toward the slot target; the draw reads `display`.
+        tween: Option<TweenState<f32>>,
+        style_ranges: Option<StyleRanges>,
+        style_state: RefCell<StyleEffectState>,
+    },
 }
 
 /// Map descriptor cross-axis `Align` to taffy `AlignItems`.
@@ -767,6 +799,18 @@ impl UiTree {
                         // Appearance-only: no mark_dirty, no relayout.
                     }
                 }
+                Some(NodeContext::Bar {
+                    bind,
+                    last_resolved,
+                    tween,
+                    ..
+                }) => {
+                    if drive_bar_binding(bind, last_resolved, tween, slot_values, time_seconds) {
+                        // A bar is fixed-size: a value change only recolors/resizes
+                        // its fill quad — appearance-only, never a relayout.
+                        diff.appearance_changed = true;
+                    }
+                }
                 _ => {}
             }
         }
@@ -872,6 +916,7 @@ impl UiTree {
                 z: this_z,
                 group,
                 neighbors,
+                interaction: widget_interaction(widget),
             });
             if let Some(g) = group {
                 out.groups[g].members.push(rect_index);
@@ -997,6 +1042,58 @@ impl UiTree {
                 // one batch; the renderer resolves the key→bind-group at encode.
                 let rect = project_rect(ref_origin, layout, scale, canvas_origin);
                 data.image_quad_for(asset).push(UiInstance::image(rect));
+            }
+            Some(NodeContext::Bar {
+                bind,
+                max,
+                fill,
+                background,
+                last_resolved,
+                tween,
+                style_ranges,
+                style_state,
+            }) => {
+                // Background quad fills the whole laid-out rect.
+                let rect = project_rect(ref_origin, layout, scale, canvas_origin);
+                data.quads
+                    .push(UiInstance::panel(rect, *background, [0.0; 4]));
+
+                // The displayed value: the eased tween display when active (the
+                // styleRanges/fill-fraction contract reads the value the widget
+                // RENDERS, which mid-tween is the display value), else the raw slot
+                // `Number`. The fresh/splash path never tweens, so it reads the slot.
+                let value = match (tween, last_resolved) {
+                    (Some(_), Some(displayed)) => *displayed,
+                    _ => bar_slot_value(bind, slot_values),
+                };
+                let fraction = if *max > 0.0 {
+                    (value / *max).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+
+                // styleRanges recolors the fill the same widget-agnostic way bound
+                // text/panel do: the evaluator maps the value against its own `max`.
+                let mut fill_color = *fill;
+                if let Some(ranges) = style_ranges {
+                    fill_color = evaluate(
+                        ranges,
+                        value,
+                        fill_color,
+                        inert_theme,
+                        &mut style_state.borrow_mut(),
+                        time_seconds,
+                    );
+                }
+
+                // Fill quad: same top-left/height, width scaled by the fraction.
+                // Snap to whole device pixels like the background rect.
+                let fill_width = (rect[2] * fraction).round();
+                if fill_width > 0.0 {
+                    let fill_rect = [rect[0], rect[1], fill_width, rect[3]];
+                    data.quads
+                        .push(UiInstance::panel(fill_rect, fill_color, [0.0; 4]));
+                }
             }
             Some(NodeContext::Text {
                 content,
@@ -1285,6 +1382,38 @@ fn drive_panel_binding(
     changed
 }
 
+/// Drive one bound BAR node for this frame and return whether its displayed value
+/// changed since the last diff. Mirrors the tweened-text numeric path but stores
+/// an `f32` display value (the bar draws a fill fraction, not a string):
+///
+/// - **Untweened**: the displayed value is the raw slot `Number` (or `0.0` when
+///   absent/non-numeric); store it, report the change.
+/// - **Tweened, slot resolves to a `Number`**: `drive_tween_f32` eases a per-node
+///   display value toward the slot target so the rendered fill fraction eases.
+/// - **Tweened, slot resolves to any other shape**: snap to the raw value (`0.0`).
+fn drive_bar_binding(
+    bind: &SliderBind,
+    last_resolved: &mut Option<f32>,
+    tween: &mut Option<TweenState<f32>>,
+    slot_values: &HashMap<String, SlotValue>,
+    now: f64,
+) -> bool {
+    let resolved = match bind.tween.as_ref() {
+        Some(cfg) => match slot_values.get(&bind.slot) {
+            Some(SlotValue::Number(n)) => {
+                drive_tween_f32(tween, cfg.from, *n, cfg.duration_ms, cfg.easing, now)
+            }
+            _ => bar_slot_value(bind, slot_values),
+        },
+        None => bar_slot_value(bind, slot_values),
+    };
+    let changed = last_resolved.is_none_or(|prev| (prev - resolved).abs() > f32::EPSILON);
+    if changed {
+        *last_resolved = Some(resolved);
+    }
+    changed
+}
+
 /// Advance (or initialize / retarget) a panel node's RGBA tween segment toward
 /// `target` at frame time `now`, returning the eased per-channel display fill.
 /// Same first-resolve / retarget / in-flight / settle mechanics as the text
@@ -1416,6 +1545,31 @@ fn focus_meta(widget: &Widget) -> (Option<&String>, FocusNeighbors) {
         Widget::Spacer(w) => (w.id.as_ref(), FocusNeighbors::default()),
         Widget::VStack(w) | Widget::HStack(w) => (w.id.as_ref(), (&w.focus_neighbors).into()),
         Widget::Grid(w) => (w.id.as_ref(), (&w.focus_neighbors).into()),
+        // Interactive widgets carry a REQUIRED id (focusable markers): button and
+        // slider always export as focusable. `bar` is passive — id only.
+        Widget::Button(w) => (Some(&w.id), (&w.focus_neighbors).into()),
+        Widget::Slider(w) => (Some(&w.id), (&w.focus_neighbors).into()),
+        Widget::Bar(w) => (w.id.as_ref(), FocusNeighbors::default()),
+    }
+}
+
+/// The interaction metadata for an interactive widget (M13 Goal F, Task 4), or
+/// `None` for passive nodes. `button` carries its activation reaction; `slider`
+/// its bound-value step parameters. The focus-rect export attaches this so the
+/// app can drive activation/value-step from the focused node id.
+fn widget_interaction(widget: &Widget) -> Option<NodeInteraction> {
+    match widget {
+        Widget::Button(w) => Some(NodeInteraction::Button {
+            on_press: w.on_press.clone(),
+        }),
+        Widget::Slider(w) => Some(NodeInteraction::Slider {
+            slot: w.bind.slot.clone(),
+            min: w.min,
+            max: w.max,
+            step: w.step,
+            captures_nav: w.captures_nav.clone(),
+        }),
+        _ => None,
     }
 }
 
@@ -1551,7 +1705,104 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget, theme: &UiThe
                 .new_leaf(style)
                 .expect("taffy leaf creation must succeed")
         }
+        Widget::Button(button) => build_button(taffy, button, theme),
+        Widget::Slider(slider) => build_slider(taffy, slider, theme),
+        Widget::Bar(bar) => build_bar(taffy, bar, theme),
     }
+}
+
+/// Build an interactive `button` leaf (M13 Goal F, Task 4). Renders its `label`
+/// as a centered text run shaping against the theme `body` face. The button is a
+/// pure text leaf for layout/draw; its focusable marker + activation (`on_press`)
+/// ride the focus-rect export (`focus_meta` / `widget_interaction`), not the draw
+/// payload. The label color resolves the theme `body`-text default (white), the
+/// same flat color a literal text widget would carry.
+fn build_button(taffy: &mut TaffyTree<NodeContext>, button: &ButtonWidget, theme: &UiTheme) -> NodeId {
+    taffy
+        .new_leaf_with_context(
+            Style::default(),
+            NodeContext::Text {
+                content: button.label.clone(),
+                font_size: INTERACTIVE_LABEL_FONT_SIZE,
+                color: resolve_color(&ColorValue::Token("body".to_string()), theme),
+                family: resolve_font(&None, theme),
+                // A button label is static text — no bind, tween, or styleRanges.
+                bind: None,
+                last_resolved: None,
+                tween: None,
+                style_ranges: None,
+                style_state: RefCell::new(StyleEffectState::default()),
+            },
+        )
+        .expect("taffy leaf creation must succeed")
+}
+
+/// Build an interactive `slider` leaf (M13 Goal F, Task 4). Renders `label` plus
+/// the current numeric value as one text run: it binds the slot through a
+/// synthesized `"<label>: {}"` format so the value display reuses the existing
+/// bound-text resolution + tween machinery (the slider's bind tween eases the
+/// shown number). The focusable marker + nav-capture/value-step ride the
+/// focus-rect export, not the draw payload.
+fn build_slider(taffy: &mut TaffyTree<NodeContext>, slider: &SliderWidget, theme: &UiTheme) -> NodeId {
+    // Synthesize a text bind so the value display rides the bound-text path:
+    // `content` is the fallback (label with no value yet), `format` injects the
+    // resolved number after the label. The slider's bind tween carries through.
+    let format = format!("{}: {{}}", slider.label);
+    let bind = TextBind {
+        slot: slider.bind.slot.clone(),
+        format: Some(format),
+        tween: slider.bind.tween.clone(),
+    };
+    taffy
+        .new_leaf_with_context(
+            Style::default(),
+            NodeContext::Text {
+                content: slider.label.clone(),
+                font_size: INTERACTIVE_LABEL_FONT_SIZE,
+                color: resolve_color(&ColorValue::Token("body".to_string()), theme),
+                family: resolve_font(&None, theme),
+                bind: Some(bind),
+                last_resolved: None,
+                tween: None,
+                style_ranges: None,
+                style_state: RefCell::new(StyleEffectState::default()),
+            },
+        )
+        .expect("taffy leaf creation must succeed")
+}
+
+/// Build a passive horizontal `bar` leaf (M13 Goal F, Task 4). Carries an explicit
+/// style size (a bar has no content to measure) and a `NodeContext::Bar` draw
+/// payload. Its `fill`/`background` color tokens resolve against the theme at
+/// build time; `style_ranges`' band colors pre-resolve too (theme-free draw walk),
+/// gated on the bind precondition like text/panel styleRanges.
+fn build_bar(taffy: &mut TaffyTree<NodeContext>, bar: &BarWidget, theme: &UiTheme) -> NodeId {
+    let style = Style {
+        size: Size {
+            width: length(DEFAULT_BAR_SIZE[0]),
+            height: length(DEFAULT_BAR_SIZE[1]),
+        },
+        ..Default::default()
+    };
+    // A bar always binds (a value to display), so the styleRanges bind precondition
+    // is satisfied; pre-resolve its band-color tokens to literals for the draw walk.
+    let style_ranges =
+        build_node_style_ranges(bar.style_ranges.as_ref(), true, theme, "bar");
+    taffy
+        .new_leaf_with_context(
+            style,
+            NodeContext::Bar {
+                bind: bar.bind.clone(),
+                max: bar.max,
+                fill: resolve_color(&bar.fill, theme),
+                background: resolve_color(&bar.background, theme),
+                last_resolved: None,
+                tween: None,
+                style_ranges,
+                style_state: RefCell::new(StyleEffectState::default()),
+            },
+        )
+        .expect("taffy leaf creation must succeed")
 }
 
 /// Optional backdrop `NodeContext` for a container declaring a `fill`/`border`.
@@ -1690,6 +1941,35 @@ pub(crate) struct FocusRect {
     /// declares a focus policy, or `None` when no ancestor governs this node.
     pub group: Option<usize>,
     pub neighbors: FocusNeighbors,
+    /// Interaction metadata for an interactive widget (M13 Goal F, Task 4): a
+    /// `button`'s activation reaction or a `slider`'s value-step parameters. `None`
+    /// for passive focusables (an id-bearing text/panel/image). The app reads this
+    /// off the focused node to fire activation (button `on_press`) or to apply a
+    /// captured nav step (slider), keeping the focus engine widget-agnostic.
+    pub interaction: Option<NodeInteraction>,
+}
+
+/// Per-node interaction metadata exported with an interactive focusable node
+/// (M13 Goal F, Task 4). The app resolves the focused node's interaction to fire
+/// a button's named reaction on confirm/click, or to step a slider's bound value
+/// on a captured nav intent and emit the `setState` write.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum NodeInteraction {
+    /// A `button`: activation (confirm/click) fires `on_press` through the
+    /// reaction registry — the same vocabulary entity/system reactions use.
+    Button { on_press: String },
+    /// A `slider`: a captured nav wire in `captures_nav` steps the bound slot's
+    /// value by `step` within `[min, max]` and emits a `setState` write on the N+1
+    /// frame. `"nav.left"`/`"nav.down"` decrease the value, `"nav.right"`/`"nav.up"`
+    /// increase it; any other captured name is swallowed (focus does not move) but
+    /// leaves the value unchanged.
+    Slider {
+        slot: String,
+        min: f32,
+        max: f32,
+        step: f32,
+        captures_nav: Vec<String>,
+    },
 }
 
 /// A focus group exported from a container that declares a `focus` policy: its
@@ -1987,6 +2267,16 @@ fn style_value(bind: Option<&PanelBind>, slot_values: &HashMap<String, SlotValue
     match slot_values.get(&bind.slot) {
         Some(SlotValue::Number(n)) => Some(*n),
         _ => None,
+    }
+}
+
+/// Resolve a `bar`'s bound numeric value from the frame's slot snapshot, or `0.0`
+/// when the slot is absent or not a `Number` (a bar with no value reads empty).
+/// The bar always binds, so there is no unbound fallback.
+fn bar_slot_value(bind: &SliderBind, slot_values: &HashMap<String, SlotValue>) -> f32 {
+    match slot_values.get(&bind.slot) {
+        Some(SlotValue::Number(n)) => *n,
+        _ => 0.0,
     }
 }
 
@@ -4288,5 +4578,246 @@ mod tests {
         let ids: Vec<&str> = focus.rects.iter().map(|r| r.id.as_str()).collect();
         // Auto-ids are the slash-joined child paths from the root.
         assert_eq!(ids, ["0", "1"], "auto-id is the tree-position path");
+    }
+
+    // --- M13 Goal F, Task 4: interactive widgets ---
+
+    use super::super::descriptor::{BarWidget, ButtonWidget, SliderBind, SliderWidget};
+
+    fn button(id: &str, on_press: &str) -> Widget {
+        Widget::Button(ButtonWidget {
+            id: id.into(),
+            label: id.into(),
+            on_press: on_press.into(),
+            focus_neighbors: Default::default(),
+        })
+    }
+
+    fn slider(id: &str, slot: &str, captures: &[&str]) -> Widget {
+        Widget::Slider(SliderWidget {
+            id: id.into(),
+            label: "Vol".into(),
+            bind: SliderBind {
+                slot: slot.into(),
+                tween: None,
+            },
+            min: 0.0,
+            max: 1.0,
+            step: 0.1,
+            captures_nav: captures.iter().map(|s| s.to_string()).collect(),
+            focus_neighbors: Default::default(),
+        })
+    }
+
+    fn anchored(root: Widget) -> AnchoredTree {
+        AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root,
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+        }
+    }
+
+    #[test]
+    fn button_exports_focusable_rect_with_activation_interaction() {
+        // A button always exports as focusable (required id) carrying its onPress
+        // activation — the seam the app fires on a focus-engine confirm/click.
+        let tree = anchored(vstack(0.0, 0.0, Align::Start, vec![button("resume", "resumeGame")]));
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+        let focus = ui.export_focus_rects(&tree, [1280, 720]);
+        let rect = focus
+            .rects
+            .iter()
+            .find(|r| r.id == "resume")
+            .expect("button is focusable");
+        assert_eq!(
+            rect.interaction,
+            Some(NodeInteraction::Button {
+                on_press: "resumeGame".to_string()
+            }),
+            "button carries its onPress activation"
+        );
+    }
+
+    #[test]
+    fn slider_exports_focusable_rect_with_step_interaction() {
+        // A slider always exports as focusable carrying its bound-value step params
+        // and capturesNav wire names — the app drives the value step from these.
+        let tree = anchored(vstack(
+            0.0,
+            0.0,
+            Align::Start,
+            vec![slider("vol", "audio.master", &["nav.left", "nav.right"])],
+        ));
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+        let focus = ui.export_focus_rects(&tree, [1280, 720]);
+        let rect = focus
+            .rects
+            .iter()
+            .find(|r| r.id == "vol")
+            .expect("slider is focusable");
+        assert_eq!(
+            rect.interaction,
+            Some(NodeInteraction::Slider {
+                slot: "audio.master".to_string(),
+                min: 0.0,
+                max: 1.0,
+                step: 0.1,
+                captures_nav: vec!["nav.left".to_string(), "nav.right".to_string()],
+            }),
+        );
+    }
+
+    fn bar(slot: &str, max: f32, style_ranges: Option<StyleRanges>) -> Widget {
+        Widget::Bar(BarWidget {
+            bind: SliderBind {
+                slot: slot.into(),
+                tween: None,
+            },
+            max,
+            fill: ColorValue::Literal([0.0, 1.0, 0.0, 1.0]),
+            background: ColorValue::Literal([0.1, 0.1, 0.1, 1.0]),
+            id: None,
+            style_ranges,
+        })
+    }
+
+    /// A slot map binding `player.health` to a Number value.
+    fn health_slots(value: f32) -> HashMap<String, SlotValue> {
+        let mut m = HashMap::new();
+        m.insert("player.health".to_string(), SlotValue::Number(value));
+        m
+    }
+
+    #[test]
+    fn bar_fill_fraction_is_value_over_max_clamped() {
+        // A bar with max 100 and value 50 draws a fill quad half the background's
+        // width; value 150 clamps to the full width (fraction 1).
+        let tree = anchored(bar("player.health", 100.0, None));
+
+        for (value, expected_fraction) in [(50.0_f32, 0.5_f32), (150.0, 1.0), (0.0, 0.0)] {
+            let mut ui = UiTree::from_descriptor(&tree, &theme());
+            let mut fs = font_system();
+            let data = ui.build_draw_data(
+                [1280, 720],
+                &mut fs,
+                &no_images(),
+                &health_slots(value),
+            );
+            // The background quad is always present (first); the fill quad follows
+            // only when the fraction is > 0.
+            let background = &data.quads[0];
+            let bg_width = background.rect[2];
+            if expected_fraction == 0.0 {
+                assert_eq!(data.quads.len(), 1, "zero fraction draws no fill quad");
+            } else {
+                let fill = &data.quads[1];
+                let expected_width = (bg_width * expected_fraction).round();
+                assert!(
+                    approx(fill.rect[2], expected_width),
+                    "value {value}: fill width {} ≈ {expected_width} (fraction {expected_fraction})",
+                    fill.rect[2],
+                );
+                // Fill shares the background's top-left and height.
+                assert!(approx(fill.rect[0], background.rect[0]));
+                assert!(approx(fill.rect[1], background.rect[1]));
+                assert!(approx(fill.rect[3], background.rect[3]));
+            }
+        }
+    }
+
+    #[test]
+    fn bar_style_ranges_recolor_the_fill() {
+        // A health bar with a red ≤ 0.25 band: at 10/100 the fill quad is red, not
+        // the base green. styleRanges (Goal E) recolor the fill widget-agnostically.
+        let ranges = StyleRanges {
+            max: 100.0,
+            entries: vec![
+                StyleEntry {
+                    up_to: Some(0.25),
+                    color: Some(ColorValue::Literal([1.0, 0.0, 0.0, 1.0])),
+                    pulse: None,
+                    flash: None,
+                },
+                StyleEntry {
+                    up_to: None,
+                    color: Some(ColorValue::Literal([0.0, 1.0, 0.0, 1.0])),
+                    pulse: None,
+                    flash: None,
+                },
+            ],
+        };
+        let tree = anchored(bar("player.health", 100.0, Some(ranges)));
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &health_slots(10.0));
+        let fill = &data.quads[1];
+        assert!(
+            approx(fill.color[0], 1.0) && approx(fill.color[1], 0.0),
+            "low health recolors the fill red, got {:?}",
+            fill.color
+        );
+    }
+
+    #[test]
+    fn bar_bind_tween_eases_the_displayed_fraction() {
+        // A bar bind carrying a tween eases the displayed value toward each new
+        // target. Retained path: from a full 100 health, retarget to 0 over 1000ms;
+        // mid-tween (500ms, linear) the displayed value is ~50, so the fill width is
+        // ~half — not the snapped 0.
+        use super::super::descriptor::{Easing, TextTween};
+        let tree = anchored(Widget::Bar(BarWidget {
+            bind: SliderBind {
+                slot: "player.health".into(),
+                tween: Some(TextTween {
+                    duration_ms: 1000.0,
+                    easing: Easing::Linear,
+                    from: None,
+                }),
+            },
+            max: 100.0,
+            fill: ColorValue::Literal([0.0, 1.0, 0.0, 1.0]),
+            background: ColorValue::Literal([0.1, 0.1, 0.1, 1.0]),
+            id: None,
+            style_ranges: None,
+        }));
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        // Frame 0: first resolution at full health (no `from`, snaps to 100).
+        ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &health_slots(100.0),
+            0.0,
+        );
+        // Frame 1: retarget to 0 at t=0 — the segment starts easing from 100.
+        ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &health_slots(0.0),
+            0.0,
+        );
+        // Frame 2: half the duration later, the eased display is ~50 (linear).
+        let data = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &health_slots(0.0),
+            0.5,
+        );
+        let bg_width = data.quads[0].rect[2];
+        let fill_width = data.quads[1].rect[2];
+        let fraction = fill_width / bg_width;
+        assert!(
+            (fraction - 0.5).abs() < 0.05,
+            "mid-tween fill fraction eases to ~0.5, got {fraction}"
+        );
     }
 }

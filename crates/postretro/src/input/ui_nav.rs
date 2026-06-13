@@ -53,9 +53,8 @@ impl NavIntent {
     /// type and Luau string union emitted in the SDK typedefs. The UI authoring
     /// surface (`capturesNav`, focus policy) keys on these strings.
     ///
-    /// Reserved-seam API: the modal stack / focus engine (Task 2/Task 3) match
-    /// authored `capturesNav` wire names against these. No production caller yet.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// The slider nav-capture path (M13 Goal F, Task 4) matches authored
+    /// `capturesNav` wire names against these to claim captured nav intents.
     pub fn wire_name(self) -> &'static str {
         match self {
             NavIntent::Up => "nav.up",

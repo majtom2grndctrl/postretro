@@ -1,4 +1,7 @@
 // Reaction dispatch: fires named events and tracks per-tag kill progress.
+// Two-arm model: entity reactions mutate EntityRegistry; system reactions push typed commands onto a queue.
+// `fire_named_event` omits entity/sequence dispatch; `fire_named_event_with_sequences` includes them.
+// See: context/lib/scripting.md §10
 
 use std::collections::HashMap;
 

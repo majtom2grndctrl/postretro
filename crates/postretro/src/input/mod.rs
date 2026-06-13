@@ -311,7 +311,9 @@ impl InputSystem {
     /// Drain the evanescent look-axis contributions accumulated since the last
     /// drain into a `LookInputs` value. Consumers apply this at render rate,
     /// before the fixed-tick loop, so mouse motion is never lost on zero-tick
-    /// frames.
+    /// frames. Must be called before `snapshot()` in the same frame — it
+    /// zeroes the mouse-displacement entries that `snapshot()` would otherwise
+    /// re-emit as `LookYaw` / `LookPitch`.
     ///
     /// Mouse displacement is refreshed from `mouse_delta`, copied out, and
     /// cleared so a later `snapshot()` in the same frame will not re-emit

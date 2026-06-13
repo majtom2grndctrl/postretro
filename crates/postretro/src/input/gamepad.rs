@@ -1,5 +1,5 @@
 // Gamepad input via gilrs: polling, dead zones, trigger thresholds.
-// See: context/lib/input.md §5
+// See: context/lib/input.md §6
 
 use gilrs::ff::{BaseEffect, BaseEffectType, Effect, EffectBuilder, Replay, Ticks};
 use gilrs::{Axis, Button, Event, EventType, GamepadId, Gilrs};
@@ -9,16 +9,27 @@ use crate::input::types::PhysicalInput;
 use crate::input::ui_nav::{NavIntent, StickNavTracker, nav_intent_for_gamepad_button};
 
 /// One frame's UI-relevant gamepad output: the nav intent down-edges harvested
-/// this frame, plus whether the confirm button (South) was RELEASED this frame.
-/// The release edge drives the focus engine's activation-repeat clock to stop a
-/// held `repeatOnHold` button (M13 Text-Entry, Task 2) — the gamepad twin of the
-/// keyboard Enter-release path. Down-edges already ride `nav_intents` (one per
-/// press, repeats from the focus engine's dt clock); releases need their own
-/// channel because the press-edge stream carries no release.
+/// this frame, plus the two release channels the focus engine's dt-clocked
+/// repeat timers need to stop.
+///
+/// `confirm_released` is true when the confirm button (South) was RELEASED this
+/// frame — it stops a held `repeatOnHold` button (M13 Text-Entry, Task 2), the
+/// gamepad twin of the keyboard Enter-release path.
+///
+/// `directional_released` is true when NO directional input is currently held —
+/// the D-pad direction buttons are all up AND the left stick is back inside the
+/// dead zone. It clears the focus engine's directional hold-to-repeat clock,
+/// mirroring the keyboard arrow-key-up path; without it a press that armed the
+/// repeat clock would free-run on dt until the next stack/intent change (runaway
+/// focus-scroll on any tree declaring a `repeat` policy).
+///
+/// Both are needed because the press-edge stream on `nav_intents` (one per press,
+/// repeats from the focus engine's dt clock) carries no release.
 #[derive(Debug, Default)]
 pub struct GamepadNavOutput {
     pub nav_intents: Vec<NavIntent>,
     pub confirm_released: bool,
+    pub directional_released: bool,
 }
 
 /// Dead zone radius for both sticks. Standard value across most controllers.
@@ -30,6 +41,15 @@ const TRIGGER_BUTTON_THRESHOLD: f32 = 0.5;
 /// Returns whether an analog trigger value counts as a button press.
 fn trigger_is_active(value: f32) -> bool {
     value >= TRIGGER_BUTTON_THRESHOLD
+}
+
+/// Whether NO directional input is held this frame: every D-pad direction button
+/// is up AND the (already dead-zoned) left stick sits at rest. This is the
+/// `directional_released` edge — the focus engine clears its hold-to-repeat clock
+/// on it, the gamepad twin of keyboard arrow-key-up. `stick_x`/`stick_y` must be
+/// post-dead-zone values so an at-rest stick reads exactly zero.
+fn no_directional_input_held(dpad_held: bool, stick_x: f32, stick_y: f32) -> bool {
+    !dpad_held && stick_x == 0.0 && stick_y == 0.0
 }
 
 /// Manages gamepad input via gilrs.
@@ -132,8 +152,10 @@ impl GamepadSystem {
             Some(id) => id,
             None => {
                 // No active gamepad: still clear the stick latch so a stick that
-                // was held when the pad disconnected re-arms cleanly.
+                // was held when the pad disconnected re-arms cleanly. With no pad
+                // nothing is held, so the directional repeat clock may release.
                 nav_stick.update(0.0, 0.0);
+                out.directional_released = true;
                 return out;
             }
         };
@@ -142,6 +164,7 @@ impl GamepadSystem {
         if !gamepad.is_connected() {
             self.active_gamepad = None;
             nav_stick.update(0.0, 0.0);
+            out.directional_released = true;
             return out;
         }
 
@@ -207,6 +230,17 @@ impl GamepadSystem {
             let pressed = gamepad.is_pressed(button);
             input_system.set_physical_input(PhysicalInput::GamepadButton(button), pressed);
         }
+
+        // Directional-release channel: true when NO directional input is held —
+        // all four D-pad direction buttons are up AND the (dead-zoned) left stick
+        // sits at rest. The focus engine consumes this to clear its hold-to-repeat
+        // clock, the gamepad twin of the keyboard arrow-key-up path. `left_x`/
+        // `left_y` are already dead-zoned, so an at-rest stick reads exactly zero.
+        let dpad_held = gamepad.is_pressed(Button::DPadUp)
+            || gamepad.is_pressed(Button::DPadDown)
+            || gamepad.is_pressed(Button::DPadLeft)
+            || gamepad.is_pressed(Button::DPadRight);
+        out.directional_released = no_directional_input_held(dpad_held, left_x, left_y);
 
         out
     }
@@ -463,7 +497,50 @@ mod tests {
         assert_eq!(y, 0.0);
     }
 
+    // --- Directional-release edge tests ---
+
+    #[test]
+    fn directional_release_reported_when_no_direction_held() {
+        // No D-pad button down and the dead-zoned stick at rest ⇒ the release edge
+        // fires, so the focus engine clears its hold-to-repeat clock (the gamepad
+        // twin of keyboard arrow-key-up).
+        assert!(no_directional_input_held(false, 0.0, 0.0));
+    }
+
+    #[test]
+    fn directional_release_suppressed_while_a_direction_is_held() {
+        // A held D-pad direction OR a deflected stick keeps the clock armed — the
+        // edge must NOT fire while any directional input is still held.
+        assert!(
+            !no_directional_input_held(true, 0.0, 0.0),
+            "a held D-pad direction holds the repeat clock"
+        );
+        assert!(
+            !no_directional_input_held(false, 0.8, 0.0),
+            "a deflected stick (post-dead-zone) holds the repeat clock"
+        );
+        assert!(
+            !no_directional_input_held(false, 0.0, -0.5),
+            "stick deflection on either axis holds the clock"
+        );
+    }
+
     // --- Trigger threshold tests ---
+
+    #[test]
+    fn trigger_below_threshold_is_inactive() {
+        assert!(!trigger_is_active(0.3));
+    }
+
+    #[test]
+    fn trigger_at_threshold_is_active() {
+        assert!(trigger_is_active(TRIGGER_BUTTON_THRESHOLD));
+    }
+
+    #[test]
+    fn trigger_above_threshold_is_active() {
+        assert!(trigger_is_active(0.8));
+    }
 
     // --- Rumble magnitude mapping tests ---
 
@@ -481,20 +558,5 @@ mod tests {
         assert_eq!(magnitude_u16(-1.0), 0, "below 0.0 clamps to zero");
         assert_eq!(magnitude_u16(f32::NAN), 0, "NaN coerces to zero");
         assert_eq!(magnitude_u16(f32::INFINITY), 0, "infinity coerces to zero");
-    }
-
-    #[test]
-    fn trigger_below_threshold_is_inactive() {
-        assert!(!trigger_is_active(0.3));
-    }
-
-    #[test]
-    fn trigger_at_threshold_is_active() {
-        assert!(trigger_is_active(TRIGGER_BUTTON_THRESHOLD));
-    }
-
-    #[test]
-    fn trigger_above_threshold_is_active() {
-        assert!(trigger_is_active(0.8));
     }
 }

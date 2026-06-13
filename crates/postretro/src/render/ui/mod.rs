@@ -3,6 +3,7 @@
 // margin); the vertex stage expands each instance into 9 regions. All wgpu lives
 // here per renderer-owns-GPU. Shaped text is glyphon's own pipeline, owned by
 // the `text` submodule and recorded into this same pass after the quads.
+// See: context/lib/ui.md
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
@@ -60,8 +61,8 @@ pub(crate) mod splash;
 /// Hardcoded demo gameplay HUD descriptor (M13 state-binding demo) behind
 /// the `demo::build_demo_descriptor` seam. The FIRST gameplay UI producer:
 /// `main.rs` publishes its `AnchoredTree` on the per-frame read snapshot and the
-/// renderer drives it through the retained gameplay path. Two `text` nodes bind
-/// `player.health`/`player.ammo`; one `panel` binds `intro.flashColor`.
+/// renderer drives it through the retained gameplay path. See `demo.rs` for the
+/// current demo binding set.
 pub(crate) mod demo;
 
 /// Engine-shipped on-screen keyboard descriptor (M13 Text-Entry, Task 4): loads

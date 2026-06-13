@@ -13,8 +13,9 @@ use super::ReactionError;
 
 /// A single deferred system-reaction effect. Variants carry their full args so
 /// the drain seam is typed end to end. The app's `dispatch_system_commands`
-/// routes each to its subsystem consumer (audio `play`, gilrs rumble, the
-/// `screen.flash` decay, and the warn-once UI-stack sink until Goal F lands).
+/// routes each to its subsystem consumer: audio `play` (kira), gilrs rumble,
+/// `screen.flash` decay, modal-stack push/pop, slot writes, and text-edit
+/// mutations.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum SystemReactionCommand {
     /// Play a one-shot sound on an optional named audio bus.
@@ -161,10 +162,13 @@ impl std::fmt::Debug for SystemReactionRegistry {
     }
 }
 
-/// Register the UI-stack system reactions (`pushTree` / `popTree`). The
-/// audio/input/UI helper primitives (`playSound`, `rumble`, `flashScreen`)
-/// land in Task 4 with their consumers; this seam already enqueues their
-/// typed commands so those tasks wire the sink, not the queue.
+/// Register all ten system-reaction primitives onto `registry`:
+/// - Audio: `playSound`
+/// - Input/rumble: `rumble`
+/// - Display/flash: `flashScreen`
+/// - UI stack: `showDialog`, `openMenu`, `closeDialog` (push/pop `PushTree`/`PopTree`)
+/// - Slot write: `setState`
+/// - Text-edit: `appendText`, `backspaceText`, `clearText`
 pub(crate) fn register_system_reaction_primitives(registry: &mut SystemReactionRegistry) {
     registry.register("playSound", |args, queue| {
         let parsed: PlaySoundArgs =

@@ -408,7 +408,7 @@ pub(crate) fn apply_text_edit(
             .get(name)
             .ok_or_else(|| unknown_slot("text-edit", name))?;
         if slot.schema.readonly {
-            log::warn!("[Scripting] setState: rejected write to readonly slot `{name}`");
+            log::warn!("[Scripting] text-edit: rejected write to readonly slot `{name}`");
             return Ok(());
         }
         match &slot.value {

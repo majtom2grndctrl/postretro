@@ -5,9 +5,10 @@
 //! Input-stage tap point the UI layer owns, sitting between raw input collection
 //! and gameplay forwarding — mirroring the `egui_consumed` gate in
 //! `App::window_event`. The capture decision is sourced from the active UI
-//! descriptor's capture mode via `Renderer::splash_capture_mode`; the splash
-//! descriptor installs `Passthrough` so the seam is inert against gameplay while
-//! the splash is shown. A capturing UI (menu or modal) drives `Capture`.
+//! descriptor's capture mode. The modal stack drives `Capture` from the top
+//! tree (via `App::reconcile_ui_focus`); the splash path (via
+//! `Renderer::splash_capture_mode`) drives `Passthrough` — the seam is inert
+//! against gameplay while the splash is shown.
 //!
 //! `InputFocus::Menu` is the intended *structural* home for UI capture — the
 //! gate a menu/modal system flips. The current splash makes no live focus
@@ -167,10 +168,10 @@ impl UiDispatch {
         Self::default()
     }
 
-    /// Set the active capture/passthrough mode. Called from `App::paint_splash`
-    /// with the value from `Renderer::splash_capture_mode` — the splash is
-    /// non-interactive, so it stays `Passthrough` and the seam is inert against
-    /// gameplay; the modal stack (Task 2) drives `Capture` from the top tree.
+    /// Set the active capture/passthrough mode. Called from
+    /// `App::reconcile_ui_focus` (modal-stack top → `Capture`) and from
+    /// `App::paint_splash` (splash path, always `Passthrough`) — the splash is
+    /// non-interactive, so the seam is inert against gameplay while it is shown.
     pub fn set_mode(&mut self, mode: UiCaptureMode) {
         self.mode = mode;
     }

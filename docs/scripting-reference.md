@@ -899,6 +899,8 @@ mod registers (the `appendText` / `backspaceText` reactions above), except the
 `done` key, whose reserved `onPress` (`ui.commitTextEntry`) the engine intercepts
 to reach the shared commit seam.
 
+> **Keyboard asset is layout-only.** `content/base/ui/keyboard.json` ships the key grid but no reactions — it is inert until a mod declares the matching named `appendText` / `backspaceText` reactions each key's `onPress` references (see `content/dev/scripts/arena-lights.ts` for the registration loop).
+
 ### The readonly `input.mode` slot
 
 `input.mode` is a readonly, engine-owned enum slot (`"pointer"` | `"focus"`)

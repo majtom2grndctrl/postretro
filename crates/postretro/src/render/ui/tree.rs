@@ -2,6 +2,7 @@
 // `taffy::TaffyTree`, computes flex/grid layout, and reads the laid-out rects
 // back into the device-pixel `UiDrawList` + shaped-text draw entries through the
 // `layout` projection path. taffy/layout lives entirely here (renderer-owns-GPU).
+// See: context/lib/ui.md §1 (retained tree), §3 (display vs. authoritative value / tween contract)
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -2277,6 +2278,10 @@ fn style_text_value(
 /// panel's RGBA fill-tween carries no scalar, so styleRanges on a panel reads the
 /// raw numeric slot (a styleRanges panel binds a numeric slot, not the length-4
 /// fill array) — the two bind uses are distinct.
+/// Seam: unlike `style_text_value` (which returns the eased display value when a
+/// tween is active), this path reads the raw slot. A panel's value-tween carries an
+/// RGBA fill; a panel styleRanges bind carries a scalar — the two never coexist on
+/// one panel, so there is no display value to prefer here.
 fn style_value(bind: Option<&PanelBind>, slot_values: &HashMap<String, SlotValue>) -> Option<f32> {
     let bind = bind?;
     match slot_values.get(&bind.slot) {

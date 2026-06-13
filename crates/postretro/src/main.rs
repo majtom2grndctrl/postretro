@@ -598,9 +598,10 @@ struct App {
     script_ctx: ScriptCtx,
 
     /// Publishes live pawn HP into the `player.health` slot each frame.
-    /// `player.ammo` and `intro.flashColor` remain stand-in values until their
-    /// real producers land. Flash timer resets on each level load.
-    /// See: context/lib/scripting.md §5 for the store contract.
+    /// `player.ammo` is a stand-in value until its real producer lands.
+    /// `intro.flashColor` is NOT a stand-in — this proxy's flash timer produces it
+    /// (and `screen.flash` is produced by `flash_decay`). Flash timer resets on
+    /// each level load. See: context/lib/scripting.md §5 for the store contract.
     ui_proxy: scripting_systems::ui_proxy::StaticUiProxy,
 
     /// App-side flash-decay state for the engine-owned `screen.flash` surface.
@@ -1120,7 +1121,12 @@ impl ApplicationHandler for App {
                     // Enter/Escape ride the queue as `nav.confirm`/`nav.cancel`, which
                     // the focus-resolution stage intercepts for commit/cancel.
                     let text_entry_open = self.modal_stack.active_text_entry_target().is_some();
-                    let nav_intent = if pressed && !key_event.repeat {
+                    // Text entry intentionally honors OS key-repeat (Text-Entry AC4:
+                    // hardware-key repeat comes from the OS): a held Backspace/letter
+                    // appends/deletes on each auto-repeat. All OTHER UI input stays
+                    // edge-only (`!key_event.repeat`) — nav intents must not re-fire on
+                    // a held key, since the focus engine's own dt clock owns nav repeat.
+                    let nav_intent = if pressed && (!key_event.repeat || text_entry_open) {
                         if text_entry_open {
                             // A key inside text entry is always a `focus`-mode signal.
                             self.record_mode_signal(
@@ -1337,6 +1343,14 @@ impl ApplicationHandler for App {
                     if gp_nav.confirm_released {
                         self.ui_focus.release_confirm_repeat();
                     }
+                    // No directional input held (D-pad up + stick in the dead zone)
+                    // RELEASES the focus engine's directional hold-to-repeat clock,
+                    // mirroring the keyboard arrow-key-up path above. Without it a
+                    // press that armed the clock would free-run on dt until the next
+                    // stack/intent change (runaway focus-scroll on a `repeat` tree).
+                    if gp_nav.directional_released {
+                        self.ui_focus.release_repeat();
+                    }
                     // Any gamepad nav intent (stick edge, D-pad, face/system
                     // button) is a `focus`-mode signal — recorded regardless of
                     // capture mode so a `nav.menu` opened from gameplay also flips
@@ -1354,7 +1368,11 @@ impl ApplicationHandler for App {
                     let capture = self.ui_dispatch.mode() == input::UiCaptureMode::Capture;
                     for intent in gp_nav.nav_intents {
                         if intent == input::NavIntent::Menu {
+                            // `pending_menu_toggle` fully handles the toggle; the
+                            // focus engine treats a queued `Nav(Menu)` as a no-op, so
+                            // enqueuing it would be a dead intent. Skip the enqueue.
                             self.pending_menu_toggle = true;
+                            continue;
                         }
                         if capture {
                             self.ui_dispatch
@@ -1677,6 +1695,9 @@ impl ApplicationHandler for App {
                 // batch. The typed queue keeps audio/input/UI services out of
                 // the scripting surface; the dispatcher routes each command to
                 // its subsystem consumer. See: scripting.md §10.4.
+                // NOTE: a SECOND drain runs later this frame, after the state
+                // crossings fire (see the crossing-detection block below), so
+                // crossing-enqueued commands land this frame, not the next.
                 if !self.script_ctx.system_commands.is_empty() {
                     self.dispatch_system_commands();
                 }

@@ -16,9 +16,9 @@
 //      context/lib/ui.md
 
 use super::descriptor::{
-    Align, AnchoredTree, ButtonWidget, CaptureMode, ColorValue, ContainerWidget, Easing,
-    GridWidget, PanelBind, PanelTween, PanelWidget, SliderBind, SliderWidget, SpacingValue,
-    TextBind, TextTween, TextWidget, Widget,
+    Align, AnchoredTree, ButtonWidget, CaptureMode, ColorValue, ContainerWidget, Easing, FocusKind,
+    FocusNeighbors, FocusPolicy, GridWidget, PanelBind, PanelTween, PanelWidget, SliderBind,
+    SliderWidget, SpacingValue, TextBind, TextTween, TextWidget, Widget,
 };
 use super::layout::Anchor;
 use super::style_ranges::{StyleEntry, StyleRanges};
@@ -404,11 +404,21 @@ pub(crate) fn build_pause_menu_descriptor() -> AnchoredTree {
         focus_neighbors: Default::default(),
     });
 
+    // Up/down focus chain over the three interactive widgets only. The root's
+    // linear policy makes every direct child focusable, including the inert
+    // title/readout text rows; these `focusNeighbors` overrides (which win over the
+    // group policy) route up/down straight between Resume, the volume slider, and
+    // the Enter-Text button, skipping the readouts. The chain wraps (Resume↑ →
+    // Enter-Text, Enter-Text↓ → Resume), matching the shorthand policy's default.
     let resume = Widget::Button(ButtonWidget {
         id: PAUSE_RESUME_ID.to_string(),
         label: "RESUME".to_string(),
         on_press: PAUSE_RESUME_REACTION.to_string(),
-        focus_neighbors: Default::default(),
+        focus_neighbors: FocusNeighbors {
+            up: Some(PAUSE_TEXT_ENTRY_ID.to_string()),
+            down: Some(PAUSE_VOLUME_ID.to_string()),
+            ..Default::default()
+        },
         repeat_on_hold: None,
     });
 
@@ -424,7 +434,11 @@ pub(crate) fn build_pause_menu_descriptor() -> AnchoredTree {
         step: VOLUME_STEP,
         // Left/right step the volume; up/down move focus between widgets.
         captures_nav: vec!["nav.left".to_string(), "nav.right".to_string()],
-        focus_neighbors: Default::default(),
+        focus_neighbors: FocusNeighbors {
+            up: Some(PAUSE_RESUME_ID.to_string()),
+            down: Some(PAUSE_TEXT_ENTRY_ID.to_string()),
+            ..Default::default()
+        },
     });
 
     // Text-entry demo (M13 Text-Entry, Task 4): a `text` bound to `ui.textEntry`
@@ -452,7 +466,15 @@ pub(crate) fn build_pause_menu_descriptor() -> AnchoredTree {
         id: PAUSE_TEXT_ENTRY_ID.to_string(),
         label: "ENTER TEXT".to_string(),
         on_press: PAUSE_TEXT_ENTRY_REACTION.to_string(),
-        focus_neighbors: Default::default(),
+        // Close the up/down chain: up returns to the volume slider, down wraps to
+        // Resume — so the three interactive widgets form a closed loop that skips
+        // the inert title/readout rows (which also join the linear group via their
+        // auto-generated ids).
+        focus_neighbors: FocusNeighbors {
+            up: Some(PAUSE_VOLUME_ID.to_string()),
+            down: Some(PAUSE_RESUME_ID.to_string()),
+            ..Default::default()
+        },
         repeat_on_hold: None,
     });
 
@@ -464,7 +486,11 @@ pub(crate) fn build_pause_menu_descriptor() -> AnchoredTree {
         border: None,
         id: None,
         focus_neighbors: Default::default(),
-        focus: None,
+        // Linear focus policy so D-pad/stick up/down walk the focusable widgets
+        // (Resume → volume slider → Enter-Text) in tree order. Without it no
+        // FocusGroup opens and `UiFocusEngine::move_focus` early-returns, so
+        // directional nav never moves focus. Shorthand `linear` wraps by default.
+        focus: Some(FocusPolicy::Shorthand(FocusKind::Linear)),
         restore_on_return: false,
         children: vec![
             title,
@@ -737,6 +763,98 @@ mod tests {
             panel.fill,
             ColorValue::Literal(SCREEN_FLASH_FALLBACK_FILL),
             "screen.flash swatch falls back to transparent at rest",
+        );
+    }
+
+    /// End-to-end gamepad navigability of the pause menu (the 🔴 fix): the root's
+    /// linear focus policy must open a `FocusGroup` so directional nav moves focus
+    /// between the interactive widgets. Builds the descriptor, exports its focus
+    /// rects through the SAME path the renderer→focus-engine seam uses
+    /// (`UiTree::export_focus_rects`), then drives `UiFocusEngine` with `Nav(Down)`
+    /// / `Nav(Up)` and asserts focus walks Resume → volume slider → Enter-Text and
+    /// back. Regression: a `focus: None` root opened no group, so `move_focus`
+    /// early-returned and the menu was un-navigable by D-pad/stick.
+    #[test]
+    fn pause_menu_gamepad_nav_walks_resume_slider_enter_text_and_wraps() {
+        use crate::input::{InputMode, NavIntent, UiFocusEngine};
+        use crate::render::ui::theme::UiTheme;
+        use crate::render::ui::tree::{ImageSizes, UiTree};
+        use crate::scripting::slot_table::SlotValue;
+        use std::collections::HashMap;
+
+        let tree = build_pause_menu_descriptor();
+        let theme = UiTheme::engine_default();
+        let mut ui = UiTree::from_descriptor(&tree, &theme);
+        let mut font_system = crate::render::ui::text::build_font_system();
+        let images = ImageSizes::new();
+        let slots: HashMap<String, SlotValue> = HashMap::new();
+        // Lay out + export the focus rects exactly as the renderer does each frame.
+        ui.build_draw_data([1280, 720], &mut font_system, &images, &slots);
+        let rects = ui.export_focus_rects(&tree, [1280, 720]);
+
+        // The interactive widgets export as focusable in tree order under one group.
+        let ids: Vec<&str> = rects.rects.iter().map(|r| r.id.as_str()).collect();
+        assert!(
+            ids.contains(&PAUSE_RESUME_ID)
+                && ids.contains(&PAUSE_VOLUME_ID)
+                && ids.contains(&PAUSE_TEXT_ENTRY_ID),
+            "Resume, volume slider, and Enter-Text all export as focusable nodes",
+        );
+        assert!(
+            !rects.groups.is_empty(),
+            "the linear focus policy opens a FocusGroup (the un-navigable bug had none)",
+        );
+
+        let mut fe = UiFocusEngine::new();
+        let drive = |fe: &mut UiFocusEngine, intent: Option<NavIntent>| {
+            let intents: Vec<NavIntent> = intent.into_iter().collect();
+            fe.tick(
+                Some(PAUSE_MENU_NAME),
+                Some(&rects),
+                &intents,
+                None,
+                &[],
+                InputMode::Focus,
+                0.0,
+            )
+            .focused
+        };
+
+        // Initial focus is Resume (the tree's initialFocus).
+        assert_eq!(drive(&mut fe, None).as_deref(), Some(PAUSE_RESUME_ID));
+        // Down: Resume → volume slider.
+        assert_eq!(
+            drive(&mut fe, Some(NavIntent::Down)).as_deref(),
+            Some(PAUSE_VOLUME_ID),
+            "down moves Resume → volume slider",
+        );
+        // Down: volume slider → Enter-Text.
+        assert_eq!(
+            drive(&mut fe, Some(NavIntent::Down)).as_deref(),
+            Some(PAUSE_TEXT_ENTRY_ID),
+            "down moves volume slider → Enter-Text",
+        );
+        // Down again wraps the chain: Enter-Text → Resume.
+        assert_eq!(
+            drive(&mut fe, Some(NavIntent::Down)).as_deref(),
+            Some(PAUSE_RESUME_ID),
+            "down wraps Enter-Text → Resume",
+        );
+        // Up walks the chain back the other way: Resume → Enter-Text (wrap up).
+        assert_eq!(
+            drive(&mut fe, Some(NavIntent::Up)).as_deref(),
+            Some(PAUSE_TEXT_ENTRY_ID),
+            "up wraps Resume → Enter-Text",
+        );
+        assert_eq!(
+            drive(&mut fe, Some(NavIntent::Up)).as_deref(),
+            Some(PAUSE_VOLUME_ID),
+            "up moves Enter-Text → volume slider",
+        );
+        assert_eq!(
+            drive(&mut fe, Some(NavIntent::Up)).as_deref(),
+            Some(PAUSE_RESUME_ID),
+            "up moves volume slider → Resume",
         );
     }
 }

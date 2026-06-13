@@ -1,5 +1,6 @@
 // Data-context descriptor types and their JS/Luau deserialization paths.
-// See: context/lib/scripting.md §2 (Data context lifecycle)
+// See: context/lib/scripting.md §2 (Context Model) — data context lifecycle;
+//      §10 (Reaction Primitives) — named-reaction and crossing vocabulary.
 
 use mlua::{Table, Value as LuaValue};
 use rquickjs::{Array, Ctx, Object, Value as JsValue};
@@ -87,8 +88,9 @@ pub(crate) enum CrossingCondition {
 }
 
 /// A state-crossing watcher declared by `onStateCrossing` and carried back
-/// through `setupLevel`'s manifest (the `scripting.md` §12 FFI rule — no
-/// side-effect registration). The detector watches `slot` after each frame's
+/// through `setupLevel`'s manifest (scripting.md §12 (Non-Goals): no
+/// side-effect FFI — cross-FFI values flow through setup-function returns).
+/// The detector watches `slot` after each frame's
 /// slot writes and, on a crossing in the condition's direction, dispatches
 /// every event in `fire` synchronously through the named-reaction vocabulary.
 ///
@@ -799,8 +801,8 @@ impl SwayParams {
 ///
 /// Entity-type descriptors are not part of this manifest — they arrive via
 /// `setupMod()`'s `entities` field (mod-init only) and are drained into
-/// `DataRegistry` before any level is loaded. `LevelManifest` carries only
-/// per-level reactions.
+/// `DataRegistry` before any level is loaded. `LevelManifest` carries
+/// per-level reactions and state-crossing watchers.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct LevelManifest {
     pub(crate) reactions: Vec<NamedReaction>,
@@ -906,8 +908,8 @@ fn build_crossing(
 // --- JS deserialization -----------------------------------------------------
 
 impl LevelManifest {
-    /// Deserialize a top-level `{ reactions }` object returned from
-    /// a QuickJS `setupLevel()` call.
+    /// Deserialize a top-level `{ reactions, crossings }` object returned from
+    /// a QuickJS `setupLevel()` call. `crossings` is optional.
     pub(crate) fn from_js_value<'js>(
         ctx: &Ctx<'js>,
         value: JsValue<'js>,
@@ -946,8 +948,8 @@ impl LevelManifest {
         })
     }
 
-    /// Deserialize a top-level `{ reactions }` table returned from a
-    /// Luau `setupLevel()` call.
+    /// Deserialize a top-level `{ reactions, crossings }` table returned from a
+    /// Luau `setupLevel()` call. `crossings` is optional.
     pub(crate) fn from_lua_value(value: LuaValue) -> Result<Self, DescriptorError> {
         let table = match value {
             LuaValue::Table(t) => t,

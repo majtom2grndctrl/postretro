@@ -181,7 +181,9 @@ impl RepeatTimer {
             self.repeating = true;
             fires += 1;
             if fires > 64 {
-                // Safety clamp against a pathological dt/interval ratio.
+                // 64 is a conservative power-of-two bound well above any
+                // realistic burst (e.g. ~0.3 fires/tick at a 50 ms interval /
+                // 16 ms dt), guarding a pathological dt/interval ratio.
                 self.elapsed = 0.0;
                 break;
             }
@@ -190,9 +192,10 @@ impl RepeatTimer {
     }
 }
 
-/// Hold-to-repeat clock for a held directional nav. Confirm/cancel never repeat by
-/// nav, so only a directional press starts one. Releasing the direction (a return
-/// to no held direction) clears it. Wraps the shared [`RepeatTimer`].
+/// Hold-to-repeat clock for a held directional nav. Only a directional press starts
+/// one; confirm repeat for `repeatOnHold` buttons is handled by the separate
+/// [`ConfirmRepeatClock`]. Releasing the direction (a return to no held direction)
+/// clears it. Wraps the shared [`RepeatTimer`].
 #[derive(Debug, Clone)]
 struct RepeatClock {
     dir: Dir,
@@ -490,8 +493,9 @@ impl UiFocusEngine {
     /// Advance the hold-to-repeat clock. `pressed_dir` is the direction pressed
     /// THIS tick (a fresh edge), if any. A press (re)arms the clock; with no press
     /// this tick the clock is advanced by `dt` and fires a synthetic directional
-    /// move once the initial delay then each interval elapses. Confirm/cancel
-    /// never reach here, so they never repeat.
+    /// move once the initial delay then each interval elapses. Confirm/cancel never
+    /// reach this function; confirm repeat for `repeatOnHold` buttons is handled by
+    /// [`advance_confirm_repeat`].
     fn advance_repeat(
         &mut self,
         key: &str,
@@ -695,6 +699,8 @@ fn spatial_step(
             Dir::Left => (-dx, dy),
             Dir::Right => (dx, dy),
         };
+        // Guards floating-point ties and excludes candidates exactly level with
+        // the current node on the primary axis (0.5 dp minimum advance).
         if along <= 0.5 {
             continue;
         }
@@ -1169,7 +1175,7 @@ mod tests {
     }
 
     #[test]
-    fn confirm_and_cancel_fire_once_and_never_repeat() {
+    fn confirm_and_cancel_without_repeat_on_hold_fire_exactly_once() {
         let mut fe = UiFocusEngine::new();
         let list = linear_list(
             false,

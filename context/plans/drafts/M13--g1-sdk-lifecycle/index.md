@@ -36,7 +36,8 @@ This closes the convergence: with G1a's factories and G1b's lifecycle, a mod can
 - [ ] A modder component that calls `ui.localState()` renders, and its cell value persists across frames at a stable value when nothing changes (the retained-tree recompute counter does not increment on a settled frame). The same value is **discarded** (resets to its declared initial) after a structural tree rebuild — paired positive/negative cases.
 - [ ] No code path in the UI module writes the authoritative store from a `localState` cell — verified by a test that mutates a `localState` value and asserts the bound store slot is unchanged (presentation-only contract, `ui.md` §3).
 - [ ] A modder component is callable with the exact same `Props`-first-then-children shape as an SDK factory, and nests inside SDK containers (a parity test builds a tree mixing `VStack` with a modder component and deserializes it through G1a's bridge).
-- [ ] A malformed UI registration (duplicate tree name, theme token of wrong type, tree that fails the bridge) produces a named load-time diagnostic and is skipped — boot/level-load does not abort (the `ui.md` §5 degrade-not-abort rule).
+- [ ] A malformed UI registration (theme token of wrong type, tree that fails the bridge) produces a named load-time diagnostic and is skipped — boot/level-load does not abort (the `ui.md` §5 degrade-not-abort rule).
+- [ ] A tree registered under a name an engine built-in or mod-scoped tree already holds **overrides** it by scope precedence (engine < mod < level) with a warning, and the higher-precedence tree resolves from the snapshot — matching the theme-token override model, not a hard collision error.
 - [ ] Generated typedefs include the `ui.localState` signature and the manifest UI fields; `gen-script-types` reports no drift.
 
 ## Tasks
@@ -45,7 +46,7 @@ This closes the convergence: with G1a's factories and G1b's lifecycle, a mod can
 Extend the `setupMod` manifest result (`runtime.rs` `ModManifest`/`ModManifestResult`, engine-global) and the `LevelManifest` (per-level, today `{ reactions, crossings }`) with UI-tree / theme / font registration arrays, parsed via G1a's deserialization bridge in `manifest_from_js_value` (+ Luau twin). Drain points mirror the existing entity/reaction drains. `Depends on` G1a.
 
 ### Task 2: Named-tree registration scopes
-Add a register-from-manifest path to the app-side named-tree registry beside `register_tree_from_disk` (`render/ui/tree_asset.rs`): mod-scoped trees into the engine-global registry; level-scoped into a per-level set cleared on level unload (mirror `DataRegistry::clear`). Duplicate-name and bridge-failure diagnostics. `Depends on` Task 1.
+Add a register-from-manifest path to the app-side named-tree registry beside `register_tree_from_disk` (`render/ui/tree_asset.rs`): mod-scoped trees into the engine-global registry; level-scoped into a per-level set cleared on level unload (mirror `DataRegistry::clear`). Name resolution is override-by-precedence (engine < mod < level), last-wins with a shadowing warning — the theme-override model; bridge failures emit a named diagnostic and skip. `Depends on` Task 1.
 
 ### Task 3: Theme + font script registration
 Route manifest theme tokens and font registrations (mod-init scope) into the engine theme registry (`render/ui/theme.rs`), reusing D's per-token override-merge and unknown-token degradation. `Depends on` Task 1.
@@ -94,9 +95,10 @@ Casing rule (uniform): Rust snake_case ↔ wire/JS/TS/Luau camelCase.
 - **UI registration mirrors the entity-types-vs-reactions scope split exactly.** Mod-scoped trees/themes/fonts are engine-global and survive unload; level-scoped trees clear like `reactions`. Reuses the existing registry shapes rather than inventing a UI-specific lifecycle. Rejected: a single global scope (level trees would leak across levels).
 - **`localState` is `State`-named, never `runtime`/`live`.** It is stored across frames (§11: "State means stored"); it is only the *scope* that is instance-local. This is the `liveValue()` → `ui.localState()` rename M14 reserved. Rejected: `ui.liveValue()` (ambiguous; "live" reads as computed/runtime).
 - **`localState` never writes the store.** Presentation-only is the decoupling-seam payoff; event-time store writes go through `setState` (`ui.md` §6). Rejected: a `localState` that can mirror back into a slot.
+- **Tree name collisions resolve by scope precedence, last-wins + warn — the theme-override model, not a hard error.** `ui.md` §2 already establishes override-by-name as the modder-reskins-built-ins mechanism ("an override replaces only the names it ships"); a named tree follows the same model for one consistent override story across UI registries (engine built-in < mod-scoped < level-scoped). Rejected: collision-as-error (would block the intended reskin path and split the override model between themes and trees).
+- **`localState` cells reset on debug hot reload, not preserved.** A reload is a structural rebuild, and `ui.md` §3 discards display state on rebuild; the `staged_manifest`/`refresh_plan` value-preserving path covers *authoritative* store slots only. Rejected: preserving presentation cells (conflates display state with authoritative state).
+- **Fonts register at mod-init only.** Fonts are global assets; per-level registration adds lifecycle surface against the near-instant-boot / smallest-surface northstar. Additive per-level support is a later change against measured need. Rejected: per-level fonts now (premature richness).
 
 ## Open questions
 
-- Do level-scoped trees override a mod-scoped tree of the same name, or is a name collision a diagnostic? Lean: collision is a named diagnostic; level overrides need an explicit opt-in if ever wanted.
-- `localState` reset-vs-preserve under debug hot reload: reuse `staged_manifest`/`refresh_plan`'s slot-value-preserving model, or always reset cells? Lean: reset (cells are presentation-only; a reset flash on reload is acceptable) — confirm against the hot-reload UX.
-- Whether fonts register only at mod-init or also per-level. Lean: mod-init only (fonts are global assets); revisit if a level needs a one-off face.
+None. The candidates above were resolved against existing project invariants (theme-override model, display-vs-authoritative split, lean / defer-richness) and recorded as Decisions.

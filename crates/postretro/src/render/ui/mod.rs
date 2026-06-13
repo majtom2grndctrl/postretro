@@ -58,12 +58,18 @@ pub(crate) use self::text::UiText;
 /// renderer lays out via `UiTree`; G1 later swaps the body for script ingestion.
 pub(crate) mod splash;
 
-/// Hardcoded demo gameplay HUD descriptor (M13 state-binding demo) behind
-/// the `demo::build_demo_descriptor` seam. The FIRST gameplay UI producer:
-/// `main.rs` publishes its `AnchoredTree` on the per-frame read snapshot and the
-/// renderer drives it through the retained gameplay path. See `demo.rs` for the
-/// current demo binding set.
+/// Demo gameplay HUD + pause-menu wiring. Both screens are now JSON-authored
+/// (`content/base/ui/hud.json`, `pauseMenu.json`), loaded through `tree_asset` and
+/// resolved by name from the registry; `demo` holds the `PAUSE_MENU_NAME` constant
+/// the App pushes under and the demo's behavioral tests (which load the shipped
+/// JSON as their source of truth).
 pub(crate) mod demo;
+
+/// Generic load-and-register path for engine-shipped UI descriptor trees: reads
+/// a named `AnchoredTree` from `content/base/ui/<file>.json` and registers it by
+/// name, warning once and degrading on a missing/malformed file. The shared boot
+/// wiring for the HUD, pause menu, and on-screen keyboard.
+pub(crate) mod tree_asset;
 
 /// Engine-shipped on-screen keyboard descriptor (M13 Text-Entry, Task 4): loads
 /// `content/base/ui/keyboard.json` from disk at boot and registers it under the
@@ -297,9 +303,10 @@ pub(crate) struct UiReadSnapshot {
     /// The gameplay UI modal stack for this frame, drawn bottom→top (`trees[0]`
     /// is the bottom, the last entry is the top/active tree). Empty (the default)
     /// on the splash path and whenever gameplay publishes no UI — the renderer's
-    /// UI pass then early-outs each empty/absent layer. The current bottom-of-
-    /// stack producer is `demo::build_demo_descriptor` (the HUD), published by
-    /// `main.rs`; modal trees pushed via the named-tree registry stack above it.
+    /// UI pass then early-outs each empty/absent layer. The bottom-of-stack layer
+    /// is the HUD (`content/base/ui/hud.json`), resolved by name from the registry
+    /// and published by `main.rs`; modal trees pushed via the named-tree registry
+    /// stack above it.
     pub trees: Vec<UiTreeEntry>,
     /// Resolved state-store values for this frame, keyed by dotted slot name.
     /// Cloned out of the live `SlotTable` once per frame (see the type doc).

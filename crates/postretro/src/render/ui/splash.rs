@@ -6,11 +6,13 @@
 // Fixed Rust content behind this builder — no script ingestion yet.
 // See: context/lib/boot_sequence.md §3a · context/lib/ui.md
 
+use std::path::PathBuf;
+use std::sync::LazyLock;
+
 use crate::input::UiCaptureMode;
 
 use super::descriptor::{
-    Align, AnchoredTree, Border, ColorValue, ContainerWidget, ImageWidget, SpacingValue,
-    TextWidget, Widget,
+    Align, AnchoredTree, ColorValue, ContainerWidget, ImageWidget, SpacingValue, TextWidget, Widget,
 };
 use super::layout::{Anchor, REFERENCE_HEIGHT, REFERENCE_WIDTH};
 
@@ -19,23 +21,9 @@ use super::layout::{Anchor, REFERENCE_HEIGHT, REFERENCE_WIDTH};
 /// distinct surface against the letterbox fill.
 const PANEL_COLOR: [f32; 4] = [0.018, 0.026, 0.039, 1.0];
 
-/// Panel border (linear RGBA) — a brighter rim drawn as a 9-slice frame around
-/// the fill so the 9-slice corners are genuinely exercised.
-const PANEL_BORDER_COLOR: [f32; 4] = [0.10, 0.55, 0.62, 1.0];
-
-/// 9-slice corner margin for the bordered frame, logical-reference px.
-const PANEL_BORDER_MARGIN: f32 = 12.0;
-
 /// Logo width in logical-reference px — about half the 1280-wide canvas. Height
 /// is derived from the decoded source aspect (see `splash_logo_reference_size`).
 const LOGO_REFERENCE_WIDTH: f32 = 600.0;
-
-/// The border rim thickness (logical-reference px): the outer container's padding.
-/// The outer (border-colored) container draws its backdrop, then pads its single
-/// child — the inner (panel-colored) container — in by this on every edge, so a
-/// 4px rim of the border color frames the inner fill. This replaces the old
-/// absolute-inset overlap: the rim now falls out of parent-backdrop + padding.
-const PANEL_BORDER_THICKNESS: f32 = 4.0;
 
 /// Inner-panel padding (logical-reference px): breathing room between the framed
 /// panel's inner fill edge and the flowed logo/text content. The panel
@@ -61,6 +49,34 @@ const TEXT_COLOR: [f32; 4] = [0.552011, 0.672443, 0.745404, 1.0];
 /// logo `image` node references it; the renderer's image registry maps the two.
 /// The single named splash asset — only known keys are pre-registered.
 pub(crate) const SPLASH_LOGO_ASSET: &str = "splash/logo";
+
+/// Templated placeholder the splash JSON authors in the version `text` node's
+/// content. `build_splash_descriptor` finds that node by this exact sentinel
+/// content and substitutes the per-frame `version_line` into it. The sentinel is
+/// the join point (the wire model has no node `id`), and it stays intact in the
+/// cached tree so each frame's clone substitutes against a fresh sentinel. Task
+/// 1's fixture asserts the JSON equals `build_splash_descriptor("{version}")`, so
+/// the sentinel must round-trip when `version_line == "{version}"`.
+const VERSION_SENTINEL: &str = "{version}";
+
+/// Engine-shipped splash descriptor path. The runtime load path is the cwd-
+/// relative `content/base/...` convention the splash PNG and keyboard JSON use:
+/// the engine runs from the workspace root, so `content/base/ui/splash.json`
+/// resolves directly. When that cwd-relative path is absent (notably under
+/// `cargo test`, whose working directory is the crate dir, not the workspace
+/// root), fall back to the same `CARGO_MANIFEST_DIR + ../..` workspace anchor the
+/// Task 1 fixture uses, so the engine-shipped asset is still found and the
+/// production builder loads the real tree in tests. The splash ships with the
+/// engine, so it loads from `base` regardless of which mod is active.
+fn splash_asset_path() -> PathBuf {
+    let runtime = PathBuf::from("content/base/ui/splash.json");
+    if runtime.exists() {
+        return runtime;
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("content/base/ui/splash.json")
+}
 
 /// The splash's input capture mode, for the dispatch seam. The splash is
 /// non-interactive, so it is always `Passthrough` (events flow to gameplay). A
@@ -110,18 +126,65 @@ pub(crate) struct SplashDescriptor {
 /// So this builder no longer takes the logo aspect — sizing moved to the
 /// content-driven measure path, matching how text nodes size from shaped glyphs.
 pub(crate) fn build_splash_descriptor(version_line: &str) -> SplashDescriptor {
-    // Inner container: the panel-colored fill that the logo + version text flow
-    // inside. It content-sizes to its children (logo, gap, text) plus its own
-    // padding, and centers them on the cross axis (so the version line centers on
-    // the logo column from its real measured run width — measured-width centering,
-    // now expressed as flex `align: center`).
+    // Clone the once-loaded cached tree (logo image + version `text` carrying the
+    // `{version}` sentinel) and substitute the per-frame version into it. The disk
+    // read + parse happen exactly once (in `SPLASH_TREE`'s initializer); per-call
+    // work is a clone + one string swap, so the per-frame `record_splash_ui` site
+    // never touches disk.
+    let mut tree = SPLASH_TREE.clone();
+    substitute_version(&mut tree.root, version_line);
+    SplashDescriptor { tree }
+}
+
+/// The splash descriptor tree, loaded + parsed exactly once. Holds the JSON-
+/// authored tree (logo image + version text with the `{version}` sentinel intact)
+/// on success, or the minimal in-code fallback on a missing/malformed
+/// `splash.json`. Each `build_splash_descriptor` call clones this and substitutes
+/// the live version, so the cached sentinel is never consumed.
+static SPLASH_TREE: LazyLock<AnchoredTree> = LazyLock::new(load_splash_tree);
+
+/// Load + deserialize the splash descriptor from `content/base/ui/splash.json`,
+/// degrading to the minimal in-code fallback on a missing or malformed file. On
+/// failure it `warn!`s once (this runs once, inside `SPLASH_TREE`'s initializer)
+/// and returns the fallback so the boot path never panics — mirroring
+/// `load_keyboard_descriptor`'s graceful degradation and `[UI]` log tag.
+fn load_splash_tree() -> AnchoredTree {
+    let path = splash_asset_path();
+    let bytes = match std::fs::read_to_string(&path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            log::warn!(
+                "[UI] splash asset '{}' could not be read ({err}); using minimal fallback splash",
+                path.display()
+            );
+            return fallback_splash_tree();
+        }
+    };
+    match serde_json::from_str::<AnchoredTree>(&bytes) {
+        Ok(tree) => tree,
+        Err(err) => {
+            log::warn!(
+                "[UI] splash asset '{}' failed to deserialize ({err}); using minimal fallback splash",
+                path.display()
+            );
+            fallback_splash_tree()
+        }
+    }
+}
+
+/// The one sanctioned in-code splash tree: a minimal center-anchored panel with
+/// the logo `image` above the version `text` (sentinel content), used ONLY when
+/// `splash.json` is absent or broken. It keeps the same logo asset + `{version}`
+/// sentinel so substitution and the logo measure seam behave identically to the
+/// JSON path — the splash still shows, just without the framed border treatment.
+fn fallback_splash_tree() -> AnchoredTree {
     let logo = Widget::Image(ImageWidget {
         asset: SPLASH_LOGO_ASSET.to_string(),
         id: None,
         focus_neighbors: Default::default(),
     });
-    let text = Widget::Text(TextWidget {
-        content: version_line.to_string(),
+    let version = Widget::Text(TextWidget {
+        content: VERSION_SENTINEL.to_string(),
         font_size: TEXT_LOGICAL_FONT_SIZE,
         color: ColorValue::Literal(TEXT_COLOR),
         font: None,
@@ -130,7 +193,7 @@ pub(crate) fn build_splash_descriptor(version_line: &str) -> SplashDescriptor {
         id: None,
         focus_neighbors: Default::default(),
     });
-    let inner = Widget::VStack(ContainerWidget {
+    let panel = Widget::VStack(ContainerWidget {
         gap: SpacingValue::Literal(LOGO_TEXT_GAP),
         padding: SpacingValue::Literal(PANEL_CONTENT_PADDING),
         align: Align::Center,
@@ -140,42 +203,35 @@ pub(crate) fn build_splash_descriptor(version_line: &str) -> SplashDescriptor {
         focus_neighbors: Default::default(),
         focus: None,
         restore_on_return: false,
-        children: vec![logo, text],
+        children: vec![logo, version],
     });
+    AnchoredTree::passthrough(Anchor::Center, [0.0, 0.0], panel)
+}
 
-    // Outer container: the border-colored backdrop + 9-slice frame. Its single
-    // child is the inner panel, padded in by the rim thickness on every edge, so
-    // the outer backdrop shows through as a 4px border-colored rim. The outer
-    // content-sizes to the inner panel + 2*rim — the whole framed panel sizes to
-    // its content (no hardcoded 740x360).
-    let outer = Widget::VStack(ContainerWidget {
-        gap: SpacingValue::Literal(0.0),
-        padding: SpacingValue::Literal(PANEL_BORDER_THICKNESS),
-        align: Align::Stretch,
-        fill: Some(ColorValue::Literal(PANEL_BORDER_COLOR)),
-        border: Some(Border {
-            texture: String::new(),
-            slice: [
-                PANEL_BORDER_MARGIN,
-                PANEL_BORDER_MARGIN,
-                PANEL_BORDER_MARGIN,
-                PANEL_BORDER_MARGIN,
-            ],
-            tint: ColorValue::Literal(PANEL_BORDER_COLOR),
-        }),
-        id: None,
-        focus_neighbors: Default::default(),
-        focus: None,
-        restore_on_return: false,
-        children: vec![inner],
-    });
-
-    // Splash is non-interactive (`splash_capture_mode` is the live gate); the
-    // envelope mode stays passthrough and the splash never routes through the
-    // modal stack anyway (boot path predates it).
-    let tree = AnchoredTree::passthrough(Anchor::Center, [0.0, 0.0], outer);
-
-    SplashDescriptor { tree }
+/// Walk the descriptor tree and replace the `{version}` sentinel in the version
+/// `text` node's content with `version_line`. The node is located by its sentinel
+/// content (the wire model has no node `id`), so any `text` whose content is the
+/// sentinel is templated. Recurses through container children.
+fn substitute_version(widget: &mut Widget, version_line: &str) {
+    match widget {
+        Widget::Text(text) => {
+            if text.content == VERSION_SENTINEL {
+                text.content = version_line.to_string();
+            }
+        }
+        Widget::VStack(container) | Widget::HStack(container) => {
+            for child in &mut container.children {
+                substitute_version(child, version_line);
+            }
+        }
+        Widget::Image(_)
+        | Widget::Panel(_)
+        | Widget::Grid(_)
+        | Widget::Spacer(_)
+        | Widget::Button(_)
+        | Widget::Slider(_)
+        | Widget::Bar(_) => {}
+    }
 }
 
 impl SplashDescriptor {
@@ -248,6 +304,83 @@ mod tests {
             *build_splash_descriptor("{version}").tree(),
             "splash.json equals the builder output for the {{version}} sentinel oracle",
         );
+    }
+
+    #[test]
+    fn fallback_splash_tree_is_non_empty_and_substitutes_version() {
+        // Degradation path (mirrors the keyboard's degradation test): when
+        // `splash.json` is absent/malformed the loader returns the in-code
+        // fallback. The fallback must be a non-empty tree (logo + version text)
+        // and must not panic; the substitution path replaces the sentinel.
+        let mut tree = fallback_splash_tree();
+        // The fallback is a panel flowing the logo image above the version text.
+        let Widget::VStack(panel) = &tree.root else {
+            panic!("fallback root is a vstack panel");
+        };
+        assert!(
+            !panel.children.is_empty(),
+            "fallback splash tree is non-empty",
+        );
+        assert!(
+            panel
+                .children
+                .iter()
+                .any(|w| matches!(w, Widget::Image(img) if img.asset == SPLASH_LOGO_ASSET)),
+            "fallback carries the logo image",
+        );
+        // The fallback's version text still carries the sentinel, so substitution
+        // works identically to the JSON path.
+        substitute_version(&mut tree.root, "postretro v9.9.9");
+        let Widget::VStack(panel) = &tree.root else {
+            panic!("fallback root is a vstack panel");
+        };
+        let versioned = panel
+            .children
+            .iter()
+            .any(|w| matches!(w, Widget::Text(t) if t.content == "postretro v9.9.9"));
+        assert!(versioned, "the sentinel is replaced with the version line");
+    }
+
+    #[test]
+    fn malformed_splash_json_degrades_without_panic() {
+        // A malformed payload through the wire path degrades to the fallback
+        // rather than panicking — the boot path must never panic on a broken
+        // engine-shipped asset.
+        let parsed = serde_json::from_str::<AnchoredTree>("{ not valid json ");
+        assert!(parsed.is_err(), "the malformed payload fails to parse");
+        // The loader swallows that error into the fallback; assert the fallback is
+        // usable directly (the loader's disk read is exercised at runtime).
+        let tree = fallback_splash_tree();
+        assert!(
+            matches!(&tree.root, Widget::VStack(p) if !p.children.is_empty()),
+            "degradation yields a non-empty tree",
+        );
+    }
+
+    #[test]
+    fn builder_substitutes_version_into_sentinel_node() {
+        // The migrated builder loads the cached tree and substitutes the live
+        // version into the `{version}` sentinel node.
+        let desc = build_splash_descriptor("postretro v1.2.3");
+        let found = find_version_text(desc.tree(), "postretro v1.2.3");
+        assert!(
+            found,
+            "the version line replaces the sentinel in the built tree"
+        );
+    }
+
+    /// Recursively check the tree for a `text` node with the given content.
+    fn find_version_text(tree: &AnchoredTree, expected: &str) -> bool {
+        fn walk(widget: &Widget, expected: &str) -> bool {
+            match widget {
+                Widget::Text(t) => t.content == expected,
+                Widget::VStack(c) | Widget::HStack(c) => {
+                    c.children.iter().any(|w| walk(w, expected))
+                }
+                _ => false,
+            }
+        }
+        walk(&tree.root, expected)
     }
 
     #[test]

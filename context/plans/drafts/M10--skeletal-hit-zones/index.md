@@ -62,7 +62,7 @@ Factor `compose_palette`'s parent-before-child forward sweep into a shared core,
 
 ### Task 3: Game-side model store + derived bounds
 
-Retain each uploaded model's CPU skeleton, clips, and Task 1's zone table in a game-layer store keyed by `ModelHandle`, populated at the level-load model sweep beside the existing clip-table install (`MeshClipTables::insert` call site) and cleared on level change with it. The store owns its CPU model data, `Arc`-wrapping clip/skeleton data so the per-shot path never deep-clones keyframes; whether that `Arc` is shared with the renderer's existing CPU clip copy or held independently is an implementation detail at code contact (the constraint is no per-shot clone, not single-ownership). For zone-bearing models, compute the derived broad-phase bound here (sample every clip's joint positions at fixed uniform times via Task 2, union, inflate by capsule radii) and store it beside the zone table. This is the visibility-independent pose source; nothing renderer-side is queried per shot.
+Retain each uploaded model's CPU skeleton, clips, and Task 1's zone table in a game-layer store keyed by `ModelHandle`, populated at the level-load model sweep beside the existing clip-table install (`MeshClipTables::insert` call site) and cleared on level change with it. The store **owns its CPU model data independently** — no sharing with the renderer's CPU clip copy — `Arc`-wrapping clip/skeleton data internally so the per-shot path never deep-clones keyframes. The store is keyed by `ModelHandle`, so it holds one copy per model *type* (not per instance); waves are many instances of few archetypes, so the duplication against the renderer's copy is a handful of models — trivially small, and worth it to keep the subsystem boundary clean (the game store never reaches into renderer ownership). For zone-bearing models, compute the derived broad-phase bound here (sample every clip's joint positions at fixed uniform times via Task 2, union, inflate by capsule radii) and store it beside the zone table. This is the visibility-independent pose source; nothing renderer-side is queried per shot.
 
 ### Task 4: Entity-raycast facility + weapon integration
 
@@ -100,10 +100,7 @@ A standalone entity-raycast query module: walk targetable entities (health + aut
 
 Zone tags are author-defined strings compared verbatim across all boundaries; no casing transform. The tag has no standalone scripting field — it appears only as a glTF `extras` value and as `zoneMultipliers` map keys.
 
-## Open questions
-
-- `Arc` granularity in the shared model data (whole model vs. per-part), and whether to share storage with the renderer's existing CPU clip copy or hold an independent `Arc` — implementation detail at code contact; the constraint is no per-shot deep clone of clip keyframes.
-
 ## Resolved during review
 
 - Crossfade and the derived bound: the bound unions per-clip pose extremes plus capsule radii; crossfade transients (a blend of two in-bound poses) are treated as covered. Not a separate sampling pass.
+- Ownership / `Arc` sharing: the game store owns its CPU model data independently (whole-model `Arc`, no sharing with the renderer's copy). Stakes are O(model types), not O(instances), so the duplication is negligible at wave scale; the subsystem-boundary invariant and the lean north star favor independence over a trivial memory saving. Decided now rather than deferred because nothing downstream resolves it — unlike nav's fragmentation question, it has no consumer that produces deciding data.

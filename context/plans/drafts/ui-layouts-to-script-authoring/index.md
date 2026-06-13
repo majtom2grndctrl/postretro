@@ -7,9 +7,13 @@
 
 Migrate the UI layouts currently hardcoded as Rust descriptor builders — the demo
 HUD, the pause menu, and the boot splash — to script/JSON-authored `AnchoredTree`
-descriptors, matching how `content/base/ui/keyboard.json` is already authored.
-Engine code keeps layout COMPUTATION (taffy in `render/ui/tree.rs`) and the
-descriptor wire model; it stops carrying layout AUTHORING.
+descriptors. The HUD and pause menu register by name into the modal-stack registry,
+matching how `content/base/ui/keyboard.json` is already authored. The boot splash
+migrates its authoring source only: it stays on its own pre-gameplay path OUTSIDE
+the modal stack and keeps the `SplashDescriptor` newtype (which wraps an
+`AnchoredTree`) and its call sites stable. Engine code keeps layout COMPUTATION
+(taffy in `render/ui/tree.rs`) and the descriptor wire model; it stops carrying
+layout AUTHORING.
 
 ## Why
 
@@ -19,7 +23,9 @@ descriptor wire model; it stops carrying layout AUTHORING.
   factory tree) and reloads — no Rust change, no recompile.
 - The precedent already works: the on-screen keyboard ships as
   `content/base/ui/keyboard.json`, loaded from disk and registered by name. Same
-  wire format, same registry, same modal stack.
+  wire format, same registry, same modal stack — the path the HUD and pause menu
+  follow. The splash reuses the wire model and serde loader but keeps its own
+  pre-gameplay call sites rather than the registry-by-name path.
 
 ## Concrete anchors
 
@@ -50,10 +56,9 @@ Existing seam that already supports asset-authored trees (the migration target s
 ## Dependency
 
 Blocked on the SDK UI-authoring surface: **G1 — SDK core + lifecycle**
-(`context/plans/roadmap.md`). G1 owns script-side tree registration, factory
-functions, and `from_*_value` descriptor ingestion — the "script registration
-arrives with the UI SDK" the modal-stack registry and `ui.md` both note as
-deferred. JSON-only migration (keyboard.json style) can land ahead of full G1
+(`context/plans/roadmap.md`). G1 owns script-side tree registration and factory
+functions (register → VM-drop lifecycle) — the "script registration arrives with
+the UI SDK" the modal-stack registry and `ui.md` both note as deferred. JSON-only migration (keyboard.json style) can land ahead of full G1
 script ingestion, since the loader + wire format + registry already exist; SDK
 factory-authored trees need G1 proper.
 

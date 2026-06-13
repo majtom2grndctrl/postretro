@@ -289,6 +289,12 @@ pub(crate) struct UiReadSnapshot {
     /// on the splash/fresh path, where inertness is structural — that path takes
     /// no time at all.
     pub time_seconds: f64,
+    /// The focused node id in the active (top) stack tree, resolved app-side by
+    /// the focus engine the previous frame (M13 Goal F, Task 3). The UI pass draws
+    /// the focus ring around this node's rect on the top layer. `None` (the
+    /// default) when nothing is focused; the ring may trail a focus change by one
+    /// frame (the same N→N+1 latency every UI event carries).
+    pub focused_id: Option<String>,
 }
 
 impl UiReadSnapshot {
@@ -302,6 +308,7 @@ impl UiReadSnapshot {
             slot_values: std::collections::HashMap::new(),
             // Splash/fresh path takes no time — inertness is structural.
             time_seconds: 0.0,
+            focused_id: None,
         }
     }
 
@@ -315,12 +322,14 @@ impl UiReadSnapshot {
         trees: Vec<UiTreeEntry>,
         slot_values: std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
         time_seconds: f64,
+        focused_id: Option<String>,
     ) -> Self {
         Self {
             version_line: String::new(),
             trees,
             slot_values,
             time_seconds,
+            focused_id,
         }
     }
 }
@@ -794,6 +803,23 @@ impl UiPass {
         )
     }
 
+    /// Export the flat hit-test / focus rect list for the TOP stack layer (the
+    /// only one that takes focus), against the descriptor it was built from and the
+    /// current `viewport` projection. Returns an empty list when there is no layer.
+    /// The renderer publishes this back to the app (the reverse twin of the
+    /// app→renderer snapshot); the app's focus engine consumes it the NEXT frame.
+    ///
+    /// Must be called after `layout_gameplay_tree` has laid out every layer this
+    /// frame, so the top layer's taffy layout is current for `viewport`.
+    pub fn export_top_focus_rects(&self, viewport: [u32; 2]) -> tree::FocusRectList {
+        match self.gameplay_trees.last() {
+            Some(retained) => retained
+                .tree
+                .export_focus_rects(&retained.descriptor, viewport),
+            None => tree::FocusRectList::default(),
+        }
+    }
+
     /// Drop retained state for stack layers at or above `len` — called once per
     /// frame after laying out `0..len`, so popped modal trees release their
     /// retained `UiTree` (layout cache, bound-value subscriptions) rather than
@@ -931,6 +957,37 @@ impl UiPass {
         });
         self.instance_capacity = capacity;
     }
+}
+
+/// Ring thickness in device pixels (before viewport scale is folded into the
+/// rect math). A thin 2px outline reads as a focus ring without obscuring content.
+const FOCUS_RING_THICKNESS: f32 = 2.0;
+
+/// Append a focus-ring outline (four thin bars) around `rect` (device px
+/// `[x, y, w, h]`) to `quads`. The ring sits `inset` device px OUTSIDE the rect
+/// (the `xs` spacing token, scaled), framing the focused node without overlapping
+/// it. `color` is the resolved `focus.ring` token (linear RGBA). Drawn as four
+/// solid `UiInstance::panel` bars (top, bottom, left, right) so it needs no new
+/// pipeline — it rides the existing white-texel quad batch.
+///
+/// M13 Goal F, Task 3: the engine-drawn focus ring. The focused id rides the
+/// snapshot, so the ring may trail a focus change by one frame.
+pub(crate) fn push_focus_ring(quads: &mut UiDrawList, rect: [f32; 4], inset: f32, color: [f32; 4]) {
+    let t = FOCUS_RING_THICKNESS;
+    // Outer frame: the focused rect grown outward by the inset.
+    let ox = rect[0] - inset;
+    let oy = rect[1] - inset;
+    let ow = rect[2] + inset * 2.0;
+    let oh = rect[3] + inset * 2.0;
+    if ow <= 0.0 || oh <= 0.0 {
+        return;
+    }
+    let bar = |r: [f32; 4]| UiInstance::panel(r, color, [0.0; 4]);
+    // Top, bottom (full width), then left/right (between the horizontal bars).
+    quads.push(bar([ox, oy, ow, t]));
+    quads.push(bar([ox, oy + oh - t, ow, t]));
+    quads.push(bar([ox, oy + t, t, (oh - 2.0 * t).max(0.0)]));
+    quads.push(bar([ox + ow - t, oy + t, t, (oh - 2.0 * t).max(0.0)]));
 }
 
 /// Upload a CPU RGBA8 `UiTexture` and return the GPU texture. sRGB format so

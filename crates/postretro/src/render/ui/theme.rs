@@ -47,6 +47,9 @@ impl UiTheme {
             // `panel.default` is a literal flat key — the dark panel surface from
             // the splash (`splash::PANEL_COLOR`).
             ("panel.default".to_string(), [0.018, 0.026, 0.039, 1.0]),
+            // `focus.ring` (M13 Goal F, Task 3): the engine-drawn focus ring color,
+            // a bright cyan accent consistent with the cyberpunk palette.
+            ("focus.ring".to_string(), [0.10, 0.80, 0.90, 1.0]),
         ]);
 
         let fonts = HashMap::from([
@@ -142,7 +145,7 @@ mod tests {
     #[test]
     fn engine_default_contains_all_required_token_names() {
         let theme = UiTheme::engine_default();
-        for name in ["critical", "warning", "ok", "panel.default"] {
+        for name in ["critical", "warning", "ok", "panel.default", "focus.ring"] {
             assert!(theme.color(name).is_some(), "missing color token {name:?}");
         }
         for name in ["body", "mono"] {

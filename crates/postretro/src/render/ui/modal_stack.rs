@@ -136,8 +136,8 @@ impl ModalStack {
     }
 
     /// The registry name of the top (active) tree, or `None` when empty. Only the
-    /// top tree is "active"; lower trees are frozen (no focus, no activation).
-    #[cfg(test)]
+    /// top tree is "active"; lower trees are frozen (no focus, no activation). The
+    /// App keys the focus engine on this (falling back to the always-on HUD).
     pub(crate) fn active_name(&self) -> Option<&str> {
         self.stack.last().map(|t| t.name.as_str())
     }
@@ -166,7 +166,7 @@ impl ModalStack {
         slot_values: std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
         time_seconds: f64,
     ) -> UiReadSnapshot {
-        UiReadSnapshot::with_trees(self.entries(), slot_values, time_seconds)
+        UiReadSnapshot::with_trees(self.entries(), slot_values, time_seconds, None)
     }
 }
 
@@ -191,9 +191,14 @@ mod tests {
                 align: Align::Start,
                 fill: None,
                 border: None,
+                id: None,
+                focus_neighbors: Default::default(),
+                focus: None,
+                restore_on_return: false,
                 children: vec![],
             }),
             capture_mode,
+            initial_focus: None,
         }
     }
 

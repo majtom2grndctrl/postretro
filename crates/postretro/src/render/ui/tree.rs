@@ -777,6 +777,152 @@ impl UiTree {
         diff
     }
 
+    /// Export the flat hit-test / focus rect list for this tree against the
+    /// descriptor it was built from. Walks the descriptor tree and the taffy tree
+    /// in lockstep (they are structurally 1:1 — `build_node` maps each widget to
+    /// exactly one node, children in order) so each focusable node's authored or
+    /// auto-generated id pairs with its computed device-pixel rect.
+    ///
+    /// Uses the SAME device-pixel projection as the draw (`project_rect`,
+    /// `canvas_origin`, `device_scale`) so a hit lands on exactly the rect drawn.
+    /// Assumes layout is already computed for `device_size` (the caller's gate ran
+    /// the compute). Pure read-back — no taffy mutation, no GPU.
+    ///
+    /// A node is exported as focusable when it carries an authored `id` OR sits
+    /// (directly) under a container that declares a focus policy. The auto-id is
+    /// the node's path from the root (`"0/2/1"`), regenerated deterministically
+    /// each build — so it is stable across rebuilds for an unchanged structure but
+    /// is runtime-only and never serialized. Authored ids carry across structural
+    /// rebuilds (focus restore relies on them).
+    pub(crate) fn export_focus_rects(
+        &self,
+        descriptor: &AnchoredTree,
+        device_size: [u32; 2],
+    ) -> FocusRectList {
+        let root_size = self.taffy.layout(self.root).expect("root has layout").size;
+        let (afx, afy) = anchor_fractions(self.anchor);
+        let anchor_x = REFERENCE_WIDTH * afx + self.offset[0];
+        let anchor_y = REFERENCE_HEIGHT * afy + self.offset[1];
+        let root_origin = [
+            anchor_x - root_size.width * afx,
+            anchor_y - root_size.height * afy,
+        ];
+        let scale = super::layout::device_scale(device_size);
+        let canvas_origin = canvas_origin(device_size, scale);
+
+        let mut out = FocusRectList {
+            initial_focus: descriptor.initial_focus.clone(),
+            restore_on_return: any_restore_on_return(&descriptor.root),
+            ..Default::default()
+        };
+        let mut z = 0u32;
+        self.collect_focus_node(
+            &descriptor.root,
+            self.root,
+            String::new(),
+            None,
+            root_origin,
+            scale,
+            canvas_origin,
+            &mut z,
+            &mut out,
+        );
+        out
+    }
+
+    /// Lockstep descriptor+taffy walk for `export_focus_rects`. `path` is the
+    /// node's slash-joined child-index path from the root (the auto-id when no id
+    /// is authored). `group` is the index (into `out.groups`) of the nearest
+    /// ancestor container that declared a focus policy. `z` rises in tree order so
+    /// a later-drawn node hit-tests as topmost.
+    #[allow(clippy::too_many_arguments)]
+    fn collect_focus_node(
+        &self,
+        widget: &Widget,
+        node: NodeId,
+        path: String,
+        group: Option<usize>,
+        ref_origin: [f32; 2],
+        scale: f32,
+        canvas_origin: [f32; 2],
+        z: &mut u32,
+        out: &mut FocusRectList,
+    ) {
+        let layout = self.taffy.layout(node).expect("node has computed layout");
+        let this_z = *z;
+        *z += 1;
+
+        let (authored_id, neighbors) = focus_meta(widget);
+        // A node is focusable when it carries an authored id or is governed by an
+        // ancestor focus group. Auto-id falls back to the tree path.
+        let focusable = authored_id.is_some() || group.is_some();
+        let id = authored_id.cloned().unwrap_or_else(|| {
+            if path.is_empty() {
+                "root".to_string()
+            } else {
+                path.clone()
+            }
+        });
+        if focusable {
+            let rect = project_rect(ref_origin, layout, scale, canvas_origin);
+            let rect_index = out.rects.len();
+            out.rects.push(FocusRect {
+                id: id.clone(),
+                rect,
+                z: this_z,
+                group,
+                neighbors,
+            });
+            if let Some(g) = group {
+                out.groups[g].members.push(rect_index);
+            }
+        }
+
+        // A container declaring a focus policy opens a new group its DIRECT
+        // children join. Register the group before recursing so children carry its
+        // index. Children of a non-policy container inherit the ancestor group.
+        let child_group = match container_focus_policy(widget) {
+            Some(policy) => {
+                let idx = out.groups.len();
+                out.groups.push(FocusGroup {
+                    kind: policy.kind().into(),
+                    wrap: policy.wrap(),
+                    repeat: policy.repeat().map(Into::into),
+                    members: Vec::new(),
+                });
+                Some(idx)
+            }
+            None => group,
+        };
+
+        if let Some(children) = widget_children(widget) {
+            let taffy_children = self.taffy.children(node).expect("node children resolve");
+            for (i, (child_widget, child_node)) in children.iter().zip(taffy_children).enumerate() {
+                let child_layout = self.taffy.layout(child_node).expect("child has layout");
+                let child_origin = [
+                    ref_origin[0] + child_layout.location.x,
+                    ref_origin[1] + child_layout.location.y,
+                ];
+                let child_path = if path.is_empty() {
+                    i.to_string()
+                } else {
+                    format!("{path}/{i}")
+                };
+                self.collect_focus_node(
+                    child_widget,
+                    child_node,
+                    child_path,
+                    child_group,
+                    child_origin,
+                    scale,
+                    canvas_origin,
+                    z,
+                    out,
+                );
+            }
+        }
+    }
+
     /// Walk a node and its descendants, accumulating draw entries. `ref_origin`
     /// is the node's top-left in reference space (parent origin + the node's
     /// taffy-relative location). Children recurse with their own absolute origin.
@@ -1258,6 +1404,54 @@ fn measure_node(
     }
 }
 
+/// A widget's authored focus id and neighbor overrides, for the focus-rect
+/// export. Every kind carries `id`/`focus_neighbors` except `spacer` (id only,
+/// never focusable). Returns the authored id (borrowed) and the exported
+/// neighbor overrides.
+fn focus_meta(widget: &Widget) -> (Option<&String>, FocusNeighbors) {
+    match widget {
+        Widget::Text(w) => (w.id.as_ref(), (&w.focus_neighbors).into()),
+        Widget::Panel(w) => (w.id.as_ref(), (&w.focus_neighbors).into()),
+        Widget::Image(w) => (w.id.as_ref(), (&w.focus_neighbors).into()),
+        Widget::Spacer(w) => (w.id.as_ref(), FocusNeighbors::default()),
+        Widget::VStack(w) | Widget::HStack(w) => (w.id.as_ref(), (&w.focus_neighbors).into()),
+        Widget::Grid(w) => (w.id.as_ref(), (&w.focus_neighbors).into()),
+    }
+}
+
+/// The focus policy a container declares, or `None` for leaves and policy-less
+/// containers. A declaring container opens a focus group its direct children join.
+fn container_focus_policy(widget: &Widget) -> Option<&super::descriptor::FocusPolicy> {
+    match widget {
+        Widget::VStack(w) | Widget::HStack(w) => w.focus.as_ref(),
+        Widget::Grid(w) => w.focus.as_ref(),
+        _ => None,
+    }
+}
+
+/// Whether `widget` or any descendant container declares `restoreOnReturn`.
+/// Surfaced tree-wide on the focus rect list: the focus engine restores this
+/// tree's saved focus on a returning pop when any of its containers opted in.
+fn any_restore_on_return(widget: &Widget) -> bool {
+    let declared = match widget {
+        Widget::VStack(w) | Widget::HStack(w) => w.restore_on_return,
+        Widget::Grid(w) => w.restore_on_return,
+        _ => false,
+    };
+    declared
+        || widget_children(widget)
+            .is_some_and(|children| children.iter().any(any_restore_on_return))
+}
+
+/// A container's `children` for the lockstep focus walk, or `None` for leaves.
+fn widget_children(widget: &Widget) -> Option<&[Widget]> {
+    match widget {
+        Widget::VStack(w) | Widget::HStack(w) => Some(&w.children),
+        Widget::Grid(w) => Some(&w.children),
+        _ => None,
+    }
+}
+
 /// Recursively build a taffy node (and its children) for one descriptor widget.
 /// Resolves every theme token (color/spacing/font) against `theme` into the
 /// concrete value the node carries, so the per-frame walk is theme-free.
@@ -1270,6 +1464,9 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget, theme: &UiThe
             font,
             bind,
             style_ranges,
+            // `id`/`focus_neighbors` are read by the focus-rect export, not the
+            // draw build — the draw walk ignores them.
+            ..
         }) => {
             let style_ranges =
                 build_node_style_ranges(style_ranges.as_ref(), bind.is_some(), theme, "text");
@@ -1307,6 +1504,8 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget, theme: &UiThe
             border,
             bind,
             style_ranges,
+            // `id`/`focus_neighbors` are read by the focus-rect export, not here.
+            ..
         }) => {
             let style_ranges =
                 build_node_style_ranges(style_ranges.as_ref(), bind.is_some(), theme, "panel");
@@ -1330,7 +1529,7 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget, theme: &UiThe
                 )
                 .expect("taffy leaf creation must succeed")
         }
-        Widget::Image(ImageWidget { asset }) => taffy
+        Widget::Image(ImageWidget { asset, .. }) => taffy
             .new_leaf_with_context(
                 Style::default(),
                 NodeContext::Image {
@@ -1444,6 +1643,118 @@ fn build_grid(taffy: &mut TaffyTree<NodeContext>, grid: &GridWidget, theme: &UiT
     taffy
         .new_with_children(style, &children)
         .expect("taffy grid creation must succeed")
+}
+
+// --- Hit-test / focus rect-list export (M13 Goal F, Task 3) -----------------
+
+/// Focus-traversal kind exported with a focus group. The descriptor twin
+/// (`descriptor::FocusKind`) is converted into this at export so the app-side
+/// focus engine carries no descriptor dependency on the wire enum's serde derive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FocusKind {
+    Linear,
+    Spatial,
+}
+
+/// Hold-to-repeat timing exported with a focus group (milliseconds). Mirrors
+/// `descriptor::RepeatPolicy`; carried on the focus rect list so the app-side
+/// focus engine's dt-clocked repeat timer reads the container's declared cadence.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct RepeatPolicy {
+    pub initial_delay_ms: f32,
+    pub interval_ms: f32,
+}
+
+/// Per-direction id overrides exported with a focusable node. A set direction
+/// wins over the container policy: nav that way jumps straight to the named node.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct FocusNeighbors {
+    pub up: Option<String>,
+    pub down: Option<String>,
+    pub left: Option<String>,
+    pub right: Option<String>,
+}
+
+/// One focusable/interactive node in the exported hit-test/focus rect list: its
+/// stable id (authored or auto-generated from tree position), device-pixel rect
+/// `[x, y, w, h]`, painter z (tree order — later = higher), the index of the
+/// focus group that governs its directional traversal (if any), and its neighbor
+/// overrides. The app-side focus engine consumes this the FOLLOWING frame (the
+/// reverse of the app→renderer snapshot's N→N+1 contract).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct FocusRect {
+    pub id: String,
+    pub rect: [f32; 4],
+    pub z: u32,
+    /// Index into `FocusRectList::groups` of the nearest ancestor container that
+    /// declares a focus policy, or `None` when no ancestor governs this node.
+    pub group: Option<usize>,
+    pub neighbors: FocusNeighbors,
+}
+
+/// A focus group exported from a container that declares a `focus` policy: its
+/// traversal kind, wrap flag, optional repeat cadence, and the indices (into
+/// `FocusRectList::rects`) of its directly-governed focusable members in tree
+/// order. The focus engine moves focus within a group by its policy.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct FocusGroup {
+    pub kind: FocusKind,
+    pub wrap: bool,
+    pub repeat: Option<RepeatPolicy>,
+    /// Indices into `FocusRectList::rects` of this group's members, tree order.
+    pub members: Vec<usize>,
+}
+
+/// The flat hit-test / focus rect list exported once per draw-data build: every
+/// focusable node's id+rect+z+group, plus the focus groups their containers
+/// declared. The renderer publishes this back to the app (the reverse twin of the
+/// app→renderer `UiReadSnapshot`); the focus engine reads it the next frame to
+/// move focus, resolve pointer hits (topmost z), and drive the repeat timer.
+///
+/// "Focusable" today means a node that carries an authored `id` or sits under a
+/// container that declares a focus policy — the focusable-node seam Task 4 plugs
+/// the `button`/`slider`/`bar` interactive markers into.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub(crate) struct FocusRectList {
+    pub rects: Vec<FocusRect>,
+    pub groups: Vec<FocusGroup>,
+    /// The tree's `initialFocus` (from the `AnchoredTree` envelope): the node id
+    /// focus starts on when this tree becomes the active (top) stack tree. `None`
+    /// selects the first focusable node in tree order.
+    pub initial_focus: Option<String>,
+    /// True when any container in the tree declared `restoreOnReturn`: on a pop
+    /// that returns focus here, the focus engine restores this tree's last-focused
+    /// node instead of resetting to `initial_focus`.
+    pub restore_on_return: bool,
+}
+
+impl From<super::descriptor::FocusKind> for FocusKind {
+    fn from(kind: super::descriptor::FocusKind) -> Self {
+        match kind {
+            super::descriptor::FocusKind::Linear => FocusKind::Linear,
+            super::descriptor::FocusKind::Spatial => FocusKind::Spatial,
+        }
+    }
+}
+
+impl From<super::descriptor::RepeatPolicy> for RepeatPolicy {
+    fn from(p: super::descriptor::RepeatPolicy) -> Self {
+        Self {
+            initial_delay_ms: p.initial_delay_ms,
+            interval_ms: p.interval_ms,
+        }
+    }
+}
+
+impl From<&super::descriptor::FocusNeighbors> for FocusNeighbors {
+    fn from(n: &super::descriptor::FocusNeighbors) -> Self {
+        Self {
+            up: n.up.clone(),
+            down: n.down.clone(),
+            left: n.left.clone(),
+            right: n.right.clone(),
+        }
+    }
 }
 
 /// Computed draw entries from one tree: a device-pixel panel quad `UiDrawList`,
@@ -1740,7 +2051,10 @@ mod tests {
     }
 
     fn spacer(flex_grow: f32) -> Widget {
-        Widget::Spacer(SpacerWidget { flex_grow })
+        Widget::Spacer(SpacerWidget {
+            flex_grow,
+            id: None,
+        })
     }
 
     fn vstack(gap: f32, padding: f32, align: Align, children: Vec<Widget>) -> Widget {
@@ -1750,6 +2064,10 @@ mod tests {
             align,
             fill: None,
             border: None,
+            id: None,
+            focus_neighbors: Default::default(),
+            focus: None,
+            restore_on_return: false,
             children,
         })
     }
@@ -1761,6 +2079,10 @@ mod tests {
             align,
             fill: None,
             border: None,
+            id: None,
+            focus_neighbors: Default::default(),
+            focus: None,
+            restore_on_return: false,
             children,
         })
     }
@@ -1778,6 +2100,8 @@ mod tests {
             font: None,
             bind: None,
             style_ranges: None,
+            id: None,
+            focus_neighbors: Default::default(),
         })
     }
 
@@ -1802,6 +2126,7 @@ mod tests {
                 vec![text("AB", 40.0), text("CD", 40.0)],
             ),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -1855,6 +2180,7 @@ mod tests {
                 )],
             ),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -1898,6 +2224,7 @@ mod tests {
                 vec![text("X", 40.0), spacer(1.0), text("Y", 40.0)],
             ),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -1938,6 +2265,7 @@ mod tests {
                 vec![text("AAAA", 20.0), text("BBBB", 20.0)],
             ),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut fs = font_system();
         let mut ui_ref = UiTree::from_descriptor(&tree, &theme());
@@ -1978,6 +2306,8 @@ mod tests {
                 font: None,
                 bind: None,
                 style_ranges: None,
+                id: None,
+                focus_neighbors: Default::default(),
             })
         };
         let tree = AnchoredTree {
@@ -1988,9 +2318,14 @@ mod tests {
                 padding: SpacingValue::Literal(0.0),
                 align: Align::Start,
                 cols: 2,
+                id: None,
+                focus_neighbors: Default::default(),
+                focus: None,
+                restore_on_return: false,
                 children: vec![cell(), cell(), cell(), cell()],
             }),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2039,8 +2374,11 @@ mod tests {
                 font: None,
                 bind: None,
                 style_ranges: None,
+                id: None,
+                focus_neighbors: Default::default(),
             }),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2079,6 +2417,10 @@ mod tests {
             align: Align::Start,
             fill: Some(ColorValue::Literal([0.2, 0.4, 0.6, 1.0])),
             border: None,
+            id: None,
+            focus_neighbors: Default::default(),
+            focus: None,
+            restore_on_return: false,
             children: vec![text("x", 13.0), text("y", 13.0)],
         });
         let tree = AnchoredTree {
@@ -2086,6 +2428,7 @@ mod tests {
             offset: [3.5, 7.25],
             root: filled,
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2113,6 +2456,10 @@ mod tests {
             align: Align::Start,
             fill: Some(ColorValue::Literal([0.1, 0.2, 0.3, 1.0])),
             border: None,
+            id: None,
+            focus_neighbors: Default::default(),
+            focus: None,
+            restore_on_return: false,
             children: vec![text("AB", 40.0)],
         });
         let tree = AnchoredTree {
@@ -2120,6 +2467,7 @@ mod tests {
             offset: [0.0, 0.0],
             root: filled,
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2165,6 +2513,7 @@ mod tests {
             offset: [0.0, 0.0],
             root: text(content, font_size),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2252,6 +2601,7 @@ mod tests {
                 vec![text("AB", 30.0), text("CD", 30.0)],
             ),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         }
     }
 
@@ -2316,6 +2666,7 @@ mod tests {
                 vec![text("AB", 30.0), text("CD", 30.0), text("EF", 30.0)],
             ),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut second = UiTree::from_descriptor(&reshaped, &theme());
         second.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
@@ -2372,6 +2723,8 @@ mod tests {
                 tween: None,
             }),
             style_ranges: None,
+            id: None,
+            focus_neighbors: Default::default(),
         })
     }
 
@@ -2385,6 +2738,10 @@ mod tests {
             align: Align::Stretch,
             fill: Some(ColorValue::Literal([0.0, 0.0, 0.0, 1.0])),
             border: None,
+            id: None,
+            focus_neighbors: Default::default(),
+            focus: None,
+            restore_on_return: false,
             children: vec![Widget::Panel(PanelWidget {
                 fill: ColorValue::Literal(fill),
                 border: None,
@@ -2393,6 +2750,8 @@ mod tests {
                     tween: None,
                 }),
                 style_ranges: None,
+                id: None,
+                focus_neighbors: Default::default(),
             })],
         })
     }
@@ -2407,6 +2766,7 @@ mod tests {
             offset: [0.0, 0.0],
             root: bound_text("0", "player.health", Some("HP {}")),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut slots = HashMap::new();
         slots.insert("player.health".to_string(), SlotValue::Number(87.0));
@@ -2431,6 +2791,7 @@ mod tests {
             offset: [0.0, 0.0],
             root: bound_text("0", "player.ammo", None),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut slots = HashMap::new();
         slots.insert("player.ammo".to_string(), SlotValue::Number(12.5));
@@ -2451,6 +2812,7 @@ mod tests {
             offset: [0.0, 0.0],
             root: bound_text("fallback", "player.health", Some("HP {}")),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2472,6 +2834,7 @@ mod tests {
             offset: [0.0, 0.0],
             root: bound_panel_in_stack([0.0, 0.0, 0.0, 1.0], "intro.flashColor"),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut slots = HashMap::new();
         slots.insert(
@@ -2504,6 +2867,7 @@ mod tests {
             offset: [0.0, 0.0],
             root: bound_panel_in_stack(fallback, "intro.flashColor"),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut slots = HashMap::new();
         slots.insert(
@@ -2536,6 +2900,7 @@ mod tests {
             offset: [0.0, 0.0],
             root: bound_panel_in_stack(fallback, "intro.flashColor"),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2584,6 +2949,7 @@ mod tests {
             offset: [0.0, 0.0],
             root: bound_panel_in_stack([0.0, 0.0, 0.0, 1.0], "intro.flashColor"),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2625,6 +2991,7 @@ mod tests {
             offset: [0.0, 0.0],
             root: bound_text("0", "player.health", Some("HP {}")),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2656,6 +3023,7 @@ mod tests {
             offset: [0.0, 0.0],
             root: bound_text("0", "player.health", Some("HP {}")),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2695,6 +3063,7 @@ mod tests {
             offset: [0.0, 0.0],
             root: bound_panel_in_stack([0.0, 0.0, 0.0, 1.0], "intro.flashColor"),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2763,8 +3132,11 @@ mod tests {
                 font: font.map(str::to_string),
                 bind: None,
                 style_ranges: None,
+                id: None,
+                focus_neighbors: Default::default(),
             }),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         }
     }
 
@@ -2819,9 +3191,14 @@ mod tests {
                 align: Align::Start,
                 fill: None,
                 border: None,
+                id: None,
+                focus_neighbors: Default::default(),
+                focus: None,
+                restore_on_return: false,
                 children: vec![text("AB", 30.0), text("CD", 30.0)],
             }),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme);
         let mut fs = font_system();
@@ -2849,9 +3226,14 @@ mod tests {
                 align: Align::Start,
                 fill: None,
                 border: None,
+                id: None,
+                focus_neighbors: Default::default(),
+                focus: None,
+                restore_on_return: false,
                 children: vec![text("AB", 30.0), text("CD", 30.0)],
             }),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme);
         let mut fs = font_system();
@@ -2976,6 +3358,8 @@ mod tests {
                 tween: Some(tween),
             }),
             style_ranges: None,
+            id: None,
+            focus_neighbors: Default::default(),
         })
     }
 
@@ -2988,6 +3372,10 @@ mod tests {
             align: Align::Stretch,
             fill: Some(ColorValue::Literal([0.0, 0.0, 0.0, 1.0])),
             border: None,
+            id: None,
+            focus_neighbors: Default::default(),
+            focus: None,
+            restore_on_return: false,
             children: vec![Widget::Panel(PanelWidget {
                 fill: ColorValue::Literal(fill),
                 border: None,
@@ -2996,6 +3384,8 @@ mod tests {
                     tween: Some(tween),
                 }),
                 style_ranges: None,
+                id: None,
+                focus_neighbors: Default::default(),
             })],
         })
     }
@@ -3035,6 +3425,7 @@ mod tests {
                 },
             ),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3083,6 +3474,7 @@ mod tests {
                 },
             ),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3115,6 +3507,7 @@ mod tests {
                 },
             ),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3200,6 +3593,7 @@ mod tests {
                 },
             ),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3239,6 +3633,7 @@ mod tests {
                 },
             ),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3269,6 +3664,7 @@ mod tests {
                 },
             ),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3305,6 +3701,7 @@ mod tests {
                 },
             ),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3372,6 +3769,7 @@ mod tests {
                 },
             ),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3439,6 +3837,7 @@ mod tests {
                 },
             ),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3486,6 +3885,7 @@ mod tests {
                 },
             ),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3518,6 +3918,7 @@ mod tests {
                 },
             ),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3549,6 +3950,7 @@ mod tests {
             offset: [0.0, 0.0],
             root: bound_text("0", "player.health", Some("HP {}")),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3585,6 +3987,8 @@ mod tests {
                 tween: None,
             }),
             style_ranges: Some(ranges),
+            id: None,
+            focus_neighbors: Default::default(),
         })
     }
 
@@ -3627,6 +4031,7 @@ mod tests {
             offset: [0.0, 0.0],
             root: styled_text([1.0, 1.0, 1.0, 1.0], "player.health", health_style_ranges()),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut fs = font_system();
 
@@ -3676,6 +4081,7 @@ mod tests {
             offset: [0.0, 0.0],
             root: styled_text([1.0, 1.0, 1.0, 1.0], "player.health", ranges),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3706,8 +4112,11 @@ mod tests {
                 font: None,
                 bind: None,
                 style_ranges: Some(health_style_ranges()),
+                id: None,
+                focus_neighbors: Default::default(),
             }),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3752,8 +4161,11 @@ mod tests {
                     }),
                 }),
                 style_ranges: Some(health_style_ranges()),
+                id: None,
+                focus_neighbors: Default::default(),
             }),
             capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3776,5 +4188,105 @@ mod tests {
             srgb_of([0.0, 1.0, 0.0, 1.0]),
             "settled at the target, the band resolves to the default green",
         );
+    }
+
+    // --- Focus-rect export (M13 Goal F, Task 3) ---
+
+    /// A text leaf carrying an authored id (focusable seam).
+    fn text_id(content: &str, id: &str) -> Widget {
+        Widget::Text(TextWidget {
+            content: content.into(),
+            font_size: 20.0,
+            color: ColorValue::Literal([1.0; 4]),
+            font: None,
+            id: Some(id.to_string()),
+            focus_neighbors: super::super::descriptor::FocusNeighbors::default(),
+            bind: None,
+            style_ranges: None,
+        })
+    }
+
+    #[test]
+    fn focus_export_lists_ids_rects_and_a_linear_group() {
+        use super::super::descriptor::{FocusKind, FocusPolicy};
+        // A vstack declaring a linear focus policy over three id'd text leaves.
+        let root = Widget::VStack(ContainerWidget {
+            gap: SpacingValue::Literal(10.0),
+            padding: SpacingValue::Literal(0.0),
+            align: Align::Start,
+            fill: None,
+            border: None,
+            id: None,
+            focus_neighbors: super::super::descriptor::FocusNeighbors::default(),
+            focus: Some(FocusPolicy::Shorthand(FocusKind::Linear)),
+            restore_on_return: false,
+            children: vec![text_id("A", "a"), text_id("B", "b"), text_id("C", "c")],
+        });
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root,
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: Some("b".to_string()),
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let draw = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+        let focus = ui.export_focus_rects(&tree, [1280, 720]);
+
+        // Three focusable nodes, one linear group with all three as members.
+        let ids: Vec<&str> = focus.rects.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, ["a", "b", "c"], "ids in tree order");
+        assert_eq!(focus.groups.len(), 1);
+        assert_eq!(focus.groups[0].kind, super::FocusKind::Linear);
+        assert!(focus.groups[0].wrap, "shorthand defaults wrap on");
+        assert_eq!(focus.groups[0].members, vec![0, 1, 2]);
+        assert_eq!(focus.initial_focus.as_deref(), Some("b"));
+
+        // z rises in tree order so a later node hit-tests as topmost.
+        assert!(focus.rects[0].z < focus.rects[1].z && focus.rects[1].z < focus.rects[2].z);
+
+        // The exported rect uses the SAME device-pixel projection as the draw: each
+        // focusable text node's rect [x, y] matches its drawn text run position.
+        for (i, run) in draw.texts.iter().enumerate() {
+            assert!(
+                approx(focus.rects[i].rect[0], run.position[0])
+                    && approx(focus.rects[i].rect[1], run.position[1]),
+                "focus rect {i} top-left matches the drawn run position",
+            );
+        }
+    }
+
+    #[test]
+    fn focus_export_auto_generates_ids_from_tree_position() {
+        use super::super::descriptor::{FocusKind, FocusPolicy};
+        // Children with NO authored id, under a focus-policy container, get a
+        // deterministic auto-id from their child-index path (runtime-only).
+        let root = Widget::VStack(ContainerWidget {
+            gap: SpacingValue::Literal(0.0),
+            padding: SpacingValue::Literal(0.0),
+            align: Align::Start,
+            fill: None,
+            border: None,
+            id: None,
+            focus_neighbors: super::super::descriptor::FocusNeighbors::default(),
+            focus: Some(FocusPolicy::Shorthand(FocusKind::Linear)),
+            restore_on_return: false,
+            children: vec![text("X", 20.0), text("Y", 20.0)],
+        });
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root,
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+        let focus = ui.export_focus_rects(&tree, [1280, 720]);
+        let ids: Vec<&str> = focus.rects.iter().map(|r| r.id.as_str()).collect();
+        // Auto-ids are the slash-joined child paths from the root.
+        assert_eq!(ids, ["0", "1"], "auto-id is the tree-position path");
     }
 }

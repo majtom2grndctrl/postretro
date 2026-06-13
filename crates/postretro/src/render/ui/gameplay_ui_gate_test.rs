@@ -69,6 +69,8 @@ fn text(content: &str, font_size: f32) -> Widget {
         font: None,
         bind: None,
         style_ranges: None,
+        id: None,
+        focus_neighbors: Default::default(),
     })
 }
 
@@ -89,6 +91,10 @@ fn composite_fixture() -> AnchoredTree {
             // have no intrinsic size).
             fill: Some(ColorValue::Literal([0.2, 0.3, 0.4, 1.0])),
             border: None,
+            id: None,
+            focus_neighbors: Default::default(),
+            focus: None,
+            restore_on_return: false,
             children: vec![
                 Widget::HStack(ContainerWidget {
                     gap: SpacingValue::Literal(10.0),
@@ -96,6 +102,10 @@ fn composite_fixture() -> AnchoredTree {
                     align: Align::Start,
                     fill: None,
                     border: None,
+                    id: None,
+                    focus_neighbors: Default::default(),
+                    focus: None,
+                    restore_on_return: false,
                     children: vec![text("HP 100", 24.0), text("ARMOR 50", 24.0)],
                 }),
                 Widget::Grid(GridWidget {
@@ -103,18 +113,27 @@ fn composite_fixture() -> AnchoredTree {
                     padding: SpacingValue::Literal(0.0),
                     align: Align::Start,
                     cols: 2,
+                    id: None,
+                    focus_neighbors: Default::default(),
+                    focus: None,
+                    restore_on_return: false,
                     children: vec![
                         Widget::Image(ImageWidget {
                             asset: "ui/icon_a".into(),
+                            id: None,
+                            focus_neighbors: Default::default(),
                         }),
                         Widget::Image(ImageWidget {
                             asset: "ui/icon_b".into(),
+                            id: None,
+                            focus_neighbors: Default::default(),
                         }),
                     ],
                 }),
             ],
         }),
         capture_mode: CaptureMode::Passthrough,
+        initial_focus: None,
     }
 }
 
@@ -182,6 +201,7 @@ fn snapshot_carries_gameplay_tree_as_the_content_contract() {
         std::collections::HashMap::new(),
         // This gate doesn't exercise tweening; a fixed synthetic time suffices.
         0.0,
+        None,
     );
     let tree = &snapshot
         .trees
@@ -213,6 +233,7 @@ fn with_trees_carries_the_passed_time() {
         vec![entry(composite_fixture())],
         std::collections::HashMap::new(),
         t,
+        None,
     );
     assert_eq!(
         snapshot.time_seconds, t,
@@ -228,8 +249,12 @@ fn snapshot_preserves_tree_painter_order_bottom_to_top() {
     let bottom = entry(composite_fixture());
     let mut top = entry(composite_fixture());
     top.name = "top".to_string();
-    let snapshot =
-        UiReadSnapshot::with_trees(vec![bottom, top], std::collections::HashMap::new(), 0.0);
+    let snapshot = UiReadSnapshot::with_trees(
+        vec![bottom, top],
+        std::collections::HashMap::new(),
+        0.0,
+        None,
+    );
     assert_eq!(snapshot.trees.len(), 2);
     assert_eq!(snapshot.trees[0].name, "fixture", "trees[0] is the bottom");
     assert_eq!(snapshot.trees[1].name, "top", "last entry is the top");
@@ -254,9 +279,14 @@ fn empty_gameplay_tree_early_outs_the_ui_pass() {
             align: Align::Start,
             fill: None,
             border: None,
+            id: None,
+            focus_neighbors: Default::default(),
+            focus: None,
+            restore_on_return: false,
             children: vec![],
         }),
         capture_mode: CaptureMode::Passthrough,
+        initial_focus: None,
     };
     let draw_empty = {
         let mut ui = UiTree::from_descriptor(&empty, &UiTheme::engine_default());

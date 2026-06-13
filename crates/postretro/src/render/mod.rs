@@ -3502,6 +3502,16 @@ impl Renderer {
         self.ui_snapshot = snapshot;
     }
 
+    /// Export the flat hit-test / focus rect list for the TOP gameplay-UI stack
+    /// layer against the current surface viewport — the reverse twin of the
+    /// app→renderer snapshot. The App reads this after a gameplay render (which
+    /// laid out the stack) and feeds it to the focus engine the NEXT frame
+    /// (N→N+1 in reverse). Empty when no gameplay layer is active. See: ui.md §4.
+    pub fn export_ui_focus_rects(&self) -> ui::tree::FocusRectList {
+        let viewport = [self.surface_config.width, self.surface_config.height];
+        self.ui.export_top_focus_rects(viewport)
+    }
+
     /// Install an override UI theme and bump the theme generation. Engine-side
     /// only (no script bridge): a caller hands a fully-merged `UiTheme` (e.g.
     /// `UiTheme::engine_default().with_override(&doc)`), which every subsequent
@@ -5412,7 +5422,7 @@ impl Renderer {
             // Bound text/panel nodes resolve against the snapshot's slot values
             // (disjoint field borrow from `&mut self.ui`). The cloned `stack`
             // above already released the snapshot, so this borrow is clean.
-            let draw = self.ui.layout_gameplay_tree(
+            let mut draw = self.ui.layout_gameplay_tree(
                 layer,
                 tree,
                 ui_viewport,
@@ -5422,6 +5432,27 @@ impl Renderer {
                 self.ui_theme_generation,
                 self.ui_snapshot.time_seconds,
             );
+            // Focus ring (M13 Goal F, Task 3): only the TOP layer takes focus, so
+            // draw the engine ring around the focused node's rect on it. The
+            // focused id rode in on the snapshot (resolved app-side last frame, so
+            // it may trail a focus change by one frame). The ring is a `focus.ring`
+            // bordered frame inset by the `xs` spacing token; appended to this
+            // layer's quad list so it composites over the layer's own quads.
+            let is_top = layer + 1 == stack.len();
+            if is_top {
+                if let Some(focused) = self.ui_snapshot.focused_id.as_deref() {
+                    let focus_rects = self.ui.export_top_focus_rects(ui_viewport);
+                    if let Some(fr) = focus_rects.rects.iter().find(|r| r.id == focused) {
+                        let inset = self.ui_theme.spacing("xs").unwrap_or(0.0)
+                            * ui::layout::device_scale(ui_viewport);
+                        let ring_color = self
+                            .ui_theme
+                            .color("focus.ring")
+                            .unwrap_or([1.0, 0.0, 1.0, 1.0]);
+                        ui::push_focus_ring(&mut draw.quads, fr.rect, inset, ring_color);
+                    }
+                }
+            }
             if !draw.is_empty() {
                 let white_bg = self.ui.white_bind_group().clone();
                 let mut batches: Vec<ui::UiBatch> = Vec::new();

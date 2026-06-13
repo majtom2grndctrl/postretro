@@ -382,6 +382,10 @@ fn main() -> Result<()> {
                 .register("hud", render::ui::demo::build_demo_descriptor());
             stack
         },
+        ui_focus: input::UiFocusEngine::new(),
+        ui_focus_rects: None,
+        ui_input_mode: input::InputMode::default(),
+        ui_focused_id: None,
         script_ctx,
         state_store_lifecycle: StateStoreLifecycle::default(),
         sequence_registry,
@@ -590,6 +594,30 @@ struct App {
     /// frame; the top tree's capture mode drives the input seam + `InputFocus`.
     /// Engine built-in trees register at boot. See: context/lib/ui.md §1.
     modal_stack: render::ui::modal_stack::ModalStack,
+
+    /// App-side UI focus engine (M13 Goal F, Task 3). Runs in the game-logic
+    /// phase: consumes the drained nav intents + tracked cursor, moves focus
+    /// through the top stack tree by policy, runs the dt-clocked hold-to-repeat
+    /// timer, and yields the focused node id that rides the next snapshot to drive
+    /// the focus ring. See: context/lib/ui.md §4.
+    ui_focus: input::UiFocusEngine,
+
+    /// The focus rect list the renderer exported for the top stack tree LAST
+    /// frame — the reverse twin of the app→renderer snapshot. The focus engine
+    /// consumes it the following game-logic phase (N→N+1 applied in reverse), so
+    /// the focus ring may trail a focus change by one frame. `None` until the
+    /// first gameplay frame exports one.
+    ui_focus_rects: Option<render::ui::tree::FocusRectList>,
+
+    /// Pointer-vs-focus interaction mode taken as an input by the focus engine
+    /// (hover moves focus only in `Pointer` mode). Task 5 owns writing the
+    /// `input.mode` slot; until then this defaults to `Focus`.
+    ui_input_mode: input::InputMode,
+
+    /// The focused node id the focus engine resolved THIS frame's game-logic
+    /// phase, published on this frame's snapshot so the UI pass draws the focus
+    /// ring around it. `None` when nothing is focused.
+    ui_focused_id: Option<String>,
 
     /// Gates the one-time persistence overlay and clean-exit save.
     state_store_lifecycle: StateStoreLifecycle,
@@ -999,12 +1027,30 @@ impl ApplicationHandler for App {
                     // split needs the "is a capturing tree on the stack?" flag —
                     // owned by Task 2's modal stack; passed `false` here until
                     // that wiring lands. See: context/lib/input.md
+                    // A directional key RELEASE stops the focus engine's
+                    // hold-to-repeat (the press-edge queue carries no release, so
+                    // the focus ring's repeat clock is cleared here). Confirm/cancel
+                    // never repeat, so only directional keys matter.
+                    if !pressed
+                        && matches!(
+                            code,
+                            winit::keyboard::KeyCode::ArrowUp
+                                | winit::keyboard::KeyCode::ArrowDown
+                                | winit::keyboard::KeyCode::ArrowLeft
+                                | winit::keyboard::KeyCode::ArrowRight
+                        )
+                    {
+                        self.ui_focus.release_repeat();
+                    }
                     let nav_intent = if pressed && !key_event.repeat {
-                        // SEAM (Task 2/Task 3): replace `false` with the real
-                        // "capturing tree present" predicate from the modal
-                        // stack so Escape inside captured UI routes to
-                        // `nav.cancel` instead of `nav.menu`.
-                        input::nav_intent_for_key(code, false).map(input::UiIntentPayload::Nav)
+                        // Escape's menu-vs-cancel split: a capturing tree on the
+                        // stack routes Escape to `nav.cancel`; from gameplay it
+                        // opens the menu (`nav.menu`). The seam's `Capture` mode is
+                        // set by `reconcile_ui_focus` from the modal stack's top
+                        // capture mode, so it IS the "capturing tree present"
+                        // predicate. See: context/lib/input.md §7
+                        let capturing = self.ui_dispatch.mode() == input::UiCaptureMode::Capture;
+                        input::nav_intent_for_key(code, capturing).map(input::UiIntentPayload::Nav)
                     } else {
                         None
                     };
@@ -1184,8 +1230,44 @@ impl ApplicationHandler for App {
                 // modal stack (Task 2/Task 3) consumes the drained intents; until
                 // then they are dropped, and the drain marks the seam where game
                 // logic reads them. See: context/lib/input.md
-                let _ui_intents = self.ui_dispatch.take_ready();
+                let ui_intents = self.ui_dispatch.take_ready();
                 self.ui_dispatch.advance_frame();
+
+                // Focus engine (game-logic phase): split the drained intents into
+                // nav (directional/confirm/cancel/next/prev) and pointer clicks,
+                // then move focus through the TOP stack tree against the focus rect
+                // list the renderer exported LAST frame (reverse N→N+1). The
+                // focused id is published on this frame's snapshot below so the UI
+                // pass draws the ring (it may trail a focus change by one frame).
+                // Only the top tree takes focus; lower trees freeze.
+                let mut nav_intents: Vec<input::NavIntent> = Vec::new();
+                let mut click_positions: Vec<input::PointerPos> = Vec::new();
+                for intent in &ui_intents {
+                    match &intent.payload {
+                        input::UiIntentPayload::Nav(nav) => nav_intents.push(*nav),
+                        input::UiIntentPayload::PointerClick { pos } => click_positions.push(*pos),
+                        input::UiIntentPayload::Text(_) => {}
+                    }
+                }
+                // The active (top) tree key: the modal stack's top entry name, else
+                // the always-on HUD. `None` is never the gameplay case (the HUD is
+                // always present), but the engine handles it.
+                let active_key = self
+                    .modal_stack
+                    .active_name()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| "hud".to_string());
+                let cursor = self.cursor_pos;
+                let focus_result = self.ui_focus.tick(
+                    Some(active_key.as_str()),
+                    self.ui_focus_rects.as_ref(),
+                    &nav_intents,
+                    cursor,
+                    &click_positions,
+                    self.ui_input_mode,
+                    frame_dt,
+                );
+                self.ui_focused_id = focus_result.focused;
 
                 // drain_look_inputs() must precede snapshot(); both touch
                 // mouse_axes and look state belongs to the render-rate path.
@@ -1872,6 +1954,7 @@ impl ApplicationHandler for App {
                             trees,
                             slot_values,
                             self.script_time,
+                            self.ui_focused_id.clone(),
                         ));
 
                         let surface_texture = match renderer.render_frame_indirect(
@@ -1890,6 +1973,12 @@ impl ApplicationHandler for App {
                                 return;
                             }
                         };
+                        // Read back the focus rect list the renderer just exported
+                        // for the top stack layer (the gameplay render above laid it
+                        // out). The focus engine consumes it next frame's game-logic
+                        // phase — the reverse N→N+1 the focus ring's one-frame trail
+                        // comes from. See: context/lib/ui.md §4.
+                        self.ui_focus_rects = Some(renderer.export_ui_focus_rects());
                         if let Some(surface_texture) = surface_texture {
                             #[cfg(feature = "dev-tools")]
                             {

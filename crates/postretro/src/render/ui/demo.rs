@@ -135,6 +135,8 @@ pub(crate) fn build_demo_descriptor() -> AnchoredTree {
             }),
         }),
         style_ranges: None,
+        id: None,
+        focus_neighbors: Default::default(),
     });
 
     let ammo = Widget::Text(TextWidget {
@@ -148,6 +150,8 @@ pub(crate) fn build_demo_descriptor() -> AnchoredTree {
             tween: None,
         }),
         style_ranges: None,
+        id: None,
+        focus_neighbors: Default::default(),
     });
 
     // The flash swatch: a bound panel paired with a measured label in a 2-column
@@ -171,6 +175,8 @@ pub(crate) fn build_demo_descriptor() -> AnchoredTree {
             }),
         }),
         style_ranges: None,
+        id: None,
+        focus_neighbors: Default::default(),
     });
     let swatch_label = Widget::Text(TextWidget {
         content: SWATCH_LABEL.to_string(),
@@ -182,12 +188,18 @@ pub(crate) fn build_demo_descriptor() -> AnchoredTree {
         font: Some("mono".into()),
         bind: None,
         style_ranges: None,
+        id: None,
+        focus_neighbors: Default::default(),
     });
     let swatch = Widget::Grid(GridWidget {
         gap: SpacingValue::Literal(SWATCH_GAP),
         padding: SpacingValue::Literal(0.0),
         align: Align::Stretch,
         cols: 2,
+        id: None,
+        focus_neighbors: Default::default(),
+        focus: None,
+        restore_on_return: false,
         children: vec![swatch_panel, swatch_label],
     });
 
@@ -230,6 +242,8 @@ pub(crate) fn build_demo_descriptor() -> AnchoredTree {
                 },
             ],
         }),
+        id: None,
+        focus_neighbors: Default::default(),
     });
     let health_bar_label = Widget::Text(TextWidget {
         content: HEALTH_BAR_LABEL.to_string(),
@@ -238,12 +252,18 @@ pub(crate) fn build_demo_descriptor() -> AnchoredTree {
         font: Some("mono".into()),
         bind: None,
         style_ranges: None,
+        id: None,
+        focus_neighbors: Default::default(),
     });
     let health_bar = Widget::Grid(GridWidget {
         gap: SpacingValue::Literal(SWATCH_GAP),
         padding: SpacingValue::Literal(0.0),
         align: Align::Stretch,
         cols: 2,
+        id: None,
+        focus_neighbors: Default::default(),
+        focus: None,
+        restore_on_return: false,
         children: vec![health_bar_panel, health_bar_label],
     });
 
@@ -260,6 +280,8 @@ pub(crate) fn build_demo_descriptor() -> AnchoredTree {
             tween: None,
         }),
         style_ranges: None,
+        id: None,
+        focus_neighbors: Default::default(),
     });
     let screen_flash_label = Widget::Text(TextWidget {
         content: SCREEN_FLASH_LABEL.to_string(),
@@ -268,12 +290,18 @@ pub(crate) fn build_demo_descriptor() -> AnchoredTree {
         font: Some("mono".into()),
         bind: None,
         style_ranges: None,
+        id: None,
+        focus_neighbors: Default::default(),
     });
     let screen_flash = Widget::Grid(GridWidget {
         gap: SpacingValue::Literal(SWATCH_GAP),
         padding: SpacingValue::Literal(0.0),
         align: Align::Stretch,
         cols: 2,
+        id: None,
+        focus_neighbors: Default::default(),
+        focus: None,
+        restore_on_return: false,
         children: vec![screen_flash_panel, screen_flash_label],
     });
 
@@ -288,6 +316,10 @@ pub(crate) fn build_demo_descriptor() -> AnchoredTree {
         align: Align::Start,
         fill: None,
         border: None,
+        id: None,
+        focus_neighbors: Default::default(),
+        focus: None,
+        restore_on_return: false,
         children: vec![health, ammo, swatch, health_bar, screen_flash],
     });
 

@@ -14,10 +14,10 @@
 //! ## Escape routing seam
 //!
 //! Escape is `nav.menu` from gameplay but `nav.cancel` inside a capturing UI
-//! tree. The "is a capturing tree on the stack?" predicate is owned by the modal
-//! stack (M13 Goal F, Task 2). Until that lands, the mapping functions accept a
-//! `capturing_tree_present: bool` and the App passes `false`; Task 2/Task 3 wire
-//! the real flag through [`nav_intent_for_key`].
+//! tree. The "is a capturing tree on the stack?" predicate is the UI-dispatch
+//! seam's `Capture` mode, which `App::reconcile_ui_focus` sets from the modal
+//! stack's top capture mode (M13 Goal F). The App threads it through
+//! [`nav_intent_for_key`] as `capturing_tree_present`.
 
 use gilrs::Button as GilrsButton;
 use winit::keyboard::KeyCode;
@@ -78,8 +78,8 @@ impl NavIntent {
 ///
 /// Escape routing depends on `capturing_tree_present`: from gameplay (no
 /// capturing tree) Escape opens the menu (`nav.menu`); inside a capturing tree
-/// it backs out (`nav.cancel`). The flag is supplied by the modal-stack owner
-/// (Task 2); the App passes `false` until that wiring lands.
+/// it backs out (`nav.cancel`). The App sources the flag from the UI-dispatch
+/// seam's `Capture` mode (set from the modal stack's top capture mode).
 pub fn nav_intent_for_key(key: KeyCode, capturing_tree_present: bool) -> Option<NavIntent> {
     Some(match key {
         KeyCode::ArrowUp => NavIntent::Up,

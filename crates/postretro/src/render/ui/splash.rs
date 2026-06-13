@@ -117,6 +117,8 @@ pub(crate) fn build_splash_descriptor(version_line: &str) -> SplashDescriptor {
     // now expressed as flex `align: center`).
     let logo = Widget::Image(ImageWidget {
         asset: SPLASH_LOGO_ASSET.to_string(),
+        id: None,
+        focus_neighbors: Default::default(),
     });
     let text = Widget::Text(TextWidget {
         content: version_line.to_string(),
@@ -125,6 +127,8 @@ pub(crate) fn build_splash_descriptor(version_line: &str) -> SplashDescriptor {
         font: None,
         bind: None,
         style_ranges: None,
+        id: None,
+        focus_neighbors: Default::default(),
     });
     let inner = Widget::VStack(ContainerWidget {
         gap: SpacingValue::Literal(LOGO_TEXT_GAP),
@@ -132,6 +136,10 @@ pub(crate) fn build_splash_descriptor(version_line: &str) -> SplashDescriptor {
         align: Align::Center,
         fill: Some(ColorValue::Literal(PANEL_COLOR)),
         border: None,
+        id: None,
+        focus_neighbors: Default::default(),
+        focus: None,
+        restore_on_return: false,
         children: vec![logo, text],
     });
 
@@ -155,6 +163,10 @@ pub(crate) fn build_splash_descriptor(version_line: &str) -> SplashDescriptor {
             ],
             tint: ColorValue::Literal(PANEL_BORDER_COLOR),
         }),
+        id: None,
+        focus_neighbors: Default::default(),
+        focus: None,
+        restore_on_return: false,
         children: vec![inner],
     });
 

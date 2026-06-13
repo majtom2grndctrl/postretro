@@ -98,8 +98,11 @@ fn token_text(token: &str) -> AnchoredTree {
             font: None,
             bind: None,
             style_ranges: None,
+            id: None,
+            focus_neighbors: Default::default(),
         }),
         capture_mode: CaptureMode::Passthrough,
+        initial_focus: None,
     }
 }
 
@@ -116,8 +119,11 @@ fn srgb_of(linear: [f32; 4]) -> [u8; 4] {
             font: None,
             bind: None,
             style_ranges: None,
+            id: None,
+            focus_neighbors: Default::default(),
         }),
         capture_mode: CaptureMode::Passthrough,
+        initial_focus: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &UiTheme::engine_default());
     let mut fs = font_system();
@@ -248,9 +254,14 @@ fn unknown_spacing_token_warns_exactly_once_per_build() {
             align: Align::Start,
             fill: None,
             border: None,
+            id: None,
+            focus_neighbors: Default::default(),
+            focus: None,
+            restore_on_return: false,
             children: vec![],
         }),
         capture_mode: CaptureMode::Passthrough,
+        initial_focus: None,
     };
     if let Some(n) = warns_for_build(&desc) {
         assert_eq!(n, 1, "one unknown spacing token logs exactly one warning");
@@ -271,8 +282,11 @@ fn unknown_font_token_warns_exactly_once_per_build() {
             font: Some("no.such.font".into()),
             bind: None,
             style_ranges: None,
+            id: None,
+            focus_neighbors: Default::default(),
         }),
         capture_mode: CaptureMode::Passthrough,
+        initial_focus: None,
     };
     if let Some(n) = warns_for_build(&desc) {
         assert_eq!(n, 1, "one unknown font token logs exactly one warning");

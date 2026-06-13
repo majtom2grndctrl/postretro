@@ -10,6 +10,7 @@ pub mod gamepad;
 mod look;
 mod types;
 mod ui_dispatch;
+mod ui_focus;
 mod ui_nav;
 
 pub use defaults::default_bindings;
@@ -29,6 +30,11 @@ pub use ui_dispatch::{PointerPos, UiDispatchOutcome, UiIntent, UiIntentPayload};
 // into `UiDispatch`. `StickNavTracker` does stick-past-deadzone edge detection.
 #[allow(unused_imports)]
 pub use ui_nav::{NavIntent, StickNavTracker, nav_intent_for_gamepad_button, nav_intent_for_key};
+// App-side focus engine (M13 Goal F, Task 3): consumes nav intents + cursor, moves
+// focus through the renderer's exported focus rect list, runs the dt-clocked
+// hold-to-repeat timer, and reports the focused id back for the focus ring.
+#[allow(unused_imports)]
+pub use ui_focus::{FocusTickResult, InputMode, UiFocusEngine};
 
 /// Default sensitivity: radians per raw mouse unit. Tuned for 800 DPI mice.
 pub const DEFAULT_MOUSE_SENSITIVITY: f32 = 0.002;

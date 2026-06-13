@@ -176,6 +176,16 @@ Portal traversal is the sole visibility path: per-frame flood-fill from the came
 
 ---
 
+## Navigation bake (forthcoming, M10)
+
+Walkable navigation is derived offline and emitted as a new PRL section — kin to the baked BVH. Design intent, not yet built. See `plans/ready/M10--navigation-representation/`.
+
+**Query contract.** The runtime consumes convex walkable **regions joined by portals** — the pathfinding query surface (A* over regions, funnel string-pulling over portal segments). This shape is the durable contract: the bake *algorithm* (initially rectangular decomposition over a span grid; a contour tracer later) is swappable behind it, and off-mesh links and hint data (jump links, cover points) arrive as future portal kinds / region attachments — additive, no format break. The navmesh is the seed of a broader baked spatial-AI layer.
+
+**Navmesh ↔ collision.** The bake reads the same triangle set the runtime collision trimesh is built from, so it never marks walkable what collision would reject. Division of labor: the navmesh **routes** (which regions connect); `CollisionWorld` owns exact ground height and final movement (an agent sweeps real collision while following a region path).
+
+**Scope.** One graph per map, baked for one canonical agent; the section records the agent parameters (radius, height, step, slope) it was baked with, so a future multi-agent need is an explicit migration, not a silent reinterpretation.
+
 ## Build Cache
 
 Disk-backed content-hash cache that lets `prl-build` skip the two expensive bake stages when their inputs are unchanged.

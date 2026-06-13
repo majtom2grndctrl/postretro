@@ -41,7 +41,10 @@ pub(crate) enum SystemReactionCommand {
     /// (`primitives::store::write_state_slot_json`): a readonly slot warns and
     /// no-ops, an engine-owned writable slot is a valid target. `value` carries the
     /// raw JSON value coerced to the slot's declared type by the write path.
-    SetState { slot: String, value: serde_json::Value },
+    SetState {
+        slot: String,
+        value: serde_json::Value,
+    },
 }
 
 /// Shared handle to the per-frame system-command queue. Cloned into the

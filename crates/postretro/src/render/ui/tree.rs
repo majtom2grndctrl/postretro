@@ -1717,7 +1717,11 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget, theme: &UiThe
 /// ride the focus-rect export (`focus_meta` / `widget_interaction`), not the draw
 /// payload. The label color resolves the theme `body`-text default (white), the
 /// same flat color a literal text widget would carry.
-fn build_button(taffy: &mut TaffyTree<NodeContext>, button: &ButtonWidget, theme: &UiTheme) -> NodeId {
+fn build_button(
+    taffy: &mut TaffyTree<NodeContext>,
+    button: &ButtonWidget,
+    theme: &UiTheme,
+) -> NodeId {
     taffy
         .new_leaf_with_context(
             Style::default(),
@@ -1743,7 +1747,11 @@ fn build_button(taffy: &mut TaffyTree<NodeContext>, button: &ButtonWidget, theme
 /// bound-text resolution + tween machinery (the slider's bind tween eases the
 /// shown number). The focusable marker + nav-capture/value-step ride the
 /// focus-rect export, not the draw payload.
-fn build_slider(taffy: &mut TaffyTree<NodeContext>, slider: &SliderWidget, theme: &UiTheme) -> NodeId {
+fn build_slider(
+    taffy: &mut TaffyTree<NodeContext>,
+    slider: &SliderWidget,
+    theme: &UiTheme,
+) -> NodeId {
     // Synthesize a text bind so the value display rides the bound-text path:
     // `content` is the fallback (label with no value yet), `format` injects the
     // resolved number after the label. The slider's bind tween carries through.
@@ -1786,8 +1794,7 @@ fn build_bar(taffy: &mut TaffyTree<NodeContext>, bar: &BarWidget, theme: &UiThem
     };
     // A bar always binds (a value to display), so the styleRanges bind precondition
     // is satisfied; pre-resolve its band-color tokens to literals for the draw walk.
-    let style_ranges =
-        build_node_style_ranges(bar.style_ranges.as_ref(), true, theme, "bar");
+    let style_ranges = build_node_style_ranges(bar.style_ranges.as_ref(), true, theme, "bar");
     taffy
         .new_leaf_with_context(
             style,
@@ -2764,7 +2771,7 @@ mod tests {
         let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
 
         // Exactly one backdrop quad (the container), one text run on top.
-        assert_eq!(data.quads.len(), 1, "one container backdrop quad");
+        assert_eq!(data.quads.instances.len(), 1, "one container backdrop quad");
         assert_eq!(data.texts.len(), 1, "one child text run drawn over it");
 
         // The backdrop spans the container's full rect: it covers the child run
@@ -4623,7 +4630,12 @@ mod tests {
     fn button_exports_focusable_rect_with_activation_interaction() {
         // A button always exports as focusable (required id) carrying its onPress
         // activation — the seam the app fires on a focus-engine confirm/click.
-        let tree = anchored(vstack(0.0, 0.0, Align::Start, vec![button("resume", "resumeGame")]));
+        let tree = anchored(vstack(
+            0.0,
+            0.0,
+            Align::Start,
+            vec![button("resume", "resumeGame")],
+        ));
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
@@ -4703,20 +4715,19 @@ mod tests {
         for (value, expected_fraction) in [(50.0_f32, 0.5_f32), (150.0, 1.0), (0.0, 0.0)] {
             let mut ui = UiTree::from_descriptor(&tree, &theme());
             let mut fs = font_system();
-            let data = ui.build_draw_data(
-                [1280, 720],
-                &mut fs,
-                &no_images(),
-                &health_slots(value),
-            );
+            let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &health_slots(value));
             // The background quad is always present (first); the fill quad follows
             // only when the fraction is > 0.
-            let background = &data.quads[0];
+            let background = &data.quads.instances[0];
             let bg_width = background.rect[2];
             if expected_fraction == 0.0 {
-                assert_eq!(data.quads.len(), 1, "zero fraction draws no fill quad");
+                assert_eq!(
+                    data.quads.instances.len(),
+                    1,
+                    "zero fraction draws no fill quad"
+                );
             } else {
-                let fill = &data.quads[1];
+                let fill = &data.quads.instances[1];
                 let expected_width = (bg_width * expected_fraction).round();
                 assert!(
                     approx(fill.rect[2], expected_width),
@@ -4756,7 +4767,7 @@ mod tests {
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &health_slots(10.0));
-        let fill = &data.quads[1];
+        let fill = &data.quads.instances[1];
         assert!(
             approx(fill.color[0], 1.0) && approx(fill.color[1], 0.0),
             "low health recolors the fill red, got {:?}",
@@ -4797,13 +4808,7 @@ mod tests {
             0.0,
         );
         // Frame 1: retarget to 0 at t=0 — the segment starts easing from 100.
-        ui.build_draw_data_retained(
-            [1280, 720],
-            &mut fs,
-            &no_images(),
-            &health_slots(0.0),
-            0.0,
-        );
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &health_slots(0.0), 0.0);
         // Frame 2: half the duration later, the eased display is ~50 (linear).
         let data = ui.build_draw_data_retained(
             [1280, 720],
@@ -4812,8 +4817,8 @@ mod tests {
             &health_slots(0.0),
             0.5,
         );
-        let bg_width = data.quads[0].rect[2];
-        let fill_width = data.quads[1].rect[2];
+        let bg_width = data.quads.instances[0].rect[2];
+        let fill_width = data.quads.instances[1].rect[2];
         let fraction = fill_width / bg_width;
         assert!(
             (fraction - 0.5).abs() < 0.05,

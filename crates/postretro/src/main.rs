@@ -2495,52 +2495,24 @@ impl App {
         let Some(rects) = self.ui_focus_rects.as_ref() else {
             return;
         };
-        // Resolve the focused slider's interaction (clone out so the immutable
-        // borrow of the rect list drops before we touch the slot table / queue).
-        let slider = rects.rects.iter().find(|r| r.id == focused_id).and_then(|r| {
-            match &r.interaction {
-                Some(NodeInteraction::Slider {
-                    slot,
-                    min,
-                    max,
-                    step,
-                    captures_nav,
-                }) => Some((slot.clone(), *min, *max, *step, captures_nav.clone())),
+        // Resolve the focused slider's interaction + its bound slot (clone out so
+        // the immutable borrow of the rect list drops before the slot/queue work).
+        let slider = rects
+            .rects
+            .iter()
+            .find(|r| r.id == focused_id)
+            .and_then(|r| match &r.interaction {
+                Some(interaction @ NodeInteraction::Slider { slot, min, .. }) => {
+                    Some((interaction.clone(), slot.clone(), *min))
+                }
                 _ => None,
-            }
-        });
-        let Some((slot, min, max, step, captures_nav)) = slider else {
+            });
+        let Some((interaction, slot, min)) = slider else {
             return;
         };
-        if captures_nav.is_empty() {
-            return;
-        }
 
-        // Partition: captured intents are swallowed (and may step the value);
-        // uncaptured intents stay for the focus engine.
-        let mut retained = Vec::with_capacity(nav_intents.len());
-        let mut delta_steps = 0i32;
-        for &nav in nav_intents.iter() {
-            if captures_nav.iter().any(|name| name == nav.wire_name()) {
-                // Captured: nav.right/up increase, nav.left/down decrease; any other
-                // captured intent is swallowed without moving the value.
-                match nav {
-                    input::NavIntent::Right | input::NavIntent::Up => delta_steps += 1,
-                    input::NavIntent::Left | input::NavIntent::Down => delta_steps -= 1,
-                    _ => {}
-                }
-            } else {
-                retained.push(nav);
-            }
-        }
-        *nav_intents = retained;
-
-        if delta_steps == 0 {
-            return;
-        }
-
-        // Step the bound value from its current slot reading (or the min as a floor
-        // when unset) and emit one `setState` for the new clamped value.
+        // The slider's current value: its bound slot reading, or `min` as a floor
+        // when the slot is unset or non-numeric (a sane starting point).
         let current = {
             let table = self.script_ctx.slot_table.borrow();
             match table.get(&slot).and_then(|r| r.value.as_ref()) {
@@ -2548,13 +2520,17 @@ impl App {
                 _ => min,
             }
         };
-        let next = (current + step * delta_steps as f32).clamp(min, max);
-        self.script_ctx
-            .system_commands
-            .push(SystemReactionCommand::SetState {
-                slot,
-                value: serde_json::json!(next),
-            });
+
+        // Peel off captured nav intents (mutating `nav_intents`) and compute the
+        // stepped value; emit one `setState` for the new clamped value.
+        if let Some(next) = input::capture_slider_step(&interaction, current, nav_intents) {
+            self.script_ctx
+                .system_commands
+                .push(SystemReactionCommand::SetState {
+                    slot,
+                    value: serde_json::json!(next),
+                });
+        }
     }
 
     /// Fire a focused button's `onPress` named reaction on activation (M13 Goal F,
@@ -2572,12 +2548,14 @@ impl App {
         let Some(rects) = self.ui_focus_rects.as_ref() else {
             return;
         };
-        let on_press = rects.rects.iter().find(|r| r.id == focused_id).and_then(|r| {
-            match &r.interaction {
+        let on_press = rects
+            .rects
+            .iter()
+            .find(|r| r.id == focused_id)
+            .and_then(|r| match &r.interaction {
                 Some(NodeInteraction::Button { on_press }) => Some(on_press.clone()),
                 _ => None,
-            }
-        });
+            });
         if let Some(on_press) = on_press {
             let _ = fire_named_event_with_sequences(
                 &on_press,

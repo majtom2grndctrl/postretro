@@ -18,7 +18,57 @@
 
 use crate::input::ui_dispatch::PointerPos;
 use crate::input::ui_nav::NavIntent;
-use crate::render::ui::tree::{FocusKind, FocusRect, FocusRectList};
+use crate::render::ui::tree::{FocusKind, FocusRect, FocusRectList, NodeInteraction};
+
+/// Resolve a captured-nav value step for a focused `slider` (M13 Goal F, Task 4).
+/// Partitions `nav_intents` into captured — removed in place — and uncaptured —
+/// retained for the focus engine. Each captured directional intent steps the value
+/// by the slider's `step`: `nav.right`/`nav.up` increase, `nav.left`/`nav.down`
+/// decrease; any other captured name is swallowed without moving the value. Returns
+/// `Some(next)` — the value stepped from `current` and clamped to `[min, max]` —
+/// when a net step occurred, else `None`. A non-`Slider` interaction returns `None`
+/// and leaves `nav_intents` untouched. The app emits a `setState { slot, next }`
+/// for a `Some` result, applied at the game-logic command drain (the bound slot
+/// changes on the N+1 frame — the system's defining N→N+1 ordering).
+pub fn capture_slider_step(
+    interaction: &NodeInteraction,
+    current: f32,
+    nav_intents: &mut Vec<NavIntent>,
+) -> Option<f32> {
+    let NodeInteraction::Slider {
+        min,
+        max,
+        step,
+        captures_nav,
+        ..
+    } = interaction
+    else {
+        return None;
+    };
+    if captures_nav.is_empty() {
+        return None;
+    }
+
+    let mut retained = Vec::with_capacity(nav_intents.len());
+    let mut delta_steps = 0i32;
+    for &nav in nav_intents.iter() {
+        if captures_nav.iter().any(|name| name == nav.wire_name()) {
+            match nav {
+                NavIntent::Right | NavIntent::Up => delta_steps += 1,
+                NavIntent::Left | NavIntent::Down => delta_steps -= 1,
+                _ => {}
+            }
+        } else {
+            retained.push(nav);
+        }
+    }
+    *nav_intents = retained;
+
+    if delta_steps == 0 {
+        return None;
+    }
+    Some((current + step * delta_steps as f32).clamp(*min, *max))
+}
 
 /// Pointer-vs-focus interaction mode, taken as an input (the `input.mode` slot
 /// write is Task 5's concern). In `Pointer` mode, cursor motion moves focus
@@ -589,6 +639,120 @@ mod tests {
             initial_focus: None,
             restore_on_return: false,
         }
+    }
+
+    // --- M13 Goal F, Task 4: slider nav-capture value step ---
+
+    fn slider_interaction(captures: &[&str]) -> NodeInteraction {
+        NodeInteraction::Slider {
+            slot: "audio.master".to_string(),
+            min: 0.0,
+            max: 1.0,
+            step: 0.1,
+            captures_nav: captures.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    fn close(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-5
+    }
+
+    #[test]
+    fn slider_captures_nav_steps_value_and_removes_captured_intents() {
+        // nav.right increases by step; the captured intent is removed so the focus
+        // engine never sees it (focus stays put). An uncaptured nav.down is retained.
+        let interaction = slider_interaction(&["nav.left", "nav.right"]);
+        let mut intents = vec![NavIntent::Right, NavIntent::Down];
+        let next = capture_slider_step(&interaction, 0.5, &mut intents);
+        assert!(close(next.unwrap(), 0.6), "right steps +step from 0.5");
+        assert_eq!(intents, vec![NavIntent::Down], "uncaptured intent retained");
+    }
+
+    #[test]
+    fn slider_step_clamps_within_min_max() {
+        // Stepping down at the floor stays at min; stepping up at the ceiling stays
+        // at max — the value never escapes [min, max].
+        let interaction = slider_interaction(&["nav.left", "nav.right"]);
+        let mut down = vec![NavIntent::Left];
+        assert!(close(
+            capture_slider_step(&interaction, 0.0, &mut down).unwrap(),
+            0.0
+        ));
+        let mut up = vec![NavIntent::Right];
+        assert!(close(
+            capture_slider_step(&interaction, 1.0, &mut up).unwrap(),
+            1.0
+        ));
+    }
+
+    #[test]
+    fn slider_with_no_captured_intents_returns_none_and_leaves_intents() {
+        // A nav intent not in capturesNav is left for the focus engine and no step
+        // happens (returns None — no setState write).
+        let interaction = slider_interaction(&["nav.left", "nav.right"]);
+        let mut intents = vec![NavIntent::Down];
+        assert_eq!(capture_slider_step(&interaction, 0.5, &mut intents), None);
+        assert_eq!(intents, vec![NavIntent::Down]);
+    }
+
+    #[test]
+    fn confirm_and_click_both_report_activation_on_the_same_focused_node() {
+        // A gamepad confirm and a pointer click both surface as `confirmed=true`
+        // with the same focused node — the app fires that node's button `onPress`
+        // off this single flag, so confirm and click have an identical effect.
+        let list = linear_list(false, None);
+
+        // Confirm path: focus a, confirm.
+        let mut fe = UiFocusEngine::new();
+        fe.tick(
+            Some("t"),
+            Some(&list),
+            &[],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+        let confirm = fe.tick(
+            Some("t"),
+            Some(&list),
+            &[NavIntent::Confirm],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+        assert!(confirm.confirmed);
+        assert_eq!(confirm.focused.as_deref(), Some("a"));
+
+        // Click path: a click on a's rect (pointer mode) focuses + activates it.
+        let mut fe = UiFocusEngine::new();
+        let click = fe.tick(
+            Some("t"),
+            Some(&list),
+            &[],
+            None,
+            &[PointerPos { x: 10.0, y: 10.0 }],
+            InputMode::Pointer,
+            0.0,
+        );
+        assert!(click.confirmed, "a click also activates");
+        assert_eq!(
+            click.focused.as_deref(),
+            confirm.focused.as_deref(),
+            "click and confirm activate the same focused node"
+        );
+    }
+
+    #[test]
+    fn button_interaction_never_captures_a_slider_step() {
+        // A non-Slider interaction returns None and never touches the intent list.
+        let interaction = NodeInteraction::Button {
+            on_press: "fire".to_string(),
+        };
+        let mut intents = vec![NavIntent::Right];
+        assert_eq!(capture_slider_step(&interaction, 0.5, &mut intents), None);
+        assert_eq!(intents, vec![NavIntent::Right]);
     }
 
     #[test]

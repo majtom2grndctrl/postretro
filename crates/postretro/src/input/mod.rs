@@ -34,7 +34,7 @@ pub use ui_nav::{NavIntent, StickNavTracker, nav_intent_for_gamepad_button, nav_
 // focus through the renderer's exported focus rect list, runs the dt-clocked
 // hold-to-repeat timer, and reports the focused id back for the focus ring.
 #[allow(unused_imports)]
-pub use ui_focus::{FocusTickResult, InputMode, UiFocusEngine};
+pub use ui_focus::{FocusTickResult, InputMode, UiFocusEngine, capture_slider_step};
 
 /// Default sensitivity: radians per raw mouse unit. Tuned for 800 DPI mice.
 pub const DEFAULT_MOUSE_SENSITIVITY: f32 = 0.002;

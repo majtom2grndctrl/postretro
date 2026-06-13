@@ -117,6 +117,8 @@ pub(crate) fn build_splash_descriptor(version_line: &str) -> SplashDescriptor {
     // now expressed as flex `align: center`).
     let logo = Widget::Image(ImageWidget {
         asset: SPLASH_LOGO_ASSET.to_string(),
+        id: None,
+        focus_neighbors: Default::default(),
     });
     let text = Widget::Text(TextWidget {
         content: version_line.to_string(),
@@ -124,6 +126,9 @@ pub(crate) fn build_splash_descriptor(version_line: &str) -> SplashDescriptor {
         color: ColorValue::Literal(TEXT_COLOR),
         font: None,
         bind: None,
+        style_ranges: None,
+        id: None,
+        focus_neighbors: Default::default(),
     });
     let inner = Widget::VStack(ContainerWidget {
         gap: SpacingValue::Literal(LOGO_TEXT_GAP),
@@ -131,6 +136,10 @@ pub(crate) fn build_splash_descriptor(version_line: &str) -> SplashDescriptor {
         align: Align::Center,
         fill: Some(ColorValue::Literal(PANEL_COLOR)),
         border: None,
+        id: None,
+        focus_neighbors: Default::default(),
+        focus: None,
+        restore_on_return: false,
         children: vec![logo, text],
     });
 
@@ -154,14 +163,17 @@ pub(crate) fn build_splash_descriptor(version_line: &str) -> SplashDescriptor {
             ],
             tint: ColorValue::Literal(PANEL_BORDER_COLOR),
         }),
+        id: None,
+        focus_neighbors: Default::default(),
+        focus: None,
+        restore_on_return: false,
         children: vec![inner],
     });
 
-    let tree = AnchoredTree {
-        anchor: Anchor::Center,
-        offset: [0.0, 0.0],
-        root: outer,
-    };
+    // Splash is non-interactive (`splash_capture_mode` is the live gate); the
+    // envelope mode stays passthrough and the splash never routes through the
+    // modal stack anyway (boot path predates it).
+    let tree = AnchoredTree::passthrough(Anchor::Center, [0.0, 0.0], outer);
 
     SplashDescriptor { tree }
 }

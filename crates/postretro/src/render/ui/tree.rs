@@ -2,7 +2,9 @@
 // `taffy::TaffyTree`, computes flex/grid layout, and reads the laid-out rects
 // back into the device-pixel `UiDrawList` + shaped-text draw entries through the
 // `layout` projection path. taffy/layout lives entirely here (renderer-owns-GPU).
+// See: context/lib/ui.md §1 (retained tree), §3 (display vs. authoritative value / tween contract)
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use taffy::prelude::{
@@ -11,10 +13,12 @@ use taffy::prelude::{
 };
 
 use super::descriptor::{
-    Align, AnchoredTree, Border, ColorValue, ContainerWidget, Easing, GridWidget, ImageWidget,
-    PanelBind, PanelWidget, SpacingValue, TextBind, TextWidget, Widget,
+    Align, AnchoredTree, BarWidget, Border, ButtonWidget, ColorValue, ContainerWidget, Easing,
+    GridWidget, ImageWidget, PanelBind, PanelWidget, SliderBind, SliderWidget, SpacingValue,
+    TextBind, TextWidget, Widget,
 };
 use super::layout::{Anchor, REFERENCE_HEIGHT, REFERENCE_WIDTH};
+use super::style_ranges::{StyleEffectState, StyleRanges, evaluate};
 use super::theme::UiTheme;
 use crate::scripting::slot_table::SlotValue;
 use glyphon::FontSystem;
@@ -29,6 +33,16 @@ const UNKNOWN_COLOR_FALLBACK: [f32; 4] = [1.0, 0.0, 1.0, 1.0];
 
 /// Fallback spacing for an unknown spacing token: zero logical px.
 const UNKNOWN_SPACING_FALLBACK: f32 = 0.0;
+
+/// Default text size (logical-reference px) for an interactive `button`/`slider`
+/// label run. The widgets carry no per-instance `font_size` in v1 (a later
+/// additive field could expose it); their labels measure/draw at this size.
+const INTERACTIVE_LABEL_FONT_SIZE: f32 = 18.0;
+
+/// Default bar size (logical-reference px, `[width, height]`). A `bar` has no
+/// intrinsic content to measure, so its leaf carries an explicit style size; a
+/// container's `align`/stretch may still override it. Horizontal-only in v1.
+const DEFAULT_BAR_SIZE: [f32; 2] = [120.0, 12.0];
 
 // --- Value-tween easing (M13 UI Value-Tweening, Task 3) ---------------------
 
@@ -86,7 +100,7 @@ fn lerp_rgba(from: [f32; 4], to: [f32; 4], e: f32) -> [f32; 4] {
 /// a `Token` looks the name up in the theme. An unknown token degrades to opaque
 /// magenta and logs exactly one warning (per tree build, not per frame — this
 /// runs at build time, which on the retained path is once per rebuild).
-fn resolve_color(value: &ColorValue, theme: &UiTheme) -> [f32; 4] {
+pub(crate) fn resolve_color(value: &ColorValue, theme: &UiTheme) -> [f32; 4] {
     match value {
         ColorValue::Literal(rgba) => *rgba,
         ColorValue::Token(name) => theme.color(name).unwrap_or_else(|| {
@@ -146,6 +160,54 @@ fn resolve_border(border: Option<&Border>, theme: &UiTheme) -> Option<Border> {
         slice: b.slice,
         tint: ColorValue::Literal(resolve_color(&b.tint, theme)),
     })
+}
+
+/// Pre-resolve a `StyleRanges`' band-color tokens against the theme at build
+/// time, returning a literal-only `StyleRanges`. Each band's optional `color`
+/// token degrades through `resolve_color` (unknown → opaque magenta + one warn),
+/// so the once-per-build warning rule holds and the per-frame draw walk stays
+/// theme-free: the draw-time evaluator only ever sees `ColorValue::Literal`
+/// bands. `up_to`/`pulse`/`flash` carry through unchanged.
+fn resolve_style_ranges(ranges: &StyleRanges, theme: &UiTheme) -> StyleRanges {
+    use super::style_ranges::StyleEntry;
+    StyleRanges {
+        max: ranges.max,
+        entries: ranges
+            .entries
+            .iter()
+            .map(|entry| StyleEntry {
+                up_to: entry.up_to,
+                color: entry
+                    .color
+                    .as_ref()
+                    .map(|c| ColorValue::Literal(resolve_color(c, theme))),
+                pulse: entry.pulse,
+                flash: entry.flash,
+            })
+            .collect(),
+    }
+}
+
+/// Resolve a widget's optional `style_ranges` for the retained node at build
+/// time: pre-resolve its band-color tokens (theme-free draw walk) and enforce the
+/// `bind` precondition. styleRanges maps the widget's bound value, so without a
+/// `bind` there is no value to map — warn exactly once per tree build (the
+/// theme-fallback precedent) and drop it (the node carries `None`, no effect
+/// fires). `kind` names the widget in the warning.
+fn build_node_style_ranges(
+    style_ranges: Option<&StyleRanges>,
+    has_bind: bool,
+    theme: &UiTheme,
+    kind: &str,
+) -> Option<StyleRanges> {
+    let ranges = style_ranges?;
+    if !has_bind {
+        log::warn!(
+            "[UI] {kind} widget declares styleRanges without a bind — no value to map; ignoring"
+        );
+        return None;
+    }
+    Some(resolve_style_ranges(ranges, theme))
 }
 
 /// Asset key → natural reference size (logical-reference px, `[width, height]`)
@@ -213,6 +275,13 @@ enum NodeContext {
         /// formatted display string (so the measure seam shapes the displayed
         /// value).
         tween: Option<TweenState<f32>>,
+        /// Continuous value→style map (M13 Goal E). When `Some`, the rendered
+        /// numeric value drives a band color + pulse/flash effect that overrides
+        /// `color`. `style_state` holds the per-node effect clock (flash entry,
+        /// active band) the evaluator advances each draw build. Both `None` on a
+        /// styleRange-less node.
+        style_ranges: Option<StyleRanges>,
+        style_state: RefCell<StyleEffectState>,
     },
     /// Solid-fill panel quad, optionally framed by a 9-slice `border`. `fill`
     /// stays linear `[f32; 4]` — no sRGB conversion on the quad path. Carried by
@@ -238,6 +307,12 @@ enum NodeContext {
         /// binds and before the first array resolution. While `Some`, the driver
         /// eases `display` (the rendered fill) per-channel toward `target`.
         tween: Option<TweenState<[f32; 4]>>,
+        /// Continuous value→style map (M13 Goal E). When `Some`, the rendered
+        /// numeric value (from `bind`'s slot) drives a band color + pulse/flash
+        /// effect that overrides `fill`. `style_state` holds the per-node effect
+        /// clock. Both `None` on a styleRange-less node and on container backdrops.
+        style_ranges: Option<StyleRanges>,
+        style_state: RefCell<StyleEffectState>,
     },
     /// Textured image quad. `asset` is the texture key the renderer binds; the
     /// rect comes from layout. The image sizes from the asset's natural reference
@@ -245,6 +320,27 @@ enum NodeContext {
     /// `asset` doubles as the size key. Image batching/binding lands in the
     /// renderer; the tree records the key so the draw step can group by it.
     Image { asset: String },
+    /// Horizontal value bar (M13 Goal F, Task 4). Draws a `background` quad filling
+    /// its laid-out rect, then a `fill` quad whose width is `value/max` clamped to
+    /// `[0, 1]` of the rect width. `value` resolves from `bind`'s slot (the eased
+    /// display fraction on the retained tweened path, via `last_resolved`); a
+    /// styleRanges map recolors the fill the same way bound text/panel do. Passive
+    /// (never focusable activation); `bind`'s tween eases the displayed fraction.
+    Bar {
+        bind: SliderBind,
+        max: f32,
+        fill: [f32; 4],
+        background: [f32; 4],
+        /// Last resolved (or eased) value the diff observed, for change detection
+        /// and to feed the draw the eased display fraction. `None` until first diff.
+        last_resolved: Option<f32>,
+        /// Live tween state when `bind`'s `tween` is `Some` and the slot has
+        /// resolved to a `Number` at least once. While `Some`, the driver eases the
+        /// displayed value toward the slot target; the draw reads `display`.
+        tween: Option<TweenState<f32>>,
+        style_ranges: Option<StyleRanges>,
+        style_state: RefCell<StyleEffectState>,
+    },
 }
 
 /// Map descriptor cross-axis `Align` to taffy `AlignItems`.
@@ -455,7 +551,10 @@ impl UiTree {
             self.recompute_count += 1;
         }
 
-        self.collect_draw_data(device_size, slot_values)
+        // Fresh/splash path: no retained clock, so styleRange effects evaluate at
+        // a steady `0.0`. The splash path carries no styleRanges; gameplay uses the
+        // retained path, which threads the real `time_seconds`.
+        self.collect_draw_data(device_size, slot_values, 0.0)
     }
 
     /// Read the cached taffy layout back into a fresh `UiDrawData`, resolving any
@@ -463,11 +562,13 @@ impl UiTree {
     /// assumes layout is already computed for `device_size` (the caller's gate
     /// ran the compute when needed). Shared by the fresh path (`build_draw_data`,
     /// which calls it every frame) and the retained path (which calls it only
-    /// when the draw list needs rebuilding).
+    /// when the draw list needs rebuilding). `time_seconds` is the frame's
+    /// dt-accumulated clock the styleRange pulse/flash effects advance against.
     fn collect_draw_data(
         &self,
         device_size: [u32; 2],
         slot_values: &HashMap<String, SlotValue>,
+        time_seconds: f64,
     ) -> UiDrawData {
         // Place the root in reference space: anchor it on the canvas, then back
         // the root's top-left out by the anchor fraction of the root's size (the
@@ -486,15 +587,22 @@ impl UiTree {
         let scale = super::layout::device_scale(device_size);
         let canvas_origin = canvas_origin(device_size, scale);
 
-        let mut data = UiDrawData::default();
-        self.collect_node(
-            self.root,
-            root_origin,
+        // styleRange band colors were pre-resolved to literals at build time, so
+        // the draw-time evaluator never looks a token up; this inert theme satisfies
+        // its `&UiTheme` parameter (the Goal F / Task 3 evaluator contract) without
+        // re-introducing the theme to the per-frame walk.
+        let inert_theme = UiTheme::engine_default();
+
+        let walk = DrawWalkCtx {
             canvas_origin,
             scale,
             slot_values,
-            &mut data,
-        );
+            time_seconds,
+            inert_theme: &inert_theme,
+        };
+
+        let mut data = UiDrawData::default();
+        self.collect_node(self.root, root_origin, &walk, &mut data);
         data
     }
 
@@ -577,7 +685,7 @@ impl UiTree {
             || self.cached_draw_data.is_none();
 
         if needs_rebuild {
-            let data = self.collect_draw_data(device_size, slot_values);
+            let data = self.collect_draw_data(device_size, slot_values, time_seconds);
             #[cfg(test)]
             {
                 self.draw_rebuild_count += 1;
@@ -692,6 +800,18 @@ impl UiTree {
                         // Appearance-only: no mark_dirty, no relayout.
                     }
                 }
+                Some(NodeContext::Bar {
+                    bind,
+                    last_resolved,
+                    tween,
+                    ..
+                }) => {
+                    if drive_bar_binding(bind, last_resolved, tween, slot_values, time_seconds) {
+                        // A bar is fixed-size: a value change only recolors/resizes
+                        // its fill quad — appearance-only, never a relayout.
+                        diff.appearance_changed = true;
+                    }
+                }
                 _ => {}
             }
         }
@@ -702,6 +822,153 @@ impl UiTree {
         diff
     }
 
+    /// Export the flat hit-test / focus rect list for this tree against the
+    /// descriptor it was built from. Walks the descriptor tree and the taffy tree
+    /// in lockstep (they are structurally 1:1 — `build_node` maps each widget to
+    /// exactly one node, children in order) so each focusable node's authored or
+    /// auto-generated id pairs with its computed device-pixel rect.
+    ///
+    /// Uses the SAME device-pixel projection as the draw (`project_rect`,
+    /// `canvas_origin`, `device_scale`) so a hit lands on exactly the rect drawn.
+    /// Assumes layout is already computed for `device_size` (the caller's gate ran
+    /// the compute). Pure read-back — no taffy mutation, no GPU.
+    ///
+    /// A node is exported as focusable when it carries an authored `id` OR sits
+    /// (directly) under a container that declares a focus policy. The auto-id is
+    /// the node's path from the root (`"0/2/1"`), regenerated deterministically
+    /// each build — so it is stable across rebuilds for an unchanged structure but
+    /// is runtime-only and never serialized. Authored ids carry across structural
+    /// rebuilds (focus restore relies on them).
+    pub(crate) fn export_focus_rects(
+        &self,
+        descriptor: &AnchoredTree,
+        device_size: [u32; 2],
+    ) -> FocusRectList {
+        let root_size = self.taffy.layout(self.root).expect("root has layout").size;
+        let (afx, afy) = anchor_fractions(self.anchor);
+        let anchor_x = REFERENCE_WIDTH * afx + self.offset[0];
+        let anchor_y = REFERENCE_HEIGHT * afy + self.offset[1];
+        let root_origin = [
+            anchor_x - root_size.width * afx,
+            anchor_y - root_size.height * afy,
+        ];
+        let scale = super::layout::device_scale(device_size);
+        let canvas_origin = canvas_origin(device_size, scale);
+
+        let mut out = FocusRectList {
+            initial_focus: descriptor.initial_focus.clone(),
+            restore_on_return: any_restore_on_return(&descriptor.root),
+            ..Default::default()
+        };
+        let mut z = 0u32;
+        self.collect_focus_node(
+            &descriptor.root,
+            self.root,
+            String::new(),
+            None,
+            root_origin,
+            scale,
+            canvas_origin,
+            &mut z,
+            &mut out,
+        );
+        out
+    }
+
+    /// Lockstep descriptor+taffy walk for `export_focus_rects`. `path` is the
+    /// node's slash-joined child-index path from the root (the auto-id when no id
+    /// is authored). `group` is the index (into `out.groups`) of the nearest
+    /// ancestor container that declared a focus policy. `z` rises in tree order so
+    /// a later-drawn node hit-tests as topmost.
+    #[allow(clippy::too_many_arguments)]
+    fn collect_focus_node(
+        &self,
+        widget: &Widget,
+        node: NodeId,
+        path: String,
+        group: Option<usize>,
+        ref_origin: [f32; 2],
+        scale: f32,
+        canvas_origin: [f32; 2],
+        z: &mut u32,
+        out: &mut FocusRectList,
+    ) {
+        let layout = self.taffy.layout(node).expect("node has computed layout");
+        let this_z = *z;
+        *z += 1;
+
+        let (authored_id, neighbors) = focus_meta(widget);
+        // A node is focusable when it carries an authored id or is governed by an
+        // ancestor focus group. Auto-id falls back to the tree path.
+        let focusable = authored_id.is_some() || group.is_some();
+        let id = authored_id.cloned().unwrap_or_else(|| {
+            if path.is_empty() {
+                "root".to_string()
+            } else {
+                path.clone()
+            }
+        });
+        if focusable {
+            let rect = project_rect(ref_origin, layout, scale, canvas_origin);
+            let rect_index = out.rects.len();
+            out.rects.push(FocusRect {
+                id: id.clone(),
+                rect,
+                z: this_z,
+                group,
+                neighbors,
+                interaction: widget_interaction(widget),
+            });
+            if let Some(g) = group {
+                out.groups[g].members.push(rect_index);
+            }
+        }
+
+        // A container declaring a focus policy opens a new group its DIRECT
+        // children join. Register the group before recursing so children carry its
+        // index. Children of a non-policy container inherit the ancestor group.
+        let child_group = match container_focus_policy(widget) {
+            Some(policy) => {
+                let idx = out.groups.len();
+                out.groups.push(FocusGroup {
+                    kind: policy.kind().into(),
+                    wrap: policy.wrap(),
+                    repeat: policy.repeat().map(Into::into),
+                    members: Vec::new(),
+                });
+                Some(idx)
+            }
+            None => group,
+        };
+
+        if let Some(children) = widget_children(widget) {
+            let taffy_children = self.taffy.children(node).expect("node children resolve");
+            for (i, (child_widget, child_node)) in children.iter().zip(taffy_children).enumerate() {
+                let child_layout = self.taffy.layout(child_node).expect("child has layout");
+                let child_origin = [
+                    ref_origin[0] + child_layout.location.x,
+                    ref_origin[1] + child_layout.location.y,
+                ];
+                let child_path = if path.is_empty() {
+                    i.to_string()
+                } else {
+                    format!("{path}/{i}")
+                };
+                self.collect_focus_node(
+                    child_widget,
+                    child_node,
+                    child_path,
+                    child_group,
+                    child_origin,
+                    scale,
+                    canvas_origin,
+                    z,
+                    out,
+                );
+            }
+        }
+    }
+
     /// Walk a node and its descendants, accumulating draw entries. `ref_origin`
     /// is the node's top-left in reference space (parent origin + the node's
     /// taffy-relative location). Children recurse with their own absolute origin.
@@ -709,11 +976,16 @@ impl UiTree {
         &self,
         node: NodeId,
         ref_origin: [f32; 2],
-        canvas_origin: [f32; 2],
-        scale: f32,
-        slot_values: &HashMap<String, SlotValue>,
+        walk: &DrawWalkCtx<'_>,
         data: &mut UiDrawData,
     ) {
+        let DrawWalkCtx {
+            canvas_origin,
+            scale,
+            slot_values,
+            time_seconds,
+            inert_theme,
+        } = *walk;
         let layout = self.taffy.layout(node).expect("node has computed layout");
         let context = self.taffy.get_node_context(node);
 
@@ -724,6 +996,8 @@ impl UiTree {
                 bind,
                 last_resolved,
                 tween,
+                style_ranges,
+                style_state,
             }) => {
                 // A bound panel resolves its fill from the slot snapshot; an
                 // absent/malformed slot falls back to the literal `fill`. For a
@@ -732,10 +1006,27 @@ impl UiTree {
                 // eased fill instead of re-resolving the raw slot — so the
                 // per-channel easing reaches the draw. The fresh/splash path never
                 // populates `tween`, so it resolves the target directly (inert).
-                let fill = match (tween, last_resolved) {
+                let mut fill = match (tween, last_resolved) {
                     (Some(_), Some(eased)) => *eased,
                     _ => resolve_panel_fill(bind.as_ref(), *fill, slot_values),
                 };
+                // styleRanges (M13 Goal E) overrides the fill: the bound numeric
+                // value maps to a band color + pulse/flash. Its band colors were
+                // pre-resolved to literals at build, so the evaluator's theme arg
+                // is inert here. The base color is the resolved `fill` above (a
+                // band with no color keeps it).
+                if let Some(ranges) = style_ranges {
+                    if let Some(value) = style_value(bind.as_ref(), slot_values) {
+                        fill = evaluate(
+                            ranges,
+                            value,
+                            fill,
+                            inert_theme,
+                            &mut style_state.borrow_mut(),
+                            time_seconds,
+                        );
+                    }
+                }
                 data.quads.push(project_quad(
                     ref_origin,
                     layout,
@@ -753,6 +1044,58 @@ impl UiTree {
                 let rect = project_rect(ref_origin, layout, scale, canvas_origin);
                 data.image_quad_for(asset).push(UiInstance::image(rect));
             }
+            Some(NodeContext::Bar {
+                bind,
+                max,
+                fill,
+                background,
+                last_resolved,
+                tween,
+                style_ranges,
+                style_state,
+            }) => {
+                // Background quad fills the whole laid-out rect.
+                let rect = project_rect(ref_origin, layout, scale, canvas_origin);
+                data.quads
+                    .push(UiInstance::panel(rect, *background, [0.0; 4]));
+
+                // The displayed value: the eased tween display when active (the
+                // styleRanges/fill-fraction contract reads the value the widget
+                // RENDERS, which mid-tween is the display value), else the raw slot
+                // `Number`. The fresh/splash path never tweens, so it reads the slot.
+                let value = match (tween, last_resolved) {
+                    (Some(_), Some(displayed)) => *displayed,
+                    _ => bar_slot_value(bind, slot_values),
+                };
+                let fraction = if *max > 0.0 {
+                    (value / *max).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+
+                // styleRanges recolors the fill the same widget-agnostic way bound
+                // text/panel do: the evaluator maps the value against its own `max`.
+                let mut fill_color = *fill;
+                if let Some(ranges) = style_ranges {
+                    fill_color = evaluate(
+                        ranges,
+                        value,
+                        fill_color,
+                        inert_theme,
+                        &mut style_state.borrow_mut(),
+                        time_seconds,
+                    );
+                }
+
+                // Fill quad: same top-left/height, width scaled by the fraction.
+                // Snap to whole device pixels like the background rect.
+                let fill_width = (rect[2] * fraction).round();
+                if fill_width > 0.0 {
+                    let fill_rect = [rect[0], rect[1], fill_width, rect[3]];
+                    data.quads
+                        .push(UiInstance::panel(fill_rect, fill_color, [0.0; 4]));
+                }
+            }
             Some(NodeContext::Text {
                 content,
                 font_size,
@@ -761,6 +1104,8 @@ impl UiTree {
                 bind,
                 last_resolved,
                 tween,
+                style_ranges,
+                style_state,
             }) => {
                 // A bound text node resolves its drawn string from the slot
                 // snapshot (through the optional `{}` format template); an absent
@@ -779,6 +1124,26 @@ impl UiTree {
                     (Some(_), Some(displayed)) => displayed.clone(),
                     _ => resolve_text(bind.as_ref(), content, slot_values),
                 };
+                // styleRanges (M13 Goal E) overrides the run's color: the bound
+                // value (the eased tween display when a tween is active, else the
+                // raw slot number) maps to a band color + pulse/flash. Band colors
+                // were pre-resolved to literals at build, so the theme arg is inert.
+                let color = match style_ranges {
+                    Some(ranges) => {
+                        match style_text_value(bind.as_ref(), tween.as_ref(), slot_values) {
+                            Some(value) => evaluate(
+                                ranges,
+                                value,
+                                *color,
+                                inert_theme,
+                                &mut style_state.borrow_mut(),
+                                time_seconds,
+                            ),
+                            None => *color,
+                        }
+                    }
+                    None => *color,
+                };
                 // Device-pixel top-left + device-scaled font size; color converts
                 // linear RGBA -> sRGB [u8; 4] at draw-list build time. The run is
                 // laid out in flow (its container's `align` centers it on the
@@ -788,7 +1153,7 @@ impl UiTree {
                     resolved,
                     [rect[0], rect[1]],
                     font_size * scale,
-                    linear_rgba_to_srgb_u8(*color),
+                    linear_rgba_to_srgb_u8(color),
                     // The theme-resolved family carried on the node (from the
                     // widget's `font` token, or `body` when it names none), so the
                     // drawn line shapes against the same registered face the
@@ -807,9 +1172,20 @@ impl UiTree {
                 ref_origin[0] + child_layout.location.x,
                 ref_origin[1] + child_layout.location.y,
             ];
-            self.collect_node(child, child_origin, canvas_origin, scale, slot_values, data);
+            self.collect_node(child, child_origin, walk, data);
         }
     }
+}
+
+/// Walk-invariant context threaded through `collect_node`'s recursion: the
+/// device-pixel projection, the slot snapshot the draw reads, the dt-accumulated
+/// UI clock, and the inert theme the (pre-resolved) styleRanges evaluator takes.
+struct DrawWalkCtx<'a> {
+    canvas_origin: [f32; 2],
+    scale: f32,
+    slot_values: &'a HashMap<String, SlotValue>,
+    time_seconds: f64,
+    inert_theme: &'a UiTheme,
 }
 
 /// Result of one retained-frame bound-value diff. Each flag is set when at least
@@ -1007,6 +1383,38 @@ fn drive_panel_binding(
     changed
 }
 
+/// Drive one bound BAR node for this frame and return whether its displayed value
+/// changed since the last diff. Mirrors the tweened-text numeric path but stores
+/// an `f32` display value (the bar draws a fill fraction, not a string):
+///
+/// - **Untweened**: the displayed value is the raw slot `Number` (or `0.0` when
+///   absent/non-numeric); store it, report the change.
+/// - **Tweened, slot resolves to a `Number`**: `drive_tween_f32` eases a per-node
+///   display value toward the slot target so the rendered fill fraction eases.
+/// - **Tweened, slot resolves to any other shape**: snap to the raw value (`0.0`).
+fn drive_bar_binding(
+    bind: &SliderBind,
+    last_resolved: &mut Option<f32>,
+    tween: &mut Option<TweenState<f32>>,
+    slot_values: &HashMap<String, SlotValue>,
+    now: f64,
+) -> bool {
+    let resolved = match bind.tween.as_ref() {
+        Some(cfg) => match slot_values.get(&bind.slot) {
+            Some(SlotValue::Number(n)) => {
+                drive_tween_f32(tween, cfg.from, *n, cfg.duration_ms, cfg.easing, now)
+            }
+            _ => bar_slot_value(bind, slot_values),
+        },
+        None => bar_slot_value(bind, slot_values),
+    };
+    let changed = last_resolved.is_none_or(|prev| (prev - resolved).abs() > f32::EPSILON);
+    if changed {
+        *last_resolved = Some(resolved);
+    }
+    changed
+}
+
 /// Advance (or initialize / retarget) a panel node's RGBA tween segment toward
 /// `target` at frame time `now`, returning the eased per-channel display fill.
 /// Same first-resolve / retarget / in-flight / settle mechanics as the text
@@ -1126,6 +1534,80 @@ fn measure_node(
     }
 }
 
+/// A widget's authored focus id and neighbor overrides, for the focus-rect
+/// export. Every kind carries `id`/`focus_neighbors` except `spacer` (id only,
+/// never focusable). Returns the authored id (borrowed) and the exported
+/// neighbor overrides.
+fn focus_meta(widget: &Widget) -> (Option<&String>, FocusNeighbors) {
+    match widget {
+        Widget::Text(w) => (w.id.as_ref(), (&w.focus_neighbors).into()),
+        Widget::Panel(w) => (w.id.as_ref(), (&w.focus_neighbors).into()),
+        Widget::Image(w) => (w.id.as_ref(), (&w.focus_neighbors).into()),
+        Widget::Spacer(w) => (w.id.as_ref(), FocusNeighbors::default()),
+        Widget::VStack(w) | Widget::HStack(w) => (w.id.as_ref(), (&w.focus_neighbors).into()),
+        Widget::Grid(w) => (w.id.as_ref(), (&w.focus_neighbors).into()),
+        // Interactive widgets carry a REQUIRED id (focusable markers): button and
+        // slider always export as focusable. `bar` is passive — id only.
+        Widget::Button(w) => (Some(&w.id), (&w.focus_neighbors).into()),
+        Widget::Slider(w) => (Some(&w.id), (&w.focus_neighbors).into()),
+        Widget::Bar(w) => (w.id.as_ref(), FocusNeighbors::default()),
+    }
+}
+
+/// The interaction metadata for an interactive widget (M13 Goal F, Task 4), or
+/// `None` for passive nodes. `button` carries its activation reaction; `slider`
+/// its bound-value step parameters. The focus-rect export attaches this so the
+/// app can drive activation/value-step from the focused node id.
+fn widget_interaction(widget: &Widget) -> Option<NodeInteraction> {
+    match widget {
+        Widget::Button(w) => Some(NodeInteraction::Button {
+            on_press: w.on_press.clone(),
+            repeat_on_hold: w.repeat_on_hold.map(Into::into),
+        }),
+        Widget::Slider(w) => Some(NodeInteraction::Slider {
+            slot: w.bind.slot.clone(),
+            min: w.min,
+            max: w.max,
+            step: w.step,
+            captures_nav: w.captures_nav.clone(),
+        }),
+        _ => None,
+    }
+}
+
+/// The focus policy a container declares, or `None` for leaves and policy-less
+/// containers. A declaring container opens a focus group its direct children join.
+fn container_focus_policy(widget: &Widget) -> Option<&super::descriptor::FocusPolicy> {
+    match widget {
+        Widget::VStack(w) | Widget::HStack(w) => w.focus.as_ref(),
+        Widget::Grid(w) => w.focus.as_ref(),
+        _ => None,
+    }
+}
+
+/// Whether `widget` or any descendant container declares `restoreOnReturn`.
+/// Surfaced tree-wide on the focus rect list: the focus engine restores this
+/// tree's saved focus on a returning pop when any of its containers opted in.
+fn any_restore_on_return(widget: &Widget) -> bool {
+    let declared = match widget {
+        Widget::VStack(w) | Widget::HStack(w) => w.restore_on_return,
+        Widget::Grid(w) => w.restore_on_return,
+        _ => false,
+    };
+    declared
+        || widget_children(widget)
+            .is_some_and(|children| children.iter().any(any_restore_on_return))
+}
+
+/// A container's `children` for the lockstep focus walk, or `None` for leaves.
+fn widget_children(widget: &Widget) -> Option<&[Widget]> {
+    match widget {
+        Widget::VStack(w) | Widget::HStack(w) => Some(&w.children),
+        Widget::Grid(w) => Some(&w.children),
+        _ => None,
+    }
+}
+
 /// Recursively build a taffy node (and its children) for one descriptor widget.
 /// Resolves every theme token (color/spacing/font) against `theme` into the
 /// concrete value the node carries, so the per-frame walk is theme-free.
@@ -1137,7 +1619,13 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget, theme: &UiThe
             color,
             font,
             bind,
+            style_ranges,
+            // `id`/`focus_neighbors` are read by the focus-rect export, not the
+            // draw build — the draw walk ignores them.
+            ..
         }) => {
+            let style_ranges =
+                build_node_style_ranges(style_ranges.as_ref(), bind.is_some(), theme, "text");
             // Text nodes are sized by the measure closure in `build_draw_data`,
             // which shapes `content` at `font_size` through glyphon and returns
             // the real shaped-run extent. The node carries no explicit style size.
@@ -1161,11 +1649,22 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget, theme: &UiThe
                         // at build: the fresh path never tweens, and the retained
                         // diff initializes it when the slot first reads a `Number`.
                         tween: None,
+                        style_ranges,
+                        style_state: RefCell::new(StyleEffectState::default()),
                     },
                 )
                 .expect("taffy leaf creation must succeed")
         }
-        Widget::Panel(PanelWidget { fill, border, bind }) => {
+        Widget::Panel(PanelWidget {
+            fill,
+            border,
+            bind,
+            style_ranges,
+            // `id`/`focus_neighbors` are read by the focus-rect export, not here.
+            ..
+        }) => {
+            let style_ranges =
+                build_node_style_ranges(style_ranges.as_ref(), bind.is_some(), theme, "panel");
             // A panel leaf sizes to fill its flex/grid slot (it has no intrinsic
             // size). Container backdrops are expressed on the container instead.
             // `bind` rides along for draw-time fill resolution.
@@ -1180,11 +1679,13 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget, theme: &UiThe
                         last_resolved: None,
                         // Born on the first length-4 array resolution (see above).
                         tween: None,
+                        style_ranges,
+                        style_state: RefCell::new(StyleEffectState::default()),
                     },
                 )
                 .expect("taffy leaf creation must succeed")
         }
-        Widget::Image(ImageWidget { asset }) => taffy
+        Widget::Image(ImageWidget { asset, .. }) => taffy
             .new_leaf_with_context(
                 Style::default(),
                 NodeContext::Image {
@@ -1206,7 +1707,111 @@ fn build_node(taffy: &mut TaffyTree<NodeContext>, widget: &Widget, theme: &UiThe
                 .new_leaf(style)
                 .expect("taffy leaf creation must succeed")
         }
+        Widget::Button(button) => build_button(taffy, button, theme),
+        Widget::Slider(slider) => build_slider(taffy, slider, theme),
+        Widget::Bar(bar) => build_bar(taffy, bar, theme),
     }
+}
+
+/// Build an interactive `button` leaf (M13 Goal F, Task 4). Renders its `label`
+/// as a centered text run shaping against the theme `body` face. The button is a
+/// pure text leaf for layout/draw; its focusable marker + activation (`on_press`)
+/// ride the focus-rect export (`focus_meta` / `widget_interaction`), not the draw
+/// payload. The label color resolves the theme `body`-text default (white), the
+/// same flat color a literal text widget would carry.
+fn build_button(
+    taffy: &mut TaffyTree<NodeContext>,
+    button: &ButtonWidget,
+    theme: &UiTheme,
+) -> NodeId {
+    taffy
+        .new_leaf_with_context(
+            Style::default(),
+            NodeContext::Text {
+                content: button.label.clone(),
+                font_size: INTERACTIVE_LABEL_FONT_SIZE,
+                color: resolve_color(&ColorValue::Token("body".to_string()), theme),
+                family: resolve_font(&None, theme),
+                // A button label is static text — no bind, tween, or styleRanges.
+                bind: None,
+                last_resolved: None,
+                tween: None,
+                style_ranges: None,
+                style_state: RefCell::new(StyleEffectState::default()),
+            },
+        )
+        .expect("taffy leaf creation must succeed")
+}
+
+/// Build an interactive `slider` leaf (M13 Goal F, Task 4). Renders `label` plus
+/// the current numeric value as one text run: it binds the slot through a
+/// synthesized `"<label>: {}"` format so the value display reuses the existing
+/// bound-text resolution + tween machinery (the slider's bind tween eases the
+/// shown number). The focusable marker + nav-capture/value-step ride the
+/// focus-rect export, not the draw payload.
+fn build_slider(
+    taffy: &mut TaffyTree<NodeContext>,
+    slider: &SliderWidget,
+    theme: &UiTheme,
+) -> NodeId {
+    // Synthesize a text bind so the value display rides the bound-text path:
+    // `content` is the fallback (label with no value yet), `format` injects the
+    // resolved number after the label. The slider's bind tween carries through.
+    let format = format!("{}: {{}}", slider.label);
+    let bind = TextBind {
+        slot: slider.bind.slot.clone(),
+        format: Some(format),
+        tween: slider.bind.tween.clone(),
+    };
+    taffy
+        .new_leaf_with_context(
+            Style::default(),
+            NodeContext::Text {
+                content: slider.label.clone(),
+                font_size: INTERACTIVE_LABEL_FONT_SIZE,
+                color: resolve_color(&ColorValue::Token("body".to_string()), theme),
+                family: resolve_font(&None, theme),
+                bind: Some(bind),
+                last_resolved: None,
+                tween: None,
+                style_ranges: None,
+                style_state: RefCell::new(StyleEffectState::default()),
+            },
+        )
+        .expect("taffy leaf creation must succeed")
+}
+
+/// Build a passive horizontal `bar` leaf (M13 Goal F, Task 4). Carries an explicit
+/// style size (a bar has no content to measure) and a `NodeContext::Bar` draw
+/// payload. Its `fill`/`background` color tokens resolve against the theme at
+/// build time; `style_ranges`' band colors pre-resolve too (theme-free draw walk),
+/// gated on the bind precondition like text/panel styleRanges.
+fn build_bar(taffy: &mut TaffyTree<NodeContext>, bar: &BarWidget, theme: &UiTheme) -> NodeId {
+    let style = Style {
+        size: Size {
+            width: length(DEFAULT_BAR_SIZE[0]),
+            height: length(DEFAULT_BAR_SIZE[1]),
+        },
+        ..Default::default()
+    };
+    // A bar always binds (a value to display), so the styleRanges bind precondition
+    // is satisfied; pre-resolve its band-color tokens to literals for the draw walk.
+    let style_ranges = build_node_style_ranges(bar.style_ranges.as_ref(), true, theme, "bar");
+    taffy
+        .new_leaf_with_context(
+            style,
+            NodeContext::Bar {
+                bind: bar.bind.clone(),
+                max: bar.max,
+                fill: resolve_color(&bar.fill, theme),
+                background: resolve_color(&bar.background, theme),
+                last_resolved: None,
+                tween: None,
+                style_ranges,
+                style_state: RefCell::new(StyleEffectState::default()),
+            },
+        )
+        .expect("taffy leaf creation must succeed")
 }
 
 /// Optional backdrop `NodeContext` for a container declaring a `fill`/`border`.
@@ -1227,6 +1832,9 @@ fn container_backdrop(fill: Option<[f32; 4]>, border: Option<&Border>) -> Option
             bind: None,
             last_resolved: None,
             tween: None,
+            // Backdrops carry no styleRanges (styleRanges live on bound leaves).
+            style_ranges: None,
+            style_state: RefCell::new(StyleEffectState::default()),
         }),
     }
 }
@@ -1295,6 +1903,154 @@ fn build_grid(taffy: &mut TaffyTree<NodeContext>, grid: &GridWidget, theme: &UiT
     taffy
         .new_with_children(style, &children)
         .expect("taffy grid creation must succeed")
+}
+
+// --- Hit-test / focus rect-list export (M13 Goal F, Task 3) -----------------
+
+/// Focus-traversal kind exported with a focus group. The descriptor twin
+/// (`descriptor::FocusKind`) is converted into this at export so the app-side
+/// focus engine carries no descriptor dependency on the wire enum's serde derive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FocusKind {
+    Linear,
+    Spatial,
+}
+
+/// Hold-to-repeat timing exported with a focus group (milliseconds). Mirrors
+/// `descriptor::RepeatPolicy`; carried on the focus rect list so the app-side
+/// focus engine's dt-clocked repeat timer reads the container's declared cadence.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct RepeatPolicy {
+    pub initial_delay_ms: f32,
+    pub interval_ms: f32,
+}
+
+/// Per-direction id overrides exported with a focusable node. A set direction
+/// wins over the container policy: nav that way jumps straight to the named node.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct FocusNeighbors {
+    pub up: Option<String>,
+    pub down: Option<String>,
+    pub left: Option<String>,
+    pub right: Option<String>,
+}
+
+/// One focusable/interactive node in the exported hit-test/focus rect list: its
+/// stable id (authored or auto-generated from tree position), device-pixel rect
+/// `[x, y, w, h]`, painter z (tree order — later = higher), the index of the
+/// focus group that governs its directional traversal (if any), and its neighbor
+/// overrides. The app-side focus engine consumes this the FOLLOWING frame (the
+/// reverse of the app→renderer snapshot's N→N+1 contract).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct FocusRect {
+    pub id: String,
+    pub rect: [f32; 4],
+    pub z: u32,
+    /// Index into `FocusRectList::groups` of the nearest ancestor container that
+    /// declares a focus policy, or `None` when no ancestor governs this node.
+    pub group: Option<usize>,
+    pub neighbors: FocusNeighbors,
+    /// Interaction metadata for an interactive widget (M13 Goal F, Task 4): a
+    /// `button`'s activation reaction or a `slider`'s value-step parameters. `None`
+    /// for passive focusables (an id-bearing text/panel/image). The app reads this
+    /// off the focused node to fire activation (button `on_press`) or to apply a
+    /// captured nav step (slider), keeping the focus engine widget-agnostic.
+    pub interaction: Option<NodeInteraction>,
+}
+
+/// Per-node interaction metadata exported with an interactive focusable node
+/// (M13 Goal F, Task 4). The app resolves the focused node's interaction to fire
+/// a button's named reaction on confirm/click, or to step a slider's bound value
+/// on a captured nav intent and emit the `setState` write.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum NodeInteraction {
+    /// A `button`: activation (confirm/click) fires `on_press` through the
+    /// reaction registry — the same vocabulary entity/system reactions use.
+    /// `repeat_on_hold`, when present, opts the button into activation-repeat: a
+    /// HELD confirm re-fires `on_press` on the focus engine's hold-to-repeat clock
+    /// (M13 Text-Entry, Task 2 — the on-screen keyboard backspace). Absent keeps
+    /// F's single-fire rule (one activation per press).
+    Button {
+        on_press: String,
+        repeat_on_hold: Option<RepeatPolicy>,
+    },
+    /// A `slider`: a captured nav wire in `captures_nav` steps the bound slot's
+    /// value by `step` within `[min, max]` and emits a `setState` write on the N+1
+    /// frame. `"nav.left"`/`"nav.down"` decrease the value, `"nav.right"`/`"nav.up"`
+    /// increase it; any other captured name is swallowed (focus does not move) but
+    /// leaves the value unchanged.
+    Slider {
+        slot: String,
+        min: f32,
+        max: f32,
+        step: f32,
+        captures_nav: Vec<String>,
+    },
+}
+
+/// A focus group exported from a container that declares a `focus` policy: its
+/// traversal kind, wrap flag, optional repeat cadence, and the indices (into
+/// `FocusRectList::rects`) of its directly-governed focusable members in tree
+/// order. The focus engine moves focus within a group by its policy.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct FocusGroup {
+    pub kind: FocusKind,
+    pub wrap: bool,
+    pub repeat: Option<RepeatPolicy>,
+    /// Indices into `FocusRectList::rects` of this group's members, tree order.
+    pub members: Vec<usize>,
+}
+
+/// The flat hit-test / focus rect list exported once per draw-data build: every
+/// focusable node's id+rect+z+group, plus the focus groups their containers
+/// declared. The renderer publishes this back to the app (the reverse twin of the
+/// app→renderer `UiReadSnapshot`); the focus engine reads it the next frame to
+/// move focus, resolve pointer hits (topmost z), and drive the repeat timer.
+///
+/// "Focusable" today means a node that carries an authored `id` or sits under a
+/// container that declares a focus policy — the focusable-node seam Task 4 plugs
+/// the `button`/`slider`/`bar` interactive markers into.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub(crate) struct FocusRectList {
+    pub rects: Vec<FocusRect>,
+    pub groups: Vec<FocusGroup>,
+    /// The tree's `initialFocus` (from the `AnchoredTree` envelope): the node id
+    /// focus starts on when this tree becomes the active (top) stack tree. `None`
+    /// selects the first focusable node in tree order.
+    pub initial_focus: Option<String>,
+    /// True when any container in the tree declared `restoreOnReturn`: on a pop
+    /// that returns focus here, the focus engine restores this tree's last-focused
+    /// node instead of resetting to `initial_focus`.
+    pub restore_on_return: bool,
+}
+
+impl From<super::descriptor::FocusKind> for FocusKind {
+    fn from(kind: super::descriptor::FocusKind) -> Self {
+        match kind {
+            super::descriptor::FocusKind::Linear => FocusKind::Linear,
+            super::descriptor::FocusKind::Spatial => FocusKind::Spatial,
+        }
+    }
+}
+
+impl From<super::descriptor::RepeatPolicy> for RepeatPolicy {
+    fn from(p: super::descriptor::RepeatPolicy) -> Self {
+        Self {
+            initial_delay_ms: p.initial_delay_ms,
+            interval_ms: p.interval_ms,
+        }
+    }
+}
+
+impl From<&super::descriptor::FocusNeighbors> for FocusNeighbors {
+    fn from(n: &super::descriptor::FocusNeighbors) -> Self {
+        Self {
+            up: n.up.clone(),
+            down: n.down.clone(),
+            left: n.left.clone(),
+            right: n.right.clone(),
+        }
+    }
 }
 
 /// Computed draw entries from one tree: a device-pixel panel quad `UiDrawList`,
@@ -1495,6 +2251,55 @@ fn resolve_panel_fill(
     }
 }
 
+/// The scalar value a `text` node's styleRanges maps: the eased tween *display*
+/// value when a tween is active on the bind (the styleRanges contract — it
+/// evaluates the value the widget renders, which mid-tween is the display value),
+/// else the bound slot's `Number`. `None` when there is no bind, the slot is
+/// absent, or it is not a `Number` (no value to map — the node keeps its base
+/// color). The tween's display is the same eased value the rendered string shows,
+/// so the color tracks the displayed number.
+fn style_text_value(
+    bind: Option<&TextBind>,
+    tween: Option<&TweenState<f32>>,
+    slot_values: &HashMap<String, SlotValue>,
+) -> Option<f32> {
+    if let Some(state) = tween {
+        return Some(state.display);
+    }
+    let bind = bind?;
+    match slot_values.get(&bind.slot) {
+        Some(SlotValue::Number(n)) => Some(*n),
+        _ => None,
+    }
+}
+
+/// The scalar value a `panel` node's styleRanges maps: the bound slot's `Number`.
+/// `None` when there is no bind, the slot is absent, or it is not a `Number`. A
+/// panel's RGBA fill-tween carries no scalar, so styleRanges on a panel reads the
+/// raw numeric slot (a styleRanges panel binds a numeric slot, not the length-4
+/// fill array) — the two bind uses are distinct.
+/// Seam: unlike `style_text_value` (which returns the eased display value when a
+/// tween is active), this path reads the raw slot. A panel's value-tween carries an
+/// RGBA fill; a panel styleRanges bind carries a scalar — the two never coexist on
+/// one panel, so there is no display value to prefer here.
+fn style_value(bind: Option<&PanelBind>, slot_values: &HashMap<String, SlotValue>) -> Option<f32> {
+    let bind = bind?;
+    match slot_values.get(&bind.slot) {
+        Some(SlotValue::Number(n)) => Some(*n),
+        _ => None,
+    }
+}
+
+/// Resolve a `bar`'s bound numeric value from the frame's slot snapshot, or `0.0`
+/// when the slot is absent or not a `Number` (a bar with no value reads empty).
+/// The bar always binds, so there is no unbound fallback.
+fn bar_slot_value(bind: &SliderBind, slot_values: &HashMap<String, SlotValue>) -> f32 {
+    match slot_values.get(&bind.slot) {
+        Some(SlotValue::Number(n)) => *n,
+        _ => 0.0,
+    }
+}
+
 /// Convert a linear-RGBA `[f32; 4]` color to glyphon's sRGB-encoded `[u8; 4]`.
 /// RGB channels go through the sRGB transfer function; alpha is linear (stays a
 /// straight 0..1 → 0..255 scale). Matches the `UiText` color contract.
@@ -1518,7 +2323,7 @@ fn linear_rgba_to_srgb_u8(color: [f32; 4]) -> [u8; 4] {
 
 #[cfg(test)]
 mod tests {
-    use super::super::descriptor::{ColorValue, SpacingValue};
+    use super::super::descriptor::{CaptureMode, ColorValue, SpacingValue};
     use super::*;
 
     /// Device-pixel comparison tolerance; rects snap to whole pixels but float
@@ -1556,7 +2361,10 @@ mod tests {
     }
 
     fn spacer(flex_grow: f32) -> Widget {
-        Widget::Spacer(SpacerWidget { flex_grow })
+        Widget::Spacer(SpacerWidget {
+            flex_grow,
+            id: None,
+        })
     }
 
     fn vstack(gap: f32, padding: f32, align: Align, children: Vec<Widget>) -> Widget {
@@ -1566,6 +2374,10 @@ mod tests {
             align,
             fill: None,
             border: None,
+            id: None,
+            focus_neighbors: Default::default(),
+            focus: None,
+            restore_on_return: false,
             children,
         })
     }
@@ -1577,6 +2389,10 @@ mod tests {
             align,
             fill: None,
             border: None,
+            id: None,
+            focus_neighbors: Default::default(),
+            focus: None,
+            restore_on_return: false,
             children,
         })
     }
@@ -1593,6 +2409,9 @@ mod tests {
             color: ColorValue::Literal([1.0, 1.0, 1.0, 1.0]),
             font: None,
             bind: None,
+            style_ranges: None,
+            id: None,
+            focus_neighbors: Default::default(),
         })
     }
 
@@ -1616,6 +2435,9 @@ mod tests {
                 Align::Start,
                 vec![text("AB", 40.0), text("CD", 40.0)],
             ),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -1668,6 +2490,9 @@ mod tests {
                     vec![text("AB", 30.0), text("CD", 30.0)],
                 )],
             ),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -1710,6 +2535,9 @@ mod tests {
                 Align::Start,
                 vec![text("X", 40.0), spacer(1.0), text("Y", 40.0)],
             ),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -1749,6 +2577,9 @@ mod tests {
                 Align::Start,
                 vec![text("AAAA", 20.0), text("BBBB", 20.0)],
             ),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut fs = font_system();
         let mut ui_ref = UiTree::from_descriptor(&tree, &theme());
@@ -1788,6 +2619,9 @@ mod tests {
                 color: ColorValue::Literal([1.0; 4]),
                 font: None,
                 bind: None,
+                style_ranges: None,
+                id: None,
+                focus_neighbors: Default::default(),
             })
         };
         let tree = AnchoredTree {
@@ -1798,8 +2632,15 @@ mod tests {
                 padding: SpacingValue::Literal(0.0),
                 align: Align::Start,
                 cols: 2,
+                id: None,
+                focus_neighbors: Default::default(),
+                focus: None,
+                restore_on_return: false,
                 children: vec![cell(), cell(), cell(), cell()],
             }),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -1847,7 +2688,13 @@ mod tests {
                 color: ColorValue::Literal([1.0, 1.0, 1.0, 1.0]),
                 font: None,
                 bind: None,
+                style_ranges: None,
+                id: None,
+                focus_neighbors: Default::default(),
             }),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -1886,12 +2733,19 @@ mod tests {
             align: Align::Start,
             fill: Some(ColorValue::Literal([0.2, 0.4, 0.6, 1.0])),
             border: None,
+            id: None,
+            focus_neighbors: Default::default(),
+            focus: None,
+            restore_on_return: false,
             children: vec![text("x", 13.0), text("y", 13.0)],
         });
         let tree = AnchoredTree {
             anchor: Anchor::TopLeft,
             offset: [3.5, 7.25],
             root: filled,
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -1919,19 +2773,26 @@ mod tests {
             align: Align::Start,
             fill: Some(ColorValue::Literal([0.1, 0.2, 0.3, 1.0])),
             border: None,
+            id: None,
+            focus_neighbors: Default::default(),
+            focus: None,
+            restore_on_return: false,
             children: vec![text("AB", 40.0)],
         });
         let tree = AnchoredTree {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
             root: filled,
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
 
         // Exactly one backdrop quad (the container), one text run on top.
-        assert_eq!(data.quads.len(), 1, "one container backdrop quad");
+        assert_eq!(data.quads.instances.len(), 1, "one container backdrop quad");
         assert_eq!(data.texts.len(), 1, "one child text run drawn over it");
 
         // The backdrop spans the container's full rect: it covers the child run
@@ -1969,6 +2830,9 @@ mod tests {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
             root: text(content, font_size),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2055,7 +2919,112 @@ mod tests {
                 Align::Start,
                 vec![text("AB", 30.0), text("CD", 30.0)],
             ),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         }
+    }
+
+    /// Regression: the pause-menu `ui.textEntry` readout and the "ENTER TEXT"
+    /// opener button are DISTINCT retained nodes whose resolved drawn content can
+    /// never alias one another. Drives the real `build_pause_menu_descriptor`
+    /// through the retained tree with a live `ui.textEntry` value and asserts the
+    /// readout draws `"ENTRY <value>"` while the opener draws its immutable
+    /// "ENTER TEXT" label — each at its own position, with no per-node cache or
+    /// auto-id collision swapping one node's content/glyphs onto the other.
+    ///
+    /// This pins the CPU half of the readout-aliasing bug (the reported symptom was
+    /// the readout rendering the opener's "ENTER TEXT" text): node identity is the
+    /// taffy `NodeId`, distinct per node, and `last_resolved` lives on the node, so
+    /// the readout's resolved string and the opener's literal label never cross.
+    /// (The GPU half — a single shared glyphon vertex buffer clobbered by a
+    /// per-stack-layer `encode` loop — is fixed in `render/mod.rs` and is not
+    /// CPU-testable without a GPU adapter; see that fix's note.)
+    #[test]
+    fn pause_menu_readout_and_opener_resolve_distinct_non_aliasing_text() {
+        use crate::render::ui::demo::build_pause_menu_descriptor;
+
+        let tree = build_pause_menu_descriptor();
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let mut slots: HashMap<String, SlotValue> = HashMap::new();
+        slots.insert(
+            "ui.textEntry".to_string(),
+            SlotValue::String("this is a test".to_string()),
+        );
+        let data = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
+
+        // The readout draws the bound value behind its untouched "ENTRY " prefix.
+        let readout = data
+            .texts
+            .iter()
+            .find(|t| t.content == "ENTRY this is a test")
+            .expect("readout draws the bound ui.textEntry value behind the ENTRY prefix");
+        // The opener button draws its immutable label, distinct from the readout.
+        let opener = data
+            .texts
+            .iter()
+            .find(|t| t.content == "ENTER TEXT")
+            .expect("the opener button still draws its own ENTER TEXT label");
+
+        // They are two separate draw entries at two separate positions — neither
+        // node picked up the other's resolved content (the aliasing symptom).
+        assert_ne!(
+            readout.position, opener.position,
+            "the readout and opener are distinct nodes at distinct positions",
+        );
+        // No drawn run is the opener's label masquerading as the readout: exactly
+        // one run carries each string.
+        assert_eq!(
+            data.texts
+                .iter()
+                .filter(|t| t.content == "ENTER TEXT")
+                .count(),
+            1,
+            "the ENTER TEXT label appears exactly once (only on the opener node)",
+        );
+        assert_eq!(
+            data.texts
+                .iter()
+                .filter(|t| t.content == "ENTRY this is a test")
+                .count(),
+            1,
+            "the resolved readout string appears exactly once (only on the readout node)",
+        );
+
+        // The readout node's `last_resolved` holds ITS value; the opener node is
+        // unbound and never resolves — so the two per-node caches cannot cross.
+        let mut ids = Vec::new();
+        ui.collect_node_ids(ui.root, &mut ids);
+        let mut readout_resolved = None;
+        let mut saw_unbound_opener = false;
+        for n in ids {
+            if let Some(NodeContext::Text {
+                content,
+                last_resolved,
+                bind,
+                ..
+            }) = ui.taffy.get_node_context(n)
+            {
+                if bind.as_ref().map(|b| b.slot.as_str()) == Some("ui.textEntry") {
+                    readout_resolved = last_resolved.clone();
+                }
+                if content == "ENTER TEXT" {
+                    saw_unbound_opener = true;
+                    assert!(bind.is_none(), "the opener label is unbound");
+                    assert!(
+                        last_resolved.is_none(),
+                        "the unbound opener never resolves a bound string",
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            readout_resolved.as_deref(),
+            Some("ENTRY this is a test"),
+            "the readout node caches its OWN resolved string, not the opener's label",
+        );
+        assert!(saw_unbound_opener, "the opener node exists in the tree");
     }
 
     #[test]
@@ -2118,6 +3087,9 @@ mod tests {
                 Align::Start,
                 vec![text("AB", 30.0), text("CD", 30.0), text("EF", 30.0)],
             ),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut second = UiTree::from_descriptor(&reshaped, &theme());
         second.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
@@ -2173,6 +3145,9 @@ mod tests {
                 format: format.map(str::to_string),
                 tween: None,
             }),
+            style_ranges: None,
+            id: None,
+            focus_neighbors: Default::default(),
         })
     }
 
@@ -2186,6 +3161,10 @@ mod tests {
             align: Align::Stretch,
             fill: Some(ColorValue::Literal([0.0, 0.0, 0.0, 1.0])),
             border: None,
+            id: None,
+            focus_neighbors: Default::default(),
+            focus: None,
+            restore_on_return: false,
             children: vec![Widget::Panel(PanelWidget {
                 fill: ColorValue::Literal(fill),
                 border: None,
@@ -2193,6 +3172,9 @@ mod tests {
                     slot: slot.into(),
                     tween: None,
                 }),
+                style_ranges: None,
+                id: None,
+                focus_neighbors: Default::default(),
             })],
         })
     }
@@ -2206,6 +3188,9 @@ mod tests {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
             root: bound_text("0", "player.health", Some("HP {}")),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut slots = HashMap::new();
         slots.insert("player.health".to_string(), SlotValue::Number(87.0));
@@ -2229,6 +3214,9 @@ mod tests {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
             root: bound_text("0", "player.ammo", None),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut slots = HashMap::new();
         slots.insert("player.ammo".to_string(), SlotValue::Number(12.5));
@@ -2248,6 +3236,9 @@ mod tests {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
             root: bound_text("fallback", "player.health", Some("HP {}")),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2268,6 +3259,9 @@ mod tests {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
             root: bound_panel_in_stack([0.0, 0.0, 0.0, 1.0], "intro.flashColor"),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut slots = HashMap::new();
         slots.insert(
@@ -2299,6 +3293,9 @@ mod tests {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
             root: bound_panel_in_stack(fallback, "intro.flashColor"),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut slots = HashMap::new();
         slots.insert(
@@ -2330,6 +3327,9 @@ mod tests {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
             root: bound_panel_in_stack(fallback, "intro.flashColor"),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2377,6 +3377,9 @@ mod tests {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
             root: bound_panel_in_stack([0.0, 0.0, 0.0, 1.0], "intro.flashColor"),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2417,6 +3420,9 @@ mod tests {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
             root: bound_text("0", "player.health", Some("HP {}")),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2447,6 +3453,9 @@ mod tests {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
             root: bound_text("0", "player.health", Some("HP {}")),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2485,6 +3494,9 @@ mod tests {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
             root: bound_panel_in_stack([0.0, 0.0, 0.0, 1.0], "intro.flashColor"),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2552,7 +3564,13 @@ mod tests {
                 color,
                 font: font.map(str::to_string),
                 bind: None,
+                style_ranges: None,
+                id: None,
+                focus_neighbors: Default::default(),
             }),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         }
     }
 
@@ -2607,8 +3625,15 @@ mod tests {
                 align: Align::Start,
                 fill: None,
                 border: None,
+                id: None,
+                focus_neighbors: Default::default(),
+                focus: None,
+                restore_on_return: false,
                 children: vec![text("AB", 30.0), text("CD", 30.0)],
             }),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme);
         let mut fs = font_system();
@@ -2636,8 +3661,15 @@ mod tests {
                 align: Align::Start,
                 fill: None,
                 border: None,
+                id: None,
+                focus_neighbors: Default::default(),
+                focus: None,
+                restore_on_return: false,
                 children: vec![text("AB", 30.0), text("CD", 30.0)],
             }),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme);
         let mut fs = font_system();
@@ -2761,6 +3793,9 @@ mod tests {
                 format: format.map(str::to_string),
                 tween: Some(tween),
             }),
+            style_ranges: None,
+            id: None,
+            focus_neighbors: Default::default(),
         })
     }
 
@@ -2773,6 +3808,10 @@ mod tests {
             align: Align::Stretch,
             fill: Some(ColorValue::Literal([0.0, 0.0, 0.0, 1.0])),
             border: None,
+            id: None,
+            focus_neighbors: Default::default(),
+            focus: None,
+            restore_on_return: false,
             children: vec![Widget::Panel(PanelWidget {
                 fill: ColorValue::Literal(fill),
                 border: None,
@@ -2780,6 +3819,9 @@ mod tests {
                     slot: slot.into(),
                     tween: Some(tween),
                 }),
+                style_ranges: None,
+                id: None,
+                focus_neighbors: Default::default(),
             })],
         })
     }
@@ -2818,6 +3860,9 @@ mod tests {
                     from: Some(0.0),
                 },
             ),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2865,6 +3910,9 @@ mod tests {
                     from: None,
                 },
             ),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2896,6 +3944,9 @@ mod tests {
                     from: Some(0.0),
                 },
             ),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2980,6 +4031,9 @@ mod tests {
                     from: Some(0.0),
                 },
             ),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3018,6 +4072,9 @@ mod tests {
                     from: Some(10.0),
                 },
             ),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3047,6 +4104,9 @@ mod tests {
                     from: Some(0.0),
                 },
             ),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3082,6 +4142,9 @@ mod tests {
                     from: Some([0.0, 0.0, 0.0, 1.0]),
                 },
             ),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3148,6 +4211,9 @@ mod tests {
                     from: Some([0.0, 0.0, 0.0, 0.0]),
                 },
             ),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3214,6 +4280,9 @@ mod tests {
                     from: Some(0.0),
                 },
             ),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3260,6 +4329,9 @@ mod tests {
                     from: Some(0.0),
                 },
             ),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3291,6 +4363,9 @@ mod tests {
                     from: Some(0.0),
                 },
             ),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3321,6 +4396,9 @@ mod tests {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
             root: bound_text("0", "player.health", Some("HP {}")),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3336,5 +4414,575 @@ mod tests {
         } else {
             panic!("root must be a text node");
         }
+    }
+
+    // --- styleRanges evaluator through the draw build (Goal E, Task 1) --------
+
+    use super::super::style_ranges::{StyleEntry, StyleRanges};
+
+    /// A bound `text` leaf carrying a `styleRanges` map. The bind supplies the
+    /// value the map evaluates; the literal `color` is the base color a no-color
+    /// or no-match band keeps.
+    fn styled_text(base: [f32; 4], slot: &str, ranges: StyleRanges) -> Widget {
+        Widget::Text(TextWidget {
+            content: "0".into(),
+            font_size: 20.0,
+            color: ColorValue::Literal(base),
+            font: None,
+            bind: Some(TextBind {
+                slot: slot.into(),
+                format: None,
+                tween: None,
+            }),
+            style_ranges: Some(ranges),
+            id: None,
+            focus_neighbors: Default::default(),
+        })
+    }
+
+    /// The three-band health map used across the integration tests: red ≤ 0.25,
+    /// amber ≤ 0.5, default green. Band colors are token literals so the draw
+    /// build's resolved sRGB is predictable.
+    fn health_style_ranges() -> StyleRanges {
+        StyleRanges {
+            max: 100.0,
+            entries: vec![
+                StyleEntry {
+                    up_to: Some(0.25),
+                    color: Some(ColorValue::Literal([1.0, 0.0, 0.0, 1.0])),
+                    pulse: None,
+                    flash: None,
+                },
+                StyleEntry {
+                    up_to: Some(0.5),
+                    color: Some(ColorValue::Literal([1.0, 1.0, 0.0, 1.0])),
+                    pulse: None,
+                    flash: None,
+                },
+                StyleEntry {
+                    up_to: None,
+                    color: Some(ColorValue::Literal([0.0, 1.0, 0.0, 1.0])),
+                    pulse: None,
+                    flash: None,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn style_ranges_change_text_color_at_the_declared_fraction() {
+        // A `text` bound to `player.health` with the three-band map draws red at a
+        // low value (10/100 = 0.10 → first band) and green at a high value
+        // (90/100 = 0.90 → trailing default). The drawn color tracks the band.
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: styled_text([1.0, 1.0, 1.0, 1.0], "player.health", health_style_ranges()),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
+        };
+        let mut fs = font_system();
+
+        let mut ui_low = UiTree::from_descriptor(&tree, &theme());
+        let low = ui_low.build_draw_data(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &number_slots("player.health", 10.0),
+        );
+        assert_eq!(
+            low.texts[0].color,
+            srgb_of([1.0, 0.0, 0.0, 1.0]),
+            "low health (fraction 0.10) draws the first band's red",
+        );
+
+        let mut ui_high = UiTree::from_descriptor(&tree, &theme());
+        let high = ui_high.build_draw_data(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &number_slots("player.health", 90.0),
+        );
+        assert_eq!(
+            high.texts[0].color,
+            srgb_of([0.0, 1.0, 0.0, 1.0]),
+            "high health (fraction 0.90) draws the trailing default green",
+        );
+    }
+
+    #[test]
+    fn style_ranges_band_color_token_degrades_to_magenta_in_draw_list() {
+        // A band naming an unknown color token degrades to opaque magenta through
+        // the existing theme rule — pre-resolved to a literal at build, so the
+        // drawn run carries magenta.
+        let ranges = StyleRanges {
+            max: 100.0,
+            entries: vec![StyleEntry {
+                up_to: None,
+                color: Some(ColorValue::Token("no.such.color".into())),
+                pulse: None,
+                flash: None,
+            }],
+        };
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: styled_text([1.0, 1.0, 1.0, 1.0], "player.health", ranges),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let data = ui.build_draw_data(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &number_slots("player.health", 50.0),
+        );
+        assert_eq!(
+            data.texts[0].color,
+            srgb_of([1.0, 0.0, 1.0, 1.0]),
+            "unknown band token degrades to opaque magenta",
+        );
+    }
+
+    #[test]
+    fn style_ranges_without_a_bind_are_dropped_and_keep_the_base_color() {
+        // styleRanges without a `bind` have no value to map: the build drops them
+        // (warning once) and the node draws its plain base color, never a band.
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: Widget::Text(TextWidget {
+                content: "X".into(),
+                font_size: 20.0,
+                color: ColorValue::Literal([0.2, 0.4, 0.6, 1.0]),
+                font: None,
+                bind: None,
+                style_ranges: Some(health_style_ranges()),
+                id: None,
+                focus_neighbors: Default::default(),
+            }),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+        assert_eq!(
+            data.texts[0].color,
+            srgb_of([0.2, 0.4, 0.6, 1.0]),
+            "a bindless styleRanges is dropped; the base color is drawn",
+        );
+        // The node carries no styleRanges (it was dropped at build).
+        if let Some(NodeContext::Text { style_ranges, .. }) = ui.taffy.get_node_context(ui.root) {
+            assert!(
+                style_ranges.is_none(),
+                "bindless styleRanges is dropped from the node",
+            );
+        } else {
+            panic!("root must be a text node");
+        }
+    }
+
+    #[test]
+    fn style_ranges_evaluate_the_eased_display_value_mid_tween() {
+        // styleRanges evaluate the value the widget RENDERS — the eased display
+        // value mid-tween, not the authoritative target. A tween easing 0→100
+        // (target 100) renders a low display early, so the band is red even though
+        // the target's fraction (1.0) would resolve to green.
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: Widget::Text(TextWidget {
+                content: "0".into(),
+                font_size: 20.0,
+                color: ColorValue::Literal([1.0, 1.0, 1.0, 1.0]),
+                font: None,
+                bind: Some(TextBind {
+                    slot: "player.health".into(),
+                    format: None,
+                    tween: Some(TextTween {
+                        duration_ms: 1000.0,
+                        easing: Easing::Linear,
+                        from: Some(0.0),
+                    }),
+                }),
+                style_ranges: Some(health_style_ranges()),
+                id: None,
+                focus_neighbors: Default::default(),
+            }),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let slots = number_slots("player.health", 100.0);
+
+        // Frame 0: display is at `from` = 0 (fraction 0) → red band, NOT the
+        // target's green. The eased display value drives the band.
+        let f0 = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
+        assert_eq!(
+            f0.texts[0].color,
+            srgb_of([1.0, 0.0, 0.0, 1.0]),
+            "mid-tween the band tracks the eased display value (0 → red), not the target",
+        );
+
+        // At t == duration the display equals the target (100, fraction 1.0) →
+        // the trailing green band.
+        let f_end = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 1.0);
+        assert_eq!(
+            f_end.texts[0].color,
+            srgb_of([0.0, 1.0, 0.0, 1.0]),
+            "settled at the target, the band resolves to the default green",
+        );
+    }
+
+    // --- Focus-rect export (M13 Goal F, Task 3) ---
+
+    /// A text leaf carrying an authored id (focusable seam).
+    fn text_id(content: &str, id: &str) -> Widget {
+        Widget::Text(TextWidget {
+            content: content.into(),
+            font_size: 20.0,
+            color: ColorValue::Literal([1.0; 4]),
+            font: None,
+            id: Some(id.to_string()),
+            focus_neighbors: super::super::descriptor::FocusNeighbors::default(),
+            bind: None,
+            style_ranges: None,
+        })
+    }
+
+    #[test]
+    fn focus_export_lists_ids_rects_and_a_linear_group() {
+        use super::super::descriptor::{FocusKind, FocusPolicy};
+        // A vstack declaring a linear focus policy over three id'd text leaves.
+        let root = Widget::VStack(ContainerWidget {
+            gap: SpacingValue::Literal(10.0),
+            padding: SpacingValue::Literal(0.0),
+            align: Align::Start,
+            fill: None,
+            border: None,
+            id: None,
+            focus_neighbors: super::super::descriptor::FocusNeighbors::default(),
+            focus: Some(FocusPolicy::Shorthand(FocusKind::Linear)),
+            restore_on_return: false,
+            children: vec![text_id("A", "a"), text_id("B", "b"), text_id("C", "c")],
+        });
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root,
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: Some("b".to_string()),
+            text_entry_target: None,
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let draw = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+        let focus = ui.export_focus_rects(&tree, [1280, 720]);
+
+        // Three focusable nodes, one linear group with all three as members.
+        let ids: Vec<&str> = focus.rects.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, ["a", "b", "c"], "ids in tree order");
+        assert_eq!(focus.groups.len(), 1);
+        assert_eq!(focus.groups[0].kind, super::FocusKind::Linear);
+        assert!(focus.groups[0].wrap, "shorthand defaults wrap on");
+        assert_eq!(focus.groups[0].members, vec![0, 1, 2]);
+        assert_eq!(focus.initial_focus.as_deref(), Some("b"));
+
+        // z rises in tree order so a later node hit-tests as topmost.
+        assert!(focus.rects[0].z < focus.rects[1].z && focus.rects[1].z < focus.rects[2].z);
+
+        // The exported rect uses the SAME device-pixel projection as the draw: each
+        // focusable text node's rect [x, y] matches its drawn text run position.
+        for (i, run) in draw.texts.iter().enumerate() {
+            assert!(
+                approx(focus.rects[i].rect[0], run.position[0])
+                    && approx(focus.rects[i].rect[1], run.position[1]),
+                "focus rect {i} top-left matches the drawn run position",
+            );
+        }
+    }
+
+    #[test]
+    fn focus_export_auto_generates_ids_from_tree_position() {
+        use super::super::descriptor::{FocusKind, FocusPolicy};
+        // Children with NO authored id, under a focus-policy container, get a
+        // deterministic auto-id from their child-index path (runtime-only).
+        let root = Widget::VStack(ContainerWidget {
+            gap: SpacingValue::Literal(0.0),
+            padding: SpacingValue::Literal(0.0),
+            align: Align::Start,
+            fill: None,
+            border: None,
+            id: None,
+            focus_neighbors: super::super::descriptor::FocusNeighbors::default(),
+            focus: Some(FocusPolicy::Shorthand(FocusKind::Linear)),
+            restore_on_return: false,
+            children: vec![text("X", 20.0), text("Y", 20.0)],
+        });
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root,
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+        let focus = ui.export_focus_rects(&tree, [1280, 720]);
+        let ids: Vec<&str> = focus.rects.iter().map(|r| r.id.as_str()).collect();
+        // Auto-ids are the slash-joined child paths from the root.
+        assert_eq!(ids, ["0", "1"], "auto-id is the tree-position path");
+    }
+
+    // --- M13 Goal F, Task 4: interactive widgets ---
+
+    use super::super::descriptor::{BarWidget, ButtonWidget, SliderBind, SliderWidget};
+
+    fn button(id: &str, on_press: &str) -> Widget {
+        Widget::Button(ButtonWidget {
+            id: id.into(),
+            label: id.into(),
+            on_press: on_press.into(),
+            focus_neighbors: Default::default(),
+            repeat_on_hold: None,
+        })
+    }
+
+    fn slider(id: &str, slot: &str, captures: &[&str]) -> Widget {
+        Widget::Slider(SliderWidget {
+            id: id.into(),
+            label: "Vol".into(),
+            bind: SliderBind {
+                slot: slot.into(),
+                tween: None,
+            },
+            min: 0.0,
+            max: 1.0,
+            step: 0.1,
+            captures_nav: captures.iter().map(|s| s.to_string()).collect(),
+            focus_neighbors: Default::default(),
+        })
+    }
+
+    fn anchored(root: Widget) -> AnchoredTree {
+        AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root,
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
+        }
+    }
+
+    #[test]
+    fn button_exports_focusable_rect_with_activation_interaction() {
+        // A button always exports as focusable (required id) carrying its onPress
+        // activation — the seam the app fires on a focus-engine confirm/click.
+        let tree = anchored(vstack(
+            0.0,
+            0.0,
+            Align::Start,
+            vec![button("resume", "resumeGame")],
+        ));
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+        let focus = ui.export_focus_rects(&tree, [1280, 720]);
+        let rect = focus
+            .rects
+            .iter()
+            .find(|r| r.id == "resume")
+            .expect("button is focusable");
+        assert_eq!(
+            rect.interaction,
+            Some(NodeInteraction::Button {
+                on_press: "resumeGame".to_string(),
+                repeat_on_hold: None,
+            }),
+            "button carries its onPress activation"
+        );
+    }
+
+    #[test]
+    fn slider_exports_focusable_rect_with_step_interaction() {
+        // A slider always exports as focusable carrying its bound-value step params
+        // and capturesNav wire names — the app drives the value step from these.
+        let tree = anchored(vstack(
+            0.0,
+            0.0,
+            Align::Start,
+            vec![slider("vol", "audio.master", &["nav.left", "nav.right"])],
+        ));
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+        let focus = ui.export_focus_rects(&tree, [1280, 720]);
+        let rect = focus
+            .rects
+            .iter()
+            .find(|r| r.id == "vol")
+            .expect("slider is focusable");
+        assert_eq!(
+            rect.interaction,
+            Some(NodeInteraction::Slider {
+                slot: "audio.master".to_string(),
+                min: 0.0,
+                max: 1.0,
+                step: 0.1,
+                captures_nav: vec!["nav.left".to_string(), "nav.right".to_string()],
+            }),
+        );
+    }
+
+    fn bar(slot: &str, max: f32, style_ranges: Option<StyleRanges>) -> Widget {
+        Widget::Bar(BarWidget {
+            bind: SliderBind {
+                slot: slot.into(),
+                tween: None,
+            },
+            max,
+            fill: ColorValue::Literal([0.0, 1.0, 0.0, 1.0]),
+            background: ColorValue::Literal([0.1, 0.1, 0.1, 1.0]),
+            id: None,
+            style_ranges,
+        })
+    }
+
+    /// A slot map binding `player.health` to a Number value.
+    fn health_slots(value: f32) -> HashMap<String, SlotValue> {
+        let mut m = HashMap::new();
+        m.insert("player.health".to_string(), SlotValue::Number(value));
+        m
+    }
+
+    #[test]
+    fn bar_fill_fraction_is_value_over_max_clamped() {
+        // A bar with max 100 and value 50 draws a fill quad half the background's
+        // width; value 150 clamps to the full width (fraction 1).
+        let tree = anchored(bar("player.health", 100.0, None));
+
+        for (value, expected_fraction) in [(50.0_f32, 0.5_f32), (150.0, 1.0), (0.0, 0.0)] {
+            let mut ui = UiTree::from_descriptor(&tree, &theme());
+            let mut fs = font_system();
+            let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &health_slots(value));
+            // The background quad is always present (first); the fill quad follows
+            // only when the fraction is > 0.
+            let background = &data.quads.instances[0];
+            let bg_width = background.rect[2];
+            if expected_fraction == 0.0 {
+                assert_eq!(
+                    data.quads.instances.len(),
+                    1,
+                    "zero fraction draws no fill quad"
+                );
+            } else {
+                let fill = &data.quads.instances[1];
+                let expected_width = (bg_width * expected_fraction).round();
+                assert!(
+                    approx(fill.rect[2], expected_width),
+                    "value {value}: fill width {} ≈ {expected_width} (fraction {expected_fraction})",
+                    fill.rect[2],
+                );
+                // Fill shares the background's top-left and height.
+                assert!(approx(fill.rect[0], background.rect[0]));
+                assert!(approx(fill.rect[1], background.rect[1]));
+                assert!(approx(fill.rect[3], background.rect[3]));
+            }
+        }
+    }
+
+    #[test]
+    fn bar_style_ranges_recolor_the_fill() {
+        // A health bar with a red ≤ 0.25 band: at 10/100 the fill quad is red, not
+        // the base green. styleRanges (Goal E) recolor the fill widget-agnostically.
+        let ranges = StyleRanges {
+            max: 100.0,
+            entries: vec![
+                StyleEntry {
+                    up_to: Some(0.25),
+                    color: Some(ColorValue::Literal([1.0, 0.0, 0.0, 1.0])),
+                    pulse: None,
+                    flash: None,
+                },
+                StyleEntry {
+                    up_to: None,
+                    color: Some(ColorValue::Literal([0.0, 1.0, 0.0, 1.0])),
+                    pulse: None,
+                    flash: None,
+                },
+            ],
+        };
+        let tree = anchored(bar("player.health", 100.0, Some(ranges)));
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &health_slots(10.0));
+        let fill = &data.quads.instances[1];
+        assert!(
+            approx(fill.color[0], 1.0) && approx(fill.color[1], 0.0),
+            "low health recolors the fill red, got {:?}",
+            fill.color
+        );
+    }
+
+    #[test]
+    fn bar_bind_tween_eases_the_displayed_fraction() {
+        // A bar bind carrying a tween eases the displayed value toward each new
+        // target. Retained path: from a full 100 health, retarget to 0 over 1000ms;
+        // mid-tween (500ms, linear) the displayed value is ~50, so the fill width is
+        // ~half — not the snapped 0.
+        use super::super::descriptor::{Easing, TextTween};
+        let tree = anchored(Widget::Bar(BarWidget {
+            bind: SliderBind {
+                slot: "player.health".into(),
+                tween: Some(TextTween {
+                    duration_ms: 1000.0,
+                    easing: Easing::Linear,
+                    from: None,
+                }),
+            },
+            max: 100.0,
+            fill: ColorValue::Literal([0.0, 1.0, 0.0, 1.0]),
+            background: ColorValue::Literal([0.1, 0.1, 0.1, 1.0]),
+            id: None,
+            style_ranges: None,
+        }));
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        // Frame 0: first resolution at full health (no `from`, snaps to 100).
+        ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &health_slots(100.0),
+            0.0,
+        );
+        // Frame 1: retarget to 0 at t=0 — the segment starts easing from 100.
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &health_slots(0.0), 0.0);
+        // Frame 2: half the duration later, the eased display is ~50 (linear).
+        let data = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &health_slots(0.0),
+            0.5,
+        );
+        let bg_width = data.quads.instances[0].rect[2];
+        let fill_width = data.quads.instances[1].rect[2];
+        let fraction = fill_width / bg_width;
+        assert!(
+            (fraction - 0.5).abs() < 0.05,
+            "mid-tween fill fraction eases to ~0.5, got {fraction}"
+        );
     }
 }

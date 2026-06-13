@@ -12,6 +12,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use super::data_registry::DataRegistry;
+use super::reactions::system_commands::SystemCommandQueue;
 use super::registry::EntityRegistry;
 use super::slot_table::SlotTable;
 
@@ -44,6 +45,13 @@ pub(crate) struct ScriptCtx {
     /// for buoyancy integration. The `Cell` lets the primitive closures mutate
     /// without a `&mut ScriptCtx` borrow.
     pub(crate) gravity: Rc<Cell<f32>>,
+    /// System-reaction command queue (M13 HUD dynamics). System reactions
+    /// (`Primitive` descriptors with no `tag`) push typed commands here; `App`
+    /// drains it once per frame after the post-tick event drains and routes
+    /// each command to its subsystem consumer. The shared handle keeps engine
+    /// services (audio/input/UI) out of the scripting surface — the queue is
+    /// the seam. See: context/lib/scripting.md §10.4.
+    pub(crate) system_commands: SystemCommandQueue,
 }
 
 impl ScriptCtx {
@@ -61,6 +69,7 @@ impl ScriptCtx {
             // obvious. The `worldSetGravity` primitive rejects non-finite
             // writes, so scripts cannot reintroduce this sentinel.
             gravity: Rc::new(Cell::new(f32::NAN)),
+            system_commands: SystemCommandQueue::new(),
         }
     }
 }
@@ -132,7 +141,9 @@ mod tests {
         ctx.data_registry.borrow_mut().clear();
 
         let slots = ctx.slot_table.borrow();
-        assert_eq!(slots.len(), 3);
+        // player.health, player.ammo, screen.flash, input.mode, ui.textEntry,
+        // test.health
+        assert_eq!(slots.len(), 6);
         assert!(slots.get("test.health").is_some());
     }
 }

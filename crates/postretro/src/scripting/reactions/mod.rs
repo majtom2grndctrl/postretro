@@ -15,6 +15,7 @@ pub(crate) mod set_fog_falloff;
 pub(crate) mod set_fog_glow;
 pub(crate) mod set_fog_params;
 pub(crate) mod set_spin_rate;
+pub(crate) mod system_commands;
 
 #[cfg(test)]
 pub(crate) mod log_capture;

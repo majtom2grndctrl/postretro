@@ -37,6 +37,23 @@ export type {
 } from "./data_script";
 export { defineReaction, defineEntity } from "./data_script";
 
+export type { CrossingCondition, CrossingDescriptor } from "./ui/reactions";
+export {
+  onStateCrossing,
+  playSound,
+  rumble,
+  flashScreen,
+  showDialog,
+  openTextEntry,
+  KEYBOARD_TREE,
+  openMenu,
+  closeDialog,
+  setState,
+  appendText,
+  backspaceText,
+  clearText,
+} from "./ui/reactions";
+
 export type {
   BillboardEmitter,
   SpinAnimation,

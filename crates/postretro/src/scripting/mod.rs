@@ -31,6 +31,7 @@ pub(crate) mod runtime;
 pub(crate) mod sequence;
 pub(crate) mod slot_table;
 pub(crate) mod staged_manifest;
+pub(crate) mod state_crossings;
 pub(crate) mod state_persistence;
 pub(crate) mod typedef;
 

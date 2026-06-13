@@ -1,4 +1,7 @@
 // Reaction dispatch: fires named events and tracks per-tag kill progress.
+// Two-arm model: entity reactions mutate EntityRegistry; system reactions push typed commands onto a queue.
+// `fire_named_event` omits entity/sequence dispatch; `fire_named_event_with_sequences` includes them.
+// See: context/lib/scripting.md §10
 
 use std::collections::HashMap;
 
@@ -8,6 +11,7 @@ use super::data_descriptors::{
 };
 use super::data_registry::DataRegistry;
 use super::reactions::registry::ReactionPrimitiveRegistry;
+use super::reactions::system_commands::SystemReactionRegistry;
 use super::registry::{ComponentKind, EntityId, EntityRegistry};
 use super::sequence::SequencedPrimitiveRegistry;
 
@@ -121,7 +125,7 @@ pub(crate) fn fire_named_event(event_name: &str, data_registry: &DataRegistry) -
             }
             ReactionDescriptor::Primitive(p) => {
                 log::debug!(
-                    "[Scripting] primitive '{}' matched on tag '{}'; deferred — handlers run only via the sequence-aware drain",
+                    "[Scripting] primitive '{}' matched (tag {:?}); deferred — handlers run only via the sequence-aware drain",
                     p.primitive,
                     p.tag,
                 );
@@ -145,6 +149,7 @@ pub(crate) fn fire_named_event_with_sequences(
     data_registry: &DataRegistry,
     sequence_registry: &SequencedPrimitiveRegistry,
     reaction_registry: &ReactionPrimitiveRegistry,
+    system_registry: &SystemReactionRegistry,
     script_ctx: &ScriptCtx,
 ) -> Vec<String> {
     let mut chained = Vec::new();
@@ -155,7 +160,7 @@ pub(crate) fn fire_named_event_with_sequences(
         match &named.descriptor {
             ReactionDescriptor::Progress(_) => {}
             ReactionDescriptor::Primitive(p) => {
-                dispatch_primitive(p, reaction_registry, script_ctx);
+                dispatch_primitive(p, reaction_registry, system_registry, script_ctx);
                 if let Some(on_complete) = &p.on_complete {
                     chained.push(on_complete.clone());
                 }
@@ -168,16 +173,29 @@ pub(crate) fn fire_named_event_with_sequences(
     chained
 }
 
-/// Targeting walks the Transform column per the invariant in [`count_entities_with_tag`].
-/// Empty target sets are passed through; handlers decide whether to warn.
+/// Routes a `Primitive` descriptor to one of two execution arms (M13 HUD
+/// dynamics): a `Some(tag)` resolves entities and runs the entity-targeted
+/// `ReactionPrimitiveRegistry`; a `None` tag is a system reaction, dispatched
+/// against the `SystemReactionRegistry`, which enqueues a typed command onto
+/// `ScriptCtx::system_commands` for the app's per-frame drain. Both arms share
+/// the one named-event vocabulary.
 fn dispatch_primitive(
     descriptor: &PrimitiveDescriptor,
     reaction_registry: &ReactionPrimitiveRegistry,
+    system_registry: &SystemReactionRegistry,
     script_ctx: &ScriptCtx,
 ) {
+    let Some(tag) = descriptor.tag.as_deref() else {
+        dispatch_system_primitive(descriptor, system_registry, script_ctx);
+        return;
+    };
+
+    // Targeting walks the Transform column per the invariant in
+    // `count_entities_with_tag`. Empty target sets are passed through; handlers
+    // decide whether to warn.
     let targets: Vec<EntityId> = {
         let reg = script_ctx.registry.borrow();
-        reg.query_by_component_and_tag(ComponentKind::Transform, Some(&descriptor.tag))
+        reg.query_by_component_and_tag(ComponentKind::Transform, Some(tag))
             .map(|(id, _)| id)
             .collect()
     };
@@ -185,7 +203,7 @@ fn dispatch_primitive(
     log::info!(
         "[Scripting] dispatch primitive '{}' on tag '{}' ({} targets)",
         descriptor.primitive,
-        descriptor.tag,
+        tag,
         targets.len(),
     );
 
@@ -198,6 +216,35 @@ fn dispatch_primitive(
         ),
         Err(e) => log::warn!(
             "[Scripting] primitive '{}' dispatch failed: {e:?}",
+            descriptor.primitive,
+        ),
+    }
+}
+
+/// System-reaction arm: no entity targets. The handler parses `args` and
+/// enqueues a typed command; the app drains the queue once per frame.
+fn dispatch_system_primitive(
+    descriptor: &PrimitiveDescriptor,
+    system_registry: &SystemReactionRegistry,
+    script_ctx: &ScriptCtx,
+) {
+    log::info!(
+        "[Scripting] dispatch system reaction '{}'",
+        descriptor.primitive,
+    );
+
+    match system_registry.dispatch(
+        &descriptor.primitive,
+        &descriptor.args,
+        &script_ctx.system_commands,
+    ) {
+        Ok(true) => {}
+        Ok(false) => log::warn!(
+            "[Scripting] system reaction '{}' is not registered; reaction had no effect",
+            descriptor.primitive,
+        ),
+        Err(e) => log::warn!(
+            "[Scripting] system reaction '{}' dispatch failed: {e:?}",
             descriptor.primitive,
         ),
     }
@@ -301,7 +348,7 @@ mod tests {
             name: name.to_string(),
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: primitive.to_string(),
-                tag: tag.to_string(),
+                tag: Some(tag.to_string()),
                 on_complete: on_complete.map(|s| s.to_string()),
                 args: serde_json::Value::Object(Default::default()),
             }),
@@ -319,6 +366,7 @@ mod tests {
         let mut data = DataRegistry::new();
         data.populate_from_manifest(LevelManifest {
             reactions: vec![progress_reaction("waveDone", "wave1", 1.0, "powerOn")],
+            crossings: Vec::new(),
         });
 
         let mut entities = EntityRegistry::new();
@@ -336,6 +384,7 @@ mod tests {
         let mut data = DataRegistry::new();
         data.populate_from_manifest(LevelManifest {
             reactions: vec![progress_reaction("waveDone", "wave1", 1.0, "powerOn")],
+            crossings: Vec::new(),
         });
 
         let mut entities = EntityRegistry::new();
@@ -357,6 +406,7 @@ mod tests {
         let mut data = DataRegistry::new();
         data.populate_from_manifest(LevelManifest {
             reactions: vec![progress_reaction("half", "wave1", 0.5, "midwave")],
+            crossings: Vec::new(),
         });
 
         let mut entities = EntityRegistry::new();
@@ -381,6 +431,7 @@ mod tests {
                 progress_reaction("waveDone", "wave1", 1.0, "powerOn"),
                 progress_reaction("reactorDown", "reactorMonster", 1.0, "reactorOff"),
             ],
+            crossings: Vec::new(),
         });
 
         let mut entities = EntityRegistry::new();
@@ -406,6 +457,7 @@ mod tests {
                 progress_reaction("waveDone", "wave1", 0.5, "powerOn"),
                 progress_reaction("reactorDown", "reactorMonster", 0.5, "reactorOff"),
             ],
+            crossings: Vec::new(),
         });
 
         let mut entities = EntityRegistry::new();
@@ -432,6 +484,7 @@ mod tests {
         let mut data = DataRegistry::new();
         data.populate_from_manifest(LevelManifest {
             reactions: vec![progress_reaction("waveDone", "wave1", 1.0, "powerOn")],
+            crossings: Vec::new(),
         });
         let mut entities = EntityRegistry::new();
         spawn_with_tags(&mut entities, &["wave1"]);
@@ -451,6 +504,7 @@ mod tests {
         let mut data = DataRegistry::new();
         data.populate_from_manifest(LevelManifest {
             reactions: vec![progress_reaction("waveDone", "ghosts", 1.0, "spooky")],
+            crossings: Vec::new(),
         });
         let entities = EntityRegistry::new();
 
@@ -506,6 +560,7 @@ mod tests {
                 "reactorChambers",
                 Some("wave2Revealed"),
             )],
+            crossings: Vec::new(),
         });
 
         let chained = fire_named_event("wave1Complete", &data);
@@ -522,6 +577,7 @@ mod tests {
                 "reactorWave2Monsters",
                 None,
             )],
+            crossings: Vec::new(),
         });
 
         let chained = fire_named_event("wave2Revealed", &data);
@@ -533,6 +589,7 @@ mod tests {
         let mut data = DataRegistry::new();
         data.populate_from_manifest(LevelManifest {
             reactions: vec![progress_reaction("waveDone", "wave1", 1.0, "powerOn")],
+            crossings: Vec::new(),
         });
         let chained = fire_named_event("waveDone", &data);
         assert!(chained.is_empty());
@@ -557,6 +614,56 @@ mod tests {
             name: name.to_string(),
             descriptor: ReactionDescriptor::Sequence(steps),
         }
+    }
+
+    // A system reaction (no `tag`) fired through the SAME `fire_named_event`
+    // path an entity event uses resolves through the shared vocabulary and
+    // enqueues a typed command onto the queue — one namespace, two arms.
+    #[test]
+    fn system_reaction_fired_by_named_event_enqueues_command() {
+        use crate::scripting::reactions::system_commands::{
+            SystemReactionCommand, register_system_reaction_primitives,
+        };
+
+        let script_ctx = ScriptCtx::new();
+
+        let mut data = DataRegistry::new();
+        data.populate_from_manifest(LevelManifest {
+            reactions: vec![NamedReaction {
+                name: "lowHealth".to_string(),
+                descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                    primitive: "playSound".to_string(),
+                    // No tag ⇒ system-targeted.
+                    tag: None,
+                    on_complete: None,
+                    args: serde_json::json!({ "sound": "alarm", "bus": "sfx" }),
+                }),
+            }],
+            crossings: Vec::new(),
+        });
+
+        let seq_reg = SequencedPrimitiveRegistry::new();
+        let reaction_reg = ReactionPrimitiveRegistry::new();
+        let mut system_reg = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut system_reg);
+
+        assert!(script_ctx.system_commands.is_empty());
+        fire_named_event_with_sequences(
+            "lowHealth",
+            &data,
+            &seq_reg,
+            &reaction_reg,
+            &system_reg,
+            &script_ctx,
+        );
+
+        assert_eq!(
+            script_ctx.system_commands.take(),
+            vec![SystemReactionCommand::PlaySound {
+                sound: "alarm".to_string(),
+                bus: Some("sfx".to_string()),
+            }]
+        );
     }
 
     #[test]
@@ -593,11 +700,19 @@ mod tests {
                     },
                 ],
             )],
+            crossings: Vec::new(),
         });
 
         let reaction_reg = ReactionPrimitiveRegistry::new();
-        let chained =
-            fire_named_event_with_sequences("go", &data, &seq_reg, &reaction_reg, &script_ctx);
+        let system_reg = SystemReactionRegistry::new();
+        let chained = fire_named_event_with_sequences(
+            "go",
+            &data,
+            &seq_reg,
+            &reaction_reg,
+            &system_reg,
+            &script_ctx,
+        );
         assert!(chained.is_empty());
         let observed = calls.lock().unwrap().clone();
         assert_eq!(observed, vec![(id_a.to_raw(), 1), (id_b.to_raw(), 2)]);
@@ -645,10 +760,19 @@ mod tests {
                     },
                 ],
             )],
+            crossings: Vec::new(),
         });
 
         let reaction_reg = ReactionPrimitiveRegistry::new();
-        fire_named_event_with_sequences("go", &data, &seq_reg, &reaction_reg, &script_ctx);
+        let system_reg = SystemReactionRegistry::new();
+        fire_named_event_with_sequences(
+            "go",
+            &data,
+            &seq_reg,
+            &reaction_reg,
+            &system_reg,
+            &script_ctx,
+        );
         assert_eq!(count.load(Ordering::SeqCst), 2);
     }
 
@@ -689,10 +813,19 @@ mod tests {
                     },
                 ],
             )],
+            crossings: Vec::new(),
         });
 
         let reaction_reg = ReactionPrimitiveRegistry::new();
-        fire_named_event_with_sequences("go", &data, &seq_reg, &reaction_reg, &script_ctx);
+        let system_reg = SystemReactionRegistry::new();
+        fire_named_event_with_sequences(
+            "go",
+            &data,
+            &seq_reg,
+            &reaction_reg,
+            &system_reg,
+            &script_ctx,
+        );
         assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 

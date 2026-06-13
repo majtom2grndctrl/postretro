@@ -3502,6 +3502,16 @@ impl Renderer {
         self.ui_snapshot = snapshot;
     }
 
+    /// Export the flat hit-test / focus rect list for the TOP gameplay-UI stack
+    /// layer against the current surface viewport — the reverse twin of the
+    /// app→renderer snapshot. The App reads this after a gameplay render (which
+    /// laid out the stack) and feeds it to the focus engine the NEXT frame
+    /// (N→N+1 in reverse). Empty when no gameplay layer is active. See: ui.md §4.
+    pub fn export_ui_focus_rects(&self) -> ui::tree::FocusRectList {
+        let viewport = [self.surface_config.width, self.surface_config.height];
+        self.ui.export_top_focus_rects(viewport)
+    }
+
     /// Install an override UI theme and bump the theme generation. Engine-side
     /// only (no script bridge): a caller hands a fully-merged `UiTheme` (e.g.
     /// `UiTheme::engine_default().with_override(&doc)`), which every subsequent
@@ -5393,15 +5403,40 @@ impl Renderer {
         // only early-out (A follow-up #3); the splash path opens the pass
         // unconditionally for its frame-0 black clear (see `record_splash_ui`).
         let ui_viewport = [self.surface_config.width, self.surface_config.height];
-        if let Some(tree) = self.ui_snapshot.gameplay_tree.clone() {
+        // Modal stack: lay out and record each layer bottom→top (`trees[0]` is the
+        // bottom HUD, the last entry the top/active modal). Each layer keeps its
+        // own retained tree + dirty gate, so a frozen lower layer recomputes
+        // nothing while the top animates. Painter's order is the stack order: a
+        // later layer's quads composite over the earlier ones into the same view
+        // (LoadOp::Load). Empty/empty-laying-out layers early-out individually.
+        let stack: Vec<ui::descriptor::AnchoredTree> = self
+            .ui_snapshot
+            .trees
+            .iter()
+            .map(|entry| entry.descriptor.clone())
+            .collect();
+
+        // Lay out EVERY layer first into owned draw data, THEN compose all layers
+        // into a SINGLE `encode` call. The glyphon text half (`UiTextRenderer`) is
+        // shared across layers and holds ONE vertex buffer it overwrites at offset
+        // 0 on each `prepare`; `queue.write_buffer` resolves on the queue timeline
+        // (last write wins) regardless of recording order, so issuing a separate
+        // `encode` per layer makes EVERY layer's text draw read the LAST layer's
+        // shaped glyphs — the readout-aliasing bug (a lower layer's text rendered
+        // the top layer's glyphs). This mirrors the multi-batch quad-buffer clobber
+        // already documented in `UiPass::encode`: one `prepare`/`render` per frame,
+        // with all layers' glyphs concatenated in painter order, sidesteps it.
+        let mut layer_draws: Vec<ui::tree::UiDrawData> = Vec::with_capacity(stack.len());
+        for (layer, tree) in stack.iter().enumerate() {
             // The demo gameplay HUD has no `image` nodes, so no image sizes are
             // threaded; any `image` node would measure to zero. The splash path
             // supplies the logo size in `record_splash_ui`.
             // Bound text/panel nodes resolve against the snapshot's slot values
-            // (disjoint field borrow from `&mut self.ui`). The cloned `tree`
+            // (disjoint field borrow from `&mut self.ui`). The cloned `stack`
             // above already released the snapshot, so this borrow is clean.
-            let draw = self.ui.layout_gameplay_tree(
-                &tree,
+            let mut draw = self.ui.layout_gameplay_tree(
+                layer,
+                tree,
                 ui_viewport,
                 &ui::tree::ImageSizes::new(),
                 &self.ui_snapshot.slot_values,
@@ -5409,9 +5444,42 @@ impl Renderer {
                 self.ui_theme_generation,
                 self.ui_snapshot.time_seconds,
             );
-            if !draw.is_empty() {
-                let white_bg = self.ui.white_bind_group().clone();
-                let mut batches: Vec<ui::UiBatch> = Vec::new();
+            // Focus ring (M13 Goal F, Task 3): only the TOP layer takes focus, so
+            // draw the engine ring around the focused node's rect on it. The
+            // focused id rode in on the snapshot (resolved app-side last frame, so
+            // it may trail a focus change by one frame). The ring is a `focus.ring`
+            // bordered frame inset by the `xs` spacing token; appended to this
+            // layer's quad list so it composites over the layer's own quads.
+            let is_top = layer + 1 == stack.len();
+            if is_top {
+                if let Some(focused) = self.ui_snapshot.focused_id.as_deref() {
+                    let focus_rects = self.ui.export_top_focus_rects(ui_viewport);
+                    if let Some(fr) = focus_rects.rects.iter().find(|r| r.id == focused) {
+                        let inset = self.ui_theme.spacing("xs").unwrap_or(0.0)
+                            * ui::layout::device_scale(ui_viewport);
+                        let ring_color = self
+                            .ui_theme
+                            .color("focus.ring")
+                            .unwrap_or([1.0, 0.0, 1.0, 1.0]);
+                        ui::push_focus_ring(&mut draw.quads, fr.rect, inset, ring_color);
+                    }
+                }
+            }
+            layer_draws.push(draw);
+        }
+
+        // Compose all laid-out layers into one batch list + one text list, in
+        // bottom→top painter order, and record a SINGLE UI pass. Each layer's
+        // quad batch precedes its text in the list, and a later layer's entries
+        // follow an earlier layer's, so painter order (and thus the LoadOp::Load
+        // composite) is preserved within the single pass exactly as the prior
+        // per-layer loop intended — minus the cross-layer text clobber.
+        let any_drawable = layer_draws.iter().any(|d| !d.is_empty());
+        if any_drawable {
+            let white_bg = self.ui.white_bind_group().clone();
+            let mut batches: Vec<ui::UiBatch> = Vec::new();
+            let mut texts: Vec<ui::UiText> = Vec::new();
+            for draw in &layer_draws {
                 if !draw.quads.is_empty() {
                     batches.push(ui::UiBatch {
                         list: &draw.quads,
@@ -5432,18 +5500,22 @@ impl Renderer {
                         ),
                     }
                 }
-                self.ui.encode(
-                    &self.device,
-                    &self.queue,
-                    &mut encoder,
-                    &view,
-                    ui_viewport,
-                    wgpu::LoadOp::Load,
-                    &batches,
-                    &draw.texts,
-                );
+                texts.extend_from_slice(&draw.texts);
             }
+            self.ui.encode(
+                &self.device,
+                &self.queue,
+                &mut encoder,
+                &view,
+                ui_viewport,
+                wgpu::LoadOp::Load,
+                &batches,
+                &texts,
+            );
         }
+        // Drop retained state for any layers popped since last frame (stack
+        // shrank), so freed modal trees release their layout cache.
+        self.ui.truncate_gameplay_stack(stack.len());
 
         if let Some(timing) = &self.frame_timing {
             timing.encode_resolve(&mut encoder);

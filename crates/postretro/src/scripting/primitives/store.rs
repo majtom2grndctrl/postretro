@@ -333,6 +333,176 @@ pub(crate) fn write_store_slot(
     Ok(())
 }
 
+/// Readonly-gated write of a JSON value to a slot by dotted name (M13 Goal F,
+/// Task 4 — the `setState` reaction's slot-write path). Unlike [`write_store_slot`]
+/// (the engine bypass), this gates on **writability**: a readonly slot warns and
+/// no-ops, leaving the value unchanged; an engine-owned but writable slot is a
+/// valid target. The JSON value is coerced to the slot's declared type (the same
+/// type/range/enum validation [`write_store_slot`] applies), so `setState` reuses
+/// one validation path. An unknown slot or a type mismatch returns an error the
+/// drain logs — never a panic. NEVER use the engine bypass for `setState`.
+pub(crate) fn write_state_slot_json(
+    ctx: &ScriptCtx,
+    name: &str,
+    value: &Value,
+) -> Result<(), ScriptError> {
+    let mut table = ctx.slot_table.borrow_mut();
+    let slot = table
+        .get_mut(name)
+        .ok_or_else(|| unknown_slot("setState", name))?;
+    if slot.schema.readonly {
+        log::warn!("[Scripting] setState: rejected write to readonly slot `{name}`");
+        return Ok(());
+    }
+    let coerced = json_value_for_slot(name, &slot.schema.slot_type, value)?;
+    slot.value = Some(validate_slot_value(name, &slot.schema, coerced)?);
+    Ok(())
+}
+
+/// A single text-edit operation against a String slot (M13 Text Entry, Task 1).
+/// The three text-edit system reactions (`appendText` / `backspaceText` /
+/// `clearText`) each map to one variant; [`apply_text_edit`] reads the slot's
+/// current string, applies the edit, and writes it back through the
+/// readonly-gated path.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum TextEdit<'a> {
+    /// Append `text` to the current string value.
+    Append(&'a str),
+    /// Remove the last character (one Unicode scalar value). No-op on empty.
+    Backspace,
+    /// Empty the slot.
+    Clear,
+}
+
+/// Apply a [`TextEdit`] to a String slot by dotted name through the SAME
+/// readonly-gated write path as `setState` (M13 Text Entry, Task 1). The current
+/// value is read, the edit applied, and the result written back via
+/// [`write_state_slot_json`]: a readonly slot warns and no-ops (the `setState`
+/// warning); an engine-owned writable slot (`ui.textEntry`) is a valid target.
+/// NEVER uses the engine bypass.
+///
+/// A readonly slot warns and no-ops (the `setState` warning) — the readonly gate
+/// is consulted BEFORE the slot's type or value, so a readonly slot is rejected
+/// uniformly regardless of its declared type (matching `setState`, which gates on
+/// writability before coercion).
+///
+/// `Backspace` on an empty value is a no-op with NO warning — it returns early
+/// before touching the write path, so an empty slot produces neither a write nor
+/// a log line. An unknown slot or a non-String writable slot surfaces an error
+/// the drain logs (never a panic). Backspace pops one `char` (one Unicode scalar
+/// value) — never splits a UTF-8 sequence, but does not segment grapheme clusters.
+pub(crate) fn apply_text_edit(
+    ctx: &ScriptCtx,
+    name: &str,
+    edit: TextEdit<'_>,
+) -> Result<(), ScriptError> {
+    // Read the slot once: gate on writability first (a readonly slot warns and
+    // no-ops, same as setState — checked before type so it is rejected uniformly
+    // regardless of declared type), then read the current value as a string. An
+    // absent value starts from empty so a fresh slot can be appended to; a
+    // writable but non-String slot is a type error.
+    let current = {
+        let table = ctx.slot_table.borrow();
+        let slot = table
+            .get(name)
+            .ok_or_else(|| unknown_slot("text-edit", name))?;
+        if slot.schema.readonly {
+            log::warn!("[Scripting] text-edit: rejected write to readonly slot `{name}`");
+            return Ok(());
+        }
+        match &slot.value {
+            Some(SlotValue::String(value)) => value.clone(),
+            None => String::new(),
+            Some(other) => {
+                return Err(wrong_write_type(
+                    name,
+                    &SlotType::String,
+                    slot_value_kind(other),
+                ));
+            }
+        }
+    };
+
+    let next = match edit {
+        TextEdit::Append(text) => {
+            let mut next = current;
+            next.push_str(text);
+            next
+        }
+        TextEdit::Backspace => {
+            // Empty: no-op, no warning, no write. Returning here keeps the
+            // readonly-gated path (and its warning) out of the empty case.
+            if current.is_empty() {
+                return Ok(());
+            }
+            let mut next = current;
+            // `char`-pop floor: drop the last Unicode scalar value. `pop`
+            // removes one whole `char`, so it never splits a UTF-8 sequence.
+            next.pop();
+            next
+        }
+        TextEdit::Clear => String::new(),
+    };
+
+    write_state_slot_json(ctx, name, &Value::String(next))
+}
+
+/// Coerce a JSON value to a `SlotValue` matching the slot's declared type for the
+/// `setState` path. Mirrors `script_value_for_slot` but takes a `serde_json::Value`
+/// (the reaction-args representation) instead of a runtime `ScriptSlotValue`.
+fn json_value_for_slot(
+    name: &str,
+    slot_type: &SlotType,
+    value: &Value,
+) -> Result<SlotValue, ScriptError> {
+    match slot_type {
+        SlotType::Number => value
+            .as_f64()
+            .map(|n| n as f32)
+            .map(SlotValue::Number)
+            .ok_or_else(|| wrong_write_type(name, slot_type, json_value_kind(value))),
+        SlotType::Boolean => value
+            .as_bool()
+            .map(SlotValue::Boolean)
+            .ok_or_else(|| wrong_write_type(name, slot_type, json_value_kind(value))),
+        SlotType::String => value
+            .as_str()
+            .map(|s| SlotValue::String(s.to_string()))
+            .ok_or_else(|| wrong_write_type(name, slot_type, json_value_kind(value))),
+        SlotType::Enum { .. } => value
+            .as_str()
+            .map(|s| SlotValue::Enum(s.to_string()))
+            .ok_or_else(|| wrong_write_type(name, slot_type, json_value_kind(value))),
+        SlotType::Array => {
+            let array = value
+                .as_array()
+                .ok_or_else(|| wrong_write_type(name, slot_type, json_value_kind(value)))?;
+            let values = array
+                .iter()
+                .enumerate()
+                .map(|(index, element)| {
+                    let number = element.as_f64().ok_or_else(|| {
+                        wrong_write_type(name, slot_type, json_value_kind(element))
+                    })?;
+                    finite_array_f32(name, index, number)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(SlotValue::Array(values))
+        }
+    }
+}
+
+fn json_value_kind(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
 fn write_script_store_slot(
     ctx: &ScriptCtx,
     name: &str,
@@ -1170,5 +1340,160 @@ mod tests {
         }
         assert!(read_store_slot(&ctx, "test.missing").is_err());
         assert!(write_store_slot(&ctx, "test.missing", SlotValue::Number(1.0)).is_err());
+    }
+
+    // --- M13 Goal F, Task 4: setState readonly-gated JSON write ---
+
+    #[test]
+    fn set_state_json_write_applies_to_writable_slot_with_validation() {
+        let ctx = ScriptCtx::new();
+        define_runtime_test_store(&ctx);
+
+        // A number write coerces and clamps to the declared [0, 1] range.
+        write_state_slot_json(&ctx, "test.number", &serde_json::json!(5)).unwrap();
+        assert_eq!(
+            read_store_slot(&ctx, "test.number").unwrap(),
+            SlotValue::Number(1.0)
+        );
+        // Boolean / string / enum / array all coerce from their JSON forms.
+        write_state_slot_json(&ctx, "test.boolean", &serde_json::json!(true)).unwrap();
+        write_state_slot_json(&ctx, "test.string", &serde_json::json!("after")).unwrap();
+        write_state_slot_json(&ctx, "test.enum", &serde_json::json!("active")).unwrap();
+        write_state_slot_json(&ctx, "test.array", &serde_json::json!([2.0, 3.5])).unwrap();
+        assert_eq!(
+            read_store_slot(&ctx, "test.boolean").unwrap(),
+            SlotValue::Boolean(true)
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "test.enum").unwrap(),
+            SlotValue::Enum("active".to_string())
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "test.array").unwrap(),
+            SlotValue::Array(vec![2.0, 3.5])
+        );
+    }
+
+    #[test]
+    fn set_state_json_write_rejects_readonly_slot_and_leaves_value_unchanged() {
+        // `player.health` is an engine-owned readonly-to-scripts slot. setState
+        // warns and no-ops; the value is unchanged. Distinct from the engine
+        // bypass (`write_store_slot`), which succeeds — proven below.
+        let ctx = ScriptCtx::new();
+        write_store_slot(&ctx, "player.health", SlotValue::Number(50.0)).unwrap();
+
+        write_state_slot_json(&ctx, "player.health", &serde_json::json!(25.0)).unwrap();
+        assert_eq!(
+            read_store_slot(&ctx, "player.health").unwrap(),
+            SlotValue::Number(50.0),
+            "readonly slot is unchanged after setState"
+        );
+
+        // The engine bypass still writes the readonly slot.
+        write_store_slot(&ctx, "player.health", SlotValue::Number(75.0)).unwrap();
+        assert_eq!(
+            read_store_slot(&ctx, "player.health").unwrap(),
+            SlotValue::Number(75.0)
+        );
+    }
+
+    // --- M13 Text Entry, Task 1: text-edit reactions ---
+
+    fn read_string(ctx: &ScriptCtx, name: &str) -> String {
+        match read_store_slot(ctx, name).unwrap() {
+            SlotValue::String(value) => value,
+            other => panic!("expected string, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ui_text_entry_is_engine_writable_string_slot() {
+        let ctx = ScriptCtx::new();
+        let table = ctx.slot_table.borrow();
+        let slot = table.get("ui.textEntry").expect("ui.textEntry exists");
+        assert_eq!(slot.schema.slot_type, SlotType::String);
+        assert!(!slot.schema.readonly);
+        assert_eq!(slot.schema.ownership, SlotOwnership::Engine);
+        assert_eq!(slot.value, Some(SlotValue::String(String::new())));
+    }
+
+    #[test]
+    fn append_text_appends_to_target_slot() {
+        let ctx = ScriptCtx::new();
+        apply_text_edit(&ctx, "ui.textEntry", TextEdit::Append("ab")).unwrap();
+        apply_text_edit(&ctx, "ui.textEntry", TextEdit::Append("c")).unwrap();
+        assert_eq!(read_string(&ctx, "ui.textEntry"), "abc");
+    }
+
+    #[test]
+    fn backspace_text_removes_last_char() {
+        let ctx = ScriptCtx::new();
+        apply_text_edit(&ctx, "ui.textEntry", TextEdit::Append("abc")).unwrap();
+        apply_text_edit(&ctx, "ui.textEntry", TextEdit::Backspace).unwrap();
+        assert_eq!(read_string(&ctx, "ui.textEntry"), "ab");
+    }
+
+    #[test]
+    fn backspace_text_on_empty_is_noop() {
+        // No-op and (by design) no warning/no write: the value stays empty.
+        let ctx = ScriptCtx::new();
+        apply_text_edit(&ctx, "ui.textEntry", TextEdit::Backspace).unwrap();
+        assert_eq!(read_string(&ctx, "ui.textEntry"), "");
+    }
+
+    #[test]
+    fn backspace_text_removes_one_precomposed_multibyte_char() {
+        // `é` as U+00E9 is a single `char` but two UTF-8 bytes. The char-pop
+        // floor removes it whole, never splitting the UTF-8 sequence — the
+        // result is valid UTF-8 ("a"), not a truncated byte sequence.
+        let ctx = ScriptCtx::new();
+        apply_text_edit(&ctx, "ui.textEntry", TextEdit::Append("a\u{00E9}")).unwrap();
+        assert_eq!(read_string(&ctx, "ui.textEntry").chars().count(), 2);
+        apply_text_edit(&ctx, "ui.textEntry", TextEdit::Backspace).unwrap();
+        assert_eq!(read_string(&ctx, "ui.textEntry"), "a");
+    }
+
+    #[test]
+    fn clear_text_empties_the_slot() {
+        let ctx = ScriptCtx::new();
+        apply_text_edit(&ctx, "ui.textEntry", TextEdit::Append("hello")).unwrap();
+        apply_text_edit(&ctx, "ui.textEntry", TextEdit::Clear).unwrap();
+        assert_eq!(read_string(&ctx, "ui.textEntry"), "");
+    }
+
+    #[test]
+    fn text_edits_reject_readonly_slot_and_leave_value_unchanged() {
+        // `input.mode` is an engine-owned readonly slot. Text edits ride the
+        // same readonly-gated write as setState, so they warn and no-op. (It is
+        // an enum, but readonly is checked before type coercion, so the write is
+        // rejected on the readonly gate, leaving the value unchanged.)
+        let ctx = ScriptCtx::new();
+        apply_text_edit(&ctx, "input.mode", TextEdit::Append("x")).unwrap();
+        apply_text_edit(&ctx, "input.mode", TextEdit::Clear).unwrap();
+        assert_eq!(
+            read_store_slot(&ctx, "input.mode").unwrap(),
+            SlotValue::Enum("focus".to_string()),
+            "readonly slot unchanged after text edits"
+        );
+    }
+
+    #[test]
+    fn text_edit_unknown_slot_errors() {
+        let ctx = ScriptCtx::new();
+        assert!(apply_text_edit(&ctx, "ui.missing", TextEdit::Append("x")).is_err());
+    }
+
+    #[test]
+    fn set_state_json_write_errors_on_unknown_slot_and_type_mismatch() {
+        let ctx = ScriptCtx::new();
+        define_runtime_test_store(&ctx);
+        assert!(write_state_slot_json(&ctx, "test.missing", &serde_json::json!(1)).is_err());
+        // A boolean into a number slot is a type mismatch.
+        assert!(write_state_slot_json(&ctx, "test.number", &serde_json::json!(true)).is_err());
+        // The number slot is unchanged after the rejected write.
+        assert_eq!(
+            read_store_slot(&ctx, "test.number").unwrap(),
+            SlotValue::Number(0.5)
+        );
     }
 }

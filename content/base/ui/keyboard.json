@@ -1,0 +1,258 @@
+{
+  "anchor": "center",
+  "offset": [
+    0.0,
+    0.0
+  ],
+  "root": {
+    "kind": "grid",
+    "gap": 6.0,
+    "padding": 12.0,
+    "align": "stretch",
+    "cols": 10,
+    "focus": "spatial",
+    "children": [
+      {
+        "kind": "button",
+        "id": "key_1",
+        "label": "1",
+        "onPress": "kbAppend_1"
+      },
+      {
+        "kind": "button",
+        "id": "key_2",
+        "label": "2",
+        "onPress": "kbAppend_2"
+      },
+      {
+        "kind": "button",
+        "id": "key_3",
+        "label": "3",
+        "onPress": "kbAppend_3"
+      },
+      {
+        "kind": "button",
+        "id": "key_4",
+        "label": "4",
+        "onPress": "kbAppend_4"
+      },
+      {
+        "kind": "button",
+        "id": "key_5",
+        "label": "5",
+        "onPress": "kbAppend_5"
+      },
+      {
+        "kind": "button",
+        "id": "key_6",
+        "label": "6",
+        "onPress": "kbAppend_6"
+      },
+      {
+        "kind": "button",
+        "id": "key_7",
+        "label": "7",
+        "onPress": "kbAppend_7"
+      },
+      {
+        "kind": "button",
+        "id": "key_8",
+        "label": "8",
+        "onPress": "kbAppend_8"
+      },
+      {
+        "kind": "button",
+        "id": "key_9",
+        "label": "9",
+        "onPress": "kbAppend_9"
+      },
+      {
+        "kind": "button",
+        "id": "key_0",
+        "label": "0",
+        "onPress": "kbAppend_0"
+      },
+      {
+        "kind": "button",
+        "id": "key_q",
+        "label": "Q",
+        "onPress": "kbAppend_q"
+      },
+      {
+        "kind": "button",
+        "id": "key_w",
+        "label": "W",
+        "onPress": "kbAppend_w"
+      },
+      {
+        "kind": "button",
+        "id": "key_e",
+        "label": "E",
+        "onPress": "kbAppend_e"
+      },
+      {
+        "kind": "button",
+        "id": "key_r",
+        "label": "R",
+        "onPress": "kbAppend_r"
+      },
+      {
+        "kind": "button",
+        "id": "key_t",
+        "label": "T",
+        "onPress": "kbAppend_t"
+      },
+      {
+        "kind": "button",
+        "id": "key_y",
+        "label": "Y",
+        "onPress": "kbAppend_y"
+      },
+      {
+        "kind": "button",
+        "id": "key_u",
+        "label": "U",
+        "onPress": "kbAppend_u"
+      },
+      {
+        "kind": "button",
+        "id": "key_i",
+        "label": "I",
+        "onPress": "kbAppend_i"
+      },
+      {
+        "kind": "button",
+        "id": "key_o",
+        "label": "O",
+        "onPress": "kbAppend_o"
+      },
+      {
+        "kind": "button",
+        "id": "key_p",
+        "label": "P",
+        "onPress": "kbAppend_p"
+      },
+      {
+        "kind": "button",
+        "id": "key_a",
+        "label": "A",
+        "onPress": "kbAppend_a"
+      },
+      {
+        "kind": "button",
+        "id": "key_s",
+        "label": "S",
+        "onPress": "kbAppend_s"
+      },
+      {
+        "kind": "button",
+        "id": "key_d",
+        "label": "D",
+        "onPress": "kbAppend_d"
+      },
+      {
+        "kind": "button",
+        "id": "key_f",
+        "label": "F",
+        "onPress": "kbAppend_f"
+      },
+      {
+        "kind": "button",
+        "id": "key_g",
+        "label": "G",
+        "onPress": "kbAppend_g"
+      },
+      {
+        "kind": "button",
+        "id": "key_h",
+        "label": "H",
+        "onPress": "kbAppend_h"
+      },
+      {
+        "kind": "button",
+        "id": "key_j",
+        "label": "J",
+        "onPress": "kbAppend_j"
+      },
+      {
+        "kind": "button",
+        "id": "key_k",
+        "label": "K",
+        "onPress": "kbAppend_k"
+      },
+      {
+        "kind": "button",
+        "id": "key_l",
+        "label": "L",
+        "onPress": "kbAppend_l"
+      },
+      {
+        "kind": "button",
+        "id": "key_z",
+        "label": "Z",
+        "onPress": "kbAppend_z"
+      },
+      {
+        "kind": "button",
+        "id": "key_x",
+        "label": "X",
+        "onPress": "kbAppend_x"
+      },
+      {
+        "kind": "button",
+        "id": "key_c",
+        "label": "C",
+        "onPress": "kbAppend_c"
+      },
+      {
+        "kind": "button",
+        "id": "key_v",
+        "label": "V",
+        "onPress": "kbAppend_v"
+      },
+      {
+        "kind": "button",
+        "id": "key_b",
+        "label": "B",
+        "onPress": "kbAppend_b"
+      },
+      {
+        "kind": "button",
+        "id": "key_n",
+        "label": "N",
+        "onPress": "kbAppend_n"
+      },
+      {
+        "kind": "button",
+        "id": "key_m",
+        "label": "M",
+        "onPress": "kbAppend_m"
+      },
+      {
+        "kind": "button",
+        "id": "key_space",
+        "label": "SPACE",
+        "onPress": "kbAppend_space"
+      },
+      {
+        "kind": "button",
+        "id": "key_backspace",
+        "label": "DEL",
+        "onPress": "kbBackspace",
+        "repeatOnHold": {
+          "initialDelayMs": 400.0,
+          "intervalMs": 60.0
+        }
+      },
+      {
+        "kind": "button",
+        "id": "key_done",
+        "label": "DONE",
+        "onPress": "ui.commitTextEntry"
+      }
+    ]
+  },
+  "captureMode": "capture",
+  "initialFocus": "key_q",
+  "textEntryTarget": "ui.textEntry"
+}

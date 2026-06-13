@@ -49,13 +49,15 @@ export type ProgressReactionDescriptor = {
   progress: { tag: string, at: number, fire: string },
 }
 
---- Primitive reaction body: invokes the named Rust primitive on entities
---- tagged `tag`, optionally firing `onComplete` when it finishes. `args`
+--- Primitive reaction body: invokes the named Rust primitive. With `tag`, it
+--- targets entities carrying that tag and mutates them. Without `tag`, it is a
+--- system reaction (no entities) that enqueues a typed engine command —
+--- `playSound`, `rumble`, `flashScreen`, the UI-stack reactions. `args`
 --- carries the primitive's typed payload (e.g. `{ rate = 0 }` for
 --- `setEmitterRate`).
 export type PrimitiveReactionDescriptor = {
   primitive: string,
-  tag: string,
+  tag: string?,
   args: { [string]: any }?,
   onComplete: string?,
 }
@@ -138,6 +140,10 @@ export type NamedReactionDescriptor = {
 --- `entities` field of `setupMod`'s return value, not here.
 export type LevelManifest = {
   reactions: {NamedReactionDescriptor},
+  -- State-crossing watchers (M13 HUD dynamics). `CrossingDescriptor` is
+  -- declared in postretro.d.luau (the generated SDK-lib type block). See
+  -- `onStateCrossing`.
+  crossings: {CrossingDescriptor}?,
 }
 
 local DataScriptSdk = {}

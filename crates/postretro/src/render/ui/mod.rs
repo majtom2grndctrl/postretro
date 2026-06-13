@@ -3,6 +3,7 @@
 // margin); the vertex stage expands each instance into 9 regions. All wgpu lives
 // here per renderer-owns-GPU. Shaped text is glyphon's own pipeline, owned by
 // the `text` submodule and recorded into this same pass after the quads.
+// See: context/lib/ui.md
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
@@ -37,6 +38,19 @@ pub(crate) mod tree;
 /// data — widgets (later tasks) reference tokens by name; the merge is per-token.
 pub(crate) mod theme;
 
+/// Continuous value→style mapping (M13 Goal E `styleRanges`): the `StyleRanges`
+/// descriptor types and the widget-agnostic pure evaluator (value → resolved
+/// color + pulse/flash). Consumed from `tree`'s draw-data build; Goal F's `bar`
+/// reuses the same evaluator. Pure data — no taffy, no GPU.
+pub(crate) mod style_ranges;
+
+/// App-side gameplay-UI modal stack + named-tree registry: resolves Goal E's
+/// `PushTree`/`PopTree` system commands by name into a bottom→top stack of
+/// descriptor trees, exposes an engine push/pop API, and builds the per-frame
+/// `UiReadSnapshot`. The top tree's capture mode drives the input seam + focus.
+/// Pure CPU — no taffy, no GPU. The splash stays outside the stack.
+pub(crate) mod modal_stack;
+
 pub(crate) use self::text::UiText;
 
 /// Hardcoded splash content descriptor behind the one named builder seam
@@ -47,9 +61,15 @@ pub(crate) mod splash;
 /// Hardcoded demo gameplay HUD descriptor (M13 state-binding demo) behind
 /// the `demo::build_demo_descriptor` seam. The FIRST gameplay UI producer:
 /// `main.rs` publishes its `AnchoredTree` on the per-frame read snapshot and the
-/// renderer drives it through the retained gameplay path. Two `text` nodes bind
-/// `player.health`/`player.ammo`; one `panel` binds `intro.flashColor`.
+/// renderer drives it through the retained gameplay path. See `demo.rs` for the
+/// current demo binding set.
 pub(crate) mod demo;
+
+/// Engine-shipped on-screen keyboard descriptor (M13 Text-Entry, Task 4): loads
+/// `content/base/ui/keyboard.json` from disk at boot and registers it under the
+/// `keyboard` name. Read from disk (not embedded) so a layout edit + reload
+/// changes the keyboard with no Rust change.
+pub(crate) mod keyboard_asset;
 
 /// Hard-gate CPU draw-list / layout assertion for the splash: pins the
 /// device-pixel quad rects (anchor, scale, snap, 9-slice corners) the splash
@@ -205,15 +225,49 @@ impl UiDrawList {
     }
 }
 
+/// One entry in the gameplay UI modal stack as published on the read snapshot:
+/// a named descriptor tree plus its resolved input behavior and the optional
+/// `onCommit` reaction carried from the `PushTree` that opened it. The renderer
+/// draws the stack bottom→top; the app reads the TOP entry's `capture_mode` to
+/// drive the input seam and focus. `on_commit` is CARRIED only — the text-entry
+/// plan fires it later; the renderer never reads it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct UiTreeEntry {
+    /// Registry name the tree was registered/pushed under. Identifies the entry
+    /// in the stack (e.g. for diagnostics); the renderer keys retained state by
+    /// stack position, not by name.
+    pub name: String,
+    /// The descriptor tree to lay out and draw this frame.
+    pub descriptor: descriptor::AnchoredTree,
+    /// Resolved capture behavior (from the descriptor's `capture_mode` envelope).
+    /// Only the TOP entry's mode is acted on by the app's input seam.
+    pub capture_mode: crate::input::UiCaptureMode,
+    /// Optional named reaction fired when this tree commits (carried from
+    /// `PushTree { on_commit }`). Carried through only — fired by a later goal.
+    pub on_commit: Option<String>,
+}
+
+/// Resolve a descriptor-side `CaptureMode` (wire/envelope form) into the input
+/// subsystem's `UiCaptureMode` (the seam form the modal stack drives). The two
+/// enums are kept separate so the descriptor module carries no input dependency.
+impl From<descriptor::CaptureMode> for crate::input::UiCaptureMode {
+    fn from(mode: descriptor::CaptureMode) -> Self {
+        match mode {
+            descriptor::CaptureMode::Capture => crate::input::UiCaptureMode::Capture,
+            descriptor::CaptureMode::Passthrough => crate::input::UiCaptureMode::Passthrough,
+        }
+    }
+}
+
 /// Once-per-frame published read-only snapshot the UI pass reads when it records.
 /// Stored on the `Renderer` via a setter the `App` calls just before each render
 /// call — NOT threaded as a render parameter, so both render signatures stay
 /// stable.
 ///
-/// Carries three things: the splash version/tagline line, the gameplay descriptor
-/// tree for the current frame, and the frame's resolved slot values. The renderer
-/// reads `version_line` on the splash path and `gameplay_tree`/`slot_values` on
-/// the gameplay path. The descriptor is carried here — never laid-out rects;
+/// Carries the splash version/tagline line, the gameplay UI modal stack (a Vec of
+/// trees drawn bottom→top), and the frame's resolved slot values. The renderer
+/// reads `version_line` on the splash path and `trees`/`slot_values` on the
+/// gameplay path. Descriptors are carried here — never laid-out rects;
 /// taffy/glyphon live in the renderer per renderer-owns-GPU. Slot values are
 /// cloned out of the live `SlotTable` once per frame so the renderer never borrows
 /// the live store — preserving the renderer/game-logic boundary. Value-less slots
@@ -223,12 +277,13 @@ pub(crate) struct UiReadSnapshot {
     /// Version/tagline string the splash's shaped-text line renders. Read only on
     /// the splash path; empty on the gameplay path.
     pub version_line: String,
-    /// The gameplay-path descriptor tree to lay out and draw this frame. `None`
-    /// (the default) on the splash path and whenever gameplay publishes no UI —
-    /// the renderer's UI pass then early-outs with no `begin_render_pass`. The
-    /// current gameplay UI producer is `demo::build_demo_descriptor`, published
-    /// by `main.rs` each frame; the test gate feeds a fixture tree.
-    pub gameplay_tree: Option<descriptor::AnchoredTree>,
+    /// The gameplay UI modal stack for this frame, drawn bottom→top (`trees[0]`
+    /// is the bottom, the last entry is the top/active tree). Empty (the default)
+    /// on the splash path and whenever gameplay publishes no UI — the renderer's
+    /// UI pass then early-outs each empty/absent layer. The current bottom-of-
+    /// stack producer is `demo::build_demo_descriptor` (the HUD), published by
+    /// `main.rs`; modal trees pushed via the named-tree registry stack above it.
+    pub trees: Vec<UiTreeEntry>,
     /// Resolved state-store values for this frame, keyed by dotted slot name.
     /// Cloned out of the live `SlotTable` once per frame (see the type doc).
     /// Only slots that currently hold a value appear; value-less slots are
@@ -241,37 +296,47 @@ pub(crate) struct UiReadSnapshot {
     /// on the splash/fresh path, where inertness is structural — that path takes
     /// no time at all.
     pub time_seconds: f64,
+    /// The focused node id in the active (top) stack tree, resolved app-side by
+    /// the focus engine the previous frame (M13 Goal F, Task 3). The UI pass draws
+    /// the focus ring around this node's rect on the top layer. `None` (the
+    /// default) when nothing is focused; the ring may trail a focus change by one
+    /// frame (the same N→N+1 latency every UI event carries).
+    pub focused_id: Option<String>,
 }
 
 impl UiReadSnapshot {
     /// Snapshot carrying the splash version/tagline line (splash path). The
-    /// slot-value map stays empty — the splash has no store-bound widgets.
+    /// slot-value map and tree stack stay empty — the splash has no store-bound
+    /// widgets and never routes through the modal stack.
     pub fn with_version_line(version_line: impl Into<String>) -> Self {
         Self {
             version_line: version_line.into(),
-            gameplay_tree: None,
+            trees: Vec::new(),
             slot_values: std::collections::HashMap::new(),
             // Splash/fresh path takes no time — inertness is structural.
             time_seconds: 0.0,
+            focused_id: None,
         }
     }
 
-    /// Snapshot carrying a gameplay-path descriptor tree (the content side) plus
-    /// the frame's resolved slot-value snapshot and the deterministic frame time.
-    /// The renderer lays the tree out into the UI draw list, resolves `bind` slots
-    /// against `slot_values`, and threads `time_seconds` into the retained build so
-    /// the tween runtime can ease bound display values over time.
+    /// Snapshot carrying the gameplay UI modal stack (the content side) plus the
+    /// frame's resolved slot-value snapshot and the deterministic frame time. The
+    /// renderer lays each tree out bottom→top into the UI draw list, resolves
+    /// `bind` slots against `slot_values`, and threads `time_seconds` into the
+    /// retained build so the tween runtime can ease bound display values over time.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn with_gameplay_tree(
-        tree: descriptor::AnchoredTree,
+    pub fn with_trees(
+        trees: Vec<UiTreeEntry>,
         slot_values: std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
         time_seconds: f64,
+        focused_id: Option<String>,
     ) -> Self {
         Self {
             version_line: String::new(),
-            gameplay_tree: Some(tree),
+            trees,
             slot_values,
             time_seconds,
+            focused_id,
         }
     }
 }
@@ -365,11 +430,13 @@ pub(crate) struct UiPass {
     /// draw records into this same render pass, after the quads. See `text`.
     text: UiTextRenderer,
 
-    /// The retained gameplay tree, held across frames so the dirty-gate and the
-    /// bound-value diff actually pay off (a fresh tree is always dirty). `None`
-    /// until the first gameplay frame installs one. The splash deliberately does
-    /// NOT use this — it stays on the stateless `layout_tree` fresh-build path.
-    gameplay_tree: Option<RetainedGameplayTree>,
+    /// Per-stack-layer retained gameplay trees, held across frames so each
+    /// layer's dirty-gate and bound-value diff pay off (a fresh tree is always
+    /// dirty). One entry per modal-stack layer, indexed bottom→top to match the
+    /// snapshot's `trees`; empty until the first gameplay frame installs a layer.
+    /// The splash deliberately does NOT use this — it stays on the stateless
+    /// `layout_tree` fresh-build path.
+    gameplay_trees: Vec<RetainedGameplayTree>,
 }
 
 /// One retained gameplay UI tree plus the descriptor it was built from. The
@@ -586,7 +653,7 @@ impl UiPass {
             white_view,
             white_bind_group,
             text,
-            gameplay_tree: None,
+            gameplay_trees: Vec::new(),
         }
     }
 
@@ -663,13 +730,17 @@ impl UiPass {
         )
     }
 
-    /// Lay out the gameplay descriptor tree through the RETAINED `UiTree` held on
-    /// the pass, so layout and the draw list only rebuild when their inputs change
-    /// across frames (the runtime perf win this task delivers).
+    /// Lay out ONE modal-stack layer's descriptor tree through the RETAINED
+    /// `UiTree` held for that layer, so layout and the draw list only rebuild when
+    /// their inputs change across frames (the runtime perf win). `layer` is the
+    /// bottom→top stack index; each layer keeps its own retained tree, dirty gate,
+    /// and bound-value diff, so a frozen lower layer recomputes nothing while a
+    /// top layer animates.
     ///
-    /// Reuse vs rebuild: the retained tree is reused while the incoming
-    /// `descriptor` equals the one it was built from. A different descriptor (the
-    /// snapshot delivered a structurally new tree) rebuilds it from scratch via
+    /// Reuse vs rebuild (per layer): the retained tree is reused while the
+    /// incoming `descriptor` equals the one it was built from AND the theme
+    /// generation is unchanged. A different descriptor (a structurally new tree at
+    /// this layer — including the stack growing into a fresh slot) rebuilds it via
     /// `UiTree::from_descriptor`. Once reused, `build_draw_data_retained` runs the
     /// subscriber-aware bound-value diff and the relayout/redraw split:
     /// - an appearance-only bound change (the panel flash color) rebuilds the
@@ -677,19 +748,21 @@ impl UiPass {
     /// - a bound text-content change re-measures and relays out,
     /// - a no-change frame returns the cached draw list and recomputes nothing.
     ///
-    /// The splash stays on `layout_tree` (fresh build per frame) — it is transient
-    /// and carries no bindings, so retaining it would only add bookkeeping.
+    /// The caller drives layers `0..stack_len` in order and calls
+    /// `truncate_gameplay_stack(stack_len)` once per frame so popped layers drop
+    /// their retained state. The splash stays on `layout_tree` (fresh build per
+    /// frame) — it is transient and carries no bindings.
     ///
     /// `time_seconds` is the deterministic, dt-accumulated frame time threaded
     /// down to the retained build for the tween runtime to ease bound values over
-    /// time. The splash/fresh `layout_tree` takes no such time — its inertness is
-    /// structural.
-    // Wide by necessity: viewport + image sizes + slot values + theme + theme
-    // generation + frame time are all distinct retained-build inputs; bundling
-    // them into a struct would only obscure the per-frame call site.
+    /// time.
+    // Wide by necessity: layer + viewport + image sizes + slot values + theme +
+    // theme generation + frame time are all distinct retained-build inputs;
+    // bundling them into a struct would only obscure the per-frame call site.
     #[allow(clippy::too_many_arguments)]
     pub fn layout_gameplay_tree(
         &mut self,
+        layer: usize,
         tree: &descriptor::AnchoredTree,
         viewport: [u32; 2],
         image_sizes: &tree::ImageSizes,
@@ -698,31 +771,36 @@ impl UiPass {
         theme_generation: u64,
         time_seconds: f64,
     ) -> tree::UiDrawData {
-        // Rebuild the retained tree when there is none yet, when the incoming
-        // descriptor differs from the one it was built from (a structural change),
-        // OR when the theme generation moved (the engine installed an override
-        // theme, so the tokens baked into the retained tree are stale). The
-        // generation gate rebuilds even on a byte-identical descriptor; a settled
-        // frame (same descriptor + same generation) reuses the retained tree, so
-        // the across-frames cache still holds.
-        let needs_build = match &self.gameplay_tree {
+        debug_assert!(
+            layer <= self.gameplay_trees.len(),
+            "layers must be driven in bottom→top order without gaps",
+        );
+
+        // Rebuild this layer's retained tree when there is none yet (the stack
+        // grew into this slot), when the incoming descriptor differs from the one
+        // it was built from (a structural change), OR when the theme generation
+        // moved (override theme installed, so baked tokens are stale). A settled
+        // frame (same descriptor + same generation) reuses the retained tree.
+        let needs_build = match self.gameplay_trees.get(layer) {
             Some(retained) => {
                 retained.descriptor != *tree || retained.theme_generation != theme_generation
             }
             None => true,
         };
         if needs_build {
-            self.gameplay_tree = Some(RetainedGameplayTree {
+            let rebuilt = RetainedGameplayTree {
                 descriptor: tree.clone(),
                 theme_generation,
                 tree: tree::UiTree::from_descriptor(tree, theme),
-            });
+            };
+            if layer < self.gameplay_trees.len() {
+                self.gameplay_trees[layer] = rebuilt;
+            } else {
+                self.gameplay_trees.push(rebuilt);
+            }
         }
 
-        let retained = self
-            .gameplay_tree
-            .as_mut()
-            .expect("retained gameplay tree set above");
+        let retained = &mut self.gameplay_trees[layer];
         retained.tree.build_draw_data_retained(
             viewport,
             self.text.font_system_mut(),
@@ -730,6 +808,34 @@ impl UiPass {
             slot_values,
             time_seconds,
         )
+    }
+
+    /// Export the flat hit-test / focus rect list for the TOP stack layer (the
+    /// only one that takes focus), against the descriptor it was built from and the
+    /// current `viewport` projection. Returns an empty list when there is no layer.
+    /// The renderer publishes this back to the app (the reverse twin of the
+    /// app→renderer snapshot); the app's focus engine consumes it the NEXT frame.
+    ///
+    /// Must be called after `layout_gameplay_tree` has laid out every layer this
+    /// frame, so the top layer's taffy layout is current for `viewport`.
+    pub fn export_top_focus_rects(&self, viewport: [u32; 2]) -> tree::FocusRectList {
+        match self.gameplay_trees.last() {
+            Some(retained) => retained
+                .tree
+                .export_focus_rects(&retained.descriptor, viewport),
+            None => tree::FocusRectList::default(),
+        }
+    }
+
+    /// Drop retained state for stack layers at or above `len` — called once per
+    /// frame after laying out `0..len`, so popped modal trees release their
+    /// retained `UiTree` (layout cache, bound-value subscriptions) rather than
+    /// lingering. A stack that shrank to zero (HUD-only frame back to no UI)
+    /// clears every layer.
+    pub fn truncate_gameplay_stack(&mut self, len: usize) {
+        if self.gameplay_trees.len() > len {
+            self.gameplay_trees.truncate(len);
+        }
     }
 
     /// Record the UI batches and shaped-text lines into `view`. Single color
@@ -858,6 +964,37 @@ impl UiPass {
         });
         self.instance_capacity = capacity;
     }
+}
+
+/// Ring thickness in device pixels (before viewport scale is folded into the
+/// rect math). A thin 2px outline reads as a focus ring without obscuring content.
+const FOCUS_RING_THICKNESS: f32 = 2.0;
+
+/// Append a focus-ring outline (four thin bars) around `rect` (device px
+/// `[x, y, w, h]`) to `quads`. The ring sits `inset` device px OUTSIDE the rect
+/// (the `xs` spacing token, scaled), framing the focused node without overlapping
+/// it. `color` is the resolved `focus.ring` token (linear RGBA). Drawn as four
+/// solid `UiInstance::panel` bars (top, bottom, left, right) so it needs no new
+/// pipeline — it rides the existing white-texel quad batch.
+///
+/// M13 Goal F, Task 3: the engine-drawn focus ring. The focused id rides the
+/// snapshot, so the ring may trail a focus change by one frame.
+pub(crate) fn push_focus_ring(quads: &mut UiDrawList, rect: [f32; 4], inset: f32, color: [f32; 4]) {
+    let t = FOCUS_RING_THICKNESS;
+    // Outer frame: the focused rect grown outward by the inset.
+    let ox = rect[0] - inset;
+    let oy = rect[1] - inset;
+    let ow = rect[2] + inset * 2.0;
+    let oh = rect[3] + inset * 2.0;
+    if ow <= 0.0 || oh <= 0.0 {
+        return;
+    }
+    let bar = |r: [f32; 4]| UiInstance::panel(r, color, [0.0; 4]);
+    // Top, bottom (full width), then left/right (between the horizontal bars).
+    quads.push(bar([ox, oy, ow, t]));
+    quads.push(bar([ox, oy + oh - t, ow, t]));
+    quads.push(bar([ox, oy + t, t, (oh - 2.0 * t).max(0.0)]));
+    quads.push(bar([ox + ow - t, oy + t, t, (oh - 2.0 * t).max(0.0)]));
 }
 
 /// Upload a CPU RGBA8 `UiTexture` and return the GPU texture. sRGB format so

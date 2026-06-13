@@ -8,8 +8,11 @@ pub mod diagnostics;
 mod focus;
 pub mod gamepad;
 mod look;
+mod text_entry;
 mod types;
 mod ui_dispatch;
+mod ui_focus;
+mod ui_nav;
 
 pub use defaults::default_bindings;
 pub use diagnostics::{DiagnosticAction, DiagnosticInputs, default_diagnostic_chords};
@@ -20,10 +23,29 @@ pub use types::{Action, AxisSource, AxisValue, Binding, ButtonState, PhysicalInp
 // descriptor via `Renderer::splash_capture_mode`.
 pub use ui_dispatch::{UiCaptureMode, UiDispatch};
 // `UiDispatchOutcome` is `dispatch_event`'s per-event return type. `UiIntent`
-// is the queued capture marker — reserved seam API with no production consumer
-// yet; a future menu/modal path consumes intents.
+// is the queued kinded capture; `UiIntentPayload`/`PointerPos` are its payload
+// vocabulary. The modal stack (M13 Goal F) consumes the queued intents.
 #[allow(unused_imports)]
-pub use ui_dispatch::{UiDispatchOutcome, UiIntent};
+pub use ui_dispatch::{PointerPos, UiDispatchOutcome, UiIntent, UiIntentPayload};
+// Nav-intent vocabulary plus the action→intent mapping the input stage feeds
+// into `UiDispatch`. `StickNavTracker` does stick-past-deadzone edge detection.
+#[allow(unused_imports)]
+pub use ui_nav::{
+    NavIntent, StickNavTracker, TextEntryKey, nav_intent_for_gamepad_button, nav_intent_for_key,
+    text_entry_key,
+};
+// Text-entry intent resolution (M13 Text-Entry, Task 3): drained intents →
+// edit/commit/cancel decisions against the open text-entry surface.
+#[allow(unused_imports)]
+pub use text_entry::{
+    TextEntryDisposition, TextEntryEdit, TextEntryResolution, escape_is_dev_quit_chord,
+    resolve_text_entry,
+};
+// App-side focus engine (M13 Goal F, Task 3): consumes nav intents + cursor, moves
+// focus through the renderer's exported focus rect list, runs the dt-clocked
+// hold-to-repeat timer, and reports the focused id back for the focus ring.
+#[allow(unused_imports)]
+pub use ui_focus::{FocusTickResult, InputMode, UiFocusEngine, capture_slider_step};
 
 /// Default sensitivity: radians per raw mouse unit. Tuned for 800 DPI mice.
 pub const DEFAULT_MOUSE_SENSITIVITY: f32 = 0.002;
@@ -290,11 +312,12 @@ impl InputSystem {
     /// Drain the evanescent look-axis contributions accumulated since the last
     /// drain into a `LookInputs` value. Consumers apply this at render rate,
     /// before the fixed-tick loop, so mouse motion is never lost on zero-tick
-    /// frames.
+    /// frames. Must be called before `snapshot()` in the same frame — it
+    /// zeroes the mouse-displacement entries that `snapshot()` would otherwise
+    /// re-emit as `LookYaw` / `LookPitch`.
     ///
     /// Mouse displacement is refreshed from `mouse_delta`, copied out, and
-    /// cleared so a later `snapshot()` in the same frame will not re-emit
-    /// `Displacement`-sourced `LookYaw` / `LookPitch` entries. Gamepad stick
+    /// cleared. Gamepad stick
     /// state in `gamepad_axes` is deliberately left intact — stick deflection
     /// is persistent, not evanescent, and a subsequent `snapshot()` will still
     /// see it. The render loop does not read look axes from `snapshot()`, so

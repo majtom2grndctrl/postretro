@@ -16,7 +16,7 @@
 // `curve_eval_test` precedent); self-skips when no GPU adapter is present so it
 // can never be the thing that fails CI.
 
-use super::{UiBatch, UiDrawList, UiInstance, UiPass};
+use super::{UiBatch, UiComposition, UiDrawList, UiInstance, UiPass};
 
 /// Offscreen target size. Even width so the left/right halves split cleanly at
 /// `width / 2`. 64*4 = 256 bytes/row already meets `COPY_BYTES_PER_ROW_ALIGNMENT`,
@@ -113,16 +113,19 @@ fn render_two_batches_offscreen(ctx: &GpuCtx) -> Readback {
     ));
 
     let white = pass.white_bind_group().clone();
-    let batches = [
-        UiBatch {
-            list: &left,
-            bind_group: &white,
-        },
-        UiBatch {
-            list: &right,
-            bind_group: &white,
-        },
-    ];
+    let composition = UiComposition::from_batches(
+        vec![
+            UiBatch {
+                list: &left,
+                bind_group: &white,
+            },
+            UiBatch {
+                list: &right,
+                bind_group: &white,
+            },
+        ],
+        Vec::new(),
+    );
 
     let mut encoder = ctx
         .device
@@ -136,8 +139,7 @@ fn render_two_batches_offscreen(ctx: &GpuCtx) -> Readback {
         &view,
         viewport,
         wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-        &batches,
-        &[],
+        &composition,
     );
 
     let pixels = read_texture_rgba8(ctx, &target, TARGET_W, TARGET_H, encoder);

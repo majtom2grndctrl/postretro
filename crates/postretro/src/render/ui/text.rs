@@ -110,6 +110,15 @@ pub(crate) struct UiTextRenderer {
     text_atlas: TextAtlas,
     /// glyphon's text pipeline/draw recorder.
     text_renderer: TextRenderer,
+    /// Debug-only guard: counts glyphon `prepare` invocations since the last
+    /// `reset_prepare_guard` (called at `UiPass::encode` entry). The shared
+    /// vertex buffer `prepare` fills is overwritten at offset 0, so a SECOND
+    /// `prepare` within one encoded composition would clobber the first layer's
+    /// glyphs — the invariant is one `prepare` per composed frame. A
+    /// `debug_assert!` in `prepare_text` fires if this exceeds one. Release builds
+    /// carry no guard cost (the field and its uses are `cfg(debug_assertions)`).
+    #[cfg(debug_assertions)]
+    prepare_count: u32,
 }
 
 impl UiTextRenderer {
@@ -149,6 +158,18 @@ impl UiTextRenderer {
             viewport,
             text_atlas,
             text_renderer,
+            #[cfg(debug_assertions)]
+            prepare_count: 0,
+        }
+    }
+
+    /// Reset the once-per-composition `prepare` guard. Called at `UiPass::encode`
+    /// entry — the single per-frame site both splash and gameplay funnel through —
+    /// so each encoded composition starts the count fresh. No-op in release.
+    pub fn reset_prepare_guard(&mut self) {
+        #[cfg(debug_assertions)]
+        {
+            self.prepare_count = 0;
         }
     }
 
@@ -208,6 +229,26 @@ impl UiTextRenderer {
     ) -> bool {
         if texts.is_empty() {
             return false;
+        }
+
+        // Once-per-composition guard: this is placed AFTER the empty-text
+        // early-return so empty-text frames never count. The shared vertex buffer
+        // `prepare` fills is overwritten at offset 0, so a SECOND `prepare` within
+        // one encoded composition would clobber the first layer's glyphs. The
+        // guard fires if more than one `prepare` is reached per `UiPass::encode`
+        // (reset there); release builds carry no cost. The historical
+        // per-encode-loop clobber resets the guard between encodes, so it is NOT
+        // caught here — a separate test covers that.
+        #[cfg(debug_assertions)]
+        {
+            self.prepare_count += 1;
+            debug_assert!(
+                self.prepare_count <= 1,
+                "glyphon prepare reached {} times in one composition — the shared \
+                 vertex buffer is overwritten at offset 0, so a second prepare \
+                 clobbers earlier layers' glyphs (one prepare per composition)",
+                self.prepare_count,
+            );
         }
 
         self.viewport.update(

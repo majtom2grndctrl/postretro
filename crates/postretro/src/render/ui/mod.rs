@@ -465,6 +465,92 @@ pub(crate) struct UiBatch<'a> {
     pub bind_group: &'a wgpu::BindGroup,
 }
 
+/// The whole frame's UI composition: every modal-stack layer's quad batches and
+/// shaped-text runs, concatenated in bottom→top painter order, as the single unit
+/// `UiPass::encode` records. The encode boundary is the WHOLE composition, never
+/// one layer — making the historical per-layer encode loop (which clobbered the
+/// shared glyphon vertex buffer across layers; see `UiPass::encode`'s disjoint-
+/// region comment for the sibling quad-path rule) unrepresentable on the
+/// production surface.
+///
+/// **Invariant — one `prepare`/vertex-buffer fill per surface composition.** All
+/// layers funnel through ONE `encode`, so glyphon's `prepare` (which overwrites
+/// its single internal vertex buffer at offset 0) runs once per composed frame.
+/// The text path obeys the same "one fill per composition" rule the quad path
+/// already enforces by giving each batch a disjoint instance-buffer region.
+///
+/// Borrows, never owns the underlying draw data: `batches` hold `UiBatch<'a>`
+/// (each borrowing a `&UiDrawList` + bind group, zero quad copy); `texts` is the
+/// concatenated run list. Built in the caller's frame scope so the borrows coexist
+/// with the `&mut self.ui` encode call. Two constructors: `from_layer_draws`
+/// (gameplay modal stack) and `from_batches` (the standalone splash assembly).
+pub(crate) struct UiComposition<'a> {
+    batches: Vec<UiBatch<'a>>,
+    texts: Vec<UiText>,
+}
+
+impl<'a> UiComposition<'a> {
+    /// Gameplay constructor: fold the per-layer `UiDrawData` slice (bottom→top)
+    /// into one composition. Each layer contributes, in order, its non-empty panel
+    /// quads (bound to `white_bind_group`), then each non-empty image batch (its
+    /// `asset` key resolved through `images` to a bind group; an unregistered key
+    /// is skipped-with-debug-log), then its text runs. This is the painter order
+    /// the prior per-layer loop produced, now in a single composed unit.
+    ///
+    /// `white_bind_group` and `images` outlive the returned composition (they are
+    /// the pass's own resources); `layer_draws` is the caller's frame-scoped fold
+    /// output. All three borrows back the `'a` lifetime.
+    pub fn from_layer_draws(
+        layer_draws: &'a [tree::UiDrawData],
+        white_bind_group: &'a wgpu::BindGroup,
+        images: &'a UiImageRegistry,
+    ) -> Self {
+        let mut batches: Vec<UiBatch<'a>> = Vec::new();
+        let mut texts: Vec<UiText> = Vec::new();
+        for draw in layer_draws {
+            if !draw.quads.is_empty() {
+                batches.push(UiBatch {
+                    list: &draw.quads,
+                    bind_group: white_bind_group,
+                });
+            }
+            // Unknown key degrades by skipping just that batch. Logged at debug,
+            // not warn: this gameplay path runs every frame with no dedup, so a
+            // persistently-missing key would spam at warn (development_guide §6.1).
+            for (asset, list) in &draw.images {
+                if list.is_empty() {
+                    continue;
+                }
+                match images.resolve(asset) {
+                    Some(bind_group) => batches.push(UiBatch { list, bind_group }),
+                    None => log::debug!(
+                        "[Renderer] UI image asset key '{asset}' is not registered — skipping its draw"
+                    ),
+                }
+            }
+            texts.extend_from_slice(&draw.texts);
+        }
+        Self { batches, texts }
+    }
+
+    /// Splash constructor: a single-layer composition from already-assembled
+    /// batches and text. The splash's quads come from a standalone `panel_list`
+    /// (`layout::project`) plus a background fill — not a `UiDrawData` — so it
+    /// borrows the assembled `&[UiBatch]`/`&[UiText]` directly. The splash has no
+    /// image-registry fold of its own (the logo batch is assembled by the caller
+    /// and passed in `batches`).
+    pub fn from_batches(batches: Vec<UiBatch<'a>>, texts: Vec<UiText>) -> Self {
+        Self { batches, texts }
+    }
+
+    /// `true` when the composition records nothing — no quad batches and no text.
+    /// The gameplay path early-outs the UI pass on this; the splash path opens the
+    /// pass regardless for its frame-0 black clear.
+    pub fn is_empty(&self) -> bool {
+        self.batches.is_empty() && self.texts.is_empty()
+    }
+}
+
 impl UiPass {
     pub fn new(
         device: &wgpu::Device,
@@ -838,9 +924,18 @@ impl UiPass {
         }
     }
 
-    /// Record the UI batches and shaped-text lines into `view`. Single color
-    /// target, no depth, the caller's `load` op controls whether the surface is
-    /// cleared first (splash phase clears to black; the gameplay path loads).
+    /// Record a whole-frame `UiComposition` (every modal-stack layer's quad
+    /// batches + text runs, in painter order) into `view`. The encode boundary is
+    /// the COMPOSITION, not one layer — a caller cannot loop `encode` per layer, so
+    /// the historical cross-layer glyphon vertex-buffer clobber is unrepresentable
+    /// here. See `UiComposition` for the "one `prepare`/vertex-buffer fill per
+    /// surface composition" invariant; its text-path sibling is the disjoint
+    /// per-batch instance-buffer region the quad loop below documents.
+    ///
+    /// Single color target, no depth; the caller's `load` op controls whether the
+    /// surface is cleared first (splash phase clears to black; the gameplay path
+    /// loads). `load` rides alongside `&UiComposition` because clear-vs-load is a
+    /// target concern, not a composition one.
     ///
     /// Order matters: quads first, then text. Quad instances upload to the
     /// instance buffer and draw one instanced batch each; then glyphon's
@@ -849,10 +944,9 @@ impl UiPass {
     /// surface view. glyphon's atlas upload + CPU layout (`prepare`) runs BEFORE
     /// the pass opens (it needs `device`/`queue`, not the pass). With no quads
     /// and no text the pass still opens so the caller's `load` op lands.
-    ///
-    /// `texts` is empty on the quad-only / no-text path (no text work runs).
-    // The wide signature mirrors a `begin_render_pass` call (target, viewport,
-    // load op, draw lists, text) — splitting it into a builder would obscure the
+    // Wide by necessity: the GPU handles (device/queue/encoder/view), the
+    // viewport, the target's `load` op, and the whole-frame `UiComposition` are
+    // all distinct encode inputs; bundling them into a builder would obscure the
     // single-pass contract the splash + gameplay paths both record through.
     #[allow(clippy::too_many_arguments)]
     pub fn encode(
@@ -863,9 +957,20 @@ impl UiPass {
         view: &wgpu::TextureView,
         viewport: [u32; 2],
         load: wgpu::LoadOp<wgpu::Color>,
-        batches: &[UiBatch<'_>],
-        texts: &[UiText],
+        composition: &UiComposition<'_>,
     ) {
+        // Keep the `&[UiBatch]`/`&[UiText]` shape internal to the pass — the public
+        // boundary takes the whole composition, the quad/text loops below the
+        // slices it spans.
+        let batches: &[UiBatch<'_>] = &composition.batches;
+        let texts: &[UiText] = &composition.texts;
+
+        // Reset the once-per-composition prepare guard at the single per-frame
+        // call site both the splash and gameplay paths funnel through. The guard
+        // fires if glyphon `prepare` is reached more than once within this encoded
+        // composition (a future intra-composition regression).
+        self.text.reset_prepare_guard();
+
         queue.write_buffer(
             &self.uniform_buffer,
             0,

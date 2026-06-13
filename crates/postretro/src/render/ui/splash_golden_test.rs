@@ -27,7 +27,7 @@
 
 use super::layout;
 use super::splash::{SplashDescriptor, build_splash_descriptor};
-use super::{UiBatch, UiDrawList, UiPass};
+use super::{UiBatch, UiComposition, UiDrawList, UiPass};
 use crate::render::splash::splash_bg_rgba;
 
 /// Offscreen render-target size. The exact 1280x720 reference (device scale 1.0,
@@ -151,13 +151,17 @@ fn render_splash_offscreen(ctx: &GpuCtx) -> Readback {
         .instances
         .extend_from_slice(&draw.quads.instances);
 
-    // Panels sample the pass's 1x1 white texel.
+    // Panels sample the pass's 1x1 white texel. Wrap the splash's assembled
+    // batches + text in a single-layer composition — the same encode unit the
+    // production splash path (`record_splash_ui`) funnels through.
     let white_bg = pass.white_bind_group().clone();
-    let batches = [UiBatch {
-        list: &panel_list,
-        bind_group: &white_bg,
-    }];
-    let texts = draw.texts;
+    let composition = UiComposition::from_batches(
+        vec![UiBatch {
+            list: &panel_list,
+            bind_group: &white_bg,
+        }],
+        draw.texts,
+    );
 
     let mut encoder = ctx
         .device
@@ -171,8 +175,7 @@ fn render_splash_offscreen(ctx: &GpuCtx) -> Readback {
         &view,
         viewport,
         wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-        &batches,
-        &texts,
+        &composition,
     );
 
     let readback = read_texture_rgba8(ctx, &target, TARGET_W, TARGET_H, encoder);

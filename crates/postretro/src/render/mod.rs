@@ -3652,8 +3652,16 @@ impl Renderer {
             }
         }
 
+        // Wrap the splash's assembled batches + text in a single-layer
+        // composition — the same encode unit the gameplay modal stack funnels
+        // through, so the splash also satisfies the once-per-composition prepare
+        // guard. The splash builds its quads from a standalone `panel_list` plus
+        // the tree's panel/logo/text draw data (not a `UiDrawData` stack), so it
+        // borrows the assembled batches/text directly via `from_batches`.
+        let composition = ui::UiComposition::from_batches(batches, draw.texts.clone());
+
         // The splash path ALWAYS opens the pass with the black clear, even when
-        // the draw lists are empty (frame 0 before install) — the boot "frame-0
+        // the composition is empty (frame 0 before install) — the boot "frame-0
         // black" step depends on this. The gameplay-path empty-tree early-out is
         // separate (see `render_frame_indirect`).
         self.ui.encode(
@@ -3663,8 +3671,7 @@ impl Renderer {
             view,
             viewport,
             wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-            &batches,
-            &draw.texts,
+            &composition,
         );
     }
 
@@ -5474,34 +5481,17 @@ impl Renderer {
         // follow an earlier layer's, so painter order (and thus the LoadOp::Load
         // composite) is preserved within the single pass exactly as the prior
         // per-layer loop intended — minus the cross-layer text clobber.
-        let any_drawable = layer_draws.iter().any(|d| !d.is_empty());
-        if any_drawable {
-            let white_bg = self.ui.white_bind_group().clone();
-            let mut batches: Vec<ui::UiBatch> = Vec::new();
-            let mut texts: Vec<ui::UiText> = Vec::new();
-            for draw in &layer_draws {
-                if !draw.quads.is_empty() {
-                    batches.push(ui::UiBatch {
-                        list: &draw.quads,
-                        bind_group: &white_bg,
-                    });
-                }
-                // Unknown key degrades by skipping just that batch. Logged at
-                // debug, not warn: this gameplay path runs every frame with no
-                // dedup, so a persistently-missing key would spam at warn (§6.1).
-                for (asset, list) in &draw.images {
-                    if list.is_empty() {
-                        continue;
-                    }
-                    match self.ui_images.resolve(asset) {
-                        Some(bind_group) => batches.push(ui::UiBatch { list, bind_group }),
-                        None => log::debug!(
-                            "[Renderer] UI image asset key '{asset}' is not registered — skipping its draw"
-                        ),
-                    }
-                }
-                texts.extend_from_slice(&draw.texts);
-            }
+        // Fold every laid-out layer into ONE whole-frame composition (bottom→top
+        // painter order) and record a SINGLE UI pass. The composition is the unit
+        // of encoding — `encode` takes the whole composition, never one layer — so
+        // the cross-layer glyphon clobber (every layer's text reading the last
+        // layer's shaped glyphs) is unrepresentable. The white bind group is cloned
+        // out first so the `&self.ui_images` borrow the fold takes can coexist with
+        // the `&mut self.ui` encode call below.
+        let white_bg = self.ui.white_bind_group().clone();
+        let composition =
+            ui::UiComposition::from_layer_draws(&layer_draws, &white_bg, &self.ui_images);
+        if !composition.is_empty() {
             self.ui.encode(
                 &self.device,
                 &self.queue,
@@ -5509,8 +5499,7 @@ impl Renderer {
                 &view,
                 ui_viewport,
                 wgpu::LoadOp::Load,
-                &batches,
-                &texts,
+                &composition,
             );
         }
         // Drop retained state for any layers popped since last frame (stack

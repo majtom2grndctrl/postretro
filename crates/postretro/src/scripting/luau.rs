@@ -60,6 +60,12 @@ const DATA_SCRIPT_LUAU_SRC: &str = include_str!("../../../../sdk/lib/data_script
 /// builder assembles a `RuntimeValue` table and never calls back into Rust.
 const RUNTIME_LUAU_SRC: &str = include_str!("../../../../sdk/lib/runtime.luau");
 
+/// SDK library prelude — `ui/reactions.luau` returns a table whose field
+/// (`onStateCrossing`) is destructured into a global so data-script authors
+/// call it by bare name. A pure descriptor builder; its result lands in
+/// `setupLevel`'s `crossings` array — no FFI until the script returns.
+const UI_REACTIONS_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/reactions.luau");
+
 /// Lights SDK fields lifted to globals after evaluating
 /// `entities/lights.luau`. Empty: the public vocabulary lives on the handle
 /// returned from `wrapLightEntity`, which is itself installed as a
@@ -85,6 +91,10 @@ const FOG_VOLUMES_LUAU_FIELDS: &[&str] = &[];
 /// Data-script SDK fields lifted to globals after evaluating
 /// `data_script.luau`.
 const DATA_SCRIPT_FIELDS: &[&str] = &["defineReaction", "defineEntity"];
+
+/// UI-reactions SDK fields lifted to globals after evaluating
+/// `ui/reactions.luau`.
+const UI_REACTIONS_FIELDS: &[&str] = &["onStateCrossing"];
 
 /// Evaluate the Luau SDK prelude in `lua` and promote the return values to
 /// globals. Must be called after primitives are installed and before
@@ -270,6 +280,31 @@ pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
                 .get(*field)
                 .map_err(|e| ScriptError::InvalidArgument {
                     reason: format!("data_script.luau missing `{field}`: {e}"),
+                })?;
+        globals
+            .set(*field, value)
+            .map_err(|e| ScriptError::InvalidArgument {
+                reason: format!("failed to install global `{field}`: {e}"),
+            })?;
+    }
+
+    // Step 7b: evaluate `ui/reactions.luau` and lift its fields to globals.
+    // Pure builders (no primitive dependency); ordering relative to the other
+    // steps is irrelevant.
+    let ui_reactions_sdk: Table = lua
+        .load(UI_REACTIONS_LUAU_SRC)
+        .set_name("postretro/sdk/ui/reactions.luau")
+        .eval()
+        .map_err(|e| ScriptError::ScriptThrew {
+            msg: format!("failed to evaluate SDK prelude `ui/reactions.luau`: {e}"),
+            source_name: "sdk/lib/ui/reactions.luau".to_string(),
+        })?;
+    for field in UI_REACTIONS_FIELDS {
+        let value: mlua::Value =
+            ui_reactions_sdk
+                .get(*field)
+                .map_err(|e| ScriptError::InvalidArgument {
+                    reason: format!("ui/reactions.luau missing `{field}`: {e}"),
                 })?;
         globals
             .set(*field, value)

@@ -659,9 +659,22 @@ declare module "postretro" {
     | SequenceReactionDescriptor
   );
 
+  /** Crossing condition: fires when the watched slot crosses the threshold in one direction. Exactly one of `below`/`above` is given. `max` is the denominator the threshold is a fraction of; omit it for a raw-value comparison (`max` defaults to `1.0`). */
+  export type CrossingCondition =
+    | { below: number; max?: number }
+    | { above: number; max?: number };
+
+  /** A state-crossing watcher entry as it appears in `setupLevel`'s manifest `crossings` array. The condition fields are flattened in beside `slot` and `fire`; `fire` lists the named reactions dispatched (through the shared named-reaction vocabulary) when the crossing occurs. */
+  export type CrossingDescriptor = {
+    slot: string;
+    max?: number;
+    fire: string[];
+  } & ({ below: number } | { above: number });
+
   /** Bundle returned from `setupLevel`. The engine deserializes this shape in one pass at level load. */
   export type LevelManifest = {
     reactions: NamedReactionDescriptor[];
+    crossings?: CrossingDescriptor[];
   };
 
   /** Build a named reaction descriptor. Pure: returns a plain object, no FFI. */
@@ -672,6 +685,13 @@ declare module "postretro" {
       | PrimitiveReactionDescriptor
       | SequenceReactionDescriptor,
   ): NamedReactionDescriptor;
+
+  /** Build a state-crossing watcher. Pure: returns a plain object, no FFI. Place the result in `setupLevel`'s returned `crossings` array. The engine fires every reaction in `fire` exactly once on a crossing in the condition's direction, re-arming only after a crossing back; a registration against a non-Number slot warns and is skipped at load. */
+  export function onStateCrossing(
+    slot: string,
+    condition: CrossingCondition,
+    fire: string[],
+  ): CrossingDescriptor;
 
   /** Pure identity builder for entity-type descriptors. Returns the descriptor as-is; its sole purpose is a typed construction site. */
   export function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor;

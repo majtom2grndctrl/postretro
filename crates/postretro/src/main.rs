@@ -83,6 +83,7 @@ use crate::scripting::reactions::system_commands::{
 };
 use crate::scripting::runtime::{ReloadSummary, ScriptRuntime, ScriptRuntimeConfig};
 use crate::scripting::sequence::SequencedPrimitiveRegistry;
+use crate::scripting::state_crossings::CrossingDetector;
 use crate::scripting::state_persistence::{
     STATE_FILE_PATH, StateStoreLifecycle, collect_persisted_state, load_persisted_state,
     overlay_persisted_state, save_persisted_state,
@@ -371,6 +372,7 @@ fn main() -> Result<()> {
         reaction_registry,
         system_registry,
         progress_tracker: ProgressTracker::new(),
+        crossing_detector: CrossingDetector::new(),
         classname_dispatch,
         light_bridge: scripting_systems::light_bridge::LightBridge::new(),
         fog_volume_bridge: scripting_systems::fog_volume_bridge::FogVolumeBridge::new(),
@@ -565,6 +567,13 @@ struct App {
     /// Per-tag kill-count subscriptions. Cleared on level unload; survives
     /// hot-reload. See: context/lib/scripting.md §2
     progress_tracker: ProgressTracker,
+
+    /// State-crossing watchers (M13 HUD dynamics). Built from the data
+    /// registry's `crossings` at level load; checked each frame after
+    /// `ui_proxy.tick` (slot writes settled) and before the UI snapshot build.
+    /// Cleared on level unload with the rest of the per-level state.
+    /// See: context/lib/scripting.md §10.4
+    crossing_detector: CrossingDetector,
 
     /// Maps `classname` strings to engine spawn handlers. Survives level
     /// unload — built-in handlers carry no per-level state.
@@ -1263,6 +1272,31 @@ impl ApplicationHandler for App {
                 // `frame_dt` (not wall-clock) so the flash animation is
                 // deterministic. See: context/lib/scripting.md §5.
                 self.ui_proxy.tick(frame_dt);
+
+                // State-crossing detection (M13 HUD dynamics). Runs AFTER the
+                // frame's slot writes (game logic + `ui_proxy.tick`) settle, so
+                // it compares the authoritative slot value — distinct from the
+                // eased display value styleRanges read mid-tween. Each watched
+                // slot's threshold crossing fires its reaction list synchronously
+                // through Task 2's shared named-reaction path; any system
+                // reactions thereby enqueued are drained immediately below so
+                // crossing-fired commands land in this frame, not the next.
+                let crossing_events = self
+                    .crossing_detector
+                    .detect(&self.script_ctx.slot_table.borrow());
+                for event_name in &crossing_events {
+                    let _ = fire_named_event_with_sequences(
+                        event_name,
+                        &self.script_ctx.data_registry.borrow(),
+                        &self.sequence_registry,
+                        &self.reaction_registry,
+                        &self.system_registry,
+                        &self.script_ctx,
+                    );
+                }
+                if !self.script_ctx.system_commands.is_empty() {
+                    self.script_ctx.system_commands.drain_to_log();
+                }
 
                 // Audio step — third in frame order (Input → Game logic →
                 // Audio → Render → Present, development_guide.md §4.3). Runs after
@@ -2394,6 +2428,15 @@ impl App {
                 self.progress_tracker.initialize(
                     &self.script_ctx.data_registry.borrow(),
                     &self.script_ctx.registry.borrow(),
+                );
+                // Build the crossing watchers from this level's `crossings`.
+                // Clear first so a re-load (or hot reload) does not stack
+                // duplicate watchers; the previous value initializes to each
+                // slot's value at level start so the initial state never fires.
+                self.crossing_detector.clear();
+                self.crossing_detector.initialize(
+                    &self.script_ctx.data_registry.borrow(),
+                    &self.script_ctx.slot_table.borrow(),
                 );
             }
         }

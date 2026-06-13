@@ -140,6 +140,10 @@ export type NamedReactionDescriptor = {
 --- `entities` field of `setupMod`'s return value, not here.
 export type LevelManifest = {
   reactions: {NamedReactionDescriptor},
+  -- State-crossing watchers (M13 HUD dynamics). `CrossingDescriptor` is
+  -- declared in postretro.d.luau (the generated SDK-lib type block). See
+  -- `onStateCrossing`.
+  crossings: {CrossingDescriptor}?,
 }
 
 local DataScriptSdk = {}

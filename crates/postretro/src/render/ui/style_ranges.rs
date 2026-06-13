@@ -418,6 +418,92 @@ mod tests {
         assert_eq!(reserialized, json);
     }
 
+    // AC-3 contract (M13 Goal E): while a tween is active, styleRanges evaluate
+    // the eased DISPLAY value, but the crossing detector evaluates the
+    // AUTHORITATIVE slot. Mid-tween the two diverge — the HUD still shows the
+    // pre-damage band color while the crossing has already fired off the true
+    // slot value. This is a render/scripting seam test: it drives the real
+    // styleRanges evaluator and the real `CrossingDetector` against one slot.
+    #[test]
+    fn styleranges_display_value_and_crossing_authoritative_slot_diverge_mid_tween() {
+        use crate::scripting::data_descriptors::{
+            CrossingCondition, CrossingDescriptor, LevelManifest,
+        };
+        use crate::scripting::data_registry::DataRegistry;
+        use crate::scripting::slot_table::{
+            SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
+        };
+        use crate::scripting::state_crossings::CrossingDetector;
+
+        // Health styleRanges: red ≤ 0.2 of max, default green above.
+        let ranges = StyleRanges {
+            max: 100.0,
+            entries: vec![
+                StyleEntry {
+                    up_to: Some(0.2),
+                    color: Some(ColorValue::Literal([1.0, 0.0, 0.0, 1.0])),
+                    pulse: None,
+                    flash: None,
+                },
+                entry(None, Some(ColorValue::Literal([0.0, 1.0, 0.0, 1.0]))),
+            ],
+        };
+
+        // The authoritative `player.health` slot: a mod-style Number slot under
+        // a fresh namespace seeded at full health.
+        let mut slot_table = crate::scripting::slot_table::SlotTable::new();
+        slot_table
+            .insert(
+                "hud.health".to_string(),
+                SlotRecord {
+                    schema: SlotSchema {
+                        slot_type: SlotType::Number,
+                        default: None,
+                        range: None,
+                        persist: false,
+                        readonly: false,
+                        ownership: SlotOwnership::Mod,
+                    },
+                    value: Some(SlotValue::Number(100.0)),
+                },
+            )
+            .unwrap();
+
+        // A `below: 20` (of max 100) crossing watching the authoritative slot.
+        let mut data_registry = DataRegistry::new();
+        data_registry.populate_from_manifest(LevelManifest {
+            reactions: Vec::new(),
+            crossings: vec![CrossingDescriptor {
+                slot: "hud.health".to_string(),
+                condition: CrossingCondition::Below { threshold: 0.2 },
+                max: 100.0,
+                fire: vec!["lowHealth".to_string()],
+            }],
+        });
+        let mut detector = CrossingDetector::new();
+        detector.initialize(&data_registry, &slot_table);
+
+        // Authoritative health drops below 20 this frame.
+        slot_table.get_mut("hud.health").unwrap().value = Some(SlotValue::Number(15.0));
+
+        // Mid-tween the eased DISPLAY value still reads 50 — the bar is catching
+        // up. styleRanges, fed the DISPLAY value, resolve the GREEN default band.
+        let mut style_state = StyleEffectState::default();
+        let display_color = evaluate(&ranges, 50.0, [1.0; 4], &theme(), &mut style_state, 0.0);
+        assert!(
+            close(display_color[0], 0.0) && close(display_color[1], 1.0),
+            "display value (mid-tween) resolves the green band, got {display_color:?}"
+        );
+
+        // The detector, fed the AUTHORITATIVE slot, fires the below-20% crossing
+        // this same frame — the two reads diverge.
+        assert_eq!(
+            detector.detect(&slot_table),
+            vec!["lowHealth".to_string()],
+            "the crossing fires off the authoritative slot while the HUD shows green"
+        );
+    }
+
     #[test]
     fn entry_omits_absent_optional_fields_on_the_wire() {
         // A bare default entry (no upTo, color, pulse, flash) serializes to an

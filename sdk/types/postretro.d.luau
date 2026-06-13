@@ -681,10 +681,23 @@ export type PrimitiveNamedReactionDescriptor = { name: string, primitive: string
 export type SequenceNamedReactionDescriptor = { name: string, sequence: {SequenceStep} }
 export type NamedReactionDescriptor = ProgressNamedReactionDescriptor | PrimitiveNamedReactionDescriptor | SequenceNamedReactionDescriptor
 
+--- Crossing condition: fires when the watched slot crosses the threshold in
+--- one direction. Exactly one of `below`/`above` is given. `max` is the
+--- denominator the threshold is a fraction of; omit it for a raw-value
+--- comparison (`max` defaults to `1.0`).
+export type CrossingCondition = { below: number?, above: number?, max: number? }
+
+--- A state-crossing watcher entry as it appears in `setupLevel`'s manifest
+--- `crossings` array. The condition fields are flattened in beside `slot` and
+--- `fire`; `fire` lists the named reactions dispatched (through the shared
+--- named-reaction vocabulary) when the crossing occurs.
+export type CrossingDescriptor = { slot: string, below: number?, above: number?, max: number?, fire: {string} }
+
 --- Bundle returned from `setupLevel`. The engine deserializes
 --- this shape in one pass at level load.
 export type LevelManifest = {
   reactions: {NamedReactionDescriptor},
+  crossings: {CrossingDescriptor}?,
 }
 
 --- Build a named reaction descriptor. Pure: returns a plain table, no FFI.
@@ -696,6 +709,17 @@ declare function defineReaction(
 --- Pure identity builder for entity-type descriptors. Returns the
 --- descriptor as-is; its sole purpose is a typed construction site.
 declare function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor
+
+--- Build a state-crossing watcher. Pure: returns a plain table, no FFI. Place
+--- the result in `setupLevel`'s returned `crossings` array. On a crossing in
+--- the condition's direction the engine fires every reaction in `fire` exactly
+--- once, re-arming only after a crossing back; a registration against a
+--- non-Number slot warns and is skipped at load.
+declare function onStateCrossing(
+  slot: string,
+  condition: CrossingCondition,
+  fire: {string}
+): CrossingDescriptor
 
 -- ---------------------------------------------------------------------------
 -- Runtime-value vocabulary — the typed command buffer (scripting.md §11). The

@@ -69,6 +69,8 @@ export type NamedReactionDescriptor = { name: string } & (
  */
 export type LevelManifest = {
   reactions: NamedReactionDescriptor[];
+  /** State-crossing watchers (M13 HUD dynamics). See `onStateCrossing`. */
+  crossings?: import("./ui/reactions").CrossingDescriptor[];
 };
 
 /** Returns a plain object — pure builder, no engine side effects. */

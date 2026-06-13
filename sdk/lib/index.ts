@@ -37,6 +37,9 @@ export type {
 } from "./data_script";
 export { defineReaction, defineEntity } from "./data_script";
 
+export type { CrossingCondition, CrossingDescriptor } from "./ui/reactions";
+export { onStateCrossing } from "./ui/reactions";
+
 export type {
   BillboardEmitter,
   SpinAnimation,

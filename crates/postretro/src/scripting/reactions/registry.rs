@@ -340,6 +340,7 @@ mod tests {
         let mut data = DataRegistry::new();
         data.populate_from_manifest(LevelManifest {
             reactions: validated,
+            crossings: Vec::new(),
         });
 
         let reaction_reg = ReactionPrimitiveRegistry::new();

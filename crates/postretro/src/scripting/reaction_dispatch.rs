@@ -363,6 +363,7 @@ mod tests {
         let mut data = DataRegistry::new();
         data.populate_from_manifest(LevelManifest {
             reactions: vec![progress_reaction("waveDone", "wave1", 1.0, "powerOn")],
+            crossings: Vec::new(),
         });
 
         let mut entities = EntityRegistry::new();
@@ -380,6 +381,7 @@ mod tests {
         let mut data = DataRegistry::new();
         data.populate_from_manifest(LevelManifest {
             reactions: vec![progress_reaction("waveDone", "wave1", 1.0, "powerOn")],
+            crossings: Vec::new(),
         });
 
         let mut entities = EntityRegistry::new();
@@ -401,6 +403,7 @@ mod tests {
         let mut data = DataRegistry::new();
         data.populate_from_manifest(LevelManifest {
             reactions: vec![progress_reaction("half", "wave1", 0.5, "midwave")],
+            crossings: Vec::new(),
         });
 
         let mut entities = EntityRegistry::new();
@@ -425,6 +428,7 @@ mod tests {
                 progress_reaction("waveDone", "wave1", 1.0, "powerOn"),
                 progress_reaction("reactorDown", "reactorMonster", 1.0, "reactorOff"),
             ],
+            crossings: Vec::new(),
         });
 
         let mut entities = EntityRegistry::new();
@@ -450,6 +454,7 @@ mod tests {
                 progress_reaction("waveDone", "wave1", 0.5, "powerOn"),
                 progress_reaction("reactorDown", "reactorMonster", 0.5, "reactorOff"),
             ],
+            crossings: Vec::new(),
         });
 
         let mut entities = EntityRegistry::new();
@@ -476,6 +481,7 @@ mod tests {
         let mut data = DataRegistry::new();
         data.populate_from_manifest(LevelManifest {
             reactions: vec![progress_reaction("waveDone", "wave1", 1.0, "powerOn")],
+            crossings: Vec::new(),
         });
         let mut entities = EntityRegistry::new();
         spawn_with_tags(&mut entities, &["wave1"]);
@@ -495,6 +501,7 @@ mod tests {
         let mut data = DataRegistry::new();
         data.populate_from_manifest(LevelManifest {
             reactions: vec![progress_reaction("waveDone", "ghosts", 1.0, "spooky")],
+            crossings: Vec::new(),
         });
         let entities = EntityRegistry::new();
 
@@ -550,6 +557,7 @@ mod tests {
                 "reactorChambers",
                 Some("wave2Revealed"),
             )],
+            crossings: Vec::new(),
         });
 
         let chained = fire_named_event("wave1Complete", &data);
@@ -566,6 +574,7 @@ mod tests {
                 "reactorWave2Monsters",
                 None,
             )],
+            crossings: Vec::new(),
         });
 
         let chained = fire_named_event("wave2Revealed", &data);
@@ -577,6 +586,7 @@ mod tests {
         let mut data = DataRegistry::new();
         data.populate_from_manifest(LevelManifest {
             reactions: vec![progress_reaction("waveDone", "wave1", 1.0, "powerOn")],
+            crossings: Vec::new(),
         });
         let chained = fire_named_event("waveDone", &data);
         assert!(chained.is_empty());
@@ -626,6 +636,7 @@ mod tests {
                     args: serde_json::json!({ "sound": "alarm", "bus": "sfx" }),
                 }),
             }],
+            crossings: Vec::new(),
         });
 
         let seq_reg = SequencedPrimitiveRegistry::new();
@@ -686,6 +697,7 @@ mod tests {
                     },
                 ],
             )],
+            crossings: Vec::new(),
         });
 
         let reaction_reg = ReactionPrimitiveRegistry::new();
@@ -745,6 +757,7 @@ mod tests {
                     },
                 ],
             )],
+            crossings: Vec::new(),
         });
 
         let reaction_reg = ReactionPrimitiveRegistry::new();
@@ -797,6 +810,7 @@ mod tests {
                     },
                 ],
             )],
+            crossings: Vec::new(),
         });
 
         let reaction_reg = ReactionPrimitiveRegistry::new();

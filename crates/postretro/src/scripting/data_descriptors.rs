@@ -72,6 +72,36 @@ pub(crate) struct NamedReaction {
     pub(crate) descriptor: ReactionDescriptor,
 }
 
+/// The condition half of a state-crossing watcher (M13 HUD dynamics). A
+/// crossing fires when the watched slot transitions across `threshold` in the
+/// declared direction. `threshold` is stored as a fraction of the
+/// registration's `max` (`raw_threshold / max`); the watcher compares it
+/// against the slot's `current / max`, so a registration with no `max`
+/// (default `1.0`) degrades to a raw-value comparison.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum CrossingCondition {
+    /// Fires on a downward crossing: `prev >= threshold && cur < threshold`.
+    Below { threshold: f32 },
+    /// Fires on an upward crossing: `prev <= threshold && cur > threshold`.
+    Above { threshold: f32 },
+}
+
+/// A state-crossing watcher declared by `onStateCrossing` and carried back
+/// through `setupLevel`'s manifest (the `scripting.md` §12 FFI rule — no
+/// side-effect registration). The detector watches `slot` after each frame's
+/// slot writes and, on a crossing in the condition's direction, dispatches
+/// every event in `fire` synchronously through the named-reaction vocabulary.
+///
+/// `max` is the registration's denominator: thresholds are fractions of it.
+/// It defaults to `1.0` (raw-value comparison) when the registration omits it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CrossingDescriptor {
+    pub(crate) slot: String,
+    pub(crate) condition: CrossingCondition,
+    pub(crate) max: f32,
+    pub(crate) fire: Vec<String>,
+}
+
 /// Authored light component preset attached to an [`EntityTypeDescriptor`].
 /// Mirrors the runtime [`super::components::light::LightComponent`] shape but
 /// only carries the script-authored fields (no animation, no cone, no
@@ -774,6 +804,10 @@ impl SwayParams {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct LevelManifest {
     pub(crate) reactions: Vec<NamedReaction>,
+    /// State-crossing watchers (M13 HUD dynamics). Parsed alongside `reactions`
+    /// from the widened `{ reactions, crossings }` setup-manifest return and
+    /// drained into the per-level `DataRegistry`; cleared on level unload.
+    pub(crate) crossings: Vec<CrossingDescriptor>,
 }
 
 #[derive(Debug, Error, PartialEq)]
@@ -792,6 +826,8 @@ pub(crate) enum DescriptorError {
     AtThresholdOutOfRange { value: f32 },
     #[error("manifest deserialization failed: {reason}")]
     InvalidShape { reason: String },
+    #[error("crossing entry must declare exactly one of 'below' or 'above' (got {count})")]
+    CrossingCondition { count: usize },
 }
 
 // --- shared validation ------------------------------------------------------
@@ -808,6 +844,63 @@ fn validate_primitive_name(name: String) -> Result<String, DescriptorError> {
         return Err(DescriptorError::EmptyPrimitiveName);
     }
     Ok(name)
+}
+
+/// Build a [`CrossingDescriptor`] from the raw fields gathered by either FFI
+/// path. Shared so JS and Luau enforce identical rules: a non-empty `slot`,
+/// exactly one of `below`/`above` (the threshold value, raw), a finite default
+/// `max` of `1.0`, and a `fire` list of event names (empty is permitted — the
+/// watcher fires nothing, a no-op). `raw_threshold` is divided by `max` here so
+/// the stored threshold is already a fraction of `max`, matching the value the
+/// detector compares against (`current / max`).
+fn build_crossing(
+    slot: String,
+    below: Option<f32>,
+    above: Option<f32>,
+    max: Option<f32>,
+    fire: Vec<String>,
+) -> Result<CrossingDescriptor, DescriptorError> {
+    if slot.is_empty() {
+        return Err(DescriptorError::InvalidShape {
+            reason: "crossing entry `slot` must be a non-empty string".to_string(),
+        });
+    }
+    let max = max.unwrap_or(1.0);
+    if !max.is_finite() || max <= 0.0 {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("crossing entry `max` must be a finite value > 0.0, got {max}"),
+        });
+    }
+    let condition = match (below, above) {
+        (Some(below), None) => {
+            if !below.is_finite() {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!("crossing entry `below` must be finite, got {below}"),
+                });
+            }
+            CrossingCondition::Below {
+                threshold: below / max,
+            }
+        }
+        (None, Some(above)) => {
+            if !above.is_finite() {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!("crossing entry `above` must be finite, got {above}"),
+                });
+            }
+            CrossingCondition::Above {
+                threshold: above / max,
+            }
+        }
+        (None, None) => return Err(DescriptorError::CrossingCondition { count: 0 }),
+        (Some(_), Some(_)) => return Err(DescriptorError::CrossingCondition { count: 2 }),
+    };
+    Ok(CrossingDescriptor {
+        slot,
+        condition,
+        max,
+        fire,
+    })
 }
 
 // --- JS deserialization -----------------------------------------------------
@@ -835,7 +928,22 @@ impl LevelManifest {
             Vec::new()
         };
 
-        Ok(Self { reactions })
+        let crossings = if obj.contains_key("crossings").map_err(js_err)? {
+            let arr: Array = obj.get("crossings").map_err(js_err)?;
+            let mut out = Vec::with_capacity(arr.len());
+            for i in 0..arr.len() {
+                let item: JsValue = arr.get(i).map_err(js_err)?;
+                out.push(crossing_descriptor_from_js(&item)?);
+            }
+            out
+        } else {
+            Vec::new()
+        };
+
+        Ok(Self {
+            reactions,
+            crossings,
+        })
     }
 
     /// Deserialize a top-level `{ reactions }` table returned from a
@@ -863,7 +971,23 @@ impl LevelManifest {
             Vec::new()
         };
 
-        Ok(Self { reactions })
+        let crossings = if table.contains_key("crossings").map_err(lua_err)? {
+            let arr: Table = table.get("crossings").map_err(lua_err)?;
+            let len = arr.raw_len();
+            let mut out = Vec::with_capacity(len);
+            for i in 1..=(len as i64) {
+                let item: LuaValue = arr.get(i).map_err(lua_err)?;
+                out.push(crossing_descriptor_from_lua(item)?);
+            }
+            out
+        } else {
+            Vec::new()
+        };
+
+        Ok(Self {
+            reactions,
+            crossings,
+        })
     }
 }
 
@@ -922,6 +1046,34 @@ fn progress_descriptor_from_js<'js>(
     let at = validate_at(at)?;
     let fire = get_required_string_js(obj, "fire")?;
     Ok(ProgressDescriptor { tag, at, fire })
+}
+
+/// Deserialize one crossing entry from a JS object. Shape:
+/// `{ slot: string, below?: number, above?: number, max?: number, fire: string[] }`.
+/// Exactly one of `below`/`above` is required; `max` defaults to `1.0` (raw
+/// comparison). Validation (single condition, finite bounds) is delegated to
+/// [`build_crossing`] so both FFI paths share identical rules.
+fn crossing_descriptor_from_js<'js>(
+    value: &JsValue<'js>,
+) -> Result<CrossingDescriptor, DescriptorError> {
+    let obj = Object::from_value(value.clone()).map_err(|_| DescriptorError::InvalidShape {
+        reason: "crossing entry must be an object".to_string(),
+    })?;
+    let slot = get_required_string_js(&obj, "slot")?;
+    let below = get_optional_f32_js(&obj, "below")?;
+    let above = get_optional_f32_js(&obj, "above")?;
+    let max = get_optional_f32_js(&obj, "max")?;
+
+    let fire_arr: Array = obj.get("fire").map_err(|_| DescriptorError::InvalidShape {
+        reason: "crossing entry `fire` must be an array of event names".to_string(),
+    })?;
+    let mut fire = Vec::with_capacity(fire_arr.len());
+    for i in 0..fire_arr.len() {
+        let item: JsValue = fire_arr.get(i).map_err(js_err)?;
+        fire.push(String::from_js_value_required(item, "fire")?);
+    }
+
+    build_crossing(slot, below, above, max, fire)
 }
 
 fn primitive_descriptor_from_js<'js>(
@@ -2023,6 +2175,48 @@ fn progress_descriptor_from_lua(table: &Table) -> Result<ProgressDescriptor, Des
     let at = validate_at(at)?;
     let fire = get_required_string_lua(table, "fire")?;
     Ok(ProgressDescriptor { tag, at, fire })
+}
+
+/// Mirror of [`crossing_descriptor_from_js`] for Luau tables. Shape:
+/// `{ slot: string, below?: number, above?: number, max?: number, fire: {string} }`.
+/// Delegates validation to [`build_crossing`].
+fn crossing_descriptor_from_lua(value: LuaValue) -> Result<CrossingDescriptor, DescriptorError> {
+    let table = match value {
+        LuaValue::Table(t) => t,
+        other => {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!("crossing entry must be a table, got {}", other.type_name()),
+            });
+        }
+    };
+    let slot = get_required_string_lua(&table, "slot")?;
+    let below = get_optional_f32_lua(&table, "below")?;
+    let above = get_optional_f32_lua(&table, "above")?;
+    let max = get_optional_f32_lua(&table, "max")?;
+
+    let fire_arr: Table = table
+        .get("fire")
+        .map_err(|_| DescriptorError::InvalidShape {
+            reason: "crossing entry `fire` must be an array of event names".to_string(),
+        })?;
+    let len = fire_arr.raw_len();
+    let mut fire = Vec::with_capacity(len);
+    for i in 1..=(len as i64) {
+        let item: LuaValue = fire_arr.get(i).map_err(lua_err)?;
+        match item {
+            LuaValue::String(s) => fire.push(s.to_str().map_err(lua_err)?.to_string()),
+            other => {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "crossing entry `fire` elements must be strings, got {}",
+                        other.type_name()
+                    ),
+                });
+            }
+        }
+    }
+
+    build_crossing(slot, below, above, max, fire)
 }
 
 fn primitive_descriptor_from_lua(table: &Table) -> Result<PrimitiveDescriptor, DescriptorError> {

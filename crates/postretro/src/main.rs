@@ -380,11 +380,23 @@ fn main() -> Result<()> {
             stack
                 .registry_mut()
                 .register("hud", render::ui::demo::build_demo_descriptor());
+            // Register the demo pause menu (M13 Goal F, Task 5) so `nav.menu`
+            // (gamepad Start / Escape-from-gameplay) can push it onto the stack.
+            stack.registry_mut().register(
+                render::ui::demo::PAUSE_MENU_NAME,
+                render::ui::demo::build_pause_menu_descriptor(),
+            );
             stack
         },
         ui_focus: input::UiFocusEngine::new(),
         ui_focus_rects: None,
         ui_input_mode: input::InputMode::default(),
+        input_mode_tracker: scripting_systems::input_mode::InputModeTracker::new(
+            script_ctx.clone(),
+        ),
+        audio_master: scripting_systems::audio_master::AudioMasterConsumer::new(script_ctx.clone()),
+        pending_mode_signal: None,
+        pending_menu_toggle: false,
         ui_focused_id: None,
         script_ctx,
         state_store_lifecycle: StateStoreLifecycle::default(),
@@ -610,9 +622,40 @@ struct App {
     ui_focus_rects: Option<render::ui::tree::FocusRectList>,
 
     /// Pointer-vs-focus interaction mode taken as an input by the focus engine
-    /// (hover moves focus only in `Pointer` mode). Task 5 owns writing the
-    /// `input.mode` slot; until then this defaults to `Focus`.
+    /// (hover moves focus only in `Pointer` mode). Driven each input phase from
+    /// `input_mode_tracker` (mouse motion → `Pointer`; nav input → `Focus`).
     ui_input_mode: input::InputMode,
+
+    /// App-side input-mode tracker (M13 Goal F, Task 5). Observes the input
+    /// phase's mode signals (mouse motion vs. nav input), debounces them, writes
+    /// the engine-owned `input.mode` enum slot, and drives `ui_input_mode`. The
+    /// store write is app composition — the input subsystem's contract output
+    /// stays the action snapshot. Reset on level load. See: context/lib/input.md §7.
+    input_mode_tracker: scripting_systems::input_mode::InputModeTracker,
+
+    /// App-side `audio.master` consumer (M13 Goal F, Task 5). Reads the
+    /// mod-declared `audio.master` amplitude slot and applies it to the audio
+    /// main-track volume (amplitude → dB) on change, making the demo pause-menu
+    /// volume slider audible. No-op when no mod declares the slot. Reset on level
+    /// load. See: context/lib/audio.md §1.
+    audio_master: scripting_systems::audio_master::AudioMasterConsumer,
+
+    /// The mode signal observed during THIS frame's input phase, resolved into
+    /// `input_mode_tracker` at the head of the game-logic phase. Mouse motion
+    /// (`CursorMoved`) votes `Pointer`; any nav input (stick edge / D-pad / nav
+    /// key) votes `Focus`. Nav wins when both occur in one frame (a deliberate
+    /// nav press dominates incidental cursor drift). Cleared each frame after the
+    /// tracker consumes it. See: context/lib/input.md §7.
+    pending_mode_signal: Option<scripting_systems::input_mode::ModeSignal>,
+
+    /// Punch-through `nav.menu` toggle (M13 Goal F, Task 5): set when a `nav.menu`
+    /// intent (gamepad Start, or keyboard Escape-from-gameplay) is produced in the
+    /// input phase, then consumed in the game-logic phase to push (open) or pop
+    /// (close) the demo pause menu via the engine push/pop API. `nav.menu` opens
+    /// the menu from gameplay where the UI-dispatch seam is `Passthrough` and so
+    /// queues nothing — hence the dedicated punch-through, mirroring how
+    /// `ToggleDebugPanel` bypasses the capture gate. See: context/lib/input.md §7.
+    pending_menu_toggle: bool,
 
     /// The focused node id the focus engine resolved THIS frame's game-logic
     /// phase, published on this frame's snapshot so the UI pass draws the focus
@@ -1050,7 +1093,21 @@ impl ApplicationHandler for App {
                         // capture mode, so it IS the "capturing tree present"
                         // predicate. See: context/lib/input.md §7
                         let capturing = self.ui_dispatch.mode() == input::UiCaptureMode::Capture;
-                        input::nav_intent_for_key(code, capturing).map(input::UiIntentPayload::Nav)
+                        let intent = input::nav_intent_for_key(code, capturing);
+                        if intent.is_some() {
+                            // A nav key (arrows/enter/escape/tab) is a `focus`-mode
+                            // signal — it switches the interaction mode off pointer.
+                            self.record_mode_signal(
+                                scripting_systems::input_mode::ModeSignal::NavInput,
+                            );
+                        }
+                        // Escape-from-gameplay maps to `nav.menu` (opens the pause
+                        // menu). The seam is `Passthrough` from gameplay and queues
+                        // nothing, so route the toggle through the punch-through flag.
+                        if intent == Some(input::NavIntent::Menu) {
+                            self.pending_menu_toggle = true;
+                        }
+                        intent.map(input::UiIntentPayload::Nav)
                     } else {
                         None
                     };
@@ -1108,6 +1165,10 @@ impl ApplicationHandler for App {
                     x: position.x,
                     y: position.y,
                 });
+                // Mouse motion is the `pointer`-mode signal. Recorded as tracked
+                // state (resolved into `input.mode` at the game-logic phase head);
+                // a same-frame nav press still wins (see `record_mode_signal`).
+                self.record_mode_signal(scripting_systems::input_mode::ModeSignal::MouseMotion);
             }
             WindowEvent::CursorLeft { .. } => {
                 // Cursor left the window: drop the tracked position so a stale
@@ -1209,13 +1270,43 @@ impl ApplicationHandler for App {
                     // stop it once its duration elapses (the rumble started by a
                     // drained `Rumble` command on a prior frame).
                     gp.tick_rumble(frame_dt);
-                    if self.ui_dispatch.mode() == input::UiCaptureMode::Capture {
-                        for intent in nav_intents {
+                    // Any gamepad nav intent (stick edge, D-pad, face/system
+                    // button) is a `focus`-mode signal — recorded regardless of
+                    // capture mode so a `nav.menu` opened from gameplay also flips
+                    // the interaction mode off pointer.
+                    if !nav_intents.is_empty() {
+                        self.record_mode_signal(
+                            scripting_systems::input_mode::ModeSignal::NavInput,
+                        );
+                    }
+                    // `nav.menu` (gamepad Start) toggles the pause menu. It must
+                    // work from gameplay, where the seam is `Passthrough` and queues
+                    // nothing — route it through the punch-through flag regardless of
+                    // capture mode. Other nav intents only enqueue while a capturing
+                    // tree owns input.
+                    let capture = self.ui_dispatch.mode() == input::UiCaptureMode::Capture;
+                    for intent in nav_intents {
+                        if intent == input::NavIntent::Menu {
+                            self.pending_menu_toggle = true;
+                        }
+                        if capture {
                             self.ui_dispatch
                                 .enqueue_intent(input::UiIntentPayload::Nav(intent));
                         }
                     }
                 }
+
+                // Resolve this frame's input-mode signal into the engine-owned
+                // `input.mode` slot (app composition — the input subsystem's
+                // contract output stays the action snapshot). Mouse motion votes
+                // `pointer`, nav input votes `focus`, debounced so jitter doesn't
+                // flap. Drives `ui_input_mode` (the focus engine's hover gate). The
+                // mode is observation-only here; its cursor/ring EFFECT is gated on
+                // a capturing tree being on the stack (applied in `reconcile_ui_focus`).
+                // See: context/lib/input.md §7.
+                self.ui_input_mode = self
+                    .input_mode_tracker
+                    .update(self.pending_mode_signal.take(), frame_dt);
 
                 // Game-logic phase begins here. Read the UI captures made
                 // available by the *previous* frame, THEN promote this frame's
@@ -1284,6 +1375,24 @@ impl ApplicationHandler for App {
                 // click and a gamepad confirm have an identical observable effect.
                 if focus_result.confirmed {
                     self.fire_focused_button_activation(focus_result.focused.as_deref());
+                }
+
+                // Pause-menu toggle (M13 Goal F, Task 5): `nav.menu` (gamepad Start
+                // / Escape-from-gameplay) opens or closes the demo pause menu via
+                // the engine push/pop API. A `nav.cancel` (Escape / B inside the
+                // menu) also closes it. The capture-mode + cursor effect follows on
+                // this frame's `reconcile_ui_focus` below. The toggle flag is a
+                // punch-through (it works from gameplay, where the seam queues
+                // nothing); `cancelled` rides the captured-intent queue. Guard the
+                // cancel close to the pause menu so it never pops an unrelated
+                // top tree.
+                if self.pending_menu_toggle {
+                    self.pending_menu_toggle = false;
+                    self.toggle_pause_menu();
+                } else if focus_result.cancelled
+                    && self.modal_stack.active_name() == Some(render::ui::demo::PAUSE_MENU_NAME)
+                {
+                    self.modal_stack.pop();
                 }
 
                 // drain_look_inputs() must precede snapshot(); both touch
@@ -1535,6 +1644,16 @@ impl ApplicationHandler for App {
                 // `forward()`, and `up` is world up per the `ListenerState`
                 // contract. Guarded for the silent (init-failed) case.
                 if let Some(audio) = &mut self.audio {
+                    // App-side `audio.master` consumer (M13 Goal F, Task 5): apply
+                    // the mod-declared master amplitude (set by the demo pause-menu
+                    // slider via `setState`) to the audio main-track volume on
+                    // change — amplitude → dB, `0` → mute floor. No-op when no mod
+                    // declares the slot or the value is unchanged. Runs in the audio
+                    // phase, after the frame's slot writes settle.
+                    if let Some(db) = self.audio_master.poll() {
+                        audio.set_main_volume(db);
+                    }
+
                     let listener = audio::ListenerState {
                         position: self.camera.position.to_array(),
                         forward: self.camera.aim_ray().1.to_array(),
@@ -1967,11 +2086,25 @@ impl ApplicationHandler for App {
                             on_commit: None,
                         }];
                         trees.extend(self.modal_stack.entries());
+                        // Ring-visibility follows the interaction mode WHILE a
+                        // capturing tree is on the stack (M13 Goal F, Task 5):
+                        // `focus` mode shows the ring, `pointer` mode hides it (the
+                        // cursor is the indicator). Inert otherwise — with no
+                        // capturing tree the focused id always rides through (the
+                        // HUD has no focusable nodes, so it is `None` anyway).
+                        let ring_id = if self.modal_stack.top_capture_mode()
+                            == input::UiCaptureMode::Capture
+                            && !self.ui_input_mode.ring_visible()
+                        {
+                            None
+                        } else {
+                            self.ui_focused_id.clone()
+                        };
                         renderer.set_ui_snapshot(render::ui::UiReadSnapshot::with_trees(
                             trees,
                             slot_values,
                             self.script_time,
-                            self.ui_focused_id.clone(),
+                            ring_id,
                         ));
 
                         let surface_texture = match renderer.render_frame_indirect(
@@ -2670,6 +2803,11 @@ impl App {
         // Clear any in-flight `screen.flash` decay so a flash never bleeds
         // across a level load.
         self.flash_decay.reset();
+        // Reset the input-mode tracker (re-seeds `input.mode` to `focus`) and the
+        // `audio.master` consumer (re-applies the freshly-declared volume) so a
+        // mid-transition mode or a stale master volume never bleeds across levels.
+        self.input_mode_tracker.reset();
+        self.audio_master.reset();
         self.active_wieldable = None;
         self.active_wieldable_descriptor = None;
 
@@ -3261,6 +3399,35 @@ impl App {
         self.diagnostic_inputs.clear_modifiers();
     }
 
+    /// Record this frame's input-mode signal, with nav input dominating mouse
+    /// motion when both occur in one frame: a deliberate nav press should win
+    /// over incidental cursor drift, so a `NavInput` vote overwrites a pending
+    /// `MouseMotion` but not vice-versa. Cleared each frame after the tracker
+    /// consumes it. See: context/lib/input.md §7.
+    fn record_mode_signal(&mut self, signal: scripting_systems::input_mode::ModeSignal) {
+        use scripting_systems::input_mode::ModeSignal;
+        self.pending_mode_signal = match (self.pending_mode_signal, signal) {
+            // Nav always wins (overwrite a pending pointer vote; keep nav).
+            (_, ModeSignal::NavInput) => Some(ModeSignal::NavInput),
+            (Some(ModeSignal::NavInput), ModeSignal::MouseMotion) => Some(ModeSignal::NavInput),
+            (_, ModeSignal::MouseMotion) => Some(ModeSignal::MouseMotion),
+        };
+    }
+
+    /// Toggle the demo pause menu (M13 Goal F, Task 5): pop it if it is the top
+    /// tree, otherwise push it via the engine push/pop API (the registered
+    /// `pauseMenu` tree). Wired to `nav.menu` (gamepad Start / Escape-from-
+    /// gameplay) through `pending_menu_toggle`. The capture-mode + cursor effect
+    /// follows on the next `reconcile_ui_focus` (this game-logic phase).
+    fn toggle_pause_menu(&mut self) {
+        if self.modal_stack.active_name() == Some(render::ui::demo::PAUSE_MENU_NAME) {
+            self.modal_stack.pop();
+        } else {
+            self.modal_stack
+                .push_named(render::ui::demo::PAUSE_MENU_NAME, None);
+        }
+    }
+
     /// Reconcile the input-dispatch seam and coarse focus with the modal stack's
     /// top capture mode. Called in the game-logic phase after the system-command
     /// drains settle the stack, so the decision is in force for the NEXT frame's
@@ -3273,6 +3440,11 @@ impl App {
     ///   `InputFocus::Menu` (cursor released, gameplay input frozen).
     /// - An empty or passthrough top hands input back: `Passthrough` at the seam,
     ///   and focus returns to `Gameplay` if it was `Menu`.
+    ///
+    /// While a capturing tree is up (Menu focus), the OS cursor's VISIBILITY then
+    /// follows the interaction mode (M13 Goal F, Task 5): `pointer` shows it,
+    /// `focus` hides it. This is inert when no capturing tree is up — gameplay
+    /// owns the cursor (locked + hidden) and dev-tools owns its own.
     ///
     /// DevTools owns focus while the debug panel is open (it released the cursor
     /// and set `DevTools`); this reconcile never overrides that — the modal stack
@@ -3294,6 +3466,17 @@ impl App {
             (false, InputFocus::Menu) => self.set_input_focus(InputFocus::Gameplay),
             // Already in the right focus for the current capture mode.
             _ => {}
+        }
+
+        // Cursor visibility follows the interaction mode WHILE a capturing tree
+        // is up. `set_input_focus(Menu)` released the cursor (visible) above; in
+        // `focus` mode we additionally hide it so directional nav isn't cluttered
+        // by a stray pointer. Mode is inert otherwise (no capturing tree).
+        if want_menu && self.input_focus == InputFocus::Menu {
+            if let Some(ws) = self.window_state.as_ref() {
+                ws.window
+                    .set_cursor_visible(self.ui_input_mode.cursor_visible());
+            }
         }
     }
 
@@ -3832,10 +4015,10 @@ mod tests {
         use crate::scripting::slot_table::SlotValue;
 
         // The default table carries engine `player.*` slots with `None` values
-        // plus the engine-owned `screen.flash` surface, which defaults to a
-        // resting transparent value (so it is value-bearing from the start).
-        // Setting one of the value-less slots asserts the boundary contract: the
-        // snapshot clones value-bearing slots and omits value-less ones.
+        // plus two value-bearing engine surfaces: `screen.flash` (resting
+        // transparent) and `input.mode` (defaults to `focus`). Setting one of the
+        // value-less slots asserts the boundary contract: the snapshot clones
+        // value-bearing slots and omits value-less ones.
         let mut table = crate::scripting::slot_table::SlotTable::new();
         table
             .get_mut("player.health")
@@ -3855,16 +4038,22 @@ mod tests {
             Some(&SlotValue::Array(vec![0.0, 0.0, 0.0, 0.0])),
             "engine-owned screen.flash defaults to transparent and is cloned",
         );
+        // `input.mode` defaults to `focus`, so it is value-bearing and present.
+        assert_eq!(
+            snapshot.get("input.mode"),
+            Some(&SlotValue::Enum("focus".to_string())),
+            "engine-owned input.mode defaults to focus and is cloned",
+        );
         // `player.ammo` starts value-less and must be excluded, so only the slot
-        // we set plus the always-valued `screen.flash` appear.
+        // we set plus the always-valued `screen.flash` and `input.mode` appear.
         assert!(
             snapshot.get("player.ammo").is_none(),
             "value-less slots are skipped",
         );
         assert_eq!(
             snapshot.len(),
-            2,
-            "only the set player.health and the default-valued screen.flash appear",
+            3,
+            "only the set player.health and the default-valued screen.flash + input.mode appear",
         );
     }
 

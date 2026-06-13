@@ -258,7 +258,6 @@ impl<B: kira::backend::Backend> Audio<B> {
     /// decibel/`Tween` convention as [`set_bus_volume`](Self::set_bus_volume):
     /// the level change fades over kira's default ~10 ms tween rather than
     /// cutting.
-    #[allow(dead_code)]
     pub fn set_main_volume(&mut self, db: f32) {
         self.manager.main_track().set_volume(db, Tween::default());
     }

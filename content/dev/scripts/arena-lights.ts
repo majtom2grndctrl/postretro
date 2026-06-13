@@ -1,5 +1,6 @@
 import {
   type NamedReactionDescriptor,
+  closeDialog,
   defineReaction,
   flashScreen,
   onStateCrossing,
@@ -146,6 +147,14 @@ export function setupLevel(_ctx: unknown) {
     defineReaction("lowHealthFlash", flashScreen([1.0, 0.0, 0.0, 0.5], 250)),
     defineReaction("lowHealthAlert", playSound("sfx/test_tone", "sfx")),
   );
+
+  // M13 Goal F (Task 5) demo: the engine pause menu's RESUME button fires the
+  // `resumePauseMenu` reaction on activation (gamepad confirm / click), which
+  // `closeDialog` pops off the modal stack — the same pop the engine `nav.menu`
+  // toggle and `nav.cancel` perform. The button's `onPress` name must match this
+  // reaction name. (The menu tree itself and the volume slider are engine-owned
+  // demo descriptors; this reaction is the script half of the Resume button.)
+  reactions.push(defineReaction("resumePauseMenu", closeDialog()));
 
   const crossings = [
     onStateCrossing("player.health", { below: 20, max: 100 }, [

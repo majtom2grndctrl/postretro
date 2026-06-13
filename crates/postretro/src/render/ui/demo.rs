@@ -16,8 +16,9 @@
 //      context/lib/ui.md
 
 use super::descriptor::{
-    Align, AnchoredTree, ColorValue, ContainerWidget, Easing, GridWidget, PanelBind, PanelTween,
-    PanelWidget, SpacingValue, TextBind, TextTween, TextWidget, Widget,
+    Align, AnchoredTree, ButtonWidget, CaptureMode, ColorValue, ContainerWidget, Easing,
+    GridWidget, PanelBind, PanelTween, PanelWidget, SliderBind, SliderWidget, SpacingValue,
+    TextBind, TextTween, TextWidget, Widget,
 };
 use super::layout::Anchor;
 use super::style_ranges::{StyleEntry, StyleRanges};
@@ -327,6 +328,114 @@ pub(crate) fn build_demo_descriptor() -> AnchoredTree {
     AnchoredTree::passthrough(Anchor::BottomLeft, [0.0, 0.0], root)
 }
 
+/// Registry name the pause menu is registered + pushed under (M13 Goal F, Task
+/// 5). The App registers the descriptor at boot and pushes/pops it via the
+/// engine push/pop API on `nav.menu`.
+pub(crate) const PAUSE_MENU_NAME: &str = "pauseMenu";
+
+/// Node ids for the pause-menu widgets. The Resume button's id and the volume
+/// slider's id; focus starts on Resume.
+const PAUSE_RESUME_ID: &str = "pauseResume";
+const PAUSE_VOLUME_ID: &str = "pauseVolume";
+
+/// Named reaction fired when Resume is activated (confirm or click). The demo
+/// mod registers this reaction as a `closeDialog` (pop the top tree); firing it
+/// through the reaction registry pops the pause menu, the same path a script
+/// `closeDialog` takes. Keyboard Escape / gamepad B (`nav.cancel`) and a second
+/// Start (`nav.menu`) also close it via the engine toggle, independent of this.
+const PAUSE_RESUME_REACTION: &str = "resumePauseMenu";
+
+/// The `audio.master` slider's range and step. Amplitude `[0, 1]`; the App-side
+/// consumer converts the bound amplitude to decibels and applies it to the audio
+/// main bus, so dragging this slider audibly changes volume.
+const VOLUME_MIN: f32 = 0.0;
+const VOLUME_MAX: f32 = 1.0;
+const VOLUME_STEP: f32 = 0.1;
+
+/// Build the demo pause-menu descriptor (M13 Goal F, Task 5): a centered,
+/// capturing modal with a Resume button and an `audio.master`-bound volume
+/// slider, fully gamepad-navigable. Pushed/popped via `nav.menu` (gamepad Start /
+/// Escape-from-gameplay) through the engine push/pop API.
+///
+/// The slider captures `nav.left`/`nav.right` so the left stick / D-pad steps the
+/// bound amplitude (a `setState` write to `audio.master` on the N+1 frame); up/
+/// down moves focus between the two widgets. The tree captures input (freezes
+/// gameplay, releases the cursor), and focus starts on the Resume button.
+pub(crate) fn build_pause_menu_descriptor() -> AnchoredTree {
+    let title = Widget::Text(TextWidget {
+        content: "PAUSED".to_string(),
+        font_size: HUD_FONT_SIZE,
+        color: ColorValue::Token(HUD_TEXT_COLOR_TOKEN.into()),
+        font: Some("mono".into()),
+        bind: None,
+        style_ranges: None,
+        id: None,
+        focus_neighbors: Default::default(),
+    });
+
+    // A `text` bound to `input.mode` displays the live pointer-vs-focus mode
+    // (the engine-owned slot Task 5 writes). No format → the raw enum string
+    // (`"pointer"` / `"focus"`) renders; this is the demo's CPU-asserted proof
+    // that the mode slot drives a bound widget.
+    let mode_readout = Widget::Text(TextWidget {
+        content: "MODE --".to_string(),
+        font_size: HUD_FONT_SIZE,
+        color: ColorValue::Token(HUD_TEXT_COLOR_TOKEN.into()),
+        font: Some("mono".into()),
+        bind: Some(TextBind {
+            slot: "input.mode".to_string(),
+            format: Some("MODE {}".to_string()),
+            tween: None,
+        }),
+        style_ranges: None,
+        id: None,
+        focus_neighbors: Default::default(),
+    });
+
+    let resume = Widget::Button(ButtonWidget {
+        id: PAUSE_RESUME_ID.to_string(),
+        label: "RESUME".to_string(),
+        on_press: PAUSE_RESUME_REACTION.to_string(),
+        focus_neighbors: Default::default(),
+    });
+
+    let volume = Widget::Slider(SliderWidget {
+        id: PAUSE_VOLUME_ID.to_string(),
+        label: "VOLUME".to_string(),
+        bind: SliderBind {
+            slot: "audio.master".to_string(),
+            tween: None,
+        },
+        min: VOLUME_MIN,
+        max: VOLUME_MAX,
+        step: VOLUME_STEP,
+        // Left/right step the volume; up/down move focus between widgets.
+        captures_nav: vec!["nav.left".to_string(), "nav.right".to_string()],
+        focus_neighbors: Default::default(),
+    });
+
+    let root = Widget::VStack(ContainerWidget {
+        gap: SpacingValue::Literal(ROW_GAP),
+        padding: SpacingValue::Literal(HUD_PADDING),
+        align: Align::Stretch,
+        fill: None,
+        border: None,
+        id: None,
+        focus_neighbors: Default::default(),
+        focus: None,
+        restore_on_return: false,
+        children: vec![title, mode_readout, resume, volume],
+    });
+
+    AnchoredTree {
+        anchor: Anchor::Center,
+        offset: [0.0, 0.0],
+        root,
+        capture_mode: CaptureMode::Capture,
+        initial_focus: Some(PAUSE_RESUME_ID.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,6 +544,93 @@ mod tests {
         assert_eq!(ranges.entries[0].up_to, Some(HEALTH_CRITICAL_UP_TO));
         assert_eq!(ranges.entries[1].up_to, Some(HEALTH_WARNING_UP_TO));
         assert_eq!(ranges.entries[2].up_to, None, "ok is the trailing default");
+    }
+
+    /// The pause menu (M13 Goal F, Task 5): a centered capturing modal with a
+    /// Resume button and an `audio.master`-bound volume slider that captures
+    /// left/right nav, plus a `text` bound to `input.mode`. Focus starts on Resume.
+    #[test]
+    fn pause_menu_is_a_capturing_modal_with_button_and_volume_slider() {
+        let tree = build_pause_menu_descriptor();
+        assert_eq!(
+            tree.capture_mode,
+            CaptureMode::Capture,
+            "the pause menu captures input (freezes gameplay, releases cursor)",
+        );
+        assert_eq!(
+            tree.initial_focus.as_deref(),
+            Some(PAUSE_RESUME_ID),
+            "focus starts on the Resume button",
+        );
+
+        let Widget::VStack(col) = &tree.root else {
+            panic!("pause menu root is a vstack column");
+        };
+        // title, input.mode readout, resume button, volume slider
+        assert_eq!(col.children.len(), 4);
+
+        let Widget::Text(mode) = &col.children[1] else {
+            panic!("second row is the input.mode readout text");
+        };
+        assert_eq!(
+            mode.bind.as_ref().map(|b| b.slot.as_str()),
+            Some("input.mode"),
+            "the readout binds the engine-owned input.mode slot",
+        );
+
+        let Widget::Button(resume) = &col.children[2] else {
+            panic!("third row is the Resume button");
+        };
+        assert_eq!(resume.id, PAUSE_RESUME_ID);
+        assert_eq!(resume.on_press, PAUSE_RESUME_REACTION);
+
+        let Widget::Slider(volume) = &col.children[3] else {
+            panic!("fourth row is the volume slider");
+        };
+        assert_eq!(volume.id, PAUSE_VOLUME_ID);
+        assert_eq!(volume.bind.slot, "audio.master");
+        assert_eq!(
+            volume.captures_nav,
+            vec!["nav.left".to_string(), "nav.right".to_string()],
+            "the slider captures left/right nav to step volume",
+        );
+        assert_eq!(volume.min, VOLUME_MIN);
+        assert_eq!(volume.max, VOLUME_MAX);
+        assert_eq!(volume.step, VOLUME_STEP);
+    }
+
+    /// The `nav.menu` toggle pushes/pops the registered pause menu through the
+    /// modal stack (the exact sequence `App::toggle_pause_menu` runs): a first
+    /// toggle pushes the capturing menu (gameplay → menu), a second pops it back
+    /// (menu → gameplay). Pins that the registered descriptor captures and that
+    /// the registry name matches what the App pushes.
+    #[test]
+    fn nav_menu_toggle_pushes_then_pops_the_pause_menu() {
+        use crate::input::UiCaptureMode;
+        use crate::render::ui::modal_stack::ModalStack;
+
+        let mut stack = ModalStack::new();
+        stack
+            .registry_mut()
+            .register(PAUSE_MENU_NAME, build_pause_menu_descriptor());
+
+        // No capturing tree up: gameplay keeps input.
+        assert_eq!(stack.top_capture_mode(), UiCaptureMode::Passthrough);
+        assert_ne!(stack.active_name(), Some(PAUSE_MENU_NAME));
+
+        // First `nav.menu`: push the pause menu (it captures → menu focus).
+        stack.push_named(PAUSE_MENU_NAME, None);
+        assert_eq!(stack.active_name(), Some(PAUSE_MENU_NAME));
+        assert_eq!(
+            stack.top_capture_mode(),
+            UiCaptureMode::Capture,
+            "the pushed pause menu captures input",
+        );
+
+        // Second `nav.menu`: the menu is the top tree, so it pops back to gameplay.
+        stack.pop();
+        assert_ne!(stack.active_name(), Some(PAUSE_MENU_NAME));
+        assert_eq!(stack.top_capture_mode(), UiCaptureMode::Passthrough);
     }
 
     /// The `screen.flash` swatch (fifth HUD row): a panel bound to the engine-

@@ -146,6 +146,9 @@ impl Default for SlotTable {
             .insert_namespace("screen", engine_screen_slots())
             .expect("built-in screen store schema must be valid");
         table
+            .insert_namespace("input", engine_input_slots())
+            .expect("built-in input store schema must be valid");
+        table
     }
 }
 
@@ -400,6 +403,31 @@ fn engine_screen_slots() -> Vec<(String, SlotRecord)> {
     )]
 }
 
+/// Engine-owned input-observation slots. `input.mode` is the pointer-vs-focus
+/// interaction mode (enum `"pointer"` / `"focus"`), written each frame by
+/// App-side composition during the input phase (mouse motion → `pointer`;
+/// stick/D-pad/nav input → `focus`) — the input subsystem's contract output
+/// stays the action snapshot, so the slot write is app composition, not a
+/// subsystem output (input.md §7). Readonly to scripts: the engine is the sole
+/// producer; a `text` widget binds it to display the current mode. Defaults to
+/// `"focus"` (the focus-engine default before the first transition).
+/// See: context/lib/input.md §5, §7.
+fn engine_input_slots() -> Vec<(String, SlotRecord)> {
+    vec![(
+        "mode".to_string(),
+        SlotRecord::new(SlotSchema {
+            slot_type: SlotType::Enum {
+                values: vec!["pointer".to_string(), "focus".to_string()],
+            },
+            default: Some(SlotValue::Enum("focus".to_string())),
+            range: None,
+            persist: false,
+            readonly: true,
+            ownership: SlotOwnership::Engine,
+        }),
+    )]
+}
+
 fn engine_player_slots() -> Vec<(String, SlotRecord)> {
     ["health", "ammo"]
         .into_iter()
@@ -491,6 +519,27 @@ mod tests {
         assert!(slot.schema.readonly);
         assert!(!slot.schema.persist);
         assert_eq!(slot.value, Some(SlotValue::Array(vec![0.0, 0.0, 0.0, 0.0])));
+    }
+
+    #[test]
+    fn new_registers_engine_input_mode_slot() {
+        // `input.mode` is the engine-owned pointer-vs-focus interaction mode: a
+        // readonly (to scripts) Enum slot constrained to `"pointer"`/`"focus"`,
+        // defaulting to `"focus"`. App-side input-phase composition writes it.
+        let table = SlotTable::new();
+        let slot = table
+            .get("input.mode")
+            .expect("engine input.mode slot exists");
+        assert_eq!(
+            slot.schema.slot_type,
+            SlotType::Enum {
+                values: vec!["pointer".to_string(), "focus".to_string()],
+            }
+        );
+        assert_eq!(slot.schema.ownership, SlotOwnership::Engine);
+        assert!(slot.schema.readonly);
+        assert!(!slot.schema.persist);
+        assert_eq!(slot.value, Some(SlotValue::Enum("focus".to_string())));
     }
 
     #[test]

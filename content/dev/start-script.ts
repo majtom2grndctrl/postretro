@@ -4,6 +4,7 @@ import { animDemoGruntEntity } from "./scripts/anim-demo-grunt";
 import { targetDummyEntity } from "./scripts/target-dummy";
 import { referenceEntities } from "../../sdk/behaviors/reference/entities";
 import { registerIntroStore } from "./scripts/intro-store";
+import { registerPauseMenuStore } from "./scripts/pause-menu-store";
 
 export function setupMod() {
   // Register the M13 Goal C demo `intro` store namespace before returning the
@@ -12,6 +13,13 @@ export function setupMod() {
   // and the demo HUD's flash panel binds. The Luau parity twin lives in
   // `./scripts/intro-store.luau` (a reference module, not a second active entry).
   registerIntroStore();
+
+  // Register the M13 Goal F (Task 5) demo `audio.master` store namespace so the
+  // engine pause menu's volume slider has a writable slot to bind: the slider
+  // `setState`s `audio.master`, and the engine's App-side consumer applies the
+  // amplitude (→ dB) to the audio main bus. Declared at mod init so the slot
+  // exists before the first slider write.
+  registerPauseMenuStore();
 
   return {
     name: "dev",

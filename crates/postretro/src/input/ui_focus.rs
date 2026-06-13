@@ -82,6 +82,36 @@ pub enum InputMode {
     Focus,
 }
 
+impl InputMode {
+    /// The stable wire name for the engine-owned `input.mode` enum slot
+    /// (`"pointer"` / `"focus"`). The App-side input-mode writer maps a mode
+    /// transition to this string; a `text` widget bound to `input.mode` displays
+    /// it. Matches the enum values declared on the slot in `slot_table.rs`.
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            InputMode::Pointer => "pointer",
+            InputMode::Focus => "focus",
+        }
+    }
+
+    /// Whether the OS cursor should be VISIBLE for this mode while a capturing UI
+    /// tree is on the stack (M13 Goal F, Task 5). `Pointer` shows the cursor (the
+    /// user is pointing); `Focus` hides it (the user is navigating with stick /
+    /// D-pad / keys, so the cursor would be a distraction). Inert when no
+    /// capturing tree is up — the caller gates on that. See: context/lib/input.md §5.
+    pub fn cursor_visible(self) -> bool {
+        matches!(self, InputMode::Pointer)
+    }
+
+    /// Whether the focus RING should be shown for this mode while a capturing UI
+    /// tree is on the stack. The complement of [`cursor_visible`]: `Focus` shows
+    /// the ring (directional nav needs it), `Pointer` hides it (the cursor is the
+    /// indicator). Inert when no capturing tree is up — the caller gates on that.
+    pub fn ring_visible(self) -> bool {
+        matches!(self, InputMode::Focus)
+    }
+}
+
 /// A directional nav step the focus engine resolves against the rect list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Dir {
@@ -693,6 +723,25 @@ mod tests {
         let mut intents = vec![NavIntent::Down];
         assert_eq!(capture_slider_step(&interaction, 0.5, &mut intents), None);
         assert_eq!(intents, vec![NavIntent::Down]);
+    }
+
+    #[test]
+    fn input_mode_wire_names_match_the_slot_enum_values() {
+        // Pins the strings the `input.mode` enum slot declares and a bound `text`
+        // widget displays. A rename here is a slot-schema break.
+        assert_eq!(InputMode::Pointer.wire_name(), "pointer");
+        assert_eq!(InputMode::Focus.wire_name(), "focus");
+    }
+
+    #[test]
+    fn pointer_mode_shows_cursor_hides_ring_and_focus_mode_is_the_complement() {
+        // The cursor/ring decision per mode (asserted CPU-side; OS cursor
+        // visibility itself is manual). Pointer: cursor visible, ring hidden.
+        // Focus: cursor hidden, ring visible. These are complements.
+        assert!(InputMode::Pointer.cursor_visible());
+        assert!(!InputMode::Pointer.ring_visible());
+        assert!(!InputMode::Focus.cursor_visible());
+        assert!(InputMode::Focus.ring_visible());
     }
 
     #[test]

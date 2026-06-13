@@ -825,4 +825,23 @@ declare module "postretro" {
 
   /** Runtime-value builder vocabulary global. */
   export const runtime: Runtime;
+
+  // -------------------------------------------------------------------------
+  // UI navigation intents — the closed gamepad-first nav vocabulary the input
+  // stage produces (keyboard arrows/enter/escape, D-pad, stick edges) and that
+  // UI authors reference in `capturesNav` and focus policy. Wire names mirror
+  // the Rust `NavIntent` enum (input/ui_nav.rs). Template-literal-typed so a
+  // typo in a `"nav.*"` string is a compile error.
+  // See: context/research/ui-layer.md §16.
+
+  /** The bare nav-intent names without the `nav.` prefix. */
+  export type NavIntentName =
+    | "up" | "down" | "left" | "right"
+    | "next" | "prev"
+    | "confirm" | "cancel"
+    | "menu" | "options";
+
+  /** A UI navigation intent wire name. Template-literal type over the closed
+   * `NavIntentName` set, so only `"nav.up"` … `"nav.options"` type-check. */
+  export type NavIntent = `nav.${NavIntentName}`;
 }

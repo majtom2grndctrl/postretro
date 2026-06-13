@@ -6,6 +6,7 @@ use gilrs::{Axis, Button, Event, EventType, GamepadId, Gilrs};
 
 use super::InputSystem;
 use crate::input::types::PhysicalInput;
+use crate::input::ui_nav::{NavIntent, StickNavTracker, nav_intent_for_gamepad_button};
 
 /// Dead zone radius for both sticks. Standard value across most controllers.
 const DEAD_ZONE: f32 = 0.15;
@@ -72,26 +73,55 @@ impl GamepadSystem {
         }
     }
 
-    /// Poll gilrs events and feed processed state into the input system.
-    /// Call once per frame, before `input_system.snapshot()`.
-    pub fn update(&mut self, input_system: &mut InputSystem) {
-        // Drain all pending events to track active gamepad.
+    /// Poll gilrs events and feed processed state into the input system,
+    /// returning the UI nav intents produced this frame (D-pad / face / system
+    /// button down-edges and a left-stick-past-dead-zone edge).
+    ///
+    /// Call once per frame, before `input_system.snapshot()` and — critically —
+    /// before the `UiDispatch` `take_ready`/`advance_frame` pair, so the returned
+    /// nav intents can be enqueued ahead of promotion and ride the same N→N+1
+    /// contract as keyboard captures. The caller enqueues them only while a
+    /// capturing tree owns input. `nav_stick` is the per-stick edge detector,
+    /// owned by the caller so its latch persists across frames.
+    /// See: context/lib/input.md §7
+    pub fn update(
+        &mut self,
+        input_system: &mut InputSystem,
+        nav_stick: &mut StickNavTracker,
+    ) -> Vec<NavIntent> {
+        let mut nav_intents: Vec<NavIntent> = Vec::new();
+
+        // Drain all pending events to track the active gamepad and harvest
+        // button-down edges as nav intents. gilrs delivers a discrete
+        // `ButtonPressed` per press, so this is the natural edge source — one
+        // intent per press, repeats handled by the focus engine's timer (Task 3).
         while let Some(Event { id, event, .. }) = self.gilrs.next_event() {
             // Any input event from a gamepad makes it the active one.
             if is_user_input(&event) {
                 self.active_gamepad = Some(id);
             }
+            if let EventType::ButtonPressed(button, _) = event {
+                if let Some(intent) = nav_intent_for_gamepad_button(button) {
+                    nav_intents.push(intent);
+                }
+            }
         }
 
         let gamepad_id = match self.active_gamepad {
             Some(id) => id,
-            None => return,
+            None => {
+                // No active gamepad: still clear the stick latch so a stick that
+                // was held when the pad disconnected re-arms cleanly.
+                nav_stick.update(0.0, 0.0);
+                return nav_intents;
+            }
         };
 
         let gamepad = self.gilrs.gamepad(gamepad_id);
         if !gamepad.is_connected() {
             self.active_gamepad = None;
-            return;
+            nav_stick.update(0.0, 0.0);
+            return nav_intents;
         }
 
         // Read raw stick axes.
@@ -103,6 +133,13 @@ impl GamepadSystem {
         // Apply radial dead zones.
         let (left_x, left_y) = apply_radial_dead_zone(left_x, left_y, DEAD_ZONE);
         let (right_x, right_y) = apply_radial_dead_zone(right_x, right_y, DEAD_ZONE);
+
+        // The left stick doubles as a D-pad for UI nav: a push past the dead
+        // zone fires one directional intent per crossing. Uses the same
+        // dead-zoned value gameplay movement reads.
+        if let Some(intent) = nav_stick.update(left_x, left_y) {
+            nav_intents.push(intent);
+        }
 
         // Feed stick axes into input system.
         input_system.set_gamepad_axis(Axis::LeftStickX, left_x);
@@ -149,6 +186,8 @@ impl GamepadSystem {
             let pressed = gamepad.is_pressed(button);
             input_system.set_physical_input(PhysicalInput::GamepadButton(button), pressed);
         }
+
+        nav_intents
     }
 
     /// Start a force-feedback rumble on the active gamepad: `strong`/`weak` are

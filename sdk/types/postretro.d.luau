@@ -853,3 +853,11 @@ export type Runtime = {
 
 --- Runtime-value builder vocabulary global.
 declare runtime: Runtime
+
+-- UI navigation intents — the closed gamepad-first nav vocabulary the input
+-- stage produces (keyboard arrows/enter/escape, D-pad, stick edges) and that UI
+-- authors reference in `capturesNav` and focus policy. Wire names mirror the
+-- Rust `NavIntent` enum (input/ui_nav.rs). Luau has no template-literal types,
+-- so this is a flat string union over the same closed set.
+-- See: context/research/ui-layer.md §16.
+export type NavIntent = "nav.up" | "nav.down" | "nav.left" | "nav.right" | "nav.next" | "nav.prev" | "nav.confirm" | "nav.cancel" | "nav.menu" | "nav.options"

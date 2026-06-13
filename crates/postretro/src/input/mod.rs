@@ -10,6 +10,7 @@ pub mod gamepad;
 mod look;
 mod types;
 mod ui_dispatch;
+mod ui_nav;
 
 pub use defaults::default_bindings;
 pub use diagnostics::{DiagnosticAction, DiagnosticInputs, default_diagnostic_chords};
@@ -20,10 +21,14 @@ pub use types::{Action, AxisSource, AxisValue, Binding, ButtonState, PhysicalInp
 // descriptor via `Renderer::splash_capture_mode`.
 pub use ui_dispatch::{UiCaptureMode, UiDispatch};
 // `UiDispatchOutcome` is `dispatch_event`'s per-event return type. `UiIntent`
-// is the queued capture marker — reserved seam API with no production consumer
-// yet; a future menu/modal path consumes intents.
+// is the queued kinded capture; `UiIntentPayload`/`PointerPos` are its payload
+// vocabulary. The modal stack (M13 Goal F) consumes the queued intents.
 #[allow(unused_imports)]
-pub use ui_dispatch::{UiDispatchOutcome, UiIntent};
+pub use ui_dispatch::{PointerPos, UiDispatchOutcome, UiIntent, UiIntentPayload};
+// Nav-intent vocabulary plus the action→intent mapping the input stage feeds
+// into `UiDispatch`. `StickNavTracker` does stick-past-deadzone edge detection.
+#[allow(unused_imports)]
+pub use ui_nav::{NavIntent, StickNavTracker, nav_intent_for_gamepad_button, nav_intent_for_key};
 
 /// Default sensitivity: radians per raw mouse unit. Tuned for 800 DPI mice.
 pub const DEFAULT_MOUSE_SENSITIVITY: f32 = 0.002;

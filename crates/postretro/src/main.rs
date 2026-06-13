@@ -356,6 +356,8 @@ fn main() -> Result<()> {
         input_focus: InputFocus::Gameplay,
         ui_dispatch: input::UiDispatch::new(),
         gamepad_system: input::gamepad::GamepadSystem::new(),
+        cursor_pos: None,
+        nav_stick_tracker: input::StickNavTracker::new(),
         frame_timing: FrameTiming::new(initial_state),
         view_feel_state: view_feel::ViewFeelState::default(),
         diagnostic_inputs: input::DiagnosticInputs::new(input::default_diagnostic_chords()),
@@ -367,7 +369,19 @@ fn main() -> Result<()> {
         script_runtime,
         ui_proxy: scripting_systems::ui_proxy::StaticUiProxy::new(script_ctx.clone()),
         flash_decay: scripting_systems::flash_decay::FlashDecay::new(script_ctx.clone()),
-        warned_no_modal_stack: false,
+        modal_stack: {
+            // Register engine built-in trees at boot. Script-side registration
+            // arrives with a later goal; today the engine HUD descriptor is the
+            // one built-in, registered by name so a `showDialog`/`openMenu`
+            // reaction can target it through the stack registry (the modal-stack
+            // drain path). The HUD is also republished as the always-on bottom
+            // layer each frame independently of this registration.
+            let mut stack = render::ui::modal_stack::ModalStack::new();
+            stack
+                .registry_mut()
+                .register("hud", render::ui::demo::build_demo_descriptor());
+            stack
+        },
         script_ctx,
         state_store_lifecycle: StateStoreLifecycle::default(),
         sequence_registry,
@@ -504,6 +518,21 @@ struct App {
     /// Goal A makes no live focus change. See: context/lib/input.md
     ui_dispatch: input::UiDispatch,
     gamepad_system: Option<input::gamepad::GamepadSystem>,
+
+    /// Last cursor position in device pixels, tracked from winit `CursorMoved`
+    /// while the cursor is released (UI mode). Tracked *state*, never queued:
+    /// hover never enqueues an intent — the focus engine (Task 3) reads this
+    /// position for hit-testing, and a mouse *click* pairs it into a
+    /// `PointerClick` intent. `None` until the first `CursorMoved`.
+    /// See: context/lib/input.md §7
+    cursor_pos: Option<input::PointerPos>,
+
+    /// Edge detector turning the gamepad nav stick (left stick) into discrete
+    /// D-pad-style nav intents: one intent per push past the dead zone. Polled
+    /// in the input stage before the `take_ready`/`advance_frame` pair so
+    /// gamepad nav shares the keyboard's N→N+1 contract. See: context/lib/input.md §7
+    nav_stick_tracker: input::StickNavTracker,
+
     frame_timing: FrameTiming,
 
     /// Per-camera view-feel integrator (head-bob phase, strafe-tilt spring,
@@ -554,10 +583,13 @@ struct App {
     /// `ui_proxy.tick`). Reset on level load. See: context/lib/ui.md §3.
     flash_decay: scripting_systems::flash_decay::FlashDecay,
 
-    /// Latches once after the first PushTree/PopTree system command is drained
-    /// without a modal-stack consumer (Goal F not landed), so the "no stack"
-    /// warning is logged once rather than every drain. See: scripting.md §10.4.
-    warned_no_modal_stack: bool,
+    /// Gameplay-UI modal stack + named-tree registry. Consumes Goal E's
+    /// `PushTree`/`PopTree` system commands (resolving names through its registry,
+    /// unknown name warns + no-op) and exposes an engine push/pop API for
+    /// pause/dialog. The HUD is republished as the stack's bottom layer each
+    /// frame; the top tree's capture mode drives the input seam + `InputFocus`.
+    /// Engine built-in trees register at boot. See: context/lib/ui.md §1.
+    modal_stack: render::ui::modal_stack::ModalStack,
 
     /// Gates the one-time persistence overlay and clean-exit save.
     state_store_lifecycle: StateStoreLifecycle,
@@ -958,10 +990,28 @@ impl ApplicationHandler for App {
                     // layer is in Capture mode the event is consumed (queued
                     // for next-frame game logic) and NOT forwarded to the
                     // action system this frame. `InputFocus::Menu` is the
-                    // intended structural home for this capture; Goal A makes
-                    // no live focus change, so the decision is the mode flag.
-                    // See: context/lib/input.md
-                    if self.ui_dispatch.dispatch_event().forwards_to_gameplay()
+                    // intended structural home for this capture.
+                    //
+                    // Key-down edges resolve to a nav intent (arrows / enter /
+                    // escape / tab); the kinded payload rides the queue. Held
+                    // repeats and non-nav keys carry no intent (the seam still
+                    // suppresses the gameplay forward). Escape's menu-vs-cancel
+                    // split needs the "is a capturing tree on the stack?" flag —
+                    // owned by Task 2's modal stack; passed `false` here until
+                    // that wiring lands. See: context/lib/input.md
+                    let nav_intent = if pressed && !key_event.repeat {
+                        // SEAM (Task 2/Task 3): replace `false` with the real
+                        // "capturing tree present" predicate from the modal
+                        // stack so Escape inside captured UI routes to
+                        // `nav.cancel` instead of `nav.menu`.
+                        input::nav_intent_for_key(code, false).map(input::UiIntentPayload::Nav)
+                    } else {
+                        None
+                    };
+                    if self
+                        .ui_dispatch
+                        .dispatch_event(nav_intent)
+                        .forwards_to_gameplay()
                         && self.input_focus == InputFocus::Gameplay
                     {
                         // Only Gameplay forwards keys to the action system. When
@@ -978,8 +1028,19 @@ impl ApplicationHandler for App {
                 }
                 // Same UI-dispatch seam as the keyboard path: a captured event
                 // is consumed by the UI layer and not forwarded to the action
-                // system this frame.
-                if !self.ui_dispatch.dispatch_event().forwards_to_gameplay() {
+                // system this frame. A *press* (not release) at the tracked
+                // cursor position queues a `PointerClick` for hit-testing; a
+                // release captures with no payload (suppresses the gameplay
+                // forward, queues nothing).
+                let click_intent = match (state.is_pressed(), self.cursor_pos) {
+                    (true, Some(pos)) => Some(input::UiIntentPayload::PointerClick { pos }),
+                    _ => None,
+                };
+                if !self
+                    .ui_dispatch
+                    .dispatch_event(click_intent)
+                    .forwards_to_gameplay()
+                {
                     return;
                 }
                 // Same focus gate as the keyboard path: mouse-button actions
@@ -989,6 +1050,23 @@ impl ApplicationHandler for App {
                     self.input_system
                         .handle_mouse_button(button, state.is_pressed());
                 }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                // Track cursor *position* (not delta) for UI hit-testing while
+                // the cursor is released. This is tracked state, never queued —
+                // hover never enqueues an intent. A later mouse click pairs this
+                // position into a `PointerClick`. Gameplay look uses raw deltas
+                // from `device_event`, not this position, so tracking here is
+                // independent of the focus gate. See: context/lib/input.md §7
+                self.cursor_pos = Some(input::PointerPos {
+                    x: position.x,
+                    y: position.y,
+                });
+            }
+            WindowEvent::CursorLeft { .. } => {
+                // Cursor left the window: drop the tracked position so a stale
+                // coordinate can't seed a click after re-entry.
+                self.cursor_pos = None;
             }
             WindowEvent::Focused(focused) => {
                 if focused {
@@ -1068,28 +1146,46 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                // Game-logic phase begins here. Read the UI captures made
-                // available by the *previous* frame, THEN promote this frame's
-                // freshly captured events for the next frame. Taking before
-                // advancing is what enforces the N→N+1 contract: events captured
-                // during THIS frame's Input stage land in `pending` and are only
-                // promoted to `ready` by this `advance_frame` call — so they
-                // first become visible at the next frame's `take_ready`, never
-                // this frame. This holds regardless of winit's event/redraw
-                // ordering because both calls run here at game-logic time. Goal A
-                // has no intent consumer yet (Goal F defines the vocabulary), so
-                // the drained intents are dropped; the drain marks the seam where
-                // game logic reads them. See: context/lib/input.md
-                let _ui_intents = self.ui_dispatch.take_ready();
-                self.ui_dispatch.advance_frame();
-
+                // Tail of the Input stage: poll the gamepad. This must run
+                // BEFORE the `take_ready`/`advance_frame` pair below so gamepad
+                // nav intents land in `pending` ahead of promotion and share the
+                // keyboard's N→N+1 contract — a gamepad nav consumed this frame
+                // first reaches game logic next frame, never same-frame. (gilrs
+                // previously polled *after* promotion, which would have leaked
+                // gamepad intents a frame early.) The intents are enqueued only
+                // while a capturing tree owns input (`Capture` mode); under
+                // `Passthrough` they are dropped here, exactly as keyboard
+                // events forward through the seam. See: context/lib/input.md §7
                 if let Some(gp) = &mut self.gamepad_system {
-                    gp.update(&mut self.input_system);
+                    let nav_intents =
+                        gp.update(&mut self.input_system, &mut self.nav_stick_tracker);
                     // Advance any active rumble's timeout in the input stage and
                     // stop it once its duration elapses (the rumble started by a
                     // drained `Rumble` command on a prior frame).
                     gp.tick_rumble(frame_dt);
+                    if self.ui_dispatch.mode() == input::UiCaptureMode::Capture {
+                        for intent in nav_intents {
+                            self.ui_dispatch
+                                .enqueue_intent(input::UiIntentPayload::Nav(intent));
+                        }
+                    }
                 }
+
+                // Game-logic phase begins here. Read the UI captures made
+                // available by the *previous* frame, THEN promote this frame's
+                // freshly captured events for the next frame. Taking before
+                // advancing is what enforces the N→N+1 contract: events captured
+                // during THIS frame's Input stage (keyboard via `dispatch_event`,
+                // gamepad via the poll just above) land in `pending` and are only
+                // promoted to `ready` by this `advance_frame` call — so they
+                // first become visible at the next frame's `take_ready`, never
+                // this frame. This holds regardless of winit's event/redraw
+                // ordering because both calls run here at game-logic time. The
+                // modal stack (Task 2/Task 3) consumes the drained intents; until
+                // then they are dropped, and the drain marks the seam where game
+                // logic reads them. See: context/lib/input.md
+                let _ui_intents = self.ui_dispatch.take_ready();
+                self.ui_dispatch.advance_frame();
 
                 // drain_look_inputs() must precede snapshot(); both touch
                 // mouse_axes and look state belongs to the render-rate path.
@@ -1321,6 +1417,15 @@ impl ApplicationHandler for App {
                 if !self.script_ctx.system_commands.is_empty() {
                     self.dispatch_system_commands();
                 }
+
+                // Reconcile the input seam + focus with the modal stack's top
+                // capture mode, now that every command drain this frame has
+                // settled the stack. A capturing top tree freezes gameplay input
+                // (UI-dispatch capture) and releases the cursor (`InputFocus::Menu`);
+                // an empty/passthrough top hands input back to gameplay. Runs in
+                // the game-logic phase so the capture decision is in force for the
+                // next frame's Input stage (the N→N+1 ordering the seam guarantees).
+                self.reconcile_ui_focus();
 
                 // Audio step — third in frame order (Input → Game logic →
                 // Audio → Render → Present, development_guide.md §4.3). Runs after
@@ -1744,19 +1849,27 @@ impl ApplicationHandler for App {
                         // audio have already run this frame, so the slot snapshot
                         // freezes the settled store state (frame order: Input →
                         // Game logic → Audio → Render). The renderer reads these
-                        // cloned values, never the live `SlotTable`. The demo HUD
-                        // descriptor is the gameplay UI producer: it is published as
-                        // the gameplay tree alongside the slot values, and the
-                        // renderer's retained gameplay path lays it out and
-                        // resolves its `player.health`/`player.ammo`/`intro.flashColor`
-                        // binds against the snapshot. The descriptor is structurally
-                        // identical every frame, so the retained tree reuses it and
-                        // only the bound values drive the diff.
+                        // cloned values, never the live `SlotTable`.
+                        //
+                        // Modal stack: the demo HUD is the always-on bottom layer
+                        // (`trees[0]`), and any pushed modal trees stack above it,
+                        // drawn bottom→top. The renderer's retained path lays each
+                        // layer out and resolves its binds against the snapshot;
+                        // each layer's descriptor is structurally stable, so the
+                        // retained tree per layer reuses it and only bound values
+                        // drive the diff. The HUD is passthrough, so with no modal
+                        // open the top mode is passthrough (gameplay keeps input).
                         let slot_values =
                             Self::build_ui_slot_snapshot(&self.script_ctx.slot_table.borrow());
-                        let demo_tree = render::ui::demo::build_demo_descriptor();
-                        renderer.set_ui_snapshot(render::ui::UiReadSnapshot::with_gameplay_tree(
-                            demo_tree,
+                        let mut trees = vec![render::ui::UiTreeEntry {
+                            name: "hud".to_string(),
+                            descriptor: render::ui::demo::build_demo_descriptor(),
+                            capture_mode: input::UiCaptureMode::Passthrough,
+                            on_commit: None,
+                        }];
+                        trees.extend(self.modal_stack.entries());
+                        renderer.set_ui_snapshot(render::ui::UiReadSnapshot::with_trees(
+                            trees,
                             slot_values,
                             self.script_time,
                         ));
@@ -1892,8 +2005,10 @@ impl ApplicationHandler for App {
     ) {
         // UI-dispatch seam, ahead of the gameplay forward: a captured raw
         // delta is consumed by the UI layer and must not reach the look path.
-        // Mirrors the `window_event` seam; the decision is the mode flag.
-        if !self.ui_dispatch.dispatch_event().forwards_to_gameplay() {
+        // Mirrors the `window_event` seam; the decision is the mode flag. A raw
+        // delta carries no queueable intent (hover/look is not nav), so the
+        // capture suppresses the forward but queues nothing.
+        if !self.ui_dispatch.dispatch_event(None).forwards_to_gameplay() {
             return;
         }
         // Raw mouse deltas only rotate the camera while gameplay owns input.
@@ -2268,8 +2383,10 @@ impl App {
     ///   when force feedback is unavailable.
     /// - `FlashScreen` → starts the App-side flash-decay state, which writes
     ///   `screen.flash` each game-logic tick.
-    /// - `PushTree` / `PopTree` → warn-once "no stack" sink until Goal F's modal
-    ///   stack lands; the commands exist, they just warn for now.
+    /// - `PushTree` / `PopTree` → push/pop the gameplay-UI modal stack, resolving
+    ///   `PushTree`'s name through the stack's registry (unknown name warns +
+    ///   no-op, never a panic). The top tree's capture mode is reconciled with the
+    ///   input seam + focus afterward by `reconcile_ui_focus`.
     fn dispatch_system_commands(&mut self) {
         for command in self.script_ctx.system_commands.take() {
             match command {
@@ -2303,31 +2420,18 @@ impl App {
                     self.flash_decay.start(color, duration_ms);
                 }
                 SystemReactionCommand::PushTree { tree, on_commit } => {
-                    // F's modal stack is not landed yet; warn-once so a script
-                    // that opens dialogs is diagnosable without spamming the log.
-                    self.warn_no_modal_stack_once();
-                    log::debug!(
-                        "[Scripting] pushTree('{tree}', onCommit={on_commit:?}) — no modal stack consumer yet"
-                    );
+                    // Resolve the registered tree by name onto the modal stack.
+                    // An unknown name warns and is a no-op (no panic). The carried
+                    // `on_commit` rides the stack entry for a later goal to fire on
+                    // commit; the stack does not fire it. The capture mode lives on
+                    // the registered tree's envelope (read after the drain by
+                    // `reconcile_ui_focus`), not on the command.
+                    self.modal_stack.push_named(&tree, on_commit);
                 }
                 SystemReactionCommand::PopTree => {
-                    self.warn_no_modal_stack_once();
-                    log::debug!("[Scripting] popTree — no modal stack consumer yet");
+                    self.modal_stack.pop();
                 }
             }
-        }
-    }
-
-    /// Log the "no modal stack" sink warning at most once. The PushTree/PopTree
-    /// commands are real (scripts can enqueue them) but their consumer — Goal F's
-    /// modal stack — has not landed, so the drain warns once and discards them.
-    fn warn_no_modal_stack_once(&mut self) {
-        if !self.warned_no_modal_stack {
-            log::warn!(
-                "[Scripting] UI-stack reactions (showDialog/openMenu/closeDialog) enqueue commands, \
-                 but the modal stack is not landed yet — ignoring until Goal F"
-            );
-            self.warned_no_modal_stack = true;
         }
     }
 
@@ -2944,6 +3048,42 @@ impl App {
         self.input_system.clear_all();
         self.gameplay_input_latch.clear();
         self.diagnostic_inputs.clear_modifiers();
+    }
+
+    /// Reconcile the input-dispatch seam and coarse focus with the modal stack's
+    /// top capture mode. Called in the game-logic phase after the system-command
+    /// drains settle the stack, so the decision is in force for the NEXT frame's
+    /// Input stage (the N→N+1 ordering the seam guarantees: a UI event consumed on
+    /// frame N reaches game logic no earlier than N+1, and the capture/cursor side
+    /// flips here, one game-logic phase before that read).
+    ///
+    /// - A capturing top tree drives `UiCaptureMode::Capture` (the seam queues
+    ///   events for next-frame game logic instead of forwarding to gameplay) and
+    ///   `InputFocus::Menu` (cursor released, gameplay input frozen).
+    /// - An empty or passthrough top hands input back: `Passthrough` at the seam,
+    ///   and focus returns to `Gameplay` if it was `Menu`.
+    ///
+    /// DevTools owns focus while the debug panel is open (it released the cursor
+    /// and set `DevTools`); this reconcile never overrides that — the modal stack
+    /// is gameplay UI, and the debug overlay is a separate, dev-only consumer.
+    fn reconcile_ui_focus(&mut self) {
+        let mode = self.modal_stack.top_capture_mode();
+        self.ui_dispatch.set_mode(mode);
+
+        // The debug overlay owns focus while open — don't fight it.
+        if self.input_focus == InputFocus::DevTools {
+            return;
+        }
+
+        let want_menu = matches!(mode, input::UiCaptureMode::Capture);
+        match (want_menu, self.input_focus) {
+            // A capturing tree opened (or stayed open): enter Menu, release cursor.
+            (true, InputFocus::Gameplay) => self.set_input_focus(InputFocus::Menu),
+            // The capturing tree(s) closed: hand the cursor back to gameplay.
+            (false, InputFocus::Menu) => self.set_input_focus(InputFocus::Gameplay),
+            // Already in the right focus for the current capture mode.
+            _ => {}
+        }
     }
 
     /// Release pointer lock as part of the exit path. Does not mutate

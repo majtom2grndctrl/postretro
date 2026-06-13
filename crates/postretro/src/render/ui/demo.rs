@@ -291,11 +291,8 @@ pub(crate) fn build_demo_descriptor() -> AnchoredTree {
         children: vec![health, ammo, swatch, health_bar, screen_flash],
     });
 
-    AnchoredTree {
-        anchor: Anchor::BottomLeft,
-        offset: [0.0, 0.0],
-        root,
-    }
+    // The demo HUD passes input through to gameplay (a HUD never captures).
+    AnchoredTree::passthrough(Anchor::BottomLeft, [0.0, 0.0], root)
 }
 
 #[cfg(test)]

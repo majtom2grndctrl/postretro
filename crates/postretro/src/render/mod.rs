@@ -5393,15 +5393,28 @@ impl Renderer {
         // only early-out (A follow-up #3); the splash path opens the pass
         // unconditionally for its frame-0 black clear (see `record_splash_ui`).
         let ui_viewport = [self.surface_config.width, self.surface_config.height];
-        if let Some(tree) = self.ui_snapshot.gameplay_tree.clone() {
+        // Modal stack: lay out and record each layer bottom→top (`trees[0]` is the
+        // bottom HUD, the last entry the top/active modal). Each layer keeps its
+        // own retained tree + dirty gate, so a frozen lower layer recomputes
+        // nothing while the top animates. Painter's order is the stack order: a
+        // later layer's quads composite over the earlier ones into the same view
+        // (LoadOp::Load). Empty/empty-laying-out layers early-out individually.
+        let stack: Vec<ui::descriptor::AnchoredTree> = self
+            .ui_snapshot
+            .trees
+            .iter()
+            .map(|entry| entry.descriptor.clone())
+            .collect();
+        for (layer, tree) in stack.iter().enumerate() {
             // The demo gameplay HUD has no `image` nodes, so no image sizes are
             // threaded; any `image` node would measure to zero. The splash path
             // supplies the logo size in `record_splash_ui`.
             // Bound text/panel nodes resolve against the snapshot's slot values
-            // (disjoint field borrow from `&mut self.ui`). The cloned `tree`
+            // (disjoint field borrow from `&mut self.ui`). The cloned `stack`
             // above already released the snapshot, so this borrow is clean.
             let draw = self.ui.layout_gameplay_tree(
-                &tree,
+                layer,
+                tree,
                 ui_viewport,
                 &ui::tree::ImageSizes::new(),
                 &self.ui_snapshot.slot_values,
@@ -5444,6 +5457,9 @@ impl Renderer {
                 );
             }
         }
+        // Drop retained state for any layers popped since last frame (stack
+        // shrank), so freed modal trees release their layout cache.
+        self.ui.truncate_gameplay_stack(stack.len());
 
         if let Some(timing) = &self.frame_timing {
             timing.encode_resolve(&mut encoder);

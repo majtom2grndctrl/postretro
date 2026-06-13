@@ -1702,7 +1702,7 @@ fn linear_rgba_to_srgb_u8(color: [f32; 4]) -> [u8; 4] {
 
 #[cfg(test)]
 mod tests {
-    use super::super::descriptor::{ColorValue, SpacingValue};
+    use super::super::descriptor::{CaptureMode, ColorValue, SpacingValue};
     use super::*;
 
     /// Device-pixel comparison tolerance; rects snap to whole pixels but float
@@ -1801,6 +1801,7 @@ mod tests {
                 Align::Start,
                 vec![text("AB", 40.0), text("CD", 40.0)],
             ),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -1853,6 +1854,7 @@ mod tests {
                     vec![text("AB", 30.0), text("CD", 30.0)],
                 )],
             ),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -1895,6 +1897,7 @@ mod tests {
                 Align::Start,
                 vec![text("X", 40.0), spacer(1.0), text("Y", 40.0)],
             ),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -1934,6 +1937,7 @@ mod tests {
                 Align::Start,
                 vec![text("AAAA", 20.0), text("BBBB", 20.0)],
             ),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut fs = font_system();
         let mut ui_ref = UiTree::from_descriptor(&tree, &theme());
@@ -1986,6 +1990,7 @@ mod tests {
                 cols: 2,
                 children: vec![cell(), cell(), cell(), cell()],
             }),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2035,6 +2040,7 @@ mod tests {
                 bind: None,
                 style_ranges: None,
             }),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2079,6 +2085,7 @@ mod tests {
             anchor: Anchor::TopLeft,
             offset: [3.5, 7.25],
             root: filled,
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2112,6 +2119,7 @@ mod tests {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
             root: filled,
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2156,6 +2164,7 @@ mod tests {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
             root: text(content, font_size),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2242,6 +2251,7 @@ mod tests {
                 Align::Start,
                 vec![text("AB", 30.0), text("CD", 30.0)],
             ),
+            capture_mode: CaptureMode::Passthrough,
         }
     }
 
@@ -2305,6 +2315,7 @@ mod tests {
                 Align::Start,
                 vec![text("AB", 30.0), text("CD", 30.0), text("EF", 30.0)],
             ),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut second = UiTree::from_descriptor(&reshaped, &theme());
         second.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
@@ -2395,6 +2406,7 @@ mod tests {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
             root: bound_text("0", "player.health", Some("HP {}")),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut slots = HashMap::new();
         slots.insert("player.health".to_string(), SlotValue::Number(87.0));
@@ -2418,6 +2430,7 @@ mod tests {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
             root: bound_text("0", "player.ammo", None),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut slots = HashMap::new();
         slots.insert("player.ammo".to_string(), SlotValue::Number(12.5));
@@ -2437,6 +2450,7 @@ mod tests {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
             root: bound_text("fallback", "player.health", Some("HP {}")),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2457,6 +2471,7 @@ mod tests {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
             root: bound_panel_in_stack([0.0, 0.0, 0.0, 1.0], "intro.flashColor"),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut slots = HashMap::new();
         slots.insert(
@@ -2488,6 +2503,7 @@ mod tests {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
             root: bound_panel_in_stack(fallback, "intro.flashColor"),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut slots = HashMap::new();
         slots.insert(
@@ -2519,6 +2535,7 @@ mod tests {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
             root: bound_panel_in_stack(fallback, "intro.flashColor"),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2566,6 +2583,7 @@ mod tests {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
             root: bound_panel_in_stack([0.0, 0.0, 0.0, 1.0], "intro.flashColor"),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2606,6 +2624,7 @@ mod tests {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
             root: bound_text("0", "player.health", Some("HP {}")),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2636,6 +2655,7 @@ mod tests {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
             root: bound_text("0", "player.health", Some("HP {}")),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2674,6 +2694,7 @@ mod tests {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
             root: bound_panel_in_stack([0.0, 0.0, 0.0, 1.0], "intro.flashColor"),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2743,6 +2764,7 @@ mod tests {
                 bind: None,
                 style_ranges: None,
             }),
+            capture_mode: CaptureMode::Passthrough,
         }
     }
 
@@ -2799,6 +2821,7 @@ mod tests {
                 border: None,
                 children: vec![text("AB", 30.0), text("CD", 30.0)],
             }),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme);
         let mut fs = font_system();
@@ -2828,6 +2851,7 @@ mod tests {
                 border: None,
                 children: vec![text("AB", 30.0), text("CD", 30.0)],
             }),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme);
         let mut fs = font_system();
@@ -3010,6 +3034,7 @@ mod tests {
                     from: Some(0.0),
                 },
             ),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3057,6 +3082,7 @@ mod tests {
                     from: None,
                 },
             ),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3088,6 +3114,7 @@ mod tests {
                     from: Some(0.0),
                 },
             ),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3172,6 +3199,7 @@ mod tests {
                     from: Some(0.0),
                 },
             ),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3210,6 +3238,7 @@ mod tests {
                     from: Some(10.0),
                 },
             ),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3239,6 +3268,7 @@ mod tests {
                     from: Some(0.0),
                 },
             ),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3274,6 +3304,7 @@ mod tests {
                     from: Some([0.0, 0.0, 0.0, 1.0]),
                 },
             ),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3340,6 +3371,7 @@ mod tests {
                     from: Some([0.0, 0.0, 0.0, 0.0]),
                 },
             ),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3406,6 +3438,7 @@ mod tests {
                     from: Some(0.0),
                 },
             ),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3452,6 +3485,7 @@ mod tests {
                     from: Some(0.0),
                 },
             ),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3483,6 +3517,7 @@ mod tests {
                     from: Some(0.0),
                 },
             ),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3513,6 +3548,7 @@ mod tests {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
             root: bound_text("0", "player.health", Some("HP {}")),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3590,6 +3626,7 @@ mod tests {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
             root: styled_text([1.0, 1.0, 1.0, 1.0], "player.health", health_style_ranges()),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut fs = font_system();
 
@@ -3638,6 +3675,7 @@ mod tests {
             anchor: Anchor::TopLeft,
             offset: [0.0, 0.0],
             root: styled_text([1.0, 1.0, 1.0, 1.0], "player.health", ranges),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3669,6 +3707,7 @@ mod tests {
                 bind: None,
                 style_ranges: Some(health_style_ranges()),
             }),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3714,6 +3753,7 @@ mod tests {
                 }),
                 style_ranges: Some(health_style_ranges()),
             }),
+            capture_mode: CaptureMode::Passthrough,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();

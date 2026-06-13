@@ -158,11 +158,10 @@ pub(crate) fn build_splash_descriptor(version_line: &str) -> SplashDescriptor {
         children: vec![inner],
     });
 
-    let tree = AnchoredTree {
-        anchor: Anchor::Center,
-        offset: [0.0, 0.0],
-        root: outer,
-    };
+    // Splash is non-interactive (`splash_capture_mode` is the live gate); the
+    // envelope mode stays passthrough and the splash never routes through the
+    // modal stack anyway (boot path predates it).
+    let tree = AnchoredTree::passthrough(Anchor::Center, [0.0, 0.0], outer);
 
     SplashDescriptor { tree }
 }

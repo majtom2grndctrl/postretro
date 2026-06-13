@@ -38,17 +38,69 @@ pub enum SpacingValue {
     Token(String),
 }
 
+/// Whether a tree captures input (freezing gameplay + lower trees and releasing
+/// the cursor) or passes it through to gameplay. Declared on the `AnchoredTree`
+/// envelope so a JSON-authored tree states its own behavior. `Passthrough` is the
+/// default — a HUD never captures, and an omitted `captureMode` keeps the pre-F
+/// wire form byte-identical (`skip_serializing_if` below). The app-side modal
+/// stack reads the TOP tree's mode to drive the input-dispatch seam and focus.
+///
+/// This is the descriptor/wire twin of `input::UiCaptureMode`; the modal stack
+/// converts one to the other via `into()`. Kept separate so the descriptor module
+/// carries no input-subsystem dependency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CaptureMode {
+    /// Tree consumes input; gameplay + lower trees freeze, cursor releases.
+    Capture,
+    /// Tree ignores input; events flow through to gameplay (HUD behavior).
+    #[default]
+    Passthrough,
+}
+
 /// Top-level placement envelope wrapping the root widget. `anchor`/`offset`
 /// live ONLY here, not on widget variants: a widget tree is placed once, as a
 /// whole, against the logical-reference canvas (see `layout::Anchor`). `offset`
 /// is logical-reference px, `[x, y]` (+x right, +y down), matching
 /// `UiElement::offset`.
+///
+/// `capture_mode` declares whether the tree captures input or passes it through;
+/// it defaults to `Passthrough` and skip-serializes when passthrough, so a
+/// pre-F descriptor (no `captureMode` key) round-trips byte-identically. The
+/// modal stack reads the TOP tree's mode to drive the input seam.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnchoredTree {
     pub anchor: Anchor,
     pub offset: [f32; 2],
     pub root: Widget,
+    /// Input capture behavior; defaults to `Passthrough`. Skip-serialized when
+    /// passthrough so a HUD/pre-F tree omits the key entirely (wire-identical).
+    #[serde(default, skip_serializing_if = "CaptureMode::is_passthrough")]
+    pub capture_mode: CaptureMode,
+}
+
+impl CaptureMode {
+    /// True for the default `Passthrough`. Used by `skip_serializing_if` so a
+    /// passthrough tree omits the `captureMode` key (pre-F wire compatibility).
+    fn is_passthrough(&self) -> bool {
+        matches!(self, CaptureMode::Passthrough)
+    }
+}
+
+impl AnchoredTree {
+    /// Build a passthrough-mode tree (the HUD/splash default). Most programmatic
+    /// trees never capture, so this keeps their construction terse and lets the
+    /// `capture_mode` field be added without touching every call site.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn passthrough(anchor: Anchor, offset: [f32; 2], root: Widget) -> Self {
+        Self {
+            anchor,
+            offset,
+            root,
+            capture_mode: CaptureMode::Passthrough,
+        }
+    }
 }
 
 /// One node in the UI widget tree. Internally tagged on `kind` (`"text"`,
@@ -590,6 +642,50 @@ mod tests {
         assert!(
             !reserialized.contains("styleRanges"),
             "absent styleRanges emits no key"
+        );
+    }
+
+    #[test]
+    fn capture_mode_bearing_tree_round_trips_in_camel_case() {
+        // A `captureMode: "capture"` envelope round-trips byte-for-byte. Field
+        // order: anchor, offset, root, then captureMode (declaration order).
+        let json = r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"spacer","flexGrow":1.0},"captureMode":"capture"}"#;
+        let tree: AnchoredTree = serde_json::from_str(json).expect("must deserialize");
+        assert_eq!(tree.capture_mode, CaptureMode::Capture);
+        let reserialized = serde_json::to_string(&tree).expect("must serialize");
+        assert_eq!(reserialized, json);
+    }
+
+    #[test]
+    fn capture_mode_absent_round_trips_byte_identically_as_passthrough() {
+        // A pre-F descriptor with no `captureMode` key deserializes to the default
+        // `Passthrough` and re-serializes WITHOUT the key (skip_serializing_if), so
+        // the wire form stays byte-identical to the pre-F shape.
+        let json =
+            r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"spacer","flexGrow":1.0}}"#;
+        let tree: AnchoredTree = serde_json::from_str(json).expect("must deserialize");
+        assert_eq!(
+            tree.capture_mode,
+            CaptureMode::Passthrough,
+            "absent captureMode defaults to passthrough",
+        );
+        let reserialized = serde_json::to_string(&tree).expect("must serialize");
+        assert_eq!(reserialized, json);
+        assert!(
+            !reserialized.contains("captureMode"),
+            "passthrough captureMode emits no key",
+        );
+    }
+
+    #[test]
+    fn capture_mode_serializes_to_camel_case_wire_form() {
+        assert_eq!(
+            serde_json::to_string(&CaptureMode::Capture).unwrap(),
+            r#""capture""#
+        );
+        assert_eq!(
+            serde_json::to_string(&CaptureMode::Passthrough).unwrap(),
+            r#""passthrough""#
         );
     }
 

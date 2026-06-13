@@ -21,8 +21,8 @@
 
 use super::UiReadSnapshot;
 use super::descriptor::{
-    Align, AnchoredTree, ColorValue, ContainerWidget, GridWidget, ImageWidget, SpacingValue,
-    TextWidget, Widget,
+    Align, AnchoredTree, CaptureMode, ColorValue, ContainerWidget, GridWidget, ImageWidget,
+    SpacingValue, TextWidget, Widget,
 };
 use super::layout::Anchor;
 use super::theme::UiTheme;
@@ -114,6 +114,7 @@ fn composite_fixture() -> AnchoredTree {
                 }),
             ],
         }),
+        capture_mode: CaptureMode::Passthrough,
     }
 }
 
@@ -157,24 +158,36 @@ fn gameplay_path_builds_non_empty_draw_list_from_descriptor_tree() {
     }
 }
 
+/// Wrap a fixture descriptor in a passthrough modal-stack entry for the snapshot.
+fn entry(descriptor: AnchoredTree) -> super::UiTreeEntry {
+    super::UiTreeEntry {
+        name: "fixture".to_string(),
+        capture_mode: crate::input::UiCaptureMode::Passthrough,
+        descriptor,
+        on_commit: None,
+    }
+}
+
 #[test]
 fn snapshot_carries_gameplay_tree_as_the_content_contract() {
-    // The widened `UiReadSnapshot` carries the descriptor tree (content side);
-    // the renderer lays it out. A default snapshot carries no tree (the splash
-    // path and any no-UI frame), which the gameplay path early-outs.
+    // The generalized `UiReadSnapshot` carries the modal-stack `trees` (content
+    // side); the renderer lays each out bottom→top. A default snapshot carries no
+    // trees (the splash path and any no-UI frame), which the gameplay path
+    // early-outs per layer.
     let default = UiReadSnapshot::default();
-    assert!(default.gameplay_tree.is_none(), "default carries no tree");
+    assert!(default.trees.is_empty(), "default carries no trees");
 
-    let snapshot = UiReadSnapshot::with_gameplay_tree(
-        composite_fixture(),
+    let snapshot = UiReadSnapshot::with_trees(
+        vec![entry(composite_fixture())],
         std::collections::HashMap::new(),
         // This gate doesn't exercise tweening; a fixed synthetic time suffices.
         0.0,
     );
-    let tree = snapshot
-        .gameplay_tree
-        .as_ref()
-        .expect("snapshot carries the gameplay tree");
+    let tree = &snapshot
+        .trees
+        .first()
+        .expect("snapshot carries the gameplay tree")
+        .descriptor;
     assert!(
         gameplay_draw(Some(tree), [1280, 720]).is_some(),
         "the snapshot's tree lays out to a non-empty draw list",
@@ -191,20 +204,35 @@ fn snapshot_default_time_is_zero() {
 }
 
 #[test]
-fn with_gameplay_tree_carries_the_passed_time() {
+fn with_trees_carries_the_passed_time() {
     // The gameplay constructor plumbs the deterministic, dt-accumulated frame
     // time straight onto the snapshot (stays `f64` end-to-end). A non-zero,
     // fractional value proves it is carried verbatim, not narrowed or reset.
     let t = 12.5_f64;
-    let snapshot = UiReadSnapshot::with_gameplay_tree(
-        composite_fixture(),
+    let snapshot = UiReadSnapshot::with_trees(
+        vec![entry(composite_fixture())],
         std::collections::HashMap::new(),
         t,
     );
     assert_eq!(
         snapshot.time_seconds, t,
-        "with_gameplay_tree carries the passed time onto the snapshot",
+        "with_trees carries the passed time onto the snapshot",
     );
+}
+
+#[test]
+fn snapshot_preserves_tree_painter_order_bottom_to_top() {
+    // The modal stack draws bottom→top: `trees[0]` is the bottom layer, the last
+    // entry the top. The snapshot must preserve that ordering verbatim so the
+    // renderer's per-layer loop composites in painter's order.
+    let bottom = entry(composite_fixture());
+    let mut top = entry(composite_fixture());
+    top.name = "top".to_string();
+    let snapshot =
+        UiReadSnapshot::with_trees(vec![bottom, top], std::collections::HashMap::new(), 0.0);
+    assert_eq!(snapshot.trees.len(), 2);
+    assert_eq!(snapshot.trees[0].name, "fixture", "trees[0] is the bottom");
+    assert_eq!(snapshot.trees[1].name, "top", "last entry is the top");
 }
 
 #[test]
@@ -228,6 +256,7 @@ fn empty_gameplay_tree_early_outs_the_ui_pass() {
             border: None,
             children: vec![],
         }),
+        capture_mode: CaptureMode::Passthrough,
     };
     let draw_empty = {
         let mut ui = UiTree::from_descriptor(&empty, &UiTheme::engine_default());

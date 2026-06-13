@@ -105,11 +105,28 @@ mod demo_ui_gate_test;
 #[cfg(test)]
 mod theme_gate_test;
 
+/// Shared headless GPU harness for the UI offscreen golden tests: the
+/// `pollster` device init (self-skip on no adapter) and the offscreen-texture
+/// readback. Used by `multi_batch_test`, `splash_golden_test`, and
+/// `multi_layer_text_golden_test`. See `testing_guide.md` §3/§4.
+#[cfg(test)]
+mod gpu_test_harness;
+
 /// Headless regression for the multi-batch instance-buffer clobber: encodes two
 /// non-empty batches into disjoint screen regions and asserts each region keeps
 /// its own batch's color. Self-skips when no GPU adapter is present.
 #[cfg(test)]
 mod multi_batch_test;
+
+/// Headless safety net for the multi-LAYER text compositing path (Task B):
+/// renders two stacked retained-tree layers (distinct text per layer at disjoint
+/// positions) into one offscreen target through a SINGLE `UiComposition` encode
+/// and asserts each layer keeps its own text. Proves the historical per-layer
+/// encode loop (two glyphon `prepare`s on the shared vertex buffer) clobbered the
+/// lower layer — coverage `cargo test` otherwise can't see. Self-skips with no
+/// GPU adapter.
+#[cfg(test)]
+mod multi_layer_text_golden_test;
 
 const UI_QUAD_WGSL: &str = include_str!("../../shaders/ui_quad.wgsl");
 

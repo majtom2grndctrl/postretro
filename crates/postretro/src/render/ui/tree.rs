@@ -2075,8 +2075,9 @@ pub(crate) struct UiDrawData {
 
 impl UiDrawData {
     /// `true` when this tree produced no drawable output: no panel quads, no
-    /// image quads, and no text. The renderer's gameplay path early-outs the UI
-    /// pass (no `begin_render_pass`) on an empty tree.
+    /// image quads, and no text. The renderer early-outs at the composed
+    /// `UiComposition` level; this per-layer predicate is test-only.
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.quads.is_empty()
             && self.texts.is_empty()

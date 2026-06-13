@@ -3465,13 +3465,16 @@ impl Renderer {
     }
 
     /// Install the active splash: upload the logo (reusing the splash texture
-    /// upload), build its UI bind group, and install the hardcoded splash
-    /// descriptor so `render_splash_frame` records it through the UI pass.
+    /// upload), build its UI bind group, and install the logo so the JSON-loaded
+    /// splash descriptor records through the UI pass in `render_splash_frame`.
     /// May be called more than once (mod-override swap in splash frame 1).
     pub fn install_splash_from_loaded(
         &mut self,
         loaded: &crate::ui_texture::UiTexture,
     ) -> [u32; 2] {
+        // Force the splash tree's one-time JSON load + parse now, at install
+        // (early in boot), rather than lazily on the first splash frame's render.
+        ui::splash::force_splash_tree_init();
         let (texture, dims) = splash::upload_splash_texture(&self.device, &self.queue, loaded);
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let bind_group = self.ui.make_texture_bind_group(&self.device, &view);
@@ -3575,18 +3578,12 @@ impl Renderer {
     }
 
     /// Record the splash through the UI pass into `view`, clearing to black first.
-    /// Builds the splash descriptor (`build_splash_descriptor`) and lays it out
-    /// through `UiTree` (`UiPass::layout_tree`): the tree is nested fill-containers
-    /// (outer border-colored backdrop + inner panel-colored backdrop) above a logo
-    /// `image` node and the version `text`. The oversized background letterbox fill
-    /// is the one quad built outside the tree, drawn first behind everything.
-    ///
-    /// The container backdrops concatenate with the background into the white-texel
-    /// batch; the logo draws as its own image batch resolved through the registry;
-    /// the version line draws as shaped text. `encode` is called unconditionally
-    /// with `LoadOp::Clear(BLACK)`, so on frame 0 (no descriptor installed yet) the
-    /// draw lists are empty and the pass only applies the black clear — preserving
-    /// the boot "frame-0 black" step.
+    /// Calls `build_splash_descriptor` (clones the once-loaded `splash.json` tree,
+    /// substitutes the version line) and lays the tree out via `UiPass::layout_tree`.
+    /// The background fill is
+    /// drawn as a separate first quad outside the tree. `encode` is called
+    /// unconditionally with `LoadOp::Clear(BLACK)` — on frame 0 the draw lists are
+    /// empty and the pass only applies the clear.
     fn record_splash_ui(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -3652,8 +3649,16 @@ impl Renderer {
             }
         }
 
+        // Wrap the splash's assembled batches + text in a single-layer
+        // composition — the same encode unit the gameplay modal stack funnels
+        // through, so the splash also satisfies the once-per-composition prepare
+        // guard. The splash builds its quads from a standalone `panel_list` plus
+        // the tree's panel/logo/text draw data (not a `UiDrawData` stack), so it
+        // borrows the assembled batches/text directly via `from_batches`.
+        let composition = ui::UiComposition::from_batches(batches, draw.texts.clone());
+
         // The splash path ALWAYS opens the pass with the black clear, even when
-        // the draw lists are empty (frame 0 before install) — the boot "frame-0
+        // the composition is empty (frame 0 before install) — the boot "frame-0
         // black" step depends on this. The gameplay-path empty-tree early-out is
         // separate (see `render_frame_indirect`).
         self.ui.encode(
@@ -3663,8 +3668,7 @@ impl Renderer {
             view,
             viewport,
             wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-            &batches,
-            &draw.texts,
+            &composition,
         );
     }
 
@@ -5428,9 +5432,9 @@ impl Renderer {
         // with all layers' glyphs concatenated in painter order, sidesteps it.
         let mut layer_draws: Vec<ui::tree::UiDrawData> = Vec::with_capacity(stack.len());
         for (layer, tree) in stack.iter().enumerate() {
-            // The demo gameplay HUD has no `image` nodes, so no image sizes are
-            // threaded; any `image` node would measure to zero. The splash path
-            // supplies the logo size in `record_splash_ui`.
+            // Image sizes are optional for gameplay layers — an `image` node with
+            // no size entry measures to zero. The splash supplies its logo size
+            // separately in `record_splash_ui`.
             // Bound text/panel nodes resolve against the snapshot's slot values
             // (disjoint field borrow from `&mut self.ui`). The cloned `stack`
             // above already released the snapshot, so this borrow is clean.
@@ -5468,40 +5472,17 @@ impl Renderer {
             layer_draws.push(draw);
         }
 
-        // Compose all laid-out layers into one batch list + one text list, in
-        // bottom→top painter order, and record a SINGLE UI pass. Each layer's
-        // quad batch precedes its text in the list, and a later layer's entries
-        // follow an earlier layer's, so painter order (and thus the LoadOp::Load
-        // composite) is preserved within the single pass exactly as the prior
-        // per-layer loop intended — minus the cross-layer text clobber.
-        let any_drawable = layer_draws.iter().any(|d| !d.is_empty());
-        if any_drawable {
-            let white_bg = self.ui.white_bind_group().clone();
-            let mut batches: Vec<ui::UiBatch> = Vec::new();
-            let mut texts: Vec<ui::UiText> = Vec::new();
-            for draw in &layer_draws {
-                if !draw.quads.is_empty() {
-                    batches.push(ui::UiBatch {
-                        list: &draw.quads,
-                        bind_group: &white_bg,
-                    });
-                }
-                // Unknown key degrades by skipping just that batch. Logged at
-                // debug, not warn: this gameplay path runs every frame with no
-                // dedup, so a persistently-missing key would spam at warn (§6.1).
-                for (asset, list) in &draw.images {
-                    if list.is_empty() {
-                        continue;
-                    }
-                    match self.ui_images.resolve(asset) {
-                        Some(bind_group) => batches.push(ui::UiBatch { list, bind_group }),
-                        None => log::debug!(
-                            "[Renderer] UI image asset key '{asset}' is not registered — skipping its draw"
-                        ),
-                    }
-                }
-                texts.extend_from_slice(&draw.texts);
-            }
+        // Fold every laid-out layer into ONE whole-frame composition (bottom→top
+        // painter order) and record a SINGLE UI pass. The composition is the unit
+        // of encoding — `encode` takes the whole composition, never one layer — so
+        // the cross-layer glyphon clobber (every layer's text reading the last
+        // layer's shaped glyphs) is unrepresentable. The white bind group is cloned
+        // out first so the `&self.ui_images` borrow the fold takes can coexist with
+        // the `&mut self.ui` encode call below.
+        let white_bg = self.ui.white_bind_group().clone();
+        let composition =
+            ui::UiComposition::from_layer_draws(&layer_draws, &white_bg, &self.ui_images);
+        if !composition.is_empty() {
             self.ui.encode(
                 &self.device,
                 &self.queue,
@@ -5509,8 +5490,7 @@ impl Renderer {
                 &view,
                 ui_viewport,
                 wgpu::LoadOp::Load,
-                &batches,
-                &texts,
+                &composition,
             );
         }
         // Drop retained state for any layers popped since last frame (stack

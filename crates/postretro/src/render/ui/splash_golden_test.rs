@@ -25,9 +25,10 @@
 //
 // See: context/lib/ui.md
 
+use super::gpu_test_harness::{GpuCtx, Readback, read_texture_rgba8, try_init_gpu};
 use super::layout;
 use super::splash::{SplashDescriptor, build_splash_descriptor};
-use super::{UiBatch, UiDrawList, UiPass};
+use super::{UiBatch, UiComposition, UiDrawList, UiPass};
 use crate::render::splash::splash_bg_rgba;
 
 /// Offscreen render-target size. The exact 1280x720 reference (device scale 1.0,
@@ -44,54 +45,6 @@ const TARGET_H: u32 = 720;
 /// structural presence — not an exact golden. The panel/background contrast is far
 /// larger than this, so it discriminates cleanly while tolerating backend drift.
 const COLOR_TOL: i32 = 16;
-
-struct GpuCtx {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-}
-
-/// Build a headless device, or `None` when no adapter is available (the
-/// headless-CI case). Mirrors `curve_eval_test::try_init_gpu`.
-fn try_init_gpu() -> Option<GpuCtx> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::PRIMARY,
-        ..wgpu::InstanceDescriptor::new_without_display_handle()
-    });
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::default(),
-        compatible_surface: None,
-        force_fallback_adapter: false,
-    }))
-    .ok()?;
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("splash_golden_test Device"),
-        required_features: wgpu::Features::empty(),
-        required_limits: wgpu::Limits::default(),
-        ..Default::default()
-    }))
-    .ok()?;
-    Some(GpuCtx { device, queue })
-}
-
-/// A read-back RGBA8 pixel grid (de-padded to a tight `width*4` stride).
-struct Readback {
-    width: u32,
-    height: u32,
-    pixels: Vec<u8>,
-}
-
-impl Readback {
-    /// The RGBA bytes at `(x, y)`.
-    fn at(&self, x: u32, y: u32) -> [u8; 4] {
-        let i = ((y * self.width + x) * 4) as usize;
-        [
-            self.pixels[i],
-            self.pixels[i + 1],
-            self.pixels[i + 2],
-            self.pixels[i + 3],
-        ]
-    }
-}
 
 /// Render the splash quads into an offscreen sRGB texture and read it back. Uses
 /// the same surface-format family the live pass uses (`Rgba8UnormSrgb`) so the
@@ -151,13 +104,17 @@ fn render_splash_offscreen(ctx: &GpuCtx) -> Readback {
         .instances
         .extend_from_slice(&draw.quads.instances);
 
-    // Panels sample the pass's 1x1 white texel.
+    // Panels sample the pass's 1x1 white texel. Wrap the splash's assembled
+    // batches + text in a single-layer composition — the same encode unit the
+    // production splash path (`record_splash_ui`) funnels through.
     let white_bg = pass.white_bind_group().clone();
-    let batches = [UiBatch {
-        list: &panel_list,
-        bind_group: &white_bg,
-    }];
-    let texts = draw.texts;
+    let composition = UiComposition::from_batches(
+        vec![UiBatch {
+            list: &panel_list,
+            bind_group: &white_bg,
+        }],
+        draw.texts,
+    );
 
     let mut encoder = ctx
         .device
@@ -171,80 +128,10 @@ fn render_splash_offscreen(ctx: &GpuCtx) -> Readback {
         &view,
         viewport,
         wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-        &batches,
-        &texts,
+        &composition,
     );
 
-    let readback = read_texture_rgba8(ctx, &target, TARGET_W, TARGET_H, encoder);
-    Readback {
-        width: TARGET_W,
-        height: TARGET_H,
-        pixels: readback,
-    }
-}
-
-/// Copy `texture` to a mappable buffer (respecting the 256-byte row alignment),
-/// submit `encoder`, map, and de-pad into a tight `width*4` RGBA8 buffer.
-fn read_texture_rgba8(
-    ctx: &GpuCtx,
-    texture: &wgpu::Texture,
-    width: u32,
-    height: u32,
-    mut encoder: wgpu::CommandEncoder,
-) -> Vec<u8> {
-    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    let unpadded = width * 4;
-    let padded = unpadded.div_ceil(align) * align;
-
-    let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("splash_golden readback"),
-        size: (padded * height) as u64,
-        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-
-    encoder.copy_texture_to_buffer(
-        wgpu::TexelCopyTextureInfo {
-            texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        wgpu::TexelCopyBufferInfo {
-            buffer: &buffer,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(padded),
-                rows_per_image: Some(height),
-            },
-        },
-        wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-    );
-    ctx.queue.submit(std::iter::once(encoder.finish()));
-
-    let slice = buffer.slice(..);
-    let (tx, rx) = std::sync::mpsc::channel();
-    slice.map_async(wgpu::MapMode::Read, move |r| {
-        tx.send(r).ok();
-    });
-    ctx.device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .expect("poll");
-    rx.recv().expect("map channel").expect("map ok");
-
-    let data = slice.get_mapped_range();
-    let mut tight = Vec::with_capacity((unpadded * height) as usize);
-    for row in 0..height {
-        let start = (row * padded) as usize;
-        tight.extend_from_slice(&data[start..start + unpadded as usize]);
-    }
-    drop(data);
-    buffer.unmap();
-    tight
+    read_texture_rgba8(ctx, &target, TARGET_W, TARGET_H, encoder)
 }
 
 fn within(a: u8, b: u8, tol: i32) -> bool {

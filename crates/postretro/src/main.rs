@@ -370,32 +370,37 @@ fn main() -> Result<()> {
         ui_proxy: scripting_systems::ui_proxy::StaticUiProxy::new(script_ctx.clone()),
         flash_decay: scripting_systems::flash_decay::FlashDecay::new(script_ctx.clone()),
         modal_stack: {
-            // Register engine built-in trees at boot. Script-side registration
-            // arrives with a later goal; today the engine HUD descriptor is the
-            // one built-in, registered by name so a `showDialog`/`openMenu`
-            // reaction can target it through the stack registry (the modal-stack
-            // drain path). The HUD is also republished as the always-on bottom
-            // layer each frame independently of this registration.
+            // Register engine built-in trees at boot through the one shared
+            // load-and-register path (`tree_asset::register_tree_from_disk`): each
+            // built-in screen's `AnchoredTree` is authored in
+            // `content/base/ui/<file>.json` and loaded from disk so a layout edit +
+            // reload changes it with no Rust change. A missing/malformed asset warns
+            // once and skips the registration — that screen is unavailable, the
+            // engine still boots.
+            //
+            // The HUD registers under `HUD_NAME` and is resolved by name as the
+            // always-on bottom passthrough layer each frame (the snapshot reads the
+            // registry, not a builder). The pause menu registers under
+            // `PAUSE_MENU_NAME` so `nav.menu` (gamepad Start / Escape-from-gameplay)
+            // can push it; the keyboard under `KEYBOARD_TREE_NAME` so a `showDialog
+            // { tree: "keyboard", onCommit }` resolves it.
             let mut stack = render::ui::modal_stack::ModalStack::new();
-            stack
-                .registry_mut()
-                .register("hud", render::ui::demo::build_demo_descriptor());
-            // Register the demo pause menu (M13 Goal F, Task 5) so `nav.menu`
-            // (gamepad Start / Escape-from-gameplay) can push it onto the stack.
-            stack.registry_mut().register(
-                render::ui::demo::PAUSE_MENU_NAME,
-                render::ui::demo::build_pause_menu_descriptor(),
+            let registry = stack.registry_mut();
+            render::ui::tree_asset::register_tree_from_disk(
+                registry,
+                render::ui::tree_asset::HUD_NAME,
+                "hud.json",
             );
-            // Register the engine-shipped on-screen keyboard (M13 Text-Entry, Task
-            // 4), loaded from `content/base/ui/keyboard.json` on disk so a layout
-            // edit + reload changes it with no Rust change. A `showDialog { tree:
-            // "keyboard", onCommit }` resolves this name. A missing/malformed asset
-            // warns and skips the registration — gameplay still boots.
-            if let Some(keyboard) = render::ui::keyboard_asset::load_keyboard_descriptor() {
-                stack
-                    .registry_mut()
-                    .register(render::ui::keyboard_asset::KEYBOARD_TREE_NAME, keyboard);
-            }
+            render::ui::tree_asset::register_tree_from_disk(
+                registry,
+                render::ui::demo::PAUSE_MENU_NAME,
+                "pauseMenu.json",
+            );
+            render::ui::tree_asset::register_tree_from_disk(
+                registry,
+                render::ui::keyboard_asset::KEYBOARD_TREE_NAME,
+                "keyboard.json",
+            );
             stack
         },
         ui_focus: input::UiFocusEngine::new(),
@@ -1472,7 +1477,7 @@ impl ApplicationHandler for App {
                     .modal_stack
                     .active_name()
                     .map(str::to_string)
-                    .unwrap_or_else(|| "hud".to_string());
+                    .unwrap_or_else(|| render::ui::tree_asset::HUD_NAME.to_string());
                 let cursor = self.cursor_pos;
                 let focus_result = self.ui_focus.tick(
                     Some(active_key.as_str()),
@@ -2190,22 +2195,33 @@ impl ApplicationHandler for App {
                         // Game logic → Audio → Render). The renderer reads these
                         // cloned values, never the live `SlotTable`.
                         //
-                        // Modal stack: the demo HUD is the always-on bottom layer
-                        // (`trees[0]`), and any pushed modal trees stack above it,
-                        // drawn bottom→top. The renderer's retained path lays each
-                        // layer out and resolves its binds against the snapshot;
-                        // each layer's descriptor is structurally stable, so the
-                        // retained tree per layer reuses it and only bound values
-                        // drive the diff. The HUD is passthrough, so with no modal
-                        // open the top mode is passthrough (gameplay keeps input).
+                        // Modal stack: the HUD is the always-on bottom layer
+                        // (`trees[0]`), resolved BY NAME from the registry
+                        // (`modal_stack.tree(HUD_NAME)`, sourced from
+                        // `content/base/ui/hud.json`) — the registry is the single
+                        // seam, no builder on the render path. Pushed modal trees
+                        // stack above it, drawn bottom→top. The renderer's retained
+                        // path lays each layer out and resolves its binds against the
+                        // snapshot; each layer's descriptor is structurally stable, so
+                        // the retained tree per layer reuses it and only bound values
+                        // drive the diff. The HUD's capture mode comes from its
+                        // declared envelope (passthrough), so with no modal open the
+                        // top mode is passthrough (gameplay keeps input). A missing
+                        // `hud.json` resolves to `None` — the HUD is simply absent
+                        // that frame and the engine still boots.
                         let slot_values =
                             Self::build_ui_slot_snapshot(&self.script_ctx.slot_table.borrow());
-                        let mut trees = vec![render::ui::UiTreeEntry {
-                            name: "hud".to_string(),
-                            descriptor: render::ui::demo::build_demo_descriptor(),
-                            capture_mode: input::UiCaptureMode::Passthrough,
-                            on_commit: None,
-                        }];
+                        let mut trees: Vec<render::ui::UiTreeEntry> = self
+                            .modal_stack
+                            .tree(render::ui::tree_asset::HUD_NAME)
+                            .map(|descriptor| render::ui::UiTreeEntry {
+                                name: render::ui::tree_asset::HUD_NAME.to_string(),
+                                capture_mode: descriptor.capture_mode.into(),
+                                descriptor: descriptor.clone(),
+                                on_commit: None,
+                            })
+                            .into_iter()
+                            .collect();
                         trees.extend(self.modal_stack.entries());
                         // Ring-visibility follows the interaction mode WHILE a
                         // capturing tree is on the stack (M13 Goal F, Task 5):

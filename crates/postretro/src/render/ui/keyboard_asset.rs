@@ -4,11 +4,15 @@
 // mod author can edit the layout JSON and reload to change the keyboard with no
 // Rust change — the gamepad accessibility accommodation, built entirely from F's
 // grid/spatial-focus/button primitives plus Task 1's text-edit reactions.
-// See: context/lib/ui.md · context/lib/resource_management.md §1.3
+// See: context/lib/ui.md
 
+#[cfg(test)]
 use std::path::PathBuf;
 
+#[cfg(test)]
 use super::descriptor::AnchoredTree;
+#[cfg(test)]
+use super::tree_asset::ui_asset_path;
 
 /// Registry name the on-screen keyboard registers under. A `showDialog { tree:
 /// "keyboard", onCommit }` resolves this name through the modal stack.
@@ -24,41 +28,12 @@ pub(crate) const KEYBOARD_TREE_NAME: &str = "keyboard";
 pub(crate) const COMMIT_TEXT_ENTRY_SENTINEL: &str = "ui.commitTextEntry";
 
 /// Engine-shipped keyboard descriptor path, relative to the working directory —
-/// the same `content/base/...` convention the splash PNG uses. Independent of the
-/// mod content root (derived from the map path): the keyboard ships with the
-/// engine, so it loads from `base` regardless of which mod is active.
+/// the same `content/base/...` convention the splash PNG uses. The boot path
+/// registers the keyboard through `tree_asset::register_tree_from_disk`; this
+/// anchors the same asset for the keyboard's own deserialization tests.
+#[cfg(test)]
 pub(crate) fn keyboard_asset_path() -> PathBuf {
-    PathBuf::from("content/base/ui/keyboard.json")
-}
-
-/// Load and deserialize the on-screen keyboard descriptor from disk. Returns the
-/// parsed `AnchoredTree` on success; on a missing or malformed file logs a
-/// `warn!` and returns `None` so the boot path degrades gracefully (the keyboard
-/// is simply unavailable — gameplay still boots). The descriptor flows through the
-/// standard serde wire path, so a layout edit (e.g. deleting a key) is picked up
-/// purely from the JSON.
-pub(crate) fn load_keyboard_descriptor() -> Option<AnchoredTree> {
-    let path = keyboard_asset_path();
-    let bytes = match std::fs::read_to_string(&path) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            log::warn!(
-                "[UI] keyboard asset '{}' could not be read ({err}); on-screen keyboard unavailable",
-                path.display()
-            );
-            return None;
-        }
-    };
-    match serde_json::from_str::<AnchoredTree>(&bytes) {
-        Ok(tree) => Some(tree),
-        Err(err) => {
-            log::warn!(
-                "[UI] keyboard asset '{}' failed to deserialize ({err}); on-screen keyboard unavailable",
-                path.display()
-            );
-            None
-        }
-    }
+    ui_asset_path("keyboard.json")
 }
 
 #[cfg(test)]

@@ -77,6 +77,14 @@ impl ModalStack {
         &mut self.registry
     }
 
+    /// Read a registered tree by `name`, or `None` if no such name is registered.
+    /// The public read seam onto the registry: the per-frame snapshot resolves the
+    /// HUD through this (cloning the borrow into its owned entry), keeping
+    /// `UiTreeRegistry::resolve` private to `push_named`'s internal use.
+    pub(crate) fn tree(&self, name: &str) -> Option<&AnchoredTree> {
+        self.registry.resolve(name)
+    }
+
     /// Resolve a registered tree by `name` and push it (script `PushTree` path).
     /// An unknown name warns and is a no-op — never a panic. `on_commit` is
     /// carried onto the entry for a later goal to fire on commit.

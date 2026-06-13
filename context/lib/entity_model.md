@@ -145,7 +145,7 @@ The camera's current BSP leaf is computed each frame for portal-visibility culli
 
 Entities collide against static world geometry. At level load, PRL static geometry is built into a `parry3d` trimesh held by `CollisionWorld`. Queries use `parry3d::query::*` free functions against this collider — no `QueryPipeline`.
 
-**Skeletal hit zones (forthcoming, M10).** Today an entity is hitscan-targetable iff it carries a hitbox (one fixed AABB, §2). When skeletal hit zones land, targetability widens to: health **and** (an authored AABB hitbox **or** a zone-bearing skinned model), and a zone-bearing model is hit-tested against bone-posed capsules rather than the AABB. Design intent; see `plans/ready/M10--skeletal-hit-zones/`. It follows a general division: **spatial structure rides on the asset** (per-joint hit-zone tags in the glTF), **balance rides in the descriptor script** (per-zone damage multipliers) — mirroring map `_tags` → entity behavior.
+**Skeletal hit zones (forthcoming, M10).** Today an entity is hitscan-targetable iff it carries a hitbox (one fixed AABB, §2). Hit zones widen this to: health **and** (an authored AABB hitbox **or** a zone-bearing skinned model); a zone-bearing model is tested against bone-posed capsules, not the AABB. Design intent; see `plans/ready/M10--skeletal-hit-zones/`. General division: **spatial structure rides on the asset** (per-joint hit-zone tags in the glTF), **balance rides in the script** (per-zone damage multipliers) — mirroring map `_tags` → entity behavior.
 
 ### Entity-Entity Collision
 

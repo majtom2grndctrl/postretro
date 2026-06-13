@@ -6,7 +6,7 @@
 // absent or malformed. This is the ONE named seam (`build_splash_descriptor`)
 // built on `AnchoredTree`; script ingestion (G1) will replace the body while
 // keeping the `SplashDescriptor` shape and call sites stable.
-// See: context/lib/boot_sequence.md §3a · context/lib/ui.md
+// See: context/lib/boot_sequence.md §1 (Splash state machine) · context/lib/ui.md
 
 use std::path::PathBuf;
 use std::sync::LazyLock;
@@ -111,8 +111,9 @@ pub(crate) fn splash_logo_reference_size(natural_dims: [u32; 2]) -> [f32; 2] {
 ///
 /// This is the seam: built on `AnchoredTree`; script ingestion (G1) will replace
 /// the body while keeping the `SplashDescriptor` shape and call sites stable.
-/// The renderer stores one of these as the active splash and re-lays-out its
-/// tree each frame against the live backbuffer size.
+/// The renderer does not store one of these: it tracks splash-installed via the
+/// logo-size field and builds a fresh `SplashDescriptor` each frame from the
+/// `LazyLock`-cached tree clone.
 pub(crate) struct SplashDescriptor {
     /// The descriptor tree: a center-anchored outer container (border-colored
     /// backdrop + padding) wrapping an inner container (panel-colored backdrop)
@@ -149,11 +150,20 @@ pub(crate) fn build_splash_descriptor(version_line: &str) -> SplashDescriptor {
 /// the live version, so the cached sentinel is never consumed.
 static SPLASH_TREE: LazyLock<AnchoredTree> = LazyLock::new(load_splash_tree);
 
+/// Force the splash tree's one-time load + parse now, rather than lazily on the
+/// first `build_splash_descriptor` call (which lands inside the first splash
+/// frame's render). The renderer calls this at splash install so the disk read +
+/// deserialize happen at boot-time init, keeping the per-frame path off disk and
+/// boot init deterministic — matching how HUD/pause/keyboard trees load eagerly.
+pub(crate) fn force_splash_tree_init() {
+    LazyLock::force(&SPLASH_TREE);
+}
+
 /// Load + deserialize the splash descriptor from `content/base/ui/splash.json`,
 /// degrading to the minimal in-code fallback on a missing or malformed file. On
 /// failure it `warn!`s once (this runs once, inside `SPLASH_TREE`'s initializer)
 /// and returns the fallback so the boot path never panics — mirroring
-/// `load_keyboard_descriptor`'s graceful degradation and `[UI]` log tag.
+/// `tree_asset::load_named_tree`'s graceful degradation and `[UI]` log tag.
 fn load_splash_tree() -> AnchoredTree {
     let path = splash_asset_path();
     let bytes = match std::fs::read_to_string(&path) {

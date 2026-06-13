@@ -5,7 +5,7 @@
 // A missing/malformed file warns ONCE and skips the registration — that screen is
 // unavailable, the engine still boots. The on-screen keyboard's loader builds on
 // this same helper.
-// See: context/lib/ui.md §1 · context/lib/resource_management.md §1.3
+// See: context/lib/ui.md §1
 
 use std::path::{Path, PathBuf};
 

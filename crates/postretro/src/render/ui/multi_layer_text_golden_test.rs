@@ -5,13 +5,13 @@
 // `UiPass::encode` ONCE PER modal-stack layer. Each encode ran glyphon `prepare`
 // against the shared `UiTextRenderer`, whose single internal vertex buffer is
 // overwritten at offset 0 — so an UPPER layer's glyphs clobbered the LOWER
-// layer's text. Task A made the per-layer loop unrepresentable on the production
-// surface: `encode` now consumes ONE whole-frame `UiComposition` folding every
-// layer's text into a single `prepare`. This test drives the REAL retained
-// gameplay text path (two independently-retained `UiDrawData` trees, exactly the
-// modal-stack shape) through that single composed encode, reads the offscreen
-// target back, and asserts the lower layer still carries ITS OWN text (S0), not
-// the upper layer's (S1).
+// layer's text. The single-`UiComposition` encode boundary made the per-layer
+// loop unrepresentable on the production surface: `encode` now consumes ONE
+// whole-frame `UiComposition` folding every layer's text into a single `prepare`.
+// This test drives the REAL retained gameplay text path (two independently-retained
+// `UiDrawData` trees, exactly the modal-stack shape) through that single composed
+// encode, reads the offscreen target back, and asserts the lower layer still
+// carries ITS OWN text (S0), not the upper layer's (S1).
 //
 // Discrimination, not exactness: AA glyph rasterization differs per backend, so a
 // committed PNG would be backend-fragile (the `splash_golden_test` rationale). We
@@ -150,8 +150,8 @@ fn make_target(ctx: &GpuCtx) -> (wgpu::Texture, wgpu::TextureView) {
 }
 
 /// The PRODUCTION path: fold both retained layers into ONE `UiComposition` and
-/// encode it ONCE. This is the Task A surface — a single `prepare` for the whole
-/// frame, so the lower layer's text survives.
+/// encode it ONCE. Single `prepare` for the whole frame, so the lower layer's
+/// text survives.
 fn render_single_composition(ctx: &GpuCtx) -> Readback {
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
     let mut pass = UiPass::new(&ctx.device, &ctx.queue, format);
@@ -201,10 +201,10 @@ fn band_ink(rb: &Readback, y0: u32, y1: u32) -> u32 {
     count
 }
 
-/// The single-composition (Task A production) path keeps EACH layer's own text:
-/// the lower band carries S0's ink signature (not S1's), the upper band carries
-/// S1's, and the two bands differ. This is the safety net the historical
-/// per-layer encode loop would fail.
+/// The single-composition production path keeps EACH layer's own text: the lower
+/// band carries S0's ink signature (not S1's), the upper band carries S1's, and
+/// the two bands differ. This is the safety net the historical per-layer encode
+/// loop would fail.
 #[test]
 fn single_composition_keeps_each_layer_text() {
     let Some(ctx) = try_init_gpu() else {

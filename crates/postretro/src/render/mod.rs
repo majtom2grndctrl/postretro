@@ -3465,13 +3465,16 @@ impl Renderer {
     }
 
     /// Install the active splash: upload the logo (reusing the splash texture
-    /// upload), build its UI bind group, and install the hardcoded splash
-    /// descriptor so `render_splash_frame` records it through the UI pass.
+    /// upload), build its UI bind group, and install the logo so the JSON-loaded
+    /// splash descriptor records through the UI pass in `render_splash_frame`.
     /// May be called more than once (mod-override swap in splash frame 1).
     pub fn install_splash_from_loaded(
         &mut self,
         loaded: &crate::ui_texture::UiTexture,
     ) -> [u32; 2] {
+        // Force the splash tree's one-time JSON load + parse now, at install
+        // (early in boot), rather than lazily on the first splash frame's render.
+        ui::splash::force_splash_tree_init();
         let (texture, dims) = splash::upload_splash_texture(&self.device, &self.queue, loaded);
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let bind_group = self.ui.make_texture_bind_group(&self.device, &view);
@@ -3575,8 +3578,9 @@ impl Renderer {
     }
 
     /// Record the splash through the UI pass into `view`, clearing to black first.
-    /// Calls `build_splash_descriptor` (loads `splash.json`, substitutes the version
-    /// line) and lays the tree out via `UiPass::layout_tree`. The background fill is
+    /// Calls `build_splash_descriptor` (clones the once-loaded `splash.json` tree,
+    /// substitutes the version line) and lays the tree out via `UiPass::layout_tree`.
+    /// The background fill is
     /// drawn as a separate first quad outside the tree. `encode` is called
     /// unconditionally with `LoadOp::Clear(BLACK)` — on frame 0 the draw lists are
     /// empty and the pass only applies the clear.

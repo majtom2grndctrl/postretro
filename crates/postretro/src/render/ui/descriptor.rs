@@ -101,7 +101,7 @@ pub enum FocusKind {
 /// the cadence after that. The focus engine accumulates dt against these. Confirm
 /// and cancel never repeat regardless of this policy.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RepeatPolicy {
     pub initial_delay_ms: f32,
     pub interval_ms: f32,
@@ -156,7 +156,7 @@ fn is_false(b: &bool) -> bool {
 /// All fields default to absent, and the whole struct skip-serializes when empty,
 /// so a node that authors no override round-trips byte-identically.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FocusNeighbors {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub up: Option<String>,
@@ -187,7 +187,7 @@ impl FocusNeighbors {
 /// pre-F descriptor (no `captureMode` key) round-trips byte-identically. The
 /// modal stack reads the TOP tree's mode to drive the input seam.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AnchoredTree {
     pub anchor: Anchor,
     pub offset: [f32; 2],
@@ -279,7 +279,7 @@ pub enum Widget {
 /// as the fallback for an absent slot (see `tree::resolve_text`).
 /// Absent on every static widget, so unbound text round-trips unchanged.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TextWidget {
     pub content: String,
     pub font_size: f32,
@@ -318,7 +318,7 @@ pub struct TextWidget {
 /// string form. With `format` absent, the value's default string form is drawn.
 /// Multi-value templates are out of scope — one `{}` max.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TextBind {
     pub slot: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -352,7 +352,7 @@ pub enum Easing {
 /// when absent the runtime starts from the first observed value. The wire shape
 /// differs from `PanelTween` only in `from`'s JSON type (a number here).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TextTween {
     pub duration_ms: f32,
     pub easing: Easing,
@@ -372,7 +372,7 @@ pub struct TextTween {
 /// malformed slot (see `tree::resolve_panel_fill`). Absent on static panels, so
 /// unbound panels round-trip unchanged.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PanelWidget {
     pub fill: ColorValue,
     pub border: Option<Border>,
@@ -400,7 +400,7 @@ pub struct PanelWidget {
 /// replaces the literal `fill`. A wrong variant, wrong length, or absent slot
 /// falls back to the literal `fill` (see `tree::resolve_panel_fill`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PanelBind {
     pub slot: String,
     /// Optional value-tweening config (M13). When present, the tween runtime
@@ -418,7 +418,7 @@ pub struct PanelBind {
 /// first observed value. The wire shape differs from `TextTween` only in
 /// `from`'s JSON type (a length-4 linear-RGBA array here).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PanelTween {
     pub duration_ms: f32,
     pub easing: Easing,
@@ -432,7 +432,7 @@ pub struct PanelTween {
 /// reference size into the measure seam (see `tree::UiTree::build_draw_data`), so
 /// the on-screen image is always shaped to the real asset and never stretched.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ImageWidget {
     pub asset: String,
     /// Authored stable id (M13 Goal F, Task 3). See `TextWidget::id`.
@@ -458,7 +458,7 @@ pub struct ImageWidget {
 /// the logo + version text, with no absolute overlap. Both skip-serialize when
 /// absent, so a fill-less container round-trips byte-identically.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContainerWidget {
     pub gap: SpacingValue,
     pub padding: SpacingValue,
@@ -489,7 +489,7 @@ pub struct ContainerWidget {
 /// Grid container. Like a stack but flows `children` across a fixed number of
 /// columns. Shares the stack fields; adds `cols`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GridWidget {
     pub gap: SpacingValue,
     pub padding: SpacingValue,
@@ -514,7 +514,7 @@ pub struct GridWidget {
 /// Flexible-space leaf. `flex_grow` is the proportional share of leftover space
 /// it claims inside its parent container.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SpacerWidget {
     pub flex_grow: f32,
     /// Authored stable id (M13 Goal F, Task 3). See `TextWidget::id`. A spacer is
@@ -532,7 +532,7 @@ pub struct SpacerWidget {
 /// the focused node id back to this button's `on_press`, so the id must be stable.
 /// `focus_neighbors` carries directional overrides exactly like the passive widgets.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ButtonWidget {
     pub id: String,
     pub label: String,
@@ -564,7 +564,7 @@ pub struct ButtonWidget {
 /// `id` is required for the same reason as `ButtonWidget::id` — nav-capture and
 /// value-step resolve through the focused node id.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SliderWidget {
     pub id: String,
     pub label: String,
@@ -588,7 +588,7 @@ pub struct SliderWidget {
 /// optional tween) so the bind vocabulary stays uniform across bound widgets; a
 /// slider binds a numeric slot, so its tween is the `TextTween` (number) shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SliderBind {
     pub slot: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -604,7 +604,7 @@ pub struct SliderBind {
 /// `fill`/`background` are color slots (literal or theme token). `bar` is
 /// horizontal-only in v1 (a vertical field is a later additive change).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BarWidget {
     pub bind: SliderBind,
     pub max: f32,
@@ -634,7 +634,7 @@ pub enum Align {
 /// inset (logical px, `[left, top, right, bottom]`) that splits it into the
 /// nine regions, and a linear-RGBA `tint`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Border {
     pub texture: String,
     pub slice: [f32; 4],
@@ -668,6 +668,25 @@ mod tests {
         let tree: AnchoredTree = serde_json::from_str(json).expect("must deserialize");
         let reserialized = serde_json::to_string(&tree).expect("must serialize");
         assert_eq!(reserialized, json);
+    }
+
+    #[test]
+    fn misspelled_field_key_is_rejected_not_silently_defaulted() {
+        // `deny_unknown_fields` on the per-widget field structs converts a typo'd
+        // key into a hard parse error instead of silently dropping the override and
+        // falling back to the field default (the pause-menu nav-override gap). Here
+        // a button misspells `focusNeighbors` as `focusNeighbours`: previously this
+        // deserialized fine (the override silently lost), now it is a serde error.
+        let typo = r#"{"kind":"button","id":"resume","label":"Resume","onPress":"resumeGame","focusNeighbours":{"down":"quit"}}"#;
+        let result: Result<Widget, _> = serde_json::from_str(typo);
+        assert!(
+            result.is_err(),
+            "a misspelled widget field key must be a serde error, not a silent default"
+        );
+
+        // The correctly-spelled key still parses — the guard rejects only unknowns.
+        let correct = r#"{"kind":"button","id":"resume","label":"Resume","onPress":"resumeGame","focusNeighbors":{"down":"quit"}}"#;
+        serde_json::from_str::<Widget>(correct).expect("correctly-spelled key must still parse");
     }
 
     #[test]

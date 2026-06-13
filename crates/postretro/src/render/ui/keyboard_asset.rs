@@ -4,7 +4,7 @@
 // mod author can edit the layout JSON and reload to change the keyboard with no
 // Rust change — the gamepad accessibility accommodation, built entirely from F's
 // grid/spatial-focus/button primitives plus Task 1's text-edit reactions.
-// See: context/lib/ui.md · context/lib/resource_management.md §1.3
+// See: context/lib/ui.md
 
 #[cfg(test)]
 use std::path::PathBuf;

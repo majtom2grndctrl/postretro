@@ -128,13 +128,13 @@ mod gpu_test_harness;
 #[cfg(test)]
 mod multi_batch_test;
 
-/// Headless safety net for the multi-LAYER text compositing path (Task B):
-/// renders two stacked retained-tree layers (distinct text per layer at disjoint
-/// positions) into one offscreen target through a SINGLE `UiComposition` encode
-/// and asserts each layer keeps its own text. Proves the historical per-layer
-/// encode loop (two glyphon `prepare`s on the shared vertex buffer) clobbered the
-/// lower layer — coverage `cargo test` otherwise can't see. Self-skips with no
-/// GPU adapter.
+/// Headless safety net for the multi-LAYER text compositing path: renders two
+/// stacked retained-tree layers (distinct text per layer at disjoint positions)
+/// into one offscreen target through a SINGLE `UiComposition` encode and asserts
+/// each layer keeps its own text. Proves the historical per-layer encode loop
+/// (two glyphon `prepare`s on the shared vertex buffer) clobbered the lower
+/// layer — coverage `cargo test` otherwise can't see. Self-skips with no GPU
+/// adapter.
 #[cfg(test)]
 mod multi_layer_text_golden_test;
 
@@ -507,11 +507,12 @@ pub(crate) struct UiBatch<'a> {
 /// The text path obeys the same "one fill per composition" rule the quad path
 /// already enforces by giving each batch a disjoint instance-buffer region.
 ///
-/// Borrows, never owns the underlying draw data: `batches` hold `UiBatch<'a>`
-/// (each borrowing a `&UiDrawList` + bind group, zero quad copy); `texts` is the
-/// concatenated run list. Built in the caller's frame scope so the borrows coexist
-/// with the `&mut self.ui` encode call. Two constructors: `from_layer_draws`
-/// (gameplay modal stack) and `from_batches` (the standalone splash assembly).
+/// Borrows the raw quad data (`batches` hold `UiBatch<'a>`, each borrowing a
+/// `&UiDrawList` + bind group, zero quad copy); owns the concatenated text runs
+/// (`texts: Vec<UiText>`). Built in the caller's frame scope so the borrows
+/// coexist with the `&mut self.ui` encode call. Two constructors:
+/// `from_layer_draws` (gameplay modal stack) and `from_batches` (the standalone
+/// splash assembly).
 pub(crate) struct UiComposition<'a> {
     batches: Vec<UiBatch<'a>>,
     texts: Vec<UiText>,
@@ -564,7 +565,8 @@ impl<'a> UiComposition<'a> {
     /// Splash constructor: a single-layer composition from already-assembled
     /// batches and text. The splash's quads come from a standalone `panel_list`
     /// (`layout::project`) plus a background fill — not a `UiDrawData` — so it
-    /// borrows the assembled `&[UiBatch]`/`&[UiText]` directly. The splash has no
+    /// takes ownership of the assembled `Vec<UiBatch<'a>>`/`Vec<UiText>` (each
+    /// `UiBatch<'a>` still borrows its underlying draw list). The splash has no
     /// image-registry fold of its own (the logo batch is assembled by the caller
     /// and passed in `batches`).
     pub fn from_batches(batches: Vec<UiBatch<'a>>, texts: Vec<UiText>) -> Self {

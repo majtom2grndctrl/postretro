@@ -2925,6 +2925,108 @@ mod tests {
         }
     }
 
+    /// Regression: the pause-menu `ui.textEntry` readout and the "ENTER TEXT"
+    /// opener button are DISTINCT retained nodes whose resolved drawn content can
+    /// never alias one another. Drives the real `build_pause_menu_descriptor`
+    /// through the retained tree with a live `ui.textEntry` value and asserts the
+    /// readout draws `"ENTRY <value>"` while the opener draws its immutable
+    /// "ENTER TEXT" label — each at its own position, with no per-node cache or
+    /// auto-id collision swapping one node's content/glyphs onto the other.
+    ///
+    /// This pins the CPU half of the readout-aliasing bug (the reported symptom was
+    /// the readout rendering the opener's "ENTER TEXT" text): node identity is the
+    /// taffy `NodeId`, distinct per node, and `last_resolved` lives on the node, so
+    /// the readout's resolved string and the opener's literal label never cross.
+    /// (The GPU half — a single shared glyphon vertex buffer clobbered by a
+    /// per-stack-layer `encode` loop — is fixed in `render/mod.rs` and is not
+    /// CPU-testable without a GPU adapter; see that fix's note.)
+    #[test]
+    fn pause_menu_readout_and_opener_resolve_distinct_non_aliasing_text() {
+        use crate::render::ui::demo::build_pause_menu_descriptor;
+
+        let tree = build_pause_menu_descriptor();
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let mut slots: HashMap<String, SlotValue> = HashMap::new();
+        slots.insert(
+            "ui.textEntry".to_string(),
+            SlotValue::String("this is a test".to_string()),
+        );
+        let data = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
+
+        // The readout draws the bound value behind its untouched "ENTRY " prefix.
+        let readout = data
+            .texts
+            .iter()
+            .find(|t| t.content == "ENTRY this is a test")
+            .expect("readout draws the bound ui.textEntry value behind the ENTRY prefix");
+        // The opener button draws its immutable label, distinct from the readout.
+        let opener = data
+            .texts
+            .iter()
+            .find(|t| t.content == "ENTER TEXT")
+            .expect("the opener button still draws its own ENTER TEXT label");
+
+        // They are two separate draw entries at two separate positions — neither
+        // node picked up the other's resolved content (the aliasing symptom).
+        assert_ne!(
+            readout.position, opener.position,
+            "the readout and opener are distinct nodes at distinct positions",
+        );
+        // No drawn run is the opener's label masquerading as the readout: exactly
+        // one run carries each string.
+        assert_eq!(
+            data.texts
+                .iter()
+                .filter(|t| t.content == "ENTER TEXT")
+                .count(),
+            1,
+            "the ENTER TEXT label appears exactly once (only on the opener node)",
+        );
+        assert_eq!(
+            data.texts
+                .iter()
+                .filter(|t| t.content == "ENTRY this is a test")
+                .count(),
+            1,
+            "the resolved readout string appears exactly once (only on the readout node)",
+        );
+
+        // The readout node's `last_resolved` holds ITS value; the opener node is
+        // unbound and never resolves — so the two per-node caches cannot cross.
+        let mut ids = Vec::new();
+        ui.collect_node_ids(ui.root, &mut ids);
+        let mut readout_resolved = None;
+        let mut saw_unbound_opener = false;
+        for n in ids {
+            if let Some(NodeContext::Text {
+                content,
+                last_resolved,
+                bind,
+                ..
+            }) = ui.taffy.get_node_context(n)
+            {
+                if bind.as_ref().map(|b| b.slot.as_str()) == Some("ui.textEntry") {
+                    readout_resolved = last_resolved.clone();
+                }
+                if content == "ENTER TEXT" {
+                    saw_unbound_opener = true;
+                    assert!(bind.is_none(), "the opener label is unbound");
+                    assert!(
+                        last_resolved.is_none(),
+                        "the unbound opener never resolves a bound string",
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            readout_resolved.as_deref(),
+            Some("ENTRY this is a test"),
+            "the readout node caches its OWN resolved string, not the opener's label",
+        );
+        assert!(saw_unbound_opener, "the opener node exists in the tree");
+    }
+
     #[test]
     fn unchanged_frame_reuses_cached_layout_without_recompute() {
         // First layout populates taffy's cache (count 1); a second call with the

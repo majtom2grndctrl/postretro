@@ -5415,6 +5415,18 @@ impl Renderer {
             .iter()
             .map(|entry| entry.descriptor.clone())
             .collect();
+
+        // Lay out EVERY layer first into owned draw data, THEN compose all layers
+        // into a SINGLE `encode` call. The glyphon text half (`UiTextRenderer`) is
+        // shared across layers and holds ONE vertex buffer it overwrites at offset
+        // 0 on each `prepare`; `queue.write_buffer` resolves on the queue timeline
+        // (last write wins) regardless of recording order, so issuing a separate
+        // `encode` per layer makes EVERY layer's text draw read the LAST layer's
+        // shaped glyphs — the readout-aliasing bug (a lower layer's text rendered
+        // the top layer's glyphs). This mirrors the multi-batch quad-buffer clobber
+        // already documented in `UiPass::encode`: one `prepare`/`render` per frame,
+        // with all layers' glyphs concatenated in painter order, sidesteps it.
+        let mut layer_draws: Vec<ui::tree::UiDrawData> = Vec::with_capacity(stack.len());
         for (layer, tree) in stack.iter().enumerate() {
             // The demo gameplay HUD has no `image` nodes, so no image sizes are
             // threaded; any `image` node would measure to zero. The splash path
@@ -5453,9 +5465,21 @@ impl Renderer {
                     }
                 }
             }
-            if !draw.is_empty() {
-                let white_bg = self.ui.white_bind_group().clone();
-                let mut batches: Vec<ui::UiBatch> = Vec::new();
+            layer_draws.push(draw);
+        }
+
+        // Compose all laid-out layers into one batch list + one text list, in
+        // bottom→top painter order, and record a SINGLE UI pass. Each layer's
+        // quad batch precedes its text in the list, and a later layer's entries
+        // follow an earlier layer's, so painter order (and thus the LoadOp::Load
+        // composite) is preserved within the single pass exactly as the prior
+        // per-layer loop intended — minus the cross-layer text clobber.
+        let any_drawable = layer_draws.iter().any(|d| !d.is_empty());
+        if any_drawable {
+            let white_bg = self.ui.white_bind_group().clone();
+            let mut batches: Vec<ui::UiBatch> = Vec::new();
+            let mut texts: Vec<ui::UiText> = Vec::new();
+            for draw in &layer_draws {
                 if !draw.quads.is_empty() {
                     batches.push(ui::UiBatch {
                         list: &draw.quads,
@@ -5476,17 +5500,18 @@ impl Renderer {
                         ),
                     }
                 }
-                self.ui.encode(
-                    &self.device,
-                    &self.queue,
-                    &mut encoder,
-                    &view,
-                    ui_viewport,
-                    wgpu::LoadOp::Load,
-                    &batches,
-                    &draw.texts,
-                );
+                texts.extend_from_slice(&draw.texts);
             }
+            self.ui.encode(
+                &self.device,
+                &self.queue,
+                &mut encoder,
+                &view,
+                ui_viewport,
+                wgpu::LoadOp::Load,
+                &batches,
+                &texts,
+            );
         }
         // Drop retained state for any layers popped since last frame (stack
         // shrank), so freed modal trees release their layout cache.

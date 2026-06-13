@@ -23,6 +23,7 @@
 - **Scripting / primitives / SDK types** → `scripting.md`
 - **Game / mod author docs (human-facing, not agent context)** → `docs/`
 - **Collision (world/entity)** → `entity_model.md` §7
+- **Navigation / navmesh / pathfinding representation** → `build_pipeline.md` §Navigation bake
 - **Player movement / movement states / FPS feel** → `movement.md`
 - **Frame timing / game loop** → `rendering_pipeline.md` §1 · `entity_model.md` §5
 - **Boot / startup / splash / level-load sequence / mod loading** → `boot_sequence.md`

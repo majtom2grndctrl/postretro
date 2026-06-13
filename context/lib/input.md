@@ -101,7 +101,7 @@ Raw mouse motion is essential for consistent aiming. OS pointer acceleration var
 |---------|--------|-------|
 | `Gameplay` | Locked and hidden | Player input / action system |
 | `DevTools` | Released | Debug overlay (egui) |
-| `Menu` | Released | Menu system (wired; no consumer yet) |
+| `Menu` | Released | Modal UI stack (consumer lands with M13 input breadth — a capturing UI tree on the stack) |
 
 Only `Gameplay` captures the cursor (`captures_cursor()` returns true for `Gameplay` only).
 
@@ -134,6 +134,8 @@ The input subsystem produces one thing: an action-state snapshot per frame. Game
 | Boundary rule | Rationale |
 |---------------|-----------|
 | Snapshot is the only output | Game logic depends on action semantics, not input hardware |
+| App composition writes cross-subsystem state | Store slots driven by input observation (e.g. `input.mode`) are written by App-side code in the input phase, not by the subsystem — the subsystem's output stays the snapshot |
+| UI dispatch precedes action mapping | Events a capturing UI tree consumes ride the `input/ui_dispatch.rs` queue (kinded intents) and reach game logic no earlier than the next frame; all intent sources, including gamepad, must enqueue before the frame's `take_ready`/`advance_frame` pair |
 | No wgpu dependency | Input has no rendering concern. Keeps the module testable without a GPU context. |
 | No reverse dependency | Game logic never pushes state back into input mid-frame. Information flows one direction. |
 | Configurable bindings are input's concern | Game logic does not know which key maps to which action |

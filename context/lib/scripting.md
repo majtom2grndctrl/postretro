@@ -28,7 +28,7 @@ Scripting is **strictly single-threaded**. Both rquickjs contexts and mlua state
 
 Both are the authoring path: scripts run once at load time and register intent. The shared Definition context accumulates definitions across calls; cross-script globals are intentional. All persistent state flows through Rust primitives, not script globals.
 
-**Data context lifecycle.** At level load, after geometry and entities are ready, the engine creates a short-lived VM context and runs the data script. The script must export a `setupLevel(ctx)` function. Its return bundle carries `{reactions}`; only those reactions land in the per-level reaction registry. Per-level entity-type registration is not supported — entity types are engine-global and arrive through `setupMod`, not `setupLevel`.
+**Data context lifecycle.** At level load, after geometry and entities are ready, the engine creates a short-lived VM context and runs the data script. The script must export a `setupLevel(ctx)` function. Its return bundle carries `{reactions, crossings}` (crossings: state-crossing watchers, M13 HUD dynamics); only those land in the per-level registries. Per-level entity-type registration is not supported — entity types are engine-global and arrive through `setupMod`, not `setupLevel`.
 
 The context is dropped after the data script completes. No live reference to the data VM remains. The reaction registry is per-level and clears on unload; the entity-type registry is engine-global. The two registries are separate Rust structures — each can be cleared and repopulated independently.
 
@@ -223,7 +223,20 @@ Six tag-targeted reaction primitives operate on `FogVolumeComponent`: `setFogDen
 
 `setAnimationState` is a tag-targeted reaction primitive: it switches each matching mesh entity's animation state by name. States are declared as descriptor data on `components.mesh` — state name → clip name, loop, crossfade, interrupt policy — with a required `defaultState`. The animation runtime plays whatever state is set and never decides transitions: selection logic stays caller-side (reactions today; AI behavior and command-buffer transition guards later, wrapping the same engine switch path).
 
-### 10.4 Damage
+### 10.4 System Reactions (no entity targets)
+
+One event namespace, two execution arms (M13 HUD dynamics): entity-targeted
+primitives resolve tags and mutate the `EntityRegistry`; **system reactions**
+(`playSound`, `rumble`, `flashScreen`, `showDialog` / `openMenu` /
+`closeDialog`, `setState` and the text-edit reactions) carry no `tag` (the
+descriptor's `tag` is optional; absent = system-targeted) and push typed
+commands onto a queue drained once per frame by the app after the post-tick
+event drains — audio/input/UI subsystems consume their commands without
+threading engine services into scripting. Crossing watchers
+(`onStateCrossing`) return through `setupLevel`'s manifest, which carries
+`{reactions, crossings}`.
+
+### 10.5 Damage
 
 `applyDamage` is a tag-targeted reaction primitive: applies a damage amount to every tagged entity carrying health. Negative or non-finite amounts warn and no-op (no healing path); targets without health warn and skip. There is no imperative script damage/health API — runtime damage flows through reactions; engine systems (weapons, future AI) call the Rust damage chokepoint directly. Death resolves in an engine sweep, never in the reaction handler. The player pawn never despawns from damage: HP latches at zero and a one-shot `playerDied` event fires through the reaction system.
 

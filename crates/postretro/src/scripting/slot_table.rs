@@ -149,6 +149,9 @@ impl Default for SlotTable {
             .insert_namespace("input", engine_input_slots())
             .expect("built-in input store schema must be valid");
         table
+            .insert_namespace("ui", engine_ui_slots())
+            .expect("built-in ui store schema must be valid");
+        table
     }
 }
 
@@ -428,6 +431,27 @@ fn engine_input_slots() -> Vec<(String, SlotRecord)> {
     )]
 }
 
+/// Engine-owned UI text-entry surface. `ui.textEntry` is the writable target the
+/// text-edit reactions (`appendText` / `backspaceText` / `clearText`, M13 Text
+/// Entry Task 1) mutate at the game-logic stage, and a valid `setState` target.
+/// Unlike the readonly engine slots (`player.*`, `screen.flash`, `input.mode`),
+/// it is WRITABLE: both the hardware-keyboard path and the on-screen-keyboard
+/// asset drive one shared edit surface over this String slot. Defaults to empty.
+/// See: context/lib/scripting.md §10.4.
+fn engine_ui_slots() -> Vec<(String, SlotRecord)> {
+    vec![(
+        "textEntry".to_string(),
+        SlotRecord::new(SlotSchema {
+            slot_type: SlotType::String,
+            default: Some(SlotValue::String(String::new())),
+            range: None,
+            persist: false,
+            readonly: false,
+            ownership: SlotOwnership::Engine,
+        }),
+    )]
+}
+
 fn engine_player_slots() -> Vec<(String, SlotRecord)> {
     ["health", "ammo"]
         .into_iter()
@@ -540,6 +564,22 @@ mod tests {
         assert!(slot.schema.readonly);
         assert!(!slot.schema.persist);
         assert_eq!(slot.value, Some(SlotValue::Enum("focus".to_string())));
+    }
+
+    #[test]
+    fn new_registers_engine_ui_text_entry_slot_writable() {
+        // `ui.textEntry` is the engine-owned WRITABLE String surface the
+        // text-edit reactions mutate. Unlike the readonly engine proxies, it is
+        // a valid setState / text-edit write target. Defaults to empty.
+        let table = SlotTable::new();
+        let slot = table
+            .get("ui.textEntry")
+            .expect("engine ui.textEntry slot exists");
+        assert_eq!(slot.schema.slot_type, SlotType::String);
+        assert_eq!(slot.schema.ownership, SlotOwnership::Engine);
+        assert!(!slot.schema.readonly, "ui.textEntry must be writable");
+        assert!(!slot.schema.persist);
+        assert_eq!(slot.value, Some(SlotValue::String(String::new())));
     }
 
     #[test]

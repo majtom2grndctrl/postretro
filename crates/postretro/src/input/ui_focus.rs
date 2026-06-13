@@ -18,7 +18,7 @@
 
 use crate::input::ui_dispatch::PointerPos;
 use crate::input::ui_nav::NavIntent;
-use crate::render::ui::tree::{FocusKind, FocusRect, FocusRectList, NodeInteraction};
+use crate::render::ui::tree::{FocusKind, FocusRect, FocusRectList, NodeInteraction, RepeatPolicy};
 
 /// Resolve a captured-nav value step for a focused `slider` (M13 Goal F, Task 4).
 /// Partitions `nav_intents` into captured — removed in place — and uncaptured —
@@ -135,20 +135,79 @@ impl Dir {
     }
 }
 
-/// Hold-to-repeat clock for a held directional nav. Confirm/cancel never repeat,
-/// so only a directional press starts one. The timer is dt-clocked: each engine
-/// tick adds `dt` to `elapsed`, and once the elapsed time passes the initial delay
-/// (then each interval after) it yields one repeated step. Releasing the direction
-/// (a return to no held direction) clears it.
+/// The dt-clocked timing core shared by the directional-nav repeat and the
+/// activation (confirm) repeat. Each engine tick adds `dt` to `elapsed`; once the
+/// elapsed time passes the initial delay (then each interval after) it yields one
+/// fire. Both hold-to-repeat consumers drive THIS one timer — there is no second
+/// repeat clock — differing only in what a fire does (move focus vs. re-activate).
 #[derive(Debug, Clone)]
-struct RepeatClock {
-    dir: Dir,
+struct RepeatTimer {
     initial_delay: f32,
     interval: f32,
     /// Seconds since the press (or since the last emitted repeat after the delay).
     elapsed: f32,
     /// Whether the initial delay has elapsed (we are in the steady interval phase).
     repeating: bool,
+}
+
+impl RepeatTimer {
+    /// Arm a fresh timer from a [`RepeatPolicy`] (milliseconds → seconds), before
+    /// the initial delay has elapsed.
+    fn armed(initial_delay_ms: f32, interval_ms: f32) -> Self {
+        Self {
+            initial_delay: initial_delay_ms / 1000.0,
+            interval: interval_ms / 1000.0,
+            elapsed: 0.0,
+            repeating: false,
+        }
+    }
+
+    /// Advance the timer by `dt` and return how many repeats fired this tick
+    /// (robust to a large dt spanning multiple intervals). A non-positive threshold
+    /// disables repeating; a pathological dt/interval ratio is clamped at 64 fires.
+    fn advance(&mut self, dt: f32) -> u32 {
+        self.elapsed += dt;
+        let mut fires = 0u32;
+        loop {
+            let threshold = if self.repeating {
+                self.interval
+            } else {
+                self.initial_delay
+            };
+            if threshold <= 0.0 || self.elapsed < threshold {
+                break;
+            }
+            self.elapsed -= threshold;
+            self.repeating = true;
+            fires += 1;
+            if fires > 64 {
+                // Safety clamp against a pathological dt/interval ratio.
+                self.elapsed = 0.0;
+                break;
+            }
+        }
+        fires
+    }
+}
+
+/// Hold-to-repeat clock for a held directional nav. Confirm/cancel never repeat by
+/// nav, so only a directional press starts one. Releasing the direction (a return
+/// to no held direction) clears it. Wraps the shared [`RepeatTimer`].
+#[derive(Debug, Clone)]
+struct RepeatClock {
+    dir: Dir,
+    timer: RepeatTimer,
+}
+
+/// Hold-to-repeat clock for a held activation (confirm) on a `repeatOnHold`-flagged
+/// button (M13 Text-Entry, Task 2 — the on-screen keyboard backspace). The ONE
+/// activation-repeat exception: armed only when a confirm lands on a focused button
+/// carrying a `repeat_on_hold` policy, it re-fires the button's activation on the
+/// SAME [`RepeatTimer`] mechanics the nav repeat uses. A confirm release clears it
+/// (mirroring how the directional release clears the nav clock).
+#[derive(Debug, Clone)]
+struct ConfirmRepeatClock {
+    timer: RepeatTimer,
 }
 
 /// One stack tree's focus state, keyed by tree identity (the stack-position key
@@ -177,6 +236,9 @@ pub struct UiFocusEngine {
     active_key: Option<String>,
     /// Hold-to-repeat clock for the active tree's currently held direction.
     repeat: Option<RepeatClock>,
+    /// Activation-repeat clock for a held confirm on a `repeatOnHold` button (M13
+    /// Text-Entry, Task 2). `Some` only while such a button's confirm is held.
+    confirm_repeat: Option<ConfirmRepeatClock>,
 }
 
 /// Result of one focus-engine tick: the focused node id to send back on the next
@@ -246,6 +308,7 @@ impl UiFocusEngine {
         let stack_changed = self.active_key.as_deref() != Some(active_key);
         if stack_changed {
             self.repeat = None;
+            self.confirm_repeat = None;
         }
         self.ensure_initialized(active_key, rects, stack_changed);
         self.active_key = Some(active_key.to_string());
@@ -280,11 +343,18 @@ impl UiFocusEngine {
         }
 
         // Directional / activation nav. A directional press moves focus and arms
-        // the hold-to-repeat clock; confirm/cancel fire once and never repeat.
+        // the hold-to-repeat clock; cancel fires once and never repeats. Confirm
+        // fires once AND — on a `repeatOnHold` button — arms the activation-repeat
+        // clock so a held confirm re-fires below (the one activation-repeat
+        // exception; nav `confirm` is otherwise single-fire like F).
         let mut held_dir: Option<Dir> = None;
+        let mut confirm_pressed = false;
         for &nav in intents {
             match nav {
-                NavIntent::Confirm => result.confirmed = true,
+                NavIntent::Confirm => {
+                    result.confirmed = true;
+                    confirm_pressed = true;
+                }
                 NavIntent::Cancel => result.cancelled = true,
                 NavIntent::Next => self.step_linear(active_key, rects, 1),
                 NavIntent::Prev => self.step_linear(active_key, rects, -1),
@@ -305,6 +375,18 @@ impl UiFocusEngine {
         // so a held direction shows up as: one intent on press, then none while
         // held — exactly the signal the dt clock turns into repeats.
         self.advance_repeat(active_key, rects, held_dir, dt);
+
+        // Activation-repeat (M13 Text-Entry, Task 2): a held confirm on a focused
+        // `repeatOnHold` button re-fires its activation on the SAME repeat timer.
+        // The confirm intent stream carries one edge per press (held confirms are
+        // suppressed at the input edge, exactly like directional nav), so a held
+        // confirm shows up as one `Confirm` on press then none while held — the dt
+        // clock turns that absence into repeats. Each repeat sets `confirmed` so the
+        // app fires `on_press` through the same activation path the initial press
+        // uses. Released externally (the app drives `release_confirm_repeat`).
+        if self.advance_confirm_repeat(active_key, rects, confirm_pressed, dt) {
+            result.confirmed = true;
+        }
 
         result.focused = self.focused_id(active_key).map(str::to_string);
         result
@@ -432,10 +514,7 @@ impl UiFocusEngine {
                 Some(cfg) => {
                     self.repeat = Some(RepeatClock {
                         dir,
-                        initial_delay: cfg.initial_delay_ms / 1000.0,
-                        interval: cfg.interval_ms / 1000.0,
-                        elapsed: 0.0,
-                        repeating: false,
+                        timer: RepeatTimer::armed(cfg.initial_delay_ms, cfg.interval_ms),
                     });
                 }
                 None => self.repeat = None,
@@ -447,28 +526,7 @@ impl UiFocusEngine {
         let Some(clock) = self.repeat.as_mut() else {
             return;
         };
-        clock.elapsed += dt;
-        // Emit as many repeats as the accumulated time covers (robust to a large
-        // dt spanning multiple intervals), advancing focus each time.
-        let mut fires = 0u32;
-        loop {
-            let threshold = if clock.repeating {
-                clock.interval
-            } else {
-                clock.initial_delay
-            };
-            if threshold <= 0.0 || clock.elapsed < threshold {
-                break;
-            }
-            clock.elapsed -= threshold;
-            clock.repeating = true;
-            fires += 1;
-            if fires > 64 {
-                // Safety clamp against a pathological dt/interval ratio.
-                clock.elapsed = 0.0;
-                break;
-            }
-        }
+        let fires = clock.timer.advance(dt);
         let dir = clock.dir;
         for _ in 0..fires {
             self.move_focus(key, rects, dir);
@@ -479,6 +537,64 @@ impl UiFocusEngine {
     /// (the app observes the directional key/stick return and drives release).
     pub fn release_repeat(&mut self) {
         self.repeat = None;
+    }
+
+    /// Advance the activation (confirm) repeat clock (M13 Text-Entry, Task 2),
+    /// returning `true` when a repeated activation fired this tick. A fresh confirm
+    /// press arms the clock ONLY when the focused node is a `button` carrying a
+    /// `repeat_on_hold` policy (the on-screen keyboard backspace); otherwise it
+    /// clears any armed clock, preserving F's single-fire rule for flag-less
+    /// confirms. With no press this tick the armed clock advances by `dt` on the
+    /// shared [`RepeatTimer`], firing once per elapsed delay/interval. The fired
+    /// activation re-targets the CURRENTLY focused button each tick (the same
+    /// node — confirm does not move focus), so the app fires its `on_press` again.
+    fn advance_confirm_repeat(
+        &mut self,
+        key: &str,
+        rects: &FocusRectList,
+        confirm_pressed: bool,
+        dt: f32,
+    ) -> bool {
+        if confirm_pressed {
+            // Fresh confirm: arm the clock only for a `repeatOnHold` button; any
+            // other focused node leaves activation single-fire (clear the clock).
+            match self.focused_button_repeat(key, rects) {
+                Some(policy) => {
+                    self.confirm_repeat = Some(ConfirmRepeatClock {
+                        timer: RepeatTimer::armed(policy.initial_delay_ms, policy.interval_ms),
+                    });
+                }
+                None => self.confirm_repeat = None,
+            }
+            return false;
+        }
+
+        // No confirm this tick. If a clock is armed, advance it; any fire is a
+        // repeated activation (a held confirm yields one edge then silence — the
+        // dt clock turns that silence into repeats, mirroring the nav clock).
+        let Some(clock) = self.confirm_repeat.as_mut() else {
+            return false;
+        };
+        clock.timer.advance(dt) > 0
+    }
+
+    /// Clear the activation-repeat clock — called when the held confirm releases
+    /// (the app observes the confirm key/button return and drives release, mirroring
+    /// [`release_repeat`] for directional nav).
+    pub fn release_confirm_repeat(&mut self) {
+        self.confirm_repeat = None;
+    }
+
+    /// The `repeat_on_hold` policy of the focused node when it is a `button`
+    /// carrying one, else `None`. Drives whether a held confirm arms the
+    /// activation-repeat clock.
+    fn focused_button_repeat(&self, key: &str, rects: &FocusRectList) -> Option<RepeatPolicy> {
+        let focused = self.focused_id(key)?;
+        let rect = rects.rects.iter().find(|r| r.id == focused)?;
+        match &rect.interaction {
+            Some(NodeInteraction::Button { repeat_on_hold, .. }) => *repeat_on_hold,
+            _ => None,
+        }
     }
 }
 
@@ -798,6 +914,7 @@ mod tests {
         // A non-Slider interaction returns None and never touches the intent list.
         let interaction = NodeInteraction::Button {
             on_press: "fire".to_string(),
+            repeat_on_hold: None,
         };
         let mut intents = vec![NavIntent::Right];
         assert_eq!(capture_slider_step(&interaction, 0.5, &mut intents), None);
@@ -1257,5 +1374,172 @@ mod tests {
             Some("a"),
             "frozen lower tree keeps its focus"
         );
+    }
+
+    // --- M13 Text-Entry, Task 2: button activation-repeat (`repeatOnHold`) ---
+
+    /// A single-button focus list. `repeat_on_hold` opts the button into
+    /// activation-repeat (the on-screen keyboard backspace); `None` is a plain
+    /// single-fire button. The button is its own group member so it is focusable.
+    fn button_list(repeat_on_hold: Option<RepeatPolicy>) -> FocusRectList {
+        let mut r = rect("bksp", [0.0, 0.0, 100.0, 20.0], 0, None);
+        r.interaction = Some(NodeInteraction::Button {
+            on_press: "backspace".to_string(),
+            repeat_on_hold,
+        });
+        FocusRectList {
+            rects: vec![r],
+            groups: vec![],
+            initial_focus: None,
+            restore_on_return: false,
+        }
+    }
+
+    #[test]
+    fn flagged_button_held_confirm_repeats_at_declared_delay_and_interval() {
+        // A `repeatOnHold` button: a held confirm re-fires activation on the focus
+        // engine's repeat timer — one fire on press, then after the initial delay,
+        // then each interval. Each fire surfaces as `confirmed` so the app re-fires
+        // `on_press` through the single activation path.
+        let mut fe = UiFocusEngine::new();
+        let list = button_list(Some(RepeatPolicy {
+            initial_delay_ms: 300.0,
+            interval_ms: 100.0,
+        }));
+        // Init focuses the button.
+        fe.tick(
+            Some("t"),
+            Some(&list),
+            &[],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+        // Press confirm: fires once and arms the activation-repeat clock.
+        let r = fe.tick(
+            Some("t"),
+            Some(&list),
+            &[NavIntent::Confirm],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+        assert!(r.confirmed, "initial confirm fires");
+        // Hold 0.2s — under the 0.3s initial delay: no repeat yet.
+        let r = fe.tick(
+            Some("t"),
+            Some(&list),
+            &[],
+            None,
+            &[],
+            InputMode::Focus,
+            0.2,
+        );
+        assert!(!r.confirmed, "no repeat before the initial delay");
+        // Another 0.15s -> 0.35s total, past the delay: first repeat fires.
+        let r = fe.tick(
+            Some("t"),
+            Some(&list),
+            &[],
+            None,
+            &[],
+            InputMode::Focus,
+            0.15,
+        );
+        assert!(r.confirmed, "first repeat after the initial delay");
+        // Another 0.1s == one interval: second repeat fires.
+        let r = fe.tick(
+            Some("t"),
+            Some(&list),
+            &[],
+            None,
+            &[],
+            InputMode::Focus,
+            0.1,
+        );
+        assert!(r.confirmed, "second repeat after one interval");
+    }
+
+    #[test]
+    fn unflagged_button_held_confirm_fires_once() {
+        // A button WITHOUT `repeatOnHold` keeps F's single-fire rule: confirm fires
+        // once on press and never repeats, no matter how long it is held.
+        let mut fe = UiFocusEngine::new();
+        let list = button_list(None);
+        fe.tick(
+            Some("t"),
+            Some(&list),
+            &[],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+        let r = fe.tick(
+            Some("t"),
+            Some(&list),
+            &[NavIntent::Confirm],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+        assert!(r.confirmed, "confirm fires once on press");
+        // Hold well past any plausible delay: no repeat (no clock armed).
+        let r = fe.tick(
+            Some("t"),
+            Some(&list),
+            &[],
+            None,
+            &[],
+            InputMode::Focus,
+            5.0,
+        );
+        assert!(!r.confirmed, "an unflagged button never repeats");
+    }
+
+    #[test]
+    fn confirm_release_stops_the_activation_repeat() {
+        // Releasing the confirm (the app drives `release_confirm_repeat`) clears the
+        // clock, mirroring how a directional release clears the nav clock. After
+        // release, holding past the delay yields no further repeats.
+        let mut fe = UiFocusEngine::new();
+        let list = button_list(Some(RepeatPolicy {
+            initial_delay_ms: 100.0,
+            interval_ms: 50.0,
+        }));
+        fe.tick(
+            Some("t"),
+            Some(&list),
+            &[],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+        fe.tick(
+            Some("t"),
+            Some(&list),
+            &[NavIntent::Confirm],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+        // Release stops the clock.
+        fe.release_confirm_repeat();
+        // Hold past the delay: no repeat now that the clock is cleared.
+        let r = fe.tick(
+            Some("t"),
+            Some(&list),
+            &[],
+            None,
+            &[],
+            InputMode::Focus,
+            1.0,
+        );
+        assert!(!r.confirmed, "release stops the activation-repeat");
     }
 }

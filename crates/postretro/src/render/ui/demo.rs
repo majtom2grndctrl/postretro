@@ -397,6 +397,7 @@ pub(crate) fn build_pause_menu_descriptor() -> AnchoredTree {
         label: "RESUME".to_string(),
         on_press: PAUSE_RESUME_REACTION.to_string(),
         focus_neighbors: Default::default(),
+        repeat_on_hold: None,
     });
 
     let volume = Widget::Slider(SliderWidget {

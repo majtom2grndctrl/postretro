@@ -532,6 +532,16 @@ pub struct ButtonWidget {
     /// `TextWidget::focus_neighbors`.
     #[serde(default, skip_serializing_if = "FocusNeighbors::is_empty")]
     pub focus_neighbors: FocusNeighbors,
+    /// Opt-in activation-repeat (M13 Text-Entry, Task 2). When set, a HELD confirm
+    /// on this focused button re-fires `on_press` on the focus engine's existing
+    /// hold-to-repeat clock — initial delay, then interval — reusing the exact wire
+    /// shape (`{ initialDelayMs, intervalMs }`) of a container's nav `repeat`. This
+    /// is the ONE activation-repeat exception (the on-screen keyboard's backspace);
+    /// absent keeps F's single-fire rule (one `on_press` per press regardless of
+    /// hold). Skip-serialized when absent so a flag-less button round-trips byte-
+    /// identically with its pre-text-entry wire form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat_on_hold: Option<RepeatPolicy>,
 }
 
 /// Interactive slider (M13 Goal F, Task 4). Focusable; nav steps it captures
@@ -1055,6 +1065,36 @@ mod tests {
         assert!(matches!(widget, Widget::Button(_)));
         let reserialized = serde_json::to_string(&widget).expect("must serialize");
         assert_eq!(reserialized, json);
+    }
+
+    #[test]
+    fn button_repeat_on_hold_round_trips_and_absent_flag_is_byte_identical() {
+        // M13 Text-Entry, Task 2: the opt-in `repeatOnHold` flag carries the same
+        // `{ initialDelayMs, intervalMs }` wire shape as a container's nav `repeat`.
+        // A flagged button round-trips byte-identically; field order is kind, id,
+        // label, onPress, then repeatOnHold (declaration order).
+        let flagged = r#"{"kind":"button","id":"bksp","label":"DEL","onPress":"backspace","repeatOnHold":{"initialDelayMs":400.0,"intervalMs":60.0}}"#;
+        let widget: Widget = serde_json::from_str(flagged).expect("must deserialize");
+        match &widget {
+            Widget::Button(b) => {
+                let p = b.repeat_on_hold.expect("flag parsed");
+                assert_eq!(p.initial_delay_ms, 400.0);
+                assert_eq!(p.interval_ms, 60.0);
+            }
+            _ => panic!("expected button"),
+        }
+        assert_eq!(serde_json::to_string(&widget).unwrap(), flagged);
+
+        // A flag-less button keeps its pre-text-entry wire form byte-identical: the
+        // additive field skip-serializes when absent (the locked-wire guarantee).
+        let plain = r#"{"kind":"button","id":"a","label":"A","onPress":"fa"}"#;
+        let widget: Widget = serde_json::from_str(plain).expect("must deserialize");
+        let reserialized = serde_json::to_string(&widget).unwrap();
+        assert_eq!(reserialized, plain);
+        assert!(
+            !reserialized.contains("repeatOnHold"),
+            "absent repeatOnHold emits no key"
+        );
     }
 
     #[test]

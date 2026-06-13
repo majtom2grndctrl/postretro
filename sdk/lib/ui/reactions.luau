@@ -133,4 +133,28 @@ function UiReactionsSdk.setState(
   return { primitive = "setState", args = { slot = slot, value = value } }
 end
 
+--- Append `text` to the current string value of the writable String slot `slot`
+--- at the game-logic stage (M13 Text Entry). Pure: returns a primitive reaction
+--- body, no engine side effect. Readonly-gated through the same writable-slot gate
+--- as `setState`: a readonly slot warns and is left unchanged; an engine-owned
+--- writable slot (e.g. `ui.textEntry`) is a valid target.
+function UiReactionsSdk.appendText(slot: string, text: string): PrimitiveReactionDescriptor
+  return { primitive = "appendText", args = { slot = slot, text = text } }
+end
+
+--- Remove the last grapheme cluster (char-pop floor: never splits a UTF-8
+--- sequence) from the writable String slot `slot` at the game-logic stage (M13
+--- Text Entry). Pure: returns a primitive reaction body, no engine side effect.
+--- Empty is a no-op with no warning. Readonly-gated like `setState`.
+function UiReactionsSdk.backspaceText(slot: string): PrimitiveReactionDescriptor
+  return { primitive = "backspaceText", args = { slot = slot } }
+end
+
+--- Empty the writable String slot `slot` at the game-logic stage (M13 Text
+--- Entry). Pure: returns a primitive reaction body, no engine side effect.
+--- Readonly-gated like `setState`.
+function UiReactionsSdk.clearText(slot: string): PrimitiveReactionDescriptor
+  return { primitive = "clearText", args = { slot = slot } }
+end
+
 return UiReactionsSdk

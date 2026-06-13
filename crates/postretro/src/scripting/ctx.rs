@@ -141,8 +141,9 @@ mod tests {
         ctx.data_registry.borrow_mut().clear();
 
         let slots = ctx.slot_table.borrow();
-        // player.health, player.ammo, screen.flash, input.mode, test.health
-        assert_eq!(slots.len(), 5);
+        // player.health, player.ammo, screen.flash, input.mode, ui.textEntry,
+        // test.health
+        assert_eq!(slots.len(), 6);
         assert!(slots.get("test.health").is_some());
     }
 }

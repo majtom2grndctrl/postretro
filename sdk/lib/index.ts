@@ -47,6 +47,9 @@ export {
   openMenu,
   closeDialog,
   setState,
+  appendText,
+  backspaceText,
+  clearText,
 } from "./ui/reactions";
 
 export type {

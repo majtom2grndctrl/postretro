@@ -1072,8 +1072,8 @@ impl ApplicationHandler for App {
                     // that wiring lands. See: context/lib/input.md
                     // A directional key RELEASE stops the focus engine's
                     // hold-to-repeat (the press-edge queue carries no release, so
-                    // the focus ring's repeat clock is cleared here). Confirm/cancel
-                    // never repeat, so only directional keys matter.
+                    // the focus ring's repeat clock is cleared here). Cancel never
+                    // repeats, so only directional keys matter for nav repeat.
                     if !pressed
                         && matches!(
                             code,
@@ -1084,6 +1084,18 @@ impl ApplicationHandler for App {
                         )
                     {
                         self.ui_focus.release_repeat();
+                    }
+                    // A confirm key (Enter) RELEASE stops the activation-repeat clock
+                    // (M13 Text-Entry, Task 2): a held `repeatOnHold` button stops
+                    // re-firing once the confirm key is released, mirroring the
+                    // directional release above.
+                    if !pressed
+                        && matches!(
+                            code,
+                            winit::keyboard::KeyCode::Enter | winit::keyboard::KeyCode::NumpadEnter
+                        )
+                    {
+                        self.ui_focus.release_confirm_repeat();
                     }
                     let nav_intent = if pressed && !key_event.repeat {
                         // Escape's menu-vs-cancel split: a capturing tree on the
@@ -1264,17 +1276,23 @@ impl ApplicationHandler for App {
                 // `Passthrough` they are dropped here, exactly as keyboard
                 // events forward through the seam. See: context/lib/input.md §7
                 if let Some(gp) = &mut self.gamepad_system {
-                    let nav_intents =
-                        gp.update(&mut self.input_system, &mut self.nav_stick_tracker);
+                    let gp_nav = gp.update(&mut self.input_system, &mut self.nav_stick_tracker);
                     // Advance any active rumble's timeout in the input stage and
                     // stop it once its duration elapses (the rumble started by a
                     // drained `Rumble` command on a prior frame).
                     gp.tick_rumble(frame_dt);
+                    // A confirm (South) RELEASE stops the focus engine's
+                    // activation-repeat clock (M13 Text-Entry, Task 2): a held
+                    // `repeatOnHold` button stops re-firing once South releases, the
+                    // gamepad twin of the keyboard Enter-release path above.
+                    if gp_nav.confirm_released {
+                        self.ui_focus.release_confirm_repeat();
+                    }
                     // Any gamepad nav intent (stick edge, D-pad, face/system
                     // button) is a `focus`-mode signal — recorded regardless of
                     // capture mode so a `nav.menu` opened from gameplay also flips
                     // the interaction mode off pointer.
-                    if !nav_intents.is_empty() {
+                    if !gp_nav.nav_intents.is_empty() {
                         self.record_mode_signal(
                             scripting_systems::input_mode::ModeSignal::NavInput,
                         );
@@ -1285,7 +1303,7 @@ impl ApplicationHandler for App {
                     // capture mode. Other nav intents only enqueue while a capturing
                     // tree owns input.
                     let capture = self.ui_dispatch.mode() == input::UiCaptureMode::Capture;
-                    for intent in nav_intents {
+                    for intent in gp_nav.nav_intents {
                         if intent == input::NavIntent::Menu {
                             self.pending_menu_toggle = true;
                         }
@@ -2686,7 +2704,7 @@ impl App {
             .iter()
             .find(|r| r.id == focused_id)
             .and_then(|r| match &r.interaction {
-                Some(NodeInteraction::Button { on_press }) => Some(on_press.clone()),
+                Some(NodeInteraction::Button { on_press, .. }) => Some(on_press.clone()),
                 _ => None,
             });
         if let Some(on_press) = on_press {
@@ -2719,6 +2737,11 @@ impl App {
     ///   input seam + focus afterward by `reconcile_ui_focus`.
     /// - `SetState` → readonly-gated JSON write to a writable store slot at the
     ///   game-logic stage (readonly warns + no-ops; unknown/type-mismatch logs).
+    /// - `AppendText` / `BackspaceText` / `ClearText` → readonly-gated text edits
+    ///   to a writable String slot at the game-logic stage, through the same
+    ///   writable-slot gate as `SetState` (readonly warns + no-ops; empty
+    ///   backspace is a silent no-op; unknown/non-String slot logs). M13 Text
+    ///   Entry, Task 1.
     fn dispatch_system_commands(&mut self) {
         for command in self.script_ctx.system_commands.take() {
             match command {
@@ -2773,6 +2796,31 @@ impl App {
                         &value,
                     ) {
                         log::warn!("[Scripting] setState write to `{slot}` failed: {err}");
+                    }
+                }
+                SystemReactionCommand::AppendText { slot, text } => {
+                    // Readonly-gated text edit at the game-logic stage (same
+                    // writable-slot gate as setState): readonly warns + no-ops;
+                    // unknown/non-String slot logs — never a panic.
+                    use crate::scripting::primitives::store::{TextEdit, apply_text_edit};
+                    if let Err(err) =
+                        apply_text_edit(&self.script_ctx, &slot, TextEdit::Append(&text))
+                    {
+                        log::warn!("[Scripting] appendText to `{slot}` failed: {err}");
+                    }
+                }
+                SystemReactionCommand::BackspaceText { slot } => {
+                    // Empty backspace is a silent no-op inside `apply_text_edit`.
+                    use crate::scripting::primitives::store::{TextEdit, apply_text_edit};
+                    if let Err(err) = apply_text_edit(&self.script_ctx, &slot, TextEdit::Backspace)
+                    {
+                        log::warn!("[Scripting] backspaceText to `{slot}` failed: {err}");
+                    }
+                }
+                SystemReactionCommand::ClearText { slot } => {
+                    use crate::scripting::primitives::store::{TextEdit, apply_text_edit};
+                    if let Err(err) = apply_text_edit(&self.script_ctx, &slot, TextEdit::Clear) {
+                        log::warn!("[Scripting] clearText to `{slot}` failed: {err}");
                     }
                 }
             }
@@ -4044,16 +4092,24 @@ mod tests {
             Some(&SlotValue::Enum("focus".to_string())),
             "engine-owned input.mode defaults to focus and is cloned",
         );
+        // `ui.textEntry` defaults to an empty string, so it is value-bearing and
+        // present (the text-edit reactions' writable target).
+        assert_eq!(
+            snapshot.get("ui.textEntry"),
+            Some(&SlotValue::String(String::new())),
+            "engine-owned ui.textEntry defaults to empty string and is cloned",
+        );
         // `player.ammo` starts value-less and must be excluded, so only the slot
-        // we set plus the always-valued `screen.flash` and `input.mode` appear.
+        // we set plus the always-valued `screen.flash`, `input.mode`, and
+        // `ui.textEntry` appear.
         assert!(
             snapshot.get("player.ammo").is_none(),
             "value-less slots are skipped",
         );
         assert_eq!(
             snapshot.len(),
-            3,
-            "only the set player.health and the default-valued screen.flash + input.mode appear",
+            4,
+            "only the set player.health and the default-valued screen.flash + input.mode + ui.textEntry appear",
         );
     }
 

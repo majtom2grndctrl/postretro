@@ -142,3 +142,40 @@ export function setState(
 ): import("../data_script").PrimitiveReactionDescriptor {
   return { primitive: "setState", args: { slot, value } };
 }
+
+/**
+ * Append `text` to the current string value of the writable String slot `slot`
+ * at the game-logic stage (M13 Text Entry). Pure — returns a primitive reaction
+ * body, no engine side effect. Readonly-gated through the same writable-slot gate
+ * as `setState`: a readonly slot warns and is left unchanged; an engine-owned
+ * writable slot (e.g. `ui.textEntry`) is a valid target.
+ */
+export function appendText(
+  slot: string,
+  text: string,
+): import("../data_script").PrimitiveReactionDescriptor {
+  return { primitive: "appendText", args: { slot, text } };
+}
+
+/**
+ * Remove the last grapheme cluster (char-pop floor — never splits a UTF-8
+ * sequence) from the writable String slot `slot` at the game-logic stage (M13
+ * Text Entry). Pure — returns a primitive reaction body, no engine side effect.
+ * Empty is a no-op with no warning. Readonly-gated like `setState`.
+ */
+export function backspaceText(
+  slot: string,
+): import("../data_script").PrimitiveReactionDescriptor {
+  return { primitive: "backspaceText", args: { slot } };
+}
+
+/**
+ * Empty the writable String slot `slot` at the game-logic stage (M13 Text
+ * Entry). Pure — returns a primitive reaction body, no engine side effect.
+ * Readonly-gated like `setState`.
+ */
+export function clearText(
+  slot: string,
+): import("../data_script").PrimitiveReactionDescriptor {
+  return { primitive: "clearText", args: { slot } };
+}

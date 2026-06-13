@@ -45,6 +45,19 @@ pub(crate) enum SystemReactionCommand {
         slot: String,
         value: serde_json::Value,
     },
+    /// Append `text` to the current string value of a writable String slot at the
+    /// game-logic stage (M13 Text Entry, Task 1). The drain applies it through the
+    /// readonly-gated text-edit path (`primitives::store::apply_text_edit`):
+    /// readonly warns and no-ops; an engine-owned writable slot (`ui.textEntry`)
+    /// is a valid target.
+    AppendText { slot: String, text: String },
+    /// Remove the last grapheme cluster (char-pop floor) from a writable String
+    /// slot at the game-logic stage (M13 Text Entry, Task 1). Empty is a no-op
+    /// with no warning. Same readonly-gated path as `AppendText`.
+    BackspaceText { slot: String },
+    /// Empty a writable String slot at the game-logic stage (M13 Text Entry,
+    /// Task 1). Same readonly-gated path as `AppendText`.
+    ClearText { slot: String },
 }
 
 /// Shared handle to the per-frame system-command queue. Cloned into the
@@ -235,6 +248,38 @@ pub(crate) fn register_system_reaction_primitives(registry: &mut SystemReactionR
         });
         Ok(())
     });
+    // Text-edit reactions (M13 Text Entry, Task 1): `appendText` / `backspaceText`
+    // / `clearText` mutate a writable String slot at the game-logic stage through
+    // the same readonly-gated path as `setState`. No `tag` — system-targeted. The
+    // hardware-keyboard and on-screen-keyboard paths both fire these against
+    // `ui.textEntry`.
+    registry.register("appendText", |args, queue| {
+        let parsed: AppendTextArgs =
+            serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
+                reason: format!("appendText: failed to deserialize args: {e}"),
+            })?;
+        queue.push(SystemReactionCommand::AppendText {
+            slot: parsed.slot,
+            text: parsed.text,
+        });
+        Ok(())
+    });
+    registry.register("backspaceText", |args, queue| {
+        let parsed: SlotOnlyArgs =
+            serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
+                reason: format!("backspaceText: failed to deserialize args: {e}"),
+            })?;
+        queue.push(SystemReactionCommand::BackspaceText { slot: parsed.slot });
+        Ok(())
+    });
+    registry.register("clearText", |args, queue| {
+        let parsed: SlotOnlyArgs =
+            serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
+                reason: format!("clearText: failed to deserialize args: {e}"),
+            })?;
+        queue.push(SystemReactionCommand::ClearText { slot: parsed.slot });
+        Ok(())
+    });
 }
 
 // --- args shapes ------------------------------------------------------------
@@ -285,6 +330,19 @@ struct SetStateArgs {
     value: serde_json::Value,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AppendTextArgs {
+    slot: String,
+    text: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SlotOnlyArgs {
+    slot: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,6 +358,9 @@ mod tests {
         assert!(r.contains("openMenu"));
         assert!(r.contains("closeDialog"));
         assert!(r.contains("setState"));
+        assert!(r.contains("appendText"));
+        assert!(r.contains("backspaceText"));
+        assert!(r.contains("clearText"));
         // Defensive: system reactions are a distinct arm; entity primitives
         // are NOT registered here.
         assert!(!r.contains("setEmitterRate"));
@@ -459,6 +520,55 @@ mod tests {
             vec![SystemReactionCommand::SetState {
                 slot: "ui.label".to_string(),
                 value: serde_json::json!("hi"),
+            }]
+        );
+    }
+
+    #[test]
+    fn append_text_dispatch_enqueues_command_with_slot_and_text() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "slot": "ui.textEntry", "text": "ab" });
+        assert!(r.dispatch("appendText", &args, &queue).unwrap());
+        assert_eq!(
+            queue.take(),
+            vec![SystemReactionCommand::AppendText {
+                slot: "ui.textEntry".to_string(),
+                text: "ab".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn backspace_text_dispatch_enqueues_command_with_slot() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "slot": "ui.textEntry" });
+        assert!(r.dispatch("backspaceText", &args, &queue).unwrap());
+        assert_eq!(
+            queue.take(),
+            vec![SystemReactionCommand::BackspaceText {
+                slot: "ui.textEntry".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn clear_text_dispatch_enqueues_command_with_slot() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "slot": "ui.textEntry" });
+        assert!(r.dispatch("clearText", &args, &queue).unwrap());
+        assert_eq!(
+            queue.take(),
+            vec![SystemReactionCommand::ClearText {
+                slot: "ui.textEntry".to_string(),
             }]
         );
     }

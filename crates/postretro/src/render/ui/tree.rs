@@ -1561,6 +1561,7 @@ fn widget_interaction(widget: &Widget) -> Option<NodeInteraction> {
     match widget {
         Widget::Button(w) => Some(NodeInteraction::Button {
             on_press: w.on_press.clone(),
+            repeat_on_hold: w.repeat_on_hold.map(Into::into),
         }),
         Widget::Slider(w) => Some(NodeInteraction::Slider {
             slot: w.bind.slot.clone(),
@@ -1964,7 +1965,14 @@ pub(crate) struct FocusRect {
 pub(crate) enum NodeInteraction {
     /// A `button`: activation (confirm/click) fires `on_press` through the
     /// reaction registry — the same vocabulary entity/system reactions use.
-    Button { on_press: String },
+    /// `repeat_on_hold`, when present, opts the button into activation-repeat: a
+    /// HELD confirm re-fires `on_press` on the focus engine's hold-to-repeat clock
+    /// (M13 Text-Entry, Task 2 — the on-screen keyboard backspace). Absent keeps
+    /// F's single-fire rule (one activation per press).
+    Button {
+        on_press: String,
+        repeat_on_hold: Option<RepeatPolicy>,
+    },
     /// A `slider`: a captured nav wire in `captures_nav` steps the bound slot's
     /// value by `step` within `[min, max]` and emits a `setState` write on the N+1
     /// frame. `"nav.left"`/`"nav.down"` decrease the value, `"nav.right"`/`"nav.up"`
@@ -4597,6 +4605,7 @@ mod tests {
             label: id.into(),
             on_press: on_press.into(),
             focus_neighbors: Default::default(),
+            repeat_on_hold: None,
         })
     }
 
@@ -4648,7 +4657,8 @@ mod tests {
         assert_eq!(
             rect.interaction,
             Some(NodeInteraction::Button {
-                on_press: "resumeGame".to_string()
+                on_press: "resumeGame".to_string(),
+                repeat_on_hold: None,
             }),
             "button carries its onPress activation"
         );

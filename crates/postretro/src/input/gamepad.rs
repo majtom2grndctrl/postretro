@@ -8,6 +8,19 @@ use super::InputSystem;
 use crate::input::types::PhysicalInput;
 use crate::input::ui_nav::{NavIntent, StickNavTracker, nav_intent_for_gamepad_button};
 
+/// One frame's UI-relevant gamepad output: the nav intent down-edges harvested
+/// this frame, plus whether the confirm button (South) was RELEASED this frame.
+/// The release edge drives the focus engine's activation-repeat clock to stop a
+/// held `repeatOnHold` button (M13 Text-Entry, Task 2) — the gamepad twin of the
+/// keyboard Enter-release path. Down-edges already ride `nav_intents` (one per
+/// press, repeats from the focus engine's dt clock); releases need their own
+/// channel because the press-edge stream carries no release.
+#[derive(Debug, Default)]
+pub struct GamepadNavOutput {
+    pub nav_intents: Vec<NavIntent>,
+    pub confirm_released: bool,
+}
+
 /// Dead zone radius for both sticks. Standard value across most controllers.
 const DEAD_ZONE: f32 = 0.15;
 
@@ -88,22 +101,30 @@ impl GamepadSystem {
         &mut self,
         input_system: &mut InputSystem,
         nav_stick: &mut StickNavTracker,
-    ) -> Vec<NavIntent> {
-        let mut nav_intents: Vec<NavIntent> = Vec::new();
+    ) -> GamepadNavOutput {
+        let mut out = GamepadNavOutput::default();
 
         // Drain all pending events to track the active gamepad and harvest
         // button-down edges as nav intents. gilrs delivers a discrete
         // `ButtonPressed` per press, so this is the natural edge source — one
         // intent per press, repeats handled by the focus engine's timer (Task 3).
+        // A `ButtonReleased(South)` surfaces the confirm-release edge so a held
+        // `repeatOnHold` button stops re-firing (M13 Text-Entry, Task 2).
         while let Some(Event { id, event, .. }) = self.gilrs.next_event() {
             // Any input event from a gamepad makes it the active one.
             if is_user_input(&event) {
                 self.active_gamepad = Some(id);
             }
-            if let EventType::ButtonPressed(button, _) = event {
-                if let Some(intent) = nav_intent_for_gamepad_button(button) {
-                    nav_intents.push(intent);
+            match event {
+                EventType::ButtonPressed(button, _) => {
+                    if let Some(intent) = nav_intent_for_gamepad_button(button) {
+                        out.nav_intents.push(intent);
+                    }
                 }
+                EventType::ButtonReleased(Button::South, _) => {
+                    out.confirm_released = true;
+                }
+                _ => {}
             }
         }
 
@@ -113,7 +134,7 @@ impl GamepadSystem {
                 // No active gamepad: still clear the stick latch so a stick that
                 // was held when the pad disconnected re-arms cleanly.
                 nav_stick.update(0.0, 0.0);
-                return nav_intents;
+                return out;
             }
         };
 
@@ -121,7 +142,7 @@ impl GamepadSystem {
         if !gamepad.is_connected() {
             self.active_gamepad = None;
             nav_stick.update(0.0, 0.0);
-            return nav_intents;
+            return out;
         }
 
         // Read raw stick axes.
@@ -138,7 +159,7 @@ impl GamepadSystem {
         // zone fires one directional intent per crossing. Uses the same
         // dead-zoned value gameplay movement reads.
         if let Some(intent) = nav_stick.update(left_x, left_y) {
-            nav_intents.push(intent);
+            out.nav_intents.push(intent);
         }
 
         // Feed stick axes into input system.
@@ -187,7 +208,7 @@ impl GamepadSystem {
             input_system.set_physical_input(PhysicalInput::GamepadButton(button), pressed);
         }
 
-        nav_intents
+        out
     }
 
     /// Start a force-feedback rumble on the active gamepad: `strong`/`weak` are

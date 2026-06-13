@@ -714,6 +714,15 @@ declare module "postretro" {
   /** System-reaction body (M13 Goal F): write `value` to the writable store slot `slot` at the game-logic stage. Readonly-gated — a readonly slot warns and stays unchanged; an engine-owned writable slot is valid. `value` is coerced to the slot's declared type. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
   export function setState(slot: string, value: number | boolean | string | number[]): PrimitiveReactionDescriptor;
 
+  /** System-reaction body (M13 Text Entry): append `text` to the current string value of the writable String slot `slot` at the game-logic stage. Readonly-gated through the same writable-slot gate as `setState` — a readonly slot warns and stays unchanged; an engine-owned writable slot (e.g. `ui.textEntry`) is valid. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
+  export function appendText(slot: string, text: string): PrimitiveReactionDescriptor;
+
+  /** System-reaction body (M13 Text Entry): remove the last grapheme cluster (char-pop floor — never splits a UTF-8 sequence) from the writable String slot `slot` at the game-logic stage. Empty is a no-op with no warning. Readonly-gated like `setState`. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
+  export function backspaceText(slot: string): PrimitiveReactionDescriptor;
+
+  /** System-reaction body (M13 Text Entry): empty the writable String slot `slot` at the game-logic stage. Readonly-gated like `setState`. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
+  export function clearText(slot: string): PrimitiveReactionDescriptor;
+
   // -------------------------------------------------------------------------
   // Interactive UI widget descriptors (M13 Goal F, Task 4). Authored as JSON in
   // a UI tree descriptor; the engine builds the retained tree from them. These

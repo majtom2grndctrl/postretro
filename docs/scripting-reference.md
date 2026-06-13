@@ -682,6 +682,9 @@ omitted from the emitted `args` entirely when not supplied — they are never se
 | `showDialog(tree, onCommit?)` | `{ primitive: "showDialog", args: { tree, onCommit? } }` | Pushes the dialog UI `tree` onto the modal stack; optional `onCommit` names a reaction fired on commit. |
 | `openMenu(tree)` | `{ primitive: "openMenu", args: { tree } }` | A v1 alias of `showDialog` (identical push behavior) without the `onCommit` hook. |
 | `closeDialog()` | `{ primitive: "closeDialog", args: {} }` | Pops the top UI tree off the modal stack. |
+| `appendText(slot, text)` | `{ primitive: "appendText", args: { slot, text } }` | Appends `text` to the current string value of the writable String slot `slot`. Readonly-gated like `setState`. |
+| `backspaceText(slot)` | `{ primitive: "backspaceText", args: { slot } }` | Removes the last grapheme cluster (char-pop floor — never splits a UTF-8 sequence) from `slot`. Empty is a silent no-op. Readonly-gated like `setState`. |
+| `clearText(slot)` | `{ primitive: "clearText", args: { slot } }` | Empties the writable String slot `slot`. Readonly-gated like `setState`. |
 
 The three UI-stack helpers (`showDialog` / `openMenu` / `closeDialog`) are v1
 placeholders: `showDialog` and `openMenu` perform the identical `PushTree`
@@ -822,6 +825,21 @@ target. The value is coerced to the slot's declared type (number / boolean /
 string / number array) with the same range/enum validation a script store write
 applies. This is the path a `slider`'s nav-capture step takes to publish its new
 value.
+
+### Text-edit reactions and the `ui.textEntry` slot
+
+`appendText(slot, text)`, `backspaceText(slot)`, and `clearText(slot)` are system
+reactions that edit the current **string** value of a **writable** store slot at
+the game-logic stage. They share `setState`'s **readonly gate**: a write to a
+readonly slot logs a warning and no-ops. `backspaceText` removes one extended
+grapheme cluster with a char-pop floor (it pops one Unicode scalar value, so it
+never splits a UTF-8 sequence); an empty value is a **silent no-op** (no warning,
+no write).
+
+`ui.textEntry` is the engine-declared, **writable** String slot these reactions
+target by default — the shared text-edit surface both the hardware-keyboard path
+and the on-screen-keyboard asset drive. It defaults to an empty string and is a
+valid `setState`/text-edit target (unlike the readonly engine slots).
 
 ### The readonly `input.mode` slot
 

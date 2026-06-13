@@ -52,9 +52,11 @@ pub(crate) enum SystemReactionCommand {
     /// readonly warns and no-ops; an engine-owned writable slot (`ui.textEntry`)
     /// is a valid target.
     AppendText { slot: String, text: String },
-    /// Remove the last grapheme cluster (char-pop floor) from a writable String
-    /// slot at the game-logic stage (M13 Text Entry, Task 1). Empty is a no-op
-    /// with no warning. Same readonly-gated path as `AppendText`.
+    /// Remove the last character — one Unicode scalar value (the `char`-pop floor;
+    /// never splits a UTF-8 sequence, but does not segment grapheme clusters) —
+    /// from a writable String slot at the game-logic stage (M13 Text Entry, Task
+    /// 1). Empty is a no-op with no warning. Same readonly-gated path as
+    /// `AppendText`.
     BackspaceText { slot: String },
     /// Empty a writable String slot at the game-logic stage (M13 Text Entry,
     /// Task 1). Same readonly-gated path as `AppendText`.

@@ -15,7 +15,9 @@ use super::ui_nav::NavIntent;
 pub enum TextEntryEdit {
     /// Append the captured text to the bound slot (`Text` intent).
     Append(String),
-    /// Delete the last grapheme from the bound slot (`Backspace` intent).
+    /// Delete the last character — one Unicode scalar value, the `apply_text_edit`
+    /// char-pop floor — from the bound slot (`Backspace` intent). Not grapheme-
+    /// segmented: a trailing combining mark pops on its own.
     Backspace,
 }
 

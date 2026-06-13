@@ -706,6 +706,138 @@ mod tests {
         );
     }
 
+    /// Regression (M13 Text-Entry): a backspace edit acts ONLY on the bound
+    /// `ui.textEntry` value and never touches the static "ENTER TEXT" opener label
+    /// or the readout's `"ENTRY {}"` format prefix. This pins the reported bug —
+    /// "backspace removes characters from the Enter Text label" — to stay fixed.
+    ///
+    /// Drives the real edit path (`apply_text_edit` against a live `ScriptCtx`)
+    /// alongside the readout's drawn-string composition (`resolve_text`-equivalent:
+    /// format prefix + bound value), asserting:
+    /// - the slot value edits as a pure FIFO/char-pop of what was typed,
+    /// - the opener button's `label` and the readout's `content` + `format` are
+    ///   never mutated by an edit (they live on separate nodes, distinct from the
+    ///   slot the edit targets),
+    /// - the readout's drawn string always keeps its `"ENTRY "` prefix — backspace
+    ///   shortens only the value tail, never the prefix.
+    #[test]
+    fn backspace_edits_only_the_bound_value_never_the_label_or_format() {
+        use crate::scripting::ctx::ScriptCtx;
+        use crate::scripting::primitives::store::{TextEdit, apply_text_edit, read_store_slot};
+        use crate::scripting::slot_table::SlotValue;
+
+        // The displayed readout string is the format with `{}` replaced by the
+        // current `ui.textEntry` value — the same composition `tree::resolve_text`
+        // performs for a bound text node (format present, single placeholder).
+        fn drawn_readout(format: &str, value: &str) -> String {
+            format.replacen("{}", value, 1)
+        }
+
+        let tree = build_pause_menu_descriptor();
+        let Widget::VStack(col) = &tree.root else {
+            panic!("pause menu root is a vstack column");
+        };
+
+        // Snapshot the immutable authored strings BEFORE any edit.
+        let Widget::Text(readout) = &col.children[4] else {
+            panic!("fifth row is the ui.textEntry readout text");
+        };
+        let readout_content = readout.content.clone();
+        let readout_format = readout
+            .bind
+            .as_ref()
+            .and_then(|b| b.format.clone())
+            .expect("readout binds with a format");
+        let readout_slot = readout
+            .bind
+            .as_ref()
+            .map(|b| b.slot.clone())
+            .expect("readout binds a slot");
+
+        let Widget::Button(opener) = &col.children[5] else {
+            panic!("sixth row is the open-text-entry button");
+        };
+        let opener_label = opener.label.clone();
+
+        // Preconditions: the label and readout-format are the strings a careless
+        // edit could eat into; they are NOT the slot the edit targets.
+        assert_eq!(opener_label, "ENTER TEXT");
+        assert_eq!(readout_format, "ENTRY {}");
+        assert_eq!(readout_slot, "ui.textEntry");
+        assert_ne!(
+            readout_slot, "input.mode",
+            "the readout binds the text-entry slot, not an unrelated one",
+        );
+
+        // Drive the real edit path against a live store: type, then backspace.
+        let ctx = ScriptCtx::new();
+        for ch in ["a", "b", "c"] {
+            apply_text_edit(&ctx, &readout_slot, TextEdit::Append(ch)).unwrap();
+        }
+        let SlotValue::String(typed) = read_store_slot(&ctx, &readout_slot).unwrap() else {
+            panic!("ui.textEntry is a string slot");
+        };
+        assert_eq!(typed, "abc", "appends land on the bound value");
+        // The readout draws the value behind its untouched "ENTRY " prefix.
+        assert_eq!(drawn_readout(&readout_format, &typed), "ENTRY abc");
+
+        apply_text_edit(&ctx, &readout_slot, TextEdit::Backspace).unwrap();
+        let SlotValue::String(after) = read_store_slot(&ctx, &readout_slot).unwrap() else {
+            panic!("ui.textEntry is a string slot");
+        };
+        // Backspace shortened ONLY the value tail.
+        assert_eq!(after, "ab", "backspace pops one char off the bound value");
+        // The drawn readout keeps its "ENTRY " prefix; only the value tail shrank.
+        let drawn = drawn_readout(&readout_format, &after);
+        assert_eq!(drawn, "ENTRY ab");
+        assert!(
+            drawn.starts_with("ENTRY "),
+            "backspace never eats into the format prefix",
+        );
+
+        // Backspace to empty, then once more on empty (no-op, no underflow): the
+        // value bottoms out at "" and the prefix is still intact — it can never be
+        // consumed.
+        apply_text_edit(&ctx, &readout_slot, TextEdit::Backspace).unwrap();
+        apply_text_edit(&ctx, &readout_slot, TextEdit::Backspace).unwrap();
+        apply_text_edit(&ctx, &readout_slot, TextEdit::Backspace).unwrap();
+        let SlotValue::String(emptied) = read_store_slot(&ctx, &readout_slot).unwrap() else {
+            panic!("ui.textEntry is a string slot");
+        };
+        assert_eq!(emptied, "", "backspace floors at empty, never negative");
+        assert_eq!(
+            drawn_readout(&readout_format, &emptied),
+            "ENTRY ",
+            "an empty value still renders the full, intact prefix",
+        );
+
+        // The authored descriptor strings are unchanged by the whole edit sequence
+        // — the edit only ever touched the slot, never the label/format nodes.
+        let tree_after = build_pause_menu_descriptor();
+        let Widget::VStack(col_after) = &tree_after.root else {
+            panic!("pause menu root is a vstack column");
+        };
+        let Widget::Button(opener_after) = &col_after.children[5] else {
+            panic!("sixth row is the open-text-entry button");
+        };
+        assert_eq!(
+            opener_after.label, opener_label,
+            "the ENTER TEXT opener label is immutable across edits",
+        );
+        let Widget::Text(readout_after) = &col_after.children[4] else {
+            panic!("fifth row is the readout");
+        };
+        assert_eq!(
+            readout_after.content, readout_content,
+            "the readout's literal content fallback is immutable across edits",
+        );
+        assert_eq!(
+            readout_after.bind.as_ref().and_then(|b| b.format.clone()),
+            Some(readout_format),
+            "the readout's format prefix is immutable across edits",
+        );
+    }
+
     /// The `nav.menu` toggle pushes/pops the registered pause menu through the
     /// modal stack (the exact sequence `App::toggle_pause_menu` runs): a first
     /// toggle pushes the capturing menu (gameplay → menu), a second pops it back

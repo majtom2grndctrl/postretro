@@ -185,9 +185,11 @@ export function appendText(
 }
 
 /**
- * Remove the last grapheme cluster (char-pop floor — never splits a UTF-8
- * sequence) from the writable String slot `slot` at the game-logic stage (M13
- * Text Entry). Pure — returns a primitive reaction body, no engine side effect.
+ * Remove the last character — one Unicode scalar value (the char-pop floor:
+ * never splits a UTF-8 sequence, but does not segment grapheme clusters, so a
+ * trailing combining mark pops on its own) — from the writable String slot
+ * `slot` at the game-logic stage (M13 Text Entry). Pure — returns a primitive
+ * reaction body, no engine side effect.
  * Empty is a no-op with no warning. Readonly-gated like `setState`.
  */
 export function backspaceText(

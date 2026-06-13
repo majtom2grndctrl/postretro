@@ -992,7 +992,11 @@ impl ApplicationHandler for App {
                         ..
                     },
                 ..
-            } => {
+            } if self.modal_stack.active_text_entry_target().is_none() => {
+                // Escape is the dev quit chord ONLY when no text-entry tree is open.
+                // While text entry is open (M13 Text-Entry, Task 3) Escape cancels
+                // the entry instead — it falls through to the general keyboard arm,
+                // which routes it as `nav.cancel` for the cancel path.
                 self.release_cursor_for_exit();
                 log::info!("[Engine] Shutting down");
                 event_loop.exit();
@@ -1097,29 +1101,64 @@ impl ApplicationHandler for App {
                     {
                         self.ui_focus.release_confirm_repeat();
                     }
+                    // Text-entry routing (M13 Text-Entry, Task 3): while a text-entry
+                    // tree is the top of the modal stack, hardware key-down events
+                    // drive the edit surface instead of nav. The LOGICAL key resolves
+                    // Backspace/Enter/Escape first (so a `\u{8}` Backspace text or a
+                    // `\r` Enter text never leaks through the printable channel); only
+                    // a non-control printable `KeyEvent.text` becomes a `Text` intent.
+                    // Enter/Escape ride the queue as `nav.confirm`/`nav.cancel`, which
+                    // the focus-resolution stage intercepts for commit/cancel.
+                    let text_entry_open = self.modal_stack.active_text_entry_target().is_some();
                     let nav_intent = if pressed && !key_event.repeat {
-                        // Escape's menu-vs-cancel split: a capturing tree on the
-                        // stack routes Escape to `nav.cancel`; from gameplay it
-                        // opens the menu (`nav.menu`). The seam's `Capture` mode is
-                        // set by `reconcile_ui_focus` from the modal stack's top
-                        // capture mode, so it IS the "capturing tree present"
-                        // predicate. See: context/lib/input.md §7
-                        let capturing = self.ui_dispatch.mode() == input::UiCaptureMode::Capture;
-                        let intent = input::nav_intent_for_key(code, capturing);
-                        if intent.is_some() {
-                            // A nav key (arrows/enter/escape/tab) is a `focus`-mode
-                            // signal — it switches the interaction mode off pointer.
+                        if text_entry_open {
+                            // A key inside text entry is always a `focus`-mode signal.
                             self.record_mode_signal(
                                 scripting_systems::input_mode::ModeSignal::NavInput,
                             );
+                            match input::text_entry_key(
+                                &key_event.logical_key,
+                                key_event.text.as_deref(),
+                            ) {
+                                Some(input::TextEntryKey::Append(s)) => {
+                                    Some(input::UiIntentPayload::Text(s))
+                                }
+                                Some(input::TextEntryKey::Backspace) => {
+                                    Some(input::UiIntentPayload::Backspace)
+                                }
+                                Some(input::TextEntryKey::Commit) => {
+                                    Some(input::UiIntentPayload::Nav(input::NavIntent::Confirm))
+                                }
+                                Some(input::TextEntryKey::Cancel) => {
+                                    Some(input::UiIntentPayload::Nav(input::NavIntent::Cancel))
+                                }
+                                None => None,
+                            }
+                        } else {
+                            // Escape's menu-vs-cancel split: a capturing tree on the
+                            // stack routes Escape to `nav.cancel`; from gameplay it
+                            // opens the menu (`nav.menu`). The seam's `Capture` mode is
+                            // set by `reconcile_ui_focus` from the modal stack's top
+                            // capture mode, so it IS the "capturing tree present"
+                            // predicate. See: context/lib/input.md §7
+                            let capturing =
+                                self.ui_dispatch.mode() == input::UiCaptureMode::Capture;
+                            let intent = input::nav_intent_for_key(code, capturing);
+                            if intent.is_some() {
+                                // A nav key (arrows/enter/escape/tab) is a `focus`-mode
+                                // signal — it switches the interaction mode off pointer.
+                                self.record_mode_signal(
+                                    scripting_systems::input_mode::ModeSignal::NavInput,
+                                );
+                            }
+                            // Escape-from-gameplay maps to `nav.menu` (opens the pause
+                            // menu). The seam is `Passthrough` from gameplay and queues
+                            // nothing, so route the toggle through the punch-through flag.
+                            if intent == Some(input::NavIntent::Menu) {
+                                self.pending_menu_toggle = true;
+                            }
+                            intent.map(input::UiIntentPayload::Nav)
                         }
-                        // Escape-from-gameplay maps to `nav.menu` (opens the pause
-                        // menu). The seam is `Passthrough` from gameplay and queues
-                        // nothing, so route the toggle through the punch-through flag.
-                        if intent == Some(input::NavIntent::Menu) {
-                            self.pending_menu_toggle = true;
-                        }
-                        intent.map(input::UiIntentPayload::Nav)
                     } else {
                         None
                     };
@@ -1342,20 +1381,47 @@ impl ApplicationHandler for App {
                 let ui_intents = self.ui_dispatch.take_ready();
                 self.ui_dispatch.advance_frame();
 
+                // Text-entry resolution (M13 Text-Entry, Task 3): while a text-entry
+                // tree is the top of the modal stack, the drained intents drive the
+                // edit surface. `Text` appends and `Backspace` deletes against the
+                // tree's `text_entry_target` slot (through Task 1's text-edit command
+                // path); `nav.confirm` commits (fires the opener's `on_commit`, then
+                // pops) and `nav.cancel` cancels (pops, no commit). Those confirm /
+                // cancel intents are CONSUMED here so they never reach the focus
+                // engine (no stray key-button activation) or the pause-menu logic
+                // below. Returns whether a commit or cancel fired so the pause-menu
+                // path is skipped this frame.
+                let text_entry_consumed_nav = self.resolve_text_entry_intents(&ui_intents);
+
                 // Focus engine (game-logic phase): split the drained intents into
                 // nav (directional/confirm/cancel/next/prev) and pointer clicks,
                 // then move focus through the TOP stack tree against the focus rect
                 // list the renderer exported LAST frame (reverse N→N+1). The
                 // focused id is published on this frame's snapshot below so the UI
                 // pass draws the ring (it may trail a focus change by one frame).
-                // Only the top tree takes focus; lower trees freeze.
+                // Only the top tree takes focus; lower trees freeze. While text entry
+                // is open, confirm/cancel were consumed above and are filtered out so
+                // the focus engine sees only directional/next/prev moves (Task 4's
+                // on-screen keyboard still navigates between keys).
                 let mut nav_intents: Vec<input::NavIntent> = Vec::new();
                 let mut click_positions: Vec<input::PointerPos> = Vec::new();
                 for intent in &ui_intents {
                     match &intent.payload {
-                        input::UiIntentPayload::Nav(nav) => nav_intents.push(*nav),
+                        input::UiIntentPayload::Nav(nav) => {
+                            if text_entry_consumed_nav
+                                && matches!(
+                                    nav,
+                                    input::NavIntent::Confirm | input::NavIntent::Cancel
+                                )
+                            {
+                                // Consumed by the text-entry commit/cancel above.
+                                continue;
+                            }
+                            nav_intents.push(*nav);
+                        }
                         input::UiIntentPayload::PointerClick { pos } => click_positions.push(*pos),
-                        input::UiIntentPayload::Text(_) => {}
+                        // Text / Backspace are text-entry edits, resolved above.
+                        input::UiIntentPayload::Text(_) | input::UiIntentPayload::Backspace => {}
                     }
                 }
                 // Slider nav-capture (M13 Goal F, Task 4): the focused slider gets
@@ -1408,6 +1474,7 @@ impl ApplicationHandler for App {
                     self.pending_menu_toggle = false;
                     self.toggle_pause_menu();
                 } else if focus_result.cancelled
+                    && !text_entry_consumed_nav
                     && self.modal_stack.active_name() == Some(render::ui::demo::PAUSE_MENU_NAME)
                 {
                     self.modal_stack.pop();
@@ -2717,6 +2784,88 @@ impl App {
                 &self.script_ctx,
             );
         }
+    }
+
+    /// Resolve drained UI intents against the open text-entry surface (M13
+    /// Text-Entry, Task 3). Returns `true` when a `nav.confirm` (commit) or
+    /// `nav.cancel` (cancel) was consumed by text entry this frame, so the caller
+    /// filters those intents out of the focus engine and skips the pause-menu path.
+    ///
+    /// No-op (returns `false`) when text entry is closed — the top tree declares no
+    /// `text_entry_target`. While open:
+    /// - `Text(s)` → an `AppendText { slot, text: s }` edit against the target slot,
+    /// - `Backspace` → a `BackspaceText { slot }` edit against the target slot,
+    /// - `nav.confirm` → commit: fire the opener's `on_commit`, then `PopTree`,
+    /// - `nav.cancel` → cancel: `PopTree` only (edits stay in the slot; the opener
+    ///   simply does not act on them — no rollback).
+    ///
+    /// Edits ride Task 1's text-edit command path (pushed onto the system-command
+    /// queue, drained at `dispatch_system_commands`), so they land on the bound slot
+    /// on the N+1 frame — the system's defining N→N+1 ordering. Commit and cancel act
+    /// on the stack immediately at this game-logic phase; the seam reconciles next.
+    fn resolve_text_entry_intents(&mut self, ui_intents: &[input::UiIntent]) -> bool {
+        let Some(target) = self
+            .modal_stack
+            .active_text_entry_target()
+            .map(str::to_string)
+        else {
+            return false;
+        };
+
+        // Pure resolution: drained intents → ordered edits + a terminal disposition.
+        let resolution = input::resolve_text_entry(ui_intents);
+
+        // Apply the edits through Task 1's text-edit command path (the bound slot
+        // changes on the N+1 frame). Edits are queued before commit/cancel acts so a
+        // committing reaction observes the slot as last edited.
+        for edit in &resolution.edits {
+            let command = match edit {
+                input::TextEntryEdit::Append(text) => SystemReactionCommand::AppendText {
+                    slot: target.clone(),
+                    text: text.clone(),
+                },
+                input::TextEntryEdit::Backspace => SystemReactionCommand::BackspaceText {
+                    slot: target.clone(),
+                },
+            };
+            self.script_ctx.system_commands.push(command);
+        }
+
+        match resolution.disposition {
+            input::TextEntryDisposition::Commit => self.commit_text_entry(),
+            input::TextEntryDisposition::Cancel => self.cancel_text_entry(),
+            input::TextEntryDisposition::Open => {}
+        }
+        resolution.consumed_commit_or_cancel()
+    }
+
+    /// Commit the open text-entry surface (M13 Text-Entry, Task 3): fire the top
+    /// tree's carried `on_commit` reaction (from the `PushTree` that opened it),
+    /// THEN pop the tree. This is the shared commit seam — the hardware Enter key
+    /// routes here, and Task 4's on-screen `done` button activation calls this same
+    /// method so commit is not keyboard-only. A no-op when no tree is open.
+    ///
+    /// The `on_commit` reaction reads the bound slot's value (the entered text); the
+    /// reaction fires synchronously here so it observes the slot as last edited.
+    fn commit_text_entry(&mut self) {
+        if let Some(on_commit) = self.modal_stack.active_on_commit().map(str::to_string) {
+            let _ = fire_named_event_with_sequences(
+                &on_commit,
+                &self.script_ctx.data_registry.borrow(),
+                &self.sequence_registry,
+                &self.reaction_registry,
+                &self.system_registry,
+                &self.script_ctx,
+            );
+        }
+        self.modal_stack.pop();
+    }
+
+    /// Cancel the open text-entry surface (M13 Text-Entry, Task 3): pop the tree
+    /// WITHOUT firing `on_commit`. Edits already applied to the bound slot are
+    /// discarded simply by the opener not acting on them — there is no rollback.
+    fn cancel_text_entry(&mut self) {
+        self.modal_stack.pop();
     }
 
     /// Drain the system-reaction command queue and route each typed command to

@@ -559,6 +559,7 @@ fn srgb_of(linear: [f32; 4]) -> [u8; 4] {
         }),
         capture_mode: CaptureMode::Passthrough,
         initial_focus: None,
+        text_entry_target: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &UiTheme::engine_default());
     let mut fs = font_system();

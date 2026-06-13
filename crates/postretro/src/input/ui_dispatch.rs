@@ -103,8 +103,17 @@ pub enum UiIntentPayload {
     /// A pointer click at a device-pixel position (hit-tested by the focus
     /// engine, Task 3).
     PointerClick { pos: PointerPos },
-    /// Typed text. Reserved here; produced only by the text-entry plan.
+    /// Typed text. Produced only while a text-entry tree is the top of the modal
+    /// stack: the input stage maps a printable, non-control `KeyEvent.text` to
+    /// this. The focus-resolution stage turns it into an `AppendText` edit against
+    /// the tree's `text_entry_target` slot.
     Text(String),
+    /// A logical Backspace delete inside text entry (M13 Text-Entry, Task 3).
+    /// Produced from the logical Backspace KEY — never from `KeyEvent.text` (some
+    /// platforms deliver Backspace as `\u{8}` text, which must NOT route through
+    /// the `Text` channel). The focus-resolution stage turns it into a
+    /// `BackspaceText` edit against the tree's `text_entry_target` slot.
+    Backspace,
 }
 
 /// A UI-captured event awaiting next-frame delivery: the kinded payload plus a
@@ -347,6 +356,60 @@ mod tests {
             frame_n_plus_1_visible[0].payload,
             UiIntentPayload::Nav(NavIntent::Right),
         );
+    }
+
+    /// A printable key typed while text entry is open resolves to a `Text` intent
+    /// and is CAPTURED — never forwarded to the gameplay input system — and it
+    /// reaches game logic no earlier than the next frame (the N→N+1 contract). This
+    /// is the seam-level guarantee that captured keystrokes can't leak to game
+    /// logic while a text-entry modal is open. The key→intent resolution mirrors the
+    /// App's input stage: `text_entry_key` maps the logical key + text, then the
+    /// `Text`/`Backspace` payload is dispatched through this seam.
+    #[test]
+    fn text_entry_keystrokes_are_captured_not_forwarded_and_obey_n_plus_1() {
+        use super::super::ui_nav::{TextEntryKey, text_entry_key};
+        use winit::keyboard::{Key, NamedKey};
+
+        let mut dispatch = UiDispatch::new();
+        dispatch.set_mode(UiCaptureMode::Capture);
+
+        // --- Frame N Input stage: a printable 'a' and a Backspace key, resolved
+        // exactly as the App's keyboard handler does, are dispatched through the
+        // seam. Both are CAPTURED (not forwarded to gameplay) and queue a payload. ---
+        let append = match text_entry_key(&Key::Character("a".into()), Some("a")) {
+            Some(TextEntryKey::Append(s)) => UiIntentPayload::Text(s),
+            other => panic!("expected Append, got {other:?}"),
+        };
+        let outcome = dispatch.dispatch_event(Some(append));
+        assert_eq!(outcome, UiDispatchOutcome::Captured);
+        assert!(
+            !outcome.forwards_to_gameplay(),
+            "a typed character must NOT reach the gameplay input system",
+        );
+
+        let backspace = match text_entry_key(&Key::Named(NamedKey::Backspace), Some("\u{8}")) {
+            Some(TextEntryKey::Backspace) => UiIntentPayload::Backspace,
+            other => panic!("expected Backspace, got {other:?}"),
+        };
+        let outcome = dispatch.dispatch_event(Some(backspace));
+        assert!(
+            !outcome.forwards_to_gameplay(),
+            "a Backspace keystroke must NOT reach the gameplay input system",
+        );
+
+        // --- Frame N Game-logic phase: the read precedes the promotion, so this
+        // frame's captures are NOT visible to frame N's game logic. ---
+        assert!(
+            dispatch.take_ready().is_empty(),
+            "frame N's text keystrokes must not be visible within frame N",
+        );
+        dispatch.advance_frame();
+
+        // --- Frame N+1: the captured keystrokes surface intact, in capture order. ---
+        let ready = dispatch.take_ready();
+        assert_eq!(ready.len(), 2, "both captured keystrokes arrive on N+1");
+        assert_eq!(ready[0].payload, UiIntentPayload::Text("a".to_string()));
+        assert_eq!(ready[1].payload, UiIntentPayload::Backspace);
     }
 
     /// Sequence numbers are assigned in capture order across both enqueue paths

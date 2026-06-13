@@ -134,6 +134,7 @@ fn composite_fixture() -> AnchoredTree {
         }),
         capture_mode: CaptureMode::Passthrough,
         initial_focus: None,
+        text_entry_target: None,
     }
 }
 
@@ -287,6 +288,7 @@ fn empty_gameplay_tree_early_outs_the_ui_pass() {
         }),
         capture_mode: CaptureMode::Passthrough,
         initial_focus: None,
+        text_entry_target: None,
     };
     let draw_empty = {
         let mut ui = UiTree::from_descriptor(&empty, &UiTheme::engine_default());

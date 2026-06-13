@@ -20,7 +20,7 @@
 //! [`nav_intent_for_key`] as `capturing_tree_present`.
 
 use gilrs::Button as GilrsButton;
-use winit::keyboard::KeyCode;
+use winit::keyboard::{Key, KeyCode, NamedKey};
 
 /// Closed UI-navigation intent vocabulary. Each variant carries a stable wire
 /// name (`"nav.up"` … `"nav.options"`) consumed by JSON/TS/Luau UI authors
@@ -96,6 +96,54 @@ pub fn nav_intent_for_key(key: KeyCode, capturing_tree_present: bool) -> Option<
         }
         _ => return None,
     })
+}
+
+/// What a key-down event means while a text-entry tree is open (M13 Text-Entry,
+/// Task 3). The input stage resolves the LOGICAL key first so the control keys
+/// (Backspace / Enter / Escape) are matched by identity — never by their
+/// `KeyEvent.text`, which on some platforms delivers Backspace as `\u{8}` and
+/// Enter as `\r`. Only a non-control printable `text` falls through to `Append`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TextEntryKey {
+    /// Append the captured printable text to the bound slot.
+    Append(String),
+    /// Delete the last grapheme (logical Backspace).
+    Backspace,
+    /// Commit the entry (logical Enter / numpad Enter).
+    Commit,
+    /// Cancel the entry (logical Escape).
+    Cancel,
+}
+
+/// Resolve a key-down event to its text-entry meaning while text entry is open,
+/// or `None` for a key that produces no text-entry effect (a bare modifier, an
+/// arrow, a control character with no printable text). Backspace / Enter / Escape
+/// are matched on the LOGICAL key BEFORE any `text` is considered, so a
+/// platform-delivered control character (`\u{8}` for Backspace, `\r` for Enter)
+/// can never leak through the `Append` text channel.
+///
+/// `text` is `KeyEvent.text` — `Some` only for keys that produce text. A printable
+/// run (no control characters) becomes `Append`; an empty or control-only run
+/// after the named keys are handled is dropped (`None`).
+pub fn text_entry_key(logical_key: &Key, text: Option<&str>) -> Option<TextEntryKey> {
+    // Control keys win on logical identity, regardless of any `text` payload.
+    if let Key::Named(named) = logical_key {
+        match named {
+            NamedKey::Backspace => return Some(TextEntryKey::Backspace),
+            NamedKey::Enter => return Some(TextEntryKey::Commit),
+            NamedKey::Escape => return Some(TextEntryKey::Cancel),
+            _ => {}
+        }
+    }
+
+    // Only a non-control printable run becomes appended text. A run containing any
+    // control character (e.g. a lone `\u{8}` Backspace text on platforms that send
+    // one, or `\r`) is rejected so it never routes through the text channel.
+    let text = text?;
+    if text.is_empty() || text.chars().any(|c| c.is_control()) {
+        return None;
+    }
+    Some(TextEntryKey::Append(text.to_string()))
 }
 
 /// Map a gamepad button to a nav intent, or `None` for buttons outside the UI
@@ -276,6 +324,72 @@ mod tests {
     fn non_nav_keys_map_to_none() {
         assert_eq!(nav_intent_for_key(KeyCode::KeyW, false), None);
         assert_eq!(nav_intent_for_key(KeyCode::Space, false), None);
+    }
+
+    // --- Text-entry key resolution (M13 Text-Entry, Task 3) ---
+
+    #[test]
+    fn printable_text_becomes_append() {
+        // A printable `KeyEvent.text` run (including a shifted character) appends.
+        assert_eq!(
+            text_entry_key(&Key::Character("a".into()), Some("a")),
+            Some(TextEntryKey::Append("a".to_string())),
+        );
+        assert_eq!(
+            text_entry_key(&Key::Character("A".into()), Some("A")),
+            Some(TextEntryKey::Append("A".to_string())),
+        );
+        // Space is printable text.
+        assert_eq!(
+            text_entry_key(&Key::Named(NamedKey::Space), Some(" ")),
+            Some(TextEntryKey::Append(" ".to_string())),
+        );
+    }
+
+    #[test]
+    fn logical_backspace_is_backspace_not_append() {
+        // The logical Backspace key resolves to Backspace even when the platform
+        // delivers a `\u{8}` text payload — the control text must never append.
+        assert_eq!(
+            text_entry_key(&Key::Named(NamedKey::Backspace), Some("\u{8}")),
+            Some(TextEntryKey::Backspace),
+        );
+        // And with no text at all.
+        assert_eq!(
+            text_entry_key(&Key::Named(NamedKey::Backspace), None),
+            Some(TextEntryKey::Backspace),
+        );
+    }
+
+    #[test]
+    fn backspace_control_text_alone_never_appends() {
+        // A lone `\u{8}` control run on a non-named key (defensive) is rejected as
+        // a control character — it never routes through the Append channel.
+        assert_eq!(
+            text_entry_key(&Key::Character("\u{8}".into()), Some("\u{8}")),
+            None,
+        );
+    }
+
+    #[test]
+    fn logical_enter_commits_and_escape_cancels() {
+        assert_eq!(
+            text_entry_key(&Key::Named(NamedKey::Enter), Some("\r")),
+            Some(TextEntryKey::Commit),
+            "Enter commits even with a \\r text payload",
+        );
+        assert_eq!(
+            text_entry_key(&Key::Named(NamedKey::Escape), None),
+            Some(TextEntryKey::Cancel),
+        );
+    }
+
+    #[test]
+    fn keys_with_no_text_effect_resolve_to_none() {
+        // An arrow key (no text) and a key with empty text produce no text-entry
+        // effect — they are swallowed by the capture seam but add no edit.
+        assert_eq!(text_entry_key(&Key::Named(NamedKey::ArrowUp), None), None);
+        assert_eq!(text_entry_key(&Key::Character("x".into()), Some("")), None);
     }
 
     // --- Gamepad mapping ---

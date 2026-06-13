@@ -201,6 +201,15 @@ pub struct AnchoredTree {
     /// node in tree order. Skip-serialized when absent so a pre-F tree omits it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial_focus: Option<String>,
+    /// Writable String slot this tree's text entry edits (M13 Text-Entry, Task 3).
+    /// `Some(slot)` is the "text entry is open" condition for the TOP tree: while
+    /// it is set, the input stage routes hardware key text events into edit
+    /// reactions against this slot (append / backspace), and Enter/Escape
+    /// commit/cancel the entry. Absent on every non-text-entry tree, so a tree
+    /// without text entry omits the key entirely (skip-serialized) and round-trips
+    /// byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_entry_target: Option<String>,
 }
 
 impl CaptureMode {
@@ -223,6 +232,7 @@ impl AnchoredTree {
             root,
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
+            text_entry_target: None,
         }
     }
 }
@@ -1052,6 +1062,37 @@ mod tests {
         let tree: AnchoredTree = serde_json::from_str(json).expect("deserialize");
         assert_eq!(tree.initial_focus.as_deref(), Some("btnA"));
         assert_eq!(serde_json::to_string(&tree).unwrap(), json);
+    }
+
+    // --- M13 Text-Entry, Task 3: text-entry target envelope field ---
+
+    #[test]
+    fn anchored_tree_text_entry_target_round_trips_beside_capture_mode() {
+        // `textEntryTarget` lives on the envelope beside `captureMode` /
+        // `initialFocus`; it round-trips byte-identically. Field order matches the
+        // struct declaration: anchor, offset, root, captureMode, initialFocus,
+        // textEntryTarget.
+        let json = r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"spacer","flexGrow":1.0},"captureMode":"capture","textEntryTarget":"ui.textEntry"}"#;
+        let tree: AnchoredTree = serde_json::from_str(json).expect("must deserialize");
+        assert_eq!(tree.text_entry_target.as_deref(), Some("ui.textEntry"));
+        assert_eq!(serde_json::to_string(&tree).unwrap(), json);
+    }
+
+    #[test]
+    fn anchored_tree_text_entry_target_absent_omits_the_key() {
+        // A tree without text entry omits `textEntryTarget` entirely
+        // (skip_serializing_if), so a non-text-entry tree round-trips
+        // byte-identically with its pre-text-entry wire form.
+        let json =
+            r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"spacer","flexGrow":1.0}}"#;
+        let tree: AnchoredTree = serde_json::from_str(json).expect("must deserialize");
+        assert_eq!(tree.text_entry_target, None);
+        let reserialized = serde_json::to_string(&tree).unwrap();
+        assert_eq!(reserialized, json);
+        assert!(
+            !reserialized.contains("textEntryTarget"),
+            "absent textEntryTarget emits no key"
+        );
     }
 
     // --- M13 Goal F, Task 4: interactive widgets ---

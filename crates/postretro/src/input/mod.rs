@@ -8,6 +8,7 @@ pub mod diagnostics;
 mod focus;
 pub mod gamepad;
 mod look;
+mod text_entry;
 mod types;
 mod ui_dispatch;
 mod ui_focus;
@@ -29,7 +30,16 @@ pub use ui_dispatch::{PointerPos, UiDispatchOutcome, UiIntent, UiIntentPayload};
 // Nav-intent vocabulary plus the action→intent mapping the input stage feeds
 // into `UiDispatch`. `StickNavTracker` does stick-past-deadzone edge detection.
 #[allow(unused_imports)]
-pub use ui_nav::{NavIntent, StickNavTracker, nav_intent_for_gamepad_button, nav_intent_for_key};
+pub use ui_nav::{
+    NavIntent, StickNavTracker, TextEntryKey, nav_intent_for_gamepad_button, nav_intent_for_key,
+    text_entry_key,
+};
+// Text-entry intent resolution (M13 Text-Entry, Task 3): drained intents →
+// edit/commit/cancel decisions against the open text-entry surface.
+#[allow(unused_imports)]
+pub use text_entry::{
+    TextEntryDisposition, TextEntryEdit, TextEntryResolution, resolve_text_entry,
+};
 // App-side focus engine (M13 Goal F, Task 3): consumes nav intents + cursor, moves
 // focus through the renderer's exported focus rect list, runs the dt-clocked
 // hold-to-repeat timer, and reports the focused id back for the focus ring.

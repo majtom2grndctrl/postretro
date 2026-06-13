@@ -142,6 +142,25 @@ impl ModalStack {
         self.stack.last().map(|t| t.name.as_str())
     }
 
+    /// The TOP tree's `text_entry_target` slot, when it declares one (M13
+    /// Text-Entry, Task 3). `Some(slot)` is the "text entry is open" condition the
+    /// App gates hardware-key routing on; `None` (empty stack, or a top tree with
+    /// no text entry) means text entry is closed. Only the top tree is consulted —
+    /// lower trees are frozen.
+    pub(crate) fn active_text_entry_target(&self) -> Option<&str> {
+        self.stack
+            .last()
+            .and_then(|t| t.descriptor.text_entry_target.as_deref())
+    }
+
+    /// The TOP tree's `on_commit` reaction, carried from the `PushTree` that
+    /// opened it (M13 Text-Entry, Task 3). Fired by the App on commit (Enter or the
+    /// `done` key), then the tree is popped. `None` when the stack is empty or the
+    /// top tree carries no commit reaction.
+    pub(crate) fn active_on_commit(&self) -> Option<&str> {
+        self.stack.last().and_then(|t| t.on_commit.as_deref())
+    }
+
     /// The live stack as snapshot entries, bottom→top. The App prepends the
     /// always-on HUD entry (the bottom-most gameplay UI layer) ahead of these
     /// modal overlays when composing the per-frame snapshot.
@@ -199,7 +218,16 @@ mod tests {
             }),
             capture_mode,
             initial_focus: None,
+            text_entry_target: None,
         }
+    }
+
+    /// A capturing tree that declares a text-entry target slot — the "text entry
+    /// is open" condition for the top tree.
+    fn text_entry_tree(target: &str) -> AnchoredTree {
+        let mut t = tree(CaptureMode::Capture);
+        t.text_entry_target = Some(target.to_string());
+        t
     }
 
     fn capturing() -> AnchoredTree {
@@ -322,6 +350,46 @@ mod tests {
             Some("onYes"),
             "the onCommit reaction rides the entry (carried, not fired)",
         );
+    }
+
+    #[test]
+    fn active_text_entry_target_reads_only_the_top_tree() {
+        // Only the TOP tree's text-entry target is consulted; a lower text-entry
+        // tree under a plain capturing tree reads as closed.
+        let mut stack = ModalStack::new();
+        stack.push("editor", text_entry_tree("ui.textEntry"));
+        assert_eq!(stack.active_text_entry_target(), Some("ui.textEntry"));
+
+        // A non-text-entry tree on top closes text entry (the lower one is frozen).
+        stack.push("confirm", capturing());
+        assert_eq!(
+            stack.active_text_entry_target(),
+            None,
+            "a top tree without a text-entry target reads as closed",
+        );
+
+        // Popping it restores the editor's target.
+        stack.pop();
+        assert_eq!(stack.active_text_entry_target(), Some("ui.textEntry"));
+    }
+
+    #[test]
+    fn active_text_entry_target_is_none_on_empty_stack() {
+        let stack = ModalStack::new();
+        assert_eq!(stack.active_text_entry_target(), None);
+    }
+
+    #[test]
+    fn active_on_commit_reads_the_top_trees_carried_reaction() {
+        // The top tree's carried `on_commit` (from `PushTree { on_commit }`) is
+        // exposed for the App to fire on commit; a tree pushed without one reads None.
+        let mut stack = ModalStack::new();
+        stack.registry_mut().register("dialog", capturing());
+        stack.push_named("dialog", Some("onNameEntered".to_string()));
+        assert_eq!(stack.active_on_commit(), Some("onNameEntered"));
+
+        stack.push_named("dialog", None);
+        assert_eq!(stack.active_on_commit(), None);
     }
 
     #[test]

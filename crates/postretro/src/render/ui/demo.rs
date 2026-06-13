@@ -434,6 +434,8 @@ pub(crate) fn build_pause_menu_descriptor() -> AnchoredTree {
         root,
         capture_mode: CaptureMode::Capture,
         initial_focus: Some(PAUSE_RESUME_ID.to_string()),
+        // The pause menu has no text entry; the field is absent on a non-text-entry tree.
+        text_entry_target: None,
     }
 }
 

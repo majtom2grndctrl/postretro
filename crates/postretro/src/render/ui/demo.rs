@@ -437,9 +437,12 @@ mod tests {
         use crate::render::ui::modal_stack::ModalStack;
 
         let mut stack = ModalStack::new();
-        stack
-            .registry_mut()
-            .register(super::PAUSE_MENU_NAME, build_pause_menu_descriptor());
+        stack.registry_mut().register(
+            super::PAUSE_MENU_NAME,
+            build_pause_menu_descriptor(),
+            crate::render::ui::modal_stack::ScopeTier::Engine,
+            false,
+        );
 
         // No capturing tree up: gameplay keeps input.
         assert_eq!(stack.top_capture_mode(), UiCaptureMode::Passthrough);

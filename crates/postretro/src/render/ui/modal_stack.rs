@@ -15,29 +15,138 @@ use super::UiTreeEntry;
 use super::descriptor::AnchoredTree;
 use crate::input::UiCaptureMode;
 
-/// Named registry of engine built-in trees: `name → AnchoredTree`. `PushTree`
-/// resolves a tree by name through this map. Engine built-ins register at boot;
-/// script-side registration arrives with a later goal. An unknown name is a
-/// no-op-with-warning at push time, never a panic.
+/// Scope tier a registered tree belongs to. Precedence is **engine < mod**: a mod
+/// tree registered under a name already held by an engine built-in *shadows* the
+/// engine entry (the reskin path — last-wins, with a one-line warning at
+/// registration time). The per-level tier is DEFERRED (single-level lifetime, no
+/// runtime unload site today), so `setupLevel` trees register into `Mod` for now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScopeTier {
+    /// Engine built-in (HUD, pause menu, on-screen keyboard) registered at boot.
+    Engine,
+    /// Mod/script-registered tree. Shadows an engine entry of the same name.
+    Mod,
+}
+
+/// One registered tree plus its registration attributes: which scope tier owns it
+/// and whether it composes as an always-on base layer every frame (the HUD case)
+/// rather than only when pushed onto the modal stack.
+#[derive(Debug, Clone)]
+struct RegisteredTree {
+    descriptor: AnchoredTree,
+    tier: ScopeTier,
+    /// `true` when this tree composes as a base layer on every gameplay frame
+    /// (resolved through the always-on read seam), independent of the modal stack.
+    /// A base/always-on layer NEVER captures input or takes focus — that derives
+    /// from the pushed modal stack alone (see `ModalStack`).
+    always_on: bool,
+}
+
+/// Named registry of UI trees: `name → RegisteredTree`. `PushTree` resolves a tree
+/// by name through this map; the per-frame compose step resolves the HUD and every
+/// always-on tree through it too. Tiered by scope (`engine < mod`): a mod
+/// registration under an existing engine name shadows it (last-wins + warn).
+/// Engine built-ins register at boot; script-side registration arrives with the UI
+/// SDK. An unknown name is a no-op-with-warning at push time, never a panic.
 #[derive(Debug, Default)]
 pub(crate) struct UiTreeRegistry {
-    trees: std::collections::HashMap<String, AnchoredTree>,
+    trees: std::collections::HashMap<String, RegisteredTree>,
 }
 
 impl UiTreeRegistry {
-    /// Register (or replace) a named tree. Engine built-ins call this at boot.
-    pub(crate) fn register(&mut self, name: impl Into<String>, tree: AnchoredTree) {
-        self.trees.insert(name.into(), tree);
+    /// Register (or replace) a named tree at the given `tier`. `always_on` marks it
+    /// as a per-frame base layer (the HUD); a pushed-only modal registers with
+    /// `always_on = false`. When a `Mod` registration replaces an existing `Engine`
+    /// entry under the same name, this is the deliberate reskin/shadow path — it
+    /// warns once at registration time so the shadow is visible in the log. Any
+    /// other replacement (engine→engine, mod→mod) is silent.
+    pub(crate) fn register(
+        &mut self,
+        name: impl Into<String>,
+        tree: AnchoredTree,
+        tier: ScopeTier,
+        always_on: bool,
+    ) {
+        let name = name.into();
+        if tier == ScopeTier::Mod {
+            if let Some(existing) = self.trees.get(&name) {
+                if existing.tier == ScopeTier::Engine {
+                    log::warn!(
+                        "[UI] mod tree '{name}' shadows the engine built-in of the same name (reskin path)"
+                    );
+                }
+            }
+        }
+        self.trees.insert(
+            name,
+            RegisteredTree {
+                descriptor: tree,
+                tier,
+                always_on,
+            },
+        );
     }
 
     /// Resolve a registered tree by name, or `None` if no such name is registered.
+    /// The HashMap holds at most one entry per name (a mod registration replaced
+    /// any engine entry of the same name at registration time), so this read is the
+    /// tiered-resolved descriptor directly.
     fn resolve(&self, name: &str) -> Option<&AnchoredTree> {
-        self.trees.get(name)
+        self.trees.get(name).map(|t| &t.descriptor)
+    }
+
+    /// The always-on trees, each as a base-layer snapshot entry. The compose step
+    /// appends these beneath the pushed modal stack every gameplay frame. The
+    /// `capture_mode` is carried for diagnostics only — a base layer never captures
+    /// input or takes focus (the pushed stack is the sole source for that), so the
+    /// compose step does NOT feed these into `top_capture_mode`/`active_name`.
+    ///
+    /// Ordering is engine-tier-first, then mod-tier, each group in a stable sort by
+    /// name so painter order is deterministic frame-over-frame (the HashMap's own
+    /// iteration order is not). A mod always-on tree under a NEW name layers above
+    /// the engine HUD; a mod tree under an EXISTING engine name already replaced it
+    /// in the map (shadow), so it composes in that one slot.
+    fn always_on_layers(&self) -> Vec<UiTreeEntry> {
+        let mut entries: Vec<(ScopeTier, &String, &RegisteredTree)> = self
+            .trees
+            .iter()
+            .filter(|(_, t)| t.always_on)
+            .map(|(name, t)| (t.tier, name, t))
+            .collect();
+        // Engine tier first (base), then mod tier (overlays on top); within a tier,
+        // sort by name for a deterministic painter order across frames.
+        entries.sort_by(|a, b| {
+            tier_order(a.0)
+                .cmp(&tier_order(b.0))
+                .then_with(|| a.1.cmp(b.1))
+        });
+        entries
+            .into_iter()
+            .map(|(_, name, t)| UiTreeEntry {
+                name: name.clone(),
+                descriptor: t.descriptor.clone(),
+                capture_mode: t.descriptor.capture_mode.into(),
+                on_commit: None,
+            })
+            .collect()
     }
 
     #[cfg(test)]
     pub(crate) fn contains(&self, name: &str) -> bool {
         self.trees.contains_key(name)
+    }
+
+    #[cfg(test)]
+    fn tier_of(&self, name: &str) -> Option<ScopeTier> {
+        self.trees.get(name).map(|t| t.tier)
+    }
+}
+
+/// Painter-order rank for a scope tier: engine (base) below mod (overlay).
+fn tier_order(tier: ScopeTier) -> u8 {
+    match tier {
+        ScopeTier::Engine => 0,
+        ScopeTier::Mod => 1,
     }
 }
 
@@ -78,11 +187,29 @@ impl ModalStack {
     }
 
     /// Read a registered tree by `name`, or `None` if no such name is registered.
-    /// The public read seam onto the registry: the per-frame snapshot resolves the
-    /// HUD through this (cloning the borrow into its owned entry), keeping
-    /// `UiTreeRegistry::resolve` private to `push_named`'s internal use.
+    /// The public `&self` read seam onto the registry's tiered resolution: keeps
+    /// `UiTreeRegistry::resolve` private to `push_named`'s internal use. The
+    /// per-frame compose step now pulls the HUD as one of the always-on base layers
+    /// via `always_on_layers` rather than resolving `HUD_NAME` by hand, so the seam
+    /// has no production caller today (script-side by-name resolution lands with the
+    /// UI SDK); it is exercised by the tiered-resolution tests.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn tree(&self, name: &str) -> Option<&AnchoredTree> {
         self.registry.resolve(name)
+    }
+
+    /// The always-on base layers for this frame (the HUD and any mod-registered
+    /// always-on overlays), engine-tier first then mod-tier, each in a deterministic
+    /// per-name order. The compose step appends these as the bottom layers of the
+    /// per-frame snapshot, with pushed modal entries (`entries`) on top.
+    ///
+    /// CAPTURE/FOCUS INVARIANT: these are draw-only base layers — they are NOT on
+    /// the pushed modal stack, which is the SOLE source of `top_capture_mode` /
+    /// `active_name` / `active_text_entry_target`. So an always-on layer never
+    /// captures input or takes focus even if its descriptor declares
+    /// `captureMode: capture`; an always-on overlay cannot steal input.
+    pub(crate) fn always_on_layers(&self) -> Vec<UiTreeEntry> {
+        self.registry.always_on_layers()
     }
 
     /// Resolve a registered tree by `name` and push it (script `PushTree` path).
@@ -246,10 +373,19 @@ mod tests {
         tree(CaptureMode::Passthrough)
     }
 
+    /// Register a pushed-only (non-always-on) engine-tier tree under `name`. The
+    /// stack/push tests register through this; tier/always-on don't affect push
+    /// behavior, so they use the engine default.
+    fn register_pushable(stack: &mut ModalStack, name: &str, tree: AnchoredTree) {
+        stack
+            .registry_mut()
+            .register(name, tree, ScopeTier::Engine, false);
+    }
+
     #[test]
     fn push_named_resolves_through_registry_and_becomes_active() {
         let mut stack = ModalStack::new();
-        stack.registry_mut().register("pauseMenu", capturing());
+        register_pushable(&mut stack, "pauseMenu", capturing());
         assert!(stack.is_empty());
 
         stack.push_named("pauseMenu", Some("resume".to_string()));
@@ -260,8 +396,8 @@ mod tests {
     #[test]
     fn push_pop_changes_the_active_top_tree() {
         let mut stack = ModalStack::new();
-        stack.registry_mut().register("hud", passthrough());
-        stack.registry_mut().register("pause", capturing());
+        register_pushable(&mut stack, "hud", passthrough());
+        register_pushable(&mut stack, "pause", capturing());
 
         stack.push_named("hud", None);
         stack.push_named("pause", None);
@@ -294,8 +430,8 @@ mod tests {
     #[test]
     fn top_capturing_tree_drives_capture_mode() {
         let mut stack = ModalStack::new();
-        stack.registry_mut().register("hud", passthrough());
-        stack.registry_mut().register("pause", capturing());
+        register_pushable(&mut stack, "hud", passthrough());
+        register_pushable(&mut stack, "pause", capturing());
 
         // Empty stack => passthrough (gameplay keeps input).
         assert_eq!(stack.top_capture_mode(), UiCaptureMode::Passthrough);
@@ -321,8 +457,8 @@ mod tests {
     #[test]
     fn snapshot_preserves_bottom_to_top_painter_order() {
         let mut stack = ModalStack::new();
-        stack.registry_mut().register("hud", passthrough());
-        stack.registry_mut().register("pause", capturing());
+        register_pushable(&mut stack, "hud", passthrough());
+        register_pushable(&mut stack, "pause", capturing());
         stack.push_named("hud", None);
         stack.push_named("pause", None);
 
@@ -349,7 +485,7 @@ mod tests {
     #[test]
     fn on_commit_is_carried_through_the_snapshot_entry() {
         let mut stack = ModalStack::new();
-        stack.registry_mut().register("dialog", capturing());
+        register_pushable(&mut stack, "dialog", capturing());
         stack.push_named("dialog", Some("onYes".to_string()));
 
         let snapshot = stack.build_snapshot(HashMap::new(), 0.0);
@@ -392,7 +528,7 @@ mod tests {
         // The top tree's carried `on_commit` (from `PushTree { on_commit }`) is
         // exposed for the App to fire on commit; a tree pushed without one reads None.
         let mut stack = ModalStack::new();
-        stack.registry_mut().register("dialog", capturing());
+        register_pushable(&mut stack, "dialog", capturing());
         stack.push_named("dialog", Some("onNameEntered".to_string()));
         assert_eq!(stack.active_on_commit(), Some("onNameEntered"));
 
@@ -408,5 +544,174 @@ mod tests {
         stack.push("engineDialog", capturing());
         assert_eq!(stack.active_name(), Some("engineDialog"));
         assert_eq!(stack.top_capture_mode(), UiCaptureMode::Capture);
+    }
+
+    // ----- Tiered registry (engine < mod) + always-on compose (Task 2) -----
+
+    /// A tree carrying an `id` on its root so descriptor identity is observable
+    /// across tier replacements (the bare helper trees are structurally equal).
+    fn identified(capture_mode: CaptureMode, root_id: &str) -> AnchoredTree {
+        let mut t = tree(capture_mode);
+        if let Widget::VStack(c) = &mut t.root {
+            c.id = Some(root_id.to_string());
+        }
+        t
+    }
+
+    /// The `id` on a tree's root (set by `identified`), for asserting which
+    /// descriptor won a tiered resolution.
+    fn root_id(tree: &AnchoredTree) -> Option<&str> {
+        match &tree.root {
+            Widget::VStack(c) => c.id.as_deref(),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn mod_tier_shadows_engine_entry_of_the_same_name() {
+        // engine < mod: a mod registration under an existing engine name replaces
+        // it in the single map slot (last-wins). Resolution stays the &self
+        // `ModalStack::tree` seam and returns the mod descriptor.
+        let mut stack = ModalStack::new();
+        let reg = stack.registry_mut();
+        reg.register(
+            "hud",
+            identified(CaptureMode::Passthrough, "engineHud"),
+            ScopeTier::Engine,
+            true,
+        );
+        // The shadow warning fires here (engine entry under "hud" already exists).
+        reg.register(
+            "hud",
+            identified(CaptureMode::Passthrough, "modHud"),
+            ScopeTier::Mod,
+            true,
+        );
+
+        // The map holds exactly one "hud" entry: the mod descriptor, at the mod tier.
+        assert_eq!(stack.registry.tier_of("hud"), Some(ScopeTier::Mod));
+        assert_eq!(
+            stack.tree("hud").and_then(root_id),
+            Some("modHud"),
+            "the mod tree shadows the engine built-in under the same name",
+        );
+    }
+
+    #[test]
+    fn engine_registration_does_not_shadow_a_later_mod_under_a_new_name() {
+        // A mod tree under a NEW name does not replace any engine entry — both
+        // coexist; tiered resolution returns each by its own name.
+        let mut stack = ModalStack::new();
+        let reg = stack.registry_mut();
+        reg.register(
+            "hud",
+            identified(CaptureMode::Passthrough, "engineHud"),
+            ScopeTier::Engine,
+            true,
+        );
+        reg.register(
+            "modOverlay",
+            identified(CaptureMode::Passthrough, "overlay"),
+            ScopeTier::Mod,
+            true,
+        );
+
+        assert_eq!(stack.registry.tier_of("hud"), Some(ScopeTier::Engine));
+        assert_eq!(stack.registry.tier_of("modOverlay"), Some(ScopeTier::Mod));
+        assert_eq!(stack.tree("hud").and_then(root_id), Some("engineHud"));
+        assert_eq!(stack.tree("modOverlay").and_then(root_id), Some("overlay"));
+    }
+
+    #[test]
+    fn always_on_layers_compose_engine_first_then_mod_each_sorted_by_name() {
+        // Always-on trees compose as base layers in a deterministic painter order:
+        // engine tier (base) first, then mod tier (overlay), each group sorted by
+        // name — independent of HashMap iteration order. Pushed-only modals
+        // (always_on = false) never appear among the base layers.
+        let mut stack = ModalStack::new();
+        let reg = stack.registry_mut();
+        reg.register("hud", passthrough(), ScopeTier::Engine, true);
+        reg.register("engineBg", passthrough(), ScopeTier::Engine, true);
+        reg.register("zModOverlay", passthrough(), ScopeTier::Mod, true);
+        reg.register("aModOverlay", passthrough(), ScopeTier::Mod, true);
+        // A pushed-only modal must NOT compose as a base layer.
+        reg.register("pause", capturing(), ScopeTier::Engine, false);
+
+        let names: Vec<String> = stack
+            .always_on_layers()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "engineBg".to_string(), // engine tier, sorted by name
+                "hud".to_string(),
+                "aModOverlay".to_string(), // mod tier, sorted by name, above engine
+                "zModOverlay".to_string(),
+            ],
+            "engine tier composes below mod tier; each group is sorted by name",
+        );
+    }
+
+    #[test]
+    fn compose_assembles_base_layers_below_pushed_modals() {
+        // The compose order the App publishes: always-on base layers (bottom),
+        // then pushed modal entries (top), in one snapshot `trees` vec.
+        let mut stack = ModalStack::new();
+        stack
+            .registry_mut()
+            .register("hud", passthrough(), ScopeTier::Engine, true);
+        register_pushable(&mut stack, "pause", capturing());
+        stack.push_named("pause", None);
+
+        // Mirror the App's compose step (main.rs): always_on_layers ++ entries.
+        let mut trees = stack.always_on_layers();
+        trees.extend(stack.entries());
+
+        let names: Vec<&str> = trees.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["hud", "pause"],
+            "base/always-on layers compose below pushed modal entries",
+        );
+    }
+
+    #[test]
+    fn always_on_layer_never_captures_or_takes_focus_even_if_it_declares_capture() {
+        // CAPTURE/FOCUS INVARIANT: an always-on tree declaring captureMode: Capture
+        // composes as a base layer but is NOT on the pushed modal stack, which is
+        // the SOLE source of top_capture_mode / active_name / active_text_entry.
+        // So it must never capture input or take focus.
+        let mut stack = ModalStack::new();
+        stack.registry_mut().register(
+            "greedyHud",
+            text_entry_tree("ui.textEntry"), // capturing + declares text entry
+            ScopeTier::Engine,
+            true,
+        );
+
+        // It DOES compose as a base layer (it renders)...
+        let layers = stack.always_on_layers();
+        assert_eq!(layers.len(), 1);
+        assert_eq!(layers[0].name, "greedyHud");
+        // ...but the pushed stack is empty, so it captures/focuses nothing.
+        assert!(stack.is_empty());
+        assert_eq!(
+            stack.top_capture_mode(),
+            UiCaptureMode::Passthrough,
+            "an always-on layer declaring Capture must not capture — the pushed \
+             stack is empty",
+        );
+        assert_eq!(
+            stack.active_name(),
+            None,
+            "an always-on layer never becomes the active (focused) tree",
+        );
+        assert_eq!(
+            stack.active_text_entry_target(),
+            None,
+            "an always-on layer never opens text entry, even if it declares a target",
+        );
     }
 }

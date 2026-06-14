@@ -386,20 +386,26 @@ fn main() -> Result<()> {
             // { tree: "keyboard", onCommit }` resolves it.
             let mut stack = render::ui::modal_stack::ModalStack::new();
             let registry = stack.registry_mut();
+            // The HUD is always-on: it composes as the bottom base layer every
+            // gameplay frame (resolved through the always-on read seam). The pause
+            // menu and keyboard are pushed-only modals — not always-on.
             render::ui::tree_asset::register_tree_from_disk(
                 registry,
                 render::ui::tree_asset::HUD_NAME,
                 "hud.json",
+                true,
             );
             render::ui::tree_asset::register_tree_from_disk(
                 registry,
                 render::ui::demo::PAUSE_MENU_NAME,
                 "pauseMenu.json",
+                false,
             );
             render::ui::tree_asset::register_tree_from_disk(
                 registry,
                 render::ui::keyboard_asset::KEYBOARD_TREE_NAME,
                 "keyboard.json",
+                false,
             );
             stack
         },
@@ -2195,33 +2201,33 @@ impl ApplicationHandler for App {
                         // Game logic → Audio → Render). The renderer reads these
                         // cloned values, never the live `SlotTable`.
                         //
-                        // Modal stack: the HUD is the always-on bottom layer
-                        // (`trees[0]`), resolved BY NAME from the registry
-                        // (`modal_stack.tree(HUD_NAME)`, sourced from
-                        // `content/base/ui/hud.json`) — the registry is the single
-                        // seam, no builder on the render path. Pushed modal trees
-                        // stack above it, drawn bottom→top. The renderer's retained
-                        // path lays each layer out and resolves its binds against the
+                        // Modal stack compose: every registered ALWAYS-ON tree
+                        // composes as a base layer at the bottom of the snapshot
+                        // (`always_on_layers()`), engine-tier first then mod-tier in a
+                        // deterministic per-name order — the HUD (`content/base/ui/
+                        // hud.json`) is the engine always-on layer, and a mod-registered
+                        // always-on overlay either shadows it (same name) or layers on
+                        // top (new mod-tier name). Pushed modal trees stack ABOVE the
+                        // base layers, drawn bottom→top. The registry is the single seam
+                        // — no builder on the render path. The renderer's retained path
+                        // lays each layer out and resolves its binds against the
                         // snapshot; each layer's descriptor is structurally stable, so
                         // the retained tree per layer reuses it and only bound values
-                        // drive the diff. The HUD's capture mode comes from its
-                        // declared envelope (passthrough), so with no modal open the
-                        // top mode is passthrough (gameplay keeps input). A missing
-                        // `hud.json` resolves to `None` — the HUD is simply absent
-                        // that frame and the engine still boots.
+                        // drive the diff.
+                        //
+                        // CAPTURE/FOCUS INVARIANT: base/always-on layers are appended to
+                        // `trees` but are NOT on the pushed modal stack, which is the
+                        // SOLE source of `top_capture_mode`/`active_name`/text-entry. So
+                        // an always-on layer never captures input or takes focus even if
+                        // its descriptor declares `captureMode: capture` — its
+                        // `capture_mode` rides the entry for diagnostics only. With no
+                        // modal pushed, the top mode is passthrough (gameplay keeps
+                        // input). A missing `hud.json` simply yields no engine always-on
+                        // layer that frame and the engine still boots.
                         let slot_values =
                             Self::build_ui_slot_snapshot(&self.script_ctx.slot_table.borrow());
-                        let mut trees: Vec<render::ui::UiTreeEntry> = self
-                            .modal_stack
-                            .tree(render::ui::tree_asset::HUD_NAME)
-                            .map(|descriptor| render::ui::UiTreeEntry {
-                                name: render::ui::tree_asset::HUD_NAME.to_string(),
-                                capture_mode: descriptor.capture_mode.into(),
-                                descriptor: descriptor.clone(),
-                                on_commit: None,
-                            })
-                            .into_iter()
-                            .collect();
+                        let mut trees: Vec<render::ui::UiTreeEntry> =
+                            self.modal_stack.always_on_layers();
                         trees.extend(self.modal_stack.entries());
                         // Ring-visibility follows the interaction mode WHILE a
                         // capturing tree is on the stack (M13 Goal F, Task 5):

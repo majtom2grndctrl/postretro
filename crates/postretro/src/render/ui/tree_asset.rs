@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use super::descriptor::AnchoredTree;
-use super::modal_stack::UiTreeRegistry;
+use super::modal_stack::{ScopeTier, UiTreeRegistry};
 
 /// Registry name the gameplay HUD registers + resolves under. The per-frame
 /// snapshot resolves this name through the registry to compose the always-on
@@ -55,16 +55,22 @@ pub(crate) fn load_named_tree(path: &Path) -> Option<AnchoredTree> {
 }
 
 /// Load `content/base/ui/<file_name>` and, on success, register it under `name`
-/// in `registry`. A missing/malformed asset warns once (via `load_named_tree`)
-/// and skips the registration — the one shared boot wiring for engine built-in
-/// screens (HUD, pause menu, keyboard).
+/// in `registry` at the `Engine` scope tier. A missing/malformed asset warns once
+/// (via `load_named_tree`) and skips the registration — the one shared boot wiring
+/// for engine built-in screens (HUD, pause menu, keyboard).
+///
+/// `always_on` marks the tree as a per-frame base layer (the HUD): the compose
+/// step composes it beneath the modal stack every gameplay frame. Pushed-only
+/// modals (pause menu, keyboard) register with `always_on = false` — they appear
+/// only when pushed.
 pub(crate) fn register_tree_from_disk(
     registry: &mut UiTreeRegistry,
     name: &'static str,
     file_name: &str,
+    always_on: bool,
 ) {
     if let Some(tree) = load_named_tree(&ui_asset_path(file_name)) {
-        registry.register(name, tree);
+        registry.register(name, tree, ScopeTier::Engine, always_on);
     }
 }
 

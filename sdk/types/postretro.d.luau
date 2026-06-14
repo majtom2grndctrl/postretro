@@ -829,6 +829,11 @@ declare function defineStore(namespace: string, schema: { [string]: StoreSlotSch
 -- UI tree descriptor; the engine builds the retained tree from them. These
 -- type-only aliases pin the wire shape (camelCase, internally tagged on `kind`).
 
+--- The type of every user-facing text string a widget displays. A single alias
+--- (`= string` today) so a future localization scheme -- message keys, ICU
+--- handles -- is one edit, not a sweep across every text prop.
+export type LocalizedText = string
+
 --- A widget color slot: an inline linear-RGBA tuple or a theme token name.
 export type WidgetColor = {number} | string
 

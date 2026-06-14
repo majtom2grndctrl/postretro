@@ -37,6 +37,8 @@ export type {
 } from "./data_script";
 export { defineReaction, defineEntity } from "./data_script";
 
+export type { LocalizedText } from "./ui/text";
+
 export type { CrossingCondition, CrossingDescriptor } from "./ui/reactions";
 export {
   onStateCrossing,

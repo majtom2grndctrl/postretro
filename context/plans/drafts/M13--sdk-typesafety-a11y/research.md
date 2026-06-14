@@ -65,6 +65,33 @@ a second SE seam (both touch `render/ui` snapshot/resolution — distinct concer
 Task 2 (resolution + visibility + focus-rect build) is the novelty → the
 implementability pass should focus there and may split it.
 
+## Review round 2 (draft-spec, 2026-06-14): reactive-core mechanisms pinned
+
+The reactive expansion's draft review confirmed every primitive feasible but found
+the spec hand-waved three mechanisms the source has firm invariants about. Pinned
+(owner-confirmed) with grounded anchors:
+- **Resolution carrier.** styleRanges extractors (`style_value`, `tree.rs:2456`)
+  accept only `SlotValue::Number`, and `export_focus_rects` (`tree.rs:908`) sees no
+  resolved binds — so "one resolution, three consumers" needs a
+  `resolve_predicate(...) -> f32` (rides `lookup_bound` `tree.rs:43`) resolved
+  **once into a per-node field** during `build_draw_data_retained` (`tree.rs:674`),
+  read by the draw walk + focus walk + a11y snapshot export.
+- **Visibility = `Display::None` + invalidate** (owner choice). The node stays in
+  taffy (preserving the descriptor↔taffy 1:1 lockstep `export_focus_rects` zips on);
+  draw (`collect_node :1041`) + focus (`collect_focus_node :950`) walks skip it.
+  Applied in layout/draw/focus walks **only**, never the `reconcile` descriptor walk
+  (`presentation_cells.rs:74`) — so `localState` scopes survive hide/show. A change
+  in a visibility predicate's resolved value re-exports the cached `FocusRectList` +
+  dirties layout (`lib/ui.md` §3 rebuild model).
+- **`disabled` activation is `main.rs::fire_focused_button_activation` (`:2923`)**,
+  NOT `ui_focus.rs` — so Task 3 touches `main.rs` (shared) and must also skip the
+  pointer (`hit_test_topmost`) + hover (`tick`) paths.
+- Mechanical: the **hand-written `data_descriptors.rs` bridge** needs a reader per
+  new field in BOTH js + lua converters (serde-only fields pass round-trip tests but
+  drop on the live path); serde skips (`Priority::is_polite`, `is_false`,
+  `Option::is_none`); Task 2 split into 2a (resolution + `FocusRect.disabled`) / 2b
+  (visibility); `localState` lives only on `ContainerWidget` (vstack/hstack), not Grid.
+
 ## Expanded-scope anchors
 
 - `AnchoredTree` envelope — `descriptor.rs:193` (beside `capture_mode:200`,

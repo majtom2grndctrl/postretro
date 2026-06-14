@@ -66,25 +66,34 @@ tonemap and M10 post extend — not a side-channel SE has to unwind later.
 - [ ] All scene/UI passes render into `scene_color`; the resolve pass is the sole
   swapchain writer. With `screen.flash`/`screen.vignette`/`screen.shake` all at
   rest, output is byte-identical to the pre-SE pipeline — the foundation parity gate.
+  (Depends on ALL re-point sites including Skinned Mesh `:5206` and Billboard
+  `:5244`, `scene_color` at the sRGB surface format, and NEAREST resolve sampler.)
 - [ ] A `flashScreen` reaction produces a full-screen color flash over scene +
   HUD decaying to transparent; `vignette` darkens/tints the edges to a peak then
   decays, center unaffected; `screenShake` offsets the whole composited image
-  with a decaying oscillation that returns to exact center — shake is a true
-  resample of `scene_color` with no read/write hazard.
+  with a decaying oscillation that returns to exact center — shake samples
+  `scene_color` and writes a different target (no read/write hazard). [Runnable:
+  assert no read/write hazard. Manual verification: decay shape, return to exact
+  center.]
 - [ ] All three pause when game logic pauses (dt-accumulated time, never wall
   clock) and compose simultaneously in the single resolve.
-- [ ] The resolve reads the three effect slots from the once-per-frame UI
-  snapshot only — never the live slot table (a test asserts the consumed values
-  come from `UiReadSnapshot`).
+- [ ] The pure pack fn `(UiReadSnapshot slot_values) -> EffectUniform` maps
+  snapshot slot values into the resolve uniform (a test asserts the
+  snapshot→uniform mapping). "Never the live slot table" is structural — the
+  renderer holds no SlotTable/ScriptCtx handle — so the test asserts the mapping,
+  not the absence of a table read.
 - [ ] `screen.vignette`/`screen.shake` are engine-owned slots registered like
-  `screen.flash`; a mod write warns and no-ops.
+  `screen.flash`; a mod write no-ops (assertable, precedent `store.rs:1215`) and
+  emits `log::warn!` (observable via log-capture harness — not required as a
+  test assertion).
 - [ ] `vignette`/`screenShake` exist in both TS + Luau SDK with emitted typedefs,
   dispatch through the same `SystemReactionCommand` path as `flashScreen`, and a
   descriptor without them keeps its pre-SE wire form byte-identical.
 - [ ] The effect composes on top of the fog already composited into `scene_color`
   (samples the post-fog, post-UI image).
-- [ ] Demo in the dev map: a low-health `onStateCrossing` fires flash + vignette;
-  an entity hit event fires `screenShake` — manual verification.
+- [ ] Demo in the dev map: a low-health `onStateCrossing` fires flash + vignette +
+  `screenShake` (all bound to the same crossing in
+  `content/dev/scripts/arena-lights.ts`) — manual verification.
 - [ ] `docs/scripting-reference.md` covers the two new reactions.
 
 ## Tasks
@@ -92,9 +101,20 @@ tonemap and M10 post extend — not a side-channel SE has to unwind later.
 ### Task 1: `scene_color` target + resolve pass (foundation)
 Allocate a renderer-owned `scene_color` color texture (surface format/size/sample
 count; resize with the surface). Re-point the color attachments of the scene and
-UI passes (`render/mod.rs`: forward clear, fog composite `:5317`, wireframe
-`:5352`, debug lines `:5395`, UI `ui.encode :5497`) from the swapchain `view` to
-`scene_color`. Add a `ScreenEffectsPass` (`render/screen_effects.rs`, new) +
+UI passes (`render/mod.rs`: forward clear, Skinned Mesh Pass `:5206`, Billboard
+Sprite Pass `:5244`, fog composite `:5317`, wireframe `:5352`, debug lines
+`:5395`, UI `ui.encode :5497`) from the swapchain `view` to `scene_color`. In
+practice: re-point every `view: &view` color attachment between the Textured Pass
+(`:5114`) and the timing resolve (`:5511`) — the `view: &view` literals at
+5117/5206/5244/5320/5355 plus the `debug_lines.render(…&view…)` (`:5395`) and
+`ui.encode(…&view…)` (`:5497`) helper calls. `scene_color` MUST be allocated at
+the surface format (sRGB — the surface picks `f.is_srgb()`, `render/mod.rs:1740`),
+single-sample, and the resolve sampler MUST be NEAREST / pixel-aligned; this is
+load-bearing for the byte-identical parity gate (per-pass sRGB-encode + 8-bit
+quantize into `scene_color` must round-trip losslessly; fog_composite's dither
+lands on that same 8-bit grid). SE's resolve is gameplay-path only; the splash
+path (`render_splash_frame` / `record_splash_ui`) keeps writing the swapchain
+directly. Add a `ScreenEffectsPass` (`render/screen_effects.rs`, new) +
 `src/shaders/screen_effects.wgsl` (fullscreen-triangle, the `fog_composite`
 precedent) that samples `scene_color` and writes `view`; encoded after
 `ui.encode`, before timing resolve (`:5511`). Identity blit when no effect input is bound. Pre-Task-4: resolve uniform
@@ -107,6 +127,8 @@ byte-identical output. `Depends on` nothing.
 Register `screen.vignette` + `screen.shake` engine-owned slots beside
 `screen.flash`; both register as mod-readonly / engine-writable exactly like
 `screen.flash` (mod writes warn + no-op via the existing readonly slot path).
+`screen.vignette` is `Array` RGBA (default `[0,0,0,0]`); `screen.shake` is
+`Array [dx,dy]` (default `[0,0]`).
 Add a vignette-envelope and a shake driver beside `flash_decay.rs`
 (`scripting/systems/`), each with `start`/`tick`/`reset` entry points, started
 by a drained command (Task 3), ticking at the game-logic stage beside
@@ -121,7 +143,9 @@ pushing those commands; drain the drained `Vignette`/`ScreenShake` commands
 to `driver.start()` — mirroring the `FlashScreen` → `FlashDecay.start` precedent
 (App constructs the driver; `main.rs` ticks it; the drained command starts it).
 SDK constructors in `sdk/lib/ui/reactions.{ts,luau}`, barrel export, typedef
-emission, docs. `Depends on` Task 2. **Wave seam (G2):** coordinate
+emission, docs. `screenShake` args carry `frequency: Option<f32>` with
+`#[serde(default)]`; the omitted-frequency 18 Hz default is applied by the shake
+driver (Task 2), not the arg deserializer. `Depends on` Task 2. **Wave seam (G2):** coordinate
 `scripting/typedef.rs` reaction-block + `sdk/lib/index.ts` barrel with G2;
 regenerate once both land.
 
@@ -131,15 +155,22 @@ apply them in `screen_effects.wgsl` (shake = sample offset, vignette = edge
 tint, flash = over-blend). The Rust pack step converts the shake dx/dy (logical-
 reference px on a 1280×720 reference) to UV offsets before writing the uniform;
 the shader applies a pure UV add (no dims needed in WGSL). Confirm the two new
-slots flow through `build_ui_slot_snapshot`. Add an assertion test proving the
-resolve reads effect slot values from `UiReadSnapshot`, never the live slot table.
+slots flow through `build_ui_slot_snapshot`. The snapshot→uniform pack MUST be a pure fn `(UiReadSnapshot slot_values) ->
+EffectUniform` so AC#4's assertion can run without a GPU/device; "never the live
+slot table" is structural (the renderer holds no SlotTable/ScriptCtx handle), so
+the test asserts the snapshot→uniform mapping (a divergence test), not the absence
+of a table read. Add an assertion test proving the resolve reads effect slot values
+from `UiReadSnapshot` via the pure pack fn.
 Pre-Task-4 the resolve uniform is zeroed/unbound → identity; post-Task-4 the
 at-rest case is resting slot values (transparent flash, zero strength, zero shake)
 whose ALU collapses to identity — resting values MUST produce bit-identical output
 to the unbound path so the parity gate holds across both. Demo: extend the
 existing low-health crossing demo (Goal E's flash-demo site) to also fire
-`vignette`, and register a dev-map entity-hit → `screenShake` reaction binding.
-Manual verification. `Depends on` Tasks 1–3.
+`vignette`, and bind `screenShake` to the same `onStateCrossing('player.health',
+…)` in `content/dev/scripts/arena-lights.ts` (the `lowHealthFlash` reaction site)
+— there is no entity-hit event seam a script can bind a reaction to; the trigger
+surface is `onStateCrossing` + named events. Manual verification. `Depends on`
+Tasks 1–3.
 
 ## Sequencing
 

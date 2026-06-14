@@ -436,6 +436,7 @@ fn main() -> Result<()> {
         particle_render: scripting_systems::particle_render::ParticleRenderCollector::new(),
         mesh_render: scripting_systems::mesh_render::MeshRenderCollector::new(),
         mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables::new(),
+        hit_zone_store: scripting_systems::hit_zones::HitZoneStore::new(),
         active_wieldable: None,
         active_wieldable_descriptor: None,
         builtin_handled: None,
@@ -764,6 +765,15 @@ struct App {
     /// resolves each mesh entity's `AnimationState.clip_index` against it. Cleared
     /// on level unload. See: context/lib/scripting.md §10.3.
     mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables,
+
+    /// Game-side skeletal hit-zone store: per model TYPE, the CPU skeleton,
+    /// clips, authored joint-zone table, and a derived broad-phase bound swept
+    /// from the clips. Re-loaded game-side (independent of the renderer's
+    /// moved-away copy) at the level-load model sweep and cleared on level
+    /// change, beside `mesh_clip_tables`. CPU-only — no wgpu. Nothing consumes it
+    /// yet besides tests; the Task 4 raycast facility threads it through.
+    /// See: context/lib/entity_model.md §7.
+    hit_zone_store: scripting_systems::hit_zones::HitZoneStore,
 
     /// Active wieldable instance equipped by the player. The companion
     /// descriptor name lets mod-init hot reload refresh authored weapon stats
@@ -3489,6 +3499,9 @@ impl App {
             // game-side clip tables before rebuilding them for this level.
             renderer.clear_mesh_pass_for_level_load();
             self.mesh_clip_tables.clear();
+            // The game-side hit-zone store is per-level transient too — clear it
+            // alongside the clip tables before this level's sweep rebuilds it.
+            self.hit_zone_store.clear();
 
             let models = {
                 let registry = self.script_ctx.registry.borrow();
@@ -3503,6 +3516,12 @@ impl App {
                 let meta = renderer.skinned_model_clip_metadata(model);
                 self.mesh_clip_tables
                     .insert(crate::model::ModelHandle::from(model.clone()), &meta);
+                // Build this model's game-side hit-zone entry by re-loading the
+                // glTF independently (the renderer moved its own skeleton + clips
+                // into the GPU layer). Keeps skeleton + clips + zone table and a
+                // derived broad-phase bound; a failed load installs nothing.
+                self.hit_zone_store
+                    .insert_from_load(model, &self.content_root);
             }
             if !models.is_empty() {
                 log::info!(

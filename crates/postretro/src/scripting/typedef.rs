@@ -700,7 +700,7 @@ pub(crate) fn generate_typescript(registry: &PrimitiveRegistry) -> String {
 //   sdk/lib/entities/fog_volumes.ts
 //   sdk/lib/util/keyframes.ts
 //   sdk/lib/data_script.ts  (re-exported via index.ts)
-//   sdk/lib/ui/{text,widgets,layout,tree,state}.ts  (M13 G1a UI factories)
+//   sdk/lib/ui/{text,widgets,layout,tree,state}.ts
 // Drift between this block and those files causes IDE types that don't match
 // runtime behavior. Update this block whenever an SDK lib signature changes.
 const TS_SDK_LIB_BLOCK: &str = r#"
@@ -1468,7 +1468,7 @@ pub(crate) fn generate_luau(registry: &PrimitiveRegistry) -> String {
 //   sdk/lib/entities/fog_volumes.luau
 //   sdk/lib/util/keyframes.luau
 //   sdk/lib/data_script.luau  (embedded directly via include_str! in luau.rs)
-//   sdk/lib/ui/{text,widgets,layout,tree,state}.luau  (M13 G1a UI factories)
+//   sdk/lib/ui/{text,widgets,layout,tree,state}.luau
 // Drift between this block and those files causes IDE types that don't match
 // runtime behavior. Update this block whenever an SDK lib signature changes.
 const LUAU_SDK_LIB_BLOCK: &str = r#"
@@ -3613,18 +3613,18 @@ export type Event = {
     }
 
     /// `WidgetAnchor` in both typedef outputs must enumerate EXACTLY the variants
-    /// of `crate::render::ui::layout::Anchor` — no more, no less. The enum
-    /// serializes via `#[serde(rename_all = "camelCase")]`; `parse_anchor` in
-    /// `data_descriptors.rs` maps the same wire strings to enum variants. Both
-    /// must stay in sync with this test.
+    /// of `crate::render::ui::layout::Anchor` — no more, no less.
     ///
-    /// The expected set below IS the canonical list of `Anchor` variants expressed
-    /// as their camelCase wire strings (matching `parse_anchor` and the serde
-    /// output). If a new variant is added to `Anchor`, add its wire string here
-    /// AND update the typedef union and `parse_anchor` — this test will then fail
-    /// loudly, catching silent drift before it reaches runtime.
+    /// The expected union is DERIVED from `Anchor::ALL`/`Anchor::wire()` (the
+    /// single source of truth), not a hand-copied list. `wire()` is an
+    /// exhaustive `match` with no catch-all arm, so adding a variant to `Anchor`
+    /// is a compile error until its wire string is defined; the new variant then
+    /// joins `ALL` and this test fails unless the emitted `WidgetAnchor` union is
+    /// updated to match. `parse_anchor` in `data_descriptors.rs` maps the same
+    /// wire strings back to variants.
     #[test]
     fn widget_anchor_typedef_matches_layout_anchor_variants() {
+        use crate::render::ui::layout::Anchor;
         use crate::scripting::ctx::ScriptCtx;
         use crate::scripting::primitives::register_all;
 
@@ -3633,32 +3633,18 @@ export type Event = {
         let ts = generate_typescript(&r);
         let luau = generate_luau(&r);
 
-        // Hard-coded expected wire strings for every `layout::Anchor` variant
-        // (camelCase, matching `#[serde(rename_all = "camelCase")]` and `parse_anchor`).
-        // MAINTAINER NOTE: this set must equal `layout::Anchor`'s variants exactly.
-        // Adding a variant to the enum without updating this list causes the test
-        // to fail — that is the intended drift guard.
-        const ANCHOR_WIRES: &[&str] = &[
-            "topLeft",
-            "top",
-            "topRight",
-            "left",
-            "center",
-            "right",
-            "bottomLeft",
-            "bottom",
-            "bottomRight",
-        ];
-
-        // Build the expected union body (pipe-separated double-quoted variants).
-        let expected_union_body: String = ANCHOR_WIRES
+        // Derive the expected union body straight from the enum's source of truth.
+        // `Anchor::ALL` enumerates the variants; `wire()` is the exhaustive
+        // variant→camelCase map that `parse_anchor` and serde also honor.
+        let expected_union_body: String = Anchor::ALL
             .iter()
-            .map(|s| format!("\"{s}\""))
+            .map(|a| format!("\"{}\"", a.wire()))
             .collect::<Vec<_>>()
             .join(" | ");
 
-        // Assert each expected variant appears in both outputs.
-        for wire in ANCHOR_WIRES {
+        // Assert each derived variant appears in both outputs.
+        for anchor in Anchor::ALL {
+            let wire = anchor.wire();
             assert!(
                 ts.contains(&format!("\"{wire}\"")),
                 "ts d.ts WidgetAnchor union missing anchor variant \"{wire}\""
@@ -3675,12 +3661,12 @@ export type Event = {
         let luau_union_line = format!("export type WidgetAnchor = {expected_union_body}");
         assert!(
             ts.contains(&ts_union_line),
-            "ts d.ts WidgetAnchor union does not exactly match expected variants.\n\
+            "ts d.ts WidgetAnchor union does not exactly match `Anchor::ALL`/`wire()`.\n\
              Expected line: {ts_union_line}"
         );
         assert!(
             luau.contains(&luau_union_line),
-            "luau d.luau WidgetAnchor union does not exactly match expected variants.\n\
+            "luau d.luau WidgetAnchor union does not exactly match `Anchor::ALL`/`wire()`.\n\
              Expected line: {luau_union_line}"
         );
     }

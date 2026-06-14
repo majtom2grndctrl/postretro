@@ -101,7 +101,7 @@ impl PresentationCellStore {
 }
 
 /// Coerce a `cellWrite` reaction's raw JSON value into a presentation-cell
-/// `SlotValue` (M13 G1b, Task 5). Numbers/booleans/strings map directly; a
+/// `SlotValue`. Numbers/booleans/strings map directly; a
 /// length-4 numeric array maps to the panel-fill `Array` shape. Any other shape
 /// (object, ragged array, null) is rejected — the drain skips the write with a
 /// warn rather than storing an unusable value. NEVER touches the slot table.

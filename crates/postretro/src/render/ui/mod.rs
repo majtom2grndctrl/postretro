@@ -38,10 +38,10 @@ pub(crate) mod tree;
 /// data — widgets (later tasks) reference tokens by name; the merge is per-token.
 pub(crate) mod theme;
 
-/// Continuous value→style mapping (M13 Goal E `styleRanges`): the `StyleRanges`
+/// Continuous value→style mapping (`styleRanges`): the `StyleRanges`
 /// descriptor types and the widget-agnostic pure evaluator (value → resolved
-/// color + pulse/flash). Consumed from `tree`'s draw-data build; Goal F's `bar`
-/// reuses the same evaluator. Pure data — no taffy, no GPU.
+/// color + pulse/flash). Consumed from `tree`'s draw-data build; the `bar`
+/// widget reuses the same evaluator. Pure data — no taffy, no GPU.
 pub(crate) mod style_ranges;
 
 /// App-side gameplay-UI modal stack + named-tree registry: resolves Goal E's
@@ -73,7 +73,7 @@ pub(crate) mod demo;
 /// wiring for the HUD, pause menu, and on-screen keyboard.
 pub(crate) mod tree_asset;
 
-/// Engine-shipped on-screen keyboard descriptor (M13 Text-Entry, Task 4): loads
+/// Engine-shipped on-screen keyboard descriptor: loads
 /// `content/base/ui/keyboard.json` from disk at boot and registers it under the
 /// `keyboard` name. Read from disk (not embedded) so a layout edit + reload
 /// changes the keyboard with no Rust change.
@@ -108,7 +108,7 @@ mod gameplay_ui_gate_test;
 #[cfg(test)]
 mod demo_ui_gate_test;
 
-/// Hard-gate CPU assertions for M13 fonts+theming Task 4: the theme-generation
+/// Hard-gate CPU assertions for the fonts+theming path: the theme-generation
 /// rebuild gate (reproduced CPU-side, mirroring `UiPass::layout_gameplay_tree`)
 /// and the exactly-one-warning-per-build fallback contract for unknown tokens.
 /// Pure CPU — no GPU adapter.
@@ -138,7 +138,7 @@ mod multi_batch_test;
 #[cfg(test)]
 mod multi_layer_text_golden_test;
 
-/// G1b cross-cutting lifecycle + render suite (M13 G1b, Task 6): the
+/// G1b cross-cutting lifecycle + render suite: the
 /// register -> resolve-by-name -> render chain over the production path, the
 /// always-on compose -> render path, a mod theme override reaching a rendered
 /// widget, a runtime-registered font usable by a `text` token, and `localState`
@@ -326,7 +326,7 @@ pub(crate) struct UiReadSnapshot {
     /// skipped. Empty on the splash path.
     pub slot_values: std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
     /// Resolved presentation-cell values for this frame, keyed by
-    /// `(scopeId, cellName)` (M13 G1b, Task 5). Published from the app-side cell
+    /// `(scopeId, cellName)`. Published from the app-side cell
     /// store the same way `slot_values` flows from the slot table — so a `{ local }`
     /// bind resolves against the live cell value without the descriptor (compared
     /// by the retained reuse gate) ever changing. Empty on the splash path and
@@ -340,10 +340,10 @@ pub(crate) struct UiReadSnapshot {
     /// no time at all.
     pub time_seconds: f64,
     /// The focused node id in the active (top) stack tree, resolved app-side by
-    /// the focus engine the previous frame (M13 Goal F, Task 3). The UI pass draws
-    /// the focus ring around this node's rect on the top layer. `None` (the
-    /// default) when nothing is focused; the ring may trail a focus change by one
-    /// frame (the same N→N+1 latency every UI event carries).
+    /// the focus engine the previous frame. The UI pass draws the focus ring around
+    /// this node's rect on the top layer. `None` (the default) when nothing is
+    /// focused; the ring may trail a focus change by one frame (the same N→N+1
+    /// latency every UI event carries).
     pub focused_id: Option<String>,
 }
 
@@ -1140,10 +1140,8 @@ const FOCUS_RING_THICKNESS: f32 = 2.0;
 /// (the `xs` spacing token, scaled), framing the focused node without overlapping
 /// it. `color` is the resolved `focus.ring` token (linear RGBA). Drawn as four
 /// solid `UiInstance::panel` bars (top, bottom, left, right) so it needs no new
-/// pipeline — it rides the existing white-texel quad batch.
-///
-/// M13 Goal F, Task 3: the engine-drawn focus ring. The focused id rides the
-/// snapshot, so the ring may trail a focus change by one frame.
+/// pipeline — it rides the existing white-texel quad batch. The focused id rides
+/// the snapshot, so the ring may trail a focus change by one frame.
 pub(crate) fn push_focus_ring(quads: &mut UiDrawList, rect: [f32; 4], inset: f32, color: [f32; 4]) {
     let t = FOCUS_RING_THICKNESS;
     // Outer frame: the focused rect grown outward by the inset.

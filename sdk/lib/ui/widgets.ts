@@ -1,5 +1,5 @@
-// UI widget factories (M13 G1a, Task 3): capitalized constructors for the seven
-// non-container widget kinds — Text, Panel, Image, Button, Slider, Bar, Spacer.
+// UI widget factories: capitalized constructors for the seven non-container
+// widget kinds — Text, Panel, Image, Button, Slider, Bar, Spacer.
 // (Containers — VStack/HStack/Grid — live in `./layout`.) Each mirrors the
 // `emitter()` precedent: a `Props` object validated synchronously, throwing a
 // field-named `Error`, returning a plain descriptor object whose keys are the
@@ -7,8 +7,8 @@
 //
 // Pure builders: constructing a widget has no engine side effect — the FFI
 // boundary is the eventual `return` of the authored tree. Bound props accept
-// Task 1 store handles (a branded slot-name string) or an explicit bind object;
-// `Button.onPress` accepts a Task 1 reaction handle or a bare name string.
+// store handles (a branded slot-name string) or an explicit bind object;
+// `Button.onPress` accepts a reaction handle or a bare name string.
 // See: context/lib/ui.md · context/lib/scripting.md §7
 
 import type { LocalizedText } from "./text";
@@ -35,11 +35,12 @@ export type WidgetAlign = "start" | "center" | "end" | "stretch";
 export type WidgetEasing = "linear" | "easeIn" | "easeOut" | "easeInOut";
 
 /**
- * A branded store-handle value (Task 1 `StateValue<T>` / the `.get()` result of
- * `ReadonlyStateValue<T>`). It is a branded `string` carrying the dotted slot
- * name, so a factory bind prop reads the slot name straight off it. Declared
- * structurally here (the SDK lib has no cyclic import to the global typedef) as
- * "a string the engine brands"; an explicit bind object is the alternative.
+ * A branded store-handle value (`StateValue<T>`): a branded `string` carrying
+ * the dotted slot name, used as the `slot` field of a bind object. A handle's
+ * `.get()` returns that bind object (a `SliderBindProp`), not this type.
+ * Declared structurally here (the SDK lib has no cyclic import to the global
+ * typedef) as "a string the engine brands"; an explicit bind object is the
+ * alternative.
  */
 export type StoreHandleRef = string & { readonly __brand?: "StateValue" };
 
@@ -63,16 +64,16 @@ export type ColorTween = {
 };
 
 /**
- * A `{ local }` presentation-cell bind reference (M13 G1b, Task 5): the `.get()`
- * result of a `ui.createLocalState()` handle. Names a cell on the nearest
- * declaring `localState` scope; resolved app-side against the cell store, never
- * the authoritative slot table. Mirrors `descriptor.rs` `BindSource::Local`.
+ * A `{ local }` presentation-cell bind reference: the `.get()` result of a
+ * `ui.createLocalState()` handle. Names a cell on the nearest declaring
+ * `localState` scope; resolved app-side against the cell store, never the
+ * authoritative slot table. Mirrors `descriptor.rs` `BindSource::Local`.
  */
 export type LocalBindRef = { local: string };
 
 /**
  * State binding for a `text` widget. The source is either a `{ slot }` store
- * binding (a dotted slot name or a Task 1 store handle) or a `{ local }`
+ * binding (a dotted slot name or a store handle) or a `{ local }`
  * presentation-cell binding; `format` is an optional one-`{}` template; `tween`
  * eases the resolved numeric value. Mirrors `descriptor.rs` `TextBind`.
  */
@@ -147,8 +148,8 @@ export type FocusNeighborsProp = {
 export type RepeatPolicyProp = { initialDelayMs: number; intervalMs: number };
 
 /**
- * A typed reaction handle (Task 1 `defineReaction` result) — anything carrying a
- * `.name` string. `Button.onPress` accepts one of these or a bare name string.
+ * A typed reaction handle (`defineReaction` result) — anything carrying a `.name`
+ * string. `Button.onPress` accepts one of these or a bare name string.
  */
 export type ReactionHandleRef = { name: string };
 
@@ -225,11 +226,11 @@ function validateEasing(value: unknown, field: string, factory: string): void {
 }
 
 /**
- * Resolve a bind prop to its wire `{ slot, ... }` form. `slot` may be a Task 1
- * store handle (a branded slot-name string) or a plain string; both read as the
- * dotted slot name. Validates the optional `tween`; the panel path expects a
- * color-shape `from`, the number path a numeric `from`. Returns `undefined` when
- * no bind was authored so the factory omits the `bind` key (wire identity).
+ * Resolve a bind prop to its wire `{ slot, ... }` form. `slot` may be a store
+ * handle (a branded slot-name string) or a plain string; both read as the dotted
+ * slot name. Validates the optional `tween`; the panel path expects a color-shape
+ * `from`, the number path a numeric `from`. Returns `undefined` when no bind was
+ * authored so the factory omits the `bind` key (wire identity).
  */
 function buildBind(
   bind: unknown,
@@ -242,8 +243,8 @@ function buildBind(
   }
   const b = bind as Record<string, unknown>;
   // The bind source is either a `{ slot }` store binding or a `{ local }`
-  // presentation-cell binding (M13 G1b, Task 5). `slot` wins when present; the
-  // emitted wire object carries exactly one of the two keys.
+  // presentation-cell binding. `slot` wins when present; the emitted wire object
+  // carries exactly one of the two keys.
   const out: { slot?: string; local?: string; format?: string; tween?: unknown } =
     b.slot !== undefined
       ? (requireNonemptyString(b.slot, "bind.slot", factory), { slot: b.slot as string })
@@ -524,9 +525,9 @@ export type ButtonProps = {
 
 /**
  * An interactive `button`. `id` is required (activation resolves the focused
- * node id back to `onPress`). `onPress` accepts a Task 1 reaction handle (the
- * `.name` is read) or a bare reaction-name string, emitting the unchanged
- * `onPress: string` wire form. Mirrors `ButtonWidget`.
+ * node id back to `onPress`). `onPress` accepts a reaction handle (the `.name`
+ * is read) or a bare reaction-name string, emitting the unchanged `onPress:
+ * string` wire form. Mirrors `ButtonWidget`.
  */
 export function Button(props: ButtonProps): WidgetDescriptor {
   requireObject(props, "Button");

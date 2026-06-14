@@ -140,8 +140,8 @@ export type NamedReactionDescriptor = {
 --- `entities` field of `setupMod`'s return value, not here.
 export type LevelManifest = {
   reactions: {NamedReactionDescriptor},
-  -- State-crossing watchers (M13 HUD dynamics). `CrossingDescriptor` is
-  -- declared in postretro.d.luau (the generated SDK-lib type block). See
+  -- State-crossing watchers (HUD dynamics). `CrossingDescriptor` is declared
+  -- in postretro.d.luau (the generated SDK-lib type block). See
   -- `onStateCrossing`.
   crossings: {CrossingDescriptor}?,
 }
@@ -192,6 +192,9 @@ end
 -- Deterministic, run-stable id derived from a reaction body via FNV-1a (32-bit)
 -- over its order-stable serialization. Re-running registration yields the same
 -- id — crossings and the `onPress` wire form reference it. Bit ops use bit32.
+-- NOTE: run-stable within Luau but NOT identical to the TS auto-id (different
+-- stable-stringify). Do not assume cross-runtime id parity; use an explicit
+-- name when the id must match between TS and Luau runtimes.
 local function autoReactionId(descriptor: any): string
   local serialized = stableStringify(descriptor)
   local hash = 0x811c9dc5

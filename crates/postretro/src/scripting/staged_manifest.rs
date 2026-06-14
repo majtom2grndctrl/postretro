@@ -498,7 +498,7 @@ fn manifest_from_js_value<'js>(
     };
 
     // UI fields drain via the G1a bridge fns; malformed entries log+skip inside
-    // the drains (ui.md §5). This is the hot-reload twin of `run_mod_init_quickjs`.
+    // the drains (ui.md §1.1). This is the hot-reload twin of `run_mod_init_quickjs`.
     let ui_trees =
         drain_ui_trees_js(ctx, &obj, "setupMod").map_err(|e| ScriptError::InvalidArgument {
             reason: format!("mod-init: `{source_path}` setupMod `uiTrees` invalid: {e}"),
@@ -632,7 +632,7 @@ fn run_staged_mod_init_luau(
     };
 
     // UI fields drain via the G1a bridge fns; malformed entries log+skip inside
-    // the drains (ui.md §5). This is the hot-reload twin of `run_mod_init_luau`.
+    // the drains (ui.md §1.1). This is the hot-reload twin of `run_mod_init_luau`.
     let ui_trees =
         drain_ui_trees_lua(&table, "setupMod").map_err(|e| ScriptError::InvalidArgument {
             reason: format!("mod-init: `{source_path}` setupMod `uiTrees` invalid: {e}"),

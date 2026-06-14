@@ -1635,6 +1635,13 @@ mod tests {
                 "args.cell must be 'hp', got: " .. tostring(desc.args.cell))
             assert(desc.args.value == 42,
                 "args.value must be 42, got: " .. tostring(desc.args.value))
+            -- 6. args.scope is present and is the stable "localState.N" id.
+            -- The SDK's monotonic counter starts at 0; the first createLocalState
+            -- call in this script yields "localState.0".
+            assert(type(desc.args.scope) == "string" and #desc.args.scope > 0,
+                "args.scope must be a non-empty string, got: " .. tostring(desc.args.scope))
+            assert(desc.args.scope == "localState.0",
+                "args.scope must be 'localState.0', got: " .. tostring(desc.args.scope))
             return true
         "#;
         let ok: bool = subsys

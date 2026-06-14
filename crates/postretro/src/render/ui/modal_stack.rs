@@ -216,13 +216,12 @@ impl ModalStack {
     }
 
     /// Read a registered tree by `name`, or `None` if no such name is registered.
-    /// The public `&self` read seam onto the registry's tiered resolution: keeps
+    /// Public `&self` read seam onto the registry's tiered resolution: keeps
     /// `UiTreeRegistry::resolve` private to `push_named`'s internal use. The
-    /// per-frame compose step pulls the HUD as one of the always-on base layers
-    /// via `always_on_layers` rather than resolving `HUD_NAME` by hand. Production
-    /// callers arrive with script-side by-name resolution; today only the
-    /// tiered-resolution tests exercise this seam.
-    #[cfg_attr(not(test), allow(dead_code))] // script-side by-name resolution not yet wired
+    /// per-frame compose step pulls the HUD via `always_on_layers` rather than
+    /// resolving `HUD_NAME` by hand; production pushes resolve by name through
+    /// `push_named`. Only the tiered-resolution tests exercise this accessor.
+    #[cfg_attr(not(test), allow(dead_code))] // public read seam; production resolves via push_named — accessor is test-only
     pub(crate) fn tree(&self, name: &str) -> Option<&AnchoredTree> {
         self.registry.resolve(name)
     }

@@ -1,9 +1,8 @@
-// Store-slot handle ergonomics (M13 G1a, Task 4): `.get()`/`.set()` accessor
-// wrappers over Task 1's value-typed store-slot handles (`StateValue<T>`). The
-// runtime representation of a `defineStore` slot handle is a plain branded
-// string carrying the dotted slot name (`scripting.md` §6.9) — it carries no
-// methods, so these namespaced wrappers are the SDK layer that adds `.get()` /
-// `.set()` over it.
+// Store-slot handle ergonomics: `.get()`/`.set()` accessor wrappers over
+// value-typed store-slot handles (`StateValue<T>`). The runtime representation
+// of a `defineStore` slot handle is a plain branded string carrying the dotted
+// slot name — it carries no methods, so these namespaced wrappers add `.get()`
+// / `.set()` over it.
 //
 // `.set(v)` delegates to the shipped `setState` reaction builder so the produced
 // descriptor is byte-identical to calling `setState(slot, v)` directly. `.get()`
@@ -11,9 +10,9 @@
 // `Text` (TextBind), `Panel` (PanelBind), and `Slider`/`Bar` (SliderBind).
 //
 // Engine-owned slots (`postretro/game-state`) are read-only to mods and expose
-// `.get()` ONLY — their handle type (`ReadonlyStateValue<T>`, Task 1) omits
-// `.set()`, so a `.set(...)` on an engine slot is a type error. This module is
-// the WRITABLE store-handle wrapper; do NOT confuse it with G1b's distinct
+// `.get()` ONLY — their handle type (`ReadonlyStateValue<T>`) omits `.set()`,
+// so a `.set(...)` on an engine slot is a type error. This module is the
+// WRITABLE store-handle wrapper; do NOT confuse it with the distinct
 // `ui.createLocalState()` presentation handle (which never writes the store).
 // See: context/lib/scripting.md §6.9 · context/lib/ui.md
 
@@ -24,8 +23,8 @@ import { setState } from "./reactions";
 
 /**
  * A `.get()`/`.set()` accessor wrapper over a writable, value-typed store-slot
- * handle (Task 1's `StateValue<T>`). `T` is the slot's declared value type, so
- * `.set(v)` is typed to it and the bind reference carries it through.
+ * handle (`StateValue<T>`). `T` is the slot's declared value type, so `.set(v)`
+ * is typed to it and the bind reference carries it through.
  *
  * - `.get()` yields the typed bind reference a widget binds to — the `{ slot }`
  *   wire shape (`SliderBindProp`) that `Text`/`Panel`/`Slider`/`Bar` accept as
@@ -33,8 +32,8 @@ import { setState } from "./reactions";
  * - `.set(v)` produces a `setState` reaction descriptor (typed to the slot's
  *   `T`), byte-identical to calling `setState(slot, v)` directly.
  *
- * Read-only engine slots use `ReadonlyStateValue<T>` (Task 1) instead — `.get()`
- * only, no `.set()`.
+ * Read-only engine slots use `ReadonlyStateValue<T>` instead — `.get()` only,
+ * no `.set()`.
  */
 export type StoreHandle<T> = {
   /** The typed bind reference a widget's `bind` prop accepts (`{ slot }`). */
@@ -68,7 +67,7 @@ export function storeHandle<T extends number | boolean | string | number[]>(
   };
 }
 
-// --- ui.createLocalState() (M13 G1b, Task 5) --------------------------------
+// --- ui.createLocalState() --------------------------------------------------
 
 /** A presentation-cell initial value: the `CellInit` wire shapes. */
 type CellInit = number | boolean | string | [number, number, number, number];
@@ -114,11 +113,10 @@ export type LocalStateBundle<I extends Record<string, CellInit>> = {
 let localStateCounter = 0;
 
 /**
- * `ui.createLocalState(init)` — declare a presentation-cell scope (M13 G1b, Task
- * 5). An SDK-lib function (hand-authored, NOT a registered primitive, NOT
- * auto-emitted): the one stateful authoring primitive the static factory layer
- * can't express. Pure — no engine side effect; the FFI boundary stays the
- * authored tree's `return`.
+ * `ui.createLocalState(init)` — declare a presentation-cell scope. An SDK-lib
+ * function (hand-authored, NOT a registered primitive, NOT auto-emitted): the
+ * one stateful authoring primitive the static factory layer can't express. Pure
+ * — no engine side effect; the FFI boundary stays the authored tree's `return`.
  *
  * Returns a `{ scope, cells }` bundle: splice `bundle.scope` onto the declaring
  * container's `localState` (so its initials seed the app-side cell store and the
@@ -150,9 +148,9 @@ export function createLocalState<I extends Record<string, CellInit>>(
 }
 
 /**
- * The `ui` namespace object: state-helper SDK functions are namespaced (per
- * G1a's locked decision — reactions stay bare exports, state helpers are
- * namespaced). `ui.createLocalState` is the G1b entry.
+ * The `ui` namespace object: state-helper SDK functions are namespaced
+ * (reactions stay bare exports, state helpers are namespaced).
+ * `ui.createLocalState` is the entry point.
  */
 export const ui = {
   createLocalState,

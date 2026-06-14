@@ -1,11 +1,9 @@
 --!strict
--- Store-slot handle ergonomics (M13 G1a, Task 4): `:get()`/`:set()` accessor
--- wrappers over Task 1's value-typed store-slot handles (`StateValue<T>`). The
--- runtime representation of a `defineStore` slot handle is a plain branded string
--- carrying the dotted slot name (`scripting.md` §6.9) -- it carries no methods,
--- so these namespaced wrappers are the SDK layer that adds `:get()` / `:set()`
--- over it. Exported as a member of a returned module table (the `UiReactionsSdk`
--- precedent).
+-- Store-slot handle ergonomics: `:get()`/`:set()` accessor wrappers over
+-- value-typed store-slot handles (`StateValue<T>`). The runtime representation
+-- of a `defineStore` slot handle is a plain branded string carrying the dotted
+-- slot name -- it carries no methods, so these namespaced wrappers add `:get()`
+-- / `:set()` over it. Exported as a member of a returned module table.
 --
 -- `:set(v)` produces a `setState` reaction descriptor BYTE-IDENTICAL to the
 -- shipped `reactions.luau` `setState(slot, v)` builder. The Luau prelude has no
@@ -15,9 +13,9 @@
 -- by `Text`/`Panel`/`Slider`/`Bar`.
 --
 -- Engine-owned slots (`postretro/game-state`) are read-only to mods and expose
--- `:get()` ONLY -- their handle type (`ReadonlyStateValue<T>`, Task 1) omits
--- `:set()`. This module is the WRITABLE store-handle wrapper; do NOT confuse it
--- with G1b's distinct `ui.createLocalState()` presentation handle.
+-- `:get()` ONLY -- their handle type (`ReadonlyStateValue<T>`) omits `:set()`.
+-- This module is the WRITABLE store-handle wrapper; do NOT confuse it with the
+-- distinct `ui.createLocalState()` presentation handle.
 -- See: context/lib/scripting.md §6.9 · context/lib/ui.md
 
 --- Primitive reaction body produced by `:set()`. Mirrors `data_script.luau`'s
@@ -34,10 +32,10 @@ export type PrimitiveReactionDescriptor = {
 export type SliderBindProp = { slot: string, tween: any? }
 
 --- A `:get()`/`:set()` accessor wrapper over a writable, value-typed store-slot
---- handle (Task 1's `StateValue<T>`). `:get()` yields the `{ slot }` bind
---- reference a widget binds to; `:set(v)` produces a `setState` reaction
---- descriptor (typed to the slot's `T`). Read-only engine slots use
---- `ReadonlyStateValue<T>` (Task 1) instead -- `:get()` only, no `:set()`.
+--- handle (`StateValue<T>`). `:get()` yields the `{ slot }` bind reference a
+--- widget binds to; `:set(v)` produces a `setState` reaction descriptor (typed
+--- to the slot's `T`). Read-only engine slots use `ReadonlyStateValue<T>`
+--- instead -- `:get()` only, no `:set()`.
 export type StoreHandle<T> = {
   get: (self: StoreHandle<T>) -> SliderBindProp,
   set: (self: StoreHandle<T>, value: T) -> PrimitiveReactionDescriptor,
@@ -65,7 +63,7 @@ function UiStateSdk.storeHandle<T>(slot: T): StoreHandle<T>
   }
 end
 
--- --- ui.createLocalState() (M13 G1b, Task 5) -------------------------------
+-- --- ui.createLocalState() -------------------------------------------------
 
 --- The `{ ["local"] = name }` bind reference a widget's `bind` prop accepts
 --- (`local` is a Luau keyword, so the field is written in bracket form).
@@ -86,8 +84,8 @@ export type LocalStateHandle<T> = {
 --- (writes) and render stage (`{ local }` resolution) both address by.
 local localStateCounter = 0
 
---- `ui.createLocalState(init)` -- declare a presentation-cell scope (M13 G1b,
---- Task 5). An SDK-lib function (hand-authored, NOT a registered primitive, NOT
+--- `ui.createLocalState(init)` -- declare a presentation-cell scope. An
+--- SDK-lib function (hand-authored, NOT a registered primitive, NOT
 --- auto-emitted). Pure -- no engine side effect. Returns a `{ scope, cells }`
 --- bundle: splice `bundle.scope` onto the declaring container's `localState`, and
 --- bind descendant widgets to `bundle.cells.<name>:get()`.
@@ -112,8 +110,9 @@ function UiStateSdk.createLocalState(init: { [string]: any }): { scope: any, cel
   return { scope = { scope = scopeId, cells = init }, cells = cells }
 end
 
---- The `ui` namespace object: state-helper SDK functions are namespaced (per
---- G1a's locked decision). `ui.createLocalState` is the G1b entry.
+--- The `ui` namespace object: state-helper SDK functions are namespaced
+--- (reactions stay bare exports, state helpers are namespaced).
+--- `ui.createLocalState` is the entry point.
 UiStateSdk.ui = {
   createLocalState = UiStateSdk.createLocalState,
 }

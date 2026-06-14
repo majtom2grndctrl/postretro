@@ -52,7 +52,7 @@ pub(crate) struct ModManifestResult {
     pub(crate) entities: Vec<EntityTypeDescriptor>,
     /// UI trees registered via `setupMod()`'s `uiTrees` field (each a name +
     /// `AnchoredTree` + `alwaysOn`). Empty when absent. A malformed entry is
-    /// logged and skipped at parse time (`ui.md` §5). Drained into the app-side
+    /// logged and skipped at parse time (`ui.md` §1.1). Drained into the app-side
     /// `UiTreeRegistry` at `ScopeTier::Mod` by the boot and level-load callers
     /// in `main.rs`.
     pub(crate) ui_trees: Vec<RegisteredUiTree>,
@@ -1596,7 +1596,7 @@ fn run_mod_init_quickjs(
 
         // UI fields drain via the G1a bridge fns. Malformed entries are logged
         // and skipped inside the drains — a bad UI field never aborts mod-init
-        // (ui.md §5). A structurally broken read still surfaces as InvalidArgument.
+        // (ui.md §1.1). A structurally broken read still surfaces as InvalidArgument.
         let ui_trees = match drain_ui_trees_js(&ctx, &obj, "setupMod") {
             Ok(t) => t,
             Err(e) => {
@@ -1754,7 +1754,7 @@ fn run_mod_init_luau(
     };
 
     // UI fields drain via the G1a bridge fns; malformed entries log+skip inside
-    // the drains (ui.md §5). Errors here are structural read failures only.
+    // the drains (ui.md §1.1). Errors here are structural read failures only.
     let ui_trees =
         drain_ui_trees_lua(&table, "setupMod").map_err(|e| ScriptError::InvalidArgument {
             reason: format!("mod-init: `{source_path}` setupMod `uiTrees` invalid: {e}"),

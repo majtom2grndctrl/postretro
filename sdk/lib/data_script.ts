@@ -69,7 +69,7 @@ export type NamedReactionDescriptor = { name: string } & (
  */
 export type LevelManifest = {
   reactions: NamedReactionDescriptor[];
-  /** State-crossing watchers (M13 HUD dynamics). See `onStateCrossing`. */
+  /** State-crossing watchers (HUD dynamics). See `onStateCrossing`. */
   crossings?: import("./ui/reactions").CrossingDescriptor[];
 };
 
@@ -83,6 +83,11 @@ type ReactionBody =
  * (a stable string serialization of the body hashed with FNV-1a) so re-running
  * registration yields the same id — crossings and the `onPress` wire form
  * reference it, so it must not vary across runs.
+ *
+ * NOTE: the auto-id is run-stable within a runtime but NOT identical across
+ * TS and Luau — each uses a different stable-stringify implementation. Do not
+ * assume cross-runtime id parity; use an explicit `name` when the id must
+ * match across both runtimes.
  */
 function autoReactionId(descriptor: ReactionBody): string {
   const serialized = stableStringify(descriptor);

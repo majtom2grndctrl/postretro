@@ -824,8 +824,9 @@ pub(crate) struct RegisteredUiTree {
 
 /// Theme tokens supplied by `setupMod()` (the `theme` field). Three
 /// category-scoped maps mirroring the engine theme tables (colors linear-RGBA,
-/// fonts → registered family name, spacing → logical px). G1b Task 1 only parses
-/// and holds these; the `ThemeDescriptor` merge into the live theme is Task 4.
+/// fonts → registered family name, spacing → logical px). Drained into a
+/// `ThemeDescriptor`, merged over `engine_default`, and installed via
+/// `Renderer::set_ui_theme` by the boot/level-load callers in `main.rs`.
 /// See: context/lib/ui.md §2.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct ModThemeTokens {
@@ -835,8 +836,8 @@ pub(crate) struct ModThemeTokens {
 }
 
 /// Font assets declared by `setupMod()` (the `fonts` field): family name → TTF
-/// asset path. G1b Task 1 only parses and holds these; `register_ui_font`
-/// installation is Task 4. See: context/lib/ui.md §2.
+/// asset path. Installed into the font system via `register_ui_font` by the
+/// boot/level-load callers in `main.rs`. See: context/lib/ui.md §2.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct ModFontAssets {
     pub(crate) families: HashMap<String, String>,
@@ -856,7 +857,7 @@ pub(crate) struct LevelManifest {
     /// drained into the per-level `DataRegistry`; cleared on level unload.
     pub(crate) crossings: Vec<CrossingDescriptor>,
     /// Per-level UI trees declared via the `uiTrees` field. A malformed entry is
-    /// logged and skipped rather than aborting level load (`ui.md` §5).
+    /// logged and skipped rather than aborting level load (`ui.md` §1.1).
     pub(crate) ui_trees: Vec<RegisteredUiTree>,
 }
 
@@ -3228,8 +3229,8 @@ fn get_optional_f32_lua(
 // generic walker (`conv::lua_to_json`) serializes an empty Lua table to `{}`,
 // not `[]`, while `ContainerWidget` requires `children: []`; reading a missing
 // or empty `children` table directly into an empty `Vec<Widget>` sidesteps that
-// ambiguity, so an empty container from Luau parses cleanly. (G1b wires these
-// into the manifest drains; here they are test-callable only.)
+// ambiguity, so an empty container from Luau parses cleanly. Called by
+// `drain_ui_trees_js`/`drain_ui_trees_lua` in the manifest drains.
 // See: context/lib/ui.md · context/lib/scripting.md §7
 // ===========================================================================
 
@@ -3845,9 +3846,9 @@ fn slider_bind_from_js<'js>(
     }))
 }
 
-/// Read a bind's `{ slot }` vs `{ local }` source (M13 G1b, Task 5). `slot` wins
-/// when present (a store binding); else `local` (a presentation-cell binding).
-/// Neither present is a hard shape error — a bind must reference something.
+/// Read a bind's `{ slot }` vs `{ local }` source. `slot` wins when present (a
+/// store binding); else `local` (a presentation-cell binding). Neither present is
+/// rejected: a bind must reference a slot or a local cell.
 fn bind_source_from_js<'js>(bind_obj: &Object<'js>) -> Result<BindSource, DescriptorError> {
     if let Some(slot) = get_optional_string_js(bind_obj, "slot")? {
         return Ok(BindSource::Slot { slot });
@@ -4186,15 +4187,15 @@ fn children_from_lua(table: &Table) -> Result<Vec<Widget>, DescriptorError> {
 }
 
 // ===========================================================================
-// Manifest-level UI field drains (G1b Task 1).
+// Manifest-level UI field drains for setupMod()/setupLevel().
 //
 // `uiTrees` / `theme` / `fonts` are optional fields on the `setupMod()` return
 // (mod scope); `uiTrees` is also optional on `setupLevel()` (level scope). Each
 // drain reads the field straight off the returned object/table via the per-
 // runtime field readers, building typed values held on the manifest result.
 //
-// Degradation contract (ui.md §5): a malformed UI *registration* (a tree entry
-// that fails its own parse, including the G1a `anchored_tree_from_*` bridge)
+// Degradation contract (ui.md §1.1): a malformed UI *registration* (a tree entry
+// that fails its own parse, including the `anchored_tree_from_*` bridge)
 // produces a named load-time diagnostic and is SKIPPED — it never aborts the
 // boot / level-load pass and never panics. A malformed *container* (the
 // `uiTrees`/`theme`/`fonts` field itself not being the expected shape) is also
@@ -4318,17 +4319,22 @@ pub(crate) fn drain_fonts_js<'js>(
     })
 }
 
-/// Read an object-valued field as a `String → String` map.
 /// Read an object-valued field as a `String → String` map. Absent/non-object →
-/// empty. Malformed tokens are logged and skipped (per-token degraded) so a
-/// single bad entry does not abort the whole theme drain — mirrors the Luau twin.
+/// empty (with a `log::warn!` when present but not an object). Malformed tokens
+/// are logged and skipped (per-token degraded) so a single bad entry does not
+/// abort the whole theme drain — mirrors the Luau twin.
 fn string_map_from_js<'js>(
     obj: &Object<'js>,
     field: &'static str,
 ) -> Result<HashMap<String, String>, DescriptorError> {
-    let map: Object = obj.get(field).map_err(|_| DescriptorError::InvalidShape {
-        reason: format!("`{field}` must be an object"),
-    })?;
+    let raw: JsValue = obj.get(field).map_err(js_err)?;
+    let map = match Object::from_value(raw) {
+        Ok(o) => o,
+        Err(_) => {
+            log::warn!("[Scripting] theme `{field}` must be an object; skipping field");
+            return Ok(HashMap::new());
+        }
+    };
     let mut out = HashMap::new();
     for entry in map.props::<String, JsValue>() {
         let (key, value) = entry.map_err(js_err)?;
@@ -4345,15 +4351,21 @@ fn string_map_from_js<'js>(
 }
 
 /// Read an object-valued field as a `String → f32` map. Absent/non-object →
-/// empty. Malformed tokens are logged and skipped (per-token degraded) so a
-/// single bad entry does not abort the whole theme drain — mirrors the Luau twin.
+/// empty (with a `log::warn!` when present but not an object). Malformed tokens
+/// are logged and skipped (per-token degraded) so a single bad entry does not
+/// abort the whole theme drain — mirrors the Luau twin.
 fn f32_map_from_js<'js>(
     obj: &Object<'js>,
     field: &'static str,
 ) -> Result<HashMap<String, f32>, DescriptorError> {
-    let map: Object = obj.get(field).map_err(|_| DescriptorError::InvalidShape {
-        reason: format!("`{field}` must be an object"),
-    })?;
+    let raw: JsValue = obj.get(field).map_err(js_err)?;
+    let map = match Object::from_value(raw) {
+        Ok(o) => o,
+        Err(_) => {
+            log::warn!("[Scripting] theme `{field}` must be an object; skipping field");
+            return Ok(HashMap::new());
+        }
+    };
     let mut out = HashMap::new();
     for entry in map.props::<String, JsValue>() {
         let (key, value) = entry.map_err(js_err)?;
@@ -4370,16 +4382,21 @@ fn f32_map_from_js<'js>(
 }
 
 /// Read an object-valued field as a `String → [f32; 4]` map (linear-RGBA color
-/// tokens). Absent/non-object → empty. Malformed tokens are logged and skipped
-/// (per-token degraded) so a single bad entry does not abort the whole theme
-/// drain — mirrors the Luau twin.
+/// tokens). Absent/non-object → empty (with a `log::warn!` when present but not
+/// an object). Malformed tokens are logged and skipped (per-token degraded) so
+/// a single bad entry does not abort the whole theme drain — mirrors the Luau twin.
 fn f32_array4_map_from_js<'js>(
     obj: &Object<'js>,
     field: &'static str,
 ) -> Result<HashMap<String, [f32; 4]>, DescriptorError> {
-    let map: Object = obj.get(field).map_err(|_| DescriptorError::InvalidShape {
-        reason: format!("`{field}` must be an object"),
-    })?;
+    let raw: JsValue = obj.get(field).map_err(js_err)?;
+    let map = match Object::from_value(raw) {
+        Ok(o) => o,
+        Err(_) => {
+            log::warn!("[Scripting] theme `{field}` must be an object; skipping field");
+            return Ok(HashMap::new());
+        }
+    };
     let mut out = HashMap::new();
     for entry in map.props::<String, JsValue>() {
         let (key, value) = entry.map_err(js_err)?;
@@ -4875,7 +4892,8 @@ fn slider_bind_from_lua(
 }
 
 /// Lua twin of [`bind_source_from_js`]: read a bind's `{ slot }` vs `{ local }`
-/// source. `slot` wins when present; else `local`; neither is a shape error.
+/// source. `slot` wins when present; else `local`; neither present is rejected: a
+/// bind must reference a slot or a local cell.
 fn bind_source_from_lua(bind: &Table) -> Result<BindSource, DescriptorError> {
     if let Some(slot) = get_optional_string_lua(bind, "slot")? {
         return Ok(BindSource::Slot { slot });
@@ -8074,7 +8092,7 @@ mod tests {
     }
 
     // ======================================================================
-    // G1b Task 1: level-manifest `uiTrees` drain (both level parsers)
+    // Level-manifest `uiTrees` drain (both level parsers)
     // ======================================================================
 
     #[test]
@@ -8205,6 +8223,45 @@ mod tests {
     /// [r,g,b,a]) and one valid token: the bad token must be skipped (with a
     /// logged warn) and the good token must survive in the drained result.
     /// This verifies per-token log-and-skip rather than per-token abort.
+    // ======================================================================
+    // Fix A: JS theme sub-map that is present but not an object degrades to
+    // empty (warn + continue), matching the Luau twin behavior.
+    // ======================================================================
+
+    /// A JS `theme` with `colors: 5` (non-object sub-map) must NOT abort the
+    /// mod manifest drain. The `colors` sub-map degrades to empty, and the rest
+    /// of the theme (fonts, spacing) is still drained correctly.
+    #[test]
+    fn drain_theme_js_degrades_non_object_sub_map_to_empty() {
+        let tokens = eval_js(
+            r#"({
+                theme: {
+                    colors: 5,
+                    fonts: { body: "Inter" },
+                    spacing: { m: 8 },
+                },
+            })"#,
+            |_ctx, v| {
+                let obj = Object::from_value(v).expect("must be an object");
+                drain_theme_js(&obj, "test").expect("non-object colors must not abort the drain")
+            },
+        );
+        assert!(
+            tokens.colors.is_empty(),
+            "colors must degrade to empty when the sub-map is not an object"
+        );
+        assert_eq!(
+            tokens.fonts.get("body").map(String::as_str),
+            Some("Inter"),
+            "fonts must still be drained when colors is bad"
+        );
+        assert_eq!(
+            tokens.spacing.get("m").copied(),
+            Some(8.0f32),
+            "spacing must still be drained when colors is bad"
+        );
+    }
+
     #[test]
     fn drain_theme_lua_skips_bad_token_and_keeps_good_token() {
         let lua = mlua::Lua::new();

@@ -665,7 +665,7 @@ walkthrough](../content/dev/maps/combat-demo.README.md).
 
 ## System reactions
 
-System reactions are the HUD-dynamics half of the reaction surface (M13 Goal E).
+System reactions are the HUD-dynamics half of the reaction surface.
 Unlike the tag-targeted primitives above, they carry **no `tag`**: they touch no
 entities. Instead each enqueues a typed engine command — audio, force feedback, a
 screen flash, or a UI-stack push/pop. The SDK exposes them as pure body builders
@@ -690,7 +690,7 @@ omitted from the emitted `args` entirely when not supplied — they are never se
 The three UI-stack helpers (`showDialog` / `openMenu` / `closeDialog`) are v1
 placeholders: `showDialog` and `openMenu` perform the identical `PushTree`
 operation (only `showDialog` carries the optional `onCommit`), and `closeDialog`
-pops. Until Goal F's modal stack lands they **warn once ("no stack") and no-op**.
+pops. Until the modal stack lands they **warn once ("no stack") and no-op**.
 
 ### Firing system reactions on a state crossing
 
@@ -759,9 +759,9 @@ the engine is its sole producer, so a script reads it to drive UI but cannot
 write it. If the player descriptor declares no `health` block, no HP is published
 and the slot keeps its prior range.
 
-## Operable UI (M13 Goal F)
+## Operable UI
 
-Goal F makes the UI operable: a closed nav-intent vocabulary, focusable
+The UI is operable: a closed nav-intent vocabulary, focusable
 interactive widgets, a slot-write reaction, and an engine-owned interaction-mode
 slot. The whole surface is keyboard-, mouse-, and gamepad-interchangeable — the
 same widget reacts to a gamepad confirm, an Enter key, or a mouse click.
@@ -813,7 +813,7 @@ repeat clock), so a held stick or arrow steps focus/value steadily.
   `bind` is `{ slot, tween? }`.
 - **`bar`** — `{ kind: "bar", bind, max, fill, background, id?, styleRanges? }`.
   Passive (not focusable). Renders a `background` quad with a `fill` quad whose
-  width is `value/max` clamped to `[0, 1]`. `styleRanges` (Goal E) recolors the
+  width is `value/max` clamped to `[0, 1]`. `styleRanges` recolors the
   fill band by `value/max`. Horizontal only in v1.
 
 ### `setState`
@@ -912,7 +912,7 @@ in `pointer`, visible in `focus`); it is inert when no capturing tree is up. A
 `text` widget can `bind` it to display the live mode. It is **read-only from
 scripts** — the engine is its sole producer.
 
-## Authoring UI with the SDK (M13 G1)
+## Authoring UI with the SDK
 
 Scripts build UI as **descriptor trees** using SDK factory functions, register
 them by name from `setupMod` / `setupLevel`, and theme them. The scripting VM

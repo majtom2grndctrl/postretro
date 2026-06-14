@@ -1,14 +1,20 @@
 // DEMO CONTENT — `target_dummy` descriptor (M10 entity health + damage).
 //
 // A map-placeable shooting target: a descriptor carrying `components.health`
-// with a `max` HP ceiling AND a `hitbox`. Carrying a hitbox is exactly what
-// makes the entity hitscan-targetable — the shipped weapon's ray can hit it,
-// route damage through the `apply_damage` chokepoint, and the death sweep
-// despawns it once HP reaches zero.
+// with a `max` HP ceiling, a `hitbox`, AND per-zone damage multipliers. The
+// shipped weapon's ray hits it, routes damage through the `apply_damage`
+// chokepoint, and the death sweep despawns it once HP reaches zero.
 //
 // It reuses the only shipped skinned model (`scene.gltf`) for a visible body,
 // mirroring `anim-demo-grunt.ts`. No animation state map is declared — the mesh
-// loops clip 0 on the animation clock; this entity is about health, not anim.
+// loops clip 0 on the animation clock.
+//
+// Hit zones (M10): the model's joints are tagged via glTF `extras`, so this is a
+// zone-bearing entity. For such entities the engine raycasts against posed bone
+// capsules (broad-phased by a clip-derived bound), and the authored `hitbox`
+// below is SUPERSEDED — kept only as documentation / the fallback shape were the
+// zone tags removed. Only tagged joints register hits; per-zone multipliers
+// scale the damage by where the ray lands.
 //
 // Sizing:
 //   - `max: 30`. The shipped `reference_pistol` deals 12 damage per hitscan hit
@@ -40,6 +46,13 @@ export const targetDummyEntity = defineEntity({
       hitbox: {
         halfExtents: [0.4, 0.9, 0.4],
         offset: [0, 0.9, 0],
+      },
+      // Per-zone damage multipliers. The model's joints are tagged
+      // head/torso/arm/leg via glTF `extras`; tags omitted here (torso, arm)
+      // apply 1.0. A headshot deals 2.5x, a leg shot 0.5x.
+      zoneMultipliers: {
+        head: 2.5,
+        leg: 0.5,
       },
     },
   },

@@ -1947,6 +1947,10 @@
       "children": [
         10
       ],
+      "extras": {
+        "hitZone": "torso",
+        "hitZoneRadius": 0.3
+      },
       "name": "mixamorig:Spine_01",
       "rotation": [
         -0.021360863000154495,
@@ -1983,6 +1987,10 @@
         15,
         19
       ],
+      "extras": {
+        "hitZone": "torso",
+        "hitZoneRadius": 0.28
+      },
       "name": "mixamorig:Spine2_03",
       "rotation": [
         -3.469446951953614e-18,
@@ -2017,6 +2025,10 @@
       "children": [
         14
       ],
+      "extras": {
+        "hitZone": "head",
+        "hitZoneRadius": 0.18
+      },
       "name": "mixamorig:Head_05",
       "translation": [
         0.0,
@@ -2053,6 +2065,10 @@
       "children": [
         17
       ],
+      "extras": {
+        "hitZone": "arm",
+        "hitZoneRadius": 0.08
+      },
       "name": "mixamorig:LeftArm_08",
       "rotation": [
         -0.21489956974983215,
@@ -2070,6 +2086,10 @@
       "children": [
         18
       ],
+      "extras": {
+        "hitZone": "arm",
+        "hitZoneRadius": 0.07
+      },
       "name": "mixamorig:LeftForeArm_09",
       "rotation": [
         0.10600363463163376,
@@ -2118,6 +2138,10 @@
       "children": [
         21
       ],
+      "extras": {
+        "hitZone": "arm",
+        "hitZoneRadius": 0.08
+      },
       "name": "mixamorig:RightArm_012",
       "rotation": [
         -0.2164476364850998,
@@ -2135,6 +2159,10 @@
       "children": [
         22
       ],
+      "extras": {
+        "hitZone": "arm",
+        "hitZoneRadius": 0.07
+      },
       "name": "mixamorig:RightForeArm_013",
       "rotation": [
         0.11207722127437592,
@@ -2166,6 +2194,10 @@
       "children": [
         24
       ],
+      "extras": {
+        "hitZone": "leg",
+        "hitZoneRadius": 0.12
+      },
       "name": "mixamorig:LeftUpLeg_015",
       "rotation": [
         -0.0012375044170767069,
@@ -2183,6 +2215,10 @@
       "children": [
         25
       ],
+      "extras": {
+        "hitZone": "leg",
+        "hitZoneRadius": 0.1
+      },
       "name": "mixamorig:LeftLeg_016",
       "rotation": [
         0.028479164466261864,
@@ -2248,6 +2284,10 @@
       "children": [
         29
       ],
+      "extras": {
+        "hitZone": "leg",
+        "hitZoneRadius": 0.12
+      },
       "name": "mixamorig:RightUpLeg_020",
       "rotation": [
         0.001256724470295012,
@@ -2265,6 +2305,10 @@
       "children": [
         30
       ],
+      "extras": {
+        "hitZone": "leg",
+        "hitZoneRadius": 0.1
+      },
       "name": "mixamorig:RightLeg_021",
       "rotation": [
         0.029574142768979073,

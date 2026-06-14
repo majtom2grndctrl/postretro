@@ -75,6 +75,17 @@ export type {
 } from "./ui/layout";
 export { VStack, HStack, Grid } from "./ui/layout";
 
+export type {
+  WidgetAnchor,
+  WidgetCaptureMode,
+  TreeProps,
+  AnchoredTreeDescriptor,
+} from "./ui/tree";
+export { Tree } from "./ui/tree";
+
+export type { StoreHandle } from "./ui/state";
+export { storeHandle } from "./ui/state";
+
 export type { CrossingCondition, CrossingDescriptor } from "./ui/reactions";
 export {
   onStateCrossing,

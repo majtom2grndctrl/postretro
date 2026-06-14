@@ -1346,4 +1346,74 @@ mod tests {
             );
         }
     }
+
+    // --- M13 G1a, Task 4: SDK Tree(...) envelope factory output validation ---
+    //
+    // The Task 5 deserialization bridge does not exist yet, so the SDK `Tree(...)`
+    // factory (sdk/lib/ui/tree.{ts,luau}) is validated here by round-tripping its
+    // EXACT emitted JSON through the `AnchoredTree` serde model: each string below
+    // is the literal output of the matching TS factory call (captured by running
+    // `tree.ts` under bun). JS emits bare integers (`0`, not `0.0`); deserializing
+    // into `AnchoredTree` and re-serializing must yield the canonical wire form,
+    // proving the envelope is a valid descriptor that resolves to the locked shape.
+    //
+    // Each tuple is (factory-emitted JSON, canonical re-serialized JSON).
+    #[test]
+    fn sdk_tree_factory_output_round_trips_to_canonical_wire_form() {
+        let cases: &[(&str, &str)] = &[
+            // Tree() with captureMode OMITTED: the factory drops the key; serde
+            // defaults it to Passthrough and skip-serializes it back out.
+            (
+                r#"{"anchor":"center","offset":[0,0],"root":{"kind":"spacer","flexGrow":1}}"#,
+                r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"spacer","flexGrow":1.0}}"#,
+            ),
+            // Tree() with captureMode "passthrough": the factory drops the key too
+            // (passthrough round-trips to omission), identical to the omitted case.
+            (
+                r#"{"anchor":"center","offset":[0,0],"root":{"kind":"spacer","flexGrow":1}}"#,
+                r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"spacer","flexGrow":1.0}}"#,
+            ),
+            // Tree() with captureMode "capture": the factory emits the key; it
+            // deserializes to CaptureMode::Capture and re-serializes with the key.
+            (
+                r#"{"anchor":"center","offset":[0,0],"root":{"kind":"spacer","flexGrow":1},"captureMode":"capture"}"#,
+                r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"spacer","flexGrow":1.0},"captureMode":"capture"}"#,
+            ),
+            // Tree() with capture + initialFocus + textEntryTarget, non-zero offset.
+            (
+                r#"{"anchor":"topLeft","offset":[10,-20],"root":{"kind":"spacer","flexGrow":1},"captureMode":"capture","initialFocus":"btnA","textEntryTarget":"ui.textEntry"}"#,
+                r#"{"anchor":"topLeft","offset":[10.0,-20.0],"root":{"kind":"spacer","flexGrow":1.0},"captureMode":"capture","initialFocus":"btnA","textEntryTarget":"ui.textEntry"}"#,
+            ),
+        ];
+
+        for (emitted, canonical) in cases {
+            let tree: AnchoredTree = serde_json::from_str(emitted)
+                .unwrap_or_else(|e| panic!("Tree() output must deserialize: {emitted}\n{e}"));
+            let reserialized = serde_json::to_string(&tree).expect("must serialize");
+            assert_eq!(
+                &reserialized, canonical,
+                "Tree() output did not resolve to the canonical wire form:\nemitted:    {emitted}\nexpected:   {canonical}\nactual:     {reserialized}"
+            );
+        }
+
+        // The omitted and explicit-"passthrough" cases must both deserialize to
+        // the default Passthrough and emit NO captureMode key.
+        let passthrough: AnchoredTree = serde_json::from_str(
+            r#"{"anchor":"center","offset":[0,0],"root":{"kind":"spacer","flexGrow":1}}"#,
+        )
+        .expect("deserialize");
+        assert_eq!(passthrough.capture_mode, CaptureMode::Passthrough);
+        assert!(
+            !serde_json::to_string(&passthrough)
+                .unwrap()
+                .contains("captureMode")
+        );
+
+        // The explicit-"capture" case deserializes to Capture.
+        let capture: AnchoredTree = serde_json::from_str(
+            r#"{"anchor":"center","offset":[0,0],"root":{"kind":"spacer","flexGrow":1},"captureMode":"capture"}"#,
+        )
+        .expect("deserialize");
+        assert_eq!(capture.capture_mode, CaptureMode::Capture);
+    }
 }

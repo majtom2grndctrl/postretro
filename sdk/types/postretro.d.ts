@@ -837,12 +837,14 @@ declare module "postretro" {
   export type NumberTween = { durationMs: number; easing: WidgetEasing; from?: number };
   /** Color-shape value tween (panel bind). */
   export type ColorTween = { durationMs: number; easing: WidgetEasing; from?: [number, number, number, number] };
-  /** State binding for a `text` widget. */
-  export type TextBindProp = { slot: StoreHandleRef; format?: string; tween?: NumberTween };
-  /** State binding for a `panel` widget (color slot). */
-  export type PanelBindProp = { slot: StoreHandleRef; tween?: ColorTween };
-  /** State binding shared by `slider`/`bar` (numeric slot). */
-  export type SliderBindProp = { slot: StoreHandleRef; tween?: NumberTween };
+  /** A `{ local }` presentation-cell bind reference (`ui.createLocalState`). */
+  export type LocalBindRef = { local: string };
+  /** State binding for a `text` widget (`{ slot }` store or `{ local }` cell). */
+  export type TextBindProp = ({ slot: StoreHandleRef; local?: never } | LocalBindRef) & { format?: string; tween?: NumberTween };
+  /** State binding for a `panel` widget (color slot or `{ local }` cell). */
+  export type PanelBindProp = ({ slot: StoreHandleRef; local?: never } | LocalBindRef) & { tween?: ColorTween };
+  /** State binding shared by `slider`/`bar` (numeric slot or `{ local }` cell). */
+  export type SliderBindProp = ({ slot: StoreHandleRef; local?: never } | LocalBindRef) & { tween?: NumberTween };
   /** One band in a `styleRanges` map. */
   export type StyleRangeEntry = { upTo?: number; color?: WidgetColor; pulse?: { periodMs: number }; flash?: { durationMs: number } };
   /** Continuous value→style map (text/panel/bar). */
@@ -924,6 +926,17 @@ declare module "postretro" {
   export type StoreHandle<T> = { get(): SliderBindProp; set(value: T): PrimitiveReactionDescriptor };
   /** Wrap a value-typed store-slot handle (`defineStore`'s `StateValue<T>` return) in a `.get()`/`.set()` accessor. Pure: `.set(...)` returns a descriptor, it does not write. */
   export function storeHandle<T extends number | boolean | string | number[]>(slot: StateValue<T>): StoreHandle<T>;
+
+  /** A presentation-cell initial value (`CellInit` wire shapes). */
+  type CellInit = number | boolean | string | [number, number, number, number];
+  /** A presentation-cell handle (`ui.createLocalState`): `.get()` yields a `{ local }` bind ref; `.set(v)` emits a `cellWrite` reaction (NEVER `setState`). Presentation-only. */
+  export type LocalStateHandle<T extends CellInit> = { get(): LocalBindRef; set(value: T): PrimitiveReactionDescriptor };
+  /** The `{ scope, cells }` bundle `ui.createLocalState` returns: splice `scope` onto the declaring container's `localState`; bind widgets to `cells.<name>.get()`. */
+  export type LocalStateBundle<I extends Record<string, CellInit>> = { scope: { scope: string; cells: I }; cells: { [K in keyof I]: LocalStateHandle<I[K]> } };
+  /** Declare a presentation-cell scope (M13 G1b). SDK-lib function, not a registered primitive. Pure: no engine side effect. `.set()` emits `cellWrite`, never writing the authoritative store. */
+  export function createLocalState<I extends Record<string, CellInit>>(init: I): LocalStateBundle<I>;
+  /** State-helper namespace (state helpers are namespaced; reactions stay bare). */
+  export const ui: { createLocalState: typeof createLocalState };
 
   /** Pure identity builder for entity-type descriptors. Returns the descriptor as-is; its sole purpose is a typed construction site. */
   export function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor;

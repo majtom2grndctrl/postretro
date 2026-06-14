@@ -369,6 +369,7 @@ fn main() -> Result<()> {
         script_runtime,
         ui_proxy: scripting_systems::ui_proxy::StaticUiProxy::new(script_ctx.clone()),
         flash_decay: scripting_systems::flash_decay::FlashDecay::new(script_ctx.clone()),
+        presentation_cells: scripting_systems::presentation_cells::PresentationCellStore::new(),
         modal_stack: {
             // Register engine built-in trees at boot through the one shared
             // load-and-register path (`tree_asset::register_tree_from_disk`): each
@@ -620,6 +621,15 @@ struct App {
     /// writes the decaying RGBA into `screen.flash` each game-logic tick (beside
     /// `ui_proxy.tick`). Reset on level load. See: context/lib/ui.md §3.
     flash_decay: scripting_systems::flash_decay::FlashDecay,
+
+    /// App-side presentation-cell store for `ui.createLocalState()` (M13 G1b,
+    /// Task 5). Seeded from a tree's declared `localState` initials when its scope
+    /// first composes, written by the drained `CellWrite` reaction at the
+    /// game-logic stage, reconciled/cleared against the composed-scope-id set at
+    /// the compose step, and snapshotted onto `cell_values` for `{ local }` bind
+    /// resolution. Presentation-only — NEVER the authoritative store.
+    /// See: context/lib/ui.md §3/§6.
+    presentation_cells: scripting_systems::presentation_cells::PresentationCellStore,
 
     /// Gameplay-UI modal stack + named-tree registry. Consumes Goal E's
     /// `PushTree`/`PopTree` system commands (resolving names through its registry,
@@ -2229,6 +2239,18 @@ impl ApplicationHandler for App {
                         let mut trees: Vec<render::ui::UiTreeEntry> =
                             self.modal_stack.always_on_layers();
                         trees.extend(self.modal_stack.entries());
+                        // Presentation cells (M13 G1b, Task 5): reconcile the
+                        // app-side cell store against THIS frame's composed-scope-id
+                        // set — seed any newly-composed `localState` scope from its
+                        // declared initials and drop cells whose scope is no longer
+                        // present — then snapshot the live cell values for `{ local }`
+                        // bind resolution. The snapshot rides the read snapshot
+                        // (beside `slot_values`), so a cell write never changes the
+                        // descriptor the retained reuse gate compares.
+                        let composed_trees: Vec<&render::ui::descriptor::AnchoredTree> =
+                            trees.iter().map(|entry| &entry.descriptor).collect();
+                        self.presentation_cells.reconcile(&composed_trees);
+                        let cell_values = self.presentation_cells.snapshot();
                         // Ring-visibility follows the interaction mode WHILE a
                         // capturing tree is on the stack (M13 Goal F, Task 5):
                         // `focus` mode shows the ring, `pointer` mode hides it (the
@@ -2246,6 +2268,7 @@ impl ApplicationHandler for App {
                         renderer.set_ui_snapshot(render::ui::UiReadSnapshot::with_trees(
                             trees,
                             slot_values,
+                            cell_values,
                             self.script_time,
                             ring_id,
                         ));
@@ -3127,6 +3150,20 @@ impl App {
                         &value,
                     ) {
                         log::warn!("[Scripting] setState write to `{slot}` failed: {err}");
+                    }
+                }
+                SystemReactionCommand::CellWrite { scope, cell, value } => {
+                    // Presentation-cell write at the game-logic stage (M13 G1b,
+                    // Task 5): routes into the app-side `PresentationCellStore`,
+                    // NEVER the slot table. A value of an unusable shape is skipped
+                    // with a warn — never a panic, never a store write.
+                    match scripting_systems::presentation_cells::json_to_cell_value(&value) {
+                        Some(cell_value) => {
+                            self.presentation_cells.write(scope, cell, cell_value);
+                        }
+                        None => log::warn!(
+                            "[Scripting] cellWrite to `{scope}.{cell}` carried an unusable value; skipped"
+                        ),
                     }
                 }
                 SystemReactionCommand::AppendText { slot, text } => {

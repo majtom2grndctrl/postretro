@@ -63,31 +63,47 @@ export type ColorTween = {
 };
 
 /**
- * State binding for a `text` widget. `slot` is a dotted slot name (or a Task 1
- * store handle); `format` is an optional one-`{}` template; `tween` eases the
- * resolved numeric value. Mirrors `descriptor.rs` `TextBind`.
+ * A `{ local }` presentation-cell bind reference (M13 G1b, Task 5): the `.get()`
+ * result of a `ui.createLocalState()` handle. Names a cell on the nearest
+ * declaring `localState` scope; resolved app-side against the cell store, never
+ * the authoritative slot table. Mirrors `descriptor.rs` `BindSource::Local`.
  */
-export type TextBindProp = {
-  slot: StoreHandleRef;
+export type LocalBindRef = { local: string };
+
+/**
+ * State binding for a `text` widget. The source is either a `{ slot }` store
+ * binding (a dotted slot name or a Task 1 store handle) or a `{ local }`
+ * presentation-cell binding; `format` is an optional one-`{}` template; `tween`
+ * eases the resolved numeric value. Mirrors `descriptor.rs` `TextBind`.
+ */
+export type TextBindProp = (
+  | { slot: StoreHandleRef; local?: never }
+  | LocalBindRef
+) & {
   format?: string;
   tween?: NumberTween;
 };
 
 /**
- * State binding for a `panel` widget. `slot` resolves a length-4 linear-RGBA
- * fill; `tween` eases the resolved color. Mirrors `descriptor.rs` `PanelBind`.
+ * State binding for a `panel` widget. The source resolves a length-4 linear-RGBA
+ * fill from a `{ slot }` store binding or a `{ local }` cell; `tween` eases the
+ * resolved color. Mirrors `descriptor.rs` `PanelBind`.
  */
-export type PanelBindProp = {
-  slot: StoreHandleRef;
+export type PanelBindProp = (
+  | { slot: StoreHandleRef; local?: never }
+  | LocalBindRef
+) & {
   tween?: ColorTween;
 };
 
 /**
- * State binding shared by `slider`/`bar` (a numeric slot + optional number-shape
- * tween). Mirrors `descriptor.rs` `SliderBind`.
+ * State binding shared by `slider`/`bar` (a `{ slot }` or `{ local }` numeric
+ * source + optional number-shape tween). Mirrors `descriptor.rs` `SliderBind`.
  */
-export type SliderBindProp = {
-  slot: StoreHandleRef;
+export type SliderBindProp = (
+  | { slot: StoreHandleRef; local?: never }
+  | LocalBindRef
+) & {
   tween?: NumberTween;
 };
 
@@ -219,14 +235,19 @@ function buildBind(
   bind: unknown,
   factory: string,
   kind: "text" | "panel" | "slider",
-): { slot: string; format?: string; tween?: unknown } | undefined {
+): { slot?: string; local?: string; format?: string; tween?: unknown } | undefined {
   if (bind === undefined) return undefined;
   if (bind === null || typeof bind !== "object") {
     throw new Error(`${factory}: \`bind\` must be an object`);
   }
   const b = bind as Record<string, unknown>;
-  requireNonemptyString(b.slot, "bind.slot", factory);
-  const out: { slot: string; format?: string; tween?: unknown } = { slot: b.slot as string };
+  // The bind source is either a `{ slot }` store binding or a `{ local }`
+  // presentation-cell binding (M13 G1b, Task 5). `slot` wins when present; the
+  // emitted wire object carries exactly one of the two keys.
+  const out: { slot?: string; local?: string; format?: string; tween?: unknown } =
+    b.slot !== undefined
+      ? (requireNonemptyString(b.slot, "bind.slot", factory), { slot: b.slot as string })
+      : (requireNonemptyString(b.local, "bind.local", factory), { local: b.local as string });
 
   if (kind === "text" && b.format !== undefined) {
     requireString(b.format, "bind.format", factory);

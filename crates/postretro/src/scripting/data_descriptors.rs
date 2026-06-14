@@ -16,10 +16,10 @@ use super::components::mesh::{AnimationState, InterruptPolicy};
 use super::registry::EntityId;
 use crate::movement::MovementScope;
 use crate::render::ui::descriptor::{
-    Align, AnchoredTree, BarWidget, Border, ButtonWidget, CaptureMode, ColorValue, ContainerWidget,
-    Easing, FocusKind, FocusNeighbors, FocusPolicy, GridWidget, ImageWidget, PanelBind, PanelTween,
-    PanelWidget, RepeatPolicy, SliderBind, SliderWidget, SpacerWidget, SpacingValue, TextBind,
-    TextTween, TextWidget, Widget,
+    Align, AnchoredTree, BarWidget, BindSource, Border, ButtonWidget, CaptureMode, CellInit,
+    ColorValue, ContainerWidget, Easing, FocusKind, FocusNeighbors, FocusPolicy, GridWidget,
+    ImageWidget, LocalState, PanelBind, PanelTween, PanelWidget, RepeatPolicy, SliderBind,
+    SliderWidget, SpacerWidget, SpacingValue, TextBind, TextTween, TextWidget, Widget,
 };
 use crate::render::ui::layout::Anchor;
 use crate::render::ui::style_ranges::{Flash, Pulse, StyleEntry, StyleRanges};
@@ -3429,7 +3429,52 @@ fn container_widget_from_js<'js>(
         focus_neighbors: focus_neighbors_from_js(obj)?,
         focus: focus_policy_from_js(obj)?,
         restore_on_return: get_optional_bool_js(obj, "restoreOnReturn")?.unwrap_or(false),
+        local_state: local_state_from_js(obj)?,
         children: children_from_js(ctx, obj)?,
+    })
+}
+
+/// Read a container's optional `localState` declaration (M13 G1b, Task 5): the
+/// stable `scope` id plus the `cells` map of declared initial values. Absent
+/// returns `None` (a localState-less container). The cell value shapes mirror the
+/// `CellInit` wire form: a bare number/boolean/string or a length-4 RGBA array.
+fn local_state_from_js<'js>(obj: &Object<'js>) -> Result<Option<LocalState>, DescriptorError> {
+    let Some(ls) = optional_object_js(obj, "localState")? else {
+        return Ok(None);
+    };
+    let scope = get_required_string_js(&ls, "scope")?;
+    let cells_obj = optional_object_js(&ls, "cells")?.ok_or(DescriptorError::InvalidShape {
+        reason: "`localState.cells` must be an object".to_string(),
+    })?;
+    let mut cells = std::collections::BTreeMap::new();
+    for key in cells_obj.keys::<String>() {
+        let key = key.map_err(js_err)?;
+        let value: JsValue = cells_obj.get(&*key).map_err(js_err)?;
+        cells.insert(key, cell_init_from_js(value)?);
+    }
+    Ok(Some(LocalState { scope, cells }))
+}
+
+/// Read one declared cell initial value (M13 G1b, Task 5) from a JS value: a
+/// number, boolean, string, or length-4 numeric array. Any other shape is a hard
+/// error (a cell must seed a usable value).
+fn cell_init_from_js(value: JsValue) -> Result<CellInit, DescriptorError> {
+    if let Some(b) = value.as_bool() {
+        return Ok(CellInit::Boolean(b));
+    }
+    if let Some(n) = value.as_number() {
+        return Ok(CellInit::Number(n));
+    }
+    if let Some(s) = value.as_string() {
+        return Ok(CellInit::String(s.to_string().map_err(js_err)?));
+    }
+    if value.is_array() {
+        let arr = read_f32_array_n_js::<4>(&value, "localState.cells[*]")?;
+        return Ok(CellInit::Array(arr));
+    }
+    Err(DescriptorError::InvalidShape {
+        reason: "a `localState` cell must be a number, boolean, string, or length-4 array"
+            .to_string(),
     })
 }
 
@@ -3767,7 +3812,7 @@ fn text_bind_from_js<'js>(
         return Ok(None);
     };
     Ok(Some(TextBind {
-        slot: get_required_string_js(&bind_obj, "slot")?,
+        source: bind_source_from_js(&bind_obj)?,
         format: get_optional_string_js(&bind_obj, "format")?,
         tween: text_tween_from_js(ctx, &bind_obj)?,
     }))
@@ -3781,7 +3826,7 @@ fn panel_bind_from_js<'js>(
         return Ok(None);
     };
     Ok(Some(PanelBind {
-        slot: get_required_string_js(&bind_obj, "slot")?,
+        source: bind_source_from_js(&bind_obj)?,
         tween: panel_tween_from_js(&bind_obj)?,
     }))
 }
@@ -3795,9 +3840,24 @@ fn slider_bind_from_js<'js>(
         return Ok(None);
     };
     Ok(Some(SliderBind {
-        slot: get_required_string_js(&bind_obj, "slot")?,
+        source: bind_source_from_js(&bind_obj)?,
         tween: text_tween_from_js(ctx, &bind_obj)?,
     }))
+}
+
+/// Read a bind's `{ slot }` vs `{ local }` source (M13 G1b, Task 5). `slot` wins
+/// when present (a store binding); else `local` (a presentation-cell binding).
+/// Neither present is a hard shape error — a bind must reference something.
+fn bind_source_from_js<'js>(bind_obj: &Object<'js>) -> Result<BindSource, DescriptorError> {
+    if let Some(slot) = get_optional_string_js(bind_obj, "slot")? {
+        return Ok(BindSource::Slot { slot });
+    }
+    if let Some(local) = get_optional_string_js(bind_obj, "local")? {
+        return Ok(BindSource::Local { local });
+    }
+    Err(DescriptorError::InvalidShape {
+        reason: "a widget `bind` must carry either `slot` or `local`".to_string(),
+    })
 }
 
 fn text_tween_from_js<'js>(
@@ -3999,8 +4059,44 @@ fn container_widget_from_lua(table: &Table) -> Result<ContainerWidget, Descripto
         focus_neighbors: focus_neighbors_from_lua(table)?,
         focus: focus_policy_from_lua(table)?,
         restore_on_return: get_optional_bool_lua(table, "restoreOnReturn")?.unwrap_or(false),
+        local_state: local_state_from_lua(table)?,
         children: children_from_lua(table)?,
     })
+}
+
+/// Lua twin of [`local_state_from_js`]: read a container's optional `localState`.
+fn local_state_from_lua(table: &Table) -> Result<Option<LocalState>, DescriptorError> {
+    let Some(ls) = optional_table_lua(table, "localState")? else {
+        return Ok(None);
+    };
+    let scope = get_required_string_lua(&ls, "scope")?;
+    let cells_table = optional_table_lua(&ls, "cells")?.ok_or(DescriptorError::InvalidShape {
+        reason: "`localState.cells` must be a table".to_string(),
+    })?;
+    let mut cells = std::collections::BTreeMap::new();
+    for pair in cells_table.clone().pairs::<String, LuaValue>() {
+        let (key, value) = pair.map_err(lua_err)?;
+        cells.insert(key, cell_init_from_lua(value)?);
+    }
+    Ok(Some(LocalState { scope, cells }))
+}
+
+/// Lua twin of [`cell_init_from_js`]: read one declared cell initial value.
+fn cell_init_from_lua(value: LuaValue) -> Result<CellInit, DescriptorError> {
+    match value {
+        LuaValue::Boolean(b) => Ok(CellInit::Boolean(b)),
+        LuaValue::Integer(i) => Ok(CellInit::Number(i as f64)),
+        LuaValue::Number(n) => Ok(CellInit::Number(n)),
+        LuaValue::String(ref s) => Ok(CellInit::String(s.to_str().map_err(lua_err)?.to_string())),
+        LuaValue::Table(_) => {
+            let arr = read_f32_array_n_lua::<4>(value, "localState.cells[*]")?;
+            Ok(CellInit::Array(arr))
+        }
+        _ => Err(DescriptorError::InvalidShape {
+            reason: "a `localState` cell must be a number, boolean, string, or length-4 array"
+                .to_string(),
+        }),
+    }
 }
 
 fn grid_widget_from_lua(table: &Table) -> Result<GridWidget, DescriptorError> {
@@ -4694,7 +4790,7 @@ fn text_bind_from_lua(table: &Table) -> Result<Option<TextBind>, DescriptorError
         return Ok(None);
     };
     Ok(Some(TextBind {
-        slot: get_required_string_lua(&bind, "slot")?,
+        source: bind_source_from_lua(&bind)?,
         format: get_optional_string_lua(&bind, "format")?,
         tween: text_tween_from_lua(&bind)?,
     }))
@@ -4705,7 +4801,7 @@ fn panel_bind_from_lua(table: &Table) -> Result<Option<PanelBind>, DescriptorErr
         return Ok(None);
     };
     Ok(Some(PanelBind {
-        slot: get_required_string_lua(&bind, "slot")?,
+        source: bind_source_from_lua(&bind)?,
         tween: panel_tween_from_lua(&bind)?,
     }))
 }
@@ -4718,9 +4814,23 @@ fn slider_bind_from_lua(
         return Ok(None);
     };
     Ok(Some(SliderBind {
-        slot: get_required_string_lua(&bind, "slot")?,
+        source: bind_source_from_lua(&bind)?,
         tween: text_tween_from_lua(&bind)?,
     }))
+}
+
+/// Lua twin of [`bind_source_from_js`]: read a bind's `{ slot }` vs `{ local }`
+/// source. `slot` wins when present; else `local`; neither is a shape error.
+fn bind_source_from_lua(bind: &Table) -> Result<BindSource, DescriptorError> {
+    if let Some(slot) = get_optional_string_lua(bind, "slot")? {
+        return Ok(BindSource::Slot { slot });
+    }
+    if let Some(local) = get_optional_string_lua(bind, "local")? {
+        return Ok(BindSource::Local { local });
+    }
+    Err(DescriptorError::InvalidShape {
+        reason: "a widget `bind` must carry either `slot` or `local`".to_string(),
+    })
 }
 
 fn text_tween_from_lua(table: &Table) -> Result<Option<TextTween>, DescriptorError> {
@@ -7561,6 +7671,87 @@ mod tests {
         // Byte-identical re-serialization through the descriptor's own serde impl.
         let reserialized = serde_json::to_string(&tree).expect("must serialize");
         assert_eq!(reserialized, UI_ALL_KINDS_WIRE);
+    }
+
+    #[test]
+    fn js_bridge_parses_local_state_scope_and_local_bind() {
+        // M13 G1b, Task 5: the G1a bridge must read a container's `localState`
+        // declaration (scope + cells) AND a descendant `{ local }` bind, and the
+        // result must re-serialize byte-identically through the descriptor's serde.
+        let src = r#"({
+            anchor: "center", offset: [0.0, 0.0],
+            root: {
+                kind: "vstack", gap: 0.0, padding: 0.0, align: "start",
+                localState: { scope: "counter", cells: { count: 0.0, flash: [1.0, 0.0, 0.0, 1.0] } },
+                children: [
+                    { kind: "text", content: "0", fontSize: 18.0, color: [1.0, 1.0, 1.0, 1.0], bind: { local: "count" } }
+                ]
+            }
+        })"#;
+        let tree = eval_js(src, |ctx, v| {
+            anchored_tree_from_js_value(ctx, v).expect("localState tree must convert")
+        });
+        let Widget::VStack(root) = &tree.root else {
+            panic!("root must be a vstack");
+        };
+        let ls = root.local_state.as_ref().expect("localState present");
+        assert_eq!(ls.scope, "counter");
+        assert_eq!(ls.cells.len(), 2);
+        let Widget::Text(t) = &root.children[0] else {
+            panic!("child must be text");
+        };
+        assert_eq!(
+            t.bind.as_ref().map(|b| &b.source),
+            Some(&BindSource::Local {
+                local: "count".into()
+            })
+        );
+        let wire = r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"vstack","gap":0.0,"padding":0.0,"align":"start","localState":{"scope":"counter","cells":{"count":0.0,"flash":[1.0,0.0,0.0,1.0]}},"children":[{"kind":"text","content":"0","fontSize":18.0,"color":[1.0,1.0,1.0,1.0],"bind":{"local":"count"}}]}}"#;
+        assert_eq!(serde_json::to_string(&tree).unwrap(), wire);
+    }
+
+    #[test]
+    fn lua_bridge_parses_local_state_scope_and_local_bind() {
+        // The Luau twin: the `["local"]` keyword-escaped bind key + `localState`.
+        let src = r#"return {
+            anchor = "center", offset = {0.0, 0.0},
+            root = {
+                kind = "vstack", gap = 0.0, padding = 0.0, align = "start",
+                localState = { scope = "counter", cells = { count = 0.0 } },
+                children = {
+                    { kind = "text", content = "0", fontSize = 18.0, color = {1.0, 1.0, 1.0, 1.0}, bind = { ["local"] = "count" } }
+                }
+            }
+        }"#;
+        let tree = eval_lua(src, |v| {
+            anchored_tree_from_lua_value(v).expect("localState tree must convert")
+        });
+        let Widget::VStack(root) = &tree.root else {
+            panic!("root must be a vstack");
+        };
+        assert_eq!(root.local_state.as_ref().unwrap().scope, "counter");
+        let Widget::Text(t) = &root.children[0] else {
+            panic!("child must be text");
+        };
+        assert_eq!(
+            t.bind.as_ref().map(|b| &b.source),
+            Some(&BindSource::Local {
+                local: "count".into()
+            })
+        );
+    }
+
+    #[test]
+    fn js_bridge_rejects_a_bind_with_neither_slot_nor_local() {
+        // A bind object must carry exactly one source key; neither is a shape error.
+        let src = r#"({
+            anchor: "center", offset: [0.0, 0.0],
+            root: { kind: "text", content: "x", fontSize: 12.0, color: [1.0,1.0,1.0,1.0], bind: {} }
+        })"#;
+        let err = eval_js(src, |ctx, v| {
+            anchored_tree_from_js_value(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
     }
 
     #[test]

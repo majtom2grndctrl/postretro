@@ -350,7 +350,13 @@ impl ModalStack {
         slot_values: std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
         time_seconds: f64,
     ) -> UiReadSnapshot {
-        UiReadSnapshot::with_trees(self.entries(), slot_values, time_seconds, None)
+        UiReadSnapshot::with_trees(
+            self.entries(),
+            slot_values,
+            crate::render::ui::tree::CellValues::new(),
+            time_seconds,
+            None,
+        )
     }
 }
 
@@ -379,6 +385,7 @@ mod tests {
                 focus_neighbors: Default::default(),
                 focus: None,
                 restore_on_return: false,
+                local_state: None,
                 children: vec![],
             }),
             capture_mode,

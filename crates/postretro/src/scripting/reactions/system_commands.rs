@@ -46,6 +46,18 @@ pub(crate) enum SystemReactionCommand {
         slot: String,
         value: serde_json::Value,
     },
+    /// Write a value to a presentation cell `(scopeId, cellName)` at the
+    /// game-logic stage (M13 G1b, Task 5 — `ui.createLocalState().set(v)`). Drained
+    /// into the app-side `PresentationCellStore`, NOT the slot table: this is
+    /// presentation-only state, distinct from `SetState` (which writes the
+    /// authoritative store). `value` carries the raw JSON value coerced to a
+    /// `SlotValue` by the drain. The scope id is the stable id the SDK stabilizes
+    /// on `createLocalState`; the cell name is the handle's key.
+    CellWrite {
+        scope: String,
+        cell: String,
+        value: serde_json::Value,
+    },
     /// Append `text` to the current string value of a writable String slot at the
     /// game-logic stage (M13 Text Entry, Task 1). The drain applies it through the
     /// readonly-gated text-edit path (`primitives::store::apply_text_edit`):
@@ -170,6 +182,7 @@ impl std::fmt::Debug for SystemReactionRegistry {
 /// - Display/flash: `flashScreen`
 /// - UI stack: `showDialog`, `openMenu`, `closeDialog` (push/pop `PushTree`/`PopTree`)
 /// - Slot write: `setState`
+/// - Presentation-cell write: `cellWrite`
 /// - Text-edit: `appendText`, `backspaceText`, `clearText`
 pub(crate) fn register_system_reaction_primitives(registry: &mut SystemReactionRegistry) {
     registry.register("playSound", |args, queue| {
@@ -250,6 +263,23 @@ pub(crate) fn register_system_reaction_primitives(registry: &mut SystemReactionR
             })?;
         queue.push(SystemReactionCommand::SetState {
             slot: parsed.slot,
+            value: parsed.value,
+        });
+        Ok(())
+    });
+    // `cellWrite` writes a presentation cell at the game-logic stage (M13 G1b,
+    // Task 5). It carries no `tag` (system-targeted); the drain routes it into the
+    // app-side `PresentationCellStore`, NOT the slot table. Distinct from
+    // `setState` (which writes the authoritative store); the `ui.createLocalState`
+    // handle's `.set(v)` emits this, never `setState`.
+    registry.register("cellWrite", |args, queue| {
+        let parsed: CellWriteArgs =
+            serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
+                reason: format!("cellWrite: failed to deserialize args: {e}"),
+            })?;
+        queue.push(SystemReactionCommand::CellWrite {
+            scope: parsed.scope,
+            cell: parsed.cell,
             value: parsed.value,
         });
         Ok(())
@@ -338,6 +368,14 @@ struct SetStateArgs {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct CellWriteArgs {
+    scope: String,
+    cell: String,
+    value: serde_json::Value,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct AppendTextArgs {
     slot: String,
     text: String,
@@ -364,6 +402,7 @@ mod tests {
         assert!(r.contains("openMenu"));
         assert!(r.contains("closeDialog"));
         assert!(r.contains("setState"));
+        assert!(r.contains("cellWrite"));
         assert!(r.contains("appendText"));
         assert!(r.contains("backspaceText"));
         assert!(r.contains("clearText"));
@@ -526,6 +565,27 @@ mod tests {
             vec![SystemReactionCommand::SetState {
                 slot: "ui.label".to_string(),
                 value: serde_json::json!("hi"),
+            }]
+        );
+    }
+
+    #[test]
+    fn cell_write_dispatch_enqueues_command_with_scope_cell_and_value() {
+        // The `ui.createLocalState().set(v)` path: distinct from `setState`, it
+        // carries a scope id + cell name (NOT a slot) and rides into the
+        // presentation-cell store, never the slot table.
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "scope": "counter", "cell": "count", "value": 5 });
+        assert!(r.dispatch("cellWrite", &args, &queue).unwrap());
+        assert_eq!(
+            queue.take(),
+            vec![SystemReactionCommand::CellWrite {
+                scope: "counter".to_string(),
+                cell: "count".to_string(),
+                value: serde_json::json!(5),
             }]
         );
     }

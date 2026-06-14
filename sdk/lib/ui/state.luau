@@ -65,4 +65,57 @@ function UiStateSdk.storeHandle<T>(slot: T): StoreHandle<T>
   }
 end
 
+-- --- ui.createLocalState() (M13 G1b, Task 5) -------------------------------
+
+--- The `{ ["local"] = name }` bind reference a widget's `bind` prop accepts
+--- (`local` is a Luau keyword, so the field is written in bracket form).
+export type LocalBindRef = { ["local"]: string }
+
+--- A presentation-cell handle for ONE cell, returned inside `createLocalState`'s
+--- bundle. Distinct from `StoreHandle` (which writes the authoritative store):
+--- `:get()` yields the `{ local }` bind reference; `:set(v)` emits a `cellWrite`
+--- reaction (NEVER `setState`) updating the cell at the game-logic stage.
+export type LocalStateHandle<T> = {
+  get: (self: LocalStateHandle<T>) -> LocalBindRef,
+  set: (self: LocalStateHandle<T>, value: T) -> PrimitiveReactionDescriptor,
+}
+
+--- Monotonic counter stabilizing each `createLocalState` call's scope id.
+--- Deterministic per script-evaluation order (single-threaded registration
+--- pass), so the same authoring code yields the same scope id the app stage
+--- (writes) and render stage (`{ local }` resolution) both address by.
+local localStateCounter = 0
+
+--- `ui.createLocalState(init)` -- declare a presentation-cell scope (M13 G1b,
+--- Task 5). An SDK-lib function (hand-authored, NOT a registered primitive, NOT
+--- auto-emitted). Pure -- no engine side effect. Returns a `{ scope, cells }`
+--- bundle: splice `bundle.scope` onto the declaring container's `localState`, and
+--- bind descendant widgets to `bundle.cells.<name>:get()`.
+--- `bundle.cells.<name>:set(v)` emits a `cellWrite` reaction; the authoritative
+--- store is never written. `State`-named because cells are stored across frames.
+function UiStateSdk.createLocalState(init: { [string]: any }): { scope: any, cells: any }
+  local scopeId = "localState." .. tostring(localStateCounter)
+  localStateCounter += 1
+  local cells: { [string]: any } = {}
+  for name in init do
+    local cellName = name
+    cells[name] = {
+      get = function(self): LocalBindRef
+        return { ["local"] = cellName }
+      end,
+      set = function(self, value): PrimitiveReactionDescriptor
+        -- A `cellWrite` reaction (NEVER `setState`): presentation cell, scoped.
+        return { primitive = "cellWrite", args = { scope = scopeId, cell = cellName, value = value } }
+      end,
+    }
+  end
+  return { scope = { scope = scopeId, cells = init }, cells = cells }
+end
+
+--- The `ui` namespace object: state-helper SDK functions are namespaced (per
+--- G1a's locked decision). `ui.createLocalState` is the G1b entry.
+UiStateSdk.ui = {
+  createLocalState = UiStateSdk.createLocalState,
+}
+
 return UiStateSdk

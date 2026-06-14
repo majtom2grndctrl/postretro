@@ -317,6 +317,13 @@ pub(crate) struct UiReadSnapshot {
     /// Only slots that currently hold a value appear; value-less slots are
     /// skipped. Empty on the splash path.
     pub slot_values: std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
+    /// Resolved presentation-cell values for this frame, keyed by
+    /// `(scopeId, cellName)` (M13 G1b, Task 5). Published from the app-side cell
+    /// store the same way `slot_values` flows from the slot table — so a `{ local }`
+    /// bind resolves against the live cell value without the descriptor (compared
+    /// by the retained reuse gate) ever changing. Empty on the splash path and
+    /// whenever no `localState` scope composes.
+    pub cell_values: tree::CellValues,
     /// Deterministic frame time in seconds, accumulated from per-frame `dt`
     /// (`App::script_time`) — NEVER wall-clock. Stays `f64` end-to-end to match
     /// the App's accumulator. The retained gameplay build threads it down so the
@@ -341,6 +348,7 @@ impl UiReadSnapshot {
             version_line: version_line.into(),
             trees: Vec::new(),
             slot_values: std::collections::HashMap::new(),
+            cell_values: tree::CellValues::new(),
             // Splash/fresh path takes no time — inertness is structural.
             time_seconds: 0.0,
             focused_id: None,
@@ -356,6 +364,7 @@ impl UiReadSnapshot {
     pub fn with_trees(
         trees: Vec<UiTreeEntry>,
         slot_values: std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
+        cell_values: tree::CellValues,
         time_seconds: f64,
         focused_id: Option<String>,
     ) -> Self {
@@ -363,6 +372,7 @@ impl UiReadSnapshot {
             version_line: String::new(),
             trees,
             slot_values,
+            cell_values,
             time_seconds,
             focused_id,
         }
@@ -893,6 +903,7 @@ impl UiPass {
         viewport: [u32; 2],
         image_sizes: &tree::ImageSizes,
         slot_values: &std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
+        cell_values: &tree::CellValues,
         theme: &theme::UiTheme,
         theme_generation: u64,
         time_seconds: f64,
@@ -932,6 +943,7 @@ impl UiPass {
             self.text.font_system_mut(),
             image_sizes,
             slot_values,
+            cell_values,
             time_seconds,
         )
     }

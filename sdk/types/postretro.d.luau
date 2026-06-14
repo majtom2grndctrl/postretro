@@ -905,12 +905,14 @@ export type WidgetEasing = "linear" | "easeIn" | "easeOut" | "easeInOut"
 export type NumberTween = { durationMs: number, easing: WidgetEasing, from: number? }
 --- Color-shape value tween (panel bind).
 export type ColorTween = { durationMs: number, easing: WidgetEasing, from: {number}? }
---- State binding for a `text` widget.
-export type TextBindProp = { slot: string, format: string?, tween: NumberTween? }
---- State binding for a `panel` widget (color slot).
-export type PanelBindProp = { slot: string, tween: ColorTween? }
---- State binding shared by `slider`/`bar` (numeric slot).
-export type SliderBindProp = { slot: string, tween: NumberTween? }
+--- A `{ ["local"] = name }` presentation-cell bind reference (`ui.createLocalState`).
+export type LocalBindRef = { ["local"]: string }
+--- State binding for a `text` widget (`slot` store or `["local"]` cell; one of the two).
+export type TextBindProp = { slot: string?, ["local"]: string?, format: string?, tween: NumberTween? }
+--- State binding for a `panel` widget (color slot or `["local"]` cell).
+export type PanelBindProp = { slot: string?, ["local"]: string?, tween: ColorTween? }
+--- State binding shared by `slider`/`bar` (numeric slot or `["local"]` cell).
+export type SliderBindProp = { slot: string?, ["local"]: string?, tween: NumberTween? }
 --- One band in a `styleRanges` map.
 export type StyleRangeEntry = { upTo: number?, color: WidgetColor?, pulse: { periodMs: number }?, flash: { durationMs: number }? }
 --- Continuous value→style map (text/panel/bar).
@@ -998,6 +1000,17 @@ export type StoreHandle<T> = {
 }
 --- Wrap a value-typed store-slot handle (`defineStore`'s `StateValue<T>` return) in a `:get()`/`:set()` accessor. Pure: `:set(...)` returns a descriptor, it does not write.
 declare function storeHandle(slot: any): StoreHandle<any>
+
+--- A presentation-cell handle (`ui.createLocalState`): `:get()` yields a `{ ["local"] }`
+--- bind ref; `:set(v)` emits a `cellWrite` reaction (NEVER `setState`). Presentation-only.
+export type LocalStateHandle<T> = {
+  get: (self: LocalStateHandle<T>) -> LocalBindRef,
+  set: (self: LocalStateHandle<T>, value: T) -> PrimitiveReactionDescriptor,
+}
+--- Declare a presentation-cell scope (M13 G1b). SDK-lib function, not a registered primitive. Pure: no engine side effect. Returns a `{ scope, cells }` bundle.
+declare function createLocalState(init: { [string]: any }): { scope: any, cells: any }
+--- State-helper namespace (state helpers are namespaced; reactions stay bare).
+declare ui: { createLocalState: (init: { [string]: any }) -> { scope: any, cells: any } }
 
 -- ---------------------------------------------------------------------------
 -- Runtime-value vocabulary — the typed command buffer (scripting.md §11). The

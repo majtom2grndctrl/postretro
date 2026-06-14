@@ -219,6 +219,7 @@ fn fallback_splash_tree() -> AnchoredTree {
         focus_neighbors: Default::default(),
         focus: None,
         restore_on_return: false,
+        local_state: None,
         children: vec![logo, version],
     });
     AnchoredTree::passthrough(Anchor::Center, [0.0, 0.0], panel)

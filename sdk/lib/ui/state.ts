@@ -19,7 +19,7 @@
 
 import type { StateValue } from "postretro";
 import type { PrimitiveReactionDescriptor } from "../data_script";
-import type { SliderBindProp } from "./widgets";
+import type { LocalBindRef, SliderBindProp } from "./widgets";
 import { setState } from "./reactions";
 
 /**
@@ -67,3 +67,93 @@ export function storeHandle<T extends number | boolean | string | number[]>(
     },
   };
 }
+
+// --- ui.createLocalState() (M13 G1b, Task 5) --------------------------------
+
+/** A presentation-cell initial value: the `CellInit` wire shapes. */
+type CellInit = number | boolean | string | [number, number, number, number];
+
+/**
+ * A presentation-cell handle returned by `ui.createLocalState()` for ONE cell.
+ * Distinct from `StoreHandle` (which writes the authoritative store): this handle
+ * is presentation-only.
+ *
+ * - `.get()` yields the `{ local: name }` bind reference a descendant widget's
+ *   `bind` prop accepts — resolved app-side against the cell store, scoped to the
+ *   nearest enclosing `localState` declaration.
+ * - `.set(v)` emits a `cellWrite` reaction (NEVER `setState`) writing the cell at
+ *   the game-logic stage. The authoritative store is untouched.
+ */
+export type LocalStateHandle<T extends CellInit> = {
+  /** The `{ local }` bind reference a widget's `bind` prop accepts. */
+  get(): LocalBindRef;
+  /** A `cellWrite` reaction descriptor writing `value` to this cell. */
+  set(value: T): PrimitiveReactionDescriptor;
+};
+
+/**
+ * The bundle `ui.createLocalState(init)` returns: a `scope` descriptor to splice
+ * into the declaring container's `localState`, plus a per-cell handle map keyed by
+ * the `init` keys. `State`-named because the cells are STORED across frames (in
+ * the app-side cell store), not recomputed each frame.
+ */
+export type LocalStateBundle<I extends Record<string, CellInit>> = {
+  /** Splice this onto the declaring container's `localState` prop. */
+  scope: { scope: string; cells: I };
+  /** Per-cell presentation handles, keyed by the `init` keys. */
+  cells: { [K in keyof I]: LocalStateHandle<I[K]> };
+};
+
+/**
+ * Monotonic counter stabilizing the scope id of each `createLocalState` call.
+ * Deterministic per script-evaluation order (the registration pass is single-
+ * threaded and runs once), so the same authoring code yields the same scope id —
+ * which the app stage (writes) and the render stage (`{ local }` resolution) both
+ * address by. NOT engine-registered; a pure SDK-side construct.
+ */
+let localStateCounter = 0;
+
+/**
+ * `ui.createLocalState(init)` — declare a presentation-cell scope (M13 G1b, Task
+ * 5). An SDK-lib function (hand-authored, NOT a registered primitive, NOT
+ * auto-emitted): the one stateful authoring primitive the static factory layer
+ * can't express. Pure — no engine side effect; the FFI boundary stays the
+ * authored tree's `return`.
+ *
+ * Returns a `{ scope, cells }` bundle: splice `bundle.scope` onto the declaring
+ * container's `localState` (so its initials seed the app-side cell store and the
+ * scope id keys the store + reconcile sweep), and bind descendant widgets to
+ * `bundle.cells.<name>.get()`. `bundle.cells.<name>.set(v)` emits a `cellWrite`
+ * reaction that updates the cell at the game-logic stage — the authoritative
+ * store is never written. Follows the `create*` convention (inline-constructed).
+ */
+export function createLocalState<I extends Record<string, CellInit>>(
+  init: I,
+): LocalStateBundle<I> {
+  const scopeId = `localState.${localStateCounter++}`;
+  const cells = {} as { [K in keyof I]: LocalStateHandle<I[K]> };
+  for (const name of Object.keys(init) as (keyof I)[]) {
+    cells[name] = {
+      get(): LocalBindRef {
+        return { local: name as string };
+      },
+      set(value): PrimitiveReactionDescriptor {
+        // A `cellWrite` reaction (NEVER `setState`): presentation cell, scoped.
+        return {
+          primitive: "cellWrite",
+          args: { scope: scopeId, cell: name as string, value },
+        };
+      },
+    };
+  }
+  return { scope: { scope: scopeId, cells: init }, cells };
+}
+
+/**
+ * The `ui` namespace object: state-helper SDK functions are namespaced (per
+ * G1a's locked decision — reactions stay bare exports, state helpers are
+ * namespaced). `ui.createLocalState` is the G1b entry.
+ */
+export const ui = {
+  createLocalState,
+};

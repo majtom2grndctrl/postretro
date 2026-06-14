@@ -50,6 +50,7 @@ export type {
   TextBindProp,
   PanelBindProp,
   SliderBindProp,
+  LocalBindRef,
   StyleRangeEntry,
   StyleRangesProp,
   BorderProp,
@@ -83,8 +84,12 @@ export type {
 } from "./ui/tree";
 export { Tree } from "./ui/tree";
 
-export type { StoreHandle } from "./ui/state";
-export { storeHandle } from "./ui/state";
+export type {
+  StoreHandle,
+  LocalStateHandle,
+  LocalStateBundle,
+} from "./ui/state";
+export { storeHandle, createLocalState, ui } from "./ui/state";
 
 export type { CrossingCondition, CrossingDescriptor } from "./ui/reactions";
 export {

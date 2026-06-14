@@ -5454,6 +5454,7 @@ impl Renderer {
                 ui_viewport,
                 &ui::tree::ImageSizes::new(),
                 &self.ui_snapshot.slot_values,
+                &self.ui_snapshot.cell_values,
                 &self.ui_theme,
                 self.ui_theme_generation,
                 self.ui_snapshot.time_seconds,

@@ -71,6 +71,12 @@ fn no_images() -> ImageSizes {
     ImageSizes::new()
 }
 
+/// The demo HUD declares no `localState` scope, so `{ local }` resolution sees
+/// an empty cell map (M13 G1b, Task 5).
+fn no_cells() -> super::tree::CellValues {
+    super::tree::CellValues::new()
+}
+
 /// A slot map matching the Task 2 proxy's at-rest writes: `player.health`=100,
 /// `player.ammo`=50 (Number), and `intro.flashColor`=`rgba` (length-4 linear
 /// RGBA array). The flash color is parameterized so the appearance-change tests
@@ -136,9 +142,16 @@ fn settle_demo(solid: [f32; 4]) -> (UiTree, glyphon::FontSystem) {
     let mut fs = font_system();
     let slots = proxy_slots(100.0, 50.0, solid);
     // Frame 0 anchors the count-up start and renders `HP 0`.
-    ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
+    ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, &no_cells(), 0.0);
     // A frame past the 1.2s duration settles the count-up to `HP 100`.
-    ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, SETTLED_T);
+    ui.build_draw_data_retained(
+        [1280, 720],
+        &mut fs,
+        &no_images(),
+        &slots,
+        &no_cells(),
+        SETTLED_T,
+    );
     (ui, fs)
 }
 
@@ -162,6 +175,7 @@ fn demo_descriptor_resolves_binds_through_retained_path() {
         &mut fs,
         &no_images(),
         &proxy_slots(100.0, 50.0, flash),
+        &no_cells(),
         0.0,
     );
     // Settled frame: past the 1.2s duration, the count-up reads its target exactly.
@@ -170,6 +184,7 @@ fn demo_descriptor_resolves_binds_through_retained_path() {
         &mut fs,
         &no_images(),
         &proxy_slots(100.0, 50.0, flash),
+        &no_cells(),
         SETTLED_T,
     );
 
@@ -219,6 +234,7 @@ fn demo_panel_fill_change_rebuilds_without_relayout() {
         &mut fs,
         &no_images(),
         &proxy_slots(100.0, 50.0, pulse),
+        &no_cells(),
         SETTLED_T,
     );
     let second = ui.build_draw_data_retained(
@@ -226,6 +242,7 @@ fn demo_panel_fill_change_rebuilds_without_relayout() {
         &mut fs,
         &no_images(),
         &proxy_slots(100.0, 50.0, pulse),
+        &no_cells(),
         SETTLED_T + 0.2,
     );
     assert_eq!(
@@ -258,6 +275,7 @@ fn demo_bound_text_change_triggers_relayout() {
         &mut fs,
         &no_images(),
         &proxy_slots(100.0, 50.0, flash),
+        &no_cells(),
         SETTLED_T,
     );
     assert!(
@@ -273,6 +291,7 @@ fn demo_bound_text_change_triggers_relayout() {
         &mut fs,
         &no_images(),
         &proxy_slots(87.0, 50.0, flash),
+        &no_cells(),
         SETTLED_T,
     );
     let second = ui.build_draw_data_retained(
@@ -280,6 +299,7 @@ fn demo_bound_text_change_triggers_relayout() {
         &mut fs,
         &no_images(),
         &proxy_slots(87.0, 50.0, flash),
+        &no_cells(),
         SETTLED_T + 2.0,
     );
     assert!(
@@ -306,8 +326,14 @@ fn demo_settled_frame_skips_rebuild_and_recompute() {
     // A first steady frame at a settled time: the count-up already reads 100 and
     // the flash already snapped, so this frame may still close out the count-up's
     // last content change. Capture the post-settle baseline AFTER it.
-    let first =
-        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &settled, SETTLED_T);
+    let first = ui.build_draw_data_retained(
+        [1280, 720],
+        &mut fs,
+        &no_images(),
+        &settled,
+        &no_cells(),
+        SETTLED_T,
+    );
     let recompute_settled = ui.recompute_count();
     let rebuild_settled = ui.draw_rebuild_count();
     assert!(
@@ -323,6 +349,7 @@ fn demo_settled_frame_skips_rebuild_and_recompute() {
         &mut fs,
         &no_images(),
         &settled,
+        &no_cells(),
         SETTLED_T + 1.0,
     );
     assert_eq!(
@@ -364,7 +391,8 @@ fn demo_health_counts_up_zero_to_hundred_over_the_tween() {
     let slots = proxy_slots(100.0, 50.0, [0.0, 0.65, 0.75, 1.0]);
 
     // Frame 0 anchors the count-up at its `from` and renders "HP 0".
-    let f0 = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
+    let f0 =
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, &no_cells(), 0.0);
     assert_eq!(
         health_value(&f0),
         0,
@@ -378,7 +406,8 @@ fn demo_health_counts_up_zero_to_hundred_over_the_tween() {
     // counting up, not snapped to 100 in one step.
     let mut prev = 0;
     for (i, &t) in [0.3_f64, 0.6, 0.9, 1.1].iter().enumerate() {
-        let f = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, t);
+        let f =
+            ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, &no_cells(), t);
         let v = health_value(&f);
         assert!(
             v >= prev && v <= 100,
@@ -394,8 +423,14 @@ fn demo_health_counts_up_zero_to_hundred_over_the_tween() {
     }
 
     // At/after the 1.2s duration the readout reads EXACTLY "HP 100".
-    let settled =
-        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, SETTLED_T);
+    let settled = ui.build_draw_data_retained(
+        [1280, 720],
+        &mut fs,
+        &no_images(),
+        &slots,
+        &no_cells(),
+        SETTLED_T,
+    );
     assert_eq!(
         health_value(&settled),
         100,
@@ -425,6 +460,7 @@ fn demo_flash_swatch_eases_between_toggle_endpoints_mid_segment() {
         &mut fs,
         &no_images(),
         &proxy_slots(100.0, 50.0, to_color),
+        &no_cells(),
         SETTLED_T,
     );
     // Sample mid-segment: 75ms into the 150ms tween (half the duration), so the
@@ -434,6 +470,7 @@ fn demo_flash_swatch_eases_between_toggle_endpoints_mid_segment() {
         &mut fs,
         &no_images(),
         &proxy_slots(100.0, 50.0, to_color),
+        &no_cells(),
         SETTLED_T + 0.075,
     );
     let color = swatch_color(&mid).expect("the demo draws a swatch quad");
@@ -470,6 +507,7 @@ fn demo_flash_swatch_eases_between_toggle_endpoints_mid_segment() {
         &mut fs,
         &no_images(),
         &proxy_slots(100.0, 50.0, to_color),
+        &no_cells(),
         SETTLED_T + 0.2,
     );
     assert!(
@@ -489,13 +527,13 @@ fn demo_unbound_slot_change_invalidates_nothing() {
     let mut fs = font_system();
 
     let mut slots = proxy_slots(100.0, 50.0, [0.0, 0.65, 0.75, 1.0]);
-    ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
+    ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, &no_cells(), 0.0);
     assert_eq!(ui.recompute_count(), 1);
     assert_eq!(ui.draw_rebuild_count(), 1, "first frame builds the list");
 
     // Add/changes only an unbound slot; every bound slot holds its value.
     slots.insert("world.kills".to_string(), SlotValue::Number(7.0));
-    ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
+    ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, &no_cells(), 0.0);
     assert_eq!(
         ui.recompute_count(),
         1,
@@ -522,6 +560,7 @@ fn demo_swatch_quad_has_real_size_presence() {
         &mut fs,
         &no_images(),
         &proxy_slots(100.0, 50.0, [0.0, 0.65, 0.75, 1.0]),
+        &no_cells(),
         0.0,
     );
     // Find the resolved swatch quad (the one carrying the flash color, not a
@@ -591,8 +630,15 @@ fn demo_hud_text_resolves_the_ok_token_color() {
     let mut fs = font_system();
     let slots = proxy_slots(100.0, 50.0, [0.0, 0.65, 0.75, 1.0]);
     // Anchor the health count-up, then settle past 1.2s so the run reads "HP 100".
-    ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, 0.0);
-    let data = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, SETTLED_T);
+    ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, &no_cells(), 0.0);
+    let data = ui.build_draw_data_retained(
+        [1280, 720],
+        &mut fs,
+        &no_images(),
+        &slots,
+        &no_cells(),
+        SETTLED_T,
+    );
 
     let hp = data
         .texts
@@ -629,6 +675,7 @@ fn demo_swatch_label_resolves_the_mono_family() {
         &mut fs,
         &no_images(),
         &proxy_slots(100.0, 50.0, [0.0, 0.65, 0.75, 1.0]),
+        &no_cells(),
         0.0,
     );
 

@@ -98,8 +98,11 @@ Pin casing and encoding once for every cross-boundary name. Reference this inven
 
 For each new binary surface, pin: endianness, integer signedness, length-prefix integer width, entry-count placement, per-entry field order, empty-list encoding, sentinel/null representation per runtime. State explicitly which existing section the new layout mirrors.
 
+## Script syntax examples
+Show examples of what scripts authored by modders utilizing this functionality would look like (only use section when applicable).
+
 ## Open questions
-Unresolved items, risks, alternatives considered.
+Unresolved items, risks, alternatives considered, if applicable (only use section when necessary).
 ```
 
 **Length smell:** most plans land at 50–200 lines. Past 250 lines usually means the spec carries research notes (→ `research.md`) or scope should split into multiple plans.

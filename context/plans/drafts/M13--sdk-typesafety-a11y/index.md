@@ -72,24 +72,31 @@ a footgun), honored by the existing focus/activation path.
   load-time error (no panic) for the zero/both case from raw wire.
 - [ ] `Image` requires `label` **xor** `decorative: true` — neither/both is a
   factory throw and a named bridge error; a decorative image carries no name.
-- [ ] A widget accepts an optional `role` from the closed `Role` set; absent
-  resolves to the kind's implicit role; an interactive `role` override on a
-  non-interactive kind makes a name required (or this generalization is
-  explicitly deferred — see Open questions).
+- [ ] A widget accepts an optional `role` from the closed `Role` set; `role`
+  round-trips and is absent by default (omitted on the wire); implicit-role
+  resolution is a pure helper `implicit_role(kind) -> Role` covered by a unit
+  test; no runtime consumer reads the resolved role in G2 (consumption
+  deferred); a `role` override on a non-interactive kind does NOT make a name
+  required (name-precondition keys off interactive kinds + Image only).
 - [ ] `disabled` widgets are skipped by focus navigation and initial-focus
   selection and cannot be activated; `selected`/`checked`/`expanded` round-trip
   as metadata with no behavioral effect.
-- [ ] `AnchoredTree` carries optional `accessibleName` + `role`; a tree without
-  them deserializes byte-identically to its pre-G2 wire form.
-- [ ] `Announce({ priority: "polite" }, "…")` round-trips to `Widget::Announce`
-  byte-identically; layout emits zero rects and draw zero glyphs for it; a
-  garbled `Announce` is a named load-time error, not a panic.
+- [ ] `AnchoredTree` carries optional `accessibleName` + `role` (alongside
+  existing `capture_mode`/`initial_focus`/`text_entry_target`); a tree without the
+  new fields deserializes byte-identically to its pre-G2 wire form.
+- [ ] `Announce({}, "…")` (polite, priority omitted on the wire) round-trips to
+  `Widget::Announce` byte-identically; `Announce({ priority: "assertive" }, "…")`
+  round-trips with the field present; layout emits zero rects and draw zero glyphs
+  for it; a garbled `Announce` is a named load-time error, not a panic.
 - [ ] Every pre-G2 tree (no new a11y fields) deserializes byte-identically — all
   additions are skip-serialized when absent (no wire break for shipped content).
 - [ ] Emitted typedefs narrow props per kind (a `Button` with a Text-only
   `content` prop is a type error; a `Bar` needs no name) — `@ts-expect-error`
   fixtures + a typedef snapshot test; `gen-script-types` reports no drift; TS and
   Luau SDK blocks stay parity-checked.
+- [ ] Slider/Bar value + min/max + role is confirmed fully expressible as the
+  announceable contract, recorded in a snapshot/test (Task 4 verification); no new
+  fields added.
 - [ ] A typedef snapshot documents the shipped TS template-literal `NavIntent`
   and the Luau flat union (verification only).
 - [ ] `docs/scripting-reference.md` covers name/role/state, image
@@ -101,8 +108,9 @@ a footgun), honored by the existing focus/activation path.
 `render/ui/descriptor.rs` is 1574 lines; G2 adds fields across ~6 widget structs
 plus the envelope and two enums. Split first along existing seams — widget
 structs and the `AnchoredTree` envelope into a `descriptor/` submodule, the
-`Widget` enum + serde wire contract unchanged — so the round-trip tests
-(`descriptor.rs:742-848`) stay byte-identical. No behavior change; the gate is
+`Widget` enum + serde wire contract unchanged — so the round-trip tests in the
+`#[cfg(test)] mod tests` block (`descriptor.rs:742-~1574`) stay byte-identical.
+No behavior change; the gate is
 green tests + identical wire. Sequenced right before the extension. `Depends on`
 nothing.
 
@@ -110,12 +118,16 @@ nothing.
 In the split modules: add `label: Option<String>` + `labelled_by: Option<String>`
 (interactive widgets), `role: Option<Role>` (all widgets) with a closed `Role`
 enum, the state flags (`disabled`/`selected`/`checked`/`expanded`), `Image`
-`label` xor `decorative: bool`, `AnchoredTree` `accessible_name` + `role`, and
+`label` xor `decorative: bool`, `AnchoredTree` `accessible_name` + `role` (alongside existing
+`capture_mode`/`initial_focus`/`text_entry_target`), and
 the `Widget::Announce(AnnounceWidget { text, priority })` variant (non-visual —
 layout/draw skip it). Extend the bridge (`data_descriptors.rs`) to read them and
 enforce the preconditions (exactly-one name; image name-xor-decorative; Announce
 shape) with named load-time errors, no panic. All new fields skip-serialized when
-absent. `Depends on` Task 0.
+absent. Serde predicates: `bool` state flags use `#[serde(default,
+skip_serializing_if = "std::ops::Not::not")]`; `Option<Role>`/`Option<String>` use
+the standard `Option` skip — so absent fields stay off the wire (byte-identical
+claim). `Depends on` Task 0.
 
 ### Task 2: SDK factories + types + typedefs
 Mirror Task 1 in `sdk/lib/ui/{widgets,tree}.{ts,luau}` + barrel: the name XOR
@@ -127,10 +139,14 @@ SDK-block + `sdk/lib/index.ts` barrel with SE (different sections); regenerate
 once both land.
 
 ### Task 3: `disabled` interaction honoring
-`input/ui_focus.rs`: a `disabled` node is skipped by `move_focus` and
-`initial_focus_id`, and its activation is blocked. Flows the `disabled` flag into
-the focus-rect list the engine consumes. The only behavior G2 ships. `Depends on`
-Task 1 (the field). Disjoint file from Task 2 — concurrent.
+Data path: the descriptor `disabled` flag flows into the per-frame `FocusRect`
+(add a `disabled: bool` field) built in `render/ui/tree.rs` from the resolved
+node; `input/ui_focus.rs` then skips disabled entries in `move_focus`,
+`linear_step`, `spatial_step`, and `initial_focus_id`, and blocks activation in
+`fire_focused_button_activation` (App-side, reading `NodeInteraction::Button`).
+The only behavior G2 ships. `Depends on` Task 1 (the field). Disjoint file from
+Task 2 — concurrent. **Touched files:** `render/ui/tree.rs` (FocusRect build),
+`input/ui_focus.rs` (navigation + activation guard).
 
 ### Task 4: narrowing verification + fixtures + docs
 Typedef snapshot tests proving per-kind narrowing + the unnamed-interactive type
@@ -147,7 +163,8 @@ template-literal status (TS) and Luau limitation; regenerate typedefs; update
 **Wave seam (SE):** Task 2/4 edit the **widget** SDK-block in `typedef.rs` and
 the `sdk/lib/index.ts` barrel; SE edits the **reaction** block in the same files
 — different sections. Coordinate; regenerate typedefs once both land. G2 owns all
-`descriptor.rs`/tree-bridge edits (SE touches neither).
+`descriptor.rs`/tree-bridge edits and the `FocusRect` build in
+`render/ui/tree.rs` (SE touches neither).
 
 ## Rough sketch
 
@@ -156,11 +173,15 @@ the `sdk/lib/index.ts` barrel; SE edits the **reaction** block in the same files
   Implicit role derived from `Widget` kind; `role` overrides.
 - Name XOR (TS): `type ButtonProps = ButtonBase & ({ label: LocalizedText;
   labelledBy?: never } | { labelledBy: NodeId; label?: never })`; Luau validates
-  in the factory. Same XOR shape for `Image` (`label` vs `decorative`).
+  in the factory. Same XOR shape for `Image`: `ImageBase & ({ label:
+  LocalizedText; decorative?: never } | { decorative: true; label?: never })`.
 - `Announce`: smallest variant; layout walker returns early (no taffy node),
-  draw walker skips. `NodeId = string`.
-- Anchors: `descriptor.rs` Widget enum `:255`, `ImageWidget :522`, `AnchoredTree
-  :193` (beside `capture_mode`/`initial_focus`); bridge in `data_descriptors.rs`
+  draw walker skips. `NodeId = string`. `Announce(props, text)` takes `text`
+  positionally (second arg) with `priority` in props; the Luau twin matches.
+- Anchors (pre-split line numbers — Task 0 moves widget structs into a
+  `descriptor/` submodule; post-split, resolve by symbol): `descriptor.rs` Widget
+  enum `:255`, `ImageWidget :522`, `AnchoredTree :193` (beside
+  `capture_mode`/`initial_focus`/`text_entry_target`); bridge in `data_descriptors.rs`
   (`anchored_tree_from_{js,lua}_value`); focus engine `ui_focus.rs`
   (`move_focus :443`, `initial_focus_id :619`, activation).
 
@@ -172,20 +193,20 @@ the `sdk/lib/index.ts` barrel; SE edits the **reaction** block in the same files
 | label (relaxed) | `label: Option<String>` | `"label"` (omit absent) | `label?: LocalizedText` | `label?` |
 | role | `role: Option<Role>` | `"role"` | `role?: Role` | `role?` |
 | state flags | `disabled`/`selected`/`checked`/`expanded`: `bool` | same camelCase, omit-when-false | same | same |
-| image decorative | `decorative: bool` | `"decorative"` | `decorative?: true` | `decorative?` |
+| image decorative | `decorative: bool` | `"decorative"` (XOR with `label`) | XOR branch: `{ decorative: true; label?: never }` | XOR in factory |
 | envelope name/role | `accessible_name`/`role` on `AnchoredTree` | `"accessibleName"`/`"role"` | `accessibleName?`/`role?` | same |
 | Announce node | `Widget::Announce(AnnounceWidget)` | `{ "kind": "announce", "text", "priority" }` | `Announce(props, text)` | `Ui.Announce(props, text)` |
-| priority | `Priority::{Polite, Assertive}` | `"polite"`/`"assertive"` | `"polite" \| "assertive"` | same |
+| priority | `Priority::{Polite, Assertive}` (default `Polite`; `#[serde(default, skip_serializing_if = "is_polite")]`) | `"polite"`/`"assertive"` — omit when `polite` | `"polite" \| "assertive"` | same |
 
 ## Open questions
 
-- **Name-required from an interactive `role` override?** Keying the
-  name-precondition off *effective role* (kind or override) is the clean
-  generalization but complicates validation. Recommend v1 keys it off the
-  interactive *kinds* (Button/Slider) + Image, treats `role` override as additive
-  metadata, and defers the role-derived precondition. Decide at implementation.
+- **Name-required from an interactive `role` override? Decided: no.** The
+  name-precondition keys off interactive *kinds* (Button/Slider) + Image only; a
+  `role` override is additive metadata and does not introduce a name requirement.
+  Role-derived precondition deferred.
 - **Validate `labelledBy` / `accessibleName` target ids exist at load?** A
   dangling-ref nicety needing a tree-wide id pass. Defer to a follow-up unless it
-  earns its place.
+  earns its place. Note: `labelledBy`/`accessibleName` target an *authored* node
+  id; auto-generated ids are not valid reference targets.
 - **`disabled` styling.** G2 honors `disabled` behaviorally; the *visual* dim
   (a theme treatment) is a styleRanges/theme concern, not G2 — note for BIS.

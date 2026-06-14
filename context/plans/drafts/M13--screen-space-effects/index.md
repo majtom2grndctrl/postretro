@@ -43,7 +43,9 @@ tonemap and M10 post extend — not a side-channel SE has to unwind later.
 - **Two reactions** — `vignette { color?, strength, durationMs }` and
   `screenShake { amplitude, durationMs, frequency? }` — as `SystemReactionCommand`
   variants + handlers (the `flashScreen` pattern), SDK constructors in
-  `sdk/lib/ui/reactions.{ts,luau}`, typedef emission, docs.
+  `sdk/lib/ui/reactions.{ts,luau}`, typedef emission, docs. When `frequency` is
+  omitted the shake driver defaults to **18 Hz**; when vignette `color` is omitted
+  it defaults to **black** (pure edge-darken, strength-only).
 
 ### Out of scope
 
@@ -63,8 +65,7 @@ tonemap and M10 post extend — not a side-channel SE has to unwind later.
 
 - [ ] All scene/UI passes render into `scene_color`; the resolve pass is the sole
   swapchain writer. With `screen.flash`/`screen.vignette`/`screen.shake` all at
-  rest, output is byte-identical (or within a stated tolerance) to the pre-SE
-  pipeline — the foundation parity gate.
+  rest, output is byte-identical to the pre-SE pipeline — the foundation parity gate.
 - [ ] A `flashScreen` reaction produces a full-screen color flash over scene +
   HUD decaying to transparent; `vignette` darkens/tints the edges to a peak then
   decays, center unaffected; `screenShake` offsets the whole composited image
@@ -80,8 +81,8 @@ tonemap and M10 post extend — not a side-channel SE has to unwind later.
 - [ ] `vignette`/`screenShake` exist in both TS + Luau SDK with emitted typedefs,
   dispatch through the same `SystemReactionCommand` path as `flashScreen`, and a
   descriptor without them keeps its pre-SE wire form byte-identical.
-- [ ] The effect composes on top of the M9 fog already in `scene_color` (samples
-  the post-fog, post-UI image).
+- [ ] The effect composes on top of the fog already composited into `scene_color`
+  (samples the post-fog, post-UI image).
 - [ ] Demo in the dev map: a low-health `onStateCrossing` fires flash + vignette;
   an entity hit event fires `screenShake` — manual verification.
 - [ ] `docs/scripting-reference.md` covers the two new reactions.
@@ -96,31 +97,49 @@ UI passes (`render/mod.rs`: forward clear, fog composite `:5317`, wireframe
 `scene_color`. Add a `ScreenEffectsPass` (`render/screen_effects.rs`, new) +
 `src/shaders/screen_effects.wgsl` (fullscreen-triangle, the `fog_composite`
 precedent) that samples `scene_color` and writes `view`; encoded after
-`ui.encode`, before timing resolve (`:5511`). Identity blit when no effect input
-is bound. Parity gate: byte-identical output. `Depends on` nothing.
+`ui.encode`, before timing resolve (`:5511`). Identity blit when no effect input is bound. Pre-Task-4: resolve uniform
+zeroed/unbound → identity. Post-Task-4: at-rest slot values (transparent flash,
+zero strength, zero shake) ALU-collapse to identity and MUST produce bit-identical
+output to the unbound path so the parity gate holds across both. Parity gate:
+byte-identical output. `Depends on` nothing.
 
 ### Task 2: effect slots + decay drivers
 Register `screen.vignette` + `screen.shake` engine-owned slots beside
-`screen.flash`. Add a vignette-envelope and a shake driver beside `flash_decay.rs`
-(`scripting/systems/`), each started by a drained command (Task 3), ticking at
-the game-logic stage on dt-accumulated time, writing its slot, clearing on level
+`screen.flash`; both register as mod-readonly / engine-writable exactly like
+`screen.flash` (mod writes warn + no-op via the existing readonly slot path).
+Add a vignette-envelope and a shake driver beside `flash_decay.rs`
+(`scripting/systems/`), each with `start`/`tick`/`reset` entry points, started
+by a drained command (Task 3), ticking at the game-logic stage beside
+`FlashDecay.tick` on dt-accumulated time, writing its slot, clearing on level
 unload. Factor shared envelope/lifecycle helpers if it reads cleanly. `Depends on`
 nothing — concurrent with Task 1.
 
 ### Task 3: reactions + commands + SDK
 Add `SystemReactionCommand::Vignette`/`::ScreenShake` beside `FlashScreen`;
 register `vignette`/`screenShake` handlers (the `flashScreen:211` pattern)
-pushing those commands; drain → start Task 2's drivers. SDK constructors in
-`sdk/lib/ui/reactions.{ts,luau}`, barrel export, typedef emission, docs.
-`Depends on` Task 2. **Wave seam (G2):** coordinate `scripting/typedef.rs`
-reaction-block + `sdk/lib/index.ts` barrel with G2; regenerate once both land.
+pushing those commands; drain the drained `Vignette`/`ScreenShake` commands
+to `driver.start()` — mirroring the `FlashScreen` → `FlashDecay.start` precedent
+(App constructs the driver; `main.rs` ticks it; the drained command starts it).
+SDK constructors in `sdk/lib/ui/reactions.{ts,luau}`, barrel export, typedef
+emission, docs. `Depends on` Task 2. **Wave seam (G2):** coordinate
+`scripting/typedef.rs` reaction-block + `sdk/lib/index.ts` barrel with G2;
+regenerate once both land.
 
 ### Task 4: effects in the resolve + snapshot + demo
 Pack the three effect slots from `UiReadSnapshot` into the resolve's uniform and
 apply them in `screen_effects.wgsl` (shake = sample offset, vignette = edge
-tint, flash = over-blend). Confirm the two new slots flow through
-`build_ui_slot_snapshot`. Demo: a low-health crossing firing flash + vignette and
-an entity hit firing `screenShake`. Manual verification. `Depends on` Tasks 1–3.
+tint, flash = over-blend). The Rust pack step converts the shake dx/dy (logical-
+reference px on a 1280×720 reference) to UV offsets before writing the uniform;
+the shader applies a pure UV add (no dims needed in WGSL). Confirm the two new
+slots flow through `build_ui_slot_snapshot`. Add an assertion test proving the
+resolve reads effect slot values from `UiReadSnapshot`, never the live slot table.
+Pre-Task-4 the resolve uniform is zeroed/unbound → identity; post-Task-4 the
+at-rest case is resting slot values (transparent flash, zero strength, zero shake)
+whose ALU collapses to identity — resting values MUST produce bit-identical output
+to the unbound path so the parity gate holds across both. Demo: extend the
+existing low-health crossing demo (Goal E's flash-demo site) to also fire
+`vignette`, and register a dev-map entity-hit → `screenShake` reaction binding.
+Manual verification. `Depends on` Tasks 1–3.
 
 ## Sequencing
 
@@ -150,16 +169,17 @@ Coordinate; regenerate typedefs once both land. SE touches no
 | vignette reaction | `SystemReactionCommand::Vignette` | `"vignette"` | `vignette(args)` | `vignette(args)` |
 | vignette args | `{ color, strength, duration_ms }` | `{ "color", "strength", "durationMs" }` | `{ color?, strength, durationMs }` | same |
 | screenShake reaction | `SystemReactionCommand::ScreenShake` | `"screenShake"` | `screenShake(args)` | `screenShake(args)` |
-| screenShake args | `{ amplitude, duration_ms, frequency }` | `{ "amplitude", "durationMs", "frequency"? }` | `{ amplitude, durationMs, frequency? }` | same |
+| screenShake args | `{ amplitude, duration_ms, frequency: Option<f32> }` (`#[serde(default)]`) | `{ "amplitude", "durationMs", "frequency"? }` | `{ amplitude, durationMs, frequency? }` | same |
 | vignette slot | `"screen.vignette"` (`Array` RGBA) | n/a | read-only bind name | same |
 | shake slot | `"screen.shake"` (`Array [dx,dy]`) | n/a | read-only bind name | same |
 
 ## Open questions
 
-- **MSAA / format.** `scene_color` must match the surface sample count (resolve
-  semantics if MSAA) and format. v1 = surface format (LDR), identical output;
-  M9's HDR upgrade is additive (swap the format, add tonemap into the resolve).
-  Confirm the surface's current sample count at implementation.
+- **MSAA / format.** Resolved: the surface is single-sample today (all pipelines
+  use `MultisampleState::default()` count 1; depth `sample_count: 1`). `scene_color`
+  is single-sample, surface format (LDR); the resolve is a true identity blit so
+  byte-identical parity is achievable. M9's HDR upgrade (swap format + add tonemap
+  into the resolve) stays additive.
 - **Idle cost.** Routing through `scene_color` adds one fullscreen resolve every
   frame even at rest — the standard cost of a compositor, accepted. The effect
   math is ALU on top; no extra pass when effects are active.

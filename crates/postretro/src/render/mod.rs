@@ -11,6 +11,8 @@ pub mod frame_timing;
 pub mod loaded_texture;
 pub mod mesh_instances;
 pub mod mesh_pass;
+#[cfg(feature = "dev-tools")]
+pub mod nav_diagnostics;
 pub mod sdf_atlas;
 pub mod sdf_shadow;
 pub mod sh_compose;
@@ -1233,6 +1235,10 @@ pub struct Renderer {
 
     #[cfg(feature = "dev-tools")]
     debug_lines: debug_lines::DebugLineRenderer,
+    /// Navmesh overlay toggle, flipped by `Alt+Shift+N`. Read at the emit call
+    /// site to decide whether to push region/portal debug lines this frame.
+    #[cfg(feature = "dev-tools")]
+    show_navmesh: bool,
 
     lighting_isolation: LightingIsolation,
 
@@ -2775,6 +2781,8 @@ impl Renderer {
             wireframe_enabled: false,
             #[cfg(feature = "dev-tools")]
             debug_lines,
+            #[cfg(feature = "dev-tools")]
+            show_navmesh: false,
             lighting_isolation: LightingIsolation::Normal,
             dynamic_direct_isolation: DynamicDirectIsolation::Combined,
             sdf_shadow_mode: SdfShadowMode::On,
@@ -3767,6 +3775,29 @@ impl Renderer {
             visible_leaf_mask,
             &mut self.debug_lines,
         );
+    }
+
+    /// Emit navmesh diagnostic debug lines (region rectangles + portal edges)
+    /// from the runtime nav graph. No-op while the overlay is toggled off.
+    /// Must run after `clear_debug_lines` and before the frame's debug-line
+    /// pass, mirroring `emit_sh_diagnostics`.
+    #[cfg(feature = "dev-tools")]
+    pub fn emit_nav_diagnostics(&mut self, graph: &crate::nav::NavGraph) {
+        if !self.show_navmesh {
+            return;
+        }
+        nav_diagnostics::emit(graph, &mut self.debug_lines);
+    }
+
+    /// Flip the navmesh overlay on/off. Bound to `Alt+Shift+N`.
+    #[cfg(feature = "dev-tools")]
+    pub fn toggle_navmesh_overlay(&mut self) -> bool {
+        self.show_navmesh = !self.show_navmesh;
+        log::info!(
+            "[Renderer] Navmesh overlay: {}",
+            if self.show_navmesh { "on" } else { "off" },
+        );
+        self.show_navmesh
     }
 
     pub fn toggle_wireframe(&mut self) -> bool {

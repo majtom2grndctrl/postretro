@@ -23,6 +23,7 @@ pub mod lightmap_bake;
 pub mod lightmap_layer;
 pub mod map_data;
 pub mod map_format;
+pub mod navmesh_bake;
 pub mod pack;
 pub mod parse;
 pub mod partition;
@@ -421,6 +422,71 @@ fn main() -> anyhow::Result<()> {
     if args.verbose {
         bvh_build::log_stats(&bvh_section);
     }
+
+    progress.start_stage("NavMesh bake...");
+    let stage_start = Instant::now();
+    // Walkable navigation graph baked from the extracted geometry's triangles
+    // (already filtered to empty, non-exterior leaf faces). `None` when no
+    // walkable region survives — the section is then omitted and the build still
+    // succeeds (SDF-atlas precedent). Cached on blake3(postcard(geo_result) ||
+    // postcard(nav params)), mirroring the SDF stage's `SdfInputs` hash.
+    let navmesh_section = {
+        let nav_input_hash = {
+            let mut buf =
+                postcard::to_allocvec(&geo_result).expect("postcard serialize geo_result");
+            buf.extend_from_slice(
+                &postcard::to_allocvec(&map_data.nav_params)
+                    .expect("postcard serialize nav params"),
+            );
+            *blake3::hash(&buf).as_bytes()
+        };
+        let nav_key = cache::CacheKey::new(
+            "navmesh",
+            navmesh_bake::NAVMESH_STAGE_VERSION,
+            &nav_input_hash,
+        );
+
+        // Cache stores the section's `to_bytes()`; an empty payload is the
+        // sentinel for a cached "no walkable region" result (no section).
+        let cached = stage_cache.as_ref().and_then(|c| c.get(&nav_key));
+        match cached {
+            Some(bytes) if bytes.is_empty() => {
+                log::info!("[cache] navmesh hit (no walkable region)");
+                None
+            }
+            Some(bytes) => {
+                match postretro_level_format::navmesh::NavMeshSection::from_bytes(&bytes) {
+                    Ok(section) => {
+                        log::info!("[cache] navmesh hit");
+                        Some(section)
+                    }
+                    Err(e) => {
+                        log::warn!("[cache] corrupt navmesh entry, re-baking: {e}");
+                        let section = navmesh_bake::bake_navmesh(&geo_result, &map_data.nav_params);
+                        if let Some(ref c) = stage_cache {
+                            c.put(
+                                &nav_key,
+                                &section.as_ref().map(|s| s.to_bytes()).unwrap_or_default(),
+                            );
+                        }
+                        section
+                    }
+                }
+            }
+            None => {
+                log::info!("[cache] navmesh miss");
+                let section = navmesh_bake::bake_navmesh(&geo_result, &map_data.nav_params);
+                if let Some(ref c) = stage_cache {
+                    c.put(
+                        &nav_key,
+                        &section.as_ref().map(|s| s.to_bytes()).unwrap_or_default(),
+                    );
+                }
+                section
+            }
+        }
+    };
+    timings.push(("NavMesh", stage_start.elapsed()));
 
     progress.start_stage("Lightmap bake...");
     let stage_start = Instant::now();
@@ -980,6 +1046,7 @@ fn main() -> anyhow::Result<()> {
         &fog_volumes_section,
         fog_cell_masks_section.as_ref(),
         sdf_atlas_section.as_ref(),
+        navmesh_section.as_ref(),
     )?;
     timings.push(("Packing", stage_start.elapsed()));
 

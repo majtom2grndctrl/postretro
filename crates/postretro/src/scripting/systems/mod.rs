@@ -10,6 +10,7 @@ pub(crate) mod emitter_bridge;
 pub(crate) mod flash_decay;
 pub(crate) mod fog_volume_bridge;
 pub(crate) mod health;
+pub(crate) mod hit_zones;
 pub(crate) mod input_mode;
 pub(crate) mod light_bridge;
 pub(crate) mod mesh_anim;

@@ -19,6 +19,7 @@ pub mod light_influence;
 pub mod light_tags;
 pub mod lightmap;
 pub mod map_entity;
+pub mod navmesh;
 pub mod octahedral;
 pub mod portals;
 pub mod prm;
@@ -201,6 +202,13 @@ pub enum SectionId {
     /// probe grid is byte-identical in position. Stored BC6H-compressed at rest.
     /// See `direct_sh_volume::DirectShVolumeSection`.
     DirectShVolume = 35,
+
+    /// Baked navigation graph: convex walkable regions joined by portals (the
+    /// pathfinding query surface — A* over regions, funnel over portal
+    /// segments). Records the canonical agent parameters it was baked with.
+    /// `portal_count == 0` is valid (a single isolated region); a present
+    /// section always carries `region_count >= 1`. See `navmesh::NavMeshSection`.
+    NavMesh = 36,
 }
 
 impl SectionId {
@@ -229,6 +237,7 @@ impl SectionId {
             33 => Some(Self::SdfAtlas),
             34 => Some(Self::OctahedralShVolume),
             35 => Some(Self::DirectShVolume),
+            36 => Some(Self::NavMesh),
             _ => None,
         }
     }

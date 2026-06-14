@@ -55,6 +55,12 @@ pub enum DiagnosticAction {
     /// without `dev-tools`, this variant and its chord are absent.
     #[cfg(feature = "dev-tools")]
     ToggleDebugPanel,
+    /// Toggle the in-world navmesh overlay (region rectangles + portal edges).
+    /// Bound to `Alt+Shift+N`. Drawn through the renderer's debug-line pass from
+    /// the loaded `NavMeshSection`. Feature-gated: without `dev-tools`, this
+    /// variant and its chord are absent.
+    #[cfg(feature = "dev-tools")]
+    ToggleNavOverlay,
 }
 
 /// A modifier+key combination bound to a diagnostic action.
@@ -171,6 +177,12 @@ pub fn default_diagnostic_chords() -> Vec<DiagnosticChord> {
             key: KeyCode::Backquote,
             action: DiagnosticAction::ToggleDebugPanel,
         },
+        #[cfg(feature = "dev-tools")]
+        DiagnosticChord {
+            modifiers: Modifiers::ALT_SHIFT,
+            key: KeyCode::KeyN,
+            action: DiagnosticAction::ToggleNavOverlay,
+        },
     ]
 }
 
@@ -252,6 +264,16 @@ mod tests {
         d.handle_key(KeyCode::AltLeft, true, false);
         let action = d.handle_key(KeyCode::Backquote, true, false);
         assert_eq!(action, Some(DiagnosticAction::ToggleDebugPanel));
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn alt_shift_n_fires_toggle_nav_overlay() {
+        let mut d = fresh();
+        d.handle_key(KeyCode::ShiftLeft, true, false);
+        d.handle_key(KeyCode::AltLeft, true, false);
+        let action = d.handle_key(KeyCode::KeyN, true, false);
+        assert_eq!(action, Some(DiagnosticAction::ToggleNavOverlay));
     }
 
     #[test]

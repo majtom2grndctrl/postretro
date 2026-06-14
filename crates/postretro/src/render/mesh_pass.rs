@@ -52,12 +52,12 @@ use wgpu::util::DeviceExt;
 
 use crate::model::anim::{BlendSource, LocalTrs};
 use crate::model::mesh::SkinnedMesh;
+use crate::model::sample_params::{ClipSample, FadeSource, MeshSampleParams, SnapshotTag};
 use crate::model::skeleton::{AnimationClip, Skeleton};
 use crate::model::{BonePaletteEntry, ModelHandle};
 use crate::prl::LevelWorld;
 use crate::render::mesh_instances::{
-    ClipSample, FadeSource, JointCounts, MAX_INSTANCES, MAX_PALETTE_ENTRIES, MeshFramePlan,
-    MeshSampleParams, SnapshotTag, instance_casts_into_cone,
+    JointCounts, MAX_INSTANCES, MAX_PALETTE_ENTRIES, MeshFramePlan, instance_casts_into_cone,
 };
 use crate::visibility::VisibleCells;
 
@@ -434,7 +434,7 @@ impl SnapshotStore {
     /// list); a missing clip aborts the capture (no usable pose).
     fn apply_capture<'a>(
         &mut self,
-        capture: &crate::render::mesh_instances::CaptureInstruction,
+        capture: &crate::model::sample_params::CaptureInstruction,
         skeleton: &Skeleton,
         resolve_clip: impl Fn(usize) -> Option<&'a AnimationClip>,
         scratch: &mut Vec<LocalTrs>,
@@ -2744,10 +2744,10 @@ mod tests {
     // capture degrade-to-fallback, idempotent capture, and the store lifecycle.
 
     use crate::model::anim::Loop as AnimLoop;
-    use crate::model::skeleton::{Joint, JointTracks, RestLocal, Skeleton, Track};
-    use crate::render::mesh_instances::{
+    use crate::model::sample_params::{
         CaptureInstruction, ClipSample, FadeSource, MeshFade, MeshSampleParams,
     };
+    use crate::model::skeleton::{Joint, JointTracks, RestLocal, Skeleton, Track};
     use glam::{Mat4, Quat};
 
     /// Single-root skeleton with identity inverse-bind, so a palette entry's

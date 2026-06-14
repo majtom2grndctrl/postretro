@@ -71,7 +71,11 @@ mod tests {
 
     fn spawn_health(reg: &mut EntityRegistry, max: f32) -> EntityId {
         let id = reg.spawn(Transform::default());
-        let health = HealthComponent::from_descriptor(&HealthDescriptor { max, hitbox: None });
+        let health = HealthComponent::from_descriptor(&HealthDescriptor {
+            max,
+            hitbox: None,
+            zone_multipliers: std::collections::HashMap::new(),
+        });
         reg.set_component(id, health).unwrap();
         id
     }

@@ -1,5 +1,5 @@
 // glTF → engine skinned-model loader (CPU-only; no wgpu).
-// See: context/lib/rendering_pipeline.md §9 · context/lib/build_pipeline.md §Baked texture mips
+// See: context/lib/rendering_pipeline.md §9 · context/lib/build_pipeline.md §Baked texture mips · context/lib/entity_model.md §7
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -32,6 +32,19 @@ pub struct Submesh {
     pub indices: std::ops::Range<u32>,
 }
 
+/// A skeletal hit zone authored on a joint node's per-node `extras`. Read at
+/// load time and carried parallel to [`Skeleton::joints`] (see
+/// [`LoadedModel::joint_zones`]). The radius is stored **as-is** — the 0.12 m
+/// default is applied by the downstream hit-zone consumer, not here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JointZone {
+    /// Author-supplied zone tag (e.g. "head", "torso").
+    pub tag: String,
+    /// Optional zone radius in meters, exactly as authored. `None` when the
+    /// joint node omits `hitZoneRadius`; the consumer applies its own default.
+    pub radius: Option<f32>,
+}
+
 /// A model loaded from glTF: one skinned mesh, its skeleton, its animation
 /// clips, the per-primitive submeshes (material key + index range), and the
 /// author-supplied entity tags read from the document's top-level `extras`.
@@ -56,6 +69,11 @@ pub struct LoadedModel {
     /// They are returned but currently unused; map placement tags are separate.
     /// Empty when `extras` or `tags` is absent or malformed.
     pub tags: Vec<String>,
+    /// Per-joint skeletal hit zones, parallel to [`Skeleton::joints`] (entry `i`
+    /// describes joint `i`). `None` when the joint node carries no zone `extras`
+    /// or the value is malformed — a garbled zone degrades to no zone, never a
+    /// load error. Empty for a static model loaded through the no-skin path.
+    pub joint_zones: Vec<Option<JointZone>>,
 }
 
 /// Errors surfaced while loading a glTF model. Every malformed/unsupported input
@@ -185,6 +203,36 @@ fn read_model_tags(extras: &gltf::json::Extras) -> Vec<String> {
     }
 }
 
+/// The shape of a joint node's per-node `extras` this loader cares about.
+/// Unknown keys are ignored so authors can stash arbitrary metadata; the zone
+/// is meaningful only when `hitZone` is present (see [`read_joint_zone`]).
+#[derive(Debug, Deserialize)]
+struct JointZoneExtras {
+    #[serde(rename = "hitZone")]
+    hit_zone: Option<String>,
+    /// Radius in meters, stored as-is (no default applied here).
+    #[serde(rename = "hitZoneRadius")]
+    hit_zone_radius: Option<f32>,
+}
+
+/// Read a single joint node's hit zone off its per-node `extras`
+/// (`gltf::Node::extras()` — NOT the document-level extras).
+///
+/// Absent `extras`, a deserialize failure (wrong shape), or a missing `hitZone`
+/// tag all yield `None` — a zone is author metadata, not load-critical data, so
+/// a garbled value degrades to no zone for that joint rather than failing the
+/// load. The radius is carried as authored; the downstream consumer applies the
+/// default when it is `None`.
+fn read_joint_zone(extras: &gltf::json::Extras) -> Option<JointZone> {
+    let raw = extras.as_ref()?;
+    let parsed = serde_json::from_str::<JointZoneExtras>(raw.get()).ok()?;
+    let tag = parsed.hit_zone?;
+    Some(JointZone {
+        tag,
+        radius: parsed.hit_zone_radius,
+    })
+}
+
 /// Load a skinned model from a glTF file at `path`.
 ///
 /// Parses one mesh (all primitives merged into a single interleaved stream), its
@@ -226,9 +274,14 @@ pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
     // topo order; `node_to_topo` reindexes animation channel targets (node
     // indices) into the same topo order.
     let skin = document.skins().next();
-    let (skeleton, skin_joint_to_topo, node_to_topo) = match skin.as_ref() {
+    let (skeleton, joint_zones, skin_joint_to_topo, node_to_topo) = match skin.as_ref() {
         Some(skin) => build_skeleton(skin, &buffers, &path_str)?,
-        None => (Skeleton::default(), HashMap::new(), HashMap::new()),
+        None => (
+            Skeleton::default(),
+            Vec::new(),
+            HashMap::new(),
+            HashMap::new(),
+        ),
     };
 
     // --- Mesh -------------------------------------------------------------
@@ -260,6 +313,7 @@ pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
         clips,
         submeshes,
         tags,
+        joint_zones,
     })
 }
 
@@ -267,7 +321,12 @@ pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
 /// remap. glTF `JOINTS_0` attributes and animation targets reference joints by
 /// their **skin-joint index** (position in `skin.joints()`); the renderer wants
 /// joints parent-before-child, so we re-order and carry the remap.
-type SkeletonMaps = (Skeleton, HashMap<usize, usize>, HashMap<usize, usize>);
+type SkeletonMaps = (
+    Skeleton,
+    Vec<Option<JointZone>>,
+    HashMap<usize, usize>,
+    HashMap<usize, usize>,
+);
 
 fn build_skeleton(
     skin: &gltf::Skin,
@@ -305,6 +364,15 @@ fn build_skeleton(
                 scale: Vec3::from(s),
             }
         })
+        .collect();
+
+    // Hit zone per skin joint, read from each joint NODE's per-node `extras`
+    // (NOT the document-level extras). Indexed by skin-joint index, exactly like
+    // `rest_locals`, so the same `topo_order` remap below realigns it with the
+    // final topo-ordered joints. A missing/malformed value is `None` (no zone).
+    let rest_zones: Vec<Option<JointZone>> = skin
+        .joints()
+        .map(|node| read_joint_zone(node.extras()))
         .collect();
 
     // Parent map among joint nodes: walk every joint node's children; any child
@@ -404,7 +472,19 @@ fn build_skeleton(
         })
         .collect();
 
-    Ok((Skeleton { joints }, skin_joint_to_topo, node_to_topo))
+    // Reindex the zone table through the SAME remap `joints` use, so entry `i`
+    // describes topo-joint `i`. A skin joint with no zone stays `None`.
+    let joint_zones: Vec<Option<JointZone>> = topo_order
+        .iter()
+        .map(|&skin_idx| rest_zones.get(skin_idx).cloned().flatten())
+        .collect();
+
+    Ok((
+        Skeleton { joints },
+        joint_zones,
+        skin_joint_to_topo,
+        node_to_topo,
+    ))
 }
 
 /// Load every primitive of `mesh` into one merged interleaved stream, remapping
@@ -1118,6 +1198,134 @@ mod tests {
         // The `None` arm (no `extras` block at all) yields no tags.
         let extras: gltf::json::Extras = None;
         assert!(read_model_tags(&extras).is_empty());
+    }
+
+    // --- Per-node extras → joint hit zones ---------------------------------
+
+    /// Build a `gltf::json::Extras` from a raw-JSON string (the same shape the
+    /// `extras` feature surfaces off a node), for driving `read_joint_zone`
+    /// directly. Mirrors the malformed-tags helper test's construction.
+    fn extras_from_raw(raw: &str) -> gltf::json::Extras {
+        let boxed: Box<serde_json::value::RawValue> =
+            serde_json::from_str(raw).expect("test raw JSON parses");
+        Some(boxed)
+    }
+
+    #[test]
+    fn read_joint_zone_reads_tag_and_radius() {
+        // A well-formed per-node `extras` with both fields yields a zone whose
+        // tag and radius are carried as authored (no default substituted).
+        let extras = extras_from_raw(r#"{ "hitZone": "head", "hitZoneRadius": 0.2 }"#);
+        let zone = read_joint_zone(&extras).expect("present hitZone yields a zone");
+        assert_eq!(zone.tag, "head");
+        assert_eq!(zone.radius, Some(0.2));
+    }
+
+    #[test]
+    fn read_joint_zone_radius_absent_stays_none_no_default() {
+        // `hitZone` present but `hitZoneRadius` omitted → tag carried, radius
+        // stays `None`. The 0.12 m default is the downstream consumer's job,
+        // never applied here at load time.
+        let extras = extras_from_raw(r#"{ "hitZone": "torso" }"#);
+        let zone = read_joint_zone(&extras).expect("present hitZone yields a zone");
+        assert_eq!(zone.tag, "torso");
+        assert_eq!(zone.radius, None, "no default radius applied at load");
+    }
+
+    #[test]
+    fn read_joint_zone_untagged_or_malformed_yields_none() {
+        // Every absent/untagged/malformed shape degrades to no zone (never a
+        // load error). Mirrors the malformed-tags helper test: a missing
+        // `hitZone`, a wrong-typed field, an unrelated object, and non-object
+        // JSON all collapse to `None`.
+        for raw in [
+            r#"{ "someOtherTool": "metadata" }"#, // no hitZone tag
+            r#"{ "hitZone": 42 }"#,               // hitZone wrong type
+            r#"{ "hitZone": "head", "hitZoneRadius": "big" }"#, // radius wrong type
+            r#"[1, 2, 3]"#,                       // not an object
+            r#""a bare string""#,                 // scalar
+        ] {
+            let extras = extras_from_raw(raw);
+            assert!(
+                read_joint_zone(&extras).is_none(),
+                "malformed/untagged per-node extras {raw} must yield no zone",
+            );
+        }
+    }
+
+    #[test]
+    fn read_joint_zone_absent_extras_yields_none() {
+        // The `None` arm (a joint node with no `extras` block at all) → no zone.
+        let extras: gltf::json::Extras = None;
+        assert!(read_joint_zone(&extras).is_none());
+    }
+
+    fn joint_zones_fixture_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/joint_zones/joint_zones.gltf")
+    }
+
+    #[test]
+    fn joint_zones_populate_indexed_to_topo_order() {
+        // End-to-end: a skin whose joint nodes carry per-node `extras` loads its
+        // zones onto `LoadedModel.joint_zones`, INDEXED TO THE TOPO-ORDERED
+        // joints — not to `skin.joints()` order. The fixture lists its skin
+        // joints child-first (`[head_leaf, root, untagged_leaf]`) so a naive
+        // skin-order read would be mis-indexed; the topo remap must reorder so
+        // the root (parent) lands at topo 0.
+        let model = load_model(&joint_zones_fixture_path()).expect("joint-zones fixture loads");
+
+        // Topo order: root precedes its children (parent-before-child).
+        assert_eq!(model.skeleton.joints.len(), 3, "three joints");
+        assert_eq!(model.skeleton.joints[0].parent, None, "topo 0 is the root");
+        assert_eq!(
+            model.skeleton.joints[1].parent,
+            Some(0),
+            "topo 1 is a child"
+        );
+        assert_eq!(
+            model.skeleton.joints[2].parent,
+            Some(0),
+            "topo 2 is a child"
+        );
+
+        // The zone table is parallel to the topo-ordered joints.
+        assert_eq!(
+            model.joint_zones.len(),
+            model.skeleton.joints.len(),
+            "joint_zones parallel to skeleton.joints",
+        );
+
+        // Topo 0 (the root, skin-joint index 1): tagged "torso" with radius 0.5
+        // carried as-authored. If the read had used skin-joint order this slot
+        // would instead hold the head leaf's zone.
+        assert_eq!(
+            model.joint_zones[0],
+            Some(JointZone {
+                tag: "torso".to_string(),
+                radius: Some(0.5),
+            }),
+            "root joint's zone, correctly reindexed to topo 0",
+        );
+
+        // The two leaf joints (topo 1 and topo 2, in whatever order the topo
+        // sort settles them) cover the tagged-leaf and untagged-leaf cases:
+        //   - one leaf is tagged "head" with NO authored radius → its radius
+        //     stays `None` (the default is applied downstream, not here);
+        //   - one leaf carries `extras` with no `hitZone` tag → no zone at all,
+        //     never a load failure.
+        let leaf_zones = [&model.joint_zones[1], &model.joint_zones[2]];
+        assert!(
+            leaf_zones.contains(&&Some(JointZone {
+                tag: "head".to_string(),
+                radius: None,
+            })),
+            "a tagged leaf joint keeps tag 'head' with radius None, got {leaf_zones:?}",
+        );
+        assert!(
+            leaf_zones.contains(&&None),
+            "the untagged leaf joint (extras without hitZone) has no zone, got {leaf_zones:?}",
+        );
     }
 
     // --- Multi-clip fixture: full load path ----------------------------------

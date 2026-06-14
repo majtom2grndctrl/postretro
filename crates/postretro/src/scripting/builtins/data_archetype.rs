@@ -780,6 +780,7 @@ mod tests {
                     half_extents: [0.5, 1.0, 0.5],
                     offset: None,
                 }),
+                zone_multipliers: std::collections::HashMap::new(),
             }),
         }];
         let placements = vec![placement("target_dummy", &[])];

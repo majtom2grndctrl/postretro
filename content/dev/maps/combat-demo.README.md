@@ -10,9 +10,16 @@ player, so the player's HP (and the readonly `player.health` HUD slot) drops.
 ## Files
 
 - `content/dev/scripts/target-dummy.ts` — `defineEntity({ canonicalName:
-  "target_dummy", components: { mesh, health: { max, hitbox } } })`. The `max`
-  HP ceiling plus the `hitbox` AABB are what make the entity shootable. Registered
-  into the mod via `content/dev/start-script.ts`'s `setupMod()` `entities` array.
+  "target_dummy", components: { mesh, health: { max, hitbox, zoneMultipliers } } })`.
+  The `max` HP ceiling makes it shootable; `zoneMultipliers` scales damage by
+  where the ray lands. Registered into the mod via `content/dev/start-script.ts`'s
+  `setupMod()` `entities` array.
+- `content/dev/models/decraniated_low_poly_retro_pixel/scene.gltf` — the skinned
+  body. Its joint nodes carry `extras` zone tags (`head`, `torso`, `arm`, `leg`
+  with per-joint `hitZoneRadius`), making `target_dummy` a **zone-bearing** entity:
+  the engine raycasts against posed bone capsules (broad-phased by a clip-derived
+  bound), and the authored `hitbox` AABB is superseded. Only tagged joints
+  register hits.
 - `content/dev/scripts/player.ts` — the player archetype, which carries
   `health: { max: 100 }` and DELIBERATELY no `hitbox` (the player is not
   ray-targetable; this also forecloses self-hit). Its HP is driven only through
@@ -48,15 +55,25 @@ cargo run -p postretro -- content/dev/maps/combat-demo.prl
 
 ## What this demo proves
 
-The descriptor → `components.health` (with `hitbox`) → spawn → hitscan target →
+The descriptor → `components.health` (hitbox authored; superseded by posed-bone capsules for zone-bearing entities) → spawn → hitscan target →
 `apply_damage` chokepoint → death sweep path, end to end:
 
 - Each `target_dummy` (max 30 HP) spawns standing in front of the player. Aiming
   the reference pistol (12 damage/hit) at one and firing **takes 12 HP per hit**,
   routed through the `apply_damage` chokepoint, and the dummy **despawns on the
   third hit** (12 + 12 + 12 = 36 ≥ 30). Seeing it vanish is the proof that the
-  hitbox made it ray-targetable, the damage flowed through the chokepoint, and
-  the death sweep despawned it at zero HP.
+  posed-bone capsules (zone-bearing path) made it ray-targetable, the damage flowed
+  through the chokepoint, and the death sweep despawned it at zero HP.
+
+- **Hit zones (M10 skeletal hit zones).** Because the model's joints are tagged,
+  damage scales by where you hit: a **headshot deals 2.5×** (12 → 30, a one-shot
+  kill of the 30-HP dummy), a **leg shot 0.5×** (12 → 6), and torso/arm hits apply
+  1.0× (12). Aiming at the head vs. a leg and watching the HP drop differ — or the
+  dummy drop in one headshot vs. three torso shots — is the proof the posed-capsule
+  raycast and per-zone multiplier are live. Note hits register only on the tagged
+  limbs (head/torso/arms/legs); a ray between limbs misses even inside the body's
+  bounding box (the two-phase narrow test). There is no in-game capsule overlay —
+  verification is by observed damage, not a debug draw.
 
 - The `progress` reaction's denominator (4 tagged dummies) is captured at level
   load. At `at: 0.5`, killing **two** dummies crosses the threshold and fires the

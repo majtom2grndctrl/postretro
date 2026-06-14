@@ -13,6 +13,11 @@ mod lighting;
 mod material;
 mod model;
 mod movement;
+// The runtime nav query surface is consumed only by the dev-tools navmesh
+// overlay today; the future baked-pathfinding plan extends it. Allow dead code
+// so shipping (non-`dev-tools`) builds stay warning-free until that lands.
+#[allow(dead_code)]
+mod nav;
 mod options;
 mod weapon;
 
@@ -212,6 +217,46 @@ fn resolve_mesh_entity_clips(
     }
 }
 
+/// Level-load cross-check: for every archetype that declares both a mesh model
+/// and `health.zoneMultipliers`, warn ONCE per archetype per declared tag that
+/// names no zone on the spawned model. The unknown set is computed by the pure,
+/// unit-tested `unknown_zone_multiplier_tags`; this is a thin warn-only caller,
+/// modeled on `resolve_mesh_entity_clips`. An archetype whose model has no
+/// hit-zone entry (load failed, or an AABB-only model) treats every declared tag
+/// as unknown — the model carries no zones to satisfy them.
+fn warn_unknown_zone_multipliers(
+    descriptors: &[crate::scripting::data_descriptors::EntityTypeDescriptor],
+    store: &scripting_systems::hit_zones::HitZoneStore,
+) {
+    for desc in descriptors {
+        let (Some(mesh), Some(health)) = (desc.mesh.as_ref(), desc.health.as_ref()) else {
+            continue;
+        };
+        if health.zone_multipliers.is_empty() {
+            continue;
+        }
+        let handle = crate::model::ModelHandle::from(mesh.model.clone());
+        let declared = health.zone_multipliers.keys().map(String::as_str);
+        // A model with no hit-zone entry carries no zones: every declared tag is
+        // unknown. Pass an empty zone table so the cross-check reports them all.
+        let empty_zones: Vec<Option<crate::model::gltf_loader::JointZone>> = Vec::new();
+        let joint_zones = store
+            .get(&handle)
+            .map(|m| m.joint_zones.as_slice())
+            .unwrap_or(&empty_zones);
+        let unknown =
+            scripting_systems::hit_zones::unknown_zone_multiplier_tags(declared, joint_zones);
+        let archetype = desc.canonical_name.as_deref().unwrap_or("<unnamed>");
+        for tag in &unknown {
+            log::warn!(
+                "[HitZones] archetype '{archetype}' declares health.zoneMultipliers tag '{tag}' \
+                 absent from model '{}' — that multiplier never applies",
+                mesh.model,
+            );
+        }
+    }
+}
+
 // Policy chokepoint: the frame loop queues a staged build only when a changed
 // path matched the active mod-init dependency set (classified by ScriptRuntime).
 fn reload_summary_requires_mod_init(summary: ReloadSummary) -> bool {
@@ -344,6 +389,8 @@ fn main() -> Result<()> {
         audio: None,
         window_state: None,
         level: None,
+        #[cfg(feature = "dev-tools")]
+        nav_graph: None,
         map_path,
         content_root,
         exit_result: Ok(()),
@@ -436,6 +483,7 @@ fn main() -> Result<()> {
         particle_render: scripting_systems::particle_render::ParticleRenderCollector::new(),
         mesh_render: scripting_systems::mesh_render::MeshRenderCollector::new(),
         mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables::new(),
+        hit_zone_store: scripting_systems::hit_zones::HitZoneStore::new(),
         active_wieldable: None,
         active_wieldable_descriptor: None,
         builtin_handled: None,
@@ -507,6 +555,12 @@ struct App {
 
     window_state: Option<WindowState>,
     level: Option<prl::LevelWorld>,
+    /// Runtime navigation graph, built once when a level with a baked navmesh
+    /// loads. The future pathfinding plan reads this; today only the
+    /// `Alt+Shift+N` debug overlay consumes it, so it is dev-tools-gated to
+    /// stay dead-code-free in shipping builds.
+    #[cfg(feature = "dev-tools")]
+    nav_graph: Option<nav::NavGraph>,
 
     /// Map path resolved from CLI args. Handed to the level-load worker
     /// when it is spawned during the second splash frame.
@@ -767,6 +821,15 @@ struct App {
     /// resolves each mesh entity's `AnimationState.clip_index` against it. Cleared
     /// on level unload. See: context/lib/scripting.md §10.3.
     mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables,
+
+    /// Game-side skeletal hit-zone store: per model TYPE, the CPU skeleton,
+    /// clips, authored joint-zone table, and a derived broad-phase bound swept
+    /// from the clips. Re-loaded game-side (independent of the renderer's
+    /// moved-away copy) at the level-load model sweep and cleared on level
+    /// change, beside `mesh_clip_tables`. CPU-only — no wgpu. Nothing consumes it
+    /// yet besides tests; the Task 4 raycast facility threads it through.
+    /// See: context/lib/entity_model.md §7.
+    hit_zone_store: scripting_systems::hit_zones::HitZoneStore,
 
     /// Active wieldable instance equipped by the player. The companion
     /// descriptor name lets mod-init hot reload refresh authored weapon stats
@@ -2200,6 +2263,12 @@ impl ApplicationHandler for App {
                                     );
                                 }
                             }
+                            // Navmesh overlay: append region rectangles + portal
+                            // edges. No-op unless the `Alt+Shift+N` toggle is on
+                            // and the map carried a baked navmesh.
+                            if let Some(nav_graph) = self.nav_graph.as_ref() {
+                                renderer.emit_nav_diagnostics(nav_graph);
+                            }
                             out
                         };
 
@@ -3282,6 +3351,13 @@ impl App {
             debug_ui.sh_diagnostics_state.seeded = false;
         }
 
+        // Build the runtime navigation graph once, from the baked navmesh
+        // section. `None` when the map has no navmesh bake.
+        #[cfg(feature = "dev-tools")]
+        {
+            self.nav_graph = world.navmesh.as_ref().map(nav::NavGraph::from_section);
+        }
+
         // Stash the world after the mutations so downstream code paths that
         // read from `self.level` see the normalized vertices.
         self.level = Some(world);
@@ -3598,6 +3674,9 @@ impl App {
             // game-side clip tables before rebuilding them for this level.
             renderer.clear_mesh_pass_for_level_load();
             self.mesh_clip_tables.clear();
+            // The game-side hit-zone store is per-level transient too — clear it
+            // alongside the clip tables before this level's sweep rebuilds it.
+            self.hit_zone_store.clear();
 
             let models = {
                 let registry = self.script_ctx.registry.borrow();
@@ -3612,6 +3691,12 @@ impl App {
                 let meta = renderer.skinned_model_clip_metadata(model);
                 self.mesh_clip_tables
                     .insert(crate::model::ModelHandle::from(model.clone()), &meta);
+                // Build this model's game-side hit-zone entry by re-loading the
+                // glTF independently (the renderer moved its own skeleton + clips
+                // into the GPU layer). Keeps skeleton + clips + zone table and a
+                // derived broad-phase bound; a failed load installs nothing.
+                self.hit_zone_store
+                    .insert_from_load(model, &self.content_root);
             }
             if !models.is_empty() {
                 log::info!(
@@ -3628,6 +3713,15 @@ impl App {
             resolve_mesh_entity_clips(
                 &mut self.script_ctx.registry.borrow_mut(),
                 &self.mesh_clip_tables,
+            );
+
+            // Zone-multiplier cross-check: warn once per archetype per declared
+            // `health.zoneMultipliers` tag that names no zone on its mesh model.
+            // Runs here, alongside clip resolution, where the descriptors and the
+            // freshly rebuilt hit-zone store are both in hand.
+            warn_unknown_zone_multipliers(
+                &self.script_ctx.data_registry.borrow().entities,
+                &self.hit_zone_store,
             );
         }
         self.level_timings.record("model_load");
@@ -3749,18 +3843,45 @@ impl App {
             snapshot,
             &self.camera,
             &self.collision_world,
+            &self.hit_zone_store,
+            self.anim_time,
             tick_dt,
         );
-        if let Some(impact) = events.impact {
+        // Borrow the impact rather than move it out: `WeaponImpact` is no longer
+        // `Copy` (it carries a `zone: Option<String>` for skeletal hit-zone
+        // hits), and `event_names()` below still needs `events`.
+        if let Some(impact) = events.impact.as_ref() {
             weapon::spawn_impact_effect_at(&mut registry, impact.point, impact.normal);
             // Additive to the impact burst: when the nearest hit was an entity
             // hitbox, route the payload through the damage chokepoint. Spatial
-            // targeting rides on the impact (`target`), never inside the
-            // payload. The death sweep (run after this tick) resolves any kill.
+            // targeting (`target`) and zone identity (`zone`) ride on the impact,
+            // never inside the payload. The death sweep (run after this tick)
+            // resolves any kill.
+            //
+            // Per-zone scaling: a FRESH payload's `amount` is multiplied by the
+            // target's `HealthComponent.zone_multipliers` entry for the struck
+            // tag before the chokepoint. An absent zone OR an absent entry
+            // applies 1.0. `DamagePayload` stays amount-only — the zone never
+            // enters the payload (established invariant).
             if let (Some(target), weapon::ActivationOutcome::Hit(payload)) =
                 (impact.target, impact.outcome)
             {
-                apply_damage(&mut registry, target, &payload);
+                let multiplier = impact
+                    .zone
+                    .as_deref()
+                    .and_then(|tag| {
+                        registry
+                            .get_component::<crate::scripting::components::health::HealthComponent>(
+                                target,
+                            )
+                            .ok()
+                            .and_then(|health| health.zone_multipliers.get(tag).copied())
+                    })
+                    .unwrap_or(1.0);
+                let scaled = weapon::DamagePayload {
+                    amount: payload.amount * multiplier,
+                };
+                apply_damage(&mut registry, target, &scaled);
             }
         }
         events.event_names()
@@ -3984,6 +4105,12 @@ impl App {
                 } else {
                     InputFocus::Gameplay
                 });
+            }
+            #[cfg(feature = "dev-tools")]
+            DiagnosticAction::ToggleNavOverlay => {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.toggle_navmesh_overlay();
+                }
             }
         }
     }

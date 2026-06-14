@@ -140,20 +140,60 @@ fn blend_local(a: LocalTrs, b: LocalTrs, weight: f32) -> LocalTrs {
     }
 }
 
+/// Run the parent-before-child forward sweep, writing each joint's **world-space**
+/// transform (PRE-inverse-bind, one [`Mat4`] per joint, in skeleton/topo order)
+/// into `world`.
+///
+/// `local_of(i, joint)` returns joint `i`'s composed local transform (the
+/// single-clip path samples + composes a clip; the blend path composes an
+/// already-blended TRS). `world` is cleared then filled to
+/// `skeleton.joints.len()`, so a steady-state call with a reused buffer performs
+/// no heap allocation.
+///
+/// This is the shared hierarchy core: the world poses it produces are what the
+/// skinning palette multiplies by each joint's inverse-bind matrix
+/// ([`compose_palette`]) and what the world-joint samplers
+/// ([`sample_clip_looped_world`], [`sample_blended_world`]) expose directly for
+/// hit-zone / attachment queries. Factoring the sweep here keeps both paths on
+/// exactly the same forward composition.
+fn compose_world_pose(
+    skeleton: &Skeleton,
+    world: &mut Vec<Mat4>,
+    mut local_of: impl FnMut(usize, &Joint) -> Mat4,
+) {
+    let joint_count = skeleton.joints.len();
+    world.clear();
+    world.reserve(joint_count);
+
+    for (i, joint) in skeleton.joints.iter().enumerate() {
+        let local = local_of(i, joint);
+
+        // Forward sweep: parent-before-child topo order guarantees the
+        // parent's world matrix is already in `world` when we reach a child.
+        let world_pose = match joint.parent {
+            Some(p) => world[p] * local,
+            None => local,
+        };
+        world.push(world_pose);
+    }
+}
+
 /// Compose a per-joint local-matrix function into the skinning palette: run the
-/// parent-before-child forward sweep and apply each joint's inverse-bind matrix,
-/// writing one [`BonePaletteEntry`] per joint into `out`.
+/// parent-before-child forward sweep ([`compose_world_pose`]) and apply each
+/// joint's inverse-bind matrix, writing one [`BonePaletteEntry`] per joint into
+/// `out`.
 ///
 /// `local_of(i, joint)` returns joint `i`'s composed local transform (the
 /// single-clip path samples + composes a clip; the blend path composes an
 /// already-blended TRS). Both `out` and the world-pose scratch are cleared then
 /// filled, so a steady-state call with a reused `out` performs no heap
-/// allocation. The hierarchy compose + inverse-bind sweep happens **once** here —
-/// the blend path resolves its per-joint blend before this, never inside it.
+/// allocation. The hierarchy compose happens **once** here (in the shared core),
+/// then the inverse-bind multiply runs per joint — the blend path resolves its
+/// per-joint blend before this, never inside it.
 fn compose_palette(
     skeleton: &Skeleton,
     out: &mut Vec<BonePaletteEntry>,
-    mut local_of: impl FnMut(usize, &Joint) -> Mat4,
+    local_of: impl FnMut(usize, &Joint) -> Mat4,
 ) {
     let joint_count = skeleton.joints.len();
     out.clear();
@@ -161,22 +201,11 @@ fn compose_palette(
 
     WORLD_POSE_SCRATCH.with(|cell| {
         let mut world = cell.borrow_mut();
-        world.clear();
-        world.reserve(joint_count);
+        compose_world_pose(skeleton, &mut world, local_of);
 
-        for (i, joint) in skeleton.joints.iter().enumerate() {
-            let local = local_of(i, joint);
-
-            // Forward sweep: parent-before-child topo order guarantees the
-            // parent's world matrix is already in `world` when we reach a child.
-            let world_pose = match joint.parent {
-                Some(p) => world[p] * local,
-                None => local,
-            };
-            world.push(world_pose);
-
+        for (joint, world_pose) in skeleton.joints.iter().zip(world.iter()) {
             let inverse_bind = Mat4::from_cols_array_2d(&joint.inverse_bind);
-            let skinning = world_pose * inverse_bind;
+            let skinning = *world_pose * inverse_bind;
             out.push(BonePaletteEntry {
                 matrix: skinning.to_cols_array_2d(),
             });
@@ -263,6 +292,68 @@ pub fn sample_blended(
         let mut locals = cell.borrow_mut();
         resolve_blend_into(a, b, weight, skeleton, &mut locals);
         compose_palette(skeleton, out, |i, _joint| locals[i].to_mat4());
+    });
+}
+
+/// Sample `clip` at `time` (seconds) under `loop_policy` against `skeleton`,
+/// writing each joint's **world-space** transform (PRE-inverse-bind, one
+/// [`Mat4`] per joint, in skeleton/topo order) into `out`.
+///
+/// The world-pose counterpart of [`sample_clip_looped`]: same inputs, same
+/// forward hierarchy compose ([`compose_world_pose`]) — but it stops at the
+/// composed world joint transform instead of multiplying by the inverse-bind
+/// matrix. That is the joint's placement in model space, which hit-zone /
+/// attachment queries need (the skinning palette's inverse-bind product is not a
+/// joint position; it maps bind-space vertices, so it is the wrong space for
+/// locating a joint). Multiplying each output by that joint's inverse-bind matrix
+/// recovers the skinning palette exactly.
+///
+/// Reuse: pass the same `out` every frame. `out` is cleared then filled to
+/// `skeleton.joints.len()`, so a steady-state call performs no heap allocation —
+/// the same contract as the palette samplers.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn sample_clip_looped_world(
+    clip: &AnimationClip,
+    skeleton: &Skeleton,
+    time: f32,
+    loop_policy: Loop,
+    out: &mut Vec<Mat4>,
+) {
+    let t = resolve_time(clip.duration, time, loop_policy);
+    compose_world_pose(skeleton, out, |i, joint| {
+        // The clip's per-joint tracks are parallel to skeleton joints, but a
+        // static-model / mismatched clip may be shorter — fall back to rest.
+        sample_local_pose(clip.joints.get(i), &joint.rest_local, t)
+    });
+}
+
+/// Blend two sources at `weight` (`0.0` → `a`, `1.0` → `b`) into per-joint
+/// **world-space** transforms (PRE-inverse-bind, one [`Mat4`] per joint, in
+/// skeleton/topo order), writing into `out`.
+///
+/// The world-pose counterpart of [`sample_blended`]: same per-joint local blend
+/// (see [`blend_local`]) resolved through the same scratch, same single forward
+/// compose ([`compose_world_pose`]) — but it stops at the composed world joint
+/// transform instead of multiplying by the inverse-bind matrix (see
+/// [`sample_clip_looped_world`] for why hit-zone / attachment queries want the
+/// world pose, not the skinning matrix). Multiplying each output by that joint's
+/// inverse-bind matrix recovers the blended skinning palette exactly.
+///
+/// Reuse `out` across frames: a thread-local TRS scratch is reused and `out` is
+/// cleared then refilled, so steady-state world-pose blending allocates nothing —
+/// the same contract as [`sample_blended`].
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn sample_blended_world(
+    a: &BlendSource,
+    b: &BlendSource,
+    weight: f32,
+    skeleton: &Skeleton,
+    out: &mut Vec<Mat4>,
+) {
+    BLEND_LOCAL_SCRATCH.with(|cell| {
+        let mut locals = cell.borrow_mut();
+        resolve_blend_into(a, b, weight, skeleton, &mut locals);
+        compose_world_pose(skeleton, out, |i, _joint| locals[i].to_mat4());
     });
 }
 
@@ -1113,6 +1204,168 @@ mod tests {
             rest_child.scale,
             "joint 1 holds rest scale",
         );
+    }
+
+    /// A two-joint skeleton with NON-IDENTITY inverse-bind matrices on both
+    /// joints, so `worldPose * inverseBind` is a meaningful transform — an
+    /// identity inverse-bind would let the world/palette comparison pass even if
+    /// the factored core were wrong.
+    fn two_joint_skeleton_nonidentity_ib() -> (Skeleton, Mat4, Mat4) {
+        let root_ib = Mat4::from_translation(Vec3::new(-2.0, 1.0, 0.0));
+        let child_ib = Mat4::from_scale_rotation_translation(
+            Vec3::new(2.0, 2.0, 2.0),
+            Quat::from_rotation_x(0.7),
+            Vec3::new(0.0, -5.0, 3.0),
+        );
+        let skeleton = Skeleton {
+            joints: vec![
+                joint(
+                    None,
+                    root_ib,
+                    RestLocal {
+                        translation: Vec3::new(2.0, 0.0, 0.0),
+                        ..Default::default()
+                    },
+                ),
+                joint(
+                    Some(0),
+                    child_ib,
+                    RestLocal {
+                        translation: Vec3::new(0.0, 3.0, 0.0),
+                        ..Default::default()
+                    },
+                ),
+            ],
+        };
+        (skeleton, root_ib, child_ib)
+    }
+
+    /// The world-joint sampler's output, multiplied per joint by that joint's
+    /// inverse-bind matrix, equals the skinning palette for the SAME single-clip
+    /// inputs (with a loop policy). Non-identity inverse-binds make the per-joint
+    /// multiply load-bearing, so this proves the shared forward-sweep core
+    /// produces the world pose the palette path applies inverse-bind to.
+    #[test]
+    fn world_clip_sampler_times_inverse_bind_equals_palette() {
+        let (skeleton, root_ib, child_ib) = two_joint_skeleton_nonidentity_ib();
+        // Animate the child translation so the pose is non-trivial at the sampled
+        // time, and use Clamp past the end so the loop policy is exercised too.
+        let child_tracks = JointTracks {
+            translation: Track {
+                times: vec![0.0, 2.0],
+                values: vec![Vec3::new(0.0, 3.0, 0.0), Vec3::new(4.0, 3.0, -1.0)],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let clip = translation_clip("walk", 2.0, vec![JointTracks::default(), child_tracks]);
+
+        let ibs = [root_ib, child_ib];
+        for (time, policy) in [(0.5, Loop::Wrap), (3.0, Loop::Clamp), (2.1, Loop::Wrap)] {
+            let mut palette = Vec::new();
+            sample_clip_looped(&clip, &skeleton, time, policy, &mut palette);
+            let mut world = Vec::new();
+            sample_clip_looped_world(&clip, &skeleton, time, policy, &mut world);
+
+            assert_eq!(world.len(), skeleton.joints.len());
+            for (j, ib) in ibs.iter().enumerate() {
+                let recovered = world[j] * *ib;
+                assert_mat4_eq(
+                    recovered,
+                    Mat4::from_cols_array_2d(&palette[j].matrix),
+                    &format!(
+                        "joint {j} worldPose*inverseBind == palette (time={time}, {policy:?})"
+                    ),
+                );
+            }
+        }
+    }
+
+    /// Same equivalence for a two-source blend at a weight: the world-joint
+    /// blend sampler's output, multiplied per joint by the inverse-bind matrix,
+    /// equals the blended skinning palette. Non-identity inverse-binds again make
+    /// the comparison meaningful.
+    #[test]
+    fn world_blend_sampler_times_inverse_bind_equals_palette() {
+        let (skeleton, root_ib, child_ib) = two_joint_skeleton_nonidentity_ib();
+        let clip_a = constant_pose_clip(
+            "a",
+            Vec3::new(1.0, 2.0, 0.0),
+            Quat::from_rotation_z(0.4),
+            Vec3::splat(1.0),
+        );
+        let clip_b = constant_pose_clip(
+            "b",
+            Vec3::new(-3.0, 0.0, 2.0),
+            Quat::from_rotation_y(1.2),
+            Vec3::splat(1.5),
+        );
+        let src_a = BlendSource::Clip {
+            clip: &clip_a,
+            time: 0.0,
+            loop_policy: Loop::Wrap,
+        };
+        let src_b = BlendSource::Clip {
+            clip: &clip_b,
+            time: 0.0,
+            loop_policy: Loop::Wrap,
+        };
+
+        let ibs = [root_ib, child_ib];
+        for weight in [0.0, 0.35, 1.0] {
+            let mut palette = Vec::new();
+            sample_blended(&src_a, &src_b, weight, &skeleton, &mut palette);
+            let mut world = Vec::new();
+            sample_blended_world(&src_a, &src_b, weight, &skeleton, &mut world);
+
+            assert_eq!(world.len(), skeleton.joints.len());
+            for (j, ib) in ibs.iter().enumerate() {
+                let recovered = world[j] * *ib;
+                assert_mat4_eq(
+                    recovered,
+                    Mat4::from_cols_array_2d(&palette[j].matrix),
+                    &format!(
+                        "joint {j} blended worldPose*inverseBind == palette (weight={weight})"
+                    ),
+                );
+            }
+        }
+    }
+
+    /// The world-joint samplers honor the caller-reused-buffer allocation
+    /// contract: `out` is cleared/resized to the joint count, and a warmed
+    /// steady-state call neither reallocates `out` nor changes the result.
+    #[test]
+    fn world_samplers_reuse_out_buffer_steady_state() {
+        let (skeleton, _, _) = two_joint_skeleton_nonidentity_ib();
+        let clip = translation_clip(
+            "rest",
+            1.0,
+            vec![JointTracks::default(), JointTracks::default()],
+        );
+
+        // Stale, oversized buffer must be cleared and resized to the joint count.
+        let mut out = vec![Mat4::from_scale(Vec3::splat(9.0)); 5];
+        sample_clip_looped_world(&clip, &skeleton, 0.0, Loop::Wrap, &mut out);
+        assert_eq!(
+            out.len(),
+            skeleton.joints.len(),
+            "out resized to joint count"
+        );
+
+        // Warm so capacity is sized, then assert steady-state reuse allocates
+        // nothing and stays deterministic.
+        let cap = out.capacity();
+        let first = out.clone();
+        for _ in 0..16 {
+            sample_clip_looped_world(&clip, &skeleton, 0.0, Loop::Wrap, &mut out);
+        }
+        assert_eq!(
+            out.capacity(),
+            cap,
+            "world clip sampler does not reallocate out"
+        );
+        assert_eq!(out, first, "world clip sampler reuse is deterministic");
     }
 
     /// Steady-state blended sampling reuses both thread-locals and the caller's

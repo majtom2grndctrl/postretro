@@ -4014,7 +4014,11 @@ mod tests {
         registry
             .set_component(
                 id,
-                HealthComponent::from_descriptor(&HealthDescriptor { max, hitbox: None }),
+                HealthComponent::from_descriptor(&HealthDescriptor {
+                    max,
+                    hitbox: None,
+                    zone_multipliers: std::collections::HashMap::new(),
+                }),
             )
             .unwrap();
         id
@@ -4030,6 +4034,7 @@ mod tests {
                     &HealthDescriptor {
                         max: new_max,
                         hitbox: None,
+                        zone_multipliers: std::collections::HashMap::new(),
                     },
                 )),
             }],

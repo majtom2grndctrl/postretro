@@ -6,8 +6,9 @@ use std::collections::HashMap;
 
 use super::mesh_anim::{self, MeshClipTables};
 use crate::model::ModelHandle;
+use crate::model::sample_params::MeshSampleParams;
 use crate::prl::LevelWorld;
-use crate::render::mesh_instances::{MeshInstanceInput, MeshSampleParams};
+use crate::render::mesh_instances::MeshInstanceInput;
 use crate::render::mesh_pass::mesh_visible;
 use crate::scripting::registry::{ComponentKind, ComponentValue, EntityRegistry, Transform};
 use crate::visibility::VisibleCells;
@@ -297,7 +298,7 @@ fn resolve_sample(
     seed: u32,
 ) -> (
     MeshSampleParams,
-    Option<crate::render::mesh_instances::CaptureInstruction>,
+    Option<crate::model::sample_params::CaptureInstruction>,
 ) {
     let table = tables.get(handle);
 
@@ -318,7 +319,7 @@ fn resolve_sample(
     // Stateless / unresolved / un-uploaded: today's behavior. The primary clip is
     // index 0; phase folds in against its duration (0 if the model is uncached).
     let duration = table.and_then(|t| t.duration(0)).unwrap_or(0.0);
-    let phase = crate::render::mesh_instances::instance_phase(seed, duration);
+    let phase = crate::model::sample_params::instance_phase(seed, duration);
     (MeshSampleParams::stateless(anim_time as f32 + phase), None)
 }
 
@@ -336,7 +337,7 @@ fn current_state_phase(
         .and_then(|s| s.clip_index)
         .and_then(|i| table.duration(i))
         .unwrap_or(0.0);
-    crate::render::mesh_instances::instance_phase(seed, duration)
+    crate::model::sample_params::instance_phase(seed, duration)
 }
 
 impl Default for MeshRenderCollector {
@@ -411,6 +412,7 @@ mod tests {
             fog_pixel_scale: 4,
             initial_gravity: -9.81,
             fog_cell_masks: None,
+            navmesh: None,
         }
     }
 
@@ -606,7 +608,7 @@ mod tests {
 
     use crate::model::ModelHandle;
     use crate::model::anim::Loop;
-    use crate::render::mesh_instances::FadeSource;
+    use crate::model::sample_params::FadeSource;
     use crate::render::mesh_pass::ClipMetadata;
     use crate::scripting::components::mesh::{AnimationState, InterruptPolicy, MeshAnimation};
     use crate::scripting::components::mesh::{

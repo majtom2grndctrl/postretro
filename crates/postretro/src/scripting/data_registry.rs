@@ -44,6 +44,12 @@ impl DataRegistry {
         let LevelManifest {
             reactions,
             crossings,
+            // Level-scope UI trees are drained off the manifest and registered
+            // into the app-side `UiTreeRegistry` at the level-load drain point
+            // (main.rs), before this `populate_from_manifest` consumes the rest.
+            // They are not engine-global data-registry state, so nothing lands
+            // here.
+            ui_trees: _,
         } = manifest;
         self.reactions.extend(reactions);
         self.crossings.extend(crossings);
@@ -158,6 +164,7 @@ mod tests {
                 }),
             }],
             crossings: Vec::new(),
+            ui_trees: Vec::new(),
         }
     }
 

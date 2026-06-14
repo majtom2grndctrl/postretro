@@ -3,6 +3,8 @@
 // envelope. Pure data — no rendering, no taffy, no retained tree.
 // See: context/lib/ui.md
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use super::layout::Anchor;
@@ -312,15 +314,87 @@ pub struct TextWidget {
     pub style_ranges: Option<StyleRanges>,
 }
 
-/// State binding for a `text` widget. `slot` is a dotted slot name (e.g.
-/// `"player.health"`) read from the frame's snapshot; `format` is an optional
-/// template with a single `{}` placeholder substituted by the resolved value's
-/// string form. With `format` absent, the value's default string form is drawn.
-/// Multi-value templates are out of scope — one `{}` max.
+/// The source a widget bind reads from — the `{ slot }` vs `{ local }` wire
+/// alternative shared by every bound widget (M13 G1b, Task 5). Untagged so the
+/// wire form stays a flat sibling key inside the bind object: a store binding is
+/// `{ "slot": "player.health" }`; a presentation-cell binding is
+/// `{ "local": "count" }`. The two are disjoint (each carries a different key),
+/// so serde's untagged dispatch is unambiguous.
+///
+/// `Slot` is declared FIRST so a bind object carrying a `slot` key lands on it
+/// (untagged variants are tried in declaration order). `Slot` references the
+/// authoritative store by dotted name; `Local` references a presentation cell
+/// declared on the nearest ancestor's `localState` scope BY NAME — the scope id
+/// is resolved at tree-build time against the nearest declaring ancestor, never
+/// authored on the bind itself (so the bind stays scope-agnostic and the same
+/// descriptor round-trips byte-identically).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum BindSource {
+    /// Authoritative store slot read by dotted name (`"player.health"`).
+    Slot { slot: String },
+    /// Presentation cell read by name from the nearest `localState` scope.
+    Local { local: String },
+}
+
+impl BindSource {
+    /// The store slot name when this is a `{ slot }` binding, else `None`. The
+    /// retained tree's tween/styleRanges paths that read the raw store snapshot
+    /// use this; a `{ local }` binding has no store slot.
+    pub fn slot(&self) -> Option<&str> {
+        match self {
+            BindSource::Slot { slot } => Some(slot),
+            BindSource::Local { .. } => None,
+        }
+    }
+}
+
+/// Declared initial value for a presentation cell (M13 G1b, Task 5). Mirrors the
+/// `SlotValue` shapes a bind resolves: a number, boolean, string, or length-4
+/// linear-RGBA array. Untagged so the wire form is a bare JSON scalar/array —
+/// `{ "count": 0 }`, `{ "flash": [1,0,0,1] }` — with no wrapper object. `Number`
+/// is declared first so an integral JSON literal lands on it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum CellInit {
+    Number(f64),
+    Boolean(bool),
+    Array([f32; 4]),
+    String(String),
+}
+
+/// Presentation-cell scope declared on a container (M13 G1b, Task 5). `scope` is
+/// a stable id (author-supplied or SDK-stabilized) addressable from BOTH the app
+/// stage (cell writes) and the render stage (`{ local }` bind resolution). `cells`
+/// maps each cell name to its declared initial value, used to seed the app-side
+/// cell store the first time this scope is composed.
+///
+/// This is presentation-only state — NOT the authoritative store (`ui.md` §3/§6):
+/// no schema, no persistence, no dotted-name namespace. `cells` is a `BTreeMap`
+/// so serialization is deterministic (stable key order) and the descriptor
+/// round-trips byte-identically.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LocalState {
+    pub scope: String,
+    pub cells: BTreeMap<String, CellInit>,
+}
+
+/// State binding for a `text` widget. The bind source is either a `{ slot }`
+/// store binding (a dotted slot name like `"player.health"`) or a `{ local }`
+/// presentation-cell binding, flattened into the bind object as a sibling of
+/// `format`/`tween`. `format` is an optional template with a single `{}`
+/// placeholder substituted by the resolved value's string form; with `format`
+/// absent, the value's default string form is drawn. One `{}` max.
+//
+// `deny_unknown_fields` is omitted: it is incompatible with `#[serde(flatten)]`,
+// which the `source` alternative requires to keep `slot`/`local` flat siblings
+// of `format`/`tween`. The bind shape is otherwise closed by `BindSource`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TextBind {
-    pub slot: String,
+    #[serde(flatten)]
+    pub source: BindSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
     /// Optional value-tweening config (M13 UI Value-Tweening). When present, the
@@ -375,6 +449,13 @@ pub struct TextTween {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PanelWidget {
     pub fill: ColorValue,
+    // `default` (without `skip_serializing_if`) so an absent `border` key
+    // deserializes to `None` — the SDK Luau factory cannot emit an explicit
+    // `null` table value (the lua→json walker drops nil-valued keys), so a
+    // border-less panel omits the key. Serialization is unchanged: `None` still
+    // emits `border: null` (no skip), so every existing fixture round-trips
+    // byte-identically; only the *absent-key* input is newly accepted.
+    #[serde(default)]
     pub border: Option<Border>,
     /// Authored stable id (M13 Goal F, Task 3). See `TextWidget::id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -395,14 +476,19 @@ pub struct PanelWidget {
     pub style_ranges: Option<StyleRanges>,
 }
 
-/// State binding for a `panel` widget. `slot` is a dotted slot name whose value
-/// must be a `SlotValue::Array` of exactly 4 f32 (linear `[r, g, b, a]`); it
-/// replaces the literal `fill`. A wrong variant, wrong length, or absent slot
-/// falls back to the literal `fill` (see `tree::resolve_panel_fill`).
+/// Bind source for a `panel` widget: either a `{ slot }` dotted store name whose
+/// value must be a `SlotValue::Array` of exactly 4 f32 (linear `[r, g, b, a]`)
+/// replacing the literal `fill`, or a `{ local }` presentation-cell name. A wrong
+/// variant, wrong length, absent value, or undeclared cell falls back to the
+/// literal `fill` (see `tree::resolve_panel_fill`).
+//
+// `deny_unknown_fields` omitted — see `TextBind` (incompatible with the flattened
+// `source` alternative).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct PanelBind {
-    pub slot: String,
+    #[serde(flatten)]
+    pub source: BindSource,
     /// Optional value-tweening config (M13). When present, the tween runtime
     /// eases the resolved RGBA fill toward each new target over `duration_ms`.
     /// Absent on every pre-tweening bind, so a tween-less bind keeps its old wire
@@ -483,6 +569,13 @@ pub struct ContainerWidget {
     /// it returns focus here (M13 Goal F, Task 3). Skip-serialized when `false`.
     #[serde(default, skip_serializing_if = "is_false")]
     pub restore_on_return: bool,
+    /// Presentation-cell scope declared on this container (M13 G1b, Task 5). When
+    /// present, descendant `{ local }` binds resolve against the named cells, the
+    /// cells seed the app-side cell store, and the scope id keys the cell store +
+    /// the reconcile/clear sweep. Absent on every pre-G1b container, so a
+    /// localState-less container round-trips byte-identically (skip-serialized).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_state: Option<LocalState>,
     pub children: Vec<Widget>,
 }
 
@@ -560,7 +653,7 @@ pub struct ButtonWidget {
 /// within `[min, max]` and emit a `setState` write to the bound slot on the N+1
 /// frame. The slider renders its `label` and current numeric value as text.
 ///
-/// `bind` follows the `PanelBind`/`TextBind` shape (slot name + optional tween).
+/// `bind` follows the `PanelBind`/`TextBind` shape (`BindSource` + optional tween).
 /// `id` is required for the same reason as `ButtonWidget::id` — nav-capture and
 /// value-step resolve through the focused node id.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -584,13 +677,18 @@ pub struct SliderWidget {
     pub focus_neighbors: FocusNeighbors,
 }
 
-/// State binding for a `slider` widget. Mirrors `PanelBind`'s shape (slot name +
-/// optional tween) so the bind vocabulary stays uniform across bound widgets; a
-/// slider binds a numeric slot, so its tween is the `TextTween` (number) shape.
+/// Bind source for a `slider` widget: either a `{ slot }` dotted store name or a
+/// `{ local }` cell name; mirrors `PanelBind`'s `BindSource`-based shape so the
+/// bind vocabulary stays uniform across bound widgets. A slider binds a numeric
+/// value, so its tween follows the `TextTween` (number) shape.
+//
+// `deny_unknown_fields` omitted — see `TextBind` (incompatible with the flattened
+// `source` alternative).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SliderBind {
-    pub slot: String,
+    #[serde(flatten)]
+    pub source: BindSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tween: Option<TextTween>,
 }
@@ -1229,5 +1327,248 @@ mod tests {
         assert_eq!(reserialized, plain);
         assert!(!reserialized.contains("styleRanges"));
         assert!(!reserialized.contains("\"id\""));
+    }
+
+    // --- M13 G1a, Task 3: SDK widget/layout factory output validation ---
+    //
+    // The Task 5 deserialization bridge does not exist yet, so the SDK factories
+    // (sdk/lib/ui/widgets.{ts,luau}, layout.{ts,luau}) are validated here by
+    // round-tripping their EXACT emitted JSON through serde: each string below is
+    // the literal output of the matching TS factory call (captured by running the
+    // factories under bun). JS emits bare integers (`1`, not `1.0`) for whole
+    // floats and OMITS an absent panel `border`; deserializing into the `Widget`
+    // variant and re-serializing must yield the canonical wire form. This proves
+    // factory output is a valid descriptor and resolves to the locked wire shape.
+    //
+    // Each tuple is (factory-emitted JSON, canonical re-serialized JSON).
+    #[test]
+    fn sdk_factory_output_round_trips_to_canonical_wire_form() {
+        let cases: &[(&str, &str)] = &[
+            // Text() with defaults (fontSize 12, white color).
+            (
+                r#"{"kind":"text","content":"hello","fontSize":12,"color":[1,1,1,1]}"#,
+                r#"{"kind":"text","content":"hello","fontSize":12.0,"color":[1.0,1.0,1.0,1.0]}"#,
+            ),
+            // Text() with a bind carrying slot + format.
+            (
+                r#"{"kind":"text","content":"0","fontSize":18,"color":[1,1,1,1],"bind":{"slot":"player.health","format":"HP {}"}}"#,
+                r#"{"kind":"text","content":"0","fontSize":18.0,"color":[1.0,1.0,1.0,1.0],"bind":{"slot":"player.health","format":"HP {}"}}"#,
+            ),
+            // Text() bind with a tween (number-shape from).
+            (
+                r#"{"kind":"text","content":"0","fontSize":18,"color":[1,1,1,1],"bind":{"slot":"player.health","tween":{"durationMs":1200,"easing":"easeOut","from":0}}}"#,
+                r#"{"kind":"text","content":"0","fontSize":18.0,"color":[1.0,1.0,1.0,1.0],"bind":{"slot":"player.health","tween":{"durationMs":1200.0,"easing":"easeOut","from":0.0}}}"#,
+            ),
+            // Text() with styleRanges (token colors).
+            (
+                r#"{"kind":"text","content":"0","fontSize":18,"color":[1,1,1,1],"bind":{"slot":"player.health"},"styleRanges":{"max":100,"entries":[{"upTo":0.25,"color":"critical"},{"color":"ok"}]}}"#,
+                r#"{"kind":"text","content":"0","fontSize":18.0,"color":[1.0,1.0,1.0,1.0],"bind":{"slot":"player.health"},"styleRanges":{"max":100.0,"entries":[{"upTo":0.25,"color":"critical"},{"color":"ok"}]}}"#,
+            ),
+            // Panel() with a border.
+            (
+                r#"{"kind":"panel","fill":[0.1,0.2,0.3,1],"border":{"texture":"ui/frame","slice":[8,8,8,8],"tint":[1,1,1,1]}}"#,
+                r#"{"kind":"panel","fill":[0.1,0.2,0.3,1.0],"border":{"texture":"ui/frame","slice":[8.0,8.0,8.0,8.0],"tint":[1.0,1.0,1.0,1.0]}}"#,
+            ),
+            // Panel() with NO border: the factory omits the key; serde defaults it
+            // to None and re-serializes as `border:null` (the canonical form).
+            (
+                r#"{"kind":"panel","fill":[0.1,0.2,0.3,1]}"#,
+                r#"{"kind":"panel","fill":[0.1,0.2,0.3,1.0],"border":null}"#,
+            ),
+            // Panel() bind with a color-shape tween `from`.
+            (
+                r#"{"kind":"panel","fill":[0,0,0,1],"bind":{"slot":"intro.flashColor","tween":{"durationMs":300,"easing":"linear","from":[1,0,0,1]}}}"#,
+                r#"{"kind":"panel","fill":[0.0,0.0,0.0,1.0],"border":null,"bind":{"slot":"intro.flashColor","tween":{"durationMs":300.0,"easing":"linear","from":[1.0,0.0,0.0,1.0]}}}"#,
+            ),
+            // Image() — no bind.
+            (
+                r#"{"kind":"image","asset":"ui/logo"}"#,
+                r#"{"kind":"image","asset":"ui/logo"}"#,
+            ),
+            // Spacer() with explicit flexGrow.
+            (
+                r#"{"kind":"spacer","flexGrow":1}"#,
+                r#"{"kind":"spacer","flexGrow":1.0}"#,
+            ),
+            // Button() with a bare-name onPress.
+            (
+                r#"{"kind":"button","id":"resume","label":"Resume","onPress":"resumeGame"}"#,
+                r#"{"kind":"button","id":"resume","label":"Resume","onPress":"resumeGame"}"#,
+            ),
+            // Button() with a reaction-handle onPress (factory read `.name` → "fa").
+            (
+                r#"{"kind":"button","id":"a","label":"A","onPress":"fa"}"#,
+                r#"{"kind":"button","id":"a","label":"A","onPress":"fa"}"#,
+            ),
+            // Slider() with capturesNav.
+            (
+                r#"{"kind":"slider","id":"vol","label":"Volume","bind":{"slot":"audio.master"},"min":0,"max":1,"step":0.1,"capturesNav":["nav.left","nav.right"]}"#,
+                r#"{"kind":"slider","id":"vol","label":"Volume","bind":{"slot":"audio.master"},"min":0.0,"max":1.0,"step":0.1,"capturesNav":["nav.left","nav.right"]}"#,
+            ),
+            // Bar() plain.
+            (
+                r#"{"kind":"bar","bind":{"slot":"player.health"},"max":100,"fill":[0,1,0,1],"background":[0.1,0.1,0.1,1]}"#,
+                r#"{"kind":"bar","bind":{"slot":"player.health"},"max":100.0,"fill":[0.0,1.0,0.0,1.0],"background":[0.1,0.1,0.1,1.0]}"#,
+            ),
+            // VStack() with one child.
+            (
+                r#"{"kind":"vstack","gap":4,"padding":8,"align":"start","children":[{"kind":"text","content":"hi","fontSize":12,"color":[1,1,1,1]}]}"#,
+                r#"{"kind":"vstack","gap":4.0,"padding":8.0,"align":"start","children":[{"kind":"text","content":"hi","fontSize":12.0,"color":[1.0,1.0,1.0,1.0]}]}"#,
+            ),
+            // Grid() with one child.
+            (
+                r#"{"kind":"grid","gap":1,"padding":3,"align":"stretch","cols":2,"children":[{"kind":"image","asset":"ui/icon"}]}"#,
+                r#"{"kind":"grid","gap":1.0,"padding":3.0,"align":"stretch","cols":2,"children":[{"kind":"image","asset":"ui/icon"}]}"#,
+            ),
+            // Grid() with a detailed focus policy (wrap:false + repeat) and defaults.
+            (
+                r#"{"kind":"grid","gap":0,"padding":0,"align":"start","cols":2,"focus":{"policy":"spatial","wrap":false,"repeat":{"initialDelayMs":300,"intervalMs":80}},"children":[]}"#,
+                r#"{"kind":"grid","gap":0.0,"padding":0.0,"align":"start","cols":2,"focus":{"policy":"spatial","wrap":false,"repeat":{"initialDelayMs":300.0,"intervalMs":80.0}},"children":[]}"#,
+            ),
+        ];
+
+        for (emitted, canonical) in cases {
+            let widget: Widget = serde_json::from_str(emitted)
+                .unwrap_or_else(|e| panic!("factory output must deserialize: {emitted}\n{e}"));
+            let reserialized = serde_json::to_string(&widget).expect("must serialize");
+            assert_eq!(
+                &reserialized, canonical,
+                "factory output did not resolve to the canonical wire form:\nemitted:    {emitted}\nexpected:   {canonical}\nactual:     {reserialized}"
+            );
+        }
+    }
+
+    // --- M13 G1a, Task 4: SDK Tree(...) envelope factory output validation ---
+    //
+    // The Task 5 deserialization bridge does not exist yet, so the SDK `Tree(...)`
+    // factory (sdk/lib/ui/tree.{ts,luau}) is validated here by round-tripping its
+    // EXACT emitted JSON through the `AnchoredTree` serde model: each string below
+    // is the literal output of the matching TS factory call (captured by running
+    // `tree.ts` under bun). JS emits bare integers (`0`, not `0.0`); deserializing
+    // into `AnchoredTree` and re-serializing must yield the canonical wire form,
+    // proving the envelope is a valid descriptor that resolves to the locked shape.
+    //
+    // Each tuple is (factory-emitted JSON, canonical re-serialized JSON).
+    #[test]
+    fn sdk_tree_factory_output_round_trips_to_canonical_wire_form() {
+        let cases: &[(&str, &str)] = &[
+            // Tree() with captureMode OMITTED: the factory drops the key; serde
+            // defaults it to Passthrough and skip-serializes it back out.
+            (
+                r#"{"anchor":"center","offset":[0,0],"root":{"kind":"spacer","flexGrow":1}}"#,
+                r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"spacer","flexGrow":1.0}}"#,
+            ),
+            // Tree() with captureMode "passthrough": the factory drops the key too
+            // (passthrough round-trips to omission), identical to the omitted case.
+            (
+                r#"{"anchor":"center","offset":[0,0],"root":{"kind":"spacer","flexGrow":1}}"#,
+                r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"spacer","flexGrow":1.0}}"#,
+            ),
+            // Tree() with captureMode "capture": the factory emits the key; it
+            // deserializes to CaptureMode::Capture and re-serializes with the key.
+            (
+                r#"{"anchor":"center","offset":[0,0],"root":{"kind":"spacer","flexGrow":1},"captureMode":"capture"}"#,
+                r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"spacer","flexGrow":1.0},"captureMode":"capture"}"#,
+            ),
+            // Tree() with capture + initialFocus + textEntryTarget, non-zero offset.
+            (
+                r#"{"anchor":"topLeft","offset":[10,-20],"root":{"kind":"spacer","flexGrow":1},"captureMode":"capture","initialFocus":"btnA","textEntryTarget":"ui.textEntry"}"#,
+                r#"{"anchor":"topLeft","offset":[10.0,-20.0],"root":{"kind":"spacer","flexGrow":1.0},"captureMode":"capture","initialFocus":"btnA","textEntryTarget":"ui.textEntry"}"#,
+            ),
+        ];
+
+        for (emitted, canonical) in cases {
+            let tree: AnchoredTree = serde_json::from_str(emitted)
+                .unwrap_or_else(|e| panic!("Tree() output must deserialize: {emitted}\n{e}"));
+            let reserialized = serde_json::to_string(&tree).expect("must serialize");
+            assert_eq!(
+                &reserialized, canonical,
+                "Tree() output did not resolve to the canonical wire form:\nemitted:    {emitted}\nexpected:   {canonical}\nactual:     {reserialized}"
+            );
+        }
+
+        // The omitted and explicit-"passthrough" cases must both deserialize to
+        // the default Passthrough and emit NO captureMode key.
+        let passthrough: AnchoredTree = serde_json::from_str(
+            r#"{"anchor":"center","offset":[0,0],"root":{"kind":"spacer","flexGrow":1}}"#,
+        )
+        .expect("deserialize");
+        assert_eq!(passthrough.capture_mode, CaptureMode::Passthrough);
+        assert!(
+            !serde_json::to_string(&passthrough)
+                .unwrap()
+                .contains("captureMode")
+        );
+
+        // The explicit-"capture" case deserializes to Capture.
+        let capture: AnchoredTree = serde_json::from_str(
+            r#"{"anchor":"center","offset":[0,0],"root":{"kind":"spacer","flexGrow":1},"captureMode":"capture"}"#,
+        )
+        .expect("deserialize");
+        assert_eq!(capture.capture_mode, CaptureMode::Capture);
+    }
+
+    // --- M13 G1b, Task 5: localState + `{ local }` bind ---------------------
+
+    #[test]
+    fn local_state_less_container_round_trips_without_the_key() {
+        // The new `localState` field skip-serializes when absent, so a pre-G1b
+        // container is byte-identical across a round-trip (absent → no key).
+        let json = r#"{"kind":"vstack","gap":0.0,"padding":0.0,"align":"start","children":[]}"#;
+        let widget: Widget = serde_json::from_str(json).expect("must deserialize");
+        let reserialized = serde_json::to_string(&widget).expect("must serialize");
+        assert_eq!(reserialized, json);
+        assert!(
+            !reserialized.contains("localState"),
+            "absent localState emits no key"
+        );
+    }
+
+    #[test]
+    fn container_with_local_state_round_trips_byte_identically() {
+        // A container declaring a `localState` scope + cells keeps its wire form.
+        // Field order: gap, padding, align, localState (scope, cells), children.
+        // `cells` is a BTreeMap, so its keys serialize in stable sorted order.
+        let json = r#"{"kind":"vstack","gap":0.0,"padding":0.0,"align":"start","localState":{"scope":"counter","cells":{"count":0.0,"flash":[1.0,0.0,0.0,1.0]}},"children":[]}"#;
+        let widget: Widget = serde_json::from_str(json).expect("must deserialize");
+        let reserialized = serde_json::to_string(&widget).expect("must serialize");
+        assert_eq!(reserialized, json);
+    }
+
+    #[test]
+    fn bind_slot_and_local_alternatives_each_round_trip_in_their_own_form() {
+        // The bind source is an untagged `{ slot }` vs `{ local }` alternative: a
+        // store binding carries `slot`, a presentation-cell binding carries
+        // `local`, and each re-serializes byte-identically to the form authored.
+        let slot = r#"{"kind":"text","content":"0","fontSize":18.0,"color":[1.0,1.0,1.0,1.0],"bind":{"slot":"player.health"}}"#;
+        let w: Widget = serde_json::from_str(slot).expect("slot bind deserializes");
+        assert_eq!(serde_json::to_string(&w).unwrap(), slot);
+
+        let local = r#"{"kind":"text","content":"0","fontSize":18.0,"color":[1.0,1.0,1.0,1.0],"bind":{"local":"count"}}"#;
+        let w: Widget = serde_json::from_str(local).expect("local bind deserializes");
+        assert_eq!(serde_json::to_string(&w).unwrap(), local);
+    }
+
+    #[test]
+    fn local_bind_parses_into_the_local_source_variant() {
+        // Pin the variant the disjoint wire forms land on.
+        let bind: TextBind = serde_json::from_str(r#"{"local":"count"}"#).unwrap();
+        assert_eq!(
+            bind.source,
+            BindSource::Local {
+                local: "count".into()
+            }
+        );
+        let bind: TextBind = serde_json::from_str(r#"{"slot":"a.b"}"#).unwrap();
+        assert_eq!(bind.source, BindSource::Slot { slot: "a.b".into() });
+    }
+
+    #[test]
+    fn panel_local_bind_with_tween_round_trips() {
+        // A `{ local }` panel bind carrying a tween keeps its wire form — the
+        // flattened `local` source sits beside `tween`.
+        let json = r#"{"kind":"panel","fill":[0.0,0.0,0.0,1.0],"border":null,"bind":{"local":"flash","tween":{"durationMs":150.0,"easing":"linear"}}}"#;
+        let w: Widget = serde_json::from_str(json).expect("must deserialize");
+        assert_eq!(serde_json::to_string(&w).unwrap(), json);
     }
 }

@@ -9,6 +9,7 @@ use glyphon::{
     Metrics, Resolution, Shaping, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
     Viewport,
 };
+use std::path::Path;
 
 /// Engine default UI typeface: Inter (SIL Open Font License 1.1). Embedded at
 /// compile time so the engine has no main-thread runtime font file I/O — the
@@ -203,6 +204,23 @@ impl UiTextRenderer {
         buffers
     }
 
+    /// Register a font face at runtime from owned TTF/OTF bytes (the net-new
+    /// runtime counterpart to `build_font_system`'s compile-time `include_bytes!`
+    /// faces). Hands the bytes to cosmic-text's font database — `load_font_data`
+    /// takes ownership, the same call the embedded faces use — so a subsequent
+    /// `Family::Name(family)` shape resolves to this face. `family` is the family
+    /// name the asset declares in its TTF `name` table; it is logged for diagnosis
+    /// but the database keys faces by their own embedded name table, so the
+    /// caller's declared family must match what the file actually contains for a
+    /// `font` token to resolve to it. Returns `false` if the bytes register no
+    /// face under `family` (a malformed/empty file or a family-name mismatch), so
+    /// the caller can surface a load-time diagnostic and skip rather than leave a
+    /// `font` token silently resolving to a system fallback.
+    pub fn register_font(&mut self, family: &str, ttf_bytes: Vec<u8>) -> bool {
+        self.font_system.db_mut().load_font_data(ttf_bytes);
+        font_family_is_registered(&self.font_system, family)
+    }
+
     /// Borrow the CPU `FontSystem` for measurement — the GPU-free bridge into the
     /// taffy measure closure. `UiPass::layout_tree` threads this into
     /// `tree::UiTree::build_draw_data`, which hands it to taffy's
@@ -326,6 +344,34 @@ pub(crate) fn build_font_system() -> FontSystem {
         .db_mut()
         .load_font_data(UI_MONO_FONT_TTF.to_vec());
     font_system
+}
+
+/// Whether `family` resolves to a face the `FontSystem`'s database actually
+/// registered. cosmic-text keys faces by the family names in their own embedded
+/// `name` table, so a `load_font_data` of malformed/empty bytes — or a caller's
+/// declared family that doesn't match what the file contains — registers nothing
+/// queryable under `family`. `register_font` calls this AFTER loading so it can
+/// report a hard miss rather than leave a `font` token silently resolving to a
+/// system fallback. Pure CPU lookup over the cosmic-text DB; matches the same
+/// `face.families` scan the embedded-face registration tests use.
+pub(crate) fn font_family_is_registered(font_system: &FontSystem, family: &str) -> bool {
+    font_system
+        .db()
+        .faces()
+        .any(|face| face.families.iter().any(|(name, _)| name == family))
+}
+
+/// Read a runtime UI font file (TTF/OTF) from disk into owned bytes — the net-new
+/// runtime asset read that pairs with `register_font` (the embedded faces use
+/// compile-time `include_bytes!` and need no I/O). The caller resolves `path`
+/// against the active mod content root, which is itself cwd-relative at runtime
+/// per the `ui.md` §5 asset-path rule (the engine runs from the workspace root);
+/// `CARGO_MANIFEST_DIR` anchoring belongs only in `#[cfg(test)]` and is never
+/// baked in here. Returns the raw bytes on success; a read error propagates so
+/// the caller can surface a named load-time diagnostic and skip the font without
+/// aborting boot.
+pub(crate) fn read_font_file(path: &Path) -> std::io::Result<Vec<u8>> {
+    std::fs::read(path)
 }
 
 /// Measure a single text run's intrinsic size from real shaped-glyph metrics, in
@@ -522,5 +568,95 @@ mod tests {
         // Line height tracks font size by the single-line factor.
         let line_height = t.font_size * LINE_HEIGHT_FACTOR;
         assert_eq!(line_height, 90.0);
+    }
+
+    /// Path rule (ui.md §5): tests anchor to `CARGO_MANIFEST_DIR` (`../..` to the
+    /// workspace root) because `cargo test`'s cwd is the crate dir, while the
+    /// production loader resolves cwd-relative. The shipped Inter TTF stands in for
+    /// a mod-supplied runtime font here.
+    fn workspace_font(file_name: &str) -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("content/base/fonts")
+            .join(file_name)
+    }
+
+    #[test]
+    fn read_font_file_reads_ttf_bytes_from_disk() {
+        // The net-new runtime font read returns the raw file bytes (an sfnt
+        // header), the same input `register_font` hands to `load_font_data`.
+        let bytes = read_font_file(&workspace_font("Inter-Regular.ttf"))
+            .expect("shipped Inter TTF reads from the workspace-anchored path");
+        assert!(
+            bytes.len() > 1024,
+            "TTF looks truncated ({} bytes)",
+            bytes.len()
+        );
+        assert_eq!(
+            &bytes[0..4],
+            &[0x00, 0x01, 0x00, 0x00],
+            "sfnt/TrueType magic"
+        );
+    }
+
+    #[test]
+    fn read_font_file_missing_path_errors_for_caller_to_skip() {
+        // A missing file surfaces as an `Err` so the drain logs a named diagnostic
+        // and skips the font — it must not panic.
+        let err = read_font_file(Path::new("/nonexistent/mod/font.ttf"))
+            .expect_err("a missing font file is an error, not a panic");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn runtime_register_makes_a_new_family_resolvable() {
+        // The runtime install seam (`register_font` = `load_font_data` +
+        // `font_family_is_registered`) over a bare FontSystem: JetBrains Mono is
+        // NOT a `FontSystem::new()` default, so registering its bytes at runtime is
+        // what makes the family resolvable — proving the runtime path, distinct
+        // from the compile-time embedded faces. CPU-only (no GPU device).
+        let mut fs = FontSystem::new();
+        assert!(
+            !font_family_is_registered(&fs, UI_MONO_FONT_FAMILY),
+            "mono must not be registered before the runtime load",
+        );
+        let bytes = read_font_file(&workspace_font("JetBrainsMono-Regular.ttf"))
+            .expect("shipped mono TTF reads");
+        fs.db_mut().load_font_data(bytes);
+        assert!(
+            font_family_is_registered(&fs, UI_MONO_FONT_FAMILY),
+            "the runtime-loaded face must be queryable under its family",
+        );
+    }
+
+    #[test]
+    fn malformed_font_bytes_register_no_face_so_caller_can_skip() {
+        // `register_font` returns false (caller skips with a diagnostic) when the
+        // bytes register no face under the declared family. Garbage bytes are not a
+        // valid sfnt, so nothing registers — and the requested family stays
+        // unresolvable, never panicking.
+        let mut fs = FontSystem::new();
+        fs.db_mut().load_font_data(vec![0u8; 64]);
+        assert!(
+            !font_family_is_registered(&fs, "ModCustomFace"),
+            "malformed bytes register no face under the declared family",
+        );
+    }
+
+    #[test]
+    fn declared_family_mismatch_is_treated_as_a_miss() {
+        // The DB keys faces by their own embedded `name` table, so a valid TTF
+        // declared under the WRONG family name registers no face under that name —
+        // `register_font` reports the miss so the caller skips rather than leaving
+        // a `font` token resolving to a system fallback.
+        let mut fs = FontSystem::new();
+        let bytes = read_font_file(&workspace_font("Inter-Regular.ttf")).expect("Inter reads");
+        fs.db_mut().load_font_data(bytes);
+        assert!(
+            !font_family_is_registered(&fs, "NotTheRealFamilyName"),
+            "a family name the file does not contain must read as a miss",
+        );
+        // ...while the file's real family DID register.
+        assert!(font_family_is_registered(&fs, UI_FONT_FAMILY));
     }
 }

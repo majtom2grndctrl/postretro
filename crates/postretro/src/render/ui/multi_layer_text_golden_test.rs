@@ -103,6 +103,7 @@ fn layout_two_layers(pass: &mut UiPass) -> [UiDrawData; 2] {
     let theme = UiTheme::engine_default();
     let images = ImageSizes::new();
     let slots = std::collections::HashMap::new();
+    let cells = super::tree::CellValues::new();
 
     let lower = pass.layout_gameplay_tree(
         0,
@@ -110,6 +111,7 @@ fn layout_two_layers(pass: &mut UiPass) -> [UiDrawData; 2] {
         viewport,
         &images,
         &slots,
+        &cells,
         &theme,
         0,
         0.0,
@@ -120,6 +122,7 @@ fn layout_two_layers(pass: &mut UiPass) -> [UiDrawData; 2] {
         viewport,
         &images,
         &slots,
+        &cells,
         &theme,
         0,
         0.0,

@@ -95,6 +95,7 @@ fn composite_fixture() -> AnchoredTree {
             focus_neighbors: Default::default(),
             focus: None,
             restore_on_return: false,
+            local_state: None,
             children: vec![
                 Widget::HStack(ContainerWidget {
                     gap: SpacingValue::Literal(10.0),
@@ -106,6 +107,7 @@ fn composite_fixture() -> AnchoredTree {
                     focus_neighbors: Default::default(),
                     focus: None,
                     restore_on_return: false,
+                    local_state: None,
                     children: vec![text("HP 100", 24.0), text("ARMOR 50", 24.0)],
                 }),
                 Widget::Grid(GridWidget {
@@ -200,6 +202,7 @@ fn snapshot_carries_gameplay_tree_as_the_content_contract() {
     let snapshot = UiReadSnapshot::with_trees(
         vec![entry(composite_fixture())],
         std::collections::HashMap::new(),
+        crate::render::ui::tree::CellValues::new(),
         // This gate doesn't exercise tweening; a fixed synthetic time suffices.
         0.0,
         None,
@@ -233,6 +236,7 @@ fn with_trees_carries_the_passed_time() {
     let snapshot = UiReadSnapshot::with_trees(
         vec![entry(composite_fixture())],
         std::collections::HashMap::new(),
+        crate::render::ui::tree::CellValues::new(),
         t,
         None,
     );
@@ -253,6 +257,7 @@ fn snapshot_preserves_tree_painter_order_bottom_to_top() {
     let snapshot = UiReadSnapshot::with_trees(
         vec![bottom, top],
         std::collections::HashMap::new(),
+        crate::render::ui::tree::CellValues::new(),
         0.0,
         None,
     );
@@ -284,6 +289,7 @@ fn empty_gameplay_tree_early_outs_the_ui_pass() {
             focus_neighbors: Default::default(),
             focus: None,
             restore_on_return: false,
+            local_state: None,
             children: vec![],
         }),
         capture_mode: CaptureMode::Passthrough,

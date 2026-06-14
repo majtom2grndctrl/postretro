@@ -11,6 +11,7 @@ use std::sync::Mutex;
 use super::primitives_registry::{
     ParamInfo, PrimitiveRegistry, RegisteredType, ScriptPrimitive, TaggedVariant, TypeShape,
 };
+use super::slot_table::{SlotOwnership, SlotTable, SlotType};
 
 /// Strip `module::path::` qualification from a type name, returning just the
 /// final identifier. `type_name::<Foo>()` yields fully-qualified paths and we
@@ -146,7 +147,23 @@ fn rust_to_ts(ty_name: &str) -> String {
         "FogVolumeComponent" => "FogVolumeComponent".to_string(),
         "FogVolumeEntity" => "FogVolumeEntity".to_string(),
         "ModManifest" => "ModManifest".to_string(),
-        "StoreHandles" => "{ readonly [slot: string]: StateValue<string> }".to_string(),
+        "ModUiTree" => "ModUiTree".to_string(),
+        "ThemeTokens" => "ThemeTokens".to_string(),
+        // The `AnchoredTree` Rust type renders to the SDK's `AnchoredTreeDescriptor`
+        // — the flat envelope the `Tree` factory produces (declared in the static
+        // SDK lib block).
+        "AnchoredTree" => "AnchoredTreeDescriptor".to_string(),
+        // Theme/font token maps render as index-signature object types.
+        "ThemeColorMap" => {
+            "{ readonly [token: string]: readonly [number, number, number, number] }".to_string()
+        }
+        "FontFamilyMap" => "{ readonly [token: string]: string }".to_string(),
+        "ThemeSpacingMap" => "{ readonly [token: string]: number }".to_string(),
+        // `StoreHandles` (the `defineStore` return) is special-cased in
+        // `generate_typescript`: a hand-written generic `defineStore<const S>`
+        // in the static SDK block carries each slot's declared value type. It
+        // never reaches this mapping because `defineStore` skips registry-driven
+        // emission (mirroring `worldQuery`).
         other => {
             if warned_once(&format!("ts:{other}")) {
                 log::warn!(
@@ -256,7 +273,16 @@ fn rust_to_luau(ty_name: &str) -> String {
         "FogVolumeComponent" => "FogVolumeComponent".to_string(),
         "FogVolumeEntity" => "FogVolumeEntity".to_string(),
         "ModManifest" => "ModManifest".to_string(),
-        "StoreHandles" => "{ [string]: StateValue<string> }".to_string(),
+        "ModUiTree" => "ModUiTree".to_string(),
+        "ThemeTokens" => "ThemeTokens".to_string(),
+        "AnchoredTree" => "AnchoredTreeDescriptor".to_string(),
+        "ThemeColorMap" => "{ [string]: {number} }".to_string(),
+        "FontFamilyMap" => "{ [string]: string }".to_string(),
+        "ThemeSpacingMap" => "{ [string]: number }".to_string(),
+        // `StoreHandles` (the `defineStore` return) is special-cased in
+        // `generate_luau`: a hand-written `defineStore` declaration in the
+        // static SDK block supplies the handle map. It never reaches this
+        // mapping because `defineStore` skips registry-driven emission.
         other => {
             if warned_once(&format!("luau:{other}")) {
                 log::warn!(
@@ -428,6 +454,171 @@ fn emit_ts_type(ty: &RegisteredType, out: &mut String) {
     }
 }
 
+/// An engine-owned, read-only state slot grouped under its namespace, as the
+/// `postretro/game-state` module exposes it. Built from `SlotTable` so the
+/// handle group is generated from the engine slot registry, never hand-written.
+struct EngineSlotGroup {
+    namespace: String,
+    /// `(slot_name, value-type spelling)` pairs, sorted by slot name.
+    slots: Vec<(String, EngineSlotType)>,
+}
+
+/// The declared value type of an engine slot, language-agnostic so each
+/// generator renders its own spelling (TS string-literal unions vs. Luau).
+enum EngineSlotType {
+    Number,
+    Boolean,
+    String,
+    /// Enum value set; rendered as a string-literal union.
+    Enum(Vec<String>),
+    /// Numeric array (e.g. `screen.flash` RGBA).
+    Array,
+}
+
+/// Collect engine-owned, read-only slots grouped by namespace, sorted
+/// deterministically. `ui.textEntry` and any other writable engine slot is
+/// excluded — `game-state` is the read-only engine surface mods bind against;
+/// writable engine slots are reached through the `setState`/text-edit reactions.
+fn engine_slot_groups() -> Vec<EngineSlotGroup> {
+    let table = SlotTable::new();
+    let mut by_namespace: BTreeSet<String> = BTreeSet::new();
+    for (full_name, record) in table.iter() {
+        if record.schema.ownership == SlotOwnership::Engine && record.schema.readonly {
+            if let Some((namespace, _)) = full_name.split_once('.') {
+                by_namespace.insert(namespace.to_string());
+            }
+        }
+    }
+
+    by_namespace
+        .into_iter()
+        .map(|namespace| {
+            let prefix = format!("{namespace}.");
+            let mut slots: Vec<(String, EngineSlotType)> = table
+                .iter()
+                .filter(|(_, record)| {
+                    record.schema.ownership == SlotOwnership::Engine && record.schema.readonly
+                })
+                .filter_map(|(full_name, record)| {
+                    full_name.strip_prefix(&prefix).map(|slot_name| {
+                        let ty = match &record.schema.slot_type {
+                            SlotType::Number => EngineSlotType::Number,
+                            SlotType::Boolean => EngineSlotType::Boolean,
+                            SlotType::String => EngineSlotType::String,
+                            SlotType::Enum { values } => EngineSlotType::Enum(values.clone()),
+                            SlotType::Array => EngineSlotType::Array,
+                        };
+                        (slot_name.to_string(), ty)
+                    })
+                })
+                .collect();
+            slots.sort_by(|(a, _), (b, _)| a.cmp(b));
+            EngineSlotGroup { namespace, slots }
+        })
+        .collect()
+}
+
+impl EngineSlotType {
+    fn to_ts(&self) -> String {
+        match self {
+            EngineSlotType::Number => "number".to_string(),
+            EngineSlotType::Boolean => "boolean".to_string(),
+            EngineSlotType::String => "string".to_string(),
+            EngineSlotType::Enum(values) => values
+                .iter()
+                .map(|v| format!("\"{v}\""))
+                .collect::<Vec<_>>()
+                .join(" | "),
+            EngineSlotType::Array => "ReadonlyArray<number>".to_string(),
+        }
+    }
+
+    fn to_luau(&self) -> String {
+        match self {
+            EngineSlotType::Number => "number".to_string(),
+            EngineSlotType::Boolean => "boolean".to_string(),
+            EngineSlotType::String => "string".to_string(),
+            EngineSlotType::Enum(values) => values
+                .iter()
+                .map(|v| format!("\"{v}\""))
+                .collect::<Vec<_>>()
+                .join(" | "),
+            EngineSlotType::Array => "{number}".to_string(),
+        }
+    }
+}
+
+/// Emit the `postretro/game-state` module: a read-only typed handle group for
+/// the engine-owned slot namespaces, one named export per namespace. Each slot
+/// is a `ReadonlyStateValue<T>` (`.get()` only — engine slots are read-only to
+/// mods, so `.set()` is absent from the type). Generated from the engine slot
+/// registry. See: context/lib/scripting.md §5, context/lib/ui.md §3.
+fn emit_ts_game_state_module(out: &mut String) {
+    out.push('\n');
+    out.push_str("declare module \"postretro/game-state\" {\n");
+    out.push_str("  import { ReadonlyStateValue } from \"postretro\";\n");
+    out.push('\n');
+    out.push_str("  // Generated from the engine slot registry (engine-owned, read-only slots).\n");
+    out.push_str("  // Imported named: `import { player } from \"postretro/game-state\"`.\n");
+    for group in engine_slot_groups() {
+        out.push('\n');
+        writeln!(
+            out,
+            "  /** Read-only handles for the engine-owned `{ns}.*` slots. */",
+            ns = group.namespace,
+        )
+        .unwrap();
+        writeln!(out, "  export const {}: {{", group.namespace).unwrap();
+        for (slot_name, ty) in &group.slots {
+            writeln!(
+                out,
+                "    readonly {slot}: ReadonlyStateValue<{ty}>;",
+                slot = slot_name,
+                ty = ty.to_ts(),
+            )
+            .unwrap();
+        }
+        out.push_str("  };\n");
+    }
+    out.push_str("}\n");
+}
+
+/// Luau twin of `emit_ts_game_state_module`. luau-lsp resolves a sibling module
+/// via `require`; the handle group is declared as a typed module return. Each
+/// slot exposes `get()` only (read-only engine slots). Generated from the engine
+/// slot registry.
+fn emit_luau_game_state_module(out: &mut String) {
+    out.push('\n');
+    out.push_str(
+        "-- ---------------------------------------------------------------------------\n",
+    );
+    out.push_str("-- `postretro/game-state` — read-only typed handles for engine-owned slots.\n");
+    out.push_str("-- Generated from the engine slot registry. Required as a sibling module:\n");
+    out.push_str("--   local gameState = require(\"postretro/game-state\")\n");
+    out.push_str("-- Each slot exposes `:get()` only — engine slots are read-only to mods.\n");
+    for group in engine_slot_groups() {
+        out.push('\n');
+        writeln!(
+            out,
+            "--- Read-only handles for the engine-owned `{ns}.*` slots.",
+            ns = group.namespace,
+        )
+        .unwrap();
+        writeln!(out, "export type GameState_{} = {{", group.namespace).unwrap();
+        for (slot_name, ty) in &group.slots {
+            writeln!(
+                out,
+                "  {slot}: ReadonlyStateValue<{ty}>,",
+                slot = slot_name,
+                ty = ty.to_luau(),
+            )
+            .unwrap();
+        }
+        out.push_str("}\n");
+        writeln!(out, "declare {ns}: GameState_{ns}", ns = group.namespace,).unwrap();
+    }
+}
+
 pub(crate) fn generate_typescript(registry: &PrimitiveRegistry) -> String {
     let mut out = String::new();
     out.push_str(TS_HEADER);
@@ -440,6 +631,17 @@ pub(crate) fn generate_typescript(registry: &PrimitiveRegistry) -> String {
     }
 
     for p in visible_primitives(registry) {
+        // `defineStore` is special-cased like `worldQuery`: the registry return
+        // type (`StoreHandles`) is a uniform handle map and cannot express each
+        // slot's declared value type, which lives only in the runtime `schema`
+        // argument (absent at typedef emission). The static SDK lib block
+        // supplies a hand-written generic `defineStore<const S>` that infers
+        // `StateValue<number>` / `StateValue<boolean>` / `StateValue<string>`
+        // per slot, so skip registry-driven emission entirely (its doc comment
+        // travels with the static declaration).
+        if p.name == "defineStore" {
+            continue;
+        }
         out.push('\n');
         if !p.doc.is_empty() {
             writeln!(&mut out, "  /** {} */", p.doc).unwrap();
@@ -484,6 +686,7 @@ pub(crate) fn generate_typescript(registry: &PrimitiveRegistry) -> String {
 
     out.push_str(TS_SDK_LIB_BLOCK);
     out.push_str("}\n");
+    emit_ts_game_state_module(&mut out);
     out
 }
 
@@ -499,6 +702,7 @@ pub(crate) fn generate_typescript(registry: &PrimitiveRegistry) -> String {
 //   sdk/lib/entities/fog_volumes.ts
 //   sdk/lib/util/keyframes.ts
 //   sdk/lib/data_script.ts  (re-exported via index.ts)
+//   sdk/lib/ui/{text,widgets,layout,tree,state}.ts
 // Drift between this block and those files causes IDE types that don't match
 // runtime behavior. Update this block whenever an SDK lib signature changes.
 const TS_SDK_LIB_BLOCK: &str = r#"
@@ -694,7 +898,19 @@ const TS_SDK_LIB_BLOCK: &str = r#"
     crossings?: CrossingDescriptor[];
   };
 
-  /** Build a named reaction descriptor. Pure: returns a plain object, no FFI. */
+  /** Build a named reaction descriptor. Pure: returns a plain object, no FFI.
+   * The `name` argument is optional: when omitted a deterministic, run-stable id
+   * is derived from the descriptor body (content-derived, so re-running
+   * registration yields the same auto-id — crossings and the wire reference it).
+   * The returned handle is a `NamedReactionDescriptor`; pass it directly to a
+   * `Button`'s `onPress` or a crossing `fire` entry (typed, go-to-definition)
+   * instead of repeating the bare name string. */
+  export function defineReaction(
+    descriptor:
+      | ProgressReactionDescriptor
+      | PrimitiveReactionDescriptor
+      | SequenceReactionDescriptor,
+  ): NamedReactionDescriptor;
   export function defineReaction(
     name: string,
     descriptor:
@@ -703,11 +919,11 @@ const TS_SDK_LIB_BLOCK: &str = r#"
       | SequenceReactionDescriptor,
   ): NamedReactionDescriptor;
 
-  /** Build a state-crossing watcher. Pure: returns a plain object, no FFI. Place the result in `setupLevel`'s returned `crossings` array. The engine fires every reaction in `fire` exactly once on a crossing in the condition's direction, re-arming only after a crossing back; a registration against a non-Number slot warns and is skipped at load. */
+  /** Build a state-crossing watcher. Pure: returns a plain object, no FFI. Place the result in `setupLevel`'s returned `crossings` array. The engine fires every reaction in `fire` exactly once on a crossing in the condition's direction, re-arming only after a crossing back; a registration against a non-Number slot warns and is skipped at load. Each `fire` entry is a `defineReaction` handle (typed) or a bare reaction-name string (the shipped path); handles are reduced to their `.name`, so the wire `CrossingDescriptor.fire` stays a `string[]`. */
   export function onStateCrossing(
     slot: string,
     condition: CrossingCondition,
-    fire: string[],
+    fire: (NamedReactionDescriptor | string)[],
   ): CrossingDescriptor;
 
   /** System-reaction body: play `sound` through the M12 audio module on the optional named `bus` (omitted when undefined → engine default bus). Pure: returns a `PrimitiveReactionDescriptor`, no FFI. Pass to `defineReaction("name", playSound(...))`. */
@@ -747,9 +963,39 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   export function clearText(slot: string): PrimitiveReactionDescriptor;
 
   // -------------------------------------------------------------------------
+  // State-store handles (M13 G1a). `defineStore` is special-cased in the typedef
+  // generator (mirroring `worldQuery`): per-slot value types live only in the
+  // runtime `schema` argument, absent at typedef emission, so the typed handle
+  // map is supplied by this hand-written generic instead of registry emission.
+
+  /** A read-only typed slot handle for an engine-owned slot. `.get()` yields the directly-bindable bind reference a widget's `bind` prop accepts — the `{ slot }` wire shape (`SliderBindProp`), symmetric with the writable `StoreHandle<T>.get()`. No `.set()` — engine slots are read-only to mods (see `postretro/game-state`). `T` is the slot's declared value type; it is carried for documentation, the runtime wire form is the bare `{ slot }` ref either handle's `.get()` produces. */
+  export type ReadonlyStateValue<T> = { get(): SliderBindProp };
+
+  /** One slot's declaration inside the `defineStore` `schema` argument. The `type` discriminant selects the slot's value type; type-specific keys (`default`, `range`, `values`, …) are accepted alongside it. */
+  export type StoreSlotSchema = { type: "number" | "boolean" | "string" | "enum" | "array" } & Record<string, unknown>;
+
+  /** Maps one schema slot's `type` discriminant to its handle value type:
+   * `{type:"number"}` → `StateValue<number>`, `{type:"boolean"}` →
+   * `StateValue<boolean>`, every other type (`string`/`enum`/`array`) →
+   * `StateValue<string>` (the stable dotted-name handle is a branded string). */
+  export type StateValueForSlot<Slot> =
+    Slot extends { type: "number" } ? StateValue<number> :
+    Slot extends { type: "boolean" } ? StateValue<boolean> :
+    StateValue<string>;
+
+  /** Declare an engine-global typed state-store namespace during mod init. Every mod-owned slot requires a default. Supported types are number, boolean, string, enum, and array. Namespace registration is atomic and rejects existing or dotted-prefix-colliding namespaces. Returns an object keyed by slot name whose values are stable dotted-name handles carrying each slot's declared value type (`StateValue<number>` / `StateValue<boolean>` / `StateValue<string>`). Definition context. */
+  export function defineStore<const S extends Record<string, StoreSlotSchema>>(
+    namespace: string,
+    schema: S,
+  ): { readonly [K in keyof S]: StateValueForSlot<S[K]> };
+
+  // -------------------------------------------------------------------------
   // Interactive UI widget descriptors (M13 Goal F, Task 4). Authored as JSON in
   // a UI tree descriptor; the engine builds the retained tree from them. These
   // type-only aliases pin the wire shape (camelCase, internally tagged on `kind`).
+
+  /** The type of every user-facing text string a widget displays. A single alias (`= string` today) so a future localization scheme — message keys, ICU handles — is one edit, not a sweep across every text prop. */
+  export type LocalizedText = string;
 
   /** A widget color slot: an inline linear-RGBA tuple or a theme token name. */
   export type WidgetColor = [number, number, number, number] | string;
@@ -760,14 +1006,135 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   /** Continuous value→style map (M13 Goal E): fill fraction `value/max` maps to the first covering band; a trailing no-`upTo` band is the default. */
   export type WidgetStyleRanges = { max: number; entries: { upTo?: number; color?: WidgetColor; pulse?: { periodMs: number }; flash?: { durationMs: number } }[] };
 
-  /** Interactive button widget. Focusable; activation (gamepad confirm or pointer click) fires the `onPress` named reaction through the reaction registry. `id` is required (activation resolves the focused node id back to `onPress`). */
-  export type ButtonWidget = { kind: "button"; id: string; label: string; onPress: string; focusNeighbors?: Record<string, string> };
+  /** Interactive button widget. Focusable; activation (gamepad confirm or pointer click) fires the `onPress` named reaction through the reaction registry. `id` is required (activation resolves the focused node id back to `onPress`). `onPress` accepts a `defineReaction` handle (typed, go-to-definition) or a bare reaction-name string (the shipped path); the factory reads the handle's `.name` and emits the unchanged `onPress: string` wire form. */
+  export type ButtonWidget = { kind: "button"; id: string; label: string; onPress: NamedReactionDescriptor | string; focusNeighbors?: Record<string, string> };
 
   /** Interactive slider widget. Focusable; nav wires named in `capturesNav` (e.g. `["nav.left", "nav.right"]` — an array, not a bool) step the bound value by `step` within `[min, max]` and emit a `setState` write on the N+1 frame. */
   export type SliderWidget = { kind: "slider"; id: string; label: string; bind: SliderBind; min: number; max: number; step: number; capturesNav?: string[]; focusNeighbors?: Record<string, string> };
 
   /** Passive horizontal value bar. Fill fraction is `value/max` clamped to [0, 1]; `styleRanges` recolors the fill; a bind tween eases the displayed fraction. */
   export type BarWidget = { kind: "bar"; bind: SliderBind; max: number; fill: WidgetColor; background: WidgetColor; id?: string; styleRanges?: WidgetStyleRanges };
+
+  // -------------------------------------------------------------------------
+  // UI widget / layout / tree / state factories (M13 G1a). Pure builders
+  // installed as prelude globals: each returns the camelCase wire descriptor of
+  // the matching `render/ui/descriptor.rs` variant and throws a field-named
+  // `Error` on invalid props. Source of truth: sdk/lib/ui/{widgets,layout,tree,
+  // state}.ts. Containers and `Tree` take `children`/`root` as a POSITIONAL
+  // second argument (Compose/SwiftUI lineage), not a prop.
+
+  /** A spacing slot (gap/padding): an inline logical-px number or a theme token. */
+  export type WidgetSpacing = number | string;
+  /** Cross-axis alignment of a container's children. */
+  export type WidgetAlign = "start" | "center" | "end" | "stretch";
+  /** Easing curve for a value tween. */
+  export type WidgetEasing = "linear" | "easeIn" | "easeOut" | "easeInOut";
+  /** A branded store-handle value (a `StateValue<T>`): a branded `string` carrying the dotted slot name, carried in the `slot` field of the bind-ref returned by a handle's `.get()`. */
+  export type StoreHandleRef = string & { readonly __brand?: "StateValue" };
+  /** Number-shape value tween (text/slider/bar bind). */
+  export type NumberTween = { durationMs: number; easing: WidgetEasing; from?: number };
+  /** Color-shape value tween (panel bind). */
+  export type ColorTween = { durationMs: number; easing: WidgetEasing; from?: [number, number, number, number] };
+  /** A `{ local }` presentation-cell bind reference (`ui.createLocalState`). */
+  export type LocalBindRef = { local: string };
+  /** State binding for a `text` widget (`{ slot }` store or `{ local }` cell). */
+  export type TextBindProp = ({ slot: StoreHandleRef; local?: never } | LocalBindRef) & { format?: string; tween?: NumberTween };
+  /** State binding for a `panel` widget (color slot or `{ local }` cell). */
+  export type PanelBindProp = ({ slot: StoreHandleRef; local?: never } | LocalBindRef) & { tween?: ColorTween };
+  /** State binding shared by `slider`/`bar` (numeric slot or `{ local }` cell). */
+  export type SliderBindProp = ({ slot: StoreHandleRef; local?: never } | LocalBindRef) & { tween?: NumberTween };
+  /** One band in a `styleRanges` map. */
+  export type StyleRangeEntry = { upTo?: number; color?: WidgetColor; pulse?: { periodMs: number }; flash?: { durationMs: number } };
+  /** Continuous value→style map (text/panel/bar). */
+  export type StyleRangesProp = { max: number; entries: StyleRangeEntry[] };
+  /** 9-slice border descriptor. */
+  export type BorderProp = { texture: string; slice: [number, number, number, number]; tint: WidgetColor };
+  /** Per-direction focus-neighbor overrides; each direction names the node id focus jumps to. */
+  export type FocusNeighborsProp = { up?: string; down?: string; left?: string; right?: string };
+  /** Hold-to-repeat timing. */
+  export type RepeatPolicyProp = { initialDelayMs: number; intervalMs: number };
+  /** A typed reaction handle (`defineReaction` result) — anything carrying a `.name` string. */
+  export type ReactionHandleRef = { name: string };
+  /** The flat `kind`-tagged descriptor a widget factory produces. */
+  export type WidgetDescriptor = { kind: string; [field: string]: unknown };
+
+  /** Props for `Text`. `content` is `LocalizedText`. `fontSize` defaults to 12; `color` to opaque white. */
+  export type TextProps = { content: LocalizedText; fontSize?: number; color?: WidgetColor; font?: string; bind?: TextBindProp; styleRanges?: StyleRangesProp; id?: string; focusNeighbors?: FocusNeighborsProp };
+  /** A `text` leaf. An optional `bind` resolves the rendered string from a store slot; `styleRanges` recolors by value. */
+  export function Text(props: TextProps): WidgetDescriptor;
+
+  /** Props for `Panel`. `bind` is a `PanelBindProp` (color slot). */
+  export type PanelProps = { fill: WidgetColor; border?: BorderProp; bind?: PanelBindProp; styleRanges?: StyleRangesProp; id?: string; focusNeighbors?: FocusNeighborsProp };
+  /** A `panel` leaf: a solid `fill` with an optional 9-slice `border`. */
+  export function Panel(props: PanelProps): WidgetDescriptor;
+
+  /** Props for `Image`. No bind. */
+  export type ImageProps = { asset: string; id?: string; focusNeighbors?: FocusNeighborsProp };
+  /** An `image` leaf referencing a texture asset by key; sizes from the asset's natural dimensions. */
+  export function Image(props: ImageProps): WidgetDescriptor;
+
+  /** Props for `Spacer`. `flexGrow` defaults to 1. No bind. */
+  export type SpacerProps = { flexGrow?: number; id?: string };
+  /** A `spacer` leaf claiming a proportional share of leftover space. */
+  export function Spacer(props?: SpacerProps): WidgetDescriptor;
+
+  /** Props for `Button`. `onPress` is a reaction handle or a bare name string. No bind. */
+  export type ButtonProps = { id: string; label: LocalizedText; onPress: ReactionHandleRef | string; repeatOnHold?: RepeatPolicyProp; focusNeighbors?: FocusNeighborsProp };
+  /** An interactive `button`. `id` is required. `onPress` accepts a `defineReaction` handle (its `.name` is read) or a bare reaction-name string, emitting the unchanged `onPress: string` wire form. */
+  export function Button(props: ButtonProps): WidgetDescriptor;
+
+  /** Props for `Slider`. `bind` is a `SliderBindProp` (numeric slot); required. */
+  export type SliderProps = { id: string; label: LocalizedText; bind: SliderBindProp; min: number; max: number; step: number; capturesNav?: string[]; focusNeighbors?: FocusNeighborsProp };
+  /** An interactive `slider`. Nav wires in `capturesNav` step the bound value by `step` within `[min, max]`. */
+  export function Slider(props: SliderProps): WidgetDescriptor;
+
+  /** Props for `Bar`. `bind` is a `SliderBindProp` (numeric slot); required. */
+  export type BarProps = { bind: SliderBindProp; max: number; fill: WidgetColor; background: WidgetColor; styleRanges?: StyleRangesProp; id?: string };
+  /** A passive `bar`: fill fraction is `value/max` clamped to `[0, 1]`. `styleRanges` recolors the fill. */
+  export function Bar(props: BarProps): WidgetDescriptor;
+
+  /** Container focus traversal kind. */
+  export type FocusKind = "linear" | "spatial";
+  /** A container focus policy: a bare-string shorthand or a detailed object. */
+  export type FocusPolicyProp = FocusKind | { policy: FocusKind; wrap?: boolean; repeat?: RepeatPolicyProp };
+  /** Props for `VStack`/`HStack`. `gap`/`padding` default to 0, `align` to `"start"`. May carry a backdrop `fill`/`border`. */
+  export type StackProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; restoreOnReturn?: boolean; fill?: WidgetColor; border?: BorderProp };
+  /** Props for `Grid`. Adds the required `cols` (integer >= 1); no backdrop fill/border. */
+  export type GridProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; restoreOnReturn?: boolean; cols: number };
+
+  /** A vertical stack (`vstack`): `children` is a POSITIONAL second argument. */
+  export function VStack(props?: StackProps, children?: WidgetDescriptor[]): WidgetDescriptor;
+  /** A horizontal stack (`hstack`): `children` is a POSITIONAL second argument. */
+  export function HStack(props?: StackProps, children?: WidgetDescriptor[]): WidgetDescriptor;
+  /** A `grid` container: flows `children` across `cols` columns. `children` is a POSITIONAL second argument. */
+  export function Grid(props: GridProps, children?: WidgetDescriptor[]): WidgetDescriptor;
+
+  /** The nine placement anchors a tree may be pinned to. */
+  export type WidgetAnchor = "topLeft" | "top" | "topRight" | "left" | "center" | "right" | "bottomLeft" | "bottom" | "bottomRight";
+  /** Whether a tree captures input or passes it through (HUD). `"passthrough"` is the default and round-trips to omission. */
+  export type WidgetCaptureMode = "capture" | "passthrough";
+  /** Placement-envelope props for `Tree`. `captureMode` defaults to `"passthrough"`. */
+  export type TreeProps = { anchor: WidgetAnchor; offset: [number, number]; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: string };
+  /** The flat `AnchoredTree` envelope `Tree` produces. */
+  export type AnchoredTreeDescriptor = { anchor: WidgetAnchor; offset: [number, number]; root: WidgetDescriptor; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: string };
+  /** Wrap a root widget descriptor in the `AnchoredTree` placement envelope. `root` is a POSITIONAL second argument. */
+  export function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDescriptor;
+
+  /** A `.get()`/`.set()` accessor wrapper over a writable, value-typed store-slot handle (`StateValue<T>`). `.get()` yields the typed bind reference a widget binds to; `.set(v)` produces a `setState` reaction descriptor (typed to the slot's `T`). Read-only engine slots use `ReadonlyStateValue<T>` (`.get()` only). */
+  export type StoreHandle<T> = { get(): SliderBindProp; set(value: T): PrimitiveReactionDescriptor };
+  /** Wrap a value-typed store-slot handle (`defineStore`'s `StateValue<T>` return) in a `.get()`/`.set()` accessor. Pure: `.set(...)` returns a descriptor, it does not write. */
+  export function storeHandle<T extends number | boolean | string | number[]>(slot: StateValue<T>): StoreHandle<T>;
+
+  /** A presentation-cell initial value (`CellInit` wire shapes). */
+  type CellInit = number | boolean | string | [number, number, number, number];
+  /** A presentation-cell handle (`ui.createLocalState`): `.get()` yields a `{ local }` bind ref; `.set(v)` emits a `cellWrite` reaction (NEVER `setState`). Presentation-only. */
+  export type LocalStateHandle<T extends CellInit> = { get(): LocalBindRef; set(value: T): PrimitiveReactionDescriptor };
+  /** The `{ scope, cells }` bundle `ui.createLocalState` returns: splice `scope` onto the declaring container's `localState`; bind widgets to `cells.<name>.get()`. */
+  export type LocalStateBundle<I extends Record<string, CellInit>> = { scope: { scope: string; cells: I }; cells: { [K in keyof I]: LocalStateHandle<I[K]> } };
+  /** Declare a presentation-cell scope (M13 G1b). SDK-lib function, not a registered primitive. Pure: no engine side effect. `.set()` emits `cellWrite`, never writing the authoritative store. */
+  export function createLocalState<I extends Record<string, CellInit>>(init: I): LocalStateBundle<I>;
+  /** State-helper namespace (state helpers are namespaced; reactions stay bare). */
+  export const ui: { createLocalState: typeof createLocalState };
 
   /** Pure identity builder for entity-type descriptors. Returns the descriptor as-is; its sole purpose is a typed construction site. */
   export function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor;
@@ -1031,6 +1398,14 @@ pub(crate) fn generate_luau(registry: &PrimitiveRegistry) -> String {
     }
 
     for p in visible_primitives(registry) {
+        // `defineStore` is special-cased like `worldQuery`: per-slot value types
+        // live only in the runtime `schema` argument (absent at emission), so a
+        // hand-written generic `defineStore<S>` in the static SDK lib block
+        // supplies the typed handle map. Skip registry-driven emission (its doc
+        // travels with the static declaration).
+        if p.name == "defineStore" {
+            continue;
+        }
         out.push('\n');
         if !p.doc.is_empty() {
             writeln!(&mut out, "--- {}", p.doc).unwrap();
@@ -1079,6 +1454,7 @@ pub(crate) fn generate_luau(registry: &PrimitiveRegistry) -> String {
     }
 
     out.push_str(LUAU_SDK_LIB_BLOCK);
+    emit_luau_game_state_module(&mut out);
     out
 }
 
@@ -1094,6 +1470,7 @@ pub(crate) fn generate_luau(registry: &PrimitiveRegistry) -> String {
 //   sdk/lib/entities/fog_volumes.luau
 //   sdk/lib/util/keyframes.luau
 //   sdk/lib/data_script.luau  (embedded directly via include_str! in luau.rs)
+//   sdk/lib/ui/{text,widgets,layout,tree,state}.luau
 // Drift between this block and those files causes IDE types that don't match
 // runtime behavior. Update this block whenever an SDK lib signature changes.
 const LUAU_SDK_LIB_BLOCK: &str = r#"
@@ -1314,10 +1691,15 @@ export type LevelManifest = {
 }
 
 --- Build a named reaction descriptor. Pure: returns a plain table, no FFI.
-declare function defineReaction(
-  name: string,
-  descriptor: ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor
-): NamedReactionDescriptor
+--- The `name` argument is optional: when omitted a deterministic, run-stable id
+--- is derived from the descriptor body (content-derived, so re-running
+--- registration yields the same auto-id — crossings and the wire reference it).
+--- The returned handle is a `NamedReactionDescriptor`; pass it directly to a
+--- button's `onPress` or a crossing `fire` entry instead of repeating the name.
+declare defineReaction: (
+  ((descriptor: ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor) -> NamedReactionDescriptor)
+  & ((name: string, descriptor: ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor) -> NamedReactionDescriptor)
+)
 
 --- Pure identity builder for entity-type descriptors. Returns the
 --- descriptor as-is; its sole purpose is a typed construction site.
@@ -1327,11 +1709,14 @@ declare function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescr
 --- the result in `setupLevel`'s returned `crossings` array. On a crossing in
 --- the condition's direction the engine fires every reaction in `fire` exactly
 --- once, re-arming only after a crossing back; a registration against a
---- non-Number slot warns and is skipped at load.
+--- non-Number slot warns and is skipped at load. Each `fire` entry is a
+--- `defineReaction` handle (typed) or a bare reaction-name string (the shipped
+--- path); handles are reduced to their `.name`, so the wire `CrossingDescriptor.fire`
+--- stays a `{string}`.
 declare function onStateCrossing(
   slot: string,
   condition: CrossingCondition,
-  fire: {string}
+  fire: {NamedReactionDescriptor | string}
 ): CrossingDescriptor
 
 --- System-reaction body: play `sound` through the M12 audio module on the
@@ -1407,9 +1792,42 @@ declare function backspaceText(slot: string): PrimitiveReactionDescriptor
 declare function clearText(slot: string): PrimitiveReactionDescriptor
 
 -- ---------------------------------------------------------------------------
+-- State-store handles (M13 G1a). `defineStore` is special-cased in the typedef
+-- generator (mirroring `worldQuery`): per-slot value types live only in the
+-- runtime `schema` argument, absent at typedef emission. Luau's type system
+-- cannot map a schema table to per-slot handle types the way the TS generic
+-- does, so the Luau handle map is the uniform branded-string form; the per-slot
+-- typing contract is asserted on the TS surface.
+
+--- A read-only typed slot handle for an engine-owned slot. `get()` yields the
+--- directly-bindable bind reference a widget's `bind` prop accepts — the
+--- `{ slot }` wire shape (`SliderBindProp`), symmetric with the writable
+--- `StoreHandle<T>:get()`. No `set` — engine slots are read-only to mods (see the
+--- `postretro/game-state` module below). `T` is carried for documentation; the
+--- runtime wire form is the bare `{ slot }` ref either handle's `get()` produces.
+export type ReadonlyStateValue<T> = { get: (self: any) -> SliderBindProp }
+
+--- One slot's declaration inside the `defineStore` `schema` argument. The `type`
+--- discriminant selects the slot's value type; type-specific keys (`default`,
+--- `range`, `values`, …) are accepted alongside it.
+export type StoreSlotSchema = { type: string, [string]: any }
+
+--- Declare an engine-global typed state-store namespace during mod init. Every
+--- mod-owned slot requires a default. Supported types are number, boolean,
+--- string, enum, and array. Namespace registration is atomic and rejects
+--- existing or dotted-prefix-colliding namespaces. Returns a table keyed by slot
+--- name whose values are stable dotted-name handles. Definition context.
+declare function defineStore(namespace: string, schema: { [string]: StoreSlotSchema }): { [string]: StateValue<string> }
+
+-- ---------------------------------------------------------------------------
 -- Interactive UI widget descriptors (M13 Goal F, Task 4). Authored as data in a
 -- UI tree descriptor; the engine builds the retained tree from them. These
 -- type-only aliases pin the wire shape (camelCase, internally tagged on `kind`).
+
+--- The type of every user-facing text string a widget displays. A single alias
+--- (`= string` today) so a future localization scheme -- message keys, ICU
+--- handles -- is one edit, not a sweep across every text prop.
+export type LocalizedText = string
 
 --- A widget color slot: an inline linear-RGBA tuple or a theme token name.
 export type WidgetColor = {number} | string
@@ -1423,8 +1841,11 @@ export type SliderBind = { slot: string, tween: { durationMs: number, easing: st
 export type WidgetStyleRanges = { max: number, entries: { upTo: number?, color: WidgetColor?, pulse: { periodMs: number }?, flash: { durationMs: number }? } }
 
 --- Interactive button widget. Focusable; activation (gamepad confirm or pointer
---- click) fires the `onPress` named reaction. `id` is required.
-export type ButtonWidget = { kind: "button", id: string, label: string, onPress: string, focusNeighbors: { [string]: string }? }
+--- click) fires the `onPress` named reaction. `id` is required. `onPress` accepts
+--- a `defineReaction` handle (typed) or a bare reaction-name string (the shipped
+--- path); the factory reads the handle's `name` and emits the `onPress: string`
+--- wire form.
+export type ButtonWidget = { kind: "button", id: string, label: string, onPress: NamedReactionDescriptor | string, focusNeighbors: { [string]: string }? }
 
 --- Interactive slider widget. Focusable; nav wires named in `capturesNav` (an
 --- array, not a bool) step the bound value by `step` within [min, max] and emit a
@@ -1434,6 +1855,131 @@ export type SliderWidget = { kind: "slider", id: string, label: string, bind: Sl
 --- Passive horizontal value bar. Fill fraction is `value/max` clamped to [0, 1];
 --- `styleRanges` recolors the fill; a bind tween eases the displayed fraction.
 export type BarWidget = { kind: "bar", bind: SliderBind, max: number, fill: WidgetColor, background: WidgetColor, id: string?, styleRanges: WidgetStyleRanges? }
+
+-- ---------------------------------------------------------------------------
+-- UI widget / layout / tree / state factories (M13 G1a). Pure builders lifted
+-- to bare globals by the Luau prelude: each returns the camelCase wire
+-- descriptor of the matching `render/ui/descriptor.rs` variant and errors with a
+-- field-named message on invalid props. Source of truth: sdk/lib/ui/{widgets,
+-- layout,tree,state}.luau. Containers and `Tree` take `children`/`root` as a
+-- POSITIONAL second argument (Compose/SwiftUI lineage), not a prop.
+
+--- A spacing slot (gap/padding): an inline logical-px number or a theme token.
+export type WidgetSpacing = number | string
+--- Cross-axis alignment of a container's children.
+export type WidgetAlign = "start" | "center" | "end" | "stretch"
+--- Easing curve for a value tween.
+export type WidgetEasing = "linear" | "easeIn" | "easeOut" | "easeInOut"
+--- Number-shape value tween (text/slider/bar bind).
+export type NumberTween = { durationMs: number, easing: WidgetEasing, from: number? }
+--- Color-shape value tween (panel bind).
+export type ColorTween = { durationMs: number, easing: WidgetEasing, from: {number}? }
+--- A `{ ["local"] = name }` presentation-cell bind reference (`ui.createLocalState`).
+export type LocalBindRef = { ["local"]: string }
+--- State binding for a `text` widget (`slot` store or `["local"]` cell; one of the two).
+export type TextBindProp = { slot: string?, ["local"]: string?, format: string?, tween: NumberTween? }
+--- State binding for a `panel` widget (color slot or `["local"]` cell).
+export type PanelBindProp = { slot: string?, ["local"]: string?, tween: ColorTween? }
+--- State binding shared by `slider`/`bar` (numeric slot or `["local"]` cell).
+export type SliderBindProp = { slot: string?, ["local"]: string?, tween: NumberTween? }
+--- One band in a `styleRanges` map.
+export type StyleRangeEntry = { upTo: number?, color: WidgetColor?, pulse: { periodMs: number }?, flash: { durationMs: number }? }
+--- Continuous value→style map (text/panel/bar).
+export type StyleRangesProp = { max: number, entries: {StyleRangeEntry} }
+--- 9-slice border descriptor.
+export type BorderProp = { texture: string, slice: {number}, tint: WidgetColor }
+--- Per-direction focus-neighbor overrides; each direction names the node id focus jumps to.
+export type FocusNeighborsProp = { up: string?, down: string?, left: string?, right: string? }
+--- Hold-to-repeat timing.
+export type RepeatPolicyProp = { initialDelayMs: number, intervalMs: number }
+--- A typed reaction handle (`defineReaction` result) — anything carrying a `.name` string.
+export type ReactionHandleRef = { name: string }
+--- The flat `kind`-tagged descriptor a widget factory produces.
+export type WidgetDescriptor = { [string]: any }
+
+--- Props for `Text`. `content` is `LocalizedText`. `fontSize` defaults to 12; `color` to opaque white.
+export type TextProps = { content: LocalizedText, fontSize: number?, color: WidgetColor?, font: string?, bind: TextBindProp?, styleRanges: StyleRangesProp?, id: string?, focusNeighbors: FocusNeighborsProp? }
+--- A `text` leaf. An optional `bind` resolves the rendered string from a store slot; `styleRanges` recolors by value.
+declare function Text(props: TextProps): WidgetDescriptor
+
+--- Props for `Panel`. `bind` is a `PanelBindProp` (color slot).
+export type PanelProps = { fill: WidgetColor, border: BorderProp?, bind: PanelBindProp?, styleRanges: StyleRangesProp?, id: string?, focusNeighbors: FocusNeighborsProp? }
+--- A `panel` leaf: a solid `fill` with an optional 9-slice `border`.
+declare function Panel(props: PanelProps): WidgetDescriptor
+
+--- Props for `Image`. No bind.
+export type ImageProps = { asset: string, id: string?, focusNeighbors: FocusNeighborsProp? }
+--- An `image` leaf referencing a texture asset by key; sizes from the asset's natural dimensions.
+declare function Image(props: ImageProps): WidgetDescriptor
+
+--- Props for `Spacer`. `flexGrow` defaults to 1. No bind.
+export type SpacerProps = { flexGrow: number?, id: string? }
+--- A `spacer` leaf claiming a proportional share of leftover space.
+declare function Spacer(props: SpacerProps?): WidgetDescriptor
+
+--- Props for `Button`. `onPress` is a reaction handle or a bare name string. No bind.
+export type ButtonProps = { id: string, label: LocalizedText, onPress: ReactionHandleRef | string, repeatOnHold: RepeatPolicyProp?, focusNeighbors: FocusNeighborsProp? }
+--- An interactive `button`. `id` is required. `onPress` accepts a `defineReaction` handle (its `.name` is read) or a bare reaction-name string, emitting the unchanged `onPress: string` wire form.
+declare function Button(props: ButtonProps): WidgetDescriptor
+
+--- Props for `Slider`. `bind` is a `SliderBindProp` (numeric slot); required.
+export type SliderProps = { id: string, label: LocalizedText, bind: SliderBindProp, min: number, max: number, step: number, capturesNav: {string}?, focusNeighbors: FocusNeighborsProp? }
+--- An interactive `slider`. Nav wires in `capturesNav` step the bound value by `step` within `[min, max]`.
+declare function Slider(props: SliderProps): WidgetDescriptor
+
+--- Props for `Bar`. `bind` is a `SliderBindProp` (numeric slot); required.
+export type BarProps = { bind: SliderBindProp, max: number, fill: WidgetColor, background: WidgetColor, styleRanges: StyleRangesProp?, id: string? }
+--- A passive `bar`: fill fraction is `value/max` clamped to `[0, 1]`. `styleRanges` recolors the fill.
+declare function Bar(props: BarProps): WidgetDescriptor
+
+--- Container focus traversal kind.
+export type FocusKind = "linear" | "spatial"
+--- A container focus policy: a bare-string shorthand or a detailed table.
+export type FocusPolicyProp = FocusKind | { policy: FocusKind, wrap: boolean?, ["repeat"]: RepeatPolicyProp? }
+--- Props for `VStack`/`HStack`. `gap`/`padding` default to 0, `align` to `"start"`. May carry a backdrop `fill`/`border`.
+export type StackProps = { gap: WidgetSpacing?, padding: WidgetSpacing?, align: WidgetAlign?, id: string?, focusNeighbors: FocusNeighborsProp?, focus: FocusPolicyProp?, restoreOnReturn: boolean?, fill: WidgetColor?, border: BorderProp? }
+--- Props for `Grid`. Adds the required `cols` (integer >= 1); no backdrop fill/border.
+export type GridProps = { gap: WidgetSpacing?, padding: WidgetSpacing?, align: WidgetAlign?, id: string?, focusNeighbors: FocusNeighborsProp?, focus: FocusPolicyProp?, restoreOnReturn: boolean?, cols: number }
+
+--- A vertical stack (`vstack`): `children` is a POSITIONAL second argument.
+declare function VStack(props: StackProps?, children: {WidgetDescriptor}?): WidgetDescriptor
+--- A horizontal stack (`hstack`): `children` is a POSITIONAL second argument.
+declare function HStack(props: StackProps?, children: {WidgetDescriptor}?): WidgetDescriptor
+--- A `grid` container: flows `children` across `cols` columns. `children` is a POSITIONAL second argument.
+declare function Grid(props: GridProps, children: {WidgetDescriptor}?): WidgetDescriptor
+
+--- The nine placement anchors a tree may be pinned to.
+export type WidgetAnchor = "topLeft" | "top" | "topRight" | "left" | "center" | "right" | "bottomLeft" | "bottom" | "bottomRight"
+--- Whether a tree captures input or passes it through (HUD). `"passthrough"` is the default and round-trips to omission.
+export type WidgetCaptureMode = "capture" | "passthrough"
+--- Placement-envelope props for `Tree`. `captureMode` defaults to `"passthrough"`.
+export type TreeProps = { anchor: WidgetAnchor, offset: {number}, captureMode: WidgetCaptureMode?, initialFocus: string?, textEntryTarget: string? }
+--- The flat `AnchoredTree` envelope `Tree` produces.
+export type AnchoredTreeDescriptor = { anchor: WidgetAnchor, offset: {number}, root: WidgetDescriptor, captureMode: WidgetCaptureMode?, initialFocus: string?, textEntryTarget: string? }
+--- Wrap a root widget descriptor in the `AnchoredTree` placement envelope. `root` is a POSITIONAL second argument.
+declare function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDescriptor
+
+--- A `:get()`/`:set()` accessor wrapper over a writable, value-typed store-slot
+--- handle (`StateValue<T>`). `:get()` yields the typed bind reference a widget
+--- binds to; `:set(v)` produces a `setState` reaction descriptor (typed to the
+--- slot's `T`). Read-only engine slots use `ReadonlyStateValue<T>` (`:get()` only).
+export type StoreHandle<T> = {
+  get: (self: StoreHandle<T>) -> SliderBindProp,
+  set: (self: StoreHandle<T>, value: T) -> PrimitiveReactionDescriptor,
+}
+--- Wrap a value-typed store-slot handle (`defineStore`'s `StateValue<T>` return) in a `:get()`/`:set()` accessor. Pure: `:set(...)` returns a descriptor, it does not write.
+declare function storeHandle(slot: any): StoreHandle<any>
+
+--- A presentation-cell handle (`ui.createLocalState`): `:get()` yields a `{ ["local"] }`
+--- bind ref; `:set(v)` emits a `cellWrite` reaction (NEVER `setState`). Presentation-only.
+export type LocalStateHandle<T> = {
+  get: (self: LocalStateHandle<T>) -> LocalBindRef,
+  set: (self: LocalStateHandle<T>, value: T) -> PrimitiveReactionDescriptor,
+}
+--- Declare a presentation-cell scope (M13 G1b). SDK-lib function, not a registered primitive. Pure: no engine side effect. Returns a `{ scope, cells }` bundle.
+declare function createLocalState(init: { [string]: any }): { scope: any, cells: any }
+--- State-helper namespace (state helpers are namespaced; reactions stay bare).
+declare ui: { createLocalState: (init: { [string]: any }) -> { scope: any, cells: any } }
 
 -- ---------------------------------------------------------------------------
 -- Runtime-value vocabulary — the typed command buffer (scripting.md §11). The
@@ -1994,12 +2540,38 @@ declare module "postretro" {
     jumpBufferMs?: number;
   };
 
+  /** A UI tree registered through `ModManifest.uiTrees` (or `LevelManifest.uiTrees`). Pairs a registry `name` with an `AnchoredTree` placement envelope and the `alwaysOn` registration flag. A malformed entry is logged and skipped at load time. */
+  export type ModUiTree = {
+    /** Registry name the render path resolves the tree by. Required. */
+    name: string;
+    /** The placement envelope + widget tree (the value produced by the `Tree` factory). Required. */
+    tree: AnchoredTreeDescriptor;
+    /** Whether the tree composes as a per-frame base layer (e.g. the HUD: always rendered) rather than only when explicitly pushed onto the modal stack. Optional; defaults to false. */
+    alwaysOn?: boolean;
+  };
+
+  /** Theme token maps supplied via `ModManifest.theme`. Three category-scoped maps: colors (linear-RGBA), fonts (registered family name), spacing (logical px). Each is optional; overrides merge per-token into the engine default. */
+  export type ThemeTokens = {
+    /** Color tokens: token name → linear-RGBA `[r, g, b, a]`. Optional. */
+    colors?: { readonly [token: string]: readonly [number, number, number, number] };
+    /** Font tokens: token name → registered family name. Optional. */
+    fonts?: { readonly [token: string]: string };
+    /** Spacing tokens: token name → logical px. Optional. */
+    spacing?: { readonly [token: string]: number };
+  };
+
   /** Object returned from `setupMod()` in `start-script.{ts,luau}`. Identifies the mod to the engine. */
   export type ModManifest = {
     /** Human-readable mod name. Required. */
     name: string;
     /** Engine-global entity-type registrations. Survive level unload. */
     entities?: ReadonlyArray<EntityTypeDescriptor>;
+    /** Script-registered UI trees (name + `AnchoredTree` + `alwaysOn`). Optional. Malformed entries are logged and skipped. */
+    uiTrees?: ReadonlyArray<ModUiTree>;
+    /** Theme token overrides (colors/fonts/spacing). Optional; merged per-token into the engine default. */
+    theme?: ThemeTokens;
+    /** Font assets: family name → TTF asset path. Optional. */
+    fonts?: { readonly [token: string]: string };
   };
 
   /** Returns true if the entity id refers to a live entity. */
@@ -2386,12 +2958,38 @@ export type ForgivenessParams = {
   jumpBufferMs: number?,
 }
 
+--- A UI tree registered through `ModManifest.uiTrees` (or `LevelManifest.uiTrees`). Pairs a registry `name` with an `AnchoredTree` placement envelope and the `alwaysOn` registration flag. A malformed entry is logged and skipped at load time.
+export type ModUiTree = {
+  --- Registry name the render path resolves the tree by. Required.
+  name: string,
+  --- The placement envelope + widget tree (the value produced by the `Tree` factory). Required.
+  tree: AnchoredTreeDescriptor,
+  --- Whether the tree composes as a per-frame base layer (e.g. the HUD: always rendered) rather than only when explicitly pushed onto the modal stack. Optional; defaults to false.
+  alwaysOn: boolean?,
+}
+
+--- Theme token maps supplied via `ModManifest.theme`. Three category-scoped maps: colors (linear-RGBA), fonts (registered family name), spacing (logical px). Each is optional; overrides merge per-token into the engine default.
+export type ThemeTokens = {
+  --- Color tokens: token name → linear-RGBA `[r, g, b, a]`. Optional.
+  colors: { [string]: {number} }?,
+  --- Font tokens: token name → registered family name. Optional.
+  fonts: { [string]: string }?,
+  --- Spacing tokens: token name → logical px. Optional.
+  spacing: { [string]: number }?,
+}
+
 --- Object returned from `setupMod()` in `start-script.{ts,luau}`. Identifies the mod to the engine.
 export type ModManifest = {
   --- Human-readable mod name. Required.
   name: string,
   --- Engine-global entity-type registrations. Survive level unload.
   entities: {EntityTypeDescriptor}?,
+  --- Script-registered UI trees (name + `AnchoredTree` + `alwaysOn`). Optional. Malformed entries are logged and skipped.
+  uiTrees: {ModUiTree}?,
+  --- Theme token overrides (colors/fonts/spacing). Optional; merged per-token into the engine default.
+  theme: ThemeTokens?,
+  --- Font assets: family name → TTF asset path. Optional.
+  fonts: { [string]: string }?,
 }
 
 --- Returns true if the entity id refers to a live entity.
@@ -2509,19 +3107,26 @@ export type Event = {
 ";
 
     /// Inject the static SDK-lib TS block before the trailing `}` of the
-    /// `declare module` body. Lets snapshot tests describe just the registry-
-    /// driven prefix; the lib block is verified separately.
+    /// `declare module` body, then append the registry-derived
+    /// `postretro/game-state` module suffix the generator emits. Lets snapshot
+    /// tests describe just the registry-driven prefix; the lib block and the
+    /// game-state module are verified separately.
     fn ts_with_sdk_lib_block(prefix_with_brace: &str) -> String {
         let stripped = prefix_with_brace
             .strip_suffix("}\n")
             .expect("expected TS snapshot to end with `}\\n`");
-        format!("{stripped}{TS_SDK_LIB_BLOCK}}}\n")
+        let mut out = format!("{stripped}{TS_SDK_LIB_BLOCK}}}\n");
+        emit_ts_game_state_module(&mut out);
+        out
     }
 
-    /// Append the static SDK-lib Luau block to a registry-driven snapshot
+    /// Append the static SDK-lib Luau block and the registry-derived
+    /// `postretro/game-state` module suffix to a registry-driven snapshot
     /// prefix, matching what `generate_luau` produces.
     fn luau_with_sdk_lib_block(prefix: &str) -> String {
-        format!("{prefix}{LUAU_SDK_LIB_BLOCK}")
+        let mut out = format!("{prefix}{LUAU_SDK_LIB_BLOCK}");
+        emit_luau_game_state_module(&mut out);
+        out
     }
 
     #[test]
@@ -2753,6 +3358,217 @@ export type Event = {
         );
     }
 
+    /// `defineStore` carries each slot's declared value type (M13 G1a). The
+    /// generator special-cases `defineStore` (like `worldQuery`) so the static
+    /// SDK block's generic `defineStore<const S>` supplies the per-slot mapping:
+    /// `{type:"number"}` → `StateValue<number>`, `{type:"boolean"}` →
+    /// `StateValue<boolean>`, else `StateValue<string>`. The uniform
+    /// registry-driven `StateValue<string>` handle map must NOT be emitted.
+    #[test]
+    fn define_store_emits_per_slot_value_typed_handles() {
+        use crate::scripting::ctx::ScriptCtx;
+        use crate::scripting::primitives::register_all;
+
+        let mut r = PrimitiveRegistry::new();
+        register_all(&mut r, ScriptCtx::new());
+        let ts = generate_typescript(&r);
+
+        // The generic declaration that infers per-slot value types.
+        assert!(
+            ts.contains(
+                "export function defineStore<const S extends Record<string, StoreSlotSchema>>("
+            ),
+            "ts missing generic defineStore declaration:\n{ts}"
+        );
+        assert!(
+            ts.contains("Slot extends { type: \"number\" } ? StateValue<number> :"),
+            "ts StateValueForSlot missing number mapping"
+        );
+        assert!(
+            ts.contains("Slot extends { type: \"boolean\" } ? StateValue<boolean> :"),
+            "ts StateValueForSlot missing boolean mapping"
+        );
+        // The old uniform registry-driven handle map must be gone.
+        assert!(
+            !ts.contains("export function defineStore(namespace: string, schema: unknown)"),
+            "ts must not emit the registry-driven uniform StateValue<string> defineStore"
+        );
+
+        let luau = generate_luau(&r);
+        assert!(
+            luau.contains("declare function defineStore(namespace: string, schema:"),
+            "luau missing defineStore declaration:\n{luau}"
+        );
+    }
+
+    /// The `postretro/game-state` module exposes read-only typed handles for
+    /// engine-owned slots, generated from the engine slot registry (M13 G1a).
+    /// `player.health.get()` is a `ReadonlyStateValue<number>` and `.set(...)`
+    /// is absent (the handle type declares `.get()` only).
+    #[test]
+    fn game_state_module_emits_readonly_engine_slot_handles() {
+        use crate::scripting::ctx::ScriptCtx;
+        use crate::scripting::primitives::register_all;
+
+        let mut r = PrimitiveRegistry::new();
+        register_all(&mut r, ScriptCtx::new());
+        let ts = generate_typescript(&r);
+
+        assert!(
+            ts.contains("declare module \"postretro/game-state\" {"),
+            "ts missing game-state module:\n{ts}"
+        );
+        // `player.health` is a read-only number handle.
+        assert!(
+            ts.contains("export const player: {")
+                && ts.contains("readonly health: ReadonlyStateValue<number>;"),
+            "ts game-state missing read-only player.health handle:\n{ts}"
+        );
+        // `ReadonlyStateValue.get()` returns the directly-bindable `{ slot }` ref
+        // (`SliderBindProp`), symmetric with the writable `StoreHandle<T>.get()` —
+        // so `Text({ bind: player.health.get() })` type-checks the same as a mod
+        // slot. It is NOT a bare `StateValue<T>`.
+        assert!(
+            ts.contains("export type ReadonlyStateValue<T> = { get(): SliderBindProp };"),
+            "ts ReadonlyStateValue.get() must return the bind-ref shape (SliderBindProp)"
+        );
+        // The writable handle's `.get()` returns the same bind-ref shape — the two
+        // `.get()` contracts are symmetric.
+        assert!(
+            ts.contains("export type StoreHandle<T> = { get(): SliderBindProp;"),
+            "ts StoreHandle.get() must return SliderBindProp (symmetry anchor)"
+        );
+        // `ReadonlyStateValue` stays read-only: still `.get()` only, no `.set()`.
+        assert!(
+            !ts.contains("ReadonlyStateValue<T> = { get(): SliderBindProp; set("),
+            "ReadonlyStateValue must not expose set()"
+        );
+
+        let luau = generate_luau(&r);
+        assert!(
+            luau.contains("declare player: GameState_player"),
+            "luau missing game-state player handle:\n{luau}"
+        );
+        assert!(
+            luau.contains("health: ReadonlyStateValue<number>,"),
+            "luau game-state missing read-only player.health handle"
+        );
+        // Luau twin: `ReadonlyStateValue:get()` returns the `{ slot }` bind ref
+        // (`SliderBindProp`), symmetric with the writable handle; no `set`.
+        assert!(
+            luau.contains(
+                "export type ReadonlyStateValue<T> = { get: (self: any) -> SliderBindProp }"
+            ),
+            "luau ReadonlyStateValue:get() must return the bind-ref shape (SliderBindProp)"
+        );
+        assert!(
+            !luau.contains("ReadonlyStateValue<T> = { get: (self: any) -> SliderBindProp, set"),
+            "luau ReadonlyStateValue must not expose set"
+        );
+    }
+
+    /// `defineReaction` (M13 G1a) widens to accept an optional `name`: both the
+    /// `(body)` overload (deterministic auto-id) and the `(name, body)` overload
+    /// surface in both type outputs, and the reaction-reference authoring types
+    /// (`ButtonWidget.onPress`, crossing `fire`) accept a typed handle or a bare
+    /// string. The wire form (`onPress: string`) is unchanged.
+    #[test]
+    fn reaction_handle_authoring_types_widen_in_both_outputs() {
+        use crate::scripting::ctx::ScriptCtx;
+        use crate::scripting::primitives::register_all;
+
+        let mut r = PrimitiveRegistry::new();
+        register_all(&mut r, ScriptCtx::new());
+        let ts = generate_typescript(&r);
+        let luau = generate_luau(&r);
+
+        // The name-optional `(body)` overload is present alongside `(name, body)`.
+        assert_eq!(
+            ts.matches("export function defineReaction(").count(),
+            2,
+            "ts must declare both defineReaction overloads"
+        );
+        // Widened reaction-reference props.
+        assert!(
+            ts.contains("onPress: NamedReactionDescriptor | string"),
+            "ts ButtonWidget.onPress must accept a handle or string"
+        );
+        assert!(
+            ts.contains("fire: (NamedReactionDescriptor | string)[]"),
+            "ts onStateCrossing.fire must accept handles or strings"
+        );
+        assert!(
+            luau.contains("onPress: NamedReactionDescriptor | string"),
+            "luau ButtonWidget.onPress must accept a handle or string"
+        );
+        assert!(
+            luau.contains("fire: {NamedReactionDescriptor | string}"),
+            "luau onStateCrossing.fire must accept handles or strings"
+        );
+    }
+
+    /// M13 G1a Task 6: the widget/layout/tree/state factory declarations must
+    /// surface in BOTH generated type files so authors get IDE completions on the
+    /// capitalized constructors. Asserts each factory appears in the form the
+    /// generator emits (`export function …` for TS, `declare function …` for
+    /// Luau), and that `LocalizedText` — the user-facing text-prop alias — is
+    /// declared in both.
+    #[test]
+    fn ui_factory_declarations_appear_in_both_type_outputs() {
+        use crate::scripting::ctx::ScriptCtx;
+        use crate::scripting::primitives::register_all;
+
+        let mut r = PrimitiveRegistry::new();
+        register_all(&mut r, ScriptCtx::new());
+        let ts = generate_typescript(&r);
+        let luau = generate_luau(&r);
+
+        // Every factory: widgets, layout containers, and the Tree envelope.
+        // `storeHandle` is generic so it's checked separately below.
+        const FACTORIES: &[&str] = &[
+            "Text", "Panel", "Image", "Spacer", "Button", "Slider", "Bar", "VStack", "HStack",
+            "Grid", "Tree",
+        ];
+        for f in FACTORIES {
+            let ts_decl = format!("export function {f}(");
+            assert!(
+                ts.contains(&ts_decl),
+                "ts d.ts missing UI factory declaration `{ts_decl}`"
+            );
+            let luau_decl = format!("declare function {f}(");
+            assert!(
+                luau.contains(&luau_decl),
+                "luau d.luau missing UI factory declaration `{luau_decl}`"
+            );
+        }
+        // `storeHandle` carries a generic param on the TS surface
+        // (`storeHandle<T extends …>`) but a plain arg list on the Luau surface.
+        assert!(
+            ts.contains("export function storeHandle<"),
+            "ts d.ts missing generic storeHandle declaration"
+        );
+        assert!(
+            luau.contains("declare function storeHandle("),
+            "luau d.luau missing storeHandle declaration"
+        );
+
+        // The user-facing text-prop alias is the single localization chokepoint
+        // (every widget text prop is typed `LocalizedText`).
+        assert!(
+            ts.contains("export type LocalizedText = string;"),
+            "ts d.ts missing LocalizedText alias"
+        );
+        assert!(
+            luau.contains("export type LocalizedText = string"),
+            "luau d.luau missing LocalizedText alias"
+        );
+        // The text-prop typing reaches the factory props (review/grep gate).
+        assert!(
+            ts.contains("content: LocalizedText") && ts.contains("label: LocalizedText"),
+            "ts UI factory props must type user-facing text as LocalizedText"
+        );
+    }
+
     /// The runtime-value vocabulary (scripting.md §11) is a closed union: every
     /// opcode tag must be typed in both `.d.ts` and `.d.luau` so an author
     /// cannot name an op outside it. Asserts each tag appears in both outputs
@@ -2799,6 +3615,65 @@ export type Event = {
         assert!(
             luau.contains("export type RuntimeValue ="),
             "luau missing RuntimeValue union"
+        );
+    }
+
+    /// `WidgetAnchor` in both typedef outputs must enumerate EXACTLY the variants
+    /// of `crate::render::ui::layout::Anchor` — no more, no less.
+    ///
+    /// The expected union is DERIVED from `Anchor::ALL`/`Anchor::wire()` (the
+    /// single source of truth), not a hand-copied list. `wire()` is an
+    /// exhaustive `match` with no catch-all arm, so adding a variant to `Anchor`
+    /// is a compile error until its wire string is defined; the new variant then
+    /// joins `ALL` and this test fails unless the emitted `WidgetAnchor` union is
+    /// updated to match. `parse_anchor` in `data_descriptors.rs` maps the same
+    /// wire strings back to variants.
+    #[test]
+    fn widget_anchor_typedef_matches_layout_anchor_variants() {
+        use crate::render::ui::layout::Anchor;
+        use crate::scripting::ctx::ScriptCtx;
+        use crate::scripting::primitives::register_all;
+
+        let mut r = PrimitiveRegistry::new();
+        register_all(&mut r, ScriptCtx::new());
+        let ts = generate_typescript(&r);
+        let luau = generate_luau(&r);
+
+        // Derive the expected union body straight from the enum's source of truth.
+        // `Anchor::ALL` enumerates the variants; `wire()` is the exhaustive
+        // variant→camelCase map that `parse_anchor` and serde also honor.
+        let expected_union_body: String = Anchor::ALL
+            .iter()
+            .map(|a| format!("\"{}\"", a.wire()))
+            .collect::<Vec<_>>()
+            .join(" | ");
+
+        // Assert each derived variant appears in both outputs.
+        for anchor in Anchor::ALL {
+            let wire = anchor.wire();
+            assert!(
+                ts.contains(&format!("\"{wire}\"")),
+                "ts d.ts WidgetAnchor union missing anchor variant \"{wire}\""
+            );
+            assert!(
+                luau.contains(&format!("\"{wire}\"")),
+                "luau d.luau WidgetAnchor union missing anchor variant \"{wire}\""
+            );
+        }
+
+        // Assert the union contains no extras by matching the full type alias line.
+        // TS terminates with a semicolon; Luau omits it.
+        let ts_union_line = format!("export type WidgetAnchor = {expected_union_body};");
+        let luau_union_line = format!("export type WidgetAnchor = {expected_union_body}");
+        assert!(
+            ts.contains(&ts_union_line),
+            "ts d.ts WidgetAnchor union does not exactly match `Anchor::ALL`/`wire()`.\n\
+             Expected line: {ts_union_line}"
+        );
+        assert!(
+            luau.contains(&luau_union_line),
+            "luau d.luau WidgetAnchor union does not exactly match `Anchor::ALL`/`wire()`.\n\
+             Expected line: {luau_union_line}"
         );
     }
 }

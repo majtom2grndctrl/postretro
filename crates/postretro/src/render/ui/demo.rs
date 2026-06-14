@@ -102,7 +102,7 @@ mod tests {
             panic!("first row is the health text");
         };
         assert_eq!(
-            health.bind.as_ref().map(|b| b.slot.as_str()),
+            health.bind.as_ref().and_then(|b| b.source.slot()),
             Some("player.health"),
         );
         assert_eq!(
@@ -125,7 +125,7 @@ mod tests {
             panic!("second row is the ammo text");
         };
         assert_eq!(
-            ammo.bind.as_ref().map(|b| b.slot.as_str()),
+            ammo.bind.as_ref().and_then(|b| b.source.slot()),
             Some("player.ammo"),
         );
         assert_eq!(
@@ -140,7 +140,7 @@ mod tests {
             panic!("swatch grid's first cell is the bound flash panel");
         };
         assert_eq!(
-            panel.bind.as_ref().map(|b| b.slot.as_str()),
+            panel.bind.as_ref().and_then(|b| b.source.slot()),
             Some("intro.flashColor"),
         );
         assert_eq!(
@@ -177,7 +177,7 @@ mod tests {
             panic!("health-bar grid's first cell is the bound bar panel");
         };
         assert_eq!(
-            bar_panel.bind.as_ref().map(|b| b.slot.as_str()),
+            bar_panel.bind.as_ref().and_then(|b| b.source.slot()),
             Some("player.health"),
             "health bar binds the numeric player.health slot",
         );
@@ -232,7 +232,7 @@ mod tests {
             panic!("second row is the input.mode readout text");
         };
         assert_eq!(
-            mode.bind.as_ref().map(|b| b.slot.as_str()),
+            mode.bind.as_ref().and_then(|b| b.source.slot()),
             Some("input.mode"),
             "the readout binds the engine-owned input.mode slot",
         );
@@ -254,7 +254,7 @@ mod tests {
             panic!("fourth row is the volume slider");
         };
         assert_eq!(volume.id, PAUSE_VOLUME_ID);
-        assert_eq!(volume.bind.slot, "audio.master");
+        assert_eq!(volume.bind.source.slot(), Some("audio.master"));
         assert_eq!(
             volume.captures_nav,
             vec!["nav.left".to_string(), "nav.right".to_string()],
@@ -279,7 +279,7 @@ mod tests {
             panic!("fifth row is the ui.textEntry readout text");
         };
         assert_eq!(
-            entry.bind.as_ref().map(|b| b.slot.as_str()),
+            entry.bind.as_ref().and_then(|b| b.source.slot()),
             Some("ui.textEntry"),
             "the readout binds the engine-owned ui.textEntry slot directly (no copyState)",
         );
@@ -339,7 +339,8 @@ mod tests {
         let readout_slot = readout
             .bind
             .as_ref()
-            .map(|b| b.slot.clone())
+            .and_then(|b| b.source.slot())
+            .map(str::to_string)
             .expect("readout binds a slot");
 
         let Widget::Button(opener) = &col.children[5] else {
@@ -437,9 +438,12 @@ mod tests {
         use crate::render::ui::modal_stack::ModalStack;
 
         let mut stack = ModalStack::new();
-        stack
-            .registry_mut()
-            .register(super::PAUSE_MENU_NAME, build_pause_menu_descriptor());
+        stack.registry_mut().register(
+            super::PAUSE_MENU_NAME,
+            build_pause_menu_descriptor(),
+            crate::render::ui::modal_stack::ScopeTier::Engine,
+            false,
+        );
 
         // No capturing tree up: gameplay keeps input.
         assert_eq!(stack.top_capture_mode(), UiCaptureMode::Passthrough);
@@ -475,7 +479,7 @@ mod tests {
             panic!("screen.flash grid's first cell is the bound panel");
         };
         assert_eq!(
-            panel.bind.as_ref().map(|b| b.slot.as_str()),
+            panel.bind.as_ref().and_then(|b| b.source.slot()),
             Some("screen.flash"),
             "the panel binds the engine-owned screen.flash surface",
         );

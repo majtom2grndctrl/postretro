@@ -3531,17 +3531,27 @@ impl Renderer {
     /// frame rebuilds the tree with the new values even when its descriptor is
     /// unchanged. The splash re-derives its tree each frame, so it picks up the
     /// new theme on its next frame with no extra bookkeeping.
-    // Engine-side override seam: no caller installs an override theme yet (the
-    // script/mod theme-document ingestion that drives it is deferred), so this is
-    // dead in both build profiles today — kept as the wired entry point the
-    // generation gate depends on. `Renderer` needs a GPU device, so it cannot be
-    // exercised by the CPU test suite.
-    // Paired deferred-G1 entry points (both dead_code until script ingestion lands):
-    // this method and `theme::UiTheme::with_override` in `render/ui/theme.rs`.
-    #[allow(dead_code)]
+    //
+    // The production caller is the G1b mod-init drain (`main.rs`): it merges a
+    // mod's `theme` tokens over `engine_default` and installs the result here.
+    // `Renderer` needs a GPU device, so this seam is exercised by running the
+    // engine, not the CPU test suite; the merge it relies on is covered in
+    // `theme.rs`.
     pub fn set_ui_theme(&mut self, theme: ui::theme::UiTheme) {
         self.ui_theme = theme;
         self.ui_theme_generation = self.ui_theme_generation.wrapping_add(1);
+    }
+
+    /// Install a runtime UI font face from owned TTF/OTF bytes (the net-new
+    /// runtime path behind `UiPass`/glyphon's `FontSystem`; the engine's body/mono
+    /// faces are embedded at compile time). Renderer-owns-GPU: the glyphon
+    /// `FontSystem` lives in the renderer, so the mod-init drain in `main.rs` reads
+    /// the TTF bytes itself and hands them here. Returns `false` when the bytes
+    /// register no face under `family` (a malformed file or a family-name
+    /// mismatch), so the caller surfaces a named diagnostic and skips rather than
+    /// leaving a `font` token silently resolving to a system fallback.
+    pub fn register_ui_font(&mut self, family: &str, ttf_bytes: Vec<u8>) -> bool {
+        self.ui.register_font(family, ttf_bytes)
     }
 
     /// Returns `Err` on swapchain failure; caller exits the event loop on error.
@@ -5475,6 +5485,7 @@ impl Renderer {
                 ui_viewport,
                 &ui::tree::ImageSizes::new(),
                 &self.ui_snapshot.slot_values,
+                &self.ui_snapshot.cell_values,
                 &self.ui_theme,
                 self.ui_theme_generation,
                 self.ui_snapshot.time_seconds,

@@ -222,6 +222,7 @@ mod tests {
         reg.populate_from_manifest(LevelManifest {
             reactions: Vec::new(),
             crossings,
+            ui_trees: Vec::new(),
         });
         reg
     }

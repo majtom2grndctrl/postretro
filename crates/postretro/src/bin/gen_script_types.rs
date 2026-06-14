@@ -31,6 +31,46 @@ mod movement {
     pub(crate) use crate::movement_scope::MovementScope;
 }
 
+// `scripting::data_descriptors`'s UI widget-tree bridge (M13 G1a Task 5) reads
+// VM values into `crate::render::ui::{descriptor, layout::Anchor, style_ranges}`
+// types. The full `render` module pulls in wgpu/glyphon GPU code this generator
+// bin deliberately excludes (see the header comment), so map a minimal `render`
+// shim exposing ONLY the data types the bridge references. The descriptor model,
+// theme map, and styleRanges data are GPU-free and reused verbatim via `#[path]`;
+// the renderer-only seams (`Anchor`'s draw-list projection, `tree::resolve_color`)
+// are stubbed to the small surface those data files compile against. The typedef
+// generator never invokes the bridge — it only needs these types to NAME-RESOLVE.
+//
+// The inline `render`/`ui` modules are anchored at the REAL `src/render/ui`
+// directory via `#[path]` so the nested data-module `#[path]` values resolve
+// against an existing directory (a nested inline module otherwise bases its
+// children at a non-existent `src/bin/render/ui/` dir, which rustc will not
+// read). The data files use `super::layout`/`super::tree`/`super::theme`, so all
+// five siblings live under one `ui` module.
+#[path = "../render"]
+mod render {
+    #[path = "ui"]
+    pub(crate) mod ui {
+        // GPU-free data files reused verbatim from the renderer.
+        pub(crate) mod descriptor;
+        pub(crate) mod style_ranges;
+        pub(crate) mod theme;
+
+        /// Minimal `layout` shim: the bridge and `descriptor.rs` need only the
+        /// `Anchor` placement enum. The real `layout.rs` couples it to GPU
+        /// draw-list projection (`UiDrawList`/`UiInstance`), excluded from this
+        /// bin, so define `Anchor` inline rather than including the file.
+        #[path = "_gen_layout_shim.rs"]
+        pub(crate) mod layout;
+
+        /// Minimal `tree` shim: `style_ranges::evaluate` calls `resolve_color`.
+        /// The bridge never calls `evaluate`, but the data file compiles against
+        /// this signature, so a thin pass-through fallback suffices here.
+        #[path = "_gen_tree_shim.rs"]
+        pub(crate) mod tree;
+    }
+}
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 

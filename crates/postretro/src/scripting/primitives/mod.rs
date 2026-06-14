@@ -405,6 +405,36 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("jumpBufferMs?", "f32", "Jump-buffer window in milliseconds: a jump pressed this long before landing fires on the landing tick. 0 disables jump buffering. Default 100.0.")
         .finish();
     registry
+        .register_type("ModUiTree")
+        .doc("A UI tree registered through `ModManifest.uiTrees` (or `LevelManifest.uiTrees`). Pairs a registry `name` with an `AnchoredTree` placement envelope and the `alwaysOn` registration flag. A malformed entry is logged and skipped at load time.")
+        .field("name", "String", "Registry name the render path resolves the tree by. Required.")
+        .field("tree", "AnchoredTree", "The placement envelope + widget tree (the value produced by the `Tree` factory). Required.")
+        .field(
+            "alwaysOn?",
+            "bool",
+            "Whether the tree composes as a per-frame base layer (e.g. the HUD: always rendered) rather than only when explicitly pushed onto the modal stack. Optional; defaults to false.",
+        )
+        .finish();
+    registry
+        .register_type("ThemeTokens")
+        .doc("Theme token maps supplied via `ModManifest.theme`. Three category-scoped maps: colors (linear-RGBA), fonts (registered family name), spacing (logical px). Each is optional; overrides merge per-token into the engine default.")
+        .field(
+            "colors?",
+            "ThemeColorMap",
+            "Color tokens: token name → linear-RGBA `[r, g, b, a]`. Optional.",
+        )
+        .field(
+            "fonts?",
+            "FontFamilyMap",
+            "Font tokens: token name → registered family name. Optional.",
+        )
+        .field(
+            "spacing?",
+            "ThemeSpacingMap",
+            "Spacing tokens: token name → logical px. Optional.",
+        )
+        .finish();
+    registry
         .register_type("ModManifest")
         .doc("Object returned from `setupMod()` in `start-script.{ts,luau}`. Identifies the mod to the engine.")
         .field("name", "String", "Human-readable mod name. Required.")
@@ -412,6 +442,21 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "entities?",
             "Vec<EntityTypeDescriptor>",
             "Engine-global entity-type registrations. Survive level unload.",
+        )
+        .field(
+            "uiTrees?",
+            "Vec<ModUiTree>",
+            "Script-registered UI trees (name + `AnchoredTree` + `alwaysOn`). Optional. Malformed entries are logged and skipped.",
+        )
+        .field(
+            "theme?",
+            "ThemeTokens",
+            "Theme token overrides (colors/fonts/spacing). Optional; merged per-token into the engine default.",
+        )
+        .field(
+            "fonts?",
+            "FontFamilyMap",
+            "Font assets: family name → TTF asset path. Optional.",
         )
         .finish();
 }
@@ -498,9 +543,12 @@ mod tests {
         let _shape_anchor = ModManifestResult {
             name: String::new(),
             entities: Vec::new(),
+            ui_trees: Vec::new(),
+            theme: crate::scripting::data_descriptors::ModThemeTokens::default(),
+            fonts: crate::scripting::data_descriptors::ModFontAssets::default(),
             store_declarations: crate::scripting::slot_table::StoreDeclarationSet::default(),
         };
-        let expected_fields: &[&str] = &["name", "entities"];
+        let expected_fields: &[&str] = &["name", "entities", "uiTrees", "theme", "fonts"];
 
         let mut r = PrimitiveRegistry::new();
         register_shared_types(&mut r);

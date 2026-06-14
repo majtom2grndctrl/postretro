@@ -20,6 +20,9 @@ pub const REFERENCE_HEIGHT: f32 = 720.0;
 /// placement envelope's `anchor` field, drive the whole-tree placement transform
 /// (`tree::anchor_fractions`), and are exercised by the layout tests. The splash
 /// itself only uses `Center`.
+///
+/// Note: `render/ui/_gen_layout_shim.rs` hand-copies this enum (and its
+/// `ALL`/`wire` API) for the typedef generator bin; add new variants there too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Anchor {
@@ -35,6 +38,44 @@ pub enum Anchor {
 }
 
 impl Anchor {
+    /// Every `Anchor` variant, in declaration order. The drift-guard test
+    /// (`scripting::typedef`) derives the `WidgetAnchor` SDK union from this
+    /// plus [`Anchor::wire`], so a new variant cannot slip into the enum
+    /// without surfacing in the generated typedefs. Test-only: these exist
+    /// solely to feed that guard, so they are gated to test builds to avoid a
+    /// dead-code warning in normal builds.
+    #[cfg(test)]
+    pub(crate) const ALL: &[Anchor] = &[
+        Anchor::TopLeft,
+        Anchor::Top,
+        Anchor::TopRight,
+        Anchor::Left,
+        Anchor::Center,
+        Anchor::Right,
+        Anchor::BottomLeft,
+        Anchor::Bottom,
+        Anchor::BottomRight,
+    ];
+
+    /// The camelCase wire string for this anchor — the single source of truth
+    /// shared by the serde `rename_all` output, `data_descriptors::parse_anchor`,
+    /// and the `WidgetAnchor` SDK union. The exhaustive `match` (no `_` arm)
+    /// makes adding a variant a compile error until its wire string is defined.
+    #[cfg(test)]
+    pub(crate) fn wire(self) -> &'static str {
+        match self {
+            Anchor::TopLeft => "topLeft",
+            Anchor::Top => "top",
+            Anchor::TopRight => "topRight",
+            Anchor::Left => "left",
+            Anchor::Center => "center",
+            Anchor::Right => "right",
+            Anchor::BottomLeft => "bottomLeft",
+            Anchor::Bottom => "bottom",
+            Anchor::BottomRight => "bottomRight",
+        }
+    }
+
     /// Fractional position of the anchor in `[0,1]` along each axis: x grows
     /// right, y grows down (top-left origin, matching device-pixel rects).
     fn fractions(self) -> (f32, f32) {

@@ -138,6 +138,14 @@ mod multi_batch_test;
 #[cfg(test)]
 mod multi_layer_text_golden_test;
 
+/// G1b cross-cutting lifecycle + render suite (M13 G1b, Task 6): the
+/// register -> resolve-by-name -> render chain over the production path, the
+/// always-on compose -> render path, a mod theme override reaching a rendered
+/// widget, a runtime-registered font usable by a `text` token, and `localState`
+/// on a mixed store-bound + local-bound tree. Pure CPU — no GPU adapter.
+#[cfg(test)]
+mod lifecycle_render_test;
+
 const UI_QUAD_WGSL: &str = include_str!("../../shaders/ui_quad.wgsl");
 
 /// 9 regions * 2 triangles * 3 vertices. The vertex shader keys off

@@ -911,3 +911,125 @@ the OS cursor (visible in `pointer`, hidden in `focus`) and the focus ring (hidd
 in `pointer`, visible in `focus`); it is inert when no capturing tree is up. A
 `text` widget can `bind` it to display the live mode. It is **read-only from
 scripts** — the engine is its sole producer.
+
+## Authoring UI with the SDK (M13 G1)
+
+Scripts build UI as **descriptor trees** using SDK factory functions, register
+them by name from `setupMod` / `setupLevel`, and theme them. The scripting VM
+drops after each registration pass — the engine then owns the live UI every
+frame, with no script callback running at draw time. You describe the UI; Rust
+renders it.
+
+### Factories
+
+Each widget kind has a capitalized factory. Containers take a **props object
+first** and **children as a positional second argument** (the Compose / SwiftUI
+shape); leaf widgets take only props. All factories return a plain descriptor.
+
+```typescript
+import { Tree, VStack, HStack, Grid, Text, Panel, Bar, Button, Slider, Image, Spacer } from "postretro";
+
+const hud = Tree(
+  { anchor: "topLeft", offset: [16, 16] },
+  VStack({ gap: "s", padding: "m" }, [
+    Text({ content: "HP", fontSize: 18, color: "ok" }),
+    Bar({ bind: { slot: "player.health" }, max: 100, fill: "ok", background: [0.1, 0.1, 0.1, 1] }),
+  ]),
+);
+```
+
+- **Containers:** `VStack` / `HStack` / `Grid` — `(props, children)`.
+- **Leaves:** `Text`, `Panel`, `Image`, `Spacer`, `Bar`, and the interactive
+  `Button` / `Slider` (see *Operable UI* above) — `(props)`.
+- **Envelope:** `Tree({ anchor, offset, captureMode?, initialFocus?, textEntryTarget? }, root)`
+  places the whole tree once on the 1280×720 logical canvas. `captureMode`
+  defaults to `"passthrough"` (a HUD never captures input); `"capture"` freezes
+  gameplay and lower trees (a menu/dialog).
+
+Color and spacing props accept either a **theme token** (a bare string like
+`"ok"` or `"m"`) or an inline literal (`[r, g, b, a]` / a number).
+
+### Modder components are plain functions
+
+A reusable component is just **a plain function that returns a descriptor
+subtree** — there is no `defineComponent`, no decorator, no base class, no
+registration. A component takes the same **props-first(-then-children)** shape an
+SDK factory takes and nests inside SDK containers exactly like a factory call:
+
+```typescript
+// A modder component: a plain function returning a subtree.
+function StatRow(props: { label: string; slot: string }) {
+  return HStack({ gap: "s", align: "center" }, [
+    Text({ content: props.label, fontSize: 16, color: "body" as never }),
+    Text({ content: "", fontSize: 16, color: "ok", bind: { slot: props.slot } }),
+  ]);
+}
+
+const panel = VStack({ gap: "s", padding: "m" }, [
+  StatRow({ label: "HP", slot: "player.health" }), // nests like any factory
+  StatRow({ label: "AMMO", slot: "player.ammo" }),
+]);
+```
+
+The bridge sees no difference between a factory call and a plain-function
+component — both produce the same descriptor objects. Compose components by
+calling them; share them by `import` / `require` like any other function.
+
+**A component that uses `ui.createLocalState()` must declare the scope on its
+root container.** The cell scope is resolved against the *nearest declaring
+ancestor*, so a self-contained component splices its `localState` onto the
+container it returns:
+
+```typescript
+function Counter(props: { start: number }) {
+  const { scope, cells } = ui.createLocalState({ count: props.start });
+  return VStack({ localState: scope }, [               // scope declared on the root
+    Text({ content: "", fontSize: 18, color: "body" as never, bind: cells.count.get() }),
+    Button({ id: "inc", label: "+1", onPress: "counterInc" }),
+  ]);
+}
+```
+
+Each `Counter(...)` call gets its own cell scope, so two instances keep
+independent counts.
+
+### Registering trees, theme, and fonts
+
+`setupMod` (mod scope) and `setupLevel` (level scope) return UI registrations
+alongside their other fields:
+
+```typescript
+export function setupMod() {
+  return {
+    name: "MyMod",
+    uiTrees: [
+      { name: "hud", alwaysOn: true, tree: hud },     // resolved by name; alwaysOn = base layer
+    ],
+    theme: {
+      colors: { ok: [0.1, 0.9, 0.4, 1], "cyan.500": [0.1, 0.55, 0.62, 1] },
+      fonts: { body: "DisplaySans" },                  // token → registered family
+    },
+    fonts: { DisplaySans: "fonts/display.ttf" },       // family → TTF asset path (runtime-loaded)
+  };
+}
+```
+
+- **`uiTrees`** — each entry is `{ name, tree, alwaysOn? }`. `name` is how the
+  engine resolves the tree (and how a `showDialog` / `openMenu` reaction targets
+  it). `alwaysOn: true` composes the tree as a base layer every frame (the HUD
+  case); the default (`false`) means the tree only shows when pushed onto the
+  modal stack. A mod tree registered under an engine built-in's name **shadows**
+  it (the reskin path — last-wins, with a one-line warning in the log).
+- **`theme`** — per-token overrides merged over the engine default: only the
+  tokens you name change; everything else keeps its default. Unknown tokens
+  referenced by a widget degrade visibly (unknown color → magenta, unknown font →
+  `body`, unknown spacing → 0) with a one-time warning, never a crash.
+- **`fonts`** — family name → TTF/OTF asset path (resolved under the mod content
+  root). Loaded at runtime so a `text` widget's `font` token (via the `theme`
+  `fonts` table) can name the family. A font that fails to load is logged and
+  skipped; boot does not abort.
+
+A malformed registration is contained: a single malformed `uiTrees` entry is
+logged and skipped (the rest register), and a structurally broken `theme` /
+`fonts` field surfaces a named load-time diagnostic the engine logs before
+continuing — a bad UI registration never aborts boot or level load.

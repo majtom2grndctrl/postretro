@@ -7852,6 +7852,80 @@ mod tests {
     }
 
     #[test]
+    fn luau_modder_component_is_a_plain_function_nesting_inside_an_sdk_container() {
+        // The modder-component convention (M13 G1b, Task 6): a modder component is
+        // a PLAIN FUNCTION returning a descriptor subtree — no defineComponent, no
+        // decorator, no inheritance. It takes the same props-first(-then-children)
+        // shape as an SDK factory and nests inside SDK containers. Here a plain
+        // `Labeled` function returns an `HStack` subtree; it is called with a props
+        // object exactly like `L.HStack`, and its result nests inside an `L.VStack`
+        // — then the whole mixed tree passes through the SAME G1a bridge an
+        // all-factory tree does, proving the component is callable and nestable with
+        // no special machinery.
+        const WIDGETS_SRC: &str = include_str!("../../../../sdk/lib/ui/widgets.luau");
+        const LAYOUT_SRC: &str = include_str!("../../../../sdk/lib/ui/layout.luau");
+        const TREE_SRC: &str = include_str!("../../../../sdk/lib/ui/tree.luau");
+
+        let lua = mlua::Lua::new();
+        let widgets: mlua::Table = lua.load(WIDGETS_SRC).eval().unwrap();
+        let layout: mlua::Table = lua.load(LAYOUT_SRC).eval().unwrap();
+        let tree_mod: mlua::Table = lua.load(TREE_SRC).eval().unwrap();
+        lua.globals().set("W", widgets).unwrap();
+        lua.globals().set("L", layout).unwrap();
+        lua.globals().set("T", tree_mod).unwrap();
+
+        // A modder component: a plain function, props-first, returning a subtree
+        // built from SDK factories. No registration, no base class.
+        let src = r#"
+            -- modder component: plain function, props-first, returns a subtree.
+            local function Labeled(props)
+                return L.HStack({ gap = 2, padding = 0, align = "center" }, {
+                    W.Text({ content = props.label, fontSize = 14, color = {1,1,1,1} }),
+                    W.Text({ content = props.value, fontSize = 14, color = {1,1,1,1} }),
+                })
+            end
+
+            return T.Tree({ anchor = "topLeft", offset = { 0, 0 } },
+                L.VStack({ gap = 4, padding = 8, align = "start" }, {
+                    -- the modder component nests inside the SDK container exactly
+                    -- like a factory call would.
+                    Labeled({ label = "HP", value = "100" }),
+                    W.Spacer({ flexGrow = 1 }),
+                }))
+        "#;
+        let value: mlua::Value = lua.load(src).eval().expect("mixed tree must build");
+        let tree = anchored_tree_from_lua_value(value)
+            .expect("bridge converts the mixed factory+component tree");
+
+        // The root SDK container holds the modder component's subtree as its first
+        // child, structurally identical to an inline `HStack` — the bridge sees no
+        // difference between a factory call and a plain-function component.
+        let Widget::VStack(root) = &tree.root else {
+            panic!("root must be a vstack");
+        };
+        assert_eq!(
+            root.children.len(),
+            2,
+            "container + component child + spacer"
+        );
+        let Widget::HStack(labeled) = &root.children[0] else {
+            panic!(
+                "the modder component returned an hstack subtree, got {:?}",
+                root.children[0]
+            );
+        };
+        assert_eq!(labeled.children.len(), 2, "the component's two text runs");
+        assert!(matches!(labeled.children[0], Widget::Text(_)));
+        assert!(matches!(root.children[1], Widget::Spacer(_)));
+
+        // The mixed tree re-serializes byte-identically through the descriptor's
+        // own serde — the component's output is indistinguishable from inline
+        // factory output on the wire.
+        let expected = r#"{"anchor":"topLeft","offset":[0.0,0.0],"root":{"kind":"vstack","gap":4.0,"padding":8.0,"align":"start","children":[{"kind":"hstack","gap":2.0,"padding":0.0,"align":"center","children":[{"kind":"text","content":"HP","fontSize":14.0,"color":[1.0,1.0,1.0,1.0]},{"kind":"text","content":"100","fontSize":14.0,"color":[1.0,1.0,1.0,1.0]}]},{"kind":"spacer","flexGrow":1.0}]}}"#;
+        assert_eq!(serde_json::to_string(&tree).unwrap(), expected);
+    }
+
+    #[test]
     fn luau_empty_container_parses_as_explicit_children_array() {
         // The critical Task 3 note: an EMPTY Luau container `children` table would
         // serialize to `{}` (not `[]`) through the generic lua_to_json walker. The

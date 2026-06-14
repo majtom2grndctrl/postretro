@@ -4195,6 +4195,144 @@ mod tests {
         assert!(!reload_summary_requires_mod_init(ReloadSummary::default()));
     }
 
+    // --- G1b drain-before-drop lifecycle invariant (Task 6) -----------------
+
+    /// RAII temp mod root mirroring `runtime.rs`'s test helper: a fresh dir under
+    /// `std::env::temp_dir()`, removed on drop so a panic leaks nothing.
+    struct TempModRoot(std::path::PathBuf);
+    impl std::ops::Deref for TempModRoot {
+        type Target = std::path::Path;
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+    impl Drop for TempModRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    fn temp_mod_root(name: &str) -> TempModRoot {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "postretro_g1b_drain_test_{}_{}_{name}",
+            std::process::id(),
+            n,
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        TempModRoot(p)
+    }
+
+    fn test_runtime() -> ScriptRuntime {
+        let ctx = ScriptCtx::new();
+        let mut registry = PrimitiveRegistry::new();
+        register_all(&mut registry, ctx.clone());
+        ScriptRuntime::new(&registry, &ScriptRuntimeConfig::default(), &ctx).unwrap()
+    }
+
+    #[test]
+    fn ui_registrations_drain_after_mod_init_returns_with_no_vm_resident_then_render() {
+        // Drain-before-drop, the assertable half: `run_mod_init` creates AND drops
+        // the authoring VM context *within* the call (scripting.md §2/§11), then
+        // stores the manifest as plain Rust. So when `run_mod_init` RETURNS, the VM
+        // is already gone and the UI registrations survive as owned data on the
+        // manifest. The App then drains that data into the registry (the ordering
+        // `App` enforces at main.rs's mod-init handler) — provably after the VM
+        // drop, because the VM cannot outlive `run_mod_init`. A frame then renders
+        // the registered tree with no VM anywhere in scope.
+        let dir = temp_mod_root("drain_order");
+        std::fs::write(
+            dir.join("start-script.js"),
+            r#"
+            globalThis.setupMod = function() {
+                return {
+                    name: "DrainMod",
+                    uiTrees: [
+                        { name: "banner", alwaysOn: true,
+                          tree: { anchor: "top", offset: [0.0, 0.0],
+                                  root: { kind: "text", content: "REGISTERED", fontSize: 18.0, color: [1.0,1.0,1.0,1.0] } } },
+                    ],
+                };
+            };
+            "#,
+        )
+        .unwrap();
+
+        let mut rt = test_runtime();
+        rt.run_mod_init(&dir).expect("mod-init succeeds");
+
+        // `run_mod_init` has returned: the VM it built is dropped. The manifest
+        // carries the registrations as plain Rust (no live VM reference).
+        let trees = {
+            let manifest = rt.mod_manifest().expect("manifest present after mod-init");
+            assert_eq!(manifest.ui_trees.len(), 1, "the UI tree survived as data");
+            manifest.ui_trees.clone()
+        };
+
+        // Drain into the tiered registry AFTER the VM is gone — the exact ordering
+        // the App's mod-init handler enforces (drain, then the VM has already
+        // dropped inside run_mod_init).
+        let mut stack = render::ui::modal_stack::ModalStack::new();
+        stack.register_script_trees(trees, render::ui::modal_stack::ScopeTier::Mod);
+
+        // A frame renders the registered tree with NO VM resident: resolve by name
+        // and build draw data from the resolved descriptor alone.
+        let resolved = stack
+            .tree("banner")
+            .expect("registered tree resolves by name");
+        let theme = render::ui::theme::UiTheme::engine_default();
+        let mut ui = render::ui::tree::UiTree::from_descriptor(resolved, &theme);
+        let mut fs = render::ui::text::build_font_system();
+        let data = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &render::ui::tree::ImageSizes::new(),
+            &std::collections::HashMap::new(),
+            &render::ui::tree::CellValues::new(),
+            0.0,
+        );
+        assert!(
+            data.texts.iter().any(|t| t.content == "REGISTERED"),
+            "the registered UI renders from drained data with no VM resident",
+        );
+    }
+
+    #[test]
+    fn malformed_theme_token_surfaces_named_error_and_boot_does_not_abort() {
+        // A structurally-broken `theme` token (a color that is not a [r,g,b,a]
+        // tuple) surfaces a NAMED load-time diagnostic from `run_mod_init` rather
+        // than panicking. The App's mod-init handler logs that error and continues
+        // (the `if let Err(..) { log::error!(..) }` arm), so boot does not abort —
+        // the engine simply runs without the mod's theme. We assert the named-error
+        // half here; the log-and-continue half is the App handler's structure.
+        let dir = temp_mod_root("bad_theme");
+        std::fs::write(
+            dir.join("start-script.js"),
+            r#"
+            globalThis.setupMod = function() {
+                return {
+                    name: "BadThemeMod",
+                    theme: { colors: { critical: "not-an-rgba-array" } },
+                };
+            };
+            "#,
+        )
+        .unwrap();
+
+        let mut rt = test_runtime();
+        let err = rt
+            .run_mod_init(&dir)
+            .expect_err("a wrong-type theme token is a named load-time error, not a panic");
+        // A named diagnostic naming the offending field — not a panic, not a silent drop.
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("theme"),
+            "the diagnostic names the offending `theme` field, got: {msg}",
+        );
+    }
+
     /// Mirrors the consumed-event gate in `window_event` for keyboard input:
     /// when egui reports `consumed`, only the `ToggleDebugPanel` chord is
     /// allowed to fire; every other resolved diagnostic action is dropped and

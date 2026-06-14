@@ -474,7 +474,7 @@ fn plan_health_replace(
     // the single source of truth for which fields are live state (`current`,
     // `death_handled`) versus authored data (`max`, `hitbox`). `current` clamps
     // to the new max; the death latch is preserved.
-    let mut refreshed = *live;
+    let mut refreshed = live.clone();
     refreshed.refresh_from_descriptor(descriptor);
     Ok(ComponentValue::Health(refreshed))
 }
@@ -936,7 +936,11 @@ mod tests {
             movement: None,
             weapon: None,
             mesh: None,
-            health: Some(HealthDescriptor { max, hitbox: None }),
+            health: Some(HealthDescriptor {
+                max,
+                hitbox: None,
+                zone_multipliers: std::collections::HashMap::new(),
+            }),
         }
     }
 

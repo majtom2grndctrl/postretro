@@ -4,6 +4,8 @@
 //
 // See: context/lib/entity_model.md §2 (Health component), §7 (hitbox AABB)
 
+use std::collections::HashMap;
+
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
@@ -20,7 +22,10 @@ pub(crate) struct Hitbox {
     pub(crate) offset: Vec3,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+// Not `Copy`: `zone_multipliers` carries a heap-backed `HashMap`, so
+// `HealthComponent` clones rather than copies. (`max`/`current`/`hitbox` stay
+// scalar; the map is the sole heap field.)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct HealthComponent {
     pub(crate) max: f32,
     pub(crate) current: f32,
@@ -30,6 +35,12 @@ pub(crate) struct HealthComponent {
     /// (`systems/health.rs`) is this field's only writer; nothing here mutates it.
     #[serde(default)]
     pub(crate) death_handled: bool,
+    /// Per-skeletal-zone damage multipliers, tag → factor, materialized from the
+    /// descriptor. The damage site scales the payload by `zone_multipliers[tag]`
+    /// for the struck zone (absent zone OR absent entry ⇒ `1.0`). Reseeded on
+    /// hot reload so multiplier edits land on live entities without respawn.
+    #[serde(default)]
+    pub(crate) zone_multipliers: HashMap<String, f32>,
 }
 
 impl HealthComponent {
@@ -43,12 +54,15 @@ impl HealthComponent {
                 offset: Vec3::from_array(h.offset.unwrap_or([0.0, 0.0, 0.0])),
             }),
             death_handled: false,
+            zone_multipliers: desc.zone_multipliers.clone(),
         }
     }
 
-    /// Hot-reload refresh: `max` and `hitbox` reseed from the new descriptor;
-    /// `current` clamps to the new max so an authored max reduction cannot leave
-    /// HP above the cap. `death_handled` is live state and is preserved.
+    /// Hot-reload refresh: `max`, `hitbox`, and `zone_multipliers` reseed from
+    /// the new descriptor; `current` clamps to the new max so an authored max
+    /// reduction cannot leave HP above the cap. `death_handled` is live state
+    /// and is preserved. The reseeded multiplier map carries the edit onto live
+    /// entities without a respawn.
     pub(crate) fn refresh_from_descriptor(&mut self, desc: &HealthDescriptor) {
         self.max = desc.max;
         self.current = self.current.min(desc.max);
@@ -56,6 +70,7 @@ impl HealthComponent {
             half_extents: Vec3::from_array(h.half_extents),
             offset: Vec3::from_array(h.offset.unwrap_or([0.0, 0.0, 0.0])),
         });
+        self.zone_multipliers = desc.zone_multipliers.clone();
     }
 }
 
@@ -74,7 +89,7 @@ pub(crate) fn pawn_with_health(registry: &EntityRegistry) -> Option<(EntityId, H
     registry
         .get_component::<HealthComponent>(pawn)
         .ok()
-        .map(|health| (pawn, *health))
+        .map(|health| (pawn, health.clone()))
 }
 
 /// The damage chokepoint every producer routes through. Subtracts the payload's
@@ -88,7 +103,7 @@ pub(crate) fn apply_damage(registry: &mut EntityRegistry, id: EntityId, payload:
     let Ok(health) = registry.get_component::<HealthComponent>(id) else {
         return;
     };
-    let mut updated = *health;
+    let mut updated = health.clone();
     updated.current = (updated.current - payload.amount).max(0.0);
     // `set_component` only fails on a stale id, which `get_component` already
     // ruled out above.
@@ -102,7 +117,11 @@ mod tests {
     use crate::scripting::registry::Transform;
 
     fn descriptor(max: f32) -> HealthDescriptor {
-        HealthDescriptor { max, hitbox: None }
+        HealthDescriptor {
+            max,
+            hitbox: None,
+            zone_multipliers: HashMap::new(),
+        }
     }
 
     #[test]
@@ -122,6 +141,7 @@ mod tests {
                 half_extents: [0.5, 1.0, 0.5],
                 offset: None,
             }),
+            zone_multipliers: HashMap::new(),
         };
         let component = HealthComponent::from_descriptor(&desc);
         let hitbox = component.hitbox.expect("hitbox materialized");
@@ -179,6 +199,52 @@ mod tests {
             0.0,
             "HP never goes negative"
         );
+    }
+
+    #[test]
+    fn from_descriptor_carries_zone_multipliers() {
+        let mut desc = descriptor(100.0);
+        desc.zone_multipliers.insert("head".to_string(), 1.5);
+        let component = HealthComponent::from_descriptor(&desc);
+        assert_eq!(component.zone_multipliers.get("head"), Some(&1.5));
+    }
+
+    #[test]
+    fn refresh_reseeds_zone_multipliers() {
+        // Hot reload: a multiplier edit lands on the live component without a
+        // respawn, mirroring how `max`/`hitbox` reseed.
+        let mut start = descriptor(100.0);
+        start.zone_multipliers.insert("head".to_string(), 1.5);
+        let mut component = HealthComponent::from_descriptor(&start);
+        component.current = 40.0;
+
+        let mut reloaded = descriptor(100.0);
+        reloaded.zone_multipliers.insert("head".to_string(), 2.0);
+        reloaded.zone_multipliers.insert("leg".to_string(), 0.5);
+        component.refresh_from_descriptor(&reloaded);
+
+        assert_eq!(component.zone_multipliers.get("head"), Some(&2.0));
+        assert_eq!(component.zone_multipliers.get("leg"), Some(&0.5));
+        assert_eq!(component.current, 40.0, "live HP preserved across reload");
+    }
+
+    #[test]
+    fn zone_multiplier_scales_payload_amount() {
+        // Mirrors the damage-site computation: a listed tag scales the payload,
+        // an unlisted tag and an absent zone both apply 1.0. `apply_damage`
+        // itself stays amount-only (the scaling happens at the fire site).
+        let mut desc = descriptor(100.0);
+        desc.zone_multipliers.insert("head".to_string(), 1.5);
+        let component = HealthComponent::from_descriptor(&desc);
+
+        let base = 20.0_f32;
+        let mult = |zone: Option<&str>| {
+            zone.and_then(|tag| component.zone_multipliers.get(tag).copied())
+                .unwrap_or(1.0)
+        };
+        assert_eq!(base * mult(Some("head")), 30.0, "head: 1.5x");
+        assert_eq!(base * mult(Some("torso")), 20.0, "unlisted tag: 1.0x");
+        assert_eq!(base * mult(None), 20.0, "absent zone: 1.0x");
     }
 
     #[test]

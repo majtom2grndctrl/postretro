@@ -217,6 +217,46 @@ fn resolve_mesh_entity_clips(
     }
 }
 
+/// Level-load cross-check: for every archetype that declares both a mesh model
+/// and `health.zoneMultipliers`, warn ONCE per archetype per declared tag that
+/// names no zone on the spawned model. The unknown set is computed by the pure,
+/// unit-tested `unknown_zone_multiplier_tags`; this is a thin warn-only caller,
+/// modeled on `resolve_mesh_entity_clips`. An archetype whose model has no
+/// hit-zone entry (load failed, or an AABB-only model) treats every declared tag
+/// as unknown — the model carries no zones to satisfy them.
+fn warn_unknown_zone_multipliers(
+    descriptors: &[crate::scripting::data_descriptors::EntityTypeDescriptor],
+    store: &scripting_systems::hit_zones::HitZoneStore,
+) {
+    for desc in descriptors {
+        let (Some(mesh), Some(health)) = (desc.mesh.as_ref(), desc.health.as_ref()) else {
+            continue;
+        };
+        if health.zone_multipliers.is_empty() {
+            continue;
+        }
+        let handle = crate::model::ModelHandle::from(mesh.model.clone());
+        let declared = health.zone_multipliers.keys().map(String::as_str);
+        // A model with no hit-zone entry carries no zones: every declared tag is
+        // unknown. Pass an empty zone table so the cross-check reports them all.
+        let empty_zones: Vec<Option<crate::model::gltf_loader::JointZone>> = Vec::new();
+        let joint_zones = store
+            .get(&handle)
+            .map(|m| m.joint_zones.as_slice())
+            .unwrap_or(&empty_zones);
+        let unknown =
+            scripting_systems::hit_zones::unknown_zone_multiplier_tags(declared, joint_zones);
+        let archetype = desc.canonical_name.as_deref().unwrap_or("<unnamed>");
+        for tag in &unknown {
+            log::warn!(
+                "[HitZones] archetype '{archetype}' declares health.zoneMultipliers tag '{tag}' \
+                 absent from model '{}' — that multiplier never applies",
+                mesh.model,
+            );
+        }
+    }
+}
+
 // Policy chokepoint: the frame loop queues a staged build only when a changed
 // path matched the active mod-init dependency set (classified by ScriptRuntime).
 fn reload_summary_requires_mod_init(summary: ReloadSummary) -> bool {
@@ -3539,6 +3579,15 @@ impl App {
                 &mut self.script_ctx.registry.borrow_mut(),
                 &self.mesh_clip_tables,
             );
+
+            // Zone-multiplier cross-check: warn once per archetype per declared
+            // `health.zoneMultipliers` tag that names no zone on its mesh model.
+            // Runs here, alongside clip resolution, where the descriptors and the
+            // freshly rebuilt hit-zone store are both in hand.
+            warn_unknown_zone_multipliers(
+                &self.script_ctx.data_registry.borrow().entities,
+                &self.hit_zone_store,
+            );
         }
         self.level_timings.record("model_load");
 
@@ -3670,13 +3719,34 @@ impl App {
             weapon::spawn_impact_effect_at(&mut registry, impact.point, impact.normal);
             // Additive to the impact burst: when the nearest hit was an entity
             // hitbox, route the payload through the damage chokepoint. Spatial
-            // targeting rides on the impact (`target`), never inside the
-            // payload. The death sweep (run after this tick) resolves any kill.
-            // (The per-zone multiplier from `impact.zone` is Task 5.)
+            // targeting (`target`) and zone identity (`zone`) ride on the impact,
+            // never inside the payload. The death sweep (run after this tick)
+            // resolves any kill.
+            //
+            // Per-zone scaling: a FRESH payload's `amount` is multiplied by the
+            // target's `HealthComponent.zone_multipliers` entry for the struck
+            // tag before the chokepoint. An absent zone OR an absent entry
+            // applies 1.0. `DamagePayload` stays amount-only — the zone never
+            // enters the payload (established invariant).
             if let (Some(target), weapon::ActivationOutcome::Hit(payload)) =
                 (impact.target, impact.outcome)
             {
-                apply_damage(&mut registry, target, &payload);
+                let multiplier = impact
+                    .zone
+                    .as_deref()
+                    .and_then(|tag| {
+                        registry
+                            .get_component::<crate::scripting::components::health::HealthComponent>(
+                                target,
+                            )
+                            .ok()
+                            .and_then(|health| health.zone_multipliers.get(tag).copied())
+                    })
+                    .unwrap_or(1.0);
+                let scaled = weapon::DamagePayload {
+                    amount: payload.amount * multiplier,
+                };
+                apply_damage(&mut registry, target, &scaled);
             }
         }
         events.event_names()

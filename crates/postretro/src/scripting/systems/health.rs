@@ -75,7 +75,7 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
             if health.death_handled {
                 continue;
             }
-            let mut updated = *health;
+            let mut updated = health.clone();
             updated.death_handled = true;
             let _ = registry.set_component(id, updated);
             report.player_died = true;
@@ -105,7 +105,11 @@ mod tests {
     use crate::scripting::registry::Transform;
 
     fn health(max: f32) -> HealthDescriptor {
-        HealthDescriptor { max, hitbox: None }
+        HealthDescriptor {
+            max,
+            hitbox: None,
+            zone_multipliers: std::collections::HashMap::new(),
+        }
     }
 
     /// Spawn an entity carrying a Health component at the given current HP,

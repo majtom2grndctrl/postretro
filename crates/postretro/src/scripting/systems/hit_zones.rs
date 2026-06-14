@@ -167,6 +167,33 @@ impl HitZoneStore {
     }
 }
 
+/// Cross-check an archetype's DECLARED zone-multiplier tags against the zone tags
+/// a model actually carries, RETURNING the declared tags that name no zone on the
+/// model (sorted, deduplicated). A health descriptor's `zone_multipliers` keys
+/// are the declared set; `joint_zones` is the model's authored zone table.
+///
+/// Pure data logic (no logging) so the unknown set is unit-testable, mirroring
+/// [`super::mesh_anim::resolve_state_clips`] returning its `MissingClip` set. The
+/// caller (level-load validation in `main.rs`) warns once per archetype per
+/// returned tag.
+pub(crate) fn unknown_zone_multiplier_tags<'a>(
+    declared: impl IntoIterator<Item = &'a str>,
+    joint_zones: &[Option<JointZone>],
+) -> Vec<String> {
+    let known: std::collections::HashSet<&str> = joint_zones
+        .iter()
+        .filter_map(|z| z.as_ref().map(|j| j.tag.as_str()))
+        .collect();
+    let mut unknown: Vec<String> = declared
+        .into_iter()
+        .filter(|tag| !known.contains(tag))
+        .map(str::to_string)
+        .collect();
+    unknown.sort();
+    unknown.dedup();
+    unknown
+}
+
 /// Capsule radius for joint `i`: the authored `hitZoneRadius` when present, the
 /// engine default [`DEFAULT_ZONE_RADIUS`] when the zone omits it, and the default
 /// for a non-zone joint too (a non-zone joint still occupies space the swept bound
@@ -1051,6 +1078,7 @@ mod tests {
                 current: 100.0,
                 hitbox: None,
                 death_handled: false,
+                zone_multipliers: std::collections::HashMap::new(),
             },
         )
         .unwrap();
@@ -1075,6 +1103,7 @@ mod tests {
                     offset: Vec3::ZERO,
                 }),
                 death_handled: false,
+                zone_multipliers: std::collections::HashMap::new(),
             },
         )
         .unwrap();
@@ -1146,6 +1175,7 @@ mod tests {
                 current: 100.0,
                 hitbox: None,
                 death_handled: false,
+                zone_multipliers: std::collections::HashMap::new(),
             },
         )
         .unwrap();
@@ -1327,6 +1357,7 @@ mod tests {
                     offset: Vec3::ZERO,
                 }),
                 death_handled: false,
+                zone_multipliers: std::collections::HashMap::new(),
             },
         )
         .unwrap();
@@ -1411,5 +1442,33 @@ mod tests {
         .expect("ray should hit the box");
         assert!(approx(toi, 2.5));
         assert!((normal - Vec3::new(-1.0, 0.0, 0.0)).length() < FACILITY_EPS);
+    }
+
+    // --- unknown_zone_multiplier_tags: the level-load cross-check ------------
+
+    #[test]
+    fn unknown_zone_tags_reports_declared_tags_absent_from_model() {
+        let zones = vec![zone("head", None), None, zone("torso", None)];
+        let unknown = unknown_zone_multiplier_tags(["head", "leg", "torso", "tail"], &zones);
+        assert_eq!(
+            unknown,
+            vec!["leg".to_string(), "tail".to_string()],
+            "only tags absent from the model are returned, sorted"
+        );
+    }
+
+    #[test]
+    fn unknown_zone_tags_empty_when_all_declared_tags_exist() {
+        let zones = vec![zone("head", None), zone("torso", None)];
+        let unknown = unknown_zone_multiplier_tags(["head", "torso"], &zones);
+        assert!(unknown.is_empty());
+    }
+
+    #[test]
+    fn unknown_zone_tags_all_unknown_for_model_without_zones() {
+        // An AABB-only model (or a failed load) carries no zones: every declared
+        // tag is unknown.
+        let unknown = unknown_zone_multiplier_tags(["head", "leg"], &[]);
+        assert_eq!(unknown, vec!["head".to_string(), "leg".to_string()]);
     }
 }

@@ -219,6 +219,7 @@ mod tests {
         let mut health = HealthComponent::from_descriptor(&HealthDescriptor {
             max: 100.0,
             hitbox: None,
+            zone_multipliers: std::collections::HashMap::new(),
         });
         health.current = current;
         registry.set_component(id, health).unwrap();
@@ -337,7 +338,10 @@ mod tests {
         // Mutate the live HP, then tick again: the slot follows.
         {
             let mut registry = ctx.registry.borrow_mut();
-            let mut health = *registry.get_component::<HealthComponent>(pawn).unwrap();
+            let mut health = registry
+                .get_component::<HealthComponent>(pawn)
+                .unwrap()
+                .clone();
             health.current = 40.0;
             registry.set_component(pawn, health).unwrap();
         }

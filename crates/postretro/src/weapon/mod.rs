@@ -324,6 +324,7 @@ mod tests {
                         offset,
                     }),
                     death_handled: false,
+                    zone_multipliers: std::collections::HashMap::new(),
                 },
             )
             .expect("health component should attach");
@@ -827,6 +828,7 @@ mod tests {
                     current: 100.0,
                     hitbox: None,
                     death_handled: false,
+                    zone_multipliers: std::collections::HashMap::new(),
                 },
             )
             .unwrap();

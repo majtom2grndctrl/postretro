@@ -389,6 +389,12 @@ pub(crate) struct HealthDescriptor {
     pub(crate) max: f32,
     #[serde(default)]
     pub(crate) hitbox: Option<HitboxDescriptor>,
+    /// Per-skeletal-zone damage multipliers, tag → factor (e.g. `"head" → 1.5`).
+    /// A shot landing on a tagged zone scales the weapon's payload by this
+    /// factor; an absent zone or an unlisted tag applies `1.0`. Each factor must
+    /// be finite and `>= 0`. Defaults to empty (every zone applies `1.0`).
+    #[serde(default, rename = "zoneMultipliers")]
+    pub(crate) zone_multipliers: HashMap<String, f32>,
 }
 
 /// Authored hitbox sub-block: one world-aligned AABB. `half_extents` is the
@@ -435,6 +441,15 @@ impl HealthDescriptor {
                         });
                     }
                 }
+            }
+        }
+        for (tag, factor) in &self.zone_multipliers {
+            if !factor.is_finite() || *factor < 0.0 {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.health.zoneMultipliers.{tag}` must be a finite value >= 0.0, got {factor}"
+                    ),
+                });
             }
         }
         Ok(self)
@@ -5865,6 +5880,38 @@ mod tests {
     fn js_health_non_finite_offset_is_rejected() {
         let src = r#"({ components: { health: { max: 50, hitbox: { halfExtents: [0.5, 0.5, 0.5], offset: [0, 1/0, 0] } } } })"#;
         let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_health_parses_zone_multipliers() {
+        let src = r#"({ components: { health: { max: 80, zoneMultipliers: { head: 1.5, leg: 0.5 } } } })"#;
+        let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+        let health = d.health.expect("health parsed");
+        assert_eq!(health.zone_multipliers.get("head"), Some(&1.5));
+        assert_eq!(health.zone_multipliers.get("leg"), Some(&0.5));
+    }
+
+    #[test]
+    fn lua_health_parses_zone_multipliers() {
+        // Luau parity: the same shape flows through the Luau arm for free.
+        let src = r#"return { components = { health = { max = 80, zoneMultipliers = { head = 2.0 } } } }"#;
+        let d = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap());
+        let health = d.health.expect("health parsed by the Luau arm");
+        assert_eq!(health.zone_multipliers.get("head"), Some(&2.0));
+    }
+
+    #[test]
+    fn js_health_negative_zone_multiplier_is_rejected() {
+        let src = r#"({ components: { health: { max: 50, zoneMultipliers: { head: -0.1 } } } })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_health_non_finite_zone_multiplier_is_rejected() {
+        let src = r#"return { components = { health = { max = 50, zoneMultipliers = { head = 1/0 } } } }"#;
+        let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
         assert!(matches!(err, DescriptorError::InvalidShape { .. }));
     }
 }

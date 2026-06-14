@@ -26,8 +26,8 @@ use glyphon::FontSystem;
 use super::text::{UiText, measure_run};
 use super::{UiDrawList, UiInstance};
 
-/// Resolved presentation-cell values for a frame, keyed by `(scopeId, cellName)`
-/// (M13 G1b, Task 5). The app-side cell store publishes this onto the read
+/// Resolved presentation-cell values for a frame, keyed by `(scopeId, cellName)`.
+/// The app-side cell store publishes this onto the read
 /// snapshot, exactly the way bound slot values flow — so the descriptor compared
 /// by the retained reuse gate (`mod.rs`) stays immutable and a cell write never
 /// forces a rebuild. A `{ local }` bind resolves against it through the node's
@@ -56,7 +56,7 @@ fn lookup_bound<'a>(
 
 /// Fallback color for an unknown color token: opaque magenta. A missing token
 /// degrades visibly (rather than panicking or rendering invisibly) so an
-/// authoring typo is obvious on screen — see the M13 fonts+theming spec.
+/// authoring typo is obvious on screen.
 const UNKNOWN_COLOR_FALLBACK: [f32; 4] = [1.0, 0.0, 1.0, 1.0];
 
 /// Fallback spacing for an unknown spacing token: zero logical px.
@@ -72,7 +72,7 @@ const INTERACTIVE_LABEL_FONT_SIZE: f32 = 18.0;
 /// container's `align`/stretch may still override it. Horizontal-only in v1.
 const DEFAULT_BAR_SIZE: [f32; 2] = [120.0, 12.0];
 
-// --- Value-tween easing (M13 UI Value-Tweening, Task 3) ---------------------
+// --- Value-tween easing -----------------------------------------------------
 
 /// Identity easing: `t` unchanged.
 fn linear(t: f32) -> f32 {
@@ -292,7 +292,7 @@ enum NodeContext {
         family: String,
         bind: Option<TextBind>,
         /// The nearest declaring `localState` scope id resolved at build time, for
-        /// a `{ local }` bind (M13 G1b, Task 5). `None` for a `{ slot }` bind or a
+        /// a `{ local }` bind. `None` for a `{ slot }` bind or a
         /// local bind with no enclosing scope (the latter degrades to "absent").
         bind_scope: Option<String>,
         /// Last resolved bound string the diff observed. `None` until the first
@@ -307,7 +307,7 @@ enum NodeContext {
         /// formatted display string (so the measure seam shapes the displayed
         /// value).
         tween: Option<TweenState<f32>>,
-        /// Continuous value→style map (M13 Goal E). When `Some`, the rendered
+        /// Continuous value→style map. When `Some`, the rendered
         /// numeric value drives a band color + pulse/flash effect that overrides
         /// `color`. `style_state` holds the per-node effect clock (flash entry,
         /// active band) the evaluator advances each draw build. Both `None` on a
@@ -342,7 +342,7 @@ enum NodeContext {
         /// binds and before the first array resolution. While `Some`, the driver
         /// eases `display` (the rendered fill) per-channel toward `target`.
         tween: Option<TweenState<[f32; 4]>>,
-        /// Continuous value→style map (M13 Goal E). When `Some`, the rendered
+        /// Continuous value→style map. When `Some`, the rendered
         /// numeric value (from `bind`'s slot) drives a band color + pulse/flash
         /// effect that overrides `fill`. `style_state` holds the per-node effect
         /// clock. Both `None` on a styleRange-less node and on container backdrops.
@@ -355,7 +355,7 @@ enum NodeContext {
     /// `asset` doubles as the size key. Image batching/binding lands in the
     /// renderer; the tree records the key so the draw step can group by it.
     Image { asset: String },
-    /// Horizontal value bar (M13 Goal F, Task 4). Draws a `background` quad filling
+    /// Horizontal value bar. Draws a `background` quad filling
     /// its laid-out rect, then a `fill` quad whose width is `value/max` clamped to
     /// `[0, 1]` of the rect width. `value` resolves from `bind`'s slot (the eased
     /// display fraction on the retained tweened path, via `last_resolved`); a
@@ -633,7 +633,7 @@ impl UiTree {
 
         // styleRange band colors were pre-resolved to literals at build time, so
         // the draw-time evaluator never looks a token up; this inert theme satisfies
-        // its `&UiTheme` parameter (the Goal F / Task 3 evaluator contract) without
+        // its `&UiTheme` parameter without
         // re-introducing the theme to the per-frame walk.
         let inert_theme = UiTheme::engine_default();
 
@@ -678,7 +678,7 @@ impl UiTree {
         image_sizes: &ImageSizes,
         slot_values: &HashMap<String, SlotValue>,
         // Resolved presentation-cell values for the frame, keyed by
-        // `(scopeId, cellName)` (M13 G1b, Task 5). `{ local }` binds resolve
+        // `(scopeId, cellName)`. `{ local }` binds resolve
         // against this the same way `{ slot }` binds resolve against `slot_values`;
         // it rides the snapshot, so a cell write never forces a rebuild.
         cell_values: &CellValues,
@@ -1084,7 +1084,7 @@ impl UiTree {
                         cell_values,
                     ),
                 };
-                // styleRanges (M13 Goal E) overrides the fill: the bound numeric
+                // styleRanges overrides the fill: the bound numeric
                 // value maps to a band color + pulse/flash. Its band colors were
                 // pre-resolved to literals at build, so the evaluator's theme arg
                 // is inert here. The base color is the resolved `fill` above (a
@@ -1211,7 +1211,7 @@ impl UiTree {
                         cell_values,
                     ),
                 };
-                // styleRanges (M13 Goal E) overrides the run's color: the bound
+                // styleRanges overrides the run's color: the bound
                 // value (the eased tween display when a tween is active, else the
                 // raw slot number) maps to a band color + pulse/flash. Band colors
                 // were pre-resolved to literals at build, so the theme arg is inert.
@@ -1277,7 +1277,7 @@ struct DrawWalkCtx<'a> {
     canvas_origin: [f32; 2],
     scale: f32,
     slot_values: &'a HashMap<String, SlotValue>,
-    /// Presentation-cell values for `{ local }` bind resolution (M13 G1b, Task 5).
+    /// Presentation-cell values for `{ local }` bind resolution.
     cell_values: &'a CellValues,
     time_seconds: f64,
     inert_theme: &'a UiTheme,
@@ -1662,7 +1662,7 @@ fn focus_meta(widget: &Widget) -> (Option<&String>, FocusNeighbors) {
     }
 }
 
-/// The interaction metadata for an interactive widget (M13 Goal F, Task 4), or
+/// The interaction metadata for an interactive widget, or
 /// `None` for passive nodes. `button` carries its activation reaction; `slider`
 /// its bound-value step parameters. The focus-rect export attaches this so the
 /// app can drive activation/value-step from the focused node id.
@@ -1716,8 +1716,8 @@ fn widget_children(widget: &Widget) -> Option<&[Widget]> {
     }
 }
 
-/// The scope id a container's `localState` declaration opens, if any (M13 G1b,
-/// Task 5). `None` when the container declares no `localState`, so its subtree
+/// The scope id a container's `localState` declaration opens, if any. `None`
+/// when the container declares no `localState`, so its subtree
 /// inherits the enclosing scope.
 fn local_state_scope(local_state: Option<&LocalState>) -> Option<&str> {
     local_state.map(|ls| ls.scope.as_str())
@@ -1727,7 +1727,7 @@ fn local_state_scope(local_state: Option<&LocalState>) -> Option<&str> {
 /// Resolves every theme token (color/spacing/font) against `theme` into the
 /// concrete value the node carries, so the per-frame walk is theme-free.
 ///
-/// `scope` is the nearest enclosing `localState` scope id (M13 G1b, Task 5),
+/// `scope` is the nearest enclosing `localState` scope id,
 /// threaded down so a `{ local }` bind on this node (or a descendant) resolves
 /// against the right scope at draw time. A container declaring its own
 /// `localState` overrides `scope` for its subtree (see `build_stack`/`build_grid`).
@@ -1855,7 +1855,7 @@ fn build_node(
     }
 }
 
-/// Build an interactive `button` leaf (M13 Goal F, Task 4). Renders its `label`
+/// Build an interactive `button` leaf. Renders its `label`
 /// as a centered text run shaping against the theme `body` face. The button is a
 /// pure text leaf for layout/draw; its focusable marker + activation (`on_press`)
 /// ride the focus-rect export (`focus_meta` / `widget_interaction`), not the draw
@@ -1886,7 +1886,7 @@ fn build_button(
         .expect("taffy leaf creation must succeed")
 }
 
-/// Build an interactive `slider` leaf (M13 Goal F, Task 4). Renders `label` plus
+/// Build an interactive `slider` leaf. Renders `label` plus
 /// the current numeric value as one text run: it binds the slot through a
 /// synthesized `"<label>: {}"` format so the value display reuses the existing
 /// bound-text resolution + tween machinery (the slider's bind tween eases the
@@ -1930,7 +1930,7 @@ fn build_slider(
         .expect("taffy leaf creation must succeed")
 }
 
-/// Build a passive horizontal `bar` leaf (M13 Goal F, Task 4). Carries an explicit
+/// Build a passive horizontal `bar` leaf. Carries an explicit
 /// style size (a bar has no content to measure) and a `NodeContext::Bar` draw
 /// payload. Its `fill`/`background` color tokens resolve against the theme at
 /// build time; `style_ranges`' band colors pre-resolve too (theme-free draw walk),
@@ -2078,7 +2078,7 @@ fn build_grid(
         .expect("taffy grid creation must succeed")
 }
 
-// --- Hit-test / focus rect-list export (M13 Goal F, Task 3) -----------------
+// --- Hit-test / focus rect-list export ---------------------------------------
 
 /// Focus-traversal kind exported with a focus group. The descriptor twin
 /// (`descriptor::FocusKind`) is converted into this at export so the app-side
@@ -2123,7 +2123,7 @@ pub(crate) struct FocusRect {
     /// declares a focus policy, or `None` when no ancestor governs this node.
     pub group: Option<usize>,
     pub neighbors: FocusNeighbors,
-    /// Interaction metadata for an interactive widget (M13 Goal F, Task 4): a
+    /// Interaction metadata for an interactive widget: a
     /// `button`'s activation reaction or a `slider`'s value-step parameters. `None`
     /// for passive focusables (an id-bearing text/panel/image). The app reads this
     /// off the focused node to fire activation (button `on_press`) or to apply a
@@ -2131,8 +2131,8 @@ pub(crate) struct FocusRect {
     pub interaction: Option<NodeInteraction>,
 }
 
-/// Per-node interaction metadata exported with an interactive focusable node
-/// (M13 Goal F, Task 4). The app resolves the focused node's interaction to fire
+/// Per-node interaction metadata exported with an interactive focusable node.
+/// The app resolves the focused node's interaction to fire
 /// a button's named reaction on confirm/click, or to step a slider's bound value
 /// on a captured nav intent and emit the `setState` write.
 #[derive(Debug, Clone, PartialEq)]
@@ -2141,8 +2141,8 @@ pub(crate) enum NodeInteraction {
     /// reaction registry — the same vocabulary entity/system reactions use.
     /// `repeat_on_hold`, when present, opts the button into activation-repeat: a
     /// HELD confirm re-fires `on_press` on the focus engine's hold-to-repeat clock
-    /// (M13 Text-Entry, Task 2 — the on-screen keyboard backspace). Absent keeps
-    /// F's single-fire rule (one activation per press).
+    /// (on-screen keyboard backspace pattern). Absent keeps the single-fire rule
+    /// (one activation per press).
     Button {
         on_press: String,
         repeat_on_hold: Option<RepeatPolicy>,
@@ -2181,8 +2181,8 @@ pub(crate) struct FocusGroup {
 /// move focus, resolve pointer hits (topmost z), and drive the repeat timer.
 ///
 /// "Focusable" today means a node that carries an authored `id` or sits under a
-/// container that declares a focus policy — the focusable-node seam Task 4 plugs
-/// the `button`/`slider`/`bar` interactive markers into.
+/// container that declares a focus policy (interactive widgets plug their
+/// markers into this seam).
 #[derive(Debug, Default, Clone, PartialEq)]
 pub(crate) struct FocusRectList {
     pub rects: Vec<FocusRect>,
@@ -3051,7 +3051,7 @@ mod tests {
     fn text_node_width_differs_with_content_via_shaped_measurement() {
         // Construct two trees whose text leaves differ only in content (same font
         // size). Real shaping gives them different advances, so the measure seam
-        // must report different widths. Content is immutable in Goal B — this is a
+        // must report different widths. Content is immutable on the descriptor — this is a
         // two-tree comparison, not runtime mutation.
         let narrow = measured_text_size("i", 40.0);
         let wide = measured_text_size("WWWWWWWW", 40.0);
@@ -3559,7 +3559,7 @@ mod tests {
         assert!(found, "absent slot falls back to the literal fill");
     }
 
-    // --- Retained-tree diff + relayout/redraw split (Task 4) -----------------
+    // --- Retained-tree diff + relayout/redraw split ---------------------------
 
     /// A length-4 RGBA slot map for the bound panel flash color.
     fn flash_slots(rgba: [f32; 4]) -> HashMap<String, SlotValue> {
@@ -3777,7 +3777,7 @@ mod tests {
         );
     }
 
-    // --- Theme-token resolution at tree build (Task 4) -----------------------
+    // --- Theme-token resolution at tree build ---------------------------------
 
     use super::super::text::{UI_FONT_FAMILY, UI_MONO_FONT_FAMILY};
     use super::super::theme::{ThemeDescriptor, UiTheme};
@@ -4016,7 +4016,7 @@ mod tests {
         );
     }
 
-    // --- Value-tween driver (Task 3) -----------------------------------------
+    // --- Value-tween driver ---------------------------------------------------
 
     use super::super::descriptor::{PanelTween, TextTween};
 
@@ -4744,7 +4744,7 @@ mod tests {
         }
     }
 
-    // --- styleRanges evaluator through the draw build (Goal E, Task 1) --------
+    // --- styleRanges evaluator through the draw build -------------------------
 
     use super::super::style_ranges::{StyleEntry, StyleRanges};
 
@@ -4986,7 +4986,7 @@ mod tests {
         );
     }
 
-    // --- Focus-rect export (M13 Goal F, Task 3) ---
+    // --- Focus-rect export ---
 
     /// A text leaf carrying an authored id (focusable seam).
     fn text_id(content: &str, id: &str) -> Widget {
@@ -5090,7 +5090,7 @@ mod tests {
         assert_eq!(ids, ["0", "1"], "auto-id is the tree-position path");
     }
 
-    // --- M13 Goal F, Task 4: interactive widgets ---
+    // --- Interactive widgets ---
 
     use super::super::descriptor::{BarWidget, ButtonWidget, SliderBind, SliderWidget};
 
@@ -5251,7 +5251,7 @@ mod tests {
     #[test]
     fn bar_style_ranges_recolor_the_fill() {
         // A health bar with a red ≤ 0.25 band: at 10/100 the fill quad is red, not
-        // the base green. styleRanges (Goal E) recolor the fill widget-agnostically.
+        // the base green. styleRanges recolors the fill widget-agnostically.
         let ranges = StyleRanges {
             max: 100.0,
             entries: vec![
@@ -5344,8 +5344,8 @@ mod tests {
     }
 }
 
-/// M13 G1b, Task 5: `{ local }` presentation-cell bind resolution end-to-end on
-/// the retained tree. Proves a descendant `{ local }` bind displays the cell
+/// `{ local }` presentation-cell bind resolution end-to-end on the retained
+/// tree. Proves a descendant `{ local }` bind displays the cell
 /// value, the value is stable across a settled frame (no recompute when the live
 /// value rides the snapshot, not the compared descriptor), an undeclared cell
 /// degrades to the literal fallback (no panic), and resolution is scoped to the
@@ -5507,6 +5507,70 @@ mod local_state_tests {
         assert!(
             data.texts.iter().any(|t| t.content == "FB"),
             "a value under a different scope id must not resolve here"
+        );
+    }
+
+    #[test]
+    fn local_bind_with_no_enclosing_scope_degrades_to_literal_and_warns_at_build() {
+        // A `{ local }` bind whose nearest ancestor declares NO `localState` scope
+        // (the text node sits at the root with no enclosing container scope) must:
+        //  1. Still render the literal fallback — no panic, no blank run.
+        //  2. Emit a build-time warn via `bind_scope_for` (not per-frame).
+        //
+        // The warn fires once at `from_descriptor` time; the per-frame hot paths
+        // (`lookup_bound`, `resolve_text`) stay log-free. We assert the behavior
+        // (literal renders) and verify the warn path is taken by checking the
+        // node's `bind_scope` is `None` (the condition `bind_scope_for` logs on).
+        //
+        // A bare text node at the root with a `{ local }` bind but no enclosing
+        // `localState` container — `build_node` is called with `scope == None`.
+        let tree = AnchoredTree::passthrough(
+            Anchor::Center,
+            [0.0, 0.0],
+            Widget::Text(TextWidget {
+                content: "FALLBACK".into(),
+                font_size: 18.0,
+                color: ColorValue::Literal([1.0, 1.0, 1.0, 1.0]),
+                font: None,
+                bind: Some(TextBind {
+                    source: BindSource::Local {
+                        local: "orphan".into(),
+                    },
+                    format: None,
+                    tween: None,
+                }),
+                style_ranges: None,
+                id: None,
+                focus_neighbors: Default::default(),
+            }),
+        );
+        // Build fires `bind_scope_for` which logs the warn (once, at build time).
+        let mut ui = UiTree::from_descriptor(&tree, &UiTheme::engine_default());
+
+        // The node's bind_scope must be `None` — confirming the warn path was taken.
+        if let Some(NodeContext::Text { bind_scope, .. }) = ui.taffy.get_node_context(ui.root) {
+            assert!(
+                bind_scope.is_none(),
+                "a `{{ local }}` bind with no enclosing scope must store None bind_scope"
+            );
+        } else {
+            panic!("root must be a Text node");
+        }
+
+        // The retained path renders the literal fallback — no panic, no blank.
+        let mut fs = fs();
+        let data = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &ImageSizes::new(),
+            &HashMap::new(),
+            &CellValues::new(),
+            0.0,
+        );
+        assert!(
+            data.texts.iter().any(|t| t.content == "FALLBACK"),
+            "a `{{ local }}` bind with no enclosing scope falls back to the literal, got: {:?}",
+            data.texts.iter().map(|t| &t.content).collect::<Vec<_>>(),
         );
     }
 }

@@ -87,10 +87,12 @@ local function validateEasing(value: any, field: string, factory: string)
   end
 end
 
--- Resolve a bind prop to its wire `{ slot, ... }` table. `slot` may be a store
--- handle (a slot-name string) or a plain string. `kind` selects the optional
--- members: text accepts `format`; panel's tween `from` is a color, others a
--- number. Returns nil when no bind was authored so the factory omits the key.
+-- Resolve a bind prop to its wire `{ slot, ... }` or `{ ["local"], ... }` table.
+-- The bind source is either a `{ slot }` store binding or a `{ local }`
+-- presentation-cell binding. `slot` wins when present; else `bind["local"]` is
+-- required. `kind` selects the optional members: text accepts `format`; panel's
+-- tween `from` is a color, others a number. Returns nil when no bind was
+-- authored so the factory omits the key.
 local function buildBind(bind: any, factory: string, kind: string): any?
   if bind == nil then
     return nil
@@ -98,8 +100,14 @@ local function buildBind(bind: any, factory: string, kind: string): any?
   if type(bind) ~= "table" then
     error(`{factory}: \`bind\` must be a table`)
   end
-  requireNonemptyString(bind.slot, "bind.slot", factory)
-  local out: { [string]: any } = { slot = bind.slot }
+  local out: { [string]: any }
+  if bind.slot ~= nil then
+    requireNonemptyString(bind.slot, "bind.slot", factory)
+    out = { slot = bind.slot }
+  else
+    requireNonemptyString(bind["local"], "bind.local", factory)
+    out = { ["local"] = bind["local"] }
+  end
 
   if kind == "text" and bind.format ~= nil then
     requireString(bind.format, "bind.format", factory)

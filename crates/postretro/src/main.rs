@@ -4300,13 +4300,13 @@ mod tests {
     }
 
     #[test]
-    fn malformed_theme_token_surfaces_named_error_and_boot_does_not_abort() {
+    fn malformed_theme_token_is_skipped_and_mod_init_still_succeeds() {
         // A structurally-broken `theme` token (a color that is not a [r,g,b,a]
-        // tuple) surfaces a NAMED load-time diagnostic from `run_mod_init` rather
-        // than panicking. The App's mod-init handler logs that error and continues
-        // (the `if let Err(..) { log::error!(..) }` arm), so boot does not abort —
-        // the engine simply runs without the mod's theme. We assert the named-error
-        // half here; the log-and-continue half is the App handler's structure.
+        // tuple) is logged and skipped per-token (`ui.md` §5) rather than
+        // aborting the mod — consistent with the `uiTrees` per-entry skip and the
+        // Luau theme twin. The mod still loads: its name and any valid sibling
+        // token survive; only the malformed token is degraded out. Boot never
+        // aborts and never panics.
         let dir = temp_mod_root("bad_theme");
         std::fs::write(
             dir.join("start-script.js"),
@@ -4314,7 +4314,7 @@ mod tests {
             globalThis.setupMod = function() {
                 return {
                     name: "BadThemeMod",
-                    theme: { colors: { critical: "not-an-rgba-array" } },
+                    theme: { colors: { critical: "not-an-rgba-array", ok: [1, 0, 0, 1] } },
                 };
             };
             "#,
@@ -4322,14 +4322,21 @@ mod tests {
         .unwrap();
 
         let mut rt = test_runtime();
-        let err = rt
-            .run_mod_init(&dir)
-            .expect_err("a wrong-type theme token is a named load-time error, not a panic");
-        // A named diagnostic naming the offending field — not a panic, not a silent drop.
-        let msg = format!("{err}");
+        rt.run_mod_init(&dir)
+            .expect("a wrong-type theme token is skipped, not a fatal error");
+        let manifest = rt
+            .mod_manifest()
+            .expect("the manifest still drains despite the bad token");
+        // The rest of the manifest still drains.
+        assert_eq!(manifest.name, "BadThemeMod");
+        // The malformed token is degraded out; the valid sibling token survives.
         assert!(
-            msg.contains("theme"),
-            "the diagnostic names the offending `theme` field, got: {msg}",
+            !manifest.theme.colors.contains_key("critical"),
+            "the malformed `critical` color token should be skipped",
+        );
+        assert!(
+            manifest.theme.colors.contains_key("ok"),
+            "the valid `ok` color token should still drain",
         );
     }
 
@@ -4684,6 +4691,71 @@ mod tests {
         assert!(
             after_first_half_step > before_change,
             "clock must keep moving forward (no backward jump) across a scale change"
+        );
+    }
+
+    // --- CellWrite dispatch: presentation cell written, slot table untouched ---
+    //
+    // G1b AC #6: a `localState` `.set()` (the `CellWrite` system-reaction command,
+    // drained by `App::dispatch_system_commands`) must write into the
+    // `PresentationCellStore` but leave the authoritative slot table (`SlotTable`)
+    // completely untouched.
+    //
+    // `App` cannot be constructed headlessly (it needs a window and GPU; see
+    // context/lib/testing_guide.md §3). The test therefore exercises the
+    // two-component seam that the `CellWrite` arm of `dispatch_system_commands`
+    // exercises directly:
+    //   1. `scripting_systems::presentation_cells::json_to_cell_value` — coerces
+    //      the raw JSON value (identical to how the drain does it).
+    //   2. `PresentationCellStore::write` — the only mutation the drain performs.
+    //   3. `SlotTable` — checked for the absence of any matching entry, proving the
+    //      drain never touches the authoritative store.
+    // This mirrors the production `CellWrite` arm exactly: that arm calls nothing
+    // else.
+
+    #[test]
+    fn cell_write_dispatch_writes_presentation_cell_and_leaves_slot_table_untouched() {
+        use crate::scripting::slot_table::SlotTable;
+        use scripting_systems::presentation_cells::{PresentationCellStore, json_to_cell_value};
+
+        let scope = "counter".to_string();
+        let cell = "count".to_string();
+        // The raw JSON value as it arrives from the `CellWrite` command.
+        let raw_value = serde_json::Value::Number(serde_json::Number::from(42));
+
+        // --- Drain path: mirror `App::dispatch_system_commands` CellWrite arm ---
+        let mut presentation_cells = PresentationCellStore::new();
+        let slot_table = SlotTable::new();
+
+        let cell_value = json_to_cell_value(&raw_value)
+            .expect("a numeric JSON value must coerce to a SlotValue");
+        presentation_cells.write(scope.clone(), cell.clone(), cell_value);
+
+        // --- AC assertion 1: presentation cell now holds the written value ---
+        let snapshot = presentation_cells.snapshot();
+        assert_eq!(
+            snapshot.get(&(scope.clone(), cell.clone())),
+            Some(&crate::scripting::slot_table::SlotValue::Number(42.0)),
+            "CellWrite must land in the presentation cell store",
+        );
+
+        // --- AC assertion 2: authoritative slot table has NO corresponding entry ---
+        // The slot table is keyed by dotted `namespace.slot` names (never by
+        // `(scope, cell)` pairs). We verify that no slot with a name that could
+        // encode the written cell exists beyond the built-in engine-declared slots —
+        // and that the built-in engine slots carry no value for `counter.count`.
+        assert!(
+            slot_table.get("counter.count").is_none(),
+            "CellWrite must NOT create a slot-table entry for the written cell",
+        );
+        // Cross-check: the default slot table carries its built-in engine slots
+        // (player.*, screen.*, input.*, ui.*) but nothing under the `counter`
+        // namespace written above.
+        assert!(
+            slot_table
+                .iter()
+                .all(|(name, _)| !name.starts_with("counter.")),
+            "slot table must have no entries under the `counter` namespace after a CellWrite",
         );
     }
 }

@@ -807,9 +807,9 @@ impl SwayParams {
 
 /// A script-registered UI tree: a named [`AnchoredTree`] plus the `alwaysOn`
 /// registration attribute. Drained from the `uiTrees` field of `setupMod()`
-/// (mod scope) and `setupLevel()` (level scope) returns. G1b Task 1 parses and
-/// holds these on the manifest results; G1b Task 3 drains them into the app-side
-/// `UiTreeRegistry` at `ScopeTier::Mod`, before the authoring VM drops.
+/// (mod scope) and `setupLevel()` (level scope) returns. Parsed and held on
+/// the manifest result; drained into the app-side `UiTreeRegistry` at
+/// `ScopeTier::Mod` before the authoring VM drops.
 /// See: context/lib/ui.md §1.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct RegisteredUiTree {
@@ -4319,6 +4319,9 @@ pub(crate) fn drain_fonts_js<'js>(
 }
 
 /// Read an object-valued field as a `String → String` map.
+/// Read an object-valued field as a `String → String` map. Absent/non-object →
+/// empty. Malformed tokens are logged and skipped (per-token degraded) so a
+/// single bad entry does not abort the whole theme drain — mirrors the Luau twin.
 fn string_map_from_js<'js>(
     obj: &Object<'js>,
     field: &'static str,
@@ -4329,13 +4332,21 @@ fn string_map_from_js<'js>(
     let mut out = HashMap::new();
     for entry in map.props::<String, JsValue>() {
         let (key, value) = entry.map_err(js_err)?;
-        let s = String::from_js_value_required(value, field)?;
-        out.insert(key, s);
+        match String::from_js_value_required(value, field) {
+            Ok(s) => {
+                out.insert(key, s);
+            }
+            Err(e) => {
+                log::warn!("[Scripting] theme `{field}.{key}` is malformed and was skipped: {e}");
+            }
+        }
     }
     Ok(out)
 }
 
-/// Read an object-valued field as a `String → f32` map.
+/// Read an object-valued field as a `String → f32` map. Absent/non-object →
+/// empty. Malformed tokens are logged and skipped (per-token degraded) so a
+/// single bad entry does not abort the whole theme drain — mirrors the Luau twin.
 fn f32_map_from_js<'js>(
     obj: &Object<'js>,
     field: &'static str,
@@ -4346,13 +4357,22 @@ fn f32_map_from_js<'js>(
     let mut out = HashMap::new();
     for entry in map.props::<String, JsValue>() {
         let (key, value) = entry.map_err(js_err)?;
-        out.insert(key, js_value_as_f32(&value, field)?);
+        match js_value_as_f32(&value, field) {
+            Ok(f) => {
+                out.insert(key, f);
+            }
+            Err(e) => {
+                log::warn!("[Scripting] theme `{field}.{key}` is malformed and was skipped: {e}");
+            }
+        }
     }
     Ok(out)
 }
 
 /// Read an object-valued field as a `String → [f32; 4]` map (linear-RGBA color
-/// tokens).
+/// tokens). Absent/non-object → empty. Malformed tokens are logged and skipped
+/// (per-token degraded) so a single bad entry does not abort the whole theme
+/// drain — mirrors the Luau twin.
 fn f32_array4_map_from_js<'js>(
     obj: &Object<'js>,
     field: &'static str,
@@ -4363,7 +4383,14 @@ fn f32_array4_map_from_js<'js>(
     let mut out = HashMap::new();
     for entry in map.props::<String, JsValue>() {
         let (key, value) = entry.map_err(js_err)?;
-        out.insert(key, read_f32_array_n_js::<4>(&value, field)?);
+        match read_f32_array_n_js::<4>(&value, field) {
+            Ok(arr) => {
+                out.insert(key, arr);
+            }
+            Err(e) => {
+                log::warn!("[Scripting] theme `{field}.{key}` is malformed and was skipped: {e}");
+            }
+        }
     }
     Ok(out)
 }
@@ -4463,6 +4490,9 @@ pub(crate) fn drain_fonts_lua(
 }
 
 /// Read a table-valued field as a `String → String` map. Absent → empty.
+/// A non-table field is logged and degraded to empty. Malformed tokens are
+/// logged and skipped (per-token degraded) so a single bad entry does not
+/// abort the whole theme drain.
 fn string_map_from_lua(
     table: &Table,
     field: &'static str,
@@ -4472,9 +4502,11 @@ fn string_map_from_lua(
         LuaValue::Nil => return Ok(HashMap::new()),
         LuaValue::Table(t) => t,
         other => {
-            return Err(DescriptorError::InvalidShape {
-                reason: format!("`{field}` must be a table, got {}", other.type_name()),
-            });
+            log::warn!(
+                "[Scripting] theme `{field}` must be a table, got {}; skipping field",
+                other.type_name()
+            );
+            return Ok(HashMap::new());
         }
     };
     let mut out = HashMap::new();
@@ -4483,12 +4515,11 @@ fn string_map_from_lua(
         let s = match value {
             LuaValue::String(s) => s.to_str().map_err(lua_err)?.to_string(),
             other => {
-                return Err(DescriptorError::InvalidShape {
-                    reason: format!(
-                        "`{field}.{key}` must be a string, got {}",
-                        other.type_name()
-                    ),
-                });
+                log::warn!(
+                    "[Scripting] theme `{field}.{key}` must be a string, got {}; skipping token",
+                    other.type_name()
+                );
+                continue;
             }
         };
         out.insert(key, s);
@@ -4497,6 +4528,9 @@ fn string_map_from_lua(
 }
 
 /// Read a table-valued field as a `String → f32` map. Absent → empty.
+/// A non-table field is logged and degraded to empty. Malformed tokens are
+/// logged and skipped (per-token degraded) so a single bad entry does not
+/// abort the whole theme drain.
 fn f32_map_from_lua(
     table: &Table,
     field: &'static str,
@@ -4506,20 +4540,32 @@ fn f32_map_from_lua(
         LuaValue::Nil => return Ok(HashMap::new()),
         LuaValue::Table(t) => t,
         other => {
-            return Err(DescriptorError::InvalidShape {
-                reason: format!("`{field}` must be a table, got {}", other.type_name()),
-            });
+            log::warn!(
+                "[Scripting] theme `{field}` must be a table, got {}; skipping field",
+                other.type_name()
+            );
+            return Ok(HashMap::new());
         }
     };
     let mut out = HashMap::new();
     for pair in map.pairs::<String, LuaValue>() {
         let (key, value) = pair.map_err(lua_err)?;
-        out.insert(key, lua_value_as_f32(value, field)?);
+        match lua_value_as_f32(value, field) {
+            Ok(f) => {
+                out.insert(key, f);
+            }
+            Err(e) => {
+                log::warn!("[Scripting] theme `{field}.{key}` is malformed and was skipped: {e}");
+            }
+        }
     }
     Ok(out)
 }
 
-/// Read a table-valued field as a `String → [f32; 4]` map. Absent → empty.
+/// Read a table-valued field as a `String → [f32; 4]` map (linear-RGBA color
+/// tokens). Absent → empty. A non-table field is logged and degraded to empty.
+/// Malformed tokens are logged and skipped (per-token degraded) so a single
+/// bad entry does not abort the whole theme drain.
 fn f32_array4_map_from_lua(
     table: &Table,
     field: &'static str,
@@ -4529,15 +4575,24 @@ fn f32_array4_map_from_lua(
         LuaValue::Nil => return Ok(HashMap::new()),
         LuaValue::Table(t) => t,
         other => {
-            return Err(DescriptorError::InvalidShape {
-                reason: format!("`{field}` must be a table, got {}", other.type_name()),
-            });
+            log::warn!(
+                "[Scripting] theme `{field}` must be a table, got {}; skipping field",
+                other.type_name()
+            );
+            return Ok(HashMap::new());
         }
     };
     let mut out = HashMap::new();
     for pair in map.pairs::<String, LuaValue>() {
         let (key, value) = pair.map_err(lua_err)?;
-        out.insert(key, read_f32_array_n_lua::<4>(value, field)?);
+        match read_f32_array_n_lua::<4>(value, field) {
+            Ok(arr) => {
+                out.insert(key, arr);
+            }
+            Err(e) => {
+                log::warn!("[Scripting] theme `{field}.{key}` is malformed and was skipped: {e}");
+            }
+        }
     }
     Ok(out)
 }
@@ -8097,5 +8152,88 @@ mod tests {
             LevelManifest::from_lua_value(value).expect("malformed entry must not abort");
         assert_eq!(manifest.ui_trees.len(), 1);
         assert_eq!(manifest.ui_trees[0].name, "good");
+    }
+
+    // ======================================================================
+    // Fix A: Luau `buildBind` accepts `{ local }` presentation-cell binds
+    // ======================================================================
+
+    /// Drive the REAL `widgets.luau` factory with a `{ local }` bind (not a
+    /// `{ slot }` bind), then pass the result through `anchored_tree_from_lua_value`.
+    /// Asserts the bridge yields a `BindSource::Local`, mirroring the TS twin which
+    /// accepts either `{ slot }` or `{ local }`.
+    #[test]
+    fn luau_factory_local_bind_yields_bind_source_local() {
+        const WIDGETS_SRC: &str = include_str!("../../../../sdk/lib/ui/widgets.luau");
+        const TREE_SRC: &str = include_str!("../../../../sdk/lib/ui/tree.luau");
+
+        let lua = mlua::Lua::new();
+        let widgets: mlua::Table = lua.load(WIDGETS_SRC).eval().unwrap();
+        let tree_mod: mlua::Table = lua.load(TREE_SRC).eval().unwrap();
+        lua.globals().set("W", widgets).unwrap();
+        lua.globals().set("T", tree_mod).unwrap();
+
+        // Use W.Text with a `{ ["local"] = "count" }` bind — the Lua keyword
+        // `local` must be escaped as a string key.
+        let src = r#"return T.Tree({ anchor = "center", offset = { 0, 0 } },
+            W.Text({ content = "0", fontSize = 18, color = {1,1,1,1},
+                     bind = { ["local"] = "count" } }))"#;
+        let value: mlua::Value = lua
+            .load(src)
+            .eval()
+            .expect("factory with {local} bind must succeed");
+        let tree =
+            anchored_tree_from_lua_value(value).expect("bridge must convert {local} bind tree");
+
+        let Widget::Text(t) = &tree.root else {
+            panic!("root must be a text widget");
+        };
+        assert_eq!(
+            t.bind.as_ref().map(|b| &b.source),
+            Some(&BindSource::Local {
+                local: "count".into()
+            }),
+            "bind source must be Local{{local: \"count\"}}"
+        );
+    }
+
+    // ======================================================================
+    // Fix B: malformed Luau theme token is skipped, good token survives
+    // ======================================================================
+
+    /// A `theme.colors` map with one malformed token (a string instead of
+    /// [r,g,b,a]) and one valid token: the bad token must be skipped (with a
+    /// logged warn) and the good token must survive in the drained result.
+    /// This verifies per-token log-and-skip rather than per-token abort.
+    #[test]
+    fn drain_theme_lua_skips_bad_token_and_keeps_good_token() {
+        let lua = mlua::Lua::new();
+        let value: mlua::Value = lua
+            .load(
+                r#"return {
+                    theme = {
+                        colors = {
+                            bad  = "not-an-rgba-array",
+                            good = { 1.0, 0.0, 0.0, 1.0 },
+                        },
+                    },
+                }"#,
+            )
+            .eval()
+            .unwrap();
+        let LuaValue::Table(table) = value else {
+            panic!("expected table");
+        };
+        let tokens =
+            drain_theme_lua(&table, "test").expect("bad token must not abort the whole drain");
+        assert!(
+            !tokens.colors.contains_key("bad"),
+            "the malformed color token must be skipped"
+        );
+        assert_eq!(
+            tokens.colors.get("good"),
+            Some(&[1.0f32, 0.0, 0.0, 1.0]),
+            "the valid color token must survive"
+        );
     }
 }

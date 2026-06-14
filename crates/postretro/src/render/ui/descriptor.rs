@@ -476,10 +476,11 @@ pub struct PanelWidget {
     pub style_ranges: Option<StyleRanges>,
 }
 
-/// State binding for a `panel` widget. `slot` is a dotted slot name whose value
-/// must be a `SlotValue::Array` of exactly 4 f32 (linear `[r, g, b, a]`); it
-/// replaces the literal `fill`. A wrong variant, wrong length, or absent slot
-/// falls back to the literal `fill` (see `tree::resolve_panel_fill`).
+/// Bind source for a `panel` widget: either a `{ slot }` dotted store name whose
+/// value must be a `SlotValue::Array` of exactly 4 f32 (linear `[r, g, b, a]`)
+/// replacing the literal `fill`, or a `{ local }` presentation-cell name. A wrong
+/// variant, wrong length, absent value, or undeclared cell falls back to the
+/// literal `fill` (see `tree::resolve_panel_fill`).
 //
 // `deny_unknown_fields` omitted — see `TextBind` (incompatible with the flattened
 // `source` alternative).
@@ -652,7 +653,7 @@ pub struct ButtonWidget {
 /// within `[min, max]` and emit a `setState` write to the bound slot on the N+1
 /// frame. The slider renders its `label` and current numeric value as text.
 ///
-/// `bind` follows the `PanelBind`/`TextBind` shape (slot name + optional tween).
+/// `bind` follows the `PanelBind`/`TextBind` shape (`BindSource` + optional tween).
 /// `id` is required for the same reason as `ButtonWidget::id` — nav-capture and
 /// value-step resolve through the focused node id.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -676,9 +677,10 @@ pub struct SliderWidget {
     pub focus_neighbors: FocusNeighbors,
 }
 
-/// State binding for a `slider` widget. Mirrors `PanelBind`'s shape (slot name +
-/// optional tween) so the bind vocabulary stays uniform across bound widgets; a
-/// slider binds a numeric slot, so its tween is the `TextTween` (number) shape.
+/// Bind source for a `slider` widget: either a `{ slot }` dotted store name or a
+/// `{ local }` cell name; mirrors `PanelBind`'s `BindSource`-based shape so the
+/// bind vocabulary stays uniform across bound widgets. A slider binds a numeric
+/// value, so its tween follows the `TextTween` (number) shape.
 //
 // `deny_unknown_fields` omitted — see `TextBind` (incompatible with the flattened
 // `source` alternative).

@@ -153,8 +153,10 @@ const UI_LAYOUT_FIELDS: &[&str] = &["VStack", "HStack", "Grid"];
 const UI_TREE_FIELDS: &[&str] = &["Tree"];
 
 /// UI state-handle SDK fields lifted to globals after evaluating
-/// `ui/state.luau`.
-const UI_STATE_FIELDS: &[&str] = &["storeHandle"];
+/// `ui/state.luau`. `storeHandle` wraps writable store-slot handles; `ui` is
+/// the namespaced object exposing `ui.createLocalState` (G1b). Both must be
+/// promoted to bare globals so Luau authors can call them directly.
+const UI_STATE_FIELDS: &[&str] = &["storeHandle", "ui"];
 
 /// Evaluate the Luau SDK prelude in `lua` and promote the return values to
 /// globals. Must be called after primitives are installed and before
@@ -1589,6 +1591,56 @@ mod tests {
             Some("resumeGame"),
             "a bare-string onPress must pass through unchanged"
         );
+    }
+
+    /// M13 G1b: `ui.createLocalState` is promoted to the `ui` global after the
+    /// prelude step that evaluates `ui/state.luau`. Without `"ui"` in
+    /// `UI_STATE_FIELDS`, a Luau author calling `ui.createLocalState(...)` gets
+    /// "attempt to index nil value 'ui'". This test verifies:
+    ///   1. `ui` is a table (not nil).
+    ///   2. `ui.createLocalState` is a function.
+    ///   3. Calling `ui.createLocalState({ hp = 100 })` returns a bundle whose
+    ///      `cells.hp:get()` is a `{ local = ... }` bind ref.
+    ///   4. `cells.hp:set(42)` returns a `cellWrite` reaction descriptor
+    ///      (primitive = "cellWrite", args.cell = "hp", args.value = 42).
+    #[test]
+    fn sdk_prelude_installs_ui_create_local_state() {
+        let (subsys, _ctx) = setup();
+        let src = r#"
+            -- 1. ui is a table, not nil
+            assert(type(ui) == "table",
+                "ui must be a table, got: " .. type(ui))
+            -- 2. ui.createLocalState is a function
+            assert(type(ui.createLocalState) == "function",
+                "ui.createLocalState must be a function, got: " .. type(ui.createLocalState))
+            -- 3. Call createLocalState and inspect the bundle
+            local bundle = ui.createLocalState({ hp = 100 })
+            assert(type(bundle) == "table", "bundle must be a table")
+            assert(type(bundle.cells) == "table", "bundle.cells must be a table")
+            local cell = bundle.cells.hp
+            assert(type(cell) == "table", "cells.hp must be a table")
+            -- 4. :get() yields the { local } bind ref
+            local ref_ = cell:get()
+            assert(type(ref_) == "table", "get() must return a table")
+            local localField = ref_["local"]
+            assert(type(localField) == "string",
+                "bind ref must have a string 'local' field, got: " .. type(localField))
+            -- 5. :set(v) emits a cellWrite reaction descriptor
+            local desc = cell:set(42)
+            assert(type(desc) == "table", "set() must return a table")
+            assert(desc.primitive == "cellWrite",
+                "set() primitive must be 'cellWrite', got: " .. tostring(desc.primitive))
+            assert(type(desc.args) == "table", "set() must have args table")
+            assert(desc.args.cell == "hp",
+                "args.cell must be 'hp', got: " .. tostring(desc.args.cell))
+            assert(desc.args.value == 42,
+                "args.value must be 42, got: " .. tostring(desc.args.value))
+            return true
+        "#;
+        let ok: bool = subsys
+            .run_source(Which::Definition, src, "ui_create_local_state.luau")
+            .unwrap();
+        assert!(ok, "ui.createLocalState round-trip failed");
     }
 
     // --- M13 G1a, Task 3: TS/Luau widget-factory JSON parity ---

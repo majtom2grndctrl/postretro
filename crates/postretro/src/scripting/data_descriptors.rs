@@ -15,6 +15,14 @@ use super::components::billboard_emitter::{
 use super::components::mesh::{AnimationState, InterruptPolicy};
 use super::registry::EntityId;
 use crate::movement::MovementScope;
+use crate::render::ui::descriptor::{
+    Align, AnchoredTree, BarWidget, Border, ButtonWidget, CaptureMode, ColorValue, ContainerWidget,
+    Easing, FocusKind, FocusNeighbors, FocusPolicy, GridWidget, ImageWidget, PanelBind, PanelTween,
+    PanelWidget, RepeatPolicy, SliderBind, SliderWidget, SpacerWidget, SpacingValue, TextBind,
+    TextTween, TextWidget, Widget,
+};
+use crate::render::ui::layout::Anchor;
+use crate::render::ui::style_ranges::{Flash, Pulse, StyleEntry, StyleRanges};
 use crate::scripting::ir::{BakedIr, CURRENT_IR_VERSION, IrNode, IrType, bind};
 
 /// Variants of a single reaction's behavior body. The `name` lives on the
@@ -3157,6 +3165,1236 @@ fn get_optional_f32_lua(
     }
 }
 
+// ===========================================================================
+// UI widget-tree bridge (M13 G1a, Task 5)
+//
+// `anchored_tree_from_js_value` / `anchored_tree_from_lua_value` convert a
+// VM-returned descriptor value (an rquickjs JS value / an mlua Lua value)
+// produced by the `widgets`/`layout`/`tree` SDK factories into a typed
+// `render::ui::descriptor::AnchoredTree`. They mirror the per-runtime
+// field-reader pattern established by `entity_descriptor_from_js` /
+// `entity_descriptor_from_lua`: read a VM value into a typed Rust struct,
+// surface a named load-time error (`DescriptorError`) on malformed input, and
+// never panic.
+//
+// These readers deserialize STRAIGHT INTO the typed `Widget`/`ContainerWidget`
+// structs rather than lowering through `serde_json::Value`. The Luau→JSON
+// generic walker (`conv::lua_to_json`) serializes an empty Lua table to `{}`,
+// not `[]`, while `ContainerWidget` requires `children: []`; reading a missing
+// or empty `children` table directly into an empty `Vec<Widget>` sidesteps that
+// ambiguity, so an empty container from Luau parses cleanly. (G1b wires these
+// into the manifest drains; here they are test-callable only.)
+// See: context/lib/ui.md · context/lib/scripting.md §7
+// ===========================================================================
+
+// --- shared enum-string parsers (runtime-agnostic) --------------------------
+
+fn parse_anchor(s: &str) -> Result<Anchor, DescriptorError> {
+    Ok(match s {
+        "topLeft" => Anchor::TopLeft,
+        "top" => Anchor::Top,
+        "topRight" => Anchor::TopRight,
+        "left" => Anchor::Left,
+        "center" => Anchor::Center,
+        "right" => Anchor::Right,
+        "bottomLeft" => Anchor::BottomLeft,
+        "bottom" => Anchor::Bottom,
+        "bottomRight" => Anchor::BottomRight,
+        other => {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!("`anchor` must be a placement anchor, got \"{other}\""),
+            });
+        }
+    })
+}
+
+fn parse_align(s: &str) -> Result<Align, DescriptorError> {
+    Ok(match s {
+        "start" => Align::Start,
+        "center" => Align::Center,
+        "end" => Align::End,
+        "stretch" => Align::Stretch,
+        other => {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`align` must be \"start\"|\"center\"|\"end\"|\"stretch\", got \"{other}\""
+                ),
+            });
+        }
+    })
+}
+
+fn parse_capture_mode(s: &str) -> Result<CaptureMode, DescriptorError> {
+    Ok(match s {
+        "capture" => CaptureMode::Capture,
+        "passthrough" => CaptureMode::Passthrough,
+        other => {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`captureMode` must be \"capture\"|\"passthrough\", got \"{other}\""
+                ),
+            });
+        }
+    })
+}
+
+fn parse_easing(s: &str) -> Result<Easing, DescriptorError> {
+    Ok(match s {
+        "linear" => Easing::Linear,
+        "easeIn" => Easing::EaseIn,
+        "easeOut" => Easing::EaseOut,
+        "easeInOut" => Easing::EaseInOut,
+        other => {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`easing` must be \"linear\"|\"easeIn\"|\"easeOut\"|\"easeInOut\", got \"{other}\""
+                ),
+            });
+        }
+    })
+}
+
+fn parse_focus_kind(s: &str) -> Result<FocusKind, DescriptorError> {
+    Ok(match s {
+        "linear" => FocusKind::Linear,
+        "spatial" => FocusKind::Spatial,
+        other => {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!("`focus.policy` must be \"linear\"|\"spatial\", got \"{other}\""),
+            });
+        }
+    })
+}
+
+// --- JS UI deserialization --------------------------------------------------
+
+/// Convert a QuickJS descriptor value (the object returned by the `tree`
+/// factory) into a typed [`AnchoredTree`]. Mirrors [`entity_descriptor_from_js`]:
+/// a hand-written field reader that builds the typed tree directly (no
+/// `serde_json::Value` lowering), returning a named [`DescriptorError`] on
+/// malformed input and never panicking.
+pub(crate) fn anchored_tree_from_js_value<'js>(
+    ctx: &Ctx<'js>,
+    value: JsValue<'js>,
+) -> Result<AnchoredTree, DescriptorError> {
+    let obj = Object::from_value(value).map_err(|_| DescriptorError::InvalidShape {
+        reason: "anchored tree must be an object".to_string(),
+    })?;
+
+    let anchor = parse_anchor(&get_required_string_js(&obj, "anchor")?)?;
+    let offset = read_f32_pair_js(&obj, "offset")?;
+
+    if !obj.contains_key("root").map_err(js_err)? {
+        return Err(DescriptorError::MissingField { field: "root" });
+    }
+    let root_val: JsValue = obj.get("root").map_err(js_err)?;
+    let root = widget_from_js(ctx, root_val)?;
+
+    let capture_mode = match get_optional_string_js(&obj, "captureMode")? {
+        Some(s) => parse_capture_mode(&s)?,
+        None => CaptureMode::Passthrough,
+    };
+    let initial_focus = get_optional_string_js(&obj, "initialFocus")?;
+    let text_entry_target = get_optional_string_js(&obj, "textEntryTarget")?;
+
+    Ok(AnchoredTree {
+        anchor,
+        offset,
+        root,
+        capture_mode,
+        initial_focus,
+        text_entry_target,
+    })
+}
+
+fn widget_from_js<'js>(ctx: &Ctx<'js>, value: JsValue<'js>) -> Result<Widget, DescriptorError> {
+    let obj = Object::from_value(value).map_err(|_| DescriptorError::InvalidShape {
+        reason: "widget must be an object".to_string(),
+    })?;
+    let kind = get_required_string_js(&obj, "kind")?;
+    Ok(match kind.as_str() {
+        "text" => Widget::Text(text_widget_from_js(ctx, &obj)?),
+        "panel" => Widget::Panel(panel_widget_from_js(ctx, &obj)?),
+        "image" => Widget::Image(image_widget_from_js(&obj)?),
+        "vstack" => Widget::VStack(container_widget_from_js(ctx, &obj)?),
+        "hstack" => Widget::HStack(container_widget_from_js(ctx, &obj)?),
+        "grid" => Widget::Grid(grid_widget_from_js(ctx, &obj)?),
+        "spacer" => Widget::Spacer(spacer_widget_from_js(&obj)?),
+        "button" => Widget::Button(button_widget_from_js(&obj)?),
+        "slider" => Widget::Slider(slider_widget_from_js(ctx, &obj)?),
+        "bar" => Widget::Bar(bar_widget_from_js(ctx, &obj)?),
+        other => {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!("unknown widget `kind` \"{other}\""),
+            });
+        }
+    })
+}
+
+fn text_widget_from_js<'js>(
+    ctx: &Ctx<'js>,
+    obj: &Object<'js>,
+) -> Result<TextWidget, DescriptorError> {
+    Ok(TextWidget {
+        content: get_required_string_js(obj, "content")?,
+        font_size: get_required_f32_js(obj, "fontSize")?,
+        color: color_value_from_js(obj, "color")?,
+        id: get_optional_string_js(obj, "id")?,
+        focus_neighbors: focus_neighbors_from_js(obj)?,
+        font: get_optional_string_js(obj, "font")?,
+        bind: text_bind_from_js(ctx, obj)?,
+        style_ranges: style_ranges_from_js(ctx, obj)?,
+    })
+}
+
+fn panel_widget_from_js<'js>(
+    ctx: &Ctx<'js>,
+    obj: &Object<'js>,
+) -> Result<PanelWidget, DescriptorError> {
+    Ok(PanelWidget {
+        fill: color_value_from_js(obj, "fill")?,
+        border: border_from_js(obj, "border")?,
+        id: get_optional_string_js(obj, "id")?,
+        focus_neighbors: focus_neighbors_from_js(obj)?,
+        bind: panel_bind_from_js(ctx, obj)?,
+        style_ranges: style_ranges_from_js(ctx, obj)?,
+    })
+}
+
+fn image_widget_from_js<'js>(obj: &Object<'js>) -> Result<ImageWidget, DescriptorError> {
+    Ok(ImageWidget {
+        asset: get_required_string_js(obj, "asset")?,
+        id: get_optional_string_js(obj, "id")?,
+        focus_neighbors: focus_neighbors_from_js(obj)?,
+    })
+}
+
+fn container_widget_from_js<'js>(
+    ctx: &Ctx<'js>,
+    obj: &Object<'js>,
+) -> Result<ContainerWidget, DescriptorError> {
+    Ok(ContainerWidget {
+        gap: spacing_value_from_js(obj, "gap")?,
+        padding: spacing_value_from_js(obj, "padding")?,
+        align: parse_align(&get_required_string_js(obj, "align")?)?,
+        fill: color_value_opt_from_js(obj, "fill")?,
+        border: border_from_js(obj, "border")?,
+        id: get_optional_string_js(obj, "id")?,
+        focus_neighbors: focus_neighbors_from_js(obj)?,
+        focus: focus_policy_from_js(obj)?,
+        restore_on_return: get_optional_bool_js(obj, "restoreOnReturn")?.unwrap_or(false),
+        children: children_from_js(ctx, obj)?,
+    })
+}
+
+fn grid_widget_from_js<'js>(
+    ctx: &Ctx<'js>,
+    obj: &Object<'js>,
+) -> Result<GridWidget, DescriptorError> {
+    Ok(GridWidget {
+        gap: spacing_value_from_js(obj, "gap")?,
+        padding: spacing_value_from_js(obj, "padding")?,
+        align: parse_align(&get_required_string_js(obj, "align")?)?,
+        cols: get_required_u32_js(obj, "cols")?,
+        id: get_optional_string_js(obj, "id")?,
+        focus_neighbors: focus_neighbors_from_js(obj)?,
+        focus: focus_policy_from_js(obj)?,
+        restore_on_return: get_optional_bool_js(obj, "restoreOnReturn")?.unwrap_or(false),
+        children: children_from_js(ctx, obj)?,
+    })
+}
+
+fn spacer_widget_from_js<'js>(obj: &Object<'js>) -> Result<SpacerWidget, DescriptorError> {
+    Ok(SpacerWidget {
+        flex_grow: get_required_f32_js(obj, "flexGrow")?,
+        id: get_optional_string_js(obj, "id")?,
+    })
+}
+
+fn button_widget_from_js<'js>(obj: &Object<'js>) -> Result<ButtonWidget, DescriptorError> {
+    Ok(ButtonWidget {
+        id: get_required_string_js(obj, "id")?,
+        label: get_required_string_js(obj, "label")?,
+        on_press: get_required_string_js(obj, "onPress")?,
+        focus_neighbors: focus_neighbors_from_js(obj)?,
+        repeat_on_hold: repeat_policy_opt_from_js(obj, "repeatOnHold")?,
+    })
+}
+
+fn slider_widget_from_js<'js>(
+    ctx: &Ctx<'js>,
+    obj: &Object<'js>,
+) -> Result<SliderWidget, DescriptorError> {
+    Ok(SliderWidget {
+        id: get_required_string_js(obj, "id")?,
+        label: get_required_string_js(obj, "label")?,
+        bind: slider_bind_from_js(ctx, obj, "bind")?
+            .ok_or(DescriptorError::MissingField { field: "bind" })?,
+        min: get_required_f32_js(obj, "min")?,
+        max: get_required_f32_js(obj, "max")?,
+        step: get_required_f32_js(obj, "step")?,
+        captures_nav: string_array_from_js(obj, "capturesNav")?,
+        focus_neighbors: focus_neighbors_from_js(obj)?,
+    })
+}
+
+fn bar_widget_from_js<'js>(
+    ctx: &Ctx<'js>,
+    obj: &Object<'js>,
+) -> Result<BarWidget, DescriptorError> {
+    Ok(BarWidget {
+        bind: slider_bind_from_js(ctx, obj, "bind")?
+            .ok_or(DescriptorError::MissingField { field: "bind" })?,
+        max: get_required_f32_js(obj, "max")?,
+        fill: color_value_from_js(obj, "fill")?,
+        background: color_value_from_js(obj, "background")?,
+        id: get_optional_string_js(obj, "id")?,
+        style_ranges: style_ranges_from_js(ctx, obj)?,
+    })
+}
+
+// --- JS leaf-field readers --------------------------------------------------
+
+/// Read `children` straight into a `Vec<Widget>`. An absent or null array yields
+/// the empty vec — the container's `children: []` form — so an empty container
+/// parses cleanly without depending on the JSON empty-table/array convention.
+fn children_from_js<'js>(
+    ctx: &Ctx<'js>,
+    obj: &Object<'js>,
+) -> Result<Vec<Widget>, DescriptorError> {
+    if !obj.contains_key("children").map_err(js_err)? {
+        return Ok(Vec::new());
+    }
+    let raw: JsValue = obj.get("children").map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(Vec::new());
+    }
+    let arr: Array = obj
+        .get("children")
+        .map_err(|_| DescriptorError::InvalidShape {
+            reason: "`children` must be an array of widgets".to_string(),
+        })?;
+    let mut out = Vec::with_capacity(arr.len());
+    for i in 0..arr.len() {
+        let item: JsValue = arr.get(i).map_err(js_err)?;
+        out.push(widget_from_js(ctx, item)?);
+    }
+    Ok(out)
+}
+
+fn read_f32_pair_js<'js>(
+    obj: &Object<'js>,
+    field: &'static str,
+) -> Result<[f32; 2], DescriptorError> {
+    let arr: Array = obj.get(field).map_err(|_| DescriptorError::InvalidShape {
+        reason: format!("`{field}` must be a [x, y] array"),
+    })?;
+    if arr.len() != 2 {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{field}` must be a length-2 [x, y] array, got {}",
+                arr.len()
+            ),
+        });
+    }
+    let x: JsValue = arr.get(0).map_err(js_err)?;
+    let y: JsValue = arr.get(1).map_err(js_err)?;
+    Ok([js_value_as_f32(&x, field)?, js_value_as_f32(&y, field)?])
+}
+
+fn read_f32_array_n_js<'js, const N: usize>(
+    value: &JsValue<'js>,
+    field: &str,
+) -> Result<[f32; N], DescriptorError> {
+    let arr = value
+        .as_array()
+        .ok_or_else(|| DescriptorError::InvalidShape {
+            reason: format!("`{field}` must be a length-{N} numeric array"),
+        })?;
+    if arr.len() != N {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{field}` must be a length-{N} numeric array, got {}",
+                arr.len()
+            ),
+        });
+    }
+    let mut out = [0.0f32; N];
+    for (i, slot) in out.iter_mut().enumerate() {
+        let item: JsValue = arr.get(i).map_err(js_err)?;
+        *slot = js_value_as_f32(&item, field)?;
+    }
+    Ok(out)
+}
+
+fn js_value_as_f32(value: &JsValue, field: &str) -> Result<f32, DescriptorError> {
+    if let Some(i) = value.as_int() {
+        return Ok(i as f32);
+    }
+    if let Some(f) = value.as_float() {
+        return Ok(f as f32);
+    }
+    Err(DescriptorError::InvalidShape {
+        reason: format!("`{field}` must be a number"),
+    })
+}
+
+fn get_optional_string_js<'js>(
+    obj: &Object<'js>,
+    field: &'static str,
+) -> Result<Option<String>, DescriptorError> {
+    if !obj.contains_key(field).map_err(js_err)? {
+        return Ok(None);
+    }
+    let raw: JsValue = obj.get(field).map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(None);
+    }
+    Ok(Some(String::from_js_value_required(raw, field)?))
+}
+
+/// A color slot: a bare `[r,g,b,a]` array → `Literal`, a bare string → `Token`.
+/// Mirrors the untagged `ColorValue` wire form (array-or-string, disjoint).
+fn color_value_from_js<'js>(
+    obj: &Object<'js>,
+    field: &'static str,
+) -> Result<ColorValue, DescriptorError> {
+    if !obj.contains_key(field).map_err(js_err)? {
+        return Err(DescriptorError::MissingField { field });
+    }
+    let raw: JsValue = obj.get(field).map_err(js_err)?;
+    color_value_from_js_value(&raw, field)
+}
+
+fn color_value_opt_from_js<'js>(
+    obj: &Object<'js>,
+    field: &'static str,
+) -> Result<Option<ColorValue>, DescriptorError> {
+    if !obj.contains_key(field).map_err(js_err)? {
+        return Ok(None);
+    }
+    let raw: JsValue = obj.get(field).map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(None);
+    }
+    Ok(Some(color_value_from_js_value(&raw, field)?))
+}
+
+fn color_value_from_js_value(value: &JsValue, field: &str) -> Result<ColorValue, DescriptorError> {
+    if let Some(s) = value.as_string() {
+        return Ok(ColorValue::Token(s.to_string().map_err(js_err)?));
+    }
+    Ok(ColorValue::Literal(read_f32_array_n_js::<4>(value, field)?))
+}
+
+/// A spacing slot: a bare number → `Literal`, a bare string → `Token`.
+fn spacing_value_from_js<'js>(
+    obj: &Object<'js>,
+    field: &'static str,
+) -> Result<SpacingValue, DescriptorError> {
+    if !obj.contains_key(field).map_err(js_err)? {
+        return Err(DescriptorError::MissingField { field });
+    }
+    let raw: JsValue = obj.get(field).map_err(js_err)?;
+    if let Some(s) = raw.as_string() {
+        return Ok(SpacingValue::Token(s.to_string().map_err(js_err)?));
+    }
+    Ok(SpacingValue::Literal(js_value_as_f32(&raw, field)?))
+}
+
+fn focus_neighbors_from_js<'js>(obj: &Object<'js>) -> Result<FocusNeighbors, DescriptorError> {
+    if !obj.contains_key("focusNeighbors").map_err(js_err)? {
+        return Ok(FocusNeighbors::default());
+    }
+    let raw: JsValue = obj.get("focusNeighbors").map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(FocusNeighbors::default());
+    }
+    let n = Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
+        reason: "`focusNeighbors` must be an object".to_string(),
+    })?;
+    Ok(FocusNeighbors {
+        up: get_optional_string_js(&n, "up")?,
+        down: get_optional_string_js(&n, "down")?,
+        left: get_optional_string_js(&n, "left")?,
+        right: get_optional_string_js(&n, "right")?,
+    })
+}
+
+fn focus_policy_from_js<'js>(obj: &Object<'js>) -> Result<Option<FocusPolicy>, DescriptorError> {
+    if !obj.contains_key("focus").map_err(js_err)? {
+        return Ok(None);
+    }
+    let raw: JsValue = obj.get("focus").map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(None);
+    }
+    if let Some(s) = raw.as_string() {
+        return Ok(Some(FocusPolicy::Shorthand(parse_focus_kind(
+            &s.to_string().map_err(js_err)?,
+        )?)));
+    }
+    let o = Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
+        reason: "`focus` must be a string or an object".to_string(),
+    })?;
+    let policy = parse_focus_kind(&get_required_string_js(&o, "policy")?)?;
+    let wrap = get_optional_bool_js(&o, "wrap")?.unwrap_or(true);
+    let repeat = repeat_policy_opt_from_js(&o, "repeat")?;
+    Ok(Some(FocusPolicy::Detailed {
+        policy,
+        wrap,
+        repeat,
+    }))
+}
+
+fn repeat_policy_opt_from_js<'js>(
+    obj: &Object<'js>,
+    field: &'static str,
+) -> Result<Option<RepeatPolicy>, DescriptorError> {
+    if !obj.contains_key(field).map_err(js_err)? {
+        return Ok(None);
+    }
+    let raw: JsValue = obj.get(field).map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(None);
+    }
+    let o = Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
+        reason: format!("`{field}` must be an object"),
+    })?;
+    Ok(Some(RepeatPolicy {
+        initial_delay_ms: get_required_f32_js(&o, "initialDelayMs")?,
+        interval_ms: get_required_f32_js(&o, "intervalMs")?,
+    }))
+}
+
+fn border_from_js<'js>(
+    obj: &Object<'js>,
+    field: &'static str,
+) -> Result<Option<Border>, DescriptorError> {
+    if !obj.contains_key(field).map_err(js_err)? {
+        return Ok(None);
+    }
+    let raw: JsValue = obj.get(field).map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(None);
+    }
+    let o = Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
+        reason: format!("`{field}` must be an object"),
+    })?;
+    let slice_val: JsValue = o.get("slice").map_err(|_| DescriptorError::InvalidShape {
+        reason: "`border.slice` must be a length-4 array".to_string(),
+    })?;
+    Ok(Some(Border {
+        texture: get_required_string_js(&o, "texture")?,
+        slice: read_f32_array_n_js::<4>(&slice_val, "border.slice")?,
+        tint: color_value_from_js(&o, "tint")?,
+    }))
+}
+
+fn string_array_from_js<'js>(
+    obj: &Object<'js>,
+    field: &'static str,
+) -> Result<Vec<String>, DescriptorError> {
+    if !obj.contains_key(field).map_err(js_err)? {
+        return Ok(Vec::new());
+    }
+    let raw: JsValue = obj.get(field).map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(Vec::new());
+    }
+    let arr: Array = obj.get(field).map_err(|_| DescriptorError::InvalidShape {
+        reason: format!("`{field}` must be a string array"),
+    })?;
+    let mut out = Vec::with_capacity(arr.len());
+    for i in 0..arr.len() {
+        let item: JsValue = arr.get(i).map_err(js_err)?;
+        out.push(String::from_js_value_required(item, field)?);
+    }
+    Ok(out)
+}
+
+fn text_bind_from_js<'js>(
+    ctx: &Ctx<'js>,
+    obj: &Object<'js>,
+) -> Result<Option<TextBind>, DescriptorError> {
+    let Some(bind_obj) = optional_object_js(obj, "bind")? else {
+        return Ok(None);
+    };
+    Ok(Some(TextBind {
+        slot: get_required_string_js(&bind_obj, "slot")?,
+        format: get_optional_string_js(&bind_obj, "format")?,
+        tween: text_tween_from_js(ctx, &bind_obj)?,
+    }))
+}
+
+fn panel_bind_from_js<'js>(
+    _ctx: &Ctx<'js>,
+    obj: &Object<'js>,
+) -> Result<Option<PanelBind>, DescriptorError> {
+    let Some(bind_obj) = optional_object_js(obj, "bind")? else {
+        return Ok(None);
+    };
+    Ok(Some(PanelBind {
+        slot: get_required_string_js(&bind_obj, "slot")?,
+        tween: panel_tween_from_js(&bind_obj)?,
+    }))
+}
+
+fn slider_bind_from_js<'js>(
+    ctx: &Ctx<'js>,
+    obj: &Object<'js>,
+    field: &'static str,
+) -> Result<Option<SliderBind>, DescriptorError> {
+    let Some(bind_obj) = optional_object_js(obj, field)? else {
+        return Ok(None);
+    };
+    Ok(Some(SliderBind {
+        slot: get_required_string_js(&bind_obj, "slot")?,
+        tween: text_tween_from_js(ctx, &bind_obj)?,
+    }))
+}
+
+fn text_tween_from_js<'js>(
+    _ctx: &Ctx<'js>,
+    obj: &Object<'js>,
+) -> Result<Option<TextTween>, DescriptorError> {
+    let Some(tw) = optional_object_js(obj, "tween")? else {
+        return Ok(None);
+    };
+    Ok(Some(TextTween {
+        duration_ms: get_required_f32_js(&tw, "durationMs")?,
+        easing: parse_easing(&get_required_string_js(&tw, "easing")?)?,
+        from: get_optional_f32_js(&tw, "from")?,
+    }))
+}
+
+fn panel_tween_from_js<'js>(obj: &Object<'js>) -> Result<Option<PanelTween>, DescriptorError> {
+    let Some(tw) = optional_object_js(obj, "tween")? else {
+        return Ok(None);
+    };
+    let from = match optional_value_js(&tw, "from")? {
+        Some(v) => Some(read_f32_array_n_js::<4>(&v, "tween.from")?),
+        None => None,
+    };
+    Ok(Some(PanelTween {
+        duration_ms: get_required_f32_js(&tw, "durationMs")?,
+        easing: parse_easing(&get_required_string_js(&tw, "easing")?)?,
+        from,
+    }))
+}
+
+fn style_ranges_from_js<'js>(
+    _ctx: &Ctx<'js>,
+    obj: &Object<'js>,
+) -> Result<Option<StyleRanges>, DescriptorError> {
+    let Some(sr) = optional_object_js(obj, "styleRanges")? else {
+        return Ok(None);
+    };
+    let max = get_required_f32_js(&sr, "max")?;
+    let entries_arr: Array = sr
+        .get("entries")
+        .map_err(|_| DescriptorError::InvalidShape {
+            reason: "`styleRanges.entries` must be an array".to_string(),
+        })?;
+    let mut entries = Vec::with_capacity(entries_arr.len());
+    for i in 0..entries_arr.len() {
+        let item: JsValue = entries_arr.get(i).map_err(js_err)?;
+        let e = Object::from_value(item).map_err(|_| DescriptorError::InvalidShape {
+            reason: format!("`styleRanges.entries[{i}]` must be an object"),
+        })?;
+        entries.push(StyleEntry {
+            up_to: get_optional_f32_js(&e, "upTo")?,
+            color: color_value_opt_from_js(&e, "color")?,
+            pulse: match optional_object_js(&e, "pulse")? {
+                Some(p) => Some(Pulse {
+                    period_ms: get_required_f32_js(&p, "periodMs")?,
+                }),
+                None => None,
+            },
+            flash: match optional_object_js(&e, "flash")? {
+                Some(f) => Some(Flash {
+                    duration_ms: get_required_f32_js(&f, "durationMs")?,
+                }),
+                None => None,
+            },
+        });
+    }
+    Ok(Some(StyleRanges { max, entries }))
+}
+
+fn optional_object_js<'js>(
+    obj: &Object<'js>,
+    field: &'static str,
+) -> Result<Option<Object<'js>>, DescriptorError> {
+    let Some(raw) = optional_value_js(obj, field)? else {
+        return Ok(None);
+    };
+    Ok(Some(Object::from_value(raw).map_err(|_| {
+        DescriptorError::InvalidShape {
+            reason: format!("`{field}` must be an object"),
+        }
+    })?))
+}
+
+fn optional_value_js<'js>(
+    obj: &Object<'js>,
+    field: &'static str,
+) -> Result<Option<JsValue<'js>>, DescriptorError> {
+    if !obj.contains_key(field).map_err(js_err)? {
+        return Ok(None);
+    }
+    let raw: JsValue = obj.get(field).map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(None);
+    }
+    Ok(Some(raw))
+}
+
+// --- Lua UI deserialization -------------------------------------------------
+
+/// Mirror of [`anchored_tree_from_js_value`] for Luau tables. Builds the typed
+/// [`AnchoredTree`] directly: reading `children` straight into a `Vec<Widget>`
+/// is what makes an EMPTY Luau container (an empty `children` table, which the
+/// generic `lua_to_json` walker would emit as `{}` not `[]`) deserialize
+/// cleanly. Returns a named [`DescriptorError`] on malformed input; never panics.
+pub(crate) fn anchored_tree_from_lua_value(
+    value: LuaValue,
+) -> Result<AnchoredTree, DescriptorError> {
+    let table = lua_table(value, "anchored tree")?;
+
+    let anchor = parse_anchor(&get_required_string_lua(&table, "anchor")?)?;
+    let offset = read_f32_pair_lua(&table, "offset")?;
+
+    let root_val: LuaValue = table.get("root").map_err(lua_err)?;
+    if matches!(root_val, LuaValue::Nil) {
+        return Err(DescriptorError::MissingField { field: "root" });
+    }
+    let root = widget_from_lua(root_val)?;
+
+    let capture_mode = match get_optional_string_lua(&table, "captureMode")? {
+        Some(s) => parse_capture_mode(&s)?,
+        None => CaptureMode::Passthrough,
+    };
+    let initial_focus = get_optional_string_lua(&table, "initialFocus")?;
+    let text_entry_target = get_optional_string_lua(&table, "textEntryTarget")?;
+
+    Ok(AnchoredTree {
+        anchor,
+        offset,
+        root,
+        capture_mode,
+        initial_focus,
+        text_entry_target,
+    })
+}
+
+fn widget_from_lua(value: LuaValue) -> Result<Widget, DescriptorError> {
+    let table = lua_table(value, "widget")?;
+    let kind = get_required_string_lua(&table, "kind")?;
+    Ok(match kind.as_str() {
+        "text" => Widget::Text(text_widget_from_lua(&table)?),
+        "panel" => Widget::Panel(panel_widget_from_lua(&table)?),
+        "image" => Widget::Image(image_widget_from_lua(&table)?),
+        "vstack" => Widget::VStack(container_widget_from_lua(&table)?),
+        "hstack" => Widget::HStack(container_widget_from_lua(&table)?),
+        "grid" => Widget::Grid(grid_widget_from_lua(&table)?),
+        "spacer" => Widget::Spacer(spacer_widget_from_lua(&table)?),
+        "button" => Widget::Button(button_widget_from_lua(&table)?),
+        "slider" => Widget::Slider(slider_widget_from_lua(&table)?),
+        "bar" => Widget::Bar(bar_widget_from_lua(&table)?),
+        other => {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!("unknown widget `kind` \"{other}\""),
+            });
+        }
+    })
+}
+
+fn text_widget_from_lua(table: &Table) -> Result<TextWidget, DescriptorError> {
+    Ok(TextWidget {
+        content: get_required_string_lua(table, "content")?,
+        font_size: get_required_f32_lua(table, "fontSize")?,
+        color: color_value_from_lua(table, "color")?,
+        id: get_optional_string_lua(table, "id")?,
+        focus_neighbors: focus_neighbors_from_lua(table)?,
+        font: get_optional_string_lua(table, "font")?,
+        bind: text_bind_from_lua(table)?,
+        style_ranges: style_ranges_from_lua(table)?,
+    })
+}
+
+fn panel_widget_from_lua(table: &Table) -> Result<PanelWidget, DescriptorError> {
+    Ok(PanelWidget {
+        fill: color_value_from_lua(table, "fill")?,
+        border: border_from_lua(table, "border")?,
+        id: get_optional_string_lua(table, "id")?,
+        focus_neighbors: focus_neighbors_from_lua(table)?,
+        bind: panel_bind_from_lua(table)?,
+        style_ranges: style_ranges_from_lua(table)?,
+    })
+}
+
+fn image_widget_from_lua(table: &Table) -> Result<ImageWidget, DescriptorError> {
+    Ok(ImageWidget {
+        asset: get_required_string_lua(table, "asset")?,
+        id: get_optional_string_lua(table, "id")?,
+        focus_neighbors: focus_neighbors_from_lua(table)?,
+    })
+}
+
+fn container_widget_from_lua(table: &Table) -> Result<ContainerWidget, DescriptorError> {
+    Ok(ContainerWidget {
+        gap: spacing_value_from_lua(table, "gap")?,
+        padding: spacing_value_from_lua(table, "padding")?,
+        align: parse_align(&get_required_string_lua(table, "align")?)?,
+        fill: color_value_opt_from_lua(table, "fill")?,
+        border: border_from_lua(table, "border")?,
+        id: get_optional_string_lua(table, "id")?,
+        focus_neighbors: focus_neighbors_from_lua(table)?,
+        focus: focus_policy_from_lua(table)?,
+        restore_on_return: get_optional_bool_lua(table, "restoreOnReturn")?.unwrap_or(false),
+        children: children_from_lua(table)?,
+    })
+}
+
+fn grid_widget_from_lua(table: &Table) -> Result<GridWidget, DescriptorError> {
+    Ok(GridWidget {
+        gap: spacing_value_from_lua(table, "gap")?,
+        padding: spacing_value_from_lua(table, "padding")?,
+        align: parse_align(&get_required_string_lua(table, "align")?)?,
+        cols: get_required_u32_lua(table, "cols")?,
+        id: get_optional_string_lua(table, "id")?,
+        focus_neighbors: focus_neighbors_from_lua(table)?,
+        focus: focus_policy_from_lua(table)?,
+        restore_on_return: get_optional_bool_lua(table, "restoreOnReturn")?.unwrap_or(false),
+        children: children_from_lua(table)?,
+    })
+}
+
+fn spacer_widget_from_lua(table: &Table) -> Result<SpacerWidget, DescriptorError> {
+    Ok(SpacerWidget {
+        flex_grow: get_required_f32_lua(table, "flexGrow")?,
+        id: get_optional_string_lua(table, "id")?,
+    })
+}
+
+fn button_widget_from_lua(table: &Table) -> Result<ButtonWidget, DescriptorError> {
+    Ok(ButtonWidget {
+        id: get_required_string_lua(table, "id")?,
+        label: get_required_string_lua(table, "label")?,
+        on_press: get_required_string_lua(table, "onPress")?,
+        focus_neighbors: focus_neighbors_from_lua(table)?,
+        repeat_on_hold: repeat_policy_opt_from_lua(table, "repeatOnHold")?,
+    })
+}
+
+fn slider_widget_from_lua(table: &Table) -> Result<SliderWidget, DescriptorError> {
+    Ok(SliderWidget {
+        id: get_required_string_lua(table, "id")?,
+        label: get_required_string_lua(table, "label")?,
+        bind: slider_bind_from_lua(table, "bind")?
+            .ok_or(DescriptorError::MissingField { field: "bind" })?,
+        min: get_required_f32_lua(table, "min")?,
+        max: get_required_f32_lua(table, "max")?,
+        step: get_required_f32_lua(table, "step")?,
+        captures_nav: string_array_from_lua(table, "capturesNav")?,
+        focus_neighbors: focus_neighbors_from_lua(table)?,
+    })
+}
+
+fn bar_widget_from_lua(table: &Table) -> Result<BarWidget, DescriptorError> {
+    Ok(BarWidget {
+        bind: slider_bind_from_lua(table, "bind")?
+            .ok_or(DescriptorError::MissingField { field: "bind" })?,
+        max: get_required_f32_lua(table, "max")?,
+        fill: color_value_from_lua(table, "fill")?,
+        background: color_value_from_lua(table, "background")?,
+        id: get_optional_string_lua(table, "id")?,
+        style_ranges: style_ranges_from_lua(table)?,
+    })
+}
+
+// --- Lua leaf-field readers -------------------------------------------------
+
+/// Read `children` straight into a `Vec<Widget>`. An absent or empty `children`
+/// table yields the empty vec — the `children: []` form — so an empty Luau
+/// container parses cleanly (the empty-table → `{}` ambiguity of the generic
+/// `lua_to_json` walker never enters this path).
+fn children_from_lua(table: &Table) -> Result<Vec<Widget>, DescriptorError> {
+    let raw: LuaValue = table.get("children").map_err(lua_err)?;
+    let arr = match raw {
+        LuaValue::Nil => return Ok(Vec::new()),
+        LuaValue::Table(t) => t,
+        other => {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`children` must be an array of widgets, got {}",
+                    other.type_name()
+                ),
+            });
+        }
+    };
+    let len = arr.raw_len();
+    let mut out = Vec::with_capacity(len);
+    for i in 1..=(len as i64) {
+        let item: LuaValue = arr.get(i).map_err(lua_err)?;
+        out.push(widget_from_lua(item)?);
+    }
+    Ok(out)
+}
+
+fn lua_table(value: LuaValue, what: &str) -> Result<Table, DescriptorError> {
+    match value {
+        LuaValue::Table(t) => Ok(t),
+        other => Err(DescriptorError::InvalidShape {
+            reason: format!("{what} must be a table, got {}", other.type_name()),
+        }),
+    }
+}
+
+fn read_f32_pair_lua(table: &Table, field: &'static str) -> Result<[f32; 2], DescriptorError> {
+    let raw: LuaValue = table.get(field).map_err(lua_err)?;
+    let arr = lua_table(raw, field)?;
+    if arr.raw_len() != 2 {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("`{field}` must be a length-2 [x, y] array"),
+        });
+    }
+    Ok([
+        lua_value_as_f32(arr.get(1).map_err(lua_err)?, field)?,
+        lua_value_as_f32(arr.get(2).map_err(lua_err)?, field)?,
+    ])
+}
+
+fn read_f32_array_n_lua<const N: usize>(
+    value: LuaValue,
+    field: &str,
+) -> Result<[f32; N], DescriptorError> {
+    let arr = match value {
+        LuaValue::Table(t) => t,
+        other => {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`{field}` must be a length-{N} numeric array, got {}",
+                    other.type_name()
+                ),
+            });
+        }
+    };
+    if arr.raw_len() != N {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("`{field}` must be a length-{N} numeric array"),
+        });
+    }
+    let mut out = [0.0f32; N];
+    for (i, slot) in out.iter_mut().enumerate() {
+        let item: LuaValue = arr.get((i + 1) as i64).map_err(lua_err)?;
+        *slot = lua_value_as_f32(item, field)?;
+    }
+    Ok(out)
+}
+
+fn lua_value_as_f32(value: LuaValue, field: &str) -> Result<f32, DescriptorError> {
+    match value {
+        LuaValue::Integer(i) => Ok(i as f32),
+        LuaValue::Number(f) => Ok(f as f32),
+        other => Err(DescriptorError::InvalidShape {
+            reason: format!("`{field}` must be a number, got {}", other.type_name()),
+        }),
+    }
+}
+
+fn get_optional_string_lua(
+    table: &Table,
+    field: &'static str,
+) -> Result<Option<String>, DescriptorError> {
+    let raw: LuaValue = table.get(field).map_err(lua_err)?;
+    match raw {
+        LuaValue::Nil => Ok(None),
+        LuaValue::String(s) => Ok(Some(s.to_str().map_err(lua_err)?.to_string())),
+        other => Err(DescriptorError::InvalidShape {
+            reason: format!("`{field}` must be a string, got {}", other.type_name()),
+        }),
+    }
+}
+
+fn color_value_from_lua(table: &Table, field: &'static str) -> Result<ColorValue, DescriptorError> {
+    let raw: LuaValue = table.get(field).map_err(lua_err)?;
+    if matches!(raw, LuaValue::Nil) {
+        return Err(DescriptorError::MissingField { field });
+    }
+    color_value_from_lua_value(raw, field)
+}
+
+fn color_value_opt_from_lua(
+    table: &Table,
+    field: &'static str,
+) -> Result<Option<ColorValue>, DescriptorError> {
+    let raw: LuaValue = table.get(field).map_err(lua_err)?;
+    if matches!(raw, LuaValue::Nil) {
+        return Ok(None);
+    }
+    Ok(Some(color_value_from_lua_value(raw, field)?))
+}
+
+fn color_value_from_lua_value(value: LuaValue, field: &str) -> Result<ColorValue, DescriptorError> {
+    match value {
+        LuaValue::String(s) => Ok(ColorValue::Token(s.to_str().map_err(lua_err)?.to_string())),
+        other => Ok(ColorValue::Literal(read_f32_array_n_lua::<4>(
+            other, field,
+        )?)),
+    }
+}
+
+fn spacing_value_from_lua(
+    table: &Table,
+    field: &'static str,
+) -> Result<SpacingValue, DescriptorError> {
+    let raw: LuaValue = table.get(field).map_err(lua_err)?;
+    match raw {
+        LuaValue::Nil => Err(DescriptorError::MissingField { field }),
+        LuaValue::String(s) => Ok(SpacingValue::Token(
+            s.to_str().map_err(lua_err)?.to_string(),
+        )),
+        LuaValue::Integer(i) => Ok(SpacingValue::Literal(i as f32)),
+        LuaValue::Number(f) => Ok(SpacingValue::Literal(f as f32)),
+        other => Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{field}` must be a number or token string, got {}",
+                other.type_name()
+            ),
+        }),
+    }
+}
+
+fn focus_neighbors_from_lua(table: &Table) -> Result<FocusNeighbors, DescriptorError> {
+    let raw: LuaValue = table.get("focusNeighbors").map_err(lua_err)?;
+    let n = match raw {
+        LuaValue::Nil => return Ok(FocusNeighbors::default()),
+        LuaValue::Table(t) => t,
+        other => {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`focusNeighbors` must be a table, got {}",
+                    other.type_name()
+                ),
+            });
+        }
+    };
+    Ok(FocusNeighbors {
+        up: get_optional_string_lua(&n, "up")?,
+        down: get_optional_string_lua(&n, "down")?,
+        left: get_optional_string_lua(&n, "left")?,
+        right: get_optional_string_lua(&n, "right")?,
+    })
+}
+
+fn focus_policy_from_lua(table: &Table) -> Result<Option<FocusPolicy>, DescriptorError> {
+    let raw: LuaValue = table.get("focus").map_err(lua_err)?;
+    match raw {
+        LuaValue::Nil => Ok(None),
+        LuaValue::String(s) => Ok(Some(FocusPolicy::Shorthand(parse_focus_kind(
+            s.to_str().map_err(lua_err)?.as_ref(),
+        )?))),
+        LuaValue::Table(o) => {
+            let policy = parse_focus_kind(&get_required_string_lua(&o, "policy")?)?;
+            let wrap = get_optional_bool_lua(&o, "wrap")?.unwrap_or(true);
+            let repeat = repeat_policy_opt_from_lua(&o, "repeat")?;
+            Ok(Some(FocusPolicy::Detailed {
+                policy,
+                wrap,
+                repeat,
+            }))
+        }
+        other => Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`focus` must be a string or table, got {}",
+                other.type_name()
+            ),
+        }),
+    }
+}
+
+fn repeat_policy_opt_from_lua(
+    table: &Table,
+    field: &'static str,
+) -> Result<Option<RepeatPolicy>, DescriptorError> {
+    let raw: LuaValue = table.get(field).map_err(lua_err)?;
+    match raw {
+        LuaValue::Nil => Ok(None),
+        LuaValue::Table(o) => Ok(Some(RepeatPolicy {
+            initial_delay_ms: get_required_f32_lua(&o, "initialDelayMs")?,
+            interval_ms: get_required_f32_lua(&o, "intervalMs")?,
+        })),
+        other => Err(DescriptorError::InvalidShape {
+            reason: format!("`{field}` must be a table, got {}", other.type_name()),
+        }),
+    }
+}
+
+fn border_from_lua(table: &Table, field: &'static str) -> Result<Option<Border>, DescriptorError> {
+    let raw: LuaValue = table.get(field).map_err(lua_err)?;
+    let o = match raw {
+        LuaValue::Nil => return Ok(None),
+        LuaValue::Table(t) => t,
+        other => {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!("`{field}` must be a table, got {}", other.type_name()),
+            });
+        }
+    };
+    let slice_val: LuaValue = o.get("slice").map_err(lua_err)?;
+    Ok(Some(Border {
+        texture: get_required_string_lua(&o, "texture")?,
+        slice: read_f32_array_n_lua::<4>(slice_val, "border.slice")?,
+        tint: color_value_from_lua(&o, "tint")?,
+    }))
+}
+
+fn string_array_from_lua(
+    table: &Table,
+    field: &'static str,
+) -> Result<Vec<String>, DescriptorError> {
+    let raw: LuaValue = table.get(field).map_err(lua_err)?;
+    let arr = match raw {
+        LuaValue::Nil => return Ok(Vec::new()),
+        LuaValue::Table(t) => t,
+        other => {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`{field}` must be a string array, got {}",
+                    other.type_name()
+                ),
+            });
+        }
+    };
+    let len = arr.raw_len();
+    let mut out = Vec::with_capacity(len);
+    for i in 1..=(len as i64) {
+        match arr.get::<LuaValue>(i).map_err(lua_err)? {
+            LuaValue::String(s) => out.push(s.to_str().map_err(lua_err)?.to_string()),
+            other => {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`{field}` elements must be strings, got {}",
+                        other.type_name()
+                    ),
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn text_bind_from_lua(table: &Table) -> Result<Option<TextBind>, DescriptorError> {
+    let Some(bind) = optional_table_lua(table, "bind")? else {
+        return Ok(None);
+    };
+    Ok(Some(TextBind {
+        slot: get_required_string_lua(&bind, "slot")?,
+        format: get_optional_string_lua(&bind, "format")?,
+        tween: text_tween_from_lua(&bind)?,
+    }))
+}
+
+fn panel_bind_from_lua(table: &Table) -> Result<Option<PanelBind>, DescriptorError> {
+    let Some(bind) = optional_table_lua(table, "bind")? else {
+        return Ok(None);
+    };
+    Ok(Some(PanelBind {
+        slot: get_required_string_lua(&bind, "slot")?,
+        tween: panel_tween_from_lua(&bind)?,
+    }))
+}
+
+fn slider_bind_from_lua(
+    table: &Table,
+    field: &'static str,
+) -> Result<Option<SliderBind>, DescriptorError> {
+    let Some(bind) = optional_table_lua(table, field)? else {
+        return Ok(None);
+    };
+    Ok(Some(SliderBind {
+        slot: get_required_string_lua(&bind, "slot")?,
+        tween: text_tween_from_lua(&bind)?,
+    }))
+}
+
+fn text_tween_from_lua(table: &Table) -> Result<Option<TextTween>, DescriptorError> {
+    let Some(tw) = optional_table_lua(table, "tween")? else {
+        return Ok(None);
+    };
+    Ok(Some(TextTween {
+        duration_ms: get_required_f32_lua(&tw, "durationMs")?,
+        easing: parse_easing(&get_required_string_lua(&tw, "easing")?)?,
+        from: get_optional_f32_lua(&tw, "from")?,
+    }))
+}
+
+fn panel_tween_from_lua(table: &Table) -> Result<Option<PanelTween>, DescriptorError> {
+    let Some(tw) = optional_table_lua(table, "tween")? else {
+        return Ok(None);
+    };
+    let from_raw: LuaValue = tw.get("from").map_err(lua_err)?;
+    let from = match from_raw {
+        LuaValue::Nil => None,
+        other => Some(read_f32_array_n_lua::<4>(other, "tween.from")?),
+    };
+    Ok(Some(PanelTween {
+        duration_ms: get_required_f32_lua(&tw, "durationMs")?,
+        easing: parse_easing(&get_required_string_lua(&tw, "easing")?)?,
+        from,
+    }))
+}
+
+fn style_ranges_from_lua(table: &Table) -> Result<Option<StyleRanges>, DescriptorError> {
+    let Some(sr) = optional_table_lua(table, "styleRanges")? else {
+        return Ok(None);
+    };
+    let max = get_required_f32_lua(&sr, "max")?;
+    let entries_raw: LuaValue = sr.get("entries").map_err(lua_err)?;
+    let entries_arr = lua_table(entries_raw, "styleRanges.entries")?;
+    let len = entries_arr.raw_len();
+    let mut entries = Vec::with_capacity(len);
+    for i in 1..=(len as i64) {
+        let e = lua_table(
+            entries_arr.get(i).map_err(lua_err)?,
+            "styleRanges.entries[]",
+        )?;
+        entries.push(StyleEntry {
+            up_to: get_optional_f32_lua(&e, "upTo")?,
+            color: color_value_opt_from_lua(&e, "color")?,
+            pulse: match optional_table_lua(&e, "pulse")? {
+                Some(p) => Some(Pulse {
+                    period_ms: get_required_f32_lua(&p, "periodMs")?,
+                }),
+                None => None,
+            },
+            flash: match optional_table_lua(&e, "flash")? {
+                Some(f) => Some(Flash {
+                    duration_ms: get_required_f32_lua(&f, "durationMs")?,
+                }),
+                None => None,
+            },
+        });
+    }
+    Ok(Some(StyleRanges { max, entries }))
+}
+
+fn optional_table_lua(
+    table: &Table,
+    field: &'static str,
+) -> Result<Option<Table>, DescriptorError> {
+    let raw: LuaValue = table.get(field).map_err(lua_err)?;
+    match raw {
+        LuaValue::Nil => Ok(None),
+        LuaValue::Table(t) => Ok(Some(t)),
+        other => Err(DescriptorError::InvalidShape {
+            reason: format!("`{field}` must be a table, got {}", other.type_name()),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5866,5 +7104,249 @@ mod tests {
         let src = r#"({ components: { health: { max: 50, hitbox: { halfExtents: [0.5, 0.5, 0.5], offset: [0, 1/0, 0] } } } })"#;
         let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
         assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    // ======================================================================
+    // UI widget-tree bridge (M13 G1a, Task 5)
+    // ======================================================================
+
+    /// The seven-non-interactive-kind tree from `descriptor.rs`'s round-trip
+    /// fixture, authored as a JS object literal. Re-serializing the bridge output
+    /// must reproduce this byte-for-byte (numbers carry `.0` to match serde's f32
+    /// emission of integral values).
+    const UI_ALL_KINDS_JS: &str = r#"({
+        anchor: "center",
+        offset: [10.0, -20.0],
+        root: {
+            kind: "vstack", gap: 4.0, padding: 8.0, align: "start",
+            children: [
+                { kind: "text", content: "hello", fontSize: 18.0, color: [1.0, 1.0, 1.0, 1.0] },
+                { kind: "panel", fill: [0.1, 0.2, 0.3, 1.0],
+                  border: { texture: "ui/frame", slice: [8.0, 8.0, 8.0, 8.0], tint: [1.0, 1.0, 1.0, 1.0] } },
+                { kind: "hstack", gap: 2.0, padding: 0.0, align: "center",
+                  children: [
+                      { kind: "image", asset: "ui/logo" },
+                      { kind: "spacer", flexGrow: 1.0 }
+                  ] },
+                { kind: "grid", gap: 1.0, padding: 3.0, align: "stretch", cols: 2,
+                  children: [ { kind: "image", asset: "ui/icon" } ] }
+            ]
+        }
+    })"#;
+
+    /// Expected wire form — byte-identical to `descriptor::tests::ALL_KINDS_JSON`.
+    const UI_ALL_KINDS_WIRE: &str = r#"{"anchor":"center","offset":[10.0,-20.0],"root":{"kind":"vstack","gap":4.0,"padding":8.0,"align":"start","children":[{"kind":"text","content":"hello","fontSize":18.0,"color":[1.0,1.0,1.0,1.0]},{"kind":"panel","fill":[0.1,0.2,0.3,1.0],"border":{"texture":"ui/frame","slice":[8.0,8.0,8.0,8.0],"tint":[1.0,1.0,1.0,1.0]}},{"kind":"hstack","gap":2.0,"padding":0.0,"align":"center","children":[{"kind":"image","asset":"ui/logo"},{"kind":"spacer","flexGrow":1.0}]},{"kind":"grid","gap":1.0,"padding":3.0,"align":"stretch","cols":2,"children":[{"kind":"image","asset":"ui/icon"}]}]}}"#;
+
+    #[test]
+    fn js_bridge_converts_all_kinds_tree_and_reserializes_byte_identically() {
+        let tree = eval_js(UI_ALL_KINDS_JS, |ctx, v| {
+            anchored_tree_from_js_value(ctx, v).expect("well-formed tree must convert")
+        });
+
+        // Typed structure assertions.
+        assert_eq!(tree.anchor, Anchor::Center);
+        assert_eq!(tree.offset, [10.0, -20.0]);
+        assert_eq!(tree.capture_mode, CaptureMode::Passthrough);
+        let Widget::VStack(root) = &tree.root else {
+            panic!("root must be a vstack, got {:?}", tree.root);
+        };
+        assert_eq!(root.children.len(), 4);
+        assert!(matches!(root.children[0], Widget::Text(_)));
+        assert!(matches!(root.children[1], Widget::Panel(_)));
+        assert!(matches!(root.children[3], Widget::Grid(_)));
+
+        // Byte-identical re-serialization through the descriptor's own serde impl.
+        let reserialized = serde_json::to_string(&tree).expect("must serialize");
+        assert_eq!(reserialized, UI_ALL_KINDS_WIRE);
+    }
+
+    #[test]
+    fn js_bridge_capture_envelope_and_interactive_widgets_round_trip() {
+        // A capture-mode tree with initialFocus + a grid of interactive widgets,
+        // covering button/slider/bar, color tokens, binds, and styleRanges.
+        let src = r#"({
+            anchor: "center", offset: [0.0, 0.0], captureMode: "capture", initialFocus: "resume",
+            root: {
+                kind: "vstack", gap: "m", padding: "s", align: "center", focus: "linear",
+                children: [
+                    { kind: "button", id: "resume", label: "Resume", onPress: "resumeGame",
+                      focusNeighbors: { down: "vol" } },
+                    { kind: "slider", id: "vol", label: "Volume", bind: { slot: "audio.master" },
+                      min: 0.0, max: 1.0, step: 0.1, capturesNav: ["nav.left", "nav.right"] },
+                    { kind: "bar", bind: { slot: "player.health" }, max: 100.0,
+                      fill: "ok", background: [0.1, 0.1, 0.1, 1.0],
+                      styleRanges: { max: 100.0, entries: [ { upTo: 0.25, color: "critical" }, { color: "ok" } ] } }
+                ]
+            }
+        })"#;
+        let tree = eval_js(src, |ctx, v| {
+            anchored_tree_from_js_value(ctx, v).expect("must convert")
+        });
+        assert_eq!(tree.capture_mode, CaptureMode::Capture);
+        assert_eq!(tree.initial_focus.as_deref(), Some("resume"));
+
+        let expected = r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"vstack","gap":"m","padding":"s","align":"center","focus":"linear","children":[{"kind":"button","id":"resume","label":"Resume","onPress":"resumeGame","focusNeighbors":{"down":"vol"}},{"kind":"slider","id":"vol","label":"Volume","bind":{"slot":"audio.master"},"min":0.0,"max":1.0,"step":0.1,"capturesNav":["nav.left","nav.right"]},{"kind":"bar","bind":{"slot":"player.health"},"max":100.0,"fill":"ok","background":[0.1,0.1,0.1,1.0],"styleRanges":{"max":100.0,"entries":[{"upTo":0.25,"color":"critical"},{"color":"ok"}]}}]},"captureMode":"capture","initialFocus":"resume"}"#;
+        assert_eq!(serde_json::to_string(&tree).unwrap(), expected);
+    }
+
+    #[test]
+    fn js_bridge_malformed_tree_surfaces_named_error_not_panic() {
+        // Unknown widget kind → InvalidShape (a named DescriptorError), no panic.
+        let bad_kind = r#"({ anchor: "center", offset: [0.0, 0.0], root: { kind: "carousel" } })"#;
+        let err = eval_js(bad_kind, |ctx, v| {
+            anchored_tree_from_js_value(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+
+        // Missing required `root` → MissingField.
+        let no_root = r#"({ anchor: "center", offset: [0.0, 0.0] })"#;
+        let err = eval_js(no_root, |ctx, v| {
+            anchored_tree_from_js_value(ctx, v).unwrap_err()
+        });
+        assert_eq!(err, DescriptorError::MissingField { field: "root" });
+
+        // Bad anchor literal → InvalidShape.
+        let bad_anchor = r#"({ anchor: "middle", offset: [0.0, 0.0], root: { kind: "spacer", flexGrow: 1.0 } })"#;
+        let err = eval_js(bad_anchor, |ctx, v| {
+            anchored_tree_from_js_value(ctx, v).unwrap_err()
+        });
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    /// The end-to-end AC: run the ACTUAL Luau `widgets`/`layout`/`tree` factories
+    /// under mlua, pass the produced descriptor value through the bridge, and
+    /// assert the typed result + a byte-identical re-serialization. This is the
+    /// validation that ties Tasks 3/4/5 together for the Luau runtime.
+    #[test]
+    fn luau_factories_through_bridge_round_trip_byte_identically() {
+        const WIDGETS_SRC: &str = include_str!("../../../../sdk/lib/ui/widgets.luau");
+        const LAYOUT_SRC: &str = include_str!("../../../../sdk/lib/ui/layout.luau");
+        const TREE_SRC: &str = include_str!("../../../../sdk/lib/ui/tree.luau");
+
+        let lua = mlua::Lua::new();
+        let widgets: mlua::Table = lua.load(WIDGETS_SRC).eval().unwrap();
+        let layout: mlua::Table = lua.load(LAYOUT_SRC).eval().unwrap();
+        let tree_mod: mlua::Table = lua.load(TREE_SRC).eval().unwrap();
+        lua.globals().set("W", widgets).unwrap();
+        lua.globals().set("L", layout).unwrap();
+        lua.globals().set("T", tree_mod).unwrap();
+
+        // Build the same all-kinds tree via the factories. (gap/padding/align are
+        // authored explicitly to match the byte-identical wire fixture.)
+        let src = r#"return T.Tree({ anchor = "center", offset = { 10, -20 } },
+            L.VStack({ gap = 4, padding = 8, align = "start" }, {
+                W.Text({ content = "hello", fontSize = 18, color = {1,1,1,1} }),
+                W.Panel({ fill = {0.1,0.2,0.3,1}, border = { texture = "ui/frame", slice = {8,8,8,8}, tint = {1,1,1,1} } }),
+                L.HStack({ gap = 2, padding = 0, align = "center" }, {
+                    W.Image({ asset = "ui/logo" }),
+                    W.Spacer({ flexGrow = 1 }),
+                }),
+                L.Grid({ gap = 1, padding = 3, align = "stretch", cols = 2 }, {
+                    W.Image({ asset = "ui/icon" }),
+                }),
+            }))"#;
+        let value: mlua::Value = lua.load(src).eval().expect("factories must build a tree");
+        let tree = anchored_tree_from_lua_value(value).expect("bridge must convert factory output");
+
+        assert_eq!(tree.anchor, Anchor::Center);
+        let Widget::VStack(root) = &tree.root else {
+            panic!("root must be a vstack");
+        };
+        assert_eq!(root.children.len(), 4);
+
+        assert_eq!(serde_json::to_string(&tree).unwrap(), UI_ALL_KINDS_WIRE);
+    }
+
+    #[test]
+    fn luau_empty_container_parses_as_explicit_children_array() {
+        // The critical Task 3 note: an EMPTY Luau container `children` table would
+        // serialize to `{}` (not `[]`) through the generic lua_to_json walker. The
+        // bridge reads `children` straight into a `Vec<Widget>`, so an empty
+        // container parses cleanly and re-serializes with the required `"children":[]`.
+        const LAYOUT_SRC: &str = include_str!("../../../../sdk/lib/ui/layout.luau");
+        const TREE_SRC: &str = include_str!("../../../../sdk/lib/ui/tree.luau");
+        let lua = mlua::Lua::new();
+        let layout: mlua::Table = lua.load(LAYOUT_SRC).eval().unwrap();
+        let tree_mod: mlua::Table = lua.load(TREE_SRC).eval().unwrap();
+        lua.globals().set("L", layout).unwrap();
+        lua.globals().set("T", tree_mod).unwrap();
+
+        let src = r#"return T.Tree({ anchor = "topLeft", offset = { 0, 0 } },
+            L.VStack({ gap = 0, padding = 0, align = "start" }, {}))"#;
+        let value: mlua::Value = lua.load(src).eval().unwrap();
+        let tree = anchored_tree_from_lua_value(value).expect("empty container must convert");
+
+        let Widget::VStack(root) = &tree.root else {
+            panic!("root must be a vstack");
+        };
+        assert!(root.children.is_empty(), "children must be empty");
+
+        let expected = r#"{"anchor":"topLeft","offset":[0.0,0.0],"root":{"kind":"vstack","gap":0.0,"padding":0.0,"align":"start","children":[]}}"#;
+        let reserialized = serde_json::to_string(&tree).unwrap();
+        assert_eq!(reserialized, expected);
+        assert!(
+            reserialized.contains(r#""children":[]"#),
+            "empty container must serialize children as an empty ARRAY, got: {reserialized}"
+        );
+    }
+
+    #[test]
+    fn luau_bridge_malformed_tree_surfaces_named_error_not_panic() {
+        // A non-table root → InvalidShape (named error, no panic).
+        let lua = mlua::Lua::new();
+        let value: mlua::Value = lua
+            .load(r#"return { anchor = "center", offset = { 0, 0 }, root = 42 }"#)
+            .eval()
+            .unwrap();
+        let err = anchored_tree_from_lua_value(value).unwrap_err();
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+
+        // A missing root → MissingField.
+        let value: mlua::Value = lua
+            .load(r#"return { anchor = "center", offset = { 0, 0 } }"#)
+            .eval()
+            .unwrap();
+        let err = anchored_tree_from_lua_value(value).unwrap_err();
+        assert_eq!(err, DescriptorError::MissingField { field: "root" });
+
+        // An unknown widget kind → InvalidShape.
+        let value: mlua::Value = lua
+            .load(
+                r#"return { anchor = "center", offset = { 0, 0 }, root = { kind = "carousel" } }"#,
+            )
+            .eval()
+            .unwrap();
+        let err = anchored_tree_from_lua_value(value).unwrap_err();
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_and_luau_bridges_agree_on_one_tree() {
+        // The same authored tree through both runtimes yields byte-identical wire
+        // output — the cross-runtime parity guarantee for the bridge.
+        const WIDGETS_SRC: &str = include_str!("../../../../sdk/lib/ui/widgets.luau");
+        const TREE_SRC: &str = include_str!("../../../../sdk/lib/ui/tree.luau");
+        let lua = mlua::Lua::new();
+        let widgets: mlua::Table = lua.load(WIDGETS_SRC).eval().unwrap();
+        let tree_mod: mlua::Table = lua.load(TREE_SRC).eval().unwrap();
+        lua.globals().set("W", widgets).unwrap();
+        lua.globals().set("T", tree_mod).unwrap();
+        let lua_value: mlua::Value = lua
+            .load(
+                r#"return T.Tree({ anchor = "center", offset = { 0, 0 } },
+                    W.Text({ content = "hi", fontSize = 12, color = {1,1,1,1} }))"#,
+            )
+            .eval()
+            .unwrap();
+        let lua_tree = anchored_tree_from_lua_value(lua_value).unwrap();
+        let lua_wire = serde_json::to_string(&lua_tree).unwrap();
+
+        let js_tree = eval_js(
+            r#"({ anchor: "center", offset: [0.0, 0.0], root: { kind: "text", content: "hi", fontSize: 12.0, color: [1.0, 1.0, 1.0, 1.0] } })"#,
+            |ctx, v| anchored_tree_from_js_value(ctx, v).unwrap(),
+        );
+        let js_wire = serde_json::to_string(&js_tree).unwrap();
+
+        assert_eq!(lua_wire, js_wire);
     }
 }

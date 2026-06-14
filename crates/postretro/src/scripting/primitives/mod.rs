@@ -411,7 +411,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field(
             "alwaysOn?",
             "bool",
-            "Whether the tree stays resolvable even when not on top of the modal stack. Optional; defaults to false.",
+            "Whether the tree composes as a per-frame base layer (e.g. the HUD: always rendered) rather than only when explicitly pushed onto the modal stack. Optional; defaults to false.",
         )
         .finish();
     registry

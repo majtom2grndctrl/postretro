@@ -2540,7 +2540,7 @@ declare module "postretro" {
     name: string;
     /** The placement envelope + widget tree (the value produced by the `Tree` factory). Required. */
     tree: AnchoredTreeDescriptor;
-    /** Whether the tree stays resolvable even when not on top of the modal stack. Optional; defaults to false. */
+    /** Whether the tree composes as a per-frame base layer (e.g. the HUD: always rendered) rather than only when explicitly pushed onto the modal stack. Optional; defaults to false. */
     alwaysOn?: boolean;
   };
 
@@ -2956,7 +2956,7 @@ export type ModUiTree = {
   name: string,
   --- The placement envelope + widget tree (the value produced by the `Tree` factory). Required.
   tree: AnchoredTreeDescriptor,
-  --- Whether the tree stays resolvable even when not on top of the modal stack. Optional; defaults to false.
+  --- Whether the tree composes as a per-frame base layer (e.g. the HUD: always rendered) rather than only when explicitly pushed onto the modal stack. Optional; defaults to false.
   alwaysOn: boolean?,
 }
 

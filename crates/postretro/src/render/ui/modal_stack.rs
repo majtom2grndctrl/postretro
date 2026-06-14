@@ -188,11 +188,10 @@ impl ModalStack {
     }
 
     /// Drain script-authored trees parsed off a manifest result into the registry
-    /// at the given scope tier, carrying each entry's `always_on` attribute. This
-    /// is the G1b Task 3 bridge: it feeds the trees `setupMod` / `setupLevel`
-    /// returned (via the `RegisteredUiTree` envelopes Task 1 parsed) into the
-    /// tiered registry Task 2 built, at the register→VM-drop lifecycle point —
-    /// before the mod-init / data-script VM context drops.
+    /// at the given scope tier, carrying each entry's `always_on` attribute. It
+    /// feeds the trees `setupMod` / `setupLevel` returned (as `RegisteredUiTree`
+    /// envelopes) into the tiered registry at the register→VM-drop lifecycle
+    /// point — before the mod-init / data-script VM context drops.
     ///
     /// Both mod-scope and level-scope trees register at `ScopeTier::Mod` today: a
     /// mod-tier registration under an existing engine name shadows it (last-wins +
@@ -219,11 +218,11 @@ impl ModalStack {
     /// Read a registered tree by `name`, or `None` if no such name is registered.
     /// The public `&self` read seam onto the registry's tiered resolution: keeps
     /// `UiTreeRegistry::resolve` private to `push_named`'s internal use. The
-    /// per-frame compose step now pulls the HUD as one of the always-on base layers
-    /// via `always_on_layers` rather than resolving `HUD_NAME` by hand, so the seam
-    /// has no production caller today (script-side by-name resolution lands with the
-    /// UI SDK); it is exercised by the tiered-resolution tests.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// per-frame compose step pulls the HUD as one of the always-on base layers
+    /// via `always_on_layers` rather than resolving `HUD_NAME` by hand. Production
+    /// callers arrive with script-side by-name resolution; today only the
+    /// tiered-resolution tests exercise this seam.
+    #[cfg_attr(not(test), allow(dead_code))] // script-side by-name resolution not yet wired
     pub(crate) fn tree(&self, name: &str) -> Option<&AnchoredTree> {
         self.registry.resolve(name)
     }

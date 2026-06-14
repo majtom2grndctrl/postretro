@@ -52,15 +52,16 @@ pub(crate) struct ModManifestResult {
     pub(crate) entities: Vec<EntityTypeDescriptor>,
     /// UI trees registered via `setupMod()`'s `uiTrees` field (each a name +
     /// `AnchoredTree` + `alwaysOn`). Empty when absent. A malformed entry is
-    /// logged and skipped at parse time (`ui.md` §5). G1b Task 1 holds these;
-    /// installation into the app-side UI registry is later-task work.
+    /// logged and skipped at parse time (`ui.md` §5). Drained into the app-side
+    /// `UiTreeRegistry` at `ScopeTier::Mod` by the boot and level-load callers
+    /// in `main.rs`.
     pub(crate) ui_trees: Vec<RegisteredUiTree>,
     /// Theme tokens from `setupMod()`'s `theme` field. Default (empty) when
-    /// absent. Held for the Task 4 `ThemeDescriptor` merge.
+    /// absent. Drained into the `ThemeDescriptor` merge by the boot caller.
     pub(crate) theme: ModThemeTokens,
     /// Font assets (family → TTF path) from `setupMod()`'s `fonts` field.
-    /// Default (empty) when absent. Held for the Task 4 `register_ui_font`
-    /// install.
+    /// Default (empty) when absent. Installed via `register_ui_font` by the
+    /// boot caller.
     pub(crate) fonts: ModFontAssets,
     /// Validated state-store declarations collected during this mod-init
     /// attempt. This is engine metadata, not a `ModManifest` script field.

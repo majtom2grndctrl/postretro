@@ -48,7 +48,7 @@ impl DataRegistry {
             // into the app-side `UiTreeRegistry` at the level-load drain point
             // (main.rs), before this `populate_from_manifest` consumes the rest.
             // They are not engine-global data-registry state, so nothing lands
-            // here. G1b Task 3.
+            // here.
             ui_trees: _,
         } = manifest;
         self.reactions.extend(reactions);

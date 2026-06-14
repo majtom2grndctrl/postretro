@@ -47,7 +47,7 @@ pub(crate) enum SystemReactionCommand {
         value: serde_json::Value,
     },
     /// Write a value to a presentation cell `(scopeId, cellName)` at the
-    /// game-logic stage (M13 G1b, Task 5 — `ui.createLocalState().set(v)`). Drained
+    /// game-logic stage (the `ui.createLocalState().set(v)` path). Drained
     /// into the app-side `PresentationCellStore`, NOT the slot table: this is
     /// presentation-only state, distinct from `SetState` (which writes the
     /// authoritative store). `value` carries the raw JSON value coerced to a
@@ -267,8 +267,8 @@ pub(crate) fn register_system_reaction_primitives(registry: &mut SystemReactionR
         });
         Ok(())
     });
-    // `cellWrite` writes a presentation cell at the game-logic stage (M13 G1b,
-    // Task 5). It carries no `tag` (system-targeted); the drain routes it into the
+    // `cellWrite` writes a presentation cell at the game-logic stage.
+    // It carries no `tag` (system-targeted); the drain routes it into the
     // app-side `PresentationCellStore`, NOT the slot table. Distinct from
     // `setState` (which writes the authoritative store); the `ui.createLocalState`
     // handle's `.set(v)` emits this, never `setState`.

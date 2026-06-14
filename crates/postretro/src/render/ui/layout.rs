@@ -20,6 +20,9 @@ pub const REFERENCE_HEIGHT: f32 = 720.0;
 /// placement envelope's `anchor` field, drive the whole-tree placement transform
 /// (`tree::anchor_fractions`), and are exercised by the layout tests. The splash
 /// itself only uses `Center`.
+///
+/// Note: `render/ui/_gen_layout_shim.rs` hand-copies this enum for the typedef
+/// generator bin; add new variants there too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Anchor {

@@ -1,5 +1,5 @@
-// App-side presentation-cell store (M13 G1b, Task 5): the `ui.createLocalState()`
-// subsystem. A presentation-only map keyed by `(scopeId, cellName)`, seeded from
+// App-side presentation-cell store backing `ui.createLocalState()`.
+// A presentation-only map keyed by `(scopeId, cellName)`, seeded from
 // a tree's declared `localState` initials when its scope is first composed,
 // written by the `CellWrite` system reaction at the game-logic stage, and
 // reconciled (cleared) against the composed-scope-id set each frame. Published

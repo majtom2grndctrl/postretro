@@ -1,6 +1,6 @@
 # M13 Goal G2 — Reactive UI (Selection + Visibility) + A11y / Type-Safety Foundation
 
-> Wave plan 2 of 2 (sibling: **SE**, `drafts/M13--screen-space-effects/`). Both
+> Wave plan 2 of 2 (sibling: **SE**, `ready/M13--screen-space-effects/`). Both
 > ship in one /orchestrate; independent except the seams under Sequencing.
 > Downstream convergence: **BIS** authors pause/dialog/death/settings/HUD against
 > this contract — landing G2 before BIS means those screens are authored once

@@ -92,6 +92,18 @@ the spec hand-waved three mechanisms the source has firm invariants about. Pinne
   `Option::is_none`); Task 2 split into 2a (resolution + `FocusRect.disabled`) / 2b
   (visibility); `localState` lives only on `ContainerWidget` (vstack/hstack), not Grid.
 
+## Owner decision (2026-06-14 #3): keep expanded G2 vs roadmap, realign roadmap
+
+Roadmap-alignment review flagged drift: roadmap G2 is "a11y metadata nothing
+consumes yet, future-proofing, **may trail BIS**" and **BIS depends on G1/E/F/SE,
+not G2** — and the reactive layer (Predicate/`selected`/`visibleWhen`) was never in
+roadmap G2; BIS's screens (settings via modal-stack sub-menus, not in-page tabs)
+don't strictly need it. Owner reviewed and **chose to keep the expanded reactive
+G2** and bring it forward as a real BIS prerequisite. Consequence applied:
+`roadmap.md` updated — G2 description expanded, **BIS now depends on G2**, G2 lands
+**before** BIS (no longer trails). SE stays independent of G2 (may ship in
+parallel). Spec unchanged from the reactive rewrite.
+
 ## Expanded-scope anchors
 
 - `AnchoredTree` envelope — `descriptor.rs:193` (beside `capture_mode:200`,

@@ -69,16 +69,16 @@ Size the panel from triage:
 | Touches a contract surface | + 1 contract verifier |
 | Subtle invariants / many edge conditions | + 1 adversarial tester |
 
-**Floor.** Always run the hygiene+drift agent. For any diff carrying logic, run at least one depth agent alongside it — one agent reviewing everything loses the cross-check that makes this a panel. Typical panel is 2–3; reach 4–5 only when the diff genuinely spans seams.
+**Floor.** Always run the hygiene+drift agent. For any diff carrying logic, run at least one depth agent alongside it — one agent reviewing everything loses the cross-check that makes this a panel. Typical panel is 2–3; rarely past 5, and only when the diff genuinely spans seams.
 
-`reviewers:N` forces N depth agents and skips the table. `model:sonnet` runs depth agents on Sonnet. The hygiene+drift agent is always Sonnet, unaffected by overrides.
+`reviewers:N` forces the depth-agent count to N and skips the table — triage still picks the lens mix (N=3 might be two tracers and one verifier). `model:sonnet` runs depth agents on Sonnet. The hygiene+drift agent is always Sonnet, unaffected by overrides.
 
 ### 4. Spawn all agents in parallel
 
 Launch every agent in a single message. No `isolation: "worktree"` needed — reviewers read code and report findings, they don't write files.
 
-- **Each depth agent:** full content of `.claude/skills/code-review/SKILL.md`, then its lens prompt (below), then the specific flow or surface from triage. Specified model (default: opus).
-- **Hygiene + drift agent (always Sonnet):** full content of `.claude/skills/code-review/SKILL.md`, then the hygiene+drift prompt (below).
+- **Each depth agent:** the shared preamble (below), then its lens prompt, then the specific flow or surface from triage. The lens governs — depth agents do not run the general code-review checklist; that is the breadth pass's job. Specified model (default: opus).
+- **Hygiene + drift agent (always Sonnet):** full content of `.claude/skills/code-review/SKILL.md` (the breadth checklist), then the hygiene+drift prompt (below).
 
 Every agent reports findings **bucketed by lens** so coverage per lens stays visible at aggregation.
 
@@ -95,7 +95,7 @@ Every agent reports findings **bucketed by lens** so coverage per lens stays vis
 ```
 ## Review Panel Summary
 
-**Panel:** [lenses that ran, e.g. "2 correctness tracers + 1 contract verifier + hygiene/drift"]
+**Panel:** [lenses that ran and their model, e.g. "2 correctness tracers + 1 contract verifier (opus) + hygiene/drift (sonnet)"]
 **Target:** [what was reviewed]
 **Verdict:** approve / request changes / needs discussion
 
@@ -131,7 +131,15 @@ Omit empty severity categories. If the panel unanimously approves with no findin
 
 ## Lens prompts
 
-Pass the matching block to each agent verbatim, after the code-review skill content.
+Each depth agent gets the shared preamble below, then its lens block. The hygiene+drift agent skips the preamble — it runs the full `code-review` skill, then the hygiene+drift block. Pass blocks verbatim.
+
+### Shared preamble (depth agents)
+
+```
+Before reviewing, read: context/lib/index.md (architecture, subsystem boundaries), context/lib/development_guide.md (conventions, constraints), context/lib/testing_guide.md (test expectations). If the target is a plan, read the plan too.
+
+You run one lens, not a general review. Stay in it — the broad completeness/correctness checklist is another agent's pass; don't duplicate it. Report with the project severity legend: 🔴 must fix · 🟡 should fix · 🟢 nit.
+```
 
 ### Correctness tracer
 

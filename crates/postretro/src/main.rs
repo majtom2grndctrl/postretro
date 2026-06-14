@@ -2545,6 +2545,14 @@ impl App {
                             std::mem::take(&mut manifest.ui_trees),
                             render::ui::modal_stack::ScopeTier::Mod,
                         );
+
+                        // Take the theme tokens + font assets out of the manifest
+                        // here; the `manifest` borrow (of `self.script_runtime`)
+                        // ends at this last use, so the `&mut self` install call
+                        // below is a non-overlapping borrow. G1b Task 4.
+                        let mod_theme = std::mem::take(&mut manifest.theme);
+                        let mod_fonts = std::mem::take(&mut manifest.fonts);
+                        self.install_mod_ui_theme_and_fonts(mod_theme, mod_fonts);
                     }
 
                     if self
@@ -2710,6 +2718,70 @@ impl App {
     /// a fullscreen background fill, a framed 9-slice panel, the centered logo
     /// image, and a shaped-text line as instanced quads plus glyphon text. The
     /// first frame has no descriptor installed yet and renders only the clear.
+    /// Install a mod's `setupMod()` theme tokens and font assets into the live UI
+    /// runtime, at the mod-init drain (before the authoring VM context drops). G1b
+    /// Task 4. Both halves degrade per `ui.md` §5: a missing/unreadable font file
+    /// or a non-registering face produces a named load-time diagnostic and is
+    /// skipped; the theme merge tolerates unknown tokens (they degrade visibly at
+    /// widget-resolution time — magenta/`body`/zero, warn-once — never here).
+    /// No-op when the renderer is absent (headless / pre-resume).
+    fn install_mod_ui_theme_and_fonts(
+        &mut self,
+        theme: crate::scripting::data_descriptors::ModThemeTokens,
+        fonts: crate::scripting::data_descriptors::ModFontAssets,
+    ) {
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+
+        // Theme: convert the mod-scope tokens into a `ThemeDescriptor`, merge over
+        // the engine default per-token, and install the merged theme. `set_ui_theme`
+        // bumps the theme generation so already-built retained trees rebuild against
+        // the new tokens. An override naming nothing leaves the default untouched.
+        if !theme.colors.is_empty() || !theme.fonts.is_empty() || !theme.spacing.is_empty() {
+            let descriptor = render::ui::theme::ThemeDescriptor {
+                colors: theme.colors,
+                fonts: theme.fonts,
+                spacing: theme.spacing,
+            };
+            let merged = render::ui::theme::UiTheme::engine_default().with_override(&descriptor);
+            renderer.set_ui_theme(merged);
+            log::info!("[UI] installed mod theme override");
+        }
+
+        // Fonts: family → TTF path. Resolve each path against the mod content root
+        // (itself cwd-relative at runtime per ui.md §5), read the bytes, and
+        // register the face. A missing/unreadable file or a non-registering face is
+        // logged and skipped — the `font` token then degrades to a system fallback
+        // at shape time, but boot never aborts.
+        for (family, rel_path) in fonts.families {
+            let path = self.content_root.join(&rel_path);
+            let bytes = match render::ui::text::read_font_file(&path) {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    log::warn!(
+                        "[UI] mod font '{family}' file '{}' could not be read ({err}); \
+                         skipping — the font token falls back to a system face",
+                        path.display(),
+                    );
+                    continue;
+                }
+            };
+            if renderer.register_ui_font(&family, bytes) {
+                log::info!(
+                    "[UI] registered mod font '{family}' from '{}'",
+                    path.display()
+                );
+            } else {
+                log::warn!(
+                    "[UI] mod font '{family}' from '{}' registered no matching face \
+                     (malformed file or family-name mismatch); skipping",
+                    path.display(),
+                );
+            }
+        }
+    }
+
     fn paint_splash(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(renderer) = self.renderer.as_mut() {
             if !renderer.is_ready() {

@@ -94,12 +94,9 @@ impl UiTheme {
     ///
     /// The engine-side theme setter (`Renderer::set_ui_theme`) installs an
     /// already-merged `UiTheme`; the override-document → merge path is the wire
-    /// contract overrides serialize through, but its production caller (script
-    /// ingestion) is deferred — so it is test-only on a release build today.
-    ///
-    /// Paired deferred-G1 entry points (both `#[allow(dead_code)]` until script
-    /// ingestion lands): this method and `Renderer::set_ui_theme` in `render/mod.rs`.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// contract overrides serialize through. Its production caller is the G1b
+    /// mod-init drain (`main.rs`), which converts a mod's `theme` tokens into a
+    /// `ThemeDescriptor`, merges here, and installs the result.
     pub fn with_override(&self, over: &ThemeDescriptor) -> Self {
         let mut merged = self.clone();
         for (name, value) in &over.colors {
@@ -117,11 +114,10 @@ impl UiTheme {
 
 /// Serde wire form for a theme override document. Each category map is optional
 /// and defaults to empty, so an override may name only the tokens it changes
-/// (the merge is per-token). Locked deliverable: script ingestion is deferred,
-/// but this format is the contract overrides serialize through.
+/// (the merge is per-token). The G1b mod-init drain builds one of these from a
+/// mod's `theme` tokens before merging over `engine_default`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct ThemeDescriptor {
     #[serde(default)]
     pub colors: HashMap<String, [f32; 4]>,
@@ -242,6 +238,43 @@ mod tests {
         ));
         // ...and the required tokens still resolve alongside it.
         assert!(merged.color("critical").is_some());
+    }
+
+    #[test]
+    fn mod_token_merge_overrides_default_and_keeps_unknown_token_degradable() {
+        // The G1b Task 4 install shape: a mod's `theme` tokens (here a known
+        // semantic override + a mod primitive) become a `ThemeDescriptor`, merge
+        // over `engine_default`, and the merged theme is what `set_ui_theme`
+        // installs. The known token takes the mod value; the mod primitive is
+        // added; an unregistered token stays absent so the widget resolution site
+        // (not the table) owns the magenta/`body`/zero warn-once degradation.
+        let descriptor = ThemeDescriptor {
+            colors: HashMap::from([
+                ("warning".to_string(), [0.0, 0.0, 1.0, 1.0]),
+                ("cyan.500".to_string(), [0.1, 0.55, 0.62, 1.0]),
+            ]),
+            fonts: HashMap::from([("body".to_string(), "ModSans".to_string())]),
+            ..Default::default()
+        };
+        let merged = UiTheme::engine_default().with_override(&descriptor);
+
+        // Known semantic token took the mod value; a sibling default survives.
+        assert!(colors_close(
+            merged.color("warning").unwrap(),
+            [0.0, 0.0, 1.0, 1.0]
+        ));
+        assert!(colors_close(
+            merged.color("critical").unwrap(),
+            UiTheme::engine_default().color("critical").unwrap(),
+        ));
+        // Mod primitive added; mod font override applied.
+        assert!(colors_close(
+            merged.color("cyan.500").unwrap(),
+            [0.1, 0.55, 0.62, 1.0]
+        ));
+        assert_eq!(merged.font("body"), Some("ModSans"));
+        // An unregistered token is absent — the resolution site degrades it.
+        assert_eq!(merged.color("unregistered.token"), None);
     }
 
     #[test]

@@ -779,6 +779,16 @@ impl UiPass {
         &self.white_bind_group
     }
 
+    /// Install a runtime font face into the shaped-text `FontSystem` (the net-new
+    /// runtime path; the embedded body/mono faces are registered once at
+    /// construction). Delegates to `text::UiTextRenderer::register_font`; returns
+    /// `false` if the bytes register no face under `family`, so the renderer caller
+    /// can surface a load-time diagnostic and skip rather than leave a `font` token
+    /// resolving to a system fallback.
+    pub fn register_font(&mut self, family: &str, ttf_bytes: Vec<u8>) -> bool {
+        self.text.register_font(family, ttf_bytes)
+    }
+
     /// Build a bind group for a caller-bound image texture (e.g. the logo). One
     /// batch per bound texture, so the image draws as a separate instanced draw.
     pub fn make_texture_bind_group(

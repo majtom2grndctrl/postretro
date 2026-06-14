@@ -1,147 +1,147 @@
-# M13 Goal SE — Post-UI Screen-Space Effects
+# M13 Goal SE — Post-UI Screen-Space Effects + Compositor Seam
 
 > Wave plan 1 of 2 (sibling: **G2**, `drafts/M13--sdk-typesafety-a11y/`). Both
 > ship in one /orchestrate; mutually independent except the typedef/barrel seam
-> noted under Sequencing. Downstream convergence: **BIS** (built-in screens)
-> consumes SE's effects for the damage vignette. Grounding: `research.md`,
-> `ui-layer.md` §13, `lib/ui.md` §3. Prereqs: A–E shipped (`done/M13--*`).
+> noted under Sequencing. Downstream: **BIS** consumes the effects (damage
+> vignette); **M9 tonemap / M10 post** later extend the resolve SE establishes.
+> Grounding: `research.md`, `ui-layer.md` §13, `lib/ui.md` §3. Prereqs: A–E
+> shipped (`done/M13--*`).
 
 ## Goal
 
-Add the missing GPU consumer for engine-owned screen-effect slots: a single
-post-UI pass that applies **flash**, **vignette**, and **screen shake** to the
-composited frame, driven by slots a reaction sets and the engine decays. Goal E
-shipped `screen.flash` (slot + `flashScreen` reaction + decay) but no pass draws
-it; SE renders it and adds two sibling effects. Establishes the post-UI
-screen-space resolve — the seam M9 tonemap / M10 post later share.
+Establish the post-scene compositor seam and ride it with the first three
+screen-space effects. Today every pass renders straight to the swapchain — no
+shared target where flash/vignette/shake (or M9 tonemap, or M10 post) can
+compose. SE introduces a `scene_color` offscreen target every scene/UI pass
+renders into, plus a **resolve pass** that samples it into the swapchain while
+applying flash, vignette, and screen shake from engine-owned slots. Goal E
+shipped `screen.flash` (slot + reaction + decay) with no GPU consumer; SE is
+that consumer and adds two sibling effects. The resolve is the durable seam M9
+tonemap and M10 post extend — not a side-channel SE has to unwind later.
 
 ## Scope
 
 ### In scope
 
-- A renderer-owned **screen-effects pass** drawn after the UI pass, before
-  present, applying flash + vignette + shake to the final color target in one
-  fullscreen draw. Skipped entirely when all three effect slots are at rest (no
-  idle cost, no idle visual change).
-- Two net-new engine-owned slots beside `screen.flash`: `screen.vignette`
-  (RGBA `Array` — rgb tint, a = strength) and `screen.shake` (`Array` `[dx, dy]`
-  — current frame offset in logical-reference px). Engine-writable, mod-readonly.
-- Two net-new decay drivers mirroring `FlashDecay`: a vignette envelope
-  (rise→hold→decay over `durationMs`) and a shake driver (decaying oscillation
-  → current offset). dt-accumulated game time; pause with game logic; clear on
-  level unload.
-- Two net-new reactions — `vignette { color?, strength, durationMs }` and
+- **`scene_color` offscreen target + resolve pass.** A renderer-owned color
+  target (surface format, surface size/sample-count) that the forward, skinned-
+  mesh, billboard, fog-composite, wireframe, debug-line, and UI passes render
+  into instead of the swapchain view. A new resolve pass samples `scene_color`
+  and writes the swapchain — the sole swapchain writer after this change.
+  **Visual-parity gate:** with no active effect, the resolve is an identity blit
+  and output is byte-identical to today's direct-to-swapchain pipeline.
+- **Three effects in the resolve.** Flash (color over-blend), vignette (edge
+  tint/darken), screen shake (full-frame sample offset — correct now that the
+  resolve reads `scene_color`, not the target it writes). Effect math is ALU on
+  top of the identity blit; all-at-rest collapses to identity.
+- **Two net-new engine-owned slots** beside `screen.flash`: `screen.vignette`
+  (RGBA `Array` — rgb tint, a = strength) and `screen.shake` (`Array [dx, dy]`,
+  current frame offset in logical-reference px). Engine-writable, mod-readonly.
+- **Two decay drivers** mirroring `FlashDecay`: a vignette envelope and a shake
+  driver (decaying oscillation → current offset). dt-accumulated game time;
+  pause with game logic; clear on level unload.
+- **Two reactions** — `vignette { color?, strength, durationMs }` and
   `screenShake { amplitude, durationMs, frequency? }` — as `SystemReactionCommand`
-  variants + handlers (the `flashScreen` pattern), plus SDK constructors in
-  `sdk/lib/ui/reactions.{ts,luau}` + typedef emission + docs.
-- SE becomes the durable consumer of `screen.flash`; the effect composes on top
-  of the M9 fog already present in the frame.
+  variants + handlers (the `flashScreen` pattern), SDK constructors in
+  `sdk/lib/ui/reactions.{ts,luau}`, typedef emission, docs.
 
 ### Out of scope
 
-- **Sustained / continuous effects** bound to a live value (e.g. a vignette
-  that tracks `player.health` while low). v1 effects are one-shot reaction +
-  decay, exactly like flash. A continuous-bind effect model is deferred.
+- **HDR / tonemap.** `scene_color` is the surface (LDR) format so output stays
+  identical; an HDR upgrade + tonemap-in-the-resolve is M9's additive change.
+- **M10 post / other resolve effects** — they extend this resolve when they
+  land; SE ships only flash/vignette/shake.
+- **Sustained / continuous effects** bound to a live value (low-health vignette
+  that tracks `player.health`). v1 effects are one-shot reaction + decay, like
+  flash; a continuous-bind model is deferred.
 - **World-only shake** (HUD held stable). v1 shakes the whole composited frame
-  (scene + UI together) — the literal reading of a post-UI screen-space effect.
-- New effect kinds beyond flash / vignette / shake (no chromatic aberration,
-  scanlines, blur — those belong with the deferred post-processing milestone).
-- HDR / tonemap / an offscreen scene-compositor target shared across passes —
-  SE resolves into the existing swapchain target (see Open questions).
-- Removing E's demo flash panel — incidental; SE's pass is the durable consumer
-  and the demo may keep or drop its stand-in panel without affecting SE.
+  (the literal post-UI screen-space reading).
+- **Splitting `render/mod.rs`** — the retarget edits existing color-attachment
+  sites across the large frame function; a split of that function is out of scope.
 
 ## Acceptance criteria
 
-- [ ] With `screen.flash` / `screen.vignette` / `screen.shake` all at rest, the
-  screen-effects pass is not encoded and the rendered frame is unchanged from
-  the pre-SE pipeline (no regression, no idle cost).
-- [ ] A `flashScreen` reaction produces a full-screen color flash over **both**
-  scene and HUD that decays to transparent over `durationMs`; a `vignette`
-  reaction darkens/tints the screen edges to a peak then decays, center
-  unaffected; a `screenShake` reaction offsets the whole composited image with a
-  decaying oscillation that returns to exact center (zero offset) at end.
-- [ ] All three effects pause when game logic pauses (dt-accumulated time, never
-  wall clock) and compose simultaneously in the single pass.
-- [ ] The pass reads the three effect slots from the once-per-frame UI snapshot
-  only — never the live slot table; a test asserts the consumed values come from
-  `UiReadSnapshot`.
-- [ ] `screen.vignette` and `screen.shake` are engine-owned slots registered the
-  same way as `screen.flash`; a mod write to either warns and no-ops (the
-  engine-owned-slot rule).
-- [ ] `vignette` and `screenShake` exist in both TS and Luau SDK with emitted
-  typedefs, dispatch through the same `SystemReactionCommand` path as
-  `flashScreen`, and a descriptor without them keeps its pre-SE wire form
-  byte-identical (round-trip test).
-- [ ] The effect composes on top of the M9 fog already composited into the frame
-  (the pass samples the post-fog, post-UI image).
-- [ ] Demo in the dev map: an `onStateCrossing` at low health fires flash +
-  vignette; an entity hit event fires `screenShake` — manual verification.
+- [ ] All scene/UI passes render into `scene_color`; the resolve pass is the sole
+  swapchain writer. With `screen.flash`/`screen.vignette`/`screen.shake` all at
+  rest, output is byte-identical (or within a stated tolerance) to the pre-SE
+  pipeline — the foundation parity gate.
+- [ ] A `flashScreen` reaction produces a full-screen color flash over scene +
+  HUD decaying to transparent; `vignette` darkens/tints the edges to a peak then
+  decays, center unaffected; `screenShake` offsets the whole composited image
+  with a decaying oscillation that returns to exact center — shake is a true
+  resample of `scene_color` with no read/write hazard.
+- [ ] All three pause when game logic pauses (dt-accumulated time, never wall
+  clock) and compose simultaneously in the single resolve.
+- [ ] The resolve reads the three effect slots from the once-per-frame UI
+  snapshot only — never the live slot table (a test asserts the consumed values
+  come from `UiReadSnapshot`).
+- [ ] `screen.vignette`/`screen.shake` are engine-owned slots registered like
+  `screen.flash`; a mod write warns and no-ops.
+- [ ] `vignette`/`screenShake` exist in both TS + Luau SDK with emitted typedefs,
+  dispatch through the same `SystemReactionCommand` path as `flashScreen`, and a
+  descriptor without them keeps its pre-SE wire form byte-identical.
+- [ ] The effect composes on top of the M9 fog already in `scene_color` (samples
+  the post-fog, post-UI image).
+- [ ] Demo in the dev map: a low-health `onStateCrossing` fires flash + vignette;
+  an entity hit event fires `screenShake` — manual verification.
 - [ ] `docs/scripting-reference.md` covers the two new reactions.
 
 ## Tasks
 
-### Task 1: effect slots + decay drivers
-Register `screen.vignette` (RGBA `Array`) and `screen.shake` (`Array [dx,dy]`)
-as engine-owned slots beside `screen.flash`. Add two decay systems beside
-`flash_decay.rs` (`scripting/systems/`): a vignette envelope and a shake driver
-(owns frequency + amplitude → current decaying offset). Each is started by a
-drained command (Task 2), ticks at the game-logic stage on dt-accumulated time,
-writes its slot, and clears on level unload. Factor shared envelope/lifecycle
-helpers if it reads cleanly — three near-identical decays is a known smell.
-`Depends on` nothing.
+### Task 1: `scene_color` target + resolve pass (foundation)
+Allocate a renderer-owned `scene_color` color texture (surface format/size/sample
+count; resize with the surface). Re-point the color attachments of the scene and
+UI passes (`render/mod.rs`: forward clear, fog composite `:5317`, wireframe
+`:5352`, debug lines `:5395`, UI `ui.encode :5497`) from the swapchain `view` to
+`scene_color`. Add a `ScreenEffectsPass` (`render/screen_effects.rs`, new) +
+`src/shaders/screen_effects.wgsl` (fullscreen-triangle, the `fog_composite`
+precedent) that samples `scene_color` and writes `view`; encoded after
+`ui.encode`, before timing resolve (`:5511`). Identity blit when no effect input
+is bound. Parity gate: byte-identical output. `Depends on` nothing.
 
-### Task 2: reactions + commands + SDK
-Add `SystemReactionCommand::Vignette { color, strength, duration_ms }` and
-`::ScreenShake { amplitude, duration_ms, frequency }` beside `FlashScreen`;
-register `vignette` / `screenShake` handlers (the `flashScreen:211` pattern)
-pushing those commands; drain them to start Task 1's drivers. SDK constructors
-in `sdk/lib/ui/reactions.{ts,luau}`, barrel export, typedef emission, docs.
-`Depends on` Task 1. **Wave seam (G2):** coordinate `scripting/typedef.rs`
-SDK-block and `sdk/lib/index.ts` barrel edits with G2 (different sections);
-regenerate typedefs after both land.
+### Task 2: effect slots + decay drivers
+Register `screen.vignette` + `screen.shake` engine-owned slots beside
+`screen.flash`. Add a vignette-envelope and a shake driver beside `flash_decay.rs`
+(`scripting/systems/`), each started by a drained command (Task 3), ticking at
+the game-logic stage on dt-accumulated time, writing its slot, clearing on level
+unload. Factor shared envelope/lifecycle helpers if it reads cleanly. `Depends on`
+nothing — concurrent with Task 1.
 
-### Task 3: screen-effects pass + shader
-`ScreenEffectsPass` owned by `Renderer`, `screen_effects.wgsl` in `src/shaders/`
-(fullscreen-triangle, the `fog_composite` precedent). Reads the three effect
-slots from the UI snapshot into a uniform; one fullscreen draw applies shake
-(sample offset), vignette (edge tint/darken), flash (color over-blend); encoded
-after `ui.encode` (`render/mod.rs:5505`), before timing resolve (`:5511`).
-Skips encoding when all three slots are at rest. Resample mechanism per Open
-questions. `Depends on` nothing structurally (reads slots by name, absent =
-at-rest) — concurrent with Task 1.
+### Task 3: reactions + commands + SDK
+Add `SystemReactionCommand::Vignette`/`::ScreenShake` beside `FlashScreen`;
+register `vignette`/`screenShake` handlers (the `flashScreen:211` pattern)
+pushing those commands; drain → start Task 2's drivers. SDK constructors in
+`sdk/lib/ui/reactions.{ts,luau}`, barrel export, typedef emission, docs.
+`Depends on` Task 2. **Wave seam (G2):** coordinate `scripting/typedef.rs`
+reaction-block + `sdk/lib/index.ts` barrel with G2; regenerate once both land.
 
-### Task 4: snapshot wiring + demo
-Confirm the two new slots flow through `build_ui_slot_snapshot` into
-`UiReadSnapshot` (registered slots propagate automatically — verify, don't
-assume). Demo in the dev map: a low-health `onStateCrossing` firing flash +
-vignette and an entity hit event firing `screenShake`. Manual verification.
-`Depends on` Tasks 1–3.
+### Task 4: effects in the resolve + snapshot + demo
+Pack the three effect slots from `UiReadSnapshot` into the resolve's uniform and
+apply them in `screen_effects.wgsl` (shake = sample offset, vignette = edge
+tint, flash = over-blend). Confirm the two new slots flow through
+`build_ui_slot_snapshot`. Demo: a low-health crossing firing flash + vignette and
+an entity hit firing `screenShake`. Manual verification. `Depends on` Tasks 1–3.
 
 ## Sequencing
 
-**Phase 1 (concurrent):** Task 1 (slots + decay, scripting/systems), Task 3
-(pass + shader, renderer) — disjoint files.
-**Phase 2 (sequential):** Task 2 — consumes Task 1's driver entry points.
+**Phase 1 (concurrent):** Task 1 (renderer foundation), Task 2 (slots + decay) — disjoint files.
+**Phase 2 (sequential):** Task 3 — consumes Task 2's driver entry points.
 **Phase 3 (sequential):** Task 4 — consumes Tasks 1–3.
-**Wave seam (G2):** Task 2 shares `scripting/typedef.rs` (reaction block) and
-`sdk/lib/index.ts` (barrel) with G2's widget-type edits — different sections.
-Coordinate and regenerate typedefs once both land. SE touches no
-`render/ui/descriptor.rs` or tree-bridge code (G2-only), so there is no
-descriptor conflict.
+**Wave seam (G2):** Task 3 shares `scripting/typedef.rs` (reaction block) and
+`sdk/lib/index.ts` (barrel) with G2's widget edits — different sections.
+Coordinate; regenerate typedefs once both land. SE touches no
+`render/ui/descriptor.rs` or tree-bridge code (G2-only).
 
 ## Rough sketch
 
-- Pass + shader: `render/screen_effects.rs` (new, Renderer-owned) +
+- Target + resolve: `render/screen_effects.rs` (new, Renderer-owned) +
   `src/shaders/screen_effects.wgsl`; mirrors `FogPass.composite_pipeline` /
-  `fog_composite.wgsl`. Uniform: `{ flash: vec4, vignette: vec4, shake: vec2,
-  _pad }` packed from the snapshot.
+  `fog_composite.wgsl` (`draw(0..3, 0..1)`, no vertex buffer). Uniform `{ flash:
+  vec4, vignette: vec4, shake: vec2, _pad }` packed from the snapshot.
+- `scene_color`: surface format/size/sample-count; lives beside the depth target
+  in the renderer, recreated on resize.
 - Slots + decay: `scripting/systems/{vignette_decay,shake_decay}.rs` beside
-  `flash_decay.rs`; `screen.vignette` / `screen.shake` registered like
-  `FLASH_SLOT`.
-- Reactions: `Vignette` / `ScreenShake` in
-  `scripting/reactions/system_commands.rs`; constructors in
-  `sdk/lib/ui/reactions.{ts,luau}`.
+  `flash_decay.rs`; reactions in `scripting/reactions/system_commands.rs`.
 
 ## Boundary inventory
 
@@ -156,19 +156,14 @@ descriptor conflict.
 
 ## Open questions
 
-- **Resample mechanism (the cross-milestone merge).** Shake must sample the
-  composited frame at an offset — a pass can't read and write the same
-  attachment. Two paths: (a) **copy** `view`→a temp texture, then the SE pass
-  samples the temp and writes `view` (localized to SE; needs `COPY_SRC` on the
-  surface or the temp); (b) an **offscreen frame target** every prior pass
-  renders into, resolved to the swapchain by the SE pass (the durable compositor
-  seam M9 tonemap / M10 post would share, but re-targets every pass — invasive).
-  Recommend (a) for this lean first slice and fold into (b) when a second
-  consumer (tonemap) actually needs the shared resolve — the project's
-  "defer until duplication is real" rule. Flag for implementability review and
-  M9/M10 coordination.
-- **Flash blend vs. overlay.** Flash and vignette need no resample (overlay
-  blend); only shake does. The pass may fast-path to an overlay-only draw when
-  `screen.shake` is at rest (skip the copy). Optimization, not required for v1.
-- **Sustained vignette** (track a value while a condition holds) is deferred to
-  a future continuous-effect model; v1 is one-shot decay only.
+- **MSAA / format.** `scene_color` must match the surface sample count (resolve
+  semantics if MSAA) and format. v1 = surface format (LDR), identical output;
+  M9's HDR upgrade is additive (swap the format, add tonemap into the resolve).
+  Confirm the surface's current sample count at implementation.
+- **Idle cost.** Routing through `scene_color` adds one fullscreen resolve every
+  frame even at rest — the standard cost of a compositor, accepted. The effect
+  math is ALU on top; no extra pass when effects are active.
+- **Cross-milestone coordination.** SE owns the resolve; M9 tonemap and M10 post
+  must *extend* it (one resolve), not stack parallel resolves. Flag for M9/M10.
+- **Sustained vignette** (track a value while a condition holds) is deferred to a
+  future continuous-effect model; v1 is one-shot decay.

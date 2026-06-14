@@ -24,8 +24,16 @@ resolve (`:5511`). The composited frame (scene + fog + UI) is in `view`.
 
 The roadmap calls SE "the one real cross-milestone merge … scene compositor
 where M9 tonemap/fog and M10 post live." Reality: that shared compositor
-target does **not** exist yet; fog composites straight into `view`. SE either
-introduces a frame-resolve seam or copies `view`. See spec open questions.
+target does **not** exist yet; fog composites straight into `view`.
+
+**Owner decision (2026-06-14): SE builds the offscreen `scene_color` target +
+resolve pass now** — the durable seam the goal exists to establish — rather than
+a copy-based deferral. A localized `view`→temp copy would be likely-throwaway
+(M9 tonemap replaces it) and carries a swapchain `COPY_SRC` portability risk;
+the offscreen target makes shake a correct/portable resample and lets M9 tonemap
+extend the same resolve (additive: swap `scene_color` to HDR, fold tonemap in).
+SE re-points the scene/UI color attachments from `view` to `scene_color`; the
+resolve pass becomes the sole swapchain writer (identity blit when no effect).
 
 ## UI pass
 

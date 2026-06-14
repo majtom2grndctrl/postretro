@@ -20,8 +20,28 @@ optional JSX-via-SWC. Against source:
 | Text-alias chokepoint (`LocalizedText`) | **Shipped** by G1a — `sdk/lib/ui/text.ts:12` `export type LocalizedText = string`. G2's i18n note builds on it; no new work. |
 
 Net-new substance for G2: **`labelledBy` + `Announce` + verification/fixtures.**
-Small. Worth telling the owner (may even fold into BIS) — but a clean
-correct-by-construction gate before BIS authors built-in screens.
+**Owner decision (2026-06-14): build the full a11y *metadata* foundation**, not
+the lean v1 — the cuts (image alt/decorative, modal name+role, role/state
+vocabulary) are foundation-shaped (BIS authors against them), so completeness now
+beats a second BIS retrofit. Consumption (screen reader) stays deferred; G2 ships
+the complete descriptor *shape* nothing reads yet, plus `disabled` honoring (a
+no-op disabled is a footgun).
+
+## Expanded-scope anchors
+
+- `AnchoredTree` envelope — `descriptor.rs:193` (beside `capture_mode:200`,
+  `initial_focus:202`). Home for `accessible_name` + `role`.
+- `ImageWidget` — `descriptor.rs:522` (`asset`, `id`, `focus_neighbors`; no name).
+  Gets `label` xor `decorative`.
+- `CaptureMode` — `descriptor.rs:55`; `Widget` enum — `:255`.
+- Focus engine — `input/ui_focus.rs` (1753 lines): `move_focus:443`,
+  `initial_focus_id:619`, activation (`focused_on_press`). Where `disabled` is
+  honored (skip nav/initial-focus, block activation) via the focus-rect list.
+- **`descriptor.rs` is 1574 lines** — ~2× the split-before-extend threshold. G2
+  adds fields across ~6 structs + envelope + two enums + a variant → split first
+  (Task 0), behavior-preserving, round-trip tests (`:742-848`) stay byte-identical.
+- `typedef.rs` 3673 lines, `ui_focus.rs` 1753 — large but tabular/test-heavy;
+  extend in place.
 
 ## SDK layout (G1a)
 

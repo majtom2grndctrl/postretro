@@ -14,6 +14,7 @@ use super::UiReadSnapshot;
 use super::UiTreeEntry;
 use super::descriptor::AnchoredTree;
 use crate::input::UiCaptureMode;
+use crate::scripting::data_descriptors::RegisteredUiTree;
 
 /// Scope tier a registered tree belongs to. Precedence is **engine < mod**: a mod
 /// tree registered under a name already held by an engine built-in *shadows* the
@@ -184,6 +185,35 @@ impl ModalStack {
     /// built-in trees by name.
     pub(crate) fn registry_mut(&mut self) -> &mut UiTreeRegistry {
         &mut self.registry
+    }
+
+    /// Drain script-authored trees parsed off a manifest result into the registry
+    /// at the given scope tier, carrying each entry's `always_on` attribute. This
+    /// is the G1b Task 3 bridge: it feeds the trees `setupMod` / `setupLevel`
+    /// returned (via the `RegisteredUiTree` envelopes Task 1 parsed) into the
+    /// tiered registry Task 2 built, at the register→VM-drop lifecycle point —
+    /// before the mod-init / data-script VM context drops.
+    ///
+    /// Both mod-scope and level-scope trees register at `ScopeTier::Mod` today: a
+    /// mod-tier registration under an existing engine name shadows it (last-wins +
+    /// one-line warning, in `UiTreeRegistry::register`). The per-level tier is
+    /// DEFERRED — single-level lifetime with no runtime unload site — so level
+    /// trees go into the persistent (`Mod`) registry alongside mod trees. A
+    /// duplicate name follows the same last-wins behavior and never aborts boot or
+    /// level load.
+    pub(crate) fn register_script_trees(
+        &mut self,
+        trees: impl IntoIterator<Item = RegisteredUiTree>,
+        tier: ScopeTier,
+    ) {
+        for RegisteredUiTree {
+            name,
+            tree,
+            always_on,
+        } in trees
+        {
+            self.registry.register(name, tree, tier, always_on);
+        }
     }
 
     /// Read a registered tree by `name`, or `None` if no such name is registered.
@@ -712,6 +742,112 @@ mod tests {
             stack.active_text_entry_target(),
             None,
             "an always-on layer never opens text entry, even if it declares a target",
+        );
+    }
+
+    // ----- Script-tree drain into the tiered registry (Task 3) -----
+
+    /// A `RegisteredUiTree` envelope as the manifest parsers produce it: a named,
+    /// identified tree plus its `always_on` registration attribute. Mirrors what
+    /// `setupMod` / `setupLevel` return through `RegisteredUiTree` (Task 1).
+    fn registered(name: &str, root_id: &str, always_on: bool) -> RegisteredUiTree {
+        RegisteredUiTree {
+            name: name.to_string(),
+            tree: identified(CaptureMode::Passthrough, root_id),
+            always_on,
+        }
+    }
+
+    #[test]
+    fn setup_mod_tree_is_resolvable_at_mod_tier_after_registration() {
+        // A `setupMod`-registered tree resolves by name through the tiered
+        // registry after mod-init, at the mod tier — the cold-boot drain point
+        // feeding the by-name render resolution seam.
+        let mut stack = ModalStack::new();
+        stack.register_script_trees(
+            vec![registered("objectiveBoard", "modBoard", false)],
+            ScopeTier::Mod,
+        );
+
+        assert_eq!(
+            stack.registry.tier_of("objectiveBoard"),
+            Some(ScopeTier::Mod)
+        );
+        assert_eq!(
+            stack.tree("objectiveBoard").and_then(root_id),
+            Some("modBoard"),
+            "a setupMod tree resolves by name through the registry after the drain",
+        );
+    }
+
+    #[test]
+    fn mod_tree_under_engine_hud_name_shadows_the_engine_hud() {
+        // The reskin path: an engine HUD registered at boot, then a mod tree
+        // drained under the SAME name from `setupMod`, shadows it (last-wins).
+        // The shadow warning is emitted by `UiTreeRegistry::register` (Task 2);
+        // here we prove the drain actually registers the mod tree at `Mod` tier
+        // under that name so the shadow takes effect.
+        let mut stack = ModalStack::new();
+        stack.registry_mut().register(
+            "hud",
+            identified(CaptureMode::Passthrough, "engineHud"),
+            ScopeTier::Engine,
+            true,
+        );
+
+        stack.register_script_trees(vec![registered("hud", "modHud", true)], ScopeTier::Mod);
+
+        assert_eq!(stack.registry.tier_of("hud"), Some(ScopeTier::Mod));
+        assert_eq!(
+            stack.tree("hud").and_then(root_id),
+            Some("modHud"),
+            "the drained mod tree shadows the engine HUD under the same name",
+        );
+    }
+
+    #[test]
+    fn setup_level_trees_register_into_the_persistent_mod_tier() {
+        // Level-scope trees register into the persistent (`Mod`) tier today — the
+        // per-level tier is DEFERRED. After the level-load drain they are
+        // resolvable by name, exactly like mod-scope trees.
+        let mut stack = ModalStack::new();
+        stack.register_script_trees(
+            vec![registered("levelBanner", "banner", true)],
+            ScopeTier::Mod,
+        );
+
+        assert_eq!(stack.registry.tier_of("levelBanner"), Some(ScopeTier::Mod));
+        assert_eq!(
+            stack.tree("levelBanner").and_then(root_id),
+            Some("banner"),
+            "a setupLevel tree is resolvable in the persistent tier after level load",
+        );
+    }
+
+    #[test]
+    fn duplicate_drained_name_is_last_wins_and_never_aborts() {
+        // A malformed/duplicate registration must not abort the drain: a second
+        // entry under the same name wins (last-wins), the first is replaced, and
+        // the whole drain completes for the remaining entries.
+        let mut stack = ModalStack::new();
+        stack.register_script_trees(
+            vec![
+                registered("dup", "first", false),
+                registered("dup", "second", false),
+                registered("other", "kept", false),
+            ],
+            ScopeTier::Mod,
+        );
+
+        assert_eq!(
+            stack.tree("dup").and_then(root_id),
+            Some("second"),
+            "a duplicate name within one drain is last-wins, not an abort",
+        );
+        assert_eq!(
+            stack.tree("other").and_then(root_id),
+            Some("kept"),
+            "entries after a duplicate still register — the drain never aborts",
         );
     }
 }

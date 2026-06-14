@@ -808,8 +808,8 @@ impl SwayParams {
 /// A script-registered UI tree: a named [`AnchoredTree`] plus the `alwaysOn`
 /// registration attribute. Drained from the `uiTrees` field of `setupMod()`
 /// (mod scope) and `setupLevel()` (level scope) returns. G1b Task 1 parses and
-/// holds these on the manifest results; the register→VM-drop lifecycle that
-/// installs them into the app-side registry is later-task work.
+/// holds these on the manifest results; G1b Task 3 drains them into the app-side
+/// `UiTreeRegistry` at `ScopeTier::Mod`, before the authoring VM drops.
 /// See: context/lib/ui.md §1.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct RegisteredUiTree {

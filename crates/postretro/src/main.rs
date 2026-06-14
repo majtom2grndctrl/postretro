@@ -2535,6 +2535,16 @@ impl App {
                             data_registry.upsert_entity_type(desc);
                         }
                         drop(data_registry);
+
+                        // Register mod-scope UI trees into the tiered registry at
+                        // `Mod` tier, before the mod-init VM context drops (no new
+                        // lifecycle stage; ui.md §5). A mod tree under an engine
+                        // built-in's name shadows it (last-wins + warning); a
+                        // duplicate never aborts boot. G1b Task 3.
+                        self.modal_stack.register_script_trees(
+                            std::mem::take(&mut manifest.ui_trees),
+                            render::ui::modal_stack::ScopeTier::Mod,
+                        );
                     }
 
                     if self
@@ -3273,6 +3283,16 @@ impl App {
                     .run_data_script(data_script, &self.content_root);
                 manifest.reactions =
                     validate_sequence_primitives(manifest.reactions, &self.sequence_registry);
+                // Register level-scope UI trees before the data-script VM context
+                // drops and before the manifest is consumed by the data registry.
+                // Level trees go into the persistent (`Mod`) tier today — the
+                // per-level tier is DEFERRED (single-level lifetime, no runtime
+                // unload site). Last-wins on a duplicate name; never aborts level
+                // load. G1b Task 3.
+                self.modal_stack.register_script_trees(
+                    std::mem::take(&mut manifest.ui_trees),
+                    render::ui::modal_stack::ScopeTier::Mod,
+                );
                 self.script_ctx
                     .data_registry
                     .borrow_mut()

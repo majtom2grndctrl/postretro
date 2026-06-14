@@ -1384,4 +1384,159 @@ mod tests {
             );
         }
     }
+
+    // --- M13 G1a, Task 3: TS/Luau widget-factory JSON parity ---
+    //
+    // The AC requires the TS and Luau widget/layout factories to emit IDENTICAL
+    // JSON for identical inputs. The Luau factories run here under a raw `mlua`
+    // VM; each result table is converted with the engine's `lua_to_json` walker
+    // (the same conversion the Task 5 bridge will use) and compared — as parsed
+    // `serde_json::Value`, so table key order is irrelevant — to the JSON the TS
+    // factory emits for the same call (captured by running the TS factories under
+    // bun; see the round-trip cases in `render::ui::descriptor`).
+    #[test]
+    fn luau_widget_factories_emit_json_identical_to_typescript() {
+        const WIDGETS_SRC: &str = include_str!("../../../../sdk/lib/ui/widgets.luau");
+        const LAYOUT_SRC: &str = include_str!("../../../../sdk/lib/ui/layout.luau");
+
+        let lua = mlua::Lua::new();
+        let widgets: mlua::Table = lua
+            .load(WIDGETS_SRC)
+            .set_name("widgets.luau")
+            .eval()
+            .expect("widgets.luau must evaluate to a module table");
+        let layout: mlua::Table = lua
+            .load(LAYOUT_SRC)
+            .set_name("layout.luau")
+            .eval()
+            .expect("layout.luau must evaluate to a module table");
+        lua.globals().set("W", widgets).unwrap();
+        lua.globals().set("L", layout).unwrap();
+
+        // (lua expression producing a widget table, expected JSON == TS output)
+        let cases: &[(&str, &str)] = &[
+            (
+                r#"W.Text({ content = "hello" })"#,
+                r#"{"kind":"text","content":"hello","fontSize":12,"color":[1,1,1,1]}"#,
+            ),
+            (
+                r#"W.Text({ content = "0", fontSize = 18, color = {1,1,1,1}, bind = { slot = "player.health", format = "HP {}" } })"#,
+                r#"{"kind":"text","content":"0","fontSize":18,"color":[1,1,1,1],"bind":{"slot":"player.health","format":"HP {}"}}"#,
+            ),
+            (
+                r#"W.Text({ content = "0", fontSize = 18, color = {1,1,1,1}, bind = { slot = "player.health", tween = { durationMs = 1200, easing = "easeOut", from = 0 } } })"#,
+                r#"{"kind":"text","content":"0","fontSize":18,"color":[1,1,1,1],"bind":{"slot":"player.health","tween":{"durationMs":1200,"easing":"easeOut","from":0}}}"#,
+            ),
+            (
+                r#"W.Text({ content = "0", fontSize = 18, color = {1,1,1,1}, bind = { slot = "player.health" }, styleRanges = { max = 100, entries = { { upTo = 0.25, color = "critical" }, { color = "ok" } } } })"#,
+                r#"{"kind":"text","content":"0","fontSize":18,"color":[1,1,1,1],"bind":{"slot":"player.health"},"styleRanges":{"max":100,"entries":[{"upTo":0.25,"color":"critical"},{"color":"ok"}]}}"#,
+            ),
+            (
+                r#"W.Panel({ fill = {0.1,0.2,0.3,1}, border = { texture = "ui/frame", slice = {8,8,8,8}, tint = {1,1,1,1} } })"#,
+                r#"{"kind":"panel","fill":[0.1,0.2,0.3,1],"border":{"texture":"ui/frame","slice":[8,8,8,8],"tint":[1,1,1,1]}}"#,
+            ),
+            (
+                r#"W.Panel({ fill = {0.1,0.2,0.3,1} })"#,
+                r#"{"kind":"panel","fill":[0.1,0.2,0.3,1]}"#,
+            ),
+            (
+                r#"W.Panel({ fill = {0,0,0,1}, bind = { slot = "intro.flashColor", tween = { durationMs = 300, easing = "linear", from = {1,0,0,1} } } })"#,
+                r#"{"kind":"panel","fill":[0,0,0,1],"bind":{"slot":"intro.flashColor","tween":{"durationMs":300,"easing":"linear","from":[1,0,0,1]}}}"#,
+            ),
+            (
+                r#"W.Image({ asset = "ui/logo" })"#,
+                r#"{"kind":"image","asset":"ui/logo"}"#,
+            ),
+            (
+                r#"W.Spacer({ flexGrow = 1 })"#,
+                r#"{"kind":"spacer","flexGrow":1}"#,
+            ),
+            (
+                r#"W.Button({ id = "resume", label = "Resume", onPress = "resumeGame" })"#,
+                r#"{"kind":"button","id":"resume","label":"Resume","onPress":"resumeGame"}"#,
+            ),
+            (
+                r#"W.Button({ id = "a", label = "A", onPress = { name = "fa" } })"#,
+                r#"{"kind":"button","id":"a","label":"A","onPress":"fa"}"#,
+            ),
+            (
+                r#"W.Slider({ id = "vol", label = "Volume", bind = { slot = "audio.master" }, min = 0, max = 1, step = 0.1, capturesNav = {"nav.left","nav.right"} })"#,
+                r#"{"kind":"slider","id":"vol","label":"Volume","bind":{"slot":"audio.master"},"min":0,"max":1,"step":0.1,"capturesNav":["nav.left","nav.right"]}"#,
+            ),
+            (
+                r#"W.Bar({ bind = { slot = "player.health" }, max = 100, fill = {0,1,0,1}, background = {0.1,0.1,0.1,1} })"#,
+                r#"{"kind":"bar","bind":{"slot":"player.health"},"max":100,"fill":[0,1,0,1],"background":[0.1,0.1,0.1,1]}"#,
+            ),
+            (
+                r#"L.VStack({ gap = 4, padding = 8, align = "start" }, { W.Text({ content = "hi", fontSize = 12 }) })"#,
+                r#"{"kind":"vstack","gap":4,"padding":8,"align":"start","children":[{"kind":"text","content":"hi","fontSize":12,"color":[1,1,1,1]}]}"#,
+            ),
+            (
+                r#"L.Grid({ gap = 1, padding = 3, align = "stretch", cols = 2 }, { W.Image({ asset = "ui/icon" }) })"#,
+                r#"{"kind":"grid","gap":1,"padding":3,"align":"stretch","cols":2,"children":[{"kind":"image","asset":"ui/icon"}]}"#,
+            ),
+            (
+                // Detailed focus policy (wrap:false + repeat) + a child. (A child
+                // is present so `children` is an unambiguous array under the generic
+                // `lua_to_json` walker — an EMPTY Lua table is `{}`, not `[]`, a
+                // limitation the Task 5 bridge resolves by deserializing straight
+                // into the typed `ContainerWidget` rather than a generic `Value`.)
+                r#"L.Grid({ cols = 2, focus = { policy = "spatial", wrap = false, ["repeat"] = { initialDelayMs = 300, intervalMs = 80 } } }, { W.Image({ asset = "x" }) })"#,
+                r#"{"kind":"grid","gap":0,"padding":0,"align":"start","cols":2,"focus":{"policy":"spatial","wrap":false,"repeat":{"initialDelayMs":300,"intervalMs":80}},"children":[{"kind":"image","asset":"x"}]}"#,
+            ),
+        ];
+
+        for (expr, expected_ts) in cases {
+            let value: mlua::Value = lua
+                .load(&format!("return {expr}"))
+                .set_name("case")
+                .eval()
+                .unwrap_or_else(|e| panic!("luau factory call failed: {expr}\n{e}"));
+            let got = super::super::conv::lua_to_json(value)
+                .unwrap_or_else(|e| panic!("lua_to_json failed for {expr}: {e}"));
+            let expected: serde_json::Value =
+                serde_json::from_str(expected_ts).expect("TS expected JSON parses");
+            assert_eq!(
+                got, expected,
+                "Luau factory output differs from TS for `{expr}`:\nluau: {got}\nts:   {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn luau_widget_factories_reject_invalid_props_with_field_named_errors() {
+        const WIDGETS_SRC: &str = include_str!("../../../../sdk/lib/ui/widgets.luau");
+        const LAYOUT_SRC: &str = include_str!("../../../../sdk/lib/ui/layout.luau");
+        let lua = mlua::Lua::new();
+        let widgets: mlua::Table = lua.load(WIDGETS_SRC).eval().unwrap();
+        let layout: mlua::Table = lua.load(LAYOUT_SRC).eval().unwrap();
+        lua.globals().set("W", widgets).unwrap();
+        lua.globals().set("L", layout).unwrap();
+
+        // (lua call expected to error, substring the error must name)
+        let cases: &[(&str, &str)] = &[
+            (r#"W.Text({})"#, "content"),
+            (r#"W.Image({ asset = "" })"#, "asset"),
+            (
+                r#"W.Button({ id = "x", label = "X", onPress = 42 })"#,
+                "onPress",
+            ),
+            (
+                r#"W.Slider({ id = "v", label = "V", min = 0, max = 1, step = 1 })"#,
+                "bind",
+            ),
+            (r#"L.Grid({ cols = 0 }, {})"#, "cols"),
+        ];
+        for (expr, field) in cases {
+            let err = lua
+                .load(&format!("return {expr}"))
+                .eval::<mlua::Value>()
+                .expect_err(&format!("expected `{expr}` to error"));
+            let msg = err.to_string();
+            assert!(
+                msg.contains(field),
+                "error for `{expr}` must name `{field}`, got: {msg}"
+            );
+        }
+    }
 }

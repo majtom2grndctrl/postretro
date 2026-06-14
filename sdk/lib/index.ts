@@ -39,6 +39,42 @@ export { defineReaction, defineEntity } from "./data_script";
 
 export type { LocalizedText } from "./ui/text";
 
+export type {
+  WidgetColor,
+  WidgetSpacing,
+  WidgetAlign,
+  WidgetEasing,
+  StoreHandleRef,
+  NumberTween,
+  ColorTween,
+  TextBindProp,
+  PanelBindProp,
+  SliderBindProp,
+  StyleRangeEntry,
+  StyleRangesProp,
+  BorderProp,
+  FocusNeighborsProp,
+  RepeatPolicyProp,
+  ReactionHandleRef,
+  WidgetDescriptor,
+  TextProps,
+  PanelProps,
+  ImageProps,
+  SpacerProps,
+  ButtonProps,
+  SliderProps,
+  BarProps,
+} from "./ui/widgets";
+export { Text, Panel, Image, Spacer, Button, Slider, Bar } from "./ui/widgets";
+
+export type {
+  FocusKind,
+  FocusPolicyProp,
+  StackProps,
+  GridProps,
+} from "./ui/layout";
+export { VStack, HStack, Grid } from "./ui/layout";
+
 export type { CrossingCondition, CrossingDescriptor } from "./ui/reactions";
 export {
   onStateCrossing,

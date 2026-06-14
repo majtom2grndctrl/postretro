@@ -375,6 +375,13 @@ pub struct TextTween {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PanelWidget {
     pub fill: ColorValue,
+    // `default` (without `skip_serializing_if`) so an absent `border` key
+    // deserializes to `None` — the SDK Luau factory cannot emit an explicit
+    // `null` table value (the lua→json walker drops nil-valued keys), so a
+    // border-less panel omits the key. Serialization is unchanged: `None` still
+    // emits `border: null` (no skip), so every existing fixture round-trips
+    // byte-identically; only the *absent-key* input is newly accepted.
+    #[serde(default)]
     pub border: Option<Border>,
     /// Authored stable id (M13 Goal F, Task 3). See `TextWidget::id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1229,5 +1236,114 @@ mod tests {
         assert_eq!(reserialized, plain);
         assert!(!reserialized.contains("styleRanges"));
         assert!(!reserialized.contains("\"id\""));
+    }
+
+    // --- M13 G1a, Task 3: SDK widget/layout factory output validation ---
+    //
+    // The Task 5 deserialization bridge does not exist yet, so the SDK factories
+    // (sdk/lib/ui/widgets.{ts,luau}, layout.{ts,luau}) are validated here by
+    // round-tripping their EXACT emitted JSON through serde: each string below is
+    // the literal output of the matching TS factory call (captured by running the
+    // factories under bun). JS emits bare integers (`1`, not `1.0`) for whole
+    // floats and OMITS an absent panel `border`; deserializing into the `Widget`
+    // variant and re-serializing must yield the canonical wire form. This proves
+    // factory output is a valid descriptor and resolves to the locked wire shape.
+    //
+    // Each tuple is (factory-emitted JSON, canonical re-serialized JSON).
+    #[test]
+    fn sdk_factory_output_round_trips_to_canonical_wire_form() {
+        let cases: &[(&str, &str)] = &[
+            // Text() with defaults (fontSize 12, white color).
+            (
+                r#"{"kind":"text","content":"hello","fontSize":12,"color":[1,1,1,1]}"#,
+                r#"{"kind":"text","content":"hello","fontSize":12.0,"color":[1.0,1.0,1.0,1.0]}"#,
+            ),
+            // Text() with a bind carrying slot + format.
+            (
+                r#"{"kind":"text","content":"0","fontSize":18,"color":[1,1,1,1],"bind":{"slot":"player.health","format":"HP {}"}}"#,
+                r#"{"kind":"text","content":"0","fontSize":18.0,"color":[1.0,1.0,1.0,1.0],"bind":{"slot":"player.health","format":"HP {}"}}"#,
+            ),
+            // Text() bind with a tween (number-shape from).
+            (
+                r#"{"kind":"text","content":"0","fontSize":18,"color":[1,1,1,1],"bind":{"slot":"player.health","tween":{"durationMs":1200,"easing":"easeOut","from":0}}}"#,
+                r#"{"kind":"text","content":"0","fontSize":18.0,"color":[1.0,1.0,1.0,1.0],"bind":{"slot":"player.health","tween":{"durationMs":1200.0,"easing":"easeOut","from":0.0}}}"#,
+            ),
+            // Text() with styleRanges (token colors).
+            (
+                r#"{"kind":"text","content":"0","fontSize":18,"color":[1,1,1,1],"bind":{"slot":"player.health"},"styleRanges":{"max":100,"entries":[{"upTo":0.25,"color":"critical"},{"color":"ok"}]}}"#,
+                r#"{"kind":"text","content":"0","fontSize":18.0,"color":[1.0,1.0,1.0,1.0],"bind":{"slot":"player.health"},"styleRanges":{"max":100.0,"entries":[{"upTo":0.25,"color":"critical"},{"color":"ok"}]}}"#,
+            ),
+            // Panel() with a border.
+            (
+                r#"{"kind":"panel","fill":[0.1,0.2,0.3,1],"border":{"texture":"ui/frame","slice":[8,8,8,8],"tint":[1,1,1,1]}}"#,
+                r#"{"kind":"panel","fill":[0.1,0.2,0.3,1.0],"border":{"texture":"ui/frame","slice":[8.0,8.0,8.0,8.0],"tint":[1.0,1.0,1.0,1.0]}}"#,
+            ),
+            // Panel() with NO border: the factory omits the key; serde defaults it
+            // to None and re-serializes as `border:null` (the canonical form).
+            (
+                r#"{"kind":"panel","fill":[0.1,0.2,0.3,1]}"#,
+                r#"{"kind":"panel","fill":[0.1,0.2,0.3,1.0],"border":null}"#,
+            ),
+            // Panel() bind with a color-shape tween `from`.
+            (
+                r#"{"kind":"panel","fill":[0,0,0,1],"bind":{"slot":"intro.flashColor","tween":{"durationMs":300,"easing":"linear","from":[1,0,0,1]}}}"#,
+                r#"{"kind":"panel","fill":[0.0,0.0,0.0,1.0],"border":null,"bind":{"slot":"intro.flashColor","tween":{"durationMs":300.0,"easing":"linear","from":[1.0,0.0,0.0,1.0]}}}"#,
+            ),
+            // Image() — no bind.
+            (
+                r#"{"kind":"image","asset":"ui/logo"}"#,
+                r#"{"kind":"image","asset":"ui/logo"}"#,
+            ),
+            // Spacer() with explicit flexGrow.
+            (
+                r#"{"kind":"spacer","flexGrow":1}"#,
+                r#"{"kind":"spacer","flexGrow":1.0}"#,
+            ),
+            // Button() with a bare-name onPress.
+            (
+                r#"{"kind":"button","id":"resume","label":"Resume","onPress":"resumeGame"}"#,
+                r#"{"kind":"button","id":"resume","label":"Resume","onPress":"resumeGame"}"#,
+            ),
+            // Button() with a reaction-handle onPress (factory read `.name` → "fa").
+            (
+                r#"{"kind":"button","id":"a","label":"A","onPress":"fa"}"#,
+                r#"{"kind":"button","id":"a","label":"A","onPress":"fa"}"#,
+            ),
+            // Slider() with capturesNav.
+            (
+                r#"{"kind":"slider","id":"vol","label":"Volume","bind":{"slot":"audio.master"},"min":0,"max":1,"step":0.1,"capturesNav":["nav.left","nav.right"]}"#,
+                r#"{"kind":"slider","id":"vol","label":"Volume","bind":{"slot":"audio.master"},"min":0.0,"max":1.0,"step":0.1,"capturesNav":["nav.left","nav.right"]}"#,
+            ),
+            // Bar() plain.
+            (
+                r#"{"kind":"bar","bind":{"slot":"player.health"},"max":100,"fill":[0,1,0,1],"background":[0.1,0.1,0.1,1]}"#,
+                r#"{"kind":"bar","bind":{"slot":"player.health"},"max":100.0,"fill":[0.0,1.0,0.0,1.0],"background":[0.1,0.1,0.1,1.0]}"#,
+            ),
+            // VStack() with one child.
+            (
+                r#"{"kind":"vstack","gap":4,"padding":8,"align":"start","children":[{"kind":"text","content":"hi","fontSize":12,"color":[1,1,1,1]}]}"#,
+                r#"{"kind":"vstack","gap":4.0,"padding":8.0,"align":"start","children":[{"kind":"text","content":"hi","fontSize":12.0,"color":[1.0,1.0,1.0,1.0]}]}"#,
+            ),
+            // Grid() with one child.
+            (
+                r#"{"kind":"grid","gap":1,"padding":3,"align":"stretch","cols":2,"children":[{"kind":"image","asset":"ui/icon"}]}"#,
+                r#"{"kind":"grid","gap":1.0,"padding":3.0,"align":"stretch","cols":2,"children":[{"kind":"image","asset":"ui/icon"}]}"#,
+            ),
+            // Grid() with a detailed focus policy (wrap:false + repeat) and defaults.
+            (
+                r#"{"kind":"grid","gap":0,"padding":0,"align":"start","cols":2,"focus":{"policy":"spatial","wrap":false,"repeat":{"initialDelayMs":300,"intervalMs":80}},"children":[]}"#,
+                r#"{"kind":"grid","gap":0.0,"padding":0.0,"align":"start","cols":2,"focus":{"policy":"spatial","wrap":false,"repeat":{"initialDelayMs":300.0,"intervalMs":80.0}},"children":[]}"#,
+            ),
+        ];
+
+        for (emitted, canonical) in cases {
+            let widget: Widget = serde_json::from_str(emitted)
+                .unwrap_or_else(|e| panic!("factory output must deserialize: {emitted}\n{e}"));
+            let reserialized = serde_json::to_string(&widget).expect("must serialize");
+            assert_eq!(
+                &reserialized, canonical,
+                "factory output did not resolve to the canonical wire form:\nemitted:    {emitted}\nexpected:   {canonical}\nactual:     {reserialized}"
+            );
+        }
     }
 }

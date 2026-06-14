@@ -1,0 +1,641 @@
+// UI widget factories (M13 G1a, Task 3): capitalized constructors for the seven
+// non-container widget kinds — Text, Panel, Image, Button, Slider, Bar, Spacer.
+// (Containers — VStack/HStack/Grid — live in `./layout`.) Each mirrors the
+// `emitter()` precedent: a `Props` object validated synchronously, throwing a
+// field-named `Error`, returning a plain descriptor object whose keys are the
+// camelCase wire form of the matching `render/ui/descriptor.rs` `Widget` variant.
+//
+// Pure builders: constructing a widget has no engine side effect — the FFI
+// boundary is the eventual `return` of the authored tree. Bound props accept
+// Task 1 store handles (a branded slot-name string) or an explicit bind object;
+// `Button.onPress` accepts a Task 1 reaction handle or a bare name string.
+// See: context/lib/ui.md · context/lib/scripting.md §7
+
+import type { LocalizedText } from "./text";
+
+// --- Shared wire-shape aliases ----------------------------------------------
+
+/**
+ * A widget color slot: an inline linear-RGBA tuple (`[r, g, b, a]`, 0–1) or a
+ * theme-token name resolved against the active theme. Mirrors `descriptor.rs`
+ * `ColorValue` (untagged: bare array or bare string).
+ */
+export type WidgetColor = [number, number, number, number] | string;
+
+/**
+ * A spacing slot (gap/padding): an inline logical-px number or a theme-token
+ * name. Mirrors `descriptor.rs` `SpacingValue` (untagged: bare number or string).
+ */
+export type WidgetSpacing = number | string;
+
+/** Cross-axis alignment of a container's children. Mirrors `Align`. */
+export type WidgetAlign = "start" | "center" | "end" | "stretch";
+
+/** Easing curve for a value tween. Mirrors `descriptor.rs` `Easing`. */
+export type WidgetEasing = "linear" | "easeIn" | "easeOut" | "easeInOut";
+
+/**
+ * A branded store-handle value (Task 1 `StateValue<T>` / the `.get()` result of
+ * `ReadonlyStateValue<T>`). It is a branded `string` carrying the dotted slot
+ * name, so a factory bind prop reads the slot name straight off it. Declared
+ * structurally here (the SDK lib has no cyclic import to the global typedef) as
+ * "a string the engine brands"; an explicit bind object is the alternative.
+ */
+export type StoreHandleRef = string & { readonly __brand?: "StateValue" };
+
+/**
+ * Value-tween config for a text/slider/bar bind (number shape). Mirrors
+ * `descriptor.rs` `TextTween`: eases the resolved numeric value toward each new
+ * target over `durationMs` using `easing`. `from` is the optional explicit start
+ * value for the first tween.
+ */
+export type NumberTween = { durationMs: number; easing: WidgetEasing; from?: number };
+
+/**
+ * Value-tween config for a panel bind (color shape). Mirrors `descriptor.rs`
+ * `PanelTween`: differs from `NumberTween` only in `from`'s type (a length-4
+ * linear-RGBA array).
+ */
+export type ColorTween = {
+  durationMs: number;
+  easing: WidgetEasing;
+  from?: [number, number, number, number];
+};
+
+/**
+ * State binding for a `text` widget. `slot` is a dotted slot name (or a Task 1
+ * store handle); `format` is an optional one-`{}` template; `tween` eases the
+ * resolved numeric value. Mirrors `descriptor.rs` `TextBind`.
+ */
+export type TextBindProp = {
+  slot: StoreHandleRef;
+  format?: string;
+  tween?: NumberTween;
+};
+
+/**
+ * State binding for a `panel` widget. `slot` resolves a length-4 linear-RGBA
+ * fill; `tween` eases the resolved color. Mirrors `descriptor.rs` `PanelBind`.
+ */
+export type PanelBindProp = {
+  slot: StoreHandleRef;
+  tween?: ColorTween;
+};
+
+/**
+ * State binding shared by `slider`/`bar` (a numeric slot + optional number-shape
+ * tween). Mirrors `descriptor.rs` `SliderBind`.
+ */
+export type SliderBindProp = {
+  slot: StoreHandleRef;
+  tween?: NumberTween;
+};
+
+/** One band in a `styleRanges` map. Mirrors `descriptor.rs` `StyleEntry`. */
+export type StyleRangeEntry = {
+  upTo?: number;
+  color?: WidgetColor;
+  pulse?: { periodMs: number };
+  flash?: { durationMs: number };
+};
+
+/**
+ * Continuous value→style map (text/panel/bar). `value/max` matches the first
+ * covering band; a trailing no-`upTo` band is the default. Mirrors
+ * `descriptor.rs` `StyleRanges`.
+ */
+export type StyleRangesProp = { max: number; entries: StyleRangeEntry[] };
+
+/** 9-slice border descriptor. Mirrors `descriptor.rs` `Border`. */
+export type BorderProp = {
+  texture: string;
+  slice: [number, number, number, number];
+  tint: WidgetColor;
+};
+
+/**
+ * Per-direction focus-neighbor overrides. Each set direction names the node id
+ * focus jumps to. Mirrors `descriptor.rs` `FocusNeighbors` (camelCase keys).
+ */
+export type FocusNeighborsProp = {
+  up?: string;
+  down?: string;
+  left?: string;
+  right?: string;
+};
+
+/**
+ * Hold-to-repeat timing (shared by container nav repeat and a button's
+ * `repeatOnHold`). Mirrors `descriptor.rs` `RepeatPolicy`.
+ */
+export type RepeatPolicyProp = { initialDelayMs: number; intervalMs: number };
+
+/**
+ * A typed reaction handle (Task 1 `defineReaction` result) — anything carrying a
+ * `.name` string. `Button.onPress` accepts one of these or a bare name string.
+ */
+export type ReactionHandleRef = { name: string };
+
+/**
+ * The flat descriptor a widget factory produces: a `kind`-tagged object whose
+ * sibling keys are the camelCase wire payload. Containers add a positional
+ * `children` array.
+ */
+export type WidgetDescriptor = { kind: string; [field: string]: unknown };
+
+// --- Internal validation helpers --------------------------------------------
+
+function requireObject(props: unknown, factory: string): void {
+  if (props === null || typeof props !== "object") {
+    throw new Error(`${factory}: props must be an object`);
+  }
+}
+
+function requireString(value: unknown, field: string, factory: string): void {
+  if (typeof value !== "string") {
+    throw new Error(`${factory}: \`${field}\` must be a string`);
+  }
+}
+
+function requireNonemptyString(value: unknown, field: string, factory: string): void {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`${factory}: \`${field}\` must be a nonempty string`);
+  }
+}
+
+function requireFiniteNumber(value: unknown, field: string, factory: string): void {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`${factory}: \`${field}\` must be a finite number`);
+  }
+}
+
+function requireColor(value: unknown, field: string, factory: string): void {
+  if (typeof value === "string") {
+    if (value.length === 0) {
+      throw new Error(`${factory}: \`${field}\` color token must be a nonempty string`);
+    }
+    return;
+  }
+  if (!Array.isArray(value) || value.length !== 4) {
+    throw new Error(
+      `${factory}: \`${field}\` must be a [r, g, b, a] tuple or a theme-token string`,
+    );
+  }
+  for (let i = 0; i < 4; i++) {
+    const c = value[i];
+    if (typeof c !== "number" || !Number.isFinite(c)) {
+      throw new Error(`${factory}: \`${field}\` color element ${i} is not a finite number`);
+    }
+  }
+}
+
+function requireSpacing(value: unknown, field: string, factory: string): void {
+  if (typeof value === "string") {
+    if (value.length === 0) {
+      throw new Error(`${factory}: \`${field}\` spacing token must be a nonempty string`);
+    }
+    return;
+  }
+  requireFiniteNumber(value, field, factory);
+}
+
+function validateEasing(value: unknown, field: string, factory: string): void {
+  const ok = value === "linear" || value === "easeIn" || value === "easeOut" || value === "easeInOut";
+  if (!ok) {
+    throw new Error(
+      `${factory}: \`${field}\` must be one of "linear" | "easeIn" | "easeOut" | "easeInOut"`,
+    );
+  }
+}
+
+/**
+ * Resolve a bind prop to its wire `{ slot, ... }` form. `slot` may be a Task 1
+ * store handle (a branded slot-name string) or a plain string; both read as the
+ * dotted slot name. Validates the optional `tween`; the panel path expects a
+ * color-shape `from`, the number path a numeric `from`. Returns `undefined` when
+ * no bind was authored so the factory omits the `bind` key (wire identity).
+ */
+function buildBind(
+  bind: unknown,
+  factory: string,
+  kind: "text" | "panel" | "slider",
+): { slot: string; format?: string; tween?: unknown } | undefined {
+  if (bind === undefined) return undefined;
+  if (bind === null || typeof bind !== "object") {
+    throw new Error(`${factory}: \`bind\` must be an object`);
+  }
+  const b = bind as Record<string, unknown>;
+  requireNonemptyString(b.slot, "bind.slot", factory);
+  const out: { slot: string; format?: string; tween?: unknown } = { slot: b.slot as string };
+
+  if (kind === "text" && b.format !== undefined) {
+    requireString(b.format, "bind.format", factory);
+    out.format = b.format as string;
+  }
+
+  if (b.tween !== undefined) {
+    const t = b.tween;
+    if (t === null || typeof t !== "object") {
+      throw new Error(`${factory}: \`bind.tween\` must be an object`);
+    }
+    const tw = t as Record<string, unknown>;
+    requireFiniteNumber(tw.durationMs, "bind.tween.durationMs", factory);
+    validateEasing(tw.easing, "bind.tween.easing", factory);
+    const tween: Record<string, unknown> = { durationMs: tw.durationMs, easing: tw.easing };
+    if (tw.from !== undefined) {
+      if (kind === "panel") {
+        requireColor(tw.from, "bind.tween.from", factory);
+      } else {
+        requireFiniteNumber(tw.from, "bind.tween.from", factory);
+      }
+      tween.from = tw.from;
+    }
+    out.tween = tween;
+  }
+
+  return out;
+}
+
+/**
+ * Validate + clone a `styleRanges` prop, returning the wire object or
+ * `undefined` when absent (so the factory omits the key). Shared by
+ * text/panel/bar.
+ */
+function buildStyleRanges(value: unknown, factory: string): StyleRangesProp | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || typeof value !== "object") {
+    throw new Error(`${factory}: \`styleRanges\` must be an object`);
+  }
+  const sr = value as Record<string, unknown>;
+  requireFiniteNumber(sr.max, "styleRanges.max", factory);
+  if (!Array.isArray(sr.entries)) {
+    throw new Error(`${factory}: \`styleRanges.entries\` must be an array`);
+  }
+  const entries: StyleRangeEntry[] = sr.entries.map((raw, i) => {
+    if (raw === null || typeof raw !== "object") {
+      throw new Error(`${factory}: \`styleRanges.entries[${i}]\` must be an object`);
+    }
+    const e = raw as Record<string, unknown>;
+    const out: StyleRangeEntry = {};
+    if (e.upTo !== undefined) {
+      requireFiniteNumber(e.upTo, `styleRanges.entries[${i}].upTo`, factory);
+      out.upTo = e.upTo as number;
+    }
+    if (e.color !== undefined) {
+      requireColor(e.color, `styleRanges.entries[${i}].color`, factory);
+      out.color = e.color as WidgetColor;
+    }
+    if (e.pulse !== undefined) {
+      const p = e.pulse as Record<string, unknown>;
+      if (p === null || typeof p !== "object") {
+        throw new Error(`${factory}: \`styleRanges.entries[${i}].pulse\` must be an object`);
+      }
+      requireFiniteNumber(p.periodMs, `styleRanges.entries[${i}].pulse.periodMs`, factory);
+      out.pulse = { periodMs: p.periodMs as number };
+    }
+    if (e.flash !== undefined) {
+      const f = e.flash as Record<string, unknown>;
+      if (f === null || typeof f !== "object") {
+        throw new Error(`${factory}: \`styleRanges.entries[${i}].flash\` must be an object`);
+      }
+      requireFiniteNumber(f.durationMs, `styleRanges.entries[${i}].flash.durationMs`, factory);
+      out.flash = { durationMs: f.durationMs as number };
+    }
+    return out;
+  });
+  return { max: sr.max as number, entries };
+}
+
+/** Validate + clone an optional `focusNeighbors` prop, or `undefined` when empty. */
+function buildFocusNeighbors(value: unknown, factory: string): FocusNeighborsProp | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || typeof value !== "object") {
+    throw new Error(`${factory}: \`focusNeighbors\` must be an object`);
+  }
+  const fn = value as Record<string, unknown>;
+  const out: FocusNeighborsProp = {};
+  for (const dir of ["up", "down", "left", "right"] as const) {
+    if (fn[dir] !== undefined) {
+      requireNonemptyString(fn[dir], `focusNeighbors.${dir}`, factory);
+      out[dir] = fn[dir] as string;
+    }
+  }
+  return Object.keys(out).length === 0 ? undefined : out;
+}
+
+function buildRepeatPolicy(value: unknown, field: string, factory: string): RepeatPolicyProp {
+  if (value === null || typeof value !== "object") {
+    throw new Error(`${factory}: \`${field}\` must be an object`);
+  }
+  const r = value as Record<string, unknown>;
+  requireFiniteNumber(r.initialDelayMs, `${field}.initialDelayMs`, factory);
+  requireFiniteNumber(r.intervalMs, `${field}.intervalMs`, factory);
+  return { initialDelayMs: r.initialDelayMs as number, intervalMs: r.intervalMs as number };
+}
+
+/** Append an optional `focusNeighbors`/`id` to a leaf widget descriptor in place. */
+function applyFocusFields(
+  out: WidgetDescriptor,
+  props: { id?: string; focusNeighbors?: FocusNeighborsProp },
+  factory: string,
+): void {
+  if (props.id !== undefined) {
+    requireNonemptyString(props.id, "id", factory);
+    out.id = props.id;
+  }
+  const neighbors = buildFocusNeighbors(props.focusNeighbors, factory);
+  if (neighbors !== undefined) out.focusNeighbors = neighbors;
+}
+
+// --- Text -------------------------------------------------------------------
+
+/** Props for `Text`. `content` is `LocalizedText`. `bind` is a `TextBindProp`. */
+export type TextProps = {
+  content: LocalizedText;
+  fontSize?: number;
+  color?: WidgetColor;
+  font?: string;
+  bind?: TextBindProp;
+  styleRanges?: StyleRangesProp;
+  id?: string;
+  focusNeighbors?: FocusNeighborsProp;
+};
+
+/**
+ * A `text` leaf. `content` is the literal/fallback string; `fontSize` defaults to
+ * 12 (logical px); `color` defaults to opaque white. An optional `bind` resolves
+ * the rendered string from a store slot; `styleRanges` recolors by value.
+ * Mirrors `descriptor.rs` `TextWidget`.
+ */
+export function Text(props: TextProps): WidgetDescriptor {
+  requireObject(props, "Text");
+  requireString(props.content, "content", "Text");
+  const fontSize = props.fontSize ?? 12.0;
+  requireFiniteNumber(fontSize, "fontSize", "Text");
+  const color = props.color ?? [1.0, 1.0, 1.0, 1.0];
+  requireColor(color, "color", "Text");
+
+  const out: WidgetDescriptor = { kind: "text", content: props.content, fontSize, color };
+  applyFocusFields(out, props, "Text");
+  if (props.font !== undefined) {
+    requireNonemptyString(props.font, "font", "Text");
+    out.font = props.font;
+  }
+  const bind = buildBind(props.bind, "Text", "text");
+  if (bind !== undefined) out.bind = bind;
+  const styleRanges = buildStyleRanges(props.styleRanges, "Text");
+  if (styleRanges !== undefined) out.styleRanges = styleRanges;
+  return out;
+}
+
+// --- Panel ------------------------------------------------------------------
+
+/** Props for `Panel`. `bind` is a `PanelBindProp` (color slot). */
+export type PanelProps = {
+  fill: WidgetColor;
+  border?: BorderProp;
+  bind?: PanelBindProp;
+  styleRanges?: StyleRangesProp;
+  id?: string;
+  focusNeighbors?: FocusNeighborsProp;
+};
+
+/**
+ * A `panel` leaf: a solid `fill` (linear RGBA or token) with an optional 9-slice
+ * `border`. An optional `bind` resolves the fill from a length-4 RGBA slot. A
+ * border-less panel OMITS the `border` key (TS/Luau parity — the Luau lua→json
+ * walker cannot carry an explicit `null`); the Rust `PanelWidget.border` is
+ * `#[serde(default)]`, so an absent key deserializes to `None` and re-serializes
+ * as `border: null`, byte-identical to the shipped fixtures. Mirrors `PanelWidget`.
+ */
+export function Panel(props: PanelProps): WidgetDescriptor {
+  requireObject(props, "Panel");
+  requireColor(props.fill, "fill", "Panel");
+
+  const out: WidgetDescriptor = { kind: "panel", fill: props.fill };
+  if (props.border !== undefined) {
+    out.border = validateBorder(props.border, "Panel");
+  }
+  applyFocusFields(out, props, "Panel");
+  const bind = buildBind(props.bind, "Panel", "panel");
+  if (bind !== undefined) out.bind = bind;
+  const styleRanges = buildStyleRanges(props.styleRanges, "Panel");
+  if (styleRanges !== undefined) out.styleRanges = styleRanges;
+  return out;
+}
+
+/** Validate a 9-slice border prop, returning the wire object. */
+export function validateBorder(value: unknown, factory: string): BorderProp {
+  if (value === null || typeof value !== "object") {
+    throw new Error(`${factory}: \`border\` must be an object`);
+  }
+  const b = value as Record<string, unknown>;
+  requireString(b.texture, "border.texture", factory);
+  if (!Array.isArray(b.slice) || b.slice.length !== 4) {
+    throw new Error(`${factory}: \`border.slice\` must be a [left, top, right, bottom] tuple`);
+  }
+  for (let i = 0; i < 4; i++) {
+    requireFiniteNumber(b.slice[i], `border.slice[${i}]`, factory);
+  }
+  requireColor(b.tint, "border.tint", factory);
+  return {
+    texture: b.texture as string,
+    slice: b.slice as [number, number, number, number],
+    tint: b.tint as WidgetColor,
+  };
+}
+
+// --- Image ------------------------------------------------------------------
+
+/** Props for `Image`. No bind. */
+export type ImageProps = {
+  asset: string;
+  id?: string;
+  focusNeighbors?: FocusNeighborsProp;
+};
+
+/**
+ * An `image` leaf referencing a texture asset by key; it sizes from the asset's
+ * natural pixel dimensions. No bind capability. Mirrors `ImageWidget`.
+ */
+export function Image(props: ImageProps): WidgetDescriptor {
+  requireObject(props, "Image");
+  requireNonemptyString(props.asset, "asset", "Image");
+  const out: WidgetDescriptor = { kind: "image", asset: props.asset };
+  applyFocusFields(out, props, "Image");
+  return out;
+}
+
+// --- Spacer -----------------------------------------------------------------
+
+/** Props for `Spacer`. No bind. */
+export type SpacerProps = {
+  flexGrow?: number;
+  id?: string;
+};
+
+/**
+ * A `spacer` leaf claiming a proportional share of leftover space (`flexGrow`,
+ * default 1). No bind capability. Mirrors `SpacerWidget`.
+ */
+export function Spacer(props: SpacerProps = {}): WidgetDescriptor {
+  requireObject(props, "Spacer");
+  const flexGrow = props.flexGrow ?? 1.0;
+  requireFiniteNumber(flexGrow, "flexGrow", "Spacer");
+  const out: WidgetDescriptor = { kind: "spacer", flexGrow };
+  if (props.id !== undefined) {
+    requireNonemptyString(props.id, "id", "Spacer");
+    out.id = props.id;
+  }
+  return out;
+}
+
+// --- Button -----------------------------------------------------------------
+
+/** Props for `Button`. `onPress` is a reaction handle or a bare name string. No bind. */
+export type ButtonProps = {
+  id: string;
+  label: LocalizedText;
+  onPress: ReactionHandleRef | string;
+  repeatOnHold?: RepeatPolicyProp;
+  focusNeighbors?: FocusNeighborsProp;
+};
+
+/**
+ * An interactive `button`. `id` is required (activation resolves the focused
+ * node id back to `onPress`). `onPress` accepts a Task 1 reaction handle (the
+ * `.name` is read) or a bare reaction-name string, emitting the unchanged
+ * `onPress: string` wire form. Mirrors `ButtonWidget`.
+ */
+export function Button(props: ButtonProps): WidgetDescriptor {
+  requireObject(props, "Button");
+  requireNonemptyString(props.id, "id", "Button");
+  requireString(props.label, "label", "Button");
+
+  const onPress = resolveReactionName(props.onPress, "Button");
+  const out: WidgetDescriptor = { kind: "button", id: props.id, label: props.label, onPress };
+  if (props.focusNeighbors !== undefined) {
+    const neighbors = buildFocusNeighbors(props.focusNeighbors, "Button");
+    if (neighbors !== undefined) out.focusNeighbors = neighbors;
+  }
+  if (props.repeatOnHold !== undefined) {
+    out.repeatOnHold = buildRepeatPolicy(props.repeatOnHold, "repeatOnHold", "Button");
+  }
+  return out;
+}
+
+/**
+ * Read a reaction name from a handle (`.name`) or accept a bare name string.
+ * Exported so `layout`/callers can reuse it; throws naming the factory.
+ */
+export function resolveReactionName(value: unknown, factory: string): string {
+  if (typeof value === "string") {
+    if (value.length === 0) {
+      throw new Error(`${factory}: \`onPress\` must be a nonempty reaction name`);
+    }
+    return value;
+  }
+  if (value !== null && typeof value === "object" && typeof (value as { name?: unknown }).name === "string") {
+    const name = (value as { name: string }).name;
+    if (name.length === 0) {
+      throw new Error(`${factory}: \`onPress\` handle has an empty \`.name\``);
+    }
+    return name;
+  }
+  throw new Error(`${factory}: \`onPress\` must be a reaction handle or a reaction-name string`);
+}
+
+// --- Slider -----------------------------------------------------------------
+
+/** Props for `Slider`. `bind` is a `SliderBindProp` (numeric slot). */
+export type SliderProps = {
+  id: string;
+  label: LocalizedText;
+  bind: SliderBindProp;
+  min: number;
+  max: number;
+  step: number;
+  capturesNav?: string[];
+  focusNeighbors?: FocusNeighborsProp;
+};
+
+/**
+ * An interactive `slider`. Nav wires in `capturesNav` step the bound value by
+ * `step` within `[min, max]`. `id` is required. Mirrors `SliderWidget`.
+ */
+export function Slider(props: SliderProps): WidgetDescriptor {
+  requireObject(props, "Slider");
+  requireNonemptyString(props.id, "id", "Slider");
+  requireString(props.label, "label", "Slider");
+  requireFiniteNumber(props.min, "min", "Slider");
+  requireFiniteNumber(props.max, "max", "Slider");
+  requireFiniteNumber(props.step, "step", "Slider");
+  const bind = buildBind(props.bind, "Slider", "slider");
+  if (bind === undefined) {
+    throw new Error("Slider: `bind` is required");
+  }
+
+  const out: WidgetDescriptor = {
+    kind: "slider",
+    id: props.id,
+    label: props.label,
+    bind,
+    min: props.min,
+    max: props.max,
+    step: props.step,
+  };
+  if (props.capturesNav !== undefined) {
+    if (!Array.isArray(props.capturesNav)) {
+      throw new Error("Slider: `capturesNav` must be a string array");
+    }
+    props.capturesNav.forEach((n, i) => requireNonemptyString(n, `capturesNav[${i}]`, "Slider"));
+    if (props.capturesNav.length > 0) out.capturesNav = props.capturesNav.slice();
+  }
+  if (props.focusNeighbors !== undefined) {
+    const neighbors = buildFocusNeighbors(props.focusNeighbors, "Slider");
+    if (neighbors !== undefined) out.focusNeighbors = neighbors;
+  }
+  return out;
+}
+
+// --- Bar --------------------------------------------------------------------
+
+/** Props for `Bar`. `bind` is a `SliderBindProp` (numeric slot). */
+export type BarProps = {
+  bind: SliderBindProp;
+  max: number;
+  fill: WidgetColor;
+  background: WidgetColor;
+  styleRanges?: StyleRangesProp;
+  id?: string;
+};
+
+/**
+ * A passive `bar`: fill fraction is `value/max` clamped to `[0, 1]`.
+ * `styleRanges` recolors the fill. Mirrors `BarWidget`.
+ */
+export function Bar(props: BarProps): WidgetDescriptor {
+  requireObject(props, "Bar");
+  const bind = buildBind(props.bind, "Bar", "slider");
+  if (bind === undefined) {
+    throw new Error("Bar: `bind` is required");
+  }
+  requireFiniteNumber(props.max, "max", "Bar");
+  requireColor(props.fill, "fill", "Bar");
+  requireColor(props.background, "background", "Bar");
+
+  const out: WidgetDescriptor = {
+    kind: "bar",
+    bind,
+    max: props.max,
+    fill: props.fill,
+    background: props.background,
+  };
+  if (props.id !== undefined) {
+    requireNonemptyString(props.id, "id", "Bar");
+    out.id = props.id;
+  }
+  const styleRanges = buildStyleRanges(props.styleRanges, "Bar");
+  if (styleRanges !== undefined) out.styleRanges = styleRanges;
+  return out;
+}

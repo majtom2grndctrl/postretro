@@ -1,0 +1,78 @@
+# G2 — Research Notes
+
+Grounding for the G2 draft. Confirmed against source 2026-06-14. Ephemeral.
+
+## Headline: most of the original G2 bullet is already shipped or impossible
+
+The roadmap G2 bullet lists: a11y compile-precondition (`label`/`labelledBy`,
+`Announce`), template-literal nav intents, discriminated unions per kind,
+optional JSX-via-SWC. Against source:
+
+| Item | Status |
+|---|---|
+| `label` required on interactive widgets | **Shipped** — `ButtonProps.label` / `SliderProps.label` are required `LocalizedText` (`sdk/lib/ui/widgets.ts:518,573`; Rust `label: String` `render/ui/descriptor.rs:631,663`). |
+| `labelledBy` alternative | **Missing** — no `labelledBy` on any widget (TS or Rust). G2's main net-new. |
+| `Announce` node | **Missing** — no variant in `Widget`, no factory. G2's other net-new. |
+| Template-literal nav intents (TS) | **Shipped** by Goal F — `export type NavIntent = \`nav.${NavIntentName}\`` in `typedef.rs` TS block. Typos are already type errors. |
+| Template-literal nav intents (Luau) | **Impossible** — Luau has no template-literal types; F emits a flat string union. Permanent language limit, not a gap. |
+| Discriminated union per kind | **Mostly shipped** — Rust `Widget` is an internally-tagged enum (`#[serde(tag="kind")]`, `descriptor.rs:242`); TS has per-factory `Props` types. G2 verifies/tightens + adds fixtures. |
+| Optional JSX-via-SWC | **No tooling** — no `@swc/core`, no JSX config, no bundler. Genuinely optional; deferrable. |
+| Text-alias chokepoint (`LocalizedText`) | **Shipped** by G1a — `sdk/lib/ui/text.ts:12` `export type LocalizedText = string`. G2's i18n note builds on it; no new work. |
+
+Net-new substance for G2: **`labelledBy` + `Announce` + verification/fixtures.**
+Small. Worth telling the owner (may even fold into BIS) — but a clean
+correct-by-construction gate before BIS authors built-in screens.
+
+## SDK layout (G1a)
+
+`sdk/lib/ui/`: `widgets.ts` (Text/Panel/Image/Spacer/Button/Slider/Bar),
+`layout.ts` (VStack/HStack/Grid), `tree.ts` (`Tree`), `text.ts` (`LocalizedText`),
+`state.ts` (`StoreHandle<T>`, `LocalStateHandle<T>`, `ui.createLocalState`),
+`reactions.ts`. Barrel: `sdk/lib/index.ts:40-92`. Luau twins alongside.
+
+Props (TS, `widgets.ts`):
+- `ButtonProps` `:518` — `{ id: string; label: LocalizedText; onPress: ReactionHandleRef | string; repeatOnHold?; focusNeighbors? }` (label required, **no labelledBy**).
+- `SliderProps` `:573` — `{ id; label: LocalizedText; bind; min; max; step; capturesNav?; focusNeighbors? }` (label required, **no labelledBy**).
+- `BarProps` `:626` — non-interactive, no label.
+- Text/Panel/Image/Spacer — non-interactive, no label (Text carries `content`, not `label`).
+
+## Rust descriptor enum (Goal B)
+
+`render/ui/descriptor.rs:242` — `#[serde(tag="kind", rename_all="camelCase")] pub enum Widget { Text, Panel, Image, VStack, HStack, Grid, Spacer, Button, Slider, Bar }` (10 variants). Flat-object wire (`{"kind":"button",…}`).
+- `ButtonWidget` `:629` — `label: String` `:631`, `id: String` `:630`, `on_press: String` `:634`, `focus_neighbors: FocusNeighbors` `:638`. **No `labelled_by`.**
+- `SliderWidget` `:661` — `label: String` `:663`, `id: String`, `bind: SliderBind`, `focus_neighbors`. **No `labelled_by`.**
+- Round-trip tests `:742-848` (byte-identical JSON).
+
+## Bridge (G1a)
+
+`anchored_tree_from_js_value` / `anchored_tree_from_lua_value` in
+`scripting/data_descriptors.rs` (per-runtime field readers, beside
+`entity_descriptor_from_js/_from_lua`), re-exported via `conv.rs`. Named
+load-time error on malformed input, no panic. G2's `labelledBy` XOR validation
+and `Announce` reading land here.
+
+## Typedef emitter
+
+`scripting/typedef.rs`: `rust_to_ts` `:56`, `rust_to_luau` `:198`,
+`emit_ts_type` `:348`, `engine_slot_groups` `:480`. UI widget types are **not**
+registry-emitted — they live in the static `TS_SDK_LIB_BLOCK` (~`:700`) /
+`LUAU_SDK_LIB_BLOCK` (~`:1100`), hand-written, sourced from `sdk/lib/ui/*`. G2
+edits these blocks + the SDK factory files + `descriptor.rs` together. The
+`gen-script-types` drift check + parity test gate them. **No `tsc` CI** — author
+compile-preconditions ship as `@ts-expect-error` fixtures (the G1a pattern),
+not an enforced build gate.
+
+## Nav intents (Goal F)
+
+`input/ui_nav.rs:31` — `enum NavIntent { Up..Options }` (10); `wire_name()` `:58`
+→ `"nav.up"`… TS type already template-literal (`typedef.rs` block); Luau flat
+union. No code change for G2 — verification + doc only.
+
+## Wave seam with SE
+
+G2 touches `render/ui/descriptor.rs` (Announce variant + `labelled_by` fields),
+`scripting/data_descriptors.rs` (bridge), `sdk/lib/ui/widgets.{ts,luau}`,
+`scripting/typedef.rs` **widget** SDK-block, `sdk/lib/index.ts` barrel. SE
+touches the **reaction** SDK-block in the same `typedef.rs` and the same barrel
+— different sections. No shared descriptor/bridge edits (SE touches neither).
+Regenerate typedefs after both land.

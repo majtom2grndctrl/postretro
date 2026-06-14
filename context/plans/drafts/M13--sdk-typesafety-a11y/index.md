@@ -291,20 +291,17 @@ slots from — coordinate (distinct concerns, same area). G2 owns all
 | envelope name/role | `accessible_name`/`role` (`Option::is_none` skip) | `"accessibleName"`/`"role"` | `accessibleName?`/`role?` | same |
 | Announce / priority | `Widget::Announce(AnnounceWidget)`; `Priority` (`is_polite` skip) | `{ "kind":"announce","text","priority"? }` | `Announce(props, text)` | same |
 
-## Open questions
+## Decisions & deferrals
 
-- **`Predicate.equals` semantics — decided:** v1 admits number / bool / string;
-  exact compare; `String`/`Enum` match by name; type mismatch → `0.0`; rgba
-  comparand is a load-time error. No-`equals` requires a `Boolean` source.
-- **Snapshot the resolved a11y `selected`/`checked` — decided: now.** The
-  resolution already runs for the highlight; exporting the 0/1 into `UiReadSnapshot`
-  is near-free and makes AC#2's one-resolution test observable.
-- **Visibility mechanism — decided:** `Display::None` (node retained, lockstep
-  preserved) + invalidate-on-predicate-change (re-export `FocusRectList` + dirty
-  layout); applied in layout/draw/focus walks, never the `reconcile` descriptor
-  walk. See `lib/ui.md` §3.
-- **Size.** G2 is ~7 tasks across descriptor, app-side resolution, focus, and SDK —
-  the wave's long pole (fine: parallel, distinct domains from SE). Task 2a/2b are
-  the novelty and the implementability focus.
-- **`disabled` styling.** Behavior only; the visual dim is a theme/styleRanges
-  concern — note for BIS. Dynamic (bound) `disabled` is a later enhancement.
+- **`Predicate.equals`:** v1 admits number / bool / string; exact compare;
+  `String`/`Enum` match by name; type mismatch → `0.0`; an rgba comparand is a
+  load-time error. A no-`equals` predicate requires a `Boolean` source.
+- **A11y `selected`/`checked` are snapshotted now.** The resolution already runs
+  for the highlight; exporting the 0/1 into `UiReadSnapshot` is near-free and makes
+  AC#2's one-resolution test observable.
+- **Visibility = `Display::None` + invalidate-on-change.** The node is retained
+  (lockstep preserved); a predicate-value change re-exports the `FocusRectList` +
+  dirties layout; applied in the layout/draw/focus walks, never the `reconcile`
+  descriptor walk. See `lib/ui.md` §3.
+- **`disabled` styling deferred.** Behavior only here; the visual dim is a
+  theme/styleRanges concern (BIS). Dynamic (bound) `disabled` is a later enhancement.

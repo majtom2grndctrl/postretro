@@ -204,17 +204,17 @@ Coordinate; regenerate typedefs once both land. SE touches no
 | vignette slot | `"screen.vignette"` (`Array` RGBA) | n/a | read-only bind name | same |
 | shake slot | `"screen.shake"` (`Array [dx,dy]`) | n/a | read-only bind name | same |
 
-## Open questions
+## Decisions & deferrals
 
-- **MSAA / format.** Resolved: the surface is single-sample today (all pipelines
-  use `MultisampleState::default()` count 1; depth `sample_count: 1`). `scene_color`
-  is single-sample, surface format (LDR); the resolve is a true identity blit so
-  byte-identical parity is achievable. M9's HDR upgrade (swap format + add tonemap
-  into the resolve) stays additive.
-- **Idle cost.** Routing through `scene_color` adds one fullscreen resolve every
-  frame even at rest — the standard cost of a compositor, accepted. The effect
+- **MSAA / format.** The surface is single-sample today (all pipelines use
+  `MultisampleState::default()` count 1; depth `sample_count: 1`), so `scene_color`
+  is single-sample at the surface (LDR) format and the resolve is a true identity
+  blit — byte-identical parity is achievable. M9's HDR upgrade (swap format + add
+  tonemap into the resolve) stays additive.
+- **Idle cost (accepted).** Routing through `scene_color` adds one fullscreen
+  resolve every frame even at rest — the standard cost of a compositor. The effect
   math is ALU on top; no extra pass when effects are active.
 - **Cross-milestone coordination.** SE owns the resolve; M9 tonemap and M10 post
   must *extend* it (one resolve), not stack parallel resolves. Flag for M9/M10.
-- **Sustained vignette** (track a value while a condition holds) is deferred to a
+- **Sustained vignette deferred** (track a value while a condition holds) to a
   future continuous-effect model; v1 is one-shot decay.

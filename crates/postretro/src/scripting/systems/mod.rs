@@ -16,6 +16,7 @@ pub(crate) mod mesh_anim;
 pub(crate) mod mesh_render;
 pub(crate) mod particle_render;
 pub(crate) mod particle_sim;
+pub(crate) mod presentation_cells;
 pub(crate) mod ui_proxy;
 
 /// Linear-interpolated curve evaluation over `[0, 1]`. Shared by the emitter

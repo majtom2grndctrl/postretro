@@ -38,10 +38,10 @@ pub(crate) mod tree;
 /// data — widgets (later tasks) reference tokens by name; the merge is per-token.
 pub(crate) mod theme;
 
-/// Continuous value→style mapping (M13 Goal E `styleRanges`): the `StyleRanges`
+/// Continuous value→style mapping (`styleRanges`): the `StyleRanges`
 /// descriptor types and the widget-agnostic pure evaluator (value → resolved
-/// color + pulse/flash). Consumed from `tree`'s draw-data build; Goal F's `bar`
-/// reuses the same evaluator. Pure data — no taffy, no GPU.
+/// color + pulse/flash). Consumed from `tree`'s draw-data build; the `bar`
+/// widget reuses the same evaluator. Pure data — no taffy, no GPU.
 pub(crate) mod style_ranges;
 
 /// App-side gameplay-UI modal stack + named-tree registry: resolves Goal E's
@@ -73,7 +73,7 @@ pub(crate) mod demo;
 /// wiring for the HUD, pause menu, and on-screen keyboard.
 pub(crate) mod tree_asset;
 
-/// Engine-shipped on-screen keyboard descriptor (M13 Text-Entry, Task 4): loads
+/// Engine-shipped on-screen keyboard descriptor: loads
 /// `content/base/ui/keyboard.json` from disk at boot and registers it under the
 /// `keyboard` name. Read from disk (not embedded) so a layout edit + reload
 /// changes the keyboard with no Rust change.
@@ -108,7 +108,7 @@ mod gameplay_ui_gate_test;
 #[cfg(test)]
 mod demo_ui_gate_test;
 
-/// Hard-gate CPU assertions for M13 fonts+theming Task 4: the theme-generation
+/// Hard-gate CPU assertions for the fonts+theming path: the theme-generation
 /// rebuild gate (reproduced CPU-side, mirroring `UiPass::layout_gameplay_tree`)
 /// and the exactly-one-warning-per-build fallback contract for unknown tokens.
 /// Pure CPU — no GPU adapter.
@@ -137,6 +137,14 @@ mod multi_batch_test;
 /// adapter.
 #[cfg(test)]
 mod multi_layer_text_golden_test;
+
+/// G1b cross-cutting lifecycle + render suite: the
+/// register -> resolve-by-name -> render chain over the production path, the
+/// always-on compose -> render path, a mod theme override reaching a rendered
+/// widget, a runtime-registered font usable by a `text` token, and `localState`
+/// on a mixed store-bound + local-bound tree. Pure CPU — no GPU adapter.
+#[cfg(test)]
+mod lifecycle_render_test;
 
 const UI_QUAD_WGSL: &str = include_str!("../../shaders/ui_quad.wgsl");
 
@@ -317,6 +325,13 @@ pub(crate) struct UiReadSnapshot {
     /// Only slots that currently hold a value appear; value-less slots are
     /// skipped. Empty on the splash path.
     pub slot_values: std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
+    /// Resolved presentation-cell values for this frame, keyed by
+    /// `(scopeId, cellName)`. Published from the app-side cell
+    /// store the same way `slot_values` flows from the slot table — so a `{ local }`
+    /// bind resolves against the live cell value without the descriptor (compared
+    /// by the retained reuse gate) ever changing. Empty on the splash path and
+    /// whenever no `localState` scope composes.
+    pub cell_values: tree::CellValues,
     /// Deterministic frame time in seconds, accumulated from per-frame `dt`
     /// (`App::script_time`) — NEVER wall-clock. Stays `f64` end-to-end to match
     /// the App's accumulator. The retained gameplay build threads it down so the
@@ -325,10 +340,10 @@ pub(crate) struct UiReadSnapshot {
     /// no time at all.
     pub time_seconds: f64,
     /// The focused node id in the active (top) stack tree, resolved app-side by
-    /// the focus engine the previous frame (M13 Goal F, Task 3). The UI pass draws
-    /// the focus ring around this node's rect on the top layer. `None` (the
-    /// default) when nothing is focused; the ring may trail a focus change by one
-    /// frame (the same N→N+1 latency every UI event carries).
+    /// the focus engine the previous frame. The UI pass draws the focus ring around
+    /// this node's rect on the top layer. `None` (the default) when nothing is
+    /// focused; the ring may trail a focus change by one frame (the same N→N+1
+    /// latency every UI event carries).
     pub focused_id: Option<String>,
 }
 
@@ -341,6 +356,7 @@ impl UiReadSnapshot {
             version_line: version_line.into(),
             trees: Vec::new(),
             slot_values: std::collections::HashMap::new(),
+            cell_values: tree::CellValues::new(),
             // Splash/fresh path takes no time — inertness is structural.
             time_seconds: 0.0,
             focused_id: None,
@@ -356,6 +372,7 @@ impl UiReadSnapshot {
     pub fn with_trees(
         trees: Vec<UiTreeEntry>,
         slot_values: std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
+        cell_values: tree::CellValues,
         time_seconds: f64,
         focused_id: Option<String>,
     ) -> Self {
@@ -363,6 +380,7 @@ impl UiReadSnapshot {
             version_line: String::new(),
             trees,
             slot_values,
+            cell_values,
             time_seconds,
             focused_id,
         }
@@ -779,6 +797,16 @@ impl UiPass {
         &self.white_bind_group
     }
 
+    /// Install a runtime font face into the shaped-text `FontSystem` (the net-new
+    /// runtime path; the embedded body/mono faces are registered once at
+    /// construction). Delegates to `text::UiTextRenderer::register_font`; returns
+    /// `false` if the bytes register no face under `family`, so the renderer caller
+    /// can surface a load-time diagnostic and skip rather than leave a `font` token
+    /// resolving to a system fallback.
+    pub fn register_font(&mut self, family: &str, ttf_bytes: Vec<u8>) -> bool {
+        self.text.register_font(family, ttf_bytes)
+    }
+
     /// Build a bind group for a caller-bound image texture (e.g. the logo). One
     /// batch per bound texture, so the image draws as a separate instanced draw.
     pub fn make_texture_bind_group(
@@ -883,6 +911,7 @@ impl UiPass {
         viewport: [u32; 2],
         image_sizes: &tree::ImageSizes,
         slot_values: &std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
+        cell_values: &tree::CellValues,
         theme: &theme::UiTheme,
         theme_generation: u64,
         time_seconds: f64,
@@ -922,6 +951,7 @@ impl UiPass {
             self.text.font_system_mut(),
             image_sizes,
             slot_values,
+            cell_values,
             time_seconds,
         )
     }
@@ -1110,10 +1140,8 @@ const FOCUS_RING_THICKNESS: f32 = 2.0;
 /// (the `xs` spacing token, scaled), framing the focused node without overlapping
 /// it. `color` is the resolved `focus.ring` token (linear RGBA). Drawn as four
 /// solid `UiInstance::panel` bars (top, bottom, left, right) so it needs no new
-/// pipeline — it rides the existing white-texel quad batch.
-///
-/// M13 Goal F, Task 3: the engine-drawn focus ring. The focused id rides the
-/// snapshot, so the ring may trail a focus change by one frame.
+/// pipeline — it rides the existing white-texel quad batch. The focused id rides
+/// the snapshot, so the ring may trail a focus change by one frame.
 pub(crate) fn push_focus_ring(quads: &mut UiDrawList, rect: [f32; 4], inset: f32, color: [f32; 4]) {
     let t = FOCUS_RING_THICKNESS;
     // Outer frame: the focused rect grown outward by the inset.

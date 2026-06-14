@@ -479,6 +479,7 @@ mod tests {
                 max: 100.0,
                 fire: vec!["lowHealth".to_string()],
             }],
+            ui_trees: Vec::new(),
         });
         let mut detector = CrossingDetector::new();
         detector.initialize(&data_registry, &slot_table);

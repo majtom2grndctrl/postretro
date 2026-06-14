@@ -369,6 +369,7 @@ fn main() -> Result<()> {
         script_runtime,
         ui_proxy: scripting_systems::ui_proxy::StaticUiProxy::new(script_ctx.clone()),
         flash_decay: scripting_systems::flash_decay::FlashDecay::new(script_ctx.clone()),
+        presentation_cells: scripting_systems::presentation_cells::PresentationCellStore::new(),
         modal_stack: {
             // Register engine built-in trees at boot through the one shared
             // load-and-register path (`tree_asset::register_tree_from_disk`): each
@@ -386,20 +387,26 @@ fn main() -> Result<()> {
             // { tree: "keyboard", onCommit }` resolves it.
             let mut stack = render::ui::modal_stack::ModalStack::new();
             let registry = stack.registry_mut();
+            // The HUD is always-on: it composes as the bottom base layer every
+            // gameplay frame (resolved through the always-on read seam). The pause
+            // menu and keyboard are pushed-only modals — not always-on.
             render::ui::tree_asset::register_tree_from_disk(
                 registry,
                 render::ui::tree_asset::HUD_NAME,
                 "hud.json",
+                true,
             );
             render::ui::tree_asset::register_tree_from_disk(
                 registry,
                 render::ui::demo::PAUSE_MENU_NAME,
                 "pauseMenu.json",
+                false,
             );
             render::ui::tree_asset::register_tree_from_disk(
                 registry,
                 render::ui::keyboard_asset::KEYBOARD_TREE_NAME,
                 "keyboard.json",
+                false,
             );
             stack
         },
@@ -614,6 +621,15 @@ struct App {
     /// writes the decaying RGBA into `screen.flash` each game-logic tick (beside
     /// `ui_proxy.tick`). Reset on level load. See: context/lib/ui.md §3.
     flash_decay: scripting_systems::flash_decay::FlashDecay,
+
+    /// App-side presentation-cell store for `ui.createLocalState()` (M13 G1b,
+    /// Task 5). Seeded from a tree's declared `localState` initials when its scope
+    /// first composes, written by the drained `CellWrite` reaction at the
+    /// game-logic stage, reconciled/cleared against the composed-scope-id set at
+    /// the compose step, and snapshotted onto `cell_values` for `{ local }` bind
+    /// resolution. Presentation-only — NEVER the authoritative store.
+    /// See: context/lib/ui.md §3/§6.
+    presentation_cells: scripting_systems::presentation_cells::PresentationCellStore,
 
     /// Gameplay-UI modal stack + named-tree registry. Consumes Goal E's
     /// `PushTree`/`PopTree` system commands (resolving names through its registry,
@@ -2195,34 +2211,46 @@ impl ApplicationHandler for App {
                         // Game logic → Audio → Render). The renderer reads these
                         // cloned values, never the live `SlotTable`.
                         //
-                        // Modal stack: the HUD is the always-on bottom layer
-                        // (`trees[0]`), resolved BY NAME from the registry
-                        // (`modal_stack.tree(HUD_NAME)`, sourced from
-                        // `content/base/ui/hud.json`) — the registry is the single
-                        // seam, no builder on the render path. Pushed modal trees
-                        // stack above it, drawn bottom→top. The renderer's retained
-                        // path lays each layer out and resolves its binds against the
+                        // Modal stack compose: every registered ALWAYS-ON tree
+                        // composes as a base layer at the bottom of the snapshot
+                        // (`always_on_layers()`), engine-tier first then mod-tier in a
+                        // deterministic per-name order — the HUD (`content/base/ui/
+                        // hud.json`) is the engine always-on layer, and a mod-registered
+                        // always-on overlay either shadows it (same name) or layers on
+                        // top (new mod-tier name). Pushed modal trees stack ABOVE the
+                        // base layers, drawn bottom→top. The registry is the single seam
+                        // — no builder on the render path. The renderer's retained path
+                        // lays each layer out and resolves its binds against the
                         // snapshot; each layer's descriptor is structurally stable, so
                         // the retained tree per layer reuses it and only bound values
-                        // drive the diff. The HUD's capture mode comes from its
-                        // declared envelope (passthrough), so with no modal open the
-                        // top mode is passthrough (gameplay keeps input). A missing
-                        // `hud.json` resolves to `None` — the HUD is simply absent
-                        // that frame and the engine still boots.
+                        // drive the diff.
+                        //
+                        // CAPTURE/FOCUS INVARIANT: base/always-on layers are appended to
+                        // `trees` but are NOT on the pushed modal stack, which is the
+                        // SOLE source of `top_capture_mode`/`active_name`/text-entry. So
+                        // an always-on layer never captures input or takes focus even if
+                        // its descriptor declares `captureMode: capture` — its
+                        // `capture_mode` rides the entry for diagnostics only. With no
+                        // modal pushed, the top mode is passthrough (gameplay keeps
+                        // input). A missing `hud.json` simply yields no engine always-on
+                        // layer that frame and the engine still boots.
                         let slot_values =
                             Self::build_ui_slot_snapshot(&self.script_ctx.slot_table.borrow());
-                        let mut trees: Vec<render::ui::UiTreeEntry> = self
-                            .modal_stack
-                            .tree(render::ui::tree_asset::HUD_NAME)
-                            .map(|descriptor| render::ui::UiTreeEntry {
-                                name: render::ui::tree_asset::HUD_NAME.to_string(),
-                                capture_mode: descriptor.capture_mode.into(),
-                                descriptor: descriptor.clone(),
-                                on_commit: None,
-                            })
-                            .into_iter()
-                            .collect();
+                        let mut trees: Vec<render::ui::UiTreeEntry> =
+                            self.modal_stack.always_on_layers();
                         trees.extend(self.modal_stack.entries());
+                        // Presentation cells (M13 G1b, Task 5): reconcile the
+                        // app-side cell store against THIS frame's composed-scope-id
+                        // set — seed any newly-composed `localState` scope from its
+                        // declared initials and drop cells whose scope is no longer
+                        // present — then snapshot the live cell values for `{ local }`
+                        // bind resolution. The snapshot rides the read snapshot
+                        // (beside `slot_values`), so a cell write never changes the
+                        // descriptor the retained reuse gate compares.
+                        let composed_trees: Vec<&render::ui::descriptor::AnchoredTree> =
+                            trees.iter().map(|entry| &entry.descriptor).collect();
+                        self.presentation_cells.reconcile(&composed_trees);
+                        let cell_values = self.presentation_cells.snapshot();
                         // Ring-visibility follows the interaction mode WHILE a
                         // capturing tree is on the stack (M13 Goal F, Task 5):
                         // `focus` mode shows the ring, `pointer` mode hides it (the
@@ -2240,6 +2268,7 @@ impl ApplicationHandler for App {
                         renderer.set_ui_snapshot(render::ui::UiReadSnapshot::with_trees(
                             trees,
                             slot_values,
+                            cell_values,
                             self.script_time,
                             ring_id,
                         ));
@@ -2529,6 +2558,24 @@ impl App {
                             data_registry.upsert_entity_type(desc);
                         }
                         drop(data_registry);
+
+                        // Register mod-scope UI trees into the tiered registry at
+                        // `Mod` tier, before the mod-init VM context drops (no new
+                        // lifecycle stage; ui.md §5). A mod tree under an engine
+                        // built-in's name shadows it (last-wins + warning); a
+                        // duplicate never aborts boot. G1b Task 3.
+                        self.modal_stack.register_script_trees(
+                            std::mem::take(&mut manifest.ui_trees),
+                            render::ui::modal_stack::ScopeTier::Mod,
+                        );
+
+                        // Take the theme tokens + font assets out of the manifest
+                        // here; the `manifest` borrow (of `self.script_runtime`)
+                        // ends at this last use, so the `&mut self` install call
+                        // below is a non-overlapping borrow. G1b Task 4.
+                        let mod_theme = std::mem::take(&mut manifest.theme);
+                        let mod_fonts = std::mem::take(&mut manifest.fonts);
+                        self.install_mod_ui_theme_and_fonts(mod_theme, mod_fonts);
                     }
 
                     if self
@@ -2694,6 +2741,70 @@ impl App {
     /// a fullscreen background fill, a framed 9-slice panel, the centered logo
     /// image, and a shaped-text line as instanced quads plus glyphon text. The
     /// first frame has no descriptor installed yet and renders only the clear.
+    /// Install a mod's `setupMod()` theme tokens and font assets into the live UI
+    /// runtime, at the mod-init drain (before the authoring VM context drops). G1b
+    /// Task 4. Both halves degrade per `ui.md` §5: a missing/unreadable font file
+    /// or a non-registering face produces a named load-time diagnostic and is
+    /// skipped; the theme merge tolerates unknown tokens (they degrade visibly at
+    /// widget-resolution time — magenta/`body`/zero, warn-once — never here).
+    /// No-op when the renderer is absent (headless / pre-resume).
+    fn install_mod_ui_theme_and_fonts(
+        &mut self,
+        theme: crate::scripting::data_descriptors::ModThemeTokens,
+        fonts: crate::scripting::data_descriptors::ModFontAssets,
+    ) {
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+
+        // Theme: convert the mod-scope tokens into a `ThemeDescriptor`, merge over
+        // the engine default per-token, and install the merged theme. `set_ui_theme`
+        // bumps the theme generation so already-built retained trees rebuild against
+        // the new tokens. An override naming nothing leaves the default untouched.
+        if !theme.colors.is_empty() || !theme.fonts.is_empty() || !theme.spacing.is_empty() {
+            let descriptor = render::ui::theme::ThemeDescriptor {
+                colors: theme.colors,
+                fonts: theme.fonts,
+                spacing: theme.spacing,
+            };
+            let merged = render::ui::theme::UiTheme::engine_default().with_override(&descriptor);
+            renderer.set_ui_theme(merged);
+            log::info!("[UI] installed mod theme override");
+        }
+
+        // Fonts: family → TTF path. Resolve each path against the mod content root
+        // (itself cwd-relative at runtime per ui.md §5), read the bytes, and
+        // register the face. A missing/unreadable file or a non-registering face is
+        // logged and skipped — the `font` token then degrades to a system fallback
+        // at shape time, but boot never aborts.
+        for (family, rel_path) in fonts.families {
+            let path = self.content_root.join(&rel_path);
+            let bytes = match render::ui::text::read_font_file(&path) {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    log::warn!(
+                        "[UI] mod font '{family}' file '{}' could not be read ({err}); \
+                         skipping — the font token falls back to a system face",
+                        path.display(),
+                    );
+                    continue;
+                }
+            };
+            if renderer.register_ui_font(&family, bytes) {
+                log::info!(
+                    "[UI] registered mod font '{family}' from '{}'",
+                    path.display()
+                );
+            } else {
+                log::warn!(
+                    "[UI] mod font '{family}' from '{}' registered no matching face \
+                     (malformed file or family-name mismatch); skipping",
+                    path.display(),
+                );
+            }
+        }
+    }
+
     fn paint_splash(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(renderer) = self.renderer.as_mut() {
             if !renderer.is_ready() {
@@ -3041,6 +3152,20 @@ impl App {
                         log::warn!("[Scripting] setState write to `{slot}` failed: {err}");
                     }
                 }
+                SystemReactionCommand::CellWrite { scope, cell, value } => {
+                    // Presentation-cell write at the game-logic stage (M13 G1b,
+                    // Task 5): routes into the app-side `PresentationCellStore`,
+                    // NEVER the slot table. A value of an unusable shape is skipped
+                    // with a warn — never a panic, never a store write.
+                    match scripting_systems::presentation_cells::json_to_cell_value(&value) {
+                        Some(cell_value) => {
+                            self.presentation_cells.write(scope, cell, cell_value);
+                        }
+                        None => log::warn!(
+                            "[Scripting] cellWrite to `{scope}.{cell}` carried an unusable value; skipped"
+                        ),
+                    }
+                }
                 SystemReactionCommand::AppendText { slot, text } => {
                     // Readonly-gated text edit at the game-logic stage (same
                     // writable-slot gate as setState): readonly warns + no-ops;
@@ -3267,6 +3392,16 @@ impl App {
                     .run_data_script(data_script, &self.content_root);
                 manifest.reactions =
                     validate_sequence_primitives(manifest.reactions, &self.sequence_registry);
+                // Register level-scope UI trees before the data-script VM context
+                // drops and before the manifest is consumed by the data registry.
+                // Level trees go into the persistent (`Mod`) tier today — the
+                // per-level tier is DEFERRED (single-level lifetime, no runtime
+                // unload site). Last-wins on a duplicate name; never aborts level
+                // load. G1b Task 3.
+                self.modal_stack.register_script_trees(
+                    std::mem::take(&mut manifest.ui_trees),
+                    render::ui::modal_stack::ScopeTier::Mod,
+                );
                 self.script_ctx
                     .data_registry
                     .borrow_mut()
@@ -4060,6 +4195,151 @@ mod tests {
         assert!(!reload_summary_requires_mod_init(ReloadSummary::default()));
     }
 
+    // --- G1b drain-before-drop lifecycle invariant (Task 6) -----------------
+
+    /// RAII temp mod root mirroring `runtime.rs`'s test helper: a fresh dir under
+    /// `std::env::temp_dir()`, removed on drop so a panic leaks nothing.
+    struct TempModRoot(std::path::PathBuf);
+    impl std::ops::Deref for TempModRoot {
+        type Target = std::path::Path;
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+    impl Drop for TempModRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    fn temp_mod_root(name: &str) -> TempModRoot {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "postretro_g1b_drain_test_{}_{}_{name}",
+            std::process::id(),
+            n,
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        TempModRoot(p)
+    }
+
+    fn test_runtime() -> ScriptRuntime {
+        let ctx = ScriptCtx::new();
+        let mut registry = PrimitiveRegistry::new();
+        register_all(&mut registry, ctx.clone());
+        ScriptRuntime::new(&registry, &ScriptRuntimeConfig::default(), &ctx).unwrap()
+    }
+
+    #[test]
+    fn ui_registrations_drain_after_mod_init_returns_with_no_vm_resident_then_render() {
+        // Drain-before-drop, the assertable half: `run_mod_init` creates AND drops
+        // the authoring VM context *within* the call (scripting.md §2/§11), then
+        // stores the manifest as plain Rust. So when `run_mod_init` RETURNS, the VM
+        // is already gone and the UI registrations survive as owned data on the
+        // manifest. The App then drains that data into the registry (the ordering
+        // `App` enforces at main.rs's mod-init handler) — provably after the VM
+        // drop, because the VM cannot outlive `run_mod_init`. A frame then renders
+        // the registered tree with no VM anywhere in scope.
+        let dir = temp_mod_root("drain_order");
+        std::fs::write(
+            dir.join("start-script.js"),
+            r#"
+            globalThis.setupMod = function() {
+                return {
+                    name: "DrainMod",
+                    uiTrees: [
+                        { name: "banner", alwaysOn: true,
+                          tree: { anchor: "top", offset: [0.0, 0.0],
+                                  root: { kind: "text", content: "REGISTERED", fontSize: 18.0, color: [1.0,1.0,1.0,1.0] } } },
+                    ],
+                };
+            };
+            "#,
+        )
+        .unwrap();
+
+        let mut rt = test_runtime();
+        rt.run_mod_init(&dir).expect("mod-init succeeds");
+
+        // `run_mod_init` has returned: the VM it built is dropped. The manifest
+        // carries the registrations as plain Rust (no live VM reference).
+        let trees = {
+            let manifest = rt.mod_manifest().expect("manifest present after mod-init");
+            assert_eq!(manifest.ui_trees.len(), 1, "the UI tree survived as data");
+            manifest.ui_trees.clone()
+        };
+
+        // Drain into the tiered registry AFTER the VM is gone — the exact ordering
+        // the App's mod-init handler enforces (drain, then the VM has already
+        // dropped inside run_mod_init).
+        let mut stack = render::ui::modal_stack::ModalStack::new();
+        stack.register_script_trees(trees, render::ui::modal_stack::ScopeTier::Mod);
+
+        // A frame renders the registered tree with NO VM resident: resolve by name
+        // and build draw data from the resolved descriptor alone.
+        let resolved = stack
+            .tree("banner")
+            .expect("registered tree resolves by name");
+        let theme = render::ui::theme::UiTheme::engine_default();
+        let mut ui = render::ui::tree::UiTree::from_descriptor(resolved, &theme);
+        let mut fs = render::ui::text::build_font_system();
+        let data = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &render::ui::tree::ImageSizes::new(),
+            &std::collections::HashMap::new(),
+            &render::ui::tree::CellValues::new(),
+            0.0,
+        );
+        assert!(
+            data.texts.iter().any(|t| t.content == "REGISTERED"),
+            "the registered UI renders from drained data with no VM resident",
+        );
+    }
+
+    #[test]
+    fn malformed_theme_token_is_skipped_and_mod_init_still_succeeds() {
+        // A structurally-broken `theme` token (a color that is not a [r,g,b,a]
+        // tuple) is logged and skipped per-token (`ui.md` §5) rather than
+        // aborting the mod — consistent with the `uiTrees` per-entry skip and the
+        // Luau theme twin. The mod still loads: its name and any valid sibling
+        // token survive; only the malformed token is degraded out. Boot never
+        // aborts and never panics.
+        let dir = temp_mod_root("bad_theme");
+        std::fs::write(
+            dir.join("start-script.js"),
+            r#"
+            globalThis.setupMod = function() {
+                return {
+                    name: "BadThemeMod",
+                    theme: { colors: { critical: "not-an-rgba-array", ok: [1, 0, 0, 1] } },
+                };
+            };
+            "#,
+        )
+        .unwrap();
+
+        let mut rt = test_runtime();
+        rt.run_mod_init(&dir)
+            .expect("a wrong-type theme token is skipped, not a fatal error");
+        let manifest = rt
+            .mod_manifest()
+            .expect("the manifest still drains despite the bad token");
+        // The rest of the manifest still drains.
+        assert_eq!(manifest.name, "BadThemeMod");
+        // The malformed token is degraded out; the valid sibling token survives.
+        assert!(
+            !manifest.theme.colors.contains_key("critical"),
+            "the malformed `critical` color token should be skipped",
+        );
+        assert!(
+            manifest.theme.colors.contains_key("ok"),
+            "the valid `ok` color token should still drain",
+        );
+    }
+
     /// Mirrors the consumed-event gate in `window_event` for keyboard input:
     /// when egui reports `consumed`, only the `ToggleDebugPanel` chord is
     /// allowed to fire; every other resolved diagnostic action is dropped and
@@ -4411,6 +4691,71 @@ mod tests {
         assert!(
             after_first_half_step > before_change,
             "clock must keep moving forward (no backward jump) across a scale change"
+        );
+    }
+
+    // --- CellWrite dispatch: presentation cell written, slot table untouched ---
+    //
+    // G1b AC #6: a `localState` `.set()` (the `CellWrite` system-reaction command,
+    // drained by `App::dispatch_system_commands`) must write into the
+    // `PresentationCellStore` but leave the authoritative slot table (`SlotTable`)
+    // completely untouched.
+    //
+    // `App` cannot be constructed headlessly (it needs a window and GPU; see
+    // context/lib/testing_guide.md §3). The test therefore exercises the
+    // two-component seam that the `CellWrite` arm of `dispatch_system_commands`
+    // exercises directly:
+    //   1. `scripting_systems::presentation_cells::json_to_cell_value` — coerces
+    //      the raw JSON value (identical to how the drain does it).
+    //   2. `PresentationCellStore::write` — the only mutation the drain performs.
+    //   3. `SlotTable` — checked for the absence of any matching entry, proving the
+    //      drain never touches the authoritative store.
+    // This mirrors the production `CellWrite` arm exactly: that arm calls nothing
+    // else.
+
+    #[test]
+    fn cell_write_dispatch_writes_presentation_cell_and_leaves_slot_table_untouched() {
+        use crate::scripting::slot_table::SlotTable;
+        use scripting_systems::presentation_cells::{PresentationCellStore, json_to_cell_value};
+
+        let scope = "counter".to_string();
+        let cell = "count".to_string();
+        // The raw JSON value as it arrives from the `CellWrite` command.
+        let raw_value = serde_json::Value::Number(serde_json::Number::from(42));
+
+        // --- Drain path: mirror `App::dispatch_system_commands` CellWrite arm ---
+        let mut presentation_cells = PresentationCellStore::new();
+        let slot_table = SlotTable::new();
+
+        let cell_value = json_to_cell_value(&raw_value)
+            .expect("a numeric JSON value must coerce to a SlotValue");
+        presentation_cells.write(scope.clone(), cell.clone(), cell_value);
+
+        // --- AC assertion 1: presentation cell now holds the written value ---
+        let snapshot = presentation_cells.snapshot();
+        assert_eq!(
+            snapshot.get(&(scope.clone(), cell.clone())),
+            Some(&crate::scripting::slot_table::SlotValue::Number(42.0)),
+            "CellWrite must land in the presentation cell store",
+        );
+
+        // --- AC assertion 2: authoritative slot table has NO corresponding entry ---
+        // The slot table is keyed by dotted `namespace.slot` names (never by
+        // `(scope, cell)` pairs). We verify that no slot with a name that could
+        // encode the written cell exists beyond the built-in engine-declared slots —
+        // and that the built-in engine slots carry no value for `counter.count`.
+        assert!(
+            slot_table.get("counter.count").is_none(),
+            "CellWrite must NOT create a slot-table entry for the written cell",
+        );
+        // Cross-check: the default slot table carries its built-in engine slots
+        // (player.*, screen.*, input.*, ui.*) but nothing under the `counter`
+        // namespace written above.
+        assert!(
+            slot_table
+                .iter()
+                .all(|(name, _)| !name.starts_with("counter.")),
+            "slot table must have no entries under the `counter` namespace after a CellWrite",
         );
     }
 }

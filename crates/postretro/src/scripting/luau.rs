@@ -66,6 +66,27 @@ const RUNTIME_LUAU_SRC: &str = include_str!("../../../../sdk/lib/runtime.luau");
 /// `setupLevel`'s `crossings` array — no FFI until the script returns.
 const UI_REACTIONS_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/reactions.luau");
 
+/// SDK library prelude — `ui/widgets.luau` returns a table whose widget-factory
+/// fields are destructured into globals (the capitalized `Text`/`Panel`/… leaf
+/// constructors). Pure descriptor builders; the FFI boundary is the eventual
+/// `return` of the authored tree. The `validateBorder`/`resolveReactionName`
+/// helpers it also exports are internal and intentionally NOT lifted.
+const UI_WIDGETS_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/widgets.luau");
+
+/// SDK library prelude — `ui/layout.luau` returns a table whose container-factory
+/// fields (`VStack`/`HStack`/`Grid`) are destructured into globals. Pure builders.
+const UI_LAYOUT_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/layout.luau");
+
+/// SDK library prelude — `ui/tree.luau` returns a table whose only field (`Tree`)
+/// is destructured into a global. Pure placement-envelope builder.
+const UI_TREE_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/tree.luau");
+
+/// SDK library prelude — `ui/state.luau` returns a table whose only field
+/// (`storeHandle`) is destructured into a global. Pure `.get()/.set()` wrapper
+/// over a value-typed store-slot handle; `:set(...)` returns a `setState`
+/// descriptor and never writes the store.
+const UI_STATE_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/state.luau");
+
 /// Lights SDK fields lifted to globals after evaluating
 /// `entities/lights.luau`. Empty: the public vocabulary lives on the handle
 /// returned from `wrapLightEntity`, which is itself installed as a
@@ -115,6 +136,27 @@ const UI_REACTIONS_FIELDS: &[&str] = &[
     "backspaceText",
     "clearText",
 ];
+
+/// UI widget-factory SDK fields lifted to globals after evaluating
+/// `ui/widgets.luau`. The capitalized leaf-widget constructors only —
+/// `validateBorder` / `resolveReactionName` are internal helpers that
+/// `layout.luau` redeclares locally, so they stay off the global table.
+const UI_WIDGETS_FIELDS: &[&str] = &[
+    "Text", "Panel", "Image", "Spacer", "Button", "Slider", "Bar",
+];
+
+/// UI layout-factory SDK fields lifted to globals after evaluating
+/// `ui/layout.luau`.
+const UI_LAYOUT_FIELDS: &[&str] = &["VStack", "HStack", "Grid"];
+
+/// UI tree-factory SDK fields lifted to globals after evaluating `ui/tree.luau`.
+const UI_TREE_FIELDS: &[&str] = &["Tree"];
+
+/// UI state-handle SDK fields lifted to globals after evaluating
+/// `ui/state.luau`. `storeHandle` wraps writable store-slot handles; `ui` is
+/// the namespaced object exposing `ui.createLocalState` (G1b). Both must be
+/// promoted to bare globals so Luau authors can call them directly.
+const UI_STATE_FIELDS: &[&str] = &["storeHandle", "ui"];
 
 /// Evaluate the Luau SDK prelude in `lua` and promote the return values to
 /// globals. Must be called after primitives are installed and before
@@ -331,6 +373,40 @@ pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
             .map_err(|e| ScriptError::InvalidArgument {
                 reason: format!("failed to install global `{field}`: {e}"),
             })?;
+    }
+
+    // Step 7c–7f: evaluate the M13 G1a UI factory modules and lift their fields
+    // to globals. All are pure descriptor builders with no primitive dependency,
+    // so ordering relative to the other steps is irrelevant. Each module is
+    // self-contained (the Luau prelude has no cross-module loader), so they are
+    // evaluated independently rather than requiring one another.
+    for (src, name, fields) in [
+        (UI_WIDGETS_LUAU_SRC, "ui/widgets.luau", UI_WIDGETS_FIELDS),
+        (UI_LAYOUT_LUAU_SRC, "ui/layout.luau", UI_LAYOUT_FIELDS),
+        (UI_TREE_LUAU_SRC, "ui/tree.luau", UI_TREE_FIELDS),
+        (UI_STATE_LUAU_SRC, "ui/state.luau", UI_STATE_FIELDS),
+    ] {
+        let module: Table = lua
+            .load(src)
+            .set_name(format!("postretro/sdk/{name}"))
+            .eval()
+            .map_err(|e| ScriptError::ScriptThrew {
+                msg: format!("failed to evaluate SDK prelude `{name}`: {e}"),
+                source_name: format!("sdk/lib/{name}"),
+            })?;
+        for field in fields {
+            let value: mlua::Value =
+                module
+                    .get(*field)
+                    .map_err(|e| ScriptError::InvalidArgument {
+                        reason: format!("{name} missing `{field}`: {e}"),
+                    })?;
+            globals
+                .set(*field, value)
+                .map_err(|e| ScriptError::InvalidArgument {
+                    reason: format!("failed to install global `{field}`: {e}"),
+                })?;
+        }
     }
 
     // Step 8: evaluate `runtime.luau` and promote its table to global `runtime`.
@@ -1381,6 +1457,350 @@ mod tests {
                 "UI_REACTIONS_FIELDS is missing `{name}` — it is declared in \
                 sdk/lib/ui/reactions.luau and the Luau typedef but was not lifted \
                 to a bare global, so Luau callers hit nil at runtime",
+            );
+        }
+    }
+
+    #[test]
+    fn sdk_prelude_installs_ui_factory_globals() {
+        // M13 G1a Task 6: the widget/layout/tree/state factory modules must be
+        // wired into the Luau prelude so authors call them by bare name. Without
+        // the wiring (the precedent the Task 3/4 notes flag), a Luau author hits a
+        // nil global at runtime while a TS author works (TS lifts via the
+        // globalThis rewrite). Asserts every lifted field is a callable global and
+        // that the internal `validateBorder`/`resolveReactionName` helpers stay
+        // OFF the global table.
+        let (subsys, _ctx) = setup();
+        let src = r#"
+            local function isfn(n) return type(_G[n]) == "function" end
+            return
+              isfn("Text"), isfn("Panel"), isfn("Image"), isfn("Spacer"),
+              isfn("Button"), isfn("Slider"), isfn("Bar"),
+              isfn("VStack"), isfn("HStack"), isfn("Grid"),
+              isfn("Tree"), isfn("storeHandle"),
+              type(validateBorder), type(resolveReactionName)
+        "#;
+        let results: mlua::MultiValue = subsys
+            .run_source(Which::Definition, src, "ui_prelude.luau")
+            .unwrap();
+        let vals: Vec<mlua::Value> = results.into_iter().collect();
+        // First 12 are the factory globals: must all be functions (true).
+        for (i, v) in vals.iter().take(12).enumerate() {
+            assert_eq!(
+                v.as_boolean(),
+                Some(true),
+                "UI factory global #{i} must be installed as a function"
+            );
+        }
+        // Last 2 are the internal helpers: must be `nil` (not leaked).
+        assert_eq!(
+            vals[12].as_str().as_deref(),
+            Some("nil"),
+            "validateBorder must NOT be a bare global"
+        );
+        assert_eq!(
+            vals[13].as_str().as_deref(),
+            Some("nil"),
+            "resolveReactionName must NOT be a bare global"
+        );
+    }
+
+    /// M13 G1a Task 6: `defineReaction` auto-id determinism + byte-identical
+    /// `onPress` (handle vs. bare string) + bare-string round-trip. Drives the
+    /// ACTUAL `data_script.luau` factory and `widgets.luau`'s `Button` under a raw
+    /// mlua VM, then converts via the engine's `lua_to_json` walker so the
+    /// assertions are on the real wire JSON.
+    #[test]
+    fn define_reaction_auto_id_is_deterministic_and_on_press_is_byte_identical() {
+        const DATA_SCRIPT_SRC: &str = include_str!("../../../../sdk/lib/data_script.luau");
+        const WIDGETS_SRC: &str = include_str!("../../../../sdk/lib/ui/widgets.luau");
+        let lua = mlua::Lua::new();
+        let data_script: mlua::Table = lua
+            .load(DATA_SCRIPT_SRC)
+            .set_name("data_script.luau")
+            .eval()
+            .unwrap();
+        let widgets: mlua::Table = lua
+            .load(WIDGETS_SRC)
+            .set_name("widgets.luau")
+            .eval()
+            .unwrap();
+        lua.globals().set("D", data_script).unwrap();
+        lua.globals().set("W", widgets).unwrap();
+
+        // (1) The same body run twice yields the same content-derived auto-id.
+        let (id_a, id_b): (String, String) = lua
+            .load(
+                r#"
+                local body = { primitive = "playSound", args = { sound = "click" } }
+                local a = D.defineReaction(body)
+                local b = D.defineReaction({ primitive = "playSound", args = { sound = "click" } })
+                return a.name, b.name
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(id_a, id_b, "auto-id must be deterministic across runs");
+        assert!(
+            id_a.starts_with("reaction_"),
+            "auto-id must carry the `reaction_` prefix, got {id_a}"
+        );
+
+        // (2) `Button({ onPress = handle })` emits `onPress: "<id>"` byte-identical
+        // to `Button({ onPress = "<id>" })`. Compare through lua_to_json.
+        let handle_btn: mlua::Value = lua
+            .load(
+                r#"
+                local handle = D.defineReaction({ primitive = "playSound", args = { sound = "click" } })
+                return W.Button({ id = "a", label = "A", onPress = handle })
+                "#,
+            )
+            .eval()
+            .unwrap();
+        let handle_json = super::super::conv::lua_to_json(handle_btn).unwrap();
+        let on_press = handle_json
+            .get("onPress")
+            .and_then(|v| v.as_str())
+            .expect("onPress must be a string")
+            .to_string();
+        assert_eq!(
+            on_press, id_a,
+            "Button onPress from a handle must equal the handle's auto-id"
+        );
+
+        let string_btn: mlua::Value = lua
+            .load(&format!(
+                r#"return W.Button({{ id = "a", label = "A", onPress = "{on_press}" }})"#
+            ))
+            .eval()
+            .unwrap();
+        let string_json = super::super::conv::lua_to_json(string_btn).unwrap();
+        assert_eq!(
+            handle_json, string_json,
+            "Button({{onPress: handle}}) must be byte-identical to Button({{onPress: \"<id>\"}})"
+        );
+
+        // (3) A bare-string onPress round-trips unchanged (the shipped path).
+        let bare: mlua::Value = lua
+            .load(r#"return W.Button({ id = "x", label = "X", onPress = "resumeGame" })"#)
+            .eval()
+            .unwrap();
+        let bare_json = super::super::conv::lua_to_json(bare).unwrap();
+        assert_eq!(
+            bare_json.get("onPress").and_then(|v| v.as_str()),
+            Some("resumeGame"),
+            "a bare-string onPress must pass through unchanged"
+        );
+    }
+
+    /// M13 G1b: `ui.createLocalState` is promoted to the `ui` global after the
+    /// prelude step that evaluates `ui/state.luau`. Without `"ui"` in
+    /// `UI_STATE_FIELDS`, a Luau author calling `ui.createLocalState(...)` gets
+    /// "attempt to index nil value 'ui'". This test verifies:
+    ///   1. `ui` is a table (not nil).
+    ///   2. `ui.createLocalState` is a function.
+    ///   3. Calling `ui.createLocalState({ hp = 100 })` returns a bundle whose
+    ///      `cells.hp:get()` is a `{ local = ... }` bind ref.
+    ///   4. `cells.hp:set(42)` returns a `cellWrite` reaction descriptor
+    ///      (primitive = "cellWrite", args.cell = "hp", args.value = 42).
+    #[test]
+    fn sdk_prelude_installs_ui_create_local_state() {
+        let (subsys, _ctx) = setup();
+        let src = r#"
+            -- 1. ui is a table, not nil
+            assert(type(ui) == "table",
+                "ui must be a table, got: " .. type(ui))
+            -- 2. ui.createLocalState is a function
+            assert(type(ui.createLocalState) == "function",
+                "ui.createLocalState must be a function, got: " .. type(ui.createLocalState))
+            -- 3. Call createLocalState and inspect the bundle
+            local bundle = ui.createLocalState({ hp = 100 })
+            assert(type(bundle) == "table", "bundle must be a table")
+            assert(type(bundle.cells) == "table", "bundle.cells must be a table")
+            local cell = bundle.cells.hp
+            assert(type(cell) == "table", "cells.hp must be a table")
+            -- 4. :get() yields the { local } bind ref
+            local ref_ = cell:get()
+            assert(type(ref_) == "table", "get() must return a table")
+            local localField = ref_["local"]
+            assert(type(localField) == "string",
+                "bind ref must have a string 'local' field, got: " .. type(localField))
+            -- 5. :set(v) emits a cellWrite reaction descriptor
+            local desc = cell:set(42)
+            assert(type(desc) == "table", "set() must return a table")
+            assert(desc.primitive == "cellWrite",
+                "set() primitive must be 'cellWrite', got: " .. tostring(desc.primitive))
+            assert(type(desc.args) == "table", "set() must have args table")
+            assert(desc.args.cell == "hp",
+                "args.cell must be 'hp', got: " .. tostring(desc.args.cell))
+            assert(desc.args.value == 42,
+                "args.value must be 42, got: " .. tostring(desc.args.value))
+            -- 6. args.scope is present and is the stable "localState.N" id.
+            -- The SDK's monotonic counter starts at 0; the first createLocalState
+            -- call in this script yields "localState.0".
+            assert(type(desc.args.scope) == "string" and #desc.args.scope > 0,
+                "args.scope must be a non-empty string, got: " .. tostring(desc.args.scope))
+            assert(desc.args.scope == "localState.0",
+                "args.scope must be 'localState.0', got: " .. tostring(desc.args.scope))
+            return true
+        "#;
+        let ok: bool = subsys
+            .run_source(Which::Definition, src, "ui_create_local_state.luau")
+            .unwrap();
+        assert!(ok, "ui.createLocalState round-trip failed");
+    }
+
+    // --- M13 G1a, Task 3: TS/Luau widget-factory JSON parity ---
+    //
+    // The AC requires the TS and Luau widget/layout factories to emit IDENTICAL
+    // JSON for identical inputs. The Luau factories run here under a raw `mlua`
+    // VM; each result table is converted with the engine's `lua_to_json` walker
+    // (the same conversion the Task 5 bridge will use) and compared — as parsed
+    // `serde_json::Value`, so table key order is irrelevant — to the JSON the TS
+    // factory emits for the same call (captured by running the TS factories under
+    // bun; see the round-trip cases in `render::ui::descriptor`).
+    #[test]
+    fn luau_widget_factories_emit_json_identical_to_typescript() {
+        const WIDGETS_SRC: &str = include_str!("../../../../sdk/lib/ui/widgets.luau");
+        const LAYOUT_SRC: &str = include_str!("../../../../sdk/lib/ui/layout.luau");
+
+        let lua = mlua::Lua::new();
+        let widgets: mlua::Table = lua
+            .load(WIDGETS_SRC)
+            .set_name("widgets.luau")
+            .eval()
+            .expect("widgets.luau must evaluate to a module table");
+        let layout: mlua::Table = lua
+            .load(LAYOUT_SRC)
+            .set_name("layout.luau")
+            .eval()
+            .expect("layout.luau must evaluate to a module table");
+        lua.globals().set("W", widgets).unwrap();
+        lua.globals().set("L", layout).unwrap();
+
+        // (lua expression producing a widget table, expected JSON == TS output)
+        let cases: &[(&str, &str)] = &[
+            (
+                r#"W.Text({ content = "hello" })"#,
+                r#"{"kind":"text","content":"hello","fontSize":12,"color":[1,1,1,1]}"#,
+            ),
+            (
+                r#"W.Text({ content = "0", fontSize = 18, color = {1,1,1,1}, bind = { slot = "player.health", format = "HP {}" } })"#,
+                r#"{"kind":"text","content":"0","fontSize":18,"color":[1,1,1,1],"bind":{"slot":"player.health","format":"HP {}"}}"#,
+            ),
+            (
+                r#"W.Text({ content = "0", fontSize = 18, color = {1,1,1,1}, bind = { slot = "player.health", tween = { durationMs = 1200, easing = "easeOut", from = 0 } } })"#,
+                r#"{"kind":"text","content":"0","fontSize":18,"color":[1,1,1,1],"bind":{"slot":"player.health","tween":{"durationMs":1200,"easing":"easeOut","from":0}}}"#,
+            ),
+            (
+                r#"W.Text({ content = "0", fontSize = 18, color = {1,1,1,1}, bind = { slot = "player.health" }, styleRanges = { max = 100, entries = { { upTo = 0.25, color = "critical" }, { color = "ok" } } } })"#,
+                r#"{"kind":"text","content":"0","fontSize":18,"color":[1,1,1,1],"bind":{"slot":"player.health"},"styleRanges":{"max":100,"entries":[{"upTo":0.25,"color":"critical"},{"color":"ok"}]}}"#,
+            ),
+            (
+                r#"W.Panel({ fill = {0.1,0.2,0.3,1}, border = { texture = "ui/frame", slice = {8,8,8,8}, tint = {1,1,1,1} } })"#,
+                r#"{"kind":"panel","fill":[0.1,0.2,0.3,1],"border":{"texture":"ui/frame","slice":[8,8,8,8],"tint":[1,1,1,1]}}"#,
+            ),
+            (
+                r#"W.Panel({ fill = {0.1,0.2,0.3,1} })"#,
+                r#"{"kind":"panel","fill":[0.1,0.2,0.3,1]}"#,
+            ),
+            (
+                r#"W.Panel({ fill = {0,0,0,1}, bind = { slot = "intro.flashColor", tween = { durationMs = 300, easing = "linear", from = {1,0,0,1} } } })"#,
+                r#"{"kind":"panel","fill":[0,0,0,1],"bind":{"slot":"intro.flashColor","tween":{"durationMs":300,"easing":"linear","from":[1,0,0,1]}}}"#,
+            ),
+            (
+                r#"W.Image({ asset = "ui/logo" })"#,
+                r#"{"kind":"image","asset":"ui/logo"}"#,
+            ),
+            (
+                r#"W.Spacer({ flexGrow = 1 })"#,
+                r#"{"kind":"spacer","flexGrow":1}"#,
+            ),
+            (
+                r#"W.Button({ id = "resume", label = "Resume", onPress = "resumeGame" })"#,
+                r#"{"kind":"button","id":"resume","label":"Resume","onPress":"resumeGame"}"#,
+            ),
+            (
+                r#"W.Button({ id = "a", label = "A", onPress = { name = "fa" } })"#,
+                r#"{"kind":"button","id":"a","label":"A","onPress":"fa"}"#,
+            ),
+            (
+                r#"W.Slider({ id = "vol", label = "Volume", bind = { slot = "audio.master" }, min = 0, max = 1, step = 0.1, capturesNav = {"nav.left","nav.right"} })"#,
+                r#"{"kind":"slider","id":"vol","label":"Volume","bind":{"slot":"audio.master"},"min":0,"max":1,"step":0.1,"capturesNav":["nav.left","nav.right"]}"#,
+            ),
+            (
+                r#"W.Bar({ bind = { slot = "player.health" }, max = 100, fill = {0,1,0,1}, background = {0.1,0.1,0.1,1} })"#,
+                r#"{"kind":"bar","bind":{"slot":"player.health"},"max":100,"fill":[0,1,0,1],"background":[0.1,0.1,0.1,1]}"#,
+            ),
+            (
+                r#"L.VStack({ gap = 4, padding = 8, align = "start" }, { W.Text({ content = "hi", fontSize = 12 }) })"#,
+                r#"{"kind":"vstack","gap":4,"padding":8,"align":"start","children":[{"kind":"text","content":"hi","fontSize":12,"color":[1,1,1,1]}]}"#,
+            ),
+            (
+                r#"L.Grid({ gap = 1, padding = 3, align = "stretch", cols = 2 }, { W.Image({ asset = "ui/icon" }) })"#,
+                r#"{"kind":"grid","gap":1,"padding":3,"align":"stretch","cols":2,"children":[{"kind":"image","asset":"ui/icon"}]}"#,
+            ),
+            (
+                // Detailed focus policy (wrap:false + repeat) + a child. (A child
+                // is present so `children` is an unambiguous array under the generic
+                // `lua_to_json` walker — an EMPTY Lua table is `{}`, not `[]`, a
+                // limitation the Task 5 bridge resolves by deserializing straight
+                // into the typed `ContainerWidget` rather than a generic `Value`.)
+                r#"L.Grid({ cols = 2, focus = { policy = "spatial", wrap = false, ["repeat"] = { initialDelayMs = 300, intervalMs = 80 } } }, { W.Image({ asset = "x" }) })"#,
+                r#"{"kind":"grid","gap":0,"padding":0,"align":"start","cols":2,"focus":{"policy":"spatial","wrap":false,"repeat":{"initialDelayMs":300,"intervalMs":80}},"children":[{"kind":"image","asset":"x"}]}"#,
+            ),
+        ];
+
+        for (expr, expected_ts) in cases {
+            let value: mlua::Value = lua
+                .load(&format!("return {expr}"))
+                .set_name("case")
+                .eval()
+                .unwrap_or_else(|e| panic!("luau factory call failed: {expr}\n{e}"));
+            let got = super::super::conv::lua_to_json(value)
+                .unwrap_or_else(|e| panic!("lua_to_json failed for {expr}: {e}"));
+            let expected: serde_json::Value =
+                serde_json::from_str(expected_ts).expect("TS expected JSON parses");
+            assert_eq!(
+                got, expected,
+                "Luau factory output differs from TS for `{expr}`:\nluau: {got}\nts:   {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn luau_widget_factories_reject_invalid_props_with_field_named_errors() {
+        const WIDGETS_SRC: &str = include_str!("../../../../sdk/lib/ui/widgets.luau");
+        const LAYOUT_SRC: &str = include_str!("../../../../sdk/lib/ui/layout.luau");
+        let lua = mlua::Lua::new();
+        let widgets: mlua::Table = lua.load(WIDGETS_SRC).eval().unwrap();
+        let layout: mlua::Table = lua.load(LAYOUT_SRC).eval().unwrap();
+        lua.globals().set("W", widgets).unwrap();
+        lua.globals().set("L", layout).unwrap();
+
+        // (lua call expected to error, substring the error must name)
+        let cases: &[(&str, &str)] = &[
+            (r#"W.Text({})"#, "content"),
+            (r#"W.Image({ asset = "" })"#, "asset"),
+            (
+                r#"W.Button({ id = "x", label = "X", onPress = 42 })"#,
+                "onPress",
+            ),
+            (
+                r#"W.Slider({ id = "v", label = "V", min = 0, max = 1, step = 1 })"#,
+                "bind",
+            ),
+            (r#"L.Grid({ cols = 0 }, {})"#, "cols"),
+        ];
+        for (expr, field) in cases {
+            let err = lua
+                .load(&format!("return {expr}"))
+                .eval::<mlua::Value>()
+                .expect_err(&format!("expected `{expr}` to error"));
+            let msg = err.to_string();
+            assert!(
+                msg.contains(field),
+                "error for `{expr}` must name `{field}`, got: {msg}"
             );
         }
     }

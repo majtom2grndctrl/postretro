@@ -140,26 +140,93 @@ export type NamedReactionDescriptor = {
 --- `entities` field of `setupMod`'s return value, not here.
 export type LevelManifest = {
   reactions: {NamedReactionDescriptor},
-  -- State-crossing watchers (M13 HUD dynamics). `CrossingDescriptor` is
-  -- declared in postretro.d.luau (the generated SDK-lib type block). See
+  -- State-crossing watchers (HUD dynamics). `CrossingDescriptor` is declared
+  -- in postretro.d.luau (the generated SDK-lib type block). See
   -- `onStateCrossing`.
   crossings: {CrossingDescriptor}?,
 }
 
 local DataScriptSdk = {}
 
+-- Order-stable serialization of a reaction body: table keys are emitted sorted
+-- so two structurally identical bodies always serialize identically. Used only
+-- to derive a deterministic auto-id; not a general JSON encoder.
+local function stableStringify(value: any): string
+  local t = type(value)
+  if t == "table" then
+    -- Distinguish array-like from map-like by checking a contiguous 1..n run.
+    local n = #value
+    local isArray = n > 0
+    if isArray then
+      for k in pairs(value) do
+        if type(k) ~= "number" then
+          isArray = false
+          break
+        end
+      end
+    end
+    if isArray then
+      local parts = {}
+      for i = 1, n do
+        parts[i] = stableStringify(value[i])
+      end
+      return "[" .. table.concat(parts, ",") .. "]"
+    end
+    local keys = {}
+    for k in pairs(value) do
+      table.insert(keys, tostring(k))
+    end
+    table.sort(keys)
+    local parts = {}
+    for _, k in ipairs(keys) do
+      table.insert(parts, string.format("%q", k) .. ":" .. stableStringify((value :: any)[k]))
+    end
+    return "{" .. table.concat(parts, ",") .. "}"
+  elseif t == "string" then
+    return string.format("%q", value)
+  else
+    return tostring(value)
+  end
+end
+
+-- Deterministic, run-stable id derived from a reaction body via FNV-1a (32-bit)
+-- over its order-stable serialization. Re-running registration yields the same
+-- id — crossings and the `onPress` wire form reference it. Bit ops use bit32.
+-- NOTE: run-stable within Luau but NOT identical to the TS auto-id (different
+-- stable-stringify). Do not assume cross-runtime id parity; use an explicit
+-- name when the id must match between TS and Luau runtimes.
+local function autoReactionId(descriptor: any): string
+  local serialized = stableStringify(descriptor)
+  local hash = 0x811c9dc5
+  for i = 1, #serialized do
+    hash = bit32.bxor(hash, string.byte(serialized, i))
+    hash = bit32.band(hash * 0x01000193, 0xffffffff)
+  end
+  return string.format("reaction_%08x", hash)
+end
+
 --- Build a named reaction descriptor. Pure: returns a plain table, does
 --- not register anything in the engine. The engine consumes the table
---- when `setupLevel` returns.
+--- when `setupLevel` returns. `name` is optional: when omitted a deterministic,
+--- run-stable id is derived from the body (FNV-1a over an order-stable
+--- serialization), so re-running registration yields the same auto-id.
 function DataScriptSdk.defineReaction(
-  name: string,
-  descriptor: ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor
+  nameOrBody: string | (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor),
+  descriptor: (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)?
 ): NamedReactionDescriptor
+  local name: string
+  local body: any
+  if type(nameOrBody) == "string" then
+    name = nameOrBody
+    body = descriptor
+  else
+    body = nameOrBody
+    name = autoReactionId(body)
+  end
   local out: NamedReactionDescriptor = { name = name }
-  -- Copy fields from the descriptor into the flat shape the deserializer
-  -- reads. Only the fields present on each variant are set; unused fields
-  -- are left absent.
-  local d = descriptor :: any
+  -- Copy fields from the body into the flat shape the deserializer reads. Only
+  -- the fields present on each variant are set; unused fields are left absent.
+  local d = body :: any
   if d.progress ~= nil then
     out.progress = d.progress
   end

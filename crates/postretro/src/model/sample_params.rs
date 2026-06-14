@@ -4,8 +4,10 @@
 //
 // CPU-only by contract (no wgpu, no `crate::render`). These are plain data, not
 // GPU types, so they live in the model layer where every party imports them.
-// SOLE producer of the sample-param types: the game-side animation resolver
-// (`scripting/systems/mesh_anim.rs`). CONSUMERS: the renderer's pose sampler
+// PRODUCERS: the game-side animation resolver (`scripting/systems/mesh_anim.rs`)
+// for the stateful animation path, AND the mesh render collector
+// (`scripting/systems/mesh_render.rs`) on the stateless/fallback path
+// (`MeshSampleParams::stateless`). CONSUMERS: the renderer's pose sampler
 // (`render::mesh_pass`) AND the hit-zone raycast facility
 // (`scripting/systems/hit_zones.rs`). `instance_phase` is shared CPU logic both
 // the renderer and the hit-zone facility call to compute the SAME per-instance

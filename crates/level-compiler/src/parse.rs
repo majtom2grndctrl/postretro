@@ -2643,4 +2643,168 @@ mod tests {
         let geo_map = GeoMap::new(shalrath_map);
         assert!(!is_axis_aligned_brush_set(&geo_map, &[]));
     }
+
+    // -- nav_* worldspawn KVP parsing --
+    //
+    // Each test exercises one of the five `nav_*` keys that feed `NavParams` via
+    // `parse_positive_nav_kvp`. The fixture helper `parse_worldspawn_with_kvp`
+    // is reused from the `_lightmap_density` tests above.
+
+    #[test]
+    fn nav_agent_radius_kvp_overrides_agent_radius_field() {
+        let map_data = parse_worldspawn_with_kvp("\"nav_agent_radius\" \"0.6\"");
+        let eps = 1e-5_f32;
+        assert!(
+            (map_data.nav_params.agent_radius - 0.6).abs() < eps,
+            "nav_agent_radius 0.6 must override NavParams::agent_radius, got {}",
+            map_data.nav_params.agent_radius,
+        );
+    }
+
+    #[test]
+    fn nav_agent_height_kvp_overrides_agent_height_field() {
+        let map_data = parse_worldspawn_with_kvp("\"nav_agent_height\" \"0.6\"");
+        let eps = 1e-5_f32;
+        assert!(
+            (map_data.nav_params.agent_height - 0.6).abs() < eps,
+            "nav_agent_height 0.6 must override NavParams::agent_height, got {}",
+            map_data.nav_params.agent_height,
+        );
+    }
+
+    #[test]
+    fn nav_step_height_kvp_overrides_step_height_field() {
+        let map_data = parse_worldspawn_with_kvp("\"nav_step_height\" \"0.6\"");
+        let eps = 1e-5_f32;
+        assert!(
+            (map_data.nav_params.step_height - 0.6).abs() < eps,
+            "nav_step_height 0.6 must override NavParams::step_height, got {}",
+            map_data.nav_params.step_height,
+        );
+    }
+
+    #[test]
+    fn nav_max_slope_kvp_overrides_max_slope_deg_field() {
+        let map_data = parse_worldspawn_with_kvp("\"nav_max_slope\" \"0.6\"");
+        let eps = 1e-5_f32;
+        assert!(
+            (map_data.nav_params.max_slope_deg - 0.6).abs() < eps,
+            "nav_max_slope 0.6 must override NavParams::max_slope_deg, got {}",
+            map_data.nav_params.max_slope_deg,
+        );
+    }
+
+    #[test]
+    fn nav_cell_size_kvp_overrides_cell_size_field() {
+        let map_data = parse_worldspawn_with_kvp("\"nav_cell_size\" \"0.6\"");
+        let eps = 1e-5_f32;
+        assert!(
+            (map_data.nav_params.cell_size - 0.6).abs() < eps,
+            "nav_cell_size 0.6 must override NavParams::cell_size, got {}",
+            map_data.nav_params.cell_size,
+        );
+    }
+
+    #[test]
+    fn nav_params_absent_keys_fall_back_to_defaults() {
+        // No nav_* KVPs authored — every field must equal NavParams::default().
+        let map_data = parse_worldspawn_with_kvp("");
+        let defaults = NavParams::default();
+        let eps = 1e-5_f32;
+        assert!(
+            (map_data.nav_params.agent_radius - defaults.agent_radius).abs() < eps,
+            "absent nav_agent_radius must fall back to default {}, got {}",
+            defaults.agent_radius,
+            map_data.nav_params.agent_radius,
+        );
+        assert!(
+            (map_data.nav_params.agent_height - defaults.agent_height).abs() < eps,
+            "absent nav_agent_height must fall back to default {}, got {}",
+            defaults.agent_height,
+            map_data.nav_params.agent_height,
+        );
+        assert!(
+            (map_data.nav_params.step_height - defaults.step_height).abs() < eps,
+            "absent nav_step_height must fall back to default {}, got {}",
+            defaults.step_height,
+            map_data.nav_params.step_height,
+        );
+        assert!(
+            (map_data.nav_params.max_slope_deg - defaults.max_slope_deg).abs() < eps,
+            "absent nav_max_slope must fall back to default {}, got {}",
+            defaults.max_slope_deg,
+            map_data.nav_params.max_slope_deg,
+        );
+        assert!(
+            (map_data.nav_params.cell_size - defaults.cell_size).abs() < eps,
+            "absent nav_cell_size must fall back to default {}, got {}",
+            defaults.cell_size,
+            map_data.nav_params.cell_size,
+        );
+    }
+
+    #[test]
+    fn nav_agent_radius_invalid_zero_falls_back_to_default() {
+        let map_data = parse_worldspawn_with_kvp("\"nav_agent_radius\" \"0\"");
+        let eps = 1e-5_f32;
+        let default = NavParams::default().agent_radius;
+        assert!(
+            (map_data.nav_params.agent_radius - default).abs() < eps,
+            "zero nav_agent_radius must warn and fall back to default {}, got {}",
+            default,
+            map_data.nav_params.agent_radius,
+        );
+    }
+
+    #[test]
+    fn nav_agent_height_invalid_negative_falls_back_to_default() {
+        let map_data = parse_worldspawn_with_kvp("\"nav_agent_height\" \"-1.8\"");
+        let eps = 1e-5_f32;
+        let default = NavParams::default().agent_height;
+        assert!(
+            (map_data.nav_params.agent_height - default).abs() < eps,
+            "negative nav_agent_height must warn and fall back to default {}, got {}",
+            default,
+            map_data.nav_params.agent_height,
+        );
+    }
+
+    #[test]
+    fn nav_step_height_invalid_nan_falls_back_to_default() {
+        let map_data = parse_worldspawn_with_kvp("\"nav_step_height\" \"nan\"");
+        let eps = 1e-5_f32;
+        let default = NavParams::default().step_height;
+        assert!(
+            (map_data.nav_params.step_height - default).abs() < eps,
+            "NaN nav_step_height must warn and fall back to default {}, got {}",
+            default,
+            map_data.nav_params.step_height,
+        );
+    }
+
+    #[test]
+    fn nav_max_slope_invalid_unparseable_falls_back_to_default() {
+        let map_data = parse_worldspawn_with_kvp("\"nav_max_slope\" \"not-a-number\"");
+        let eps = 1e-5_f32;
+        let default = NavParams::default().max_slope_deg;
+        assert!(
+            (map_data.nav_params.max_slope_deg - default).abs() < eps,
+            "non-float nav_max_slope must warn and fall back to default {}, got {}",
+            default,
+            map_data.nav_params.max_slope_deg,
+        );
+    }
+
+    #[test]
+    fn nav_cell_size_invalid_zero_falls_back_to_default() {
+        let map_data = parse_worldspawn_with_kvp("\"nav_cell_size\" \"0\"");
+        let eps = 1e-5_f32;
+        let default = NavParams::default().cell_size;
+        assert!(
+            (map_data.nav_params.cell_size - default).abs() < eps,
+            "zero nav_cell_size must warn and fall back to default {}, got {}",
+            default,
+            map_data.nav_params.cell_size,
+        );
+    }
 }

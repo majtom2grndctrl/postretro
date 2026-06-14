@@ -17,7 +17,7 @@ pub const NAVMESH_STAGE_VERSION: u32 = 2;
 /// Tolerance on every `step_height` comparison. A floor delta exactly equal to
 /// `step_height` must count as a climbable step (a one-step riser is reachable),
 /// but f32 round-trips through interpolation and subtraction leave a delta of,
-/// e.g., 0.3 a hair above the f32 `step_height`. This slack keeps the
+/// e.g., 0.5 a hair above the f32 `step_height`. This slack keeps the
 /// region-merge and portal step-rules agreeing on the boundary case so a shared
 /// edge at exactly `step_height` always yields a portal.
 const STEP_EPS: f32 = 1.0e-4;
@@ -317,13 +317,12 @@ fn sample_triangle_y(t: &Triangle, x: f32, z: f32) -> Option<f32> {
 /// Fragments whose floors are within `merge_eps` collapse into one span; a span
 /// is walkable iff any contributing fragment is walkable (a walkable surface is
 /// not masked by a coincident non-walkable one). A merged span's floor tracks
-/// the WALKABLE surface — the height an agent stands on — not the lowest
-/// fragment: a thin deck (walkable top + non-walkable underside within
-/// `merge_eps`) must record its floor at the top, or the region sinks a
-/// slab-thickness below the walk surface and the step delta to flush ground
-/// would exceed `step_height`, leaving it a disconnected island. Clearance is
-/// the gap from a span's top to the next span's floor; the topmost span has
-/// open sky (+inf).
+/// the lowest WALKABLE surface — the height an agent stands on. Non-walkable
+/// fragments (e.g. a thin deck's underside) do not drag the floor down: if they
+/// did, the region would sink a slab-thickness below the walk surface and the
+/// step delta to flush ground would exceed `step_height`, leaving it a
+/// disconnected island. Clearance is the gap from a span's top to the next
+/// span's floor; the topmost span has open sky (+inf).
 fn merge_column(fragments: &mut [Fragment], agent_height: f32) -> Vec<Span> {
     if fragments.is_empty() {
         return Vec::new();
@@ -855,7 +854,9 @@ mod tests {
     }
 
     /// Test params: tiny radius (no erosion) unless a test overrides it, so the
-    /// rasterization/region logic is exercised in isolation.
+    /// rasterization/region logic is exercised in isolation. `step_height` is
+    /// fixed at 0.3 (not the engine default of 0.5) — chosen to suit the
+    /// thin-deck and step fixtures in this suite.
     fn no_erode_params() -> NavParams {
         NavParams {
             agent_radius: 0.0,

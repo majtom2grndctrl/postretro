@@ -51,8 +51,10 @@ algorithm choice (no nondeterministic parallel reductions).
 
 - Player values live in descriptor data, materialized into `PlayerMovementComponent`
   (`scripting/components/player_movement.rs:147–256`): `CapsuleParams { radius, half_height, eye_height }`,
-  `GroundParams { step_height, max_slope }` (degrees; `cos_walkable` precomputed). Test values:
-  `step_height: 0.3`, `max_slope: 45.0` (`movement/mod.rs:1942–1943`).
+  `GroundParams { step_height, max_slope }` (degrees; `cos_walkable` precomputed). `movement/mod.rs:1942–1943`
+  uses `step_height: 0.3` as a movement-module test-fixture value; the player descriptor's authored
+  `stepHeight` is 0.5 m, which matches the navmesh default (`nav_step_height` 0.5). Use 0.5 as the
+  canonical agent value, not the test fixture.
 - Bake needs its own agent params (radius/height/step/slope). Open: per-map worldspawn KVP vs.
   CLI/config default vs. per-archetype (multiple param sets ⇒ multiple meshes?). Start with one
   canonical agent param set, authored per map with engine defaults.

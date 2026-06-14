@@ -66,6 +66,27 @@ const RUNTIME_LUAU_SRC: &str = include_str!("../../../../sdk/lib/runtime.luau");
 /// `setupLevel`'s `crossings` array — no FFI until the script returns.
 const UI_REACTIONS_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/reactions.luau");
 
+/// SDK library prelude — `ui/widgets.luau` returns a table whose widget-factory
+/// fields are destructured into globals (the capitalized `Text`/`Panel`/… leaf
+/// constructors). Pure descriptor builders; the FFI boundary is the eventual
+/// `return` of the authored tree. The `validateBorder`/`resolveReactionName`
+/// helpers it also exports are internal and intentionally NOT lifted.
+const UI_WIDGETS_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/widgets.luau");
+
+/// SDK library prelude — `ui/layout.luau` returns a table whose container-factory
+/// fields (`VStack`/`HStack`/`Grid`) are destructured into globals. Pure builders.
+const UI_LAYOUT_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/layout.luau");
+
+/// SDK library prelude — `ui/tree.luau` returns a table whose only field (`Tree`)
+/// is destructured into a global. Pure placement-envelope builder.
+const UI_TREE_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/tree.luau");
+
+/// SDK library prelude — `ui/state.luau` returns a table whose only field
+/// (`storeHandle`) is destructured into a global. Pure `.get()/.set()` wrapper
+/// over a value-typed store-slot handle; `:set(...)` returns a `setState`
+/// descriptor and never writes the store.
+const UI_STATE_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/state.luau");
+
 /// Lights SDK fields lifted to globals after evaluating
 /// `entities/lights.luau`. Empty: the public vocabulary lives on the handle
 /// returned from `wrapLightEntity`, which is itself installed as a
@@ -115,6 +136,25 @@ const UI_REACTIONS_FIELDS: &[&str] = &[
     "backspaceText",
     "clearText",
 ];
+
+/// UI widget-factory SDK fields lifted to globals after evaluating
+/// `ui/widgets.luau`. The capitalized leaf-widget constructors only —
+/// `validateBorder` / `resolveReactionName` are internal helpers that
+/// `layout.luau` redeclares locally, so they stay off the global table.
+const UI_WIDGETS_FIELDS: &[&str] = &[
+    "Text", "Panel", "Image", "Spacer", "Button", "Slider", "Bar",
+];
+
+/// UI layout-factory SDK fields lifted to globals after evaluating
+/// `ui/layout.luau`.
+const UI_LAYOUT_FIELDS: &[&str] = &["VStack", "HStack", "Grid"];
+
+/// UI tree-factory SDK fields lifted to globals after evaluating `ui/tree.luau`.
+const UI_TREE_FIELDS: &[&str] = &["Tree"];
+
+/// UI state-handle SDK fields lifted to globals after evaluating
+/// `ui/state.luau`.
+const UI_STATE_FIELDS: &[&str] = &["storeHandle"];
 
 /// Evaluate the Luau SDK prelude in `lua` and promote the return values to
 /// globals. Must be called after primitives are installed and before
@@ -331,6 +371,40 @@ pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
             .map_err(|e| ScriptError::InvalidArgument {
                 reason: format!("failed to install global `{field}`: {e}"),
             })?;
+    }
+
+    // Step 7c–7f: evaluate the M13 G1a UI factory modules and lift their fields
+    // to globals. All are pure descriptor builders with no primitive dependency,
+    // so ordering relative to the other steps is irrelevant. Each module is
+    // self-contained (the Luau prelude has no cross-module loader), so they are
+    // evaluated independently rather than requiring one another.
+    for (src, name, fields) in [
+        (UI_WIDGETS_LUAU_SRC, "ui/widgets.luau", UI_WIDGETS_FIELDS),
+        (UI_LAYOUT_LUAU_SRC, "ui/layout.luau", UI_LAYOUT_FIELDS),
+        (UI_TREE_LUAU_SRC, "ui/tree.luau", UI_TREE_FIELDS),
+        (UI_STATE_LUAU_SRC, "ui/state.luau", UI_STATE_FIELDS),
+    ] {
+        let module: Table = lua
+            .load(src)
+            .set_name(format!("postretro/sdk/{name}"))
+            .eval()
+            .map_err(|e| ScriptError::ScriptThrew {
+                msg: format!("failed to evaluate SDK prelude `{name}`: {e}"),
+                source_name: format!("sdk/lib/{name}"),
+            })?;
+        for field in fields {
+            let value: mlua::Value =
+                module
+                    .get(*field)
+                    .map_err(|e| ScriptError::InvalidArgument {
+                        reason: format!("{name} missing `{field}`: {e}"),
+                    })?;
+            globals
+                .set(*field, value)
+                .map_err(|e| ScriptError::InvalidArgument {
+                    reason: format!("failed to install global `{field}`: {e}"),
+                })?;
+        }
     }
 
     // Step 8: evaluate `runtime.luau` and promote its table to global `runtime`.
@@ -1383,6 +1457,138 @@ mod tests {
                 to a bare global, so Luau callers hit nil at runtime",
             );
         }
+    }
+
+    #[test]
+    fn sdk_prelude_installs_ui_factory_globals() {
+        // M13 G1a Task 6: the widget/layout/tree/state factory modules must be
+        // wired into the Luau prelude so authors call them by bare name. Without
+        // the wiring (the precedent the Task 3/4 notes flag), a Luau author hits a
+        // nil global at runtime while a TS author works (TS lifts via the
+        // globalThis rewrite). Asserts every lifted field is a callable global and
+        // that the internal `validateBorder`/`resolveReactionName` helpers stay
+        // OFF the global table.
+        let (subsys, _ctx) = setup();
+        let src = r#"
+            local function isfn(n) return type(_G[n]) == "function" end
+            return
+              isfn("Text"), isfn("Panel"), isfn("Image"), isfn("Spacer"),
+              isfn("Button"), isfn("Slider"), isfn("Bar"),
+              isfn("VStack"), isfn("HStack"), isfn("Grid"),
+              isfn("Tree"), isfn("storeHandle"),
+              type(validateBorder), type(resolveReactionName)
+        "#;
+        let results: mlua::MultiValue = subsys
+            .run_source(Which::Definition, src, "ui_prelude.luau")
+            .unwrap();
+        let vals: Vec<mlua::Value> = results.into_iter().collect();
+        // First 12 are the factory globals: must all be functions (true).
+        for (i, v) in vals.iter().take(12).enumerate() {
+            assert_eq!(
+                v.as_boolean(),
+                Some(true),
+                "UI factory global #{i} must be installed as a function"
+            );
+        }
+        // Last 2 are the internal helpers: must be `nil` (not leaked).
+        assert_eq!(
+            vals[12].as_str().as_deref(),
+            Some("nil"),
+            "validateBorder must NOT be a bare global"
+        );
+        assert_eq!(
+            vals[13].as_str().as_deref(),
+            Some("nil"),
+            "resolveReactionName must NOT be a bare global"
+        );
+    }
+
+    /// M13 G1a Task 6: `defineReaction` auto-id determinism + byte-identical
+    /// `onPress` (handle vs. bare string) + bare-string round-trip. Drives the
+    /// ACTUAL `data_script.luau` factory and `widgets.luau`'s `Button` under a raw
+    /// mlua VM, then converts via the engine's `lua_to_json` walker so the
+    /// assertions are on the real wire JSON.
+    #[test]
+    fn define_reaction_auto_id_is_deterministic_and_on_press_is_byte_identical() {
+        const DATA_SCRIPT_SRC: &str = include_str!("../../../../sdk/lib/data_script.luau");
+        const WIDGETS_SRC: &str = include_str!("../../../../sdk/lib/ui/widgets.luau");
+        let lua = mlua::Lua::new();
+        let data_script: mlua::Table = lua
+            .load(DATA_SCRIPT_SRC)
+            .set_name("data_script.luau")
+            .eval()
+            .unwrap();
+        let widgets: mlua::Table = lua
+            .load(WIDGETS_SRC)
+            .set_name("widgets.luau")
+            .eval()
+            .unwrap();
+        lua.globals().set("D", data_script).unwrap();
+        lua.globals().set("W", widgets).unwrap();
+
+        // (1) The same body run twice yields the same content-derived auto-id.
+        let (id_a, id_b): (String, String) = lua
+            .load(
+                r#"
+                local body = { primitive = "playSound", args = { sound = "click" } }
+                local a = D.defineReaction(body)
+                local b = D.defineReaction({ primitive = "playSound", args = { sound = "click" } })
+                return a.name, b.name
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(id_a, id_b, "auto-id must be deterministic across runs");
+        assert!(
+            id_a.starts_with("reaction_"),
+            "auto-id must carry the `reaction_` prefix, got {id_a}"
+        );
+
+        // (2) `Button({ onPress = handle })` emits `onPress: "<id>"` byte-identical
+        // to `Button({ onPress = "<id>" })`. Compare through lua_to_json.
+        let handle_btn: mlua::Value = lua
+            .load(
+                r#"
+                local handle = D.defineReaction({ primitive = "playSound", args = { sound = "click" } })
+                return W.Button({ id = "a", label = "A", onPress = handle })
+                "#,
+            )
+            .eval()
+            .unwrap();
+        let handle_json = super::super::conv::lua_to_json(handle_btn).unwrap();
+        let on_press = handle_json
+            .get("onPress")
+            .and_then(|v| v.as_str())
+            .expect("onPress must be a string")
+            .to_string();
+        assert_eq!(
+            on_press, id_a,
+            "Button onPress from a handle must equal the handle's auto-id"
+        );
+
+        let string_btn: mlua::Value = lua
+            .load(&format!(
+                r#"return W.Button({{ id = "a", label = "A", onPress = "{on_press}" }})"#
+            ))
+            .eval()
+            .unwrap();
+        let string_json = super::super::conv::lua_to_json(string_btn).unwrap();
+        assert_eq!(
+            handle_json, string_json,
+            "Button({{onPress: handle}}) must be byte-identical to Button({{onPress: \"<id>\"}})"
+        );
+
+        // (3) A bare-string onPress round-trips unchanged (the shipped path).
+        let bare: mlua::Value = lua
+            .load(r#"return W.Button({ id = "x", label = "X", onPress = "resumeGame" })"#)
+            .eval()
+            .unwrap();
+        let bare_json = super::super::conv::lua_to_json(bare).unwrap();
+        assert_eq!(
+            bare_json.get("onPress").and_then(|v| v.as_str()),
+            Some("resumeGame"),
+            "a bare-string onPress must pass through unchanged"
+        );
     }
 
     // --- M13 G1a, Task 3: TS/Luau widget-factory JSON parity ---

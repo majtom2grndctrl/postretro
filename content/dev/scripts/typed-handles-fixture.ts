@@ -9,7 +9,14 @@
 //
 // See: context/lib/scripting.md §5, context/lib/ui.md §3, M13 G1a Task 1.
 
-import { defineStore, defineReaction, type StateValue } from "postretro";
+import {
+  defineStore,
+  defineReaction,
+  Text,
+  Button,
+  type StateValue,
+  type LocalizedText,
+} from "postretro";
 import { player } from "postretro/game-state";
 
 // --- (1) Value-typed slot handles -------------------------------------------
@@ -52,6 +59,22 @@ const _auto = defineReaction({
   args: { sound: "confirm" },
 });
 
+// --- (4) LocalizedText — the user-facing text-prop chokepoint ----------------
+// Every widget text prop (`Text.content`, `Button.label`, …) is typed
+// `LocalizedText` (= string today). The intent: a future localization swap
+// (message keys, ICU handles) is one edit at the alias, and authoring code keeps
+// type-checking. A bare string author surface stays ergonomic now.
+const _greeting: LocalizedText = "Hello";
+const _text = Text({ content: _greeting });
+const _resume = Button({ id: "resume", label: "Resume", onPress: _named });
+
+// The documented mismatch: a widget text prop is text, not an arbitrary value —
+// a non-string (here a number) is a type error. When `LocalizedText` becomes a
+// branded message-key type, this same line documents that a raw literal no
+// longer satisfies the prop without going through the localization constructor.
+// @ts-expect-error — `content` is LocalizedText (string), not a number.
+const _badText = Text({ content: 42 });
+
 void _volume;
 void _muted;
 void _preset;
@@ -59,3 +82,7 @@ void _wrong;
 void _health;
 void _named;
 void _auto;
+void _greeting;
+void _text;
+void _resume;
+void _badText;

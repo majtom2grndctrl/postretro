@@ -791,6 +791,114 @@ declare module "postretro" {
   /** Passive horizontal value bar. Fill fraction is `value/max` clamped to [0, 1]; `styleRanges` recolors the fill; a bind tween eases the displayed fraction. */
   export type BarWidget = { kind: "bar"; bind: SliderBind; max: number; fill: WidgetColor; background: WidgetColor; id?: string; styleRanges?: WidgetStyleRanges };
 
+  // -------------------------------------------------------------------------
+  // UI widget / layout / tree / state factories (M13 G1a). Pure builders
+  // installed as prelude globals: each returns the camelCase wire descriptor of
+  // the matching `render/ui/descriptor.rs` variant and throws a field-named
+  // `Error` on invalid props. Source of truth: sdk/lib/ui/{widgets,layout,tree,
+  // state}.ts. Containers and `Tree` take `children`/`root` as a POSITIONAL
+  // second argument (Compose/SwiftUI lineage), not a prop.
+
+  /** A spacing slot (gap/padding): an inline logical-px number or a theme token. */
+  export type WidgetSpacing = number | string;
+  /** Cross-axis alignment of a container's children. */
+  export type WidgetAlign = "start" | "center" | "end" | "stretch";
+  /** Easing curve for a value tween. */
+  export type WidgetEasing = "linear" | "easeIn" | "easeOut" | "easeInOut";
+  /** A branded store-handle value (a `StateValue<T>` / the `.get()` of a `ReadonlyStateValue<T>`): a branded `string` carrying the dotted slot name. */
+  export type StoreHandleRef = string & { readonly __brand?: "StateValue" };
+  /** Number-shape value tween (text/slider/bar bind). */
+  export type NumberTween = { durationMs: number; easing: WidgetEasing; from?: number };
+  /** Color-shape value tween (panel bind). */
+  export type ColorTween = { durationMs: number; easing: WidgetEasing; from?: [number, number, number, number] };
+  /** State binding for a `text` widget. */
+  export type TextBindProp = { slot: StoreHandleRef; format?: string; tween?: NumberTween };
+  /** State binding for a `panel` widget (color slot). */
+  export type PanelBindProp = { slot: StoreHandleRef; tween?: ColorTween };
+  /** State binding shared by `slider`/`bar` (numeric slot). */
+  export type SliderBindProp = { slot: StoreHandleRef; tween?: NumberTween };
+  /** One band in a `styleRanges` map. */
+  export type StyleRangeEntry = { upTo?: number; color?: WidgetColor; pulse?: { periodMs: number }; flash?: { durationMs: number } };
+  /** Continuous value→style map (text/panel/bar). */
+  export type StyleRangesProp = { max: number; entries: StyleRangeEntry[] };
+  /** 9-slice border descriptor. */
+  export type BorderProp = { texture: string; slice: [number, number, number, number]; tint: WidgetColor };
+  /** Per-direction focus-neighbor overrides; each direction names the node id focus jumps to. */
+  export type FocusNeighborsProp = { up?: string; down?: string; left?: string; right?: string };
+  /** Hold-to-repeat timing. */
+  export type RepeatPolicyProp = { initialDelayMs: number; intervalMs: number };
+  /** A typed reaction handle (`defineReaction` result) — anything carrying a `.name` string. */
+  export type ReactionHandleRef = { name: string };
+  /** The flat `kind`-tagged descriptor a widget factory produces. */
+  export type WidgetDescriptor = { kind: string; [field: string]: unknown };
+
+  /** Props for `Text`. `content` is `LocalizedText`. `fontSize` defaults to 12; `color` to opaque white. */
+  export type TextProps = { content: LocalizedText; fontSize?: number; color?: WidgetColor; font?: string; bind?: TextBindProp; styleRanges?: StyleRangesProp; id?: string; focusNeighbors?: FocusNeighborsProp };
+  /** A `text` leaf. An optional `bind` resolves the rendered string from a store slot; `styleRanges` recolors by value. */
+  export function Text(props: TextProps): WidgetDescriptor;
+
+  /** Props for `Panel`. `bind` is a `PanelBindProp` (color slot). */
+  export type PanelProps = { fill: WidgetColor; border?: BorderProp; bind?: PanelBindProp; styleRanges?: StyleRangesProp; id?: string; focusNeighbors?: FocusNeighborsProp };
+  /** A `panel` leaf: a solid `fill` with an optional 9-slice `border`. */
+  export function Panel(props: PanelProps): WidgetDescriptor;
+
+  /** Props for `Image`. No bind. */
+  export type ImageProps = { asset: string; id?: string; focusNeighbors?: FocusNeighborsProp };
+  /** An `image` leaf referencing a texture asset by key; sizes from the asset's natural dimensions. */
+  export function Image(props: ImageProps): WidgetDescriptor;
+
+  /** Props for `Spacer`. `flexGrow` defaults to 1. No bind. */
+  export type SpacerProps = { flexGrow?: number; id?: string };
+  /** A `spacer` leaf claiming a proportional share of leftover space. */
+  export function Spacer(props?: SpacerProps): WidgetDescriptor;
+
+  /** Props for `Button`. `onPress` is a reaction handle or a bare name string. No bind. */
+  export type ButtonProps = { id: string; label: LocalizedText; onPress: ReactionHandleRef | string; repeatOnHold?: RepeatPolicyProp; focusNeighbors?: FocusNeighborsProp };
+  /** An interactive `button`. `id` is required. `onPress` accepts a `defineReaction` handle (its `.name` is read) or a bare reaction-name string, emitting the unchanged `onPress: string` wire form. */
+  export function Button(props: ButtonProps): WidgetDescriptor;
+
+  /** Props for `Slider`. `bind` is a `SliderBindProp` (numeric slot); required. */
+  export type SliderProps = { id: string; label: LocalizedText; bind: SliderBindProp; min: number; max: number; step: number; capturesNav?: string[]; focusNeighbors?: FocusNeighborsProp };
+  /** An interactive `slider`. Nav wires in `capturesNav` step the bound value by `step` within `[min, max]`. */
+  export function Slider(props: SliderProps): WidgetDescriptor;
+
+  /** Props for `Bar`. `bind` is a `SliderBindProp` (numeric slot); required. */
+  export type BarProps = { bind: SliderBindProp; max: number; fill: WidgetColor; background: WidgetColor; styleRanges?: StyleRangesProp; id?: string };
+  /** A passive `bar`: fill fraction is `value/max` clamped to `[0, 1]`. `styleRanges` recolors the fill. */
+  export function Bar(props: BarProps): WidgetDescriptor;
+
+  /** Container focus traversal kind. */
+  export type FocusKind = "linear" | "spatial";
+  /** A container focus policy: a bare-string shorthand or a detailed object. */
+  export type FocusPolicyProp = FocusKind | { policy: FocusKind; wrap?: boolean; repeat?: RepeatPolicyProp };
+  /** Props for `VStack`/`HStack`. `gap`/`padding` default to 0, `align` to `"start"`. May carry a backdrop `fill`/`border`. */
+  export type StackProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; restoreOnReturn?: boolean; fill?: WidgetColor; border?: BorderProp };
+  /** Props for `Grid`. Adds the required `cols` (integer >= 1); no backdrop fill/border. */
+  export type GridProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; restoreOnReturn?: boolean; cols: number };
+
+  /** A vertical stack (`vstack`): `children` is a POSITIONAL second argument. */
+  export function VStack(props?: StackProps, children?: WidgetDescriptor[]): WidgetDescriptor;
+  /** A horizontal stack (`hstack`): `children` is a POSITIONAL second argument. */
+  export function HStack(props?: StackProps, children?: WidgetDescriptor[]): WidgetDescriptor;
+  /** A `grid` container: flows `children` across `cols` columns. `children` is a POSITIONAL second argument. */
+  export function Grid(props: GridProps, children?: WidgetDescriptor[]): WidgetDescriptor;
+
+  /** The nine placement anchors a tree may be pinned to. */
+  export type WidgetAnchor = "topLeft" | "top" | "topRight" | "left" | "center" | "right" | "bottomLeft" | "bottom" | "bottomRight";
+  /** Whether a tree captures input or passes it through (HUD). `"passthrough"` is the default and round-trips to omission. */
+  export type WidgetCaptureMode = "capture" | "passthrough";
+  /** Placement-envelope props for `Tree`. `captureMode` defaults to `"passthrough"`. */
+  export type TreeProps = { anchor: WidgetAnchor; offset: [number, number]; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: string };
+  /** The flat `AnchoredTree` envelope `Tree` produces. */
+  export type AnchoredTreeDescriptor = { anchor: WidgetAnchor; offset: [number, number]; root: WidgetDescriptor; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: string };
+  /** Wrap a root widget descriptor in the `AnchoredTree` placement envelope. `root` is a POSITIONAL second argument. */
+  export function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDescriptor;
+
+  /** A `.get()`/`.set()` accessor wrapper over a writable, value-typed store-slot handle (`StateValue<T>`). `.get()` yields the typed bind reference a widget binds to; `.set(v)` produces a `setState` reaction descriptor (typed to the slot's `T`). Read-only engine slots use `ReadonlyStateValue<T>` (`.get()` only). */
+  export type StoreHandle<T> = { get(): SliderBindProp; set(value: T): PrimitiveReactionDescriptor };
+  /** Wrap a value-typed store-slot handle (`defineStore`'s `StateValue<T>` return) in a `.get()`/`.set()` accessor. Pure: `.set(...)` returns a descriptor, it does not write. */
+  export function storeHandle<T extends number | boolean | string | number[]>(slot: StateValue<T>): StoreHandle<T>;
+
   /** Pure identity builder for entity-type descriptors. Returns the descriptor as-is; its sole purpose is a typed construction site. */
   export function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor;
 

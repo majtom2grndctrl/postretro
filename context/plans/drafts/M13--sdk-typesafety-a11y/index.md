@@ -14,10 +14,13 @@ Ship the **reactive-UI primitives** that make selection-driven widgets (tabs,
 segmented controls, radio groups, toggles) buildable — a **selection-predicate
 bind** over `localState` and a **conditional-visibility** field — *plus* the
 **a11y metadata + SDK type-safety contract**. One spec because the a11y state
-(`selected`/`checked`) must be **derived from the same resolved predicate** that
-drives the visual highlight and the content swap — resolved once, stored on the
-node, read by every consumer, correct by construction. A static `selected: true`
-would duplicate runtime state and desync; this spec refuses it. Two layers:
+(`selected`/`checked`) and the visual highlight are both driven by the **same
+author predicate**: a `Predicate` is a bind source, so the author wires the
+highlight with `styleRanges` and tags the widget's `selected`/`checked` from one
+expression — each resolves deterministically, so they agree by construction. The
+engine draws no `selected`/`checked` styling itself (the highlight is author-wired,
+like the deferred `disabled` dim). A static `selected: true` would duplicate
+runtime state and desync; this spec refuses it. Two layers:
 **(1) reactive** selection + visibility (consumed now by highlight, content-swap,
 focus, a11y-by-construction); **(2) static a11y metadata** (name/role/alt/modal/
 announce — shape nothing reads yet, the durable contract BIS authors against).
@@ -26,21 +29,24 @@ announce — shape nothing reads yet, the durable contract BIS authors against).
 
 ### In scope — reactive layer
 
-- **Selection-predicate bind.** A `Predicate` = an existing bind source
-  (`{ local }` cell or `{ slot }`) + optional `equals` comparand → resolves to
-  **`f32` 0.0/1.0** via a new `resolve_predicate(source, equals, scope, slots,
-  cells) -> f32` helper riding the existing `lookup_bound` (`render/ui/tree.rs:43`).
-  Without `equals` the source must be a `Boolean` (a toggle cell → its truthiness);
-  with `equals` the resolved `SlotValue` is compared to the comparand. The 0/1 is
-  **resolved once into a per-node resolved field** during bind resolution, so the
-  three consumers (highlight, a11y `selected`/`checked`, `visibleWhen`) read one
-  value — not three resolutions. Idiomatic over `localState`; `{ slot }` works too.
-- **`selected` / `checked` as predicate state** (`Option<Predicate>`; **no
-  static-bool form is ever defined**). The per-node resolved 0/1 is exported into
-  the a11y snapshot *and* drives the highlight via the same value — identical by
-  construction. The highlight reuses **existing `styleRanges`**: the resolved 0/1
-  is a `Number`, which `style_value` (`tree.rs:2456`) already consumes (a `max:1`
-  band at `upTo:0` flips the color) — no new visual primitive.
+- **Selection-predicate bind.** A `Predicate` = a bind source (`{ local }` cell or
+  `{ slot }`) + optional `equals` comparand → resolves to **`f32` 0.0/1.0** via a new
+  `resolve_predicate(source, equals, scope, slots, cells) -> f32` helper riding the
+  existing `lookup_bound` (`render/ui/tree.rs:43`). Without `equals` the source must
+  be a `Boolean` (toggle cell → truthiness); with `equals` the resolved `SlotValue`
+  is compared. A `Predicate` is a valid **`bind` source for `styleRanges`-capable
+  widgets** (Text / Panel / Bar / Button), so the author drives the highlight with
+  the existing `styleRanges` (a `max:1` band) — no new visual primitive. The same
+  `Predicate` is the type of `selected`/`checked`/`visibleWhen`. Each consumer
+  resolves independently (cheap, deterministic) — no shared per-node storage.
+  Idiomatic over `localState`; `{ slot }` works too.
+- **`selected` / `checked` are a11y state** (`Option<Predicate>`; **no static-bool
+  form is ever defined**). They resolve in the focus-rect build and are carried on
+  **`FocusRect`** — the renderer→app readback (`export_ui_focus_rects`), where a
+  test reads them today and a screen reader will later. The engine draws **no**
+  highlight from them; the author wires the visual with a `Predicate`-bound
+  `styleRanges` referencing the same predicate, so a11y and highlight agree by
+  construction.
 - **Conditional visibility — `visibleWhen: Predicate`** on any widget, via taffy
   **`Display::None`** (`Display` already imported `tree.rs:11`). A false predicate
   sets the node `Display::None` (it **stays in the taffy tree** — preserving the
@@ -102,6 +108,9 @@ announce — shape nothing reads yet, the durable contract BIS authors against).
   `visibleWhen`); deferred — no field added.
 - **Screen-reader / AT consumption** of the *static* metadata (deferred §19–§20);
   the *reactive* `selected`/`checked`/`visibleWhen` are consumed now.
+- **Engine-rendered `selected`/`checked` styling.** The highlight is author-wired
+  via a `Predicate`-bound `styleRanges`; an engine/theme selected-state visual is
+  deferred — consistent with the deferred `disabled` dim.
 - **ARIA breadth**; **template-literal nav intents** (doc only); **JSX-via-SWC**;
   **localization runtime** (`LocalizedText` is the seam).
 
@@ -111,12 +120,13 @@ announce — shape nothing reads yet, the durable contract BIS authors against).
   source without `equals` → its truthiness; a source with `equals` → `1.0` iff the
   resolved `SlotValue` equals the comparand. `equals` v1 admits **number / bool /
   string** only (exact compare; `String`/`Enum` match by name; a type mismatch →
-  `0.0`); rgba/array comparands are a load-time error. The resolved `Number(0/1)`
-  is consumable by an existing `styleRanges` (a `max:1` / `upTo:0` band highlights).
-- [ ] `selected`/`checked` (`Option<Predicate>`) resolve to the per-node stored
-  0/1, exported into `UiReadSnapshot`; a test reads that snapshot value and the
-  highlight's value and asserts they come from **one** resolution (the same stored
-  field), not two. No static-bool form compiles.
+  `0.0`); rgba/array comparands are a load-time error. A `Predicate` used as a
+  widget `bind` resolves to a `Number` the existing `styleRanges` extractor
+  (`style_value`) consumes — the author-wired highlight, no new visual primitive.
+- [ ] `selected`/`checked` (`Option<Predicate>`) resolve in the focus-rect build
+  and are carried on `FocusRect`/`FocusRectList`; a test reads the exported
+  `FocusRectList` and asserts the value matches the predicate. No static-bool form
+  compiles. (The engine draws no highlight from them — see Out of scope.)
 - [ ] `visibleWhen: false` sets the node `Display::None` — excluded from layout
   size, the draw walk (zero rects/glyphs), and the focus-rect list (its focusables
   are unreachable + not chosen as initial focus); `true` restores all three. A
@@ -125,9 +135,9 @@ announce — shape nothing reads yet, the durable contract BIS authors against).
   above the toggle (a test round-trips a cell value across a hide/show) — because
   `reconcile` walks the descriptor, not the visible tree.
 - [ ] `Switch(cell, map)` expands to the map's subtrees each with `visibleWhen:
-  cell.is(key)` injected, in a **pinned key order** identical across TS and Luau
-  (assert byte-identical wire); a `Switch` over a 3-key cell shows exactly the
-  matching child.
+  cell.is(key)` injected, in **lexicographically-sorted key order** (pinned
+  identically in TS + Luau, since Luau table iteration order is undefined) — assert
+  byte-identical wire; a `Switch` over a 3-key cell shows exactly the matching child.
 - [ ] `disabled` widgets are skipped by focus navigation, initial-focus, and the
   pointer/hover paths, and cannot be activated (`FocusRect.disabled` populated in
   the focus-rect build; honored in `ui_focus.rs` nav + `main.rs::fire_focused_button_activation`).
@@ -159,8 +169,9 @@ announce — shape nothing reads yet, the durable contract BIS authors against).
   are typed to the cell/slot value type — `@ts-expect-error` fixtures + a typedef
   snapshot; `gen-script-types` reports no drift; TS/Luau parity.
 - [ ] A working **tabs demo** in the dev UI: a `localState` cell + `role:"tablist"`
-  strip whose buttons are `selected`-highlighted, with `Switch` swapping the
-  content panel — manual verification.
+  strip where each tab `Button` carries a `Predicate` `bind` + `styleRanges` (the
+  highlight) and `selected` (a11y), with `Switch` swapping the content panel —
+  manual verification.
 - [ ] `docs/scripting-reference.md` covers the predicate bind, `selected`/`checked`,
   `visibleWhen`/`Switch`, name/role/disabled, image alt/decorative, modal naming,
   and `Announce`.
@@ -176,8 +187,12 @@ the `Widget` enum + serde wire contract unchanged, so the round-trip tests in th
 
 ### Task 1: descriptor vocabulary + bridge (both languages)
 In the split modules add: the `Predicate` type (`{ source: BindSource, equals:
-Option<Value> }`); `selected`/`checked: Option<Predicate>` + `visible_when:
-Option<Predicate>` on the relevant widgets; `label`/`labelled_by`, `role:
+Option<Value> }`, also accepted as a widget `bind` for `styleRanges`);
+`selected`/`checked: Option<Predicate>` on `Button`, `visible_when:
+Option<Predicate>` on every `Widget` variant; optional `bind` + `style_ranges` on
+`Button` (passed through `build_button` to its internal `Text` `NodeContext`,
+reusing `style_text_value`) so a tab button self-highlights from a `Predicate` bind;
+`label`/`labelled_by`, `role:
 Option<Role>` + closed `Role` enum + `implicit_role`, `disabled: bool`
 (`skip_serializing_if = is_false`), `Image` `label` xor `decorative: bool`,
 `AnchoredTree` `accessible_name`+`role` (`Option::is_none` skip), and
@@ -192,15 +207,16 @@ errors, no panic. New fields skip-serialized when absent. `Depends on` Task 0.
 ### Task 2a: predicate resolution + a11y state + `FocusRect.disabled`
 Add `resolve_predicate(source, equals, scope, slots, cells) -> f32` riding
 `lookup_bound` (`tree.rs:43`) — exact compare; `String`/`Enum` match by name; a
-type mismatch (or a no-`equals` predicate over a non-`Boolean` source) resolves
-`0.0`; a no-`equals` `Boolean` source resolves its truthiness. Resolve each node's
-`selected`/`checked`/`visible_when`
-predicate **once into a per-node resolved field** during bind resolution
-(`build_draw_data_retained`, `tree.rs:674`). Make the resolved 0/1 a `Number` the
-existing `styleRanges` extractors consume (`style_value :2456`); export the
-resolved `selected`/`checked` 0/1 into `UiReadSnapshot` (`render/ui/mod.rs:311`)
-for the a11y contract. Add the `disabled` bit to `FocusRect`/`NodeInteraction`
-(`tree.rs:2126/2147`), populated in `collect_focus_node`/`export_focus_rects`.
+type mismatch (or a no-`equals` predicate over a non-`Boolean` source) → `0.0`; a
+no-`equals` `Boolean` source → its truthiness. Wire it into the `styleRanges` value
+path so a `Predicate`-carrying `bind` resolves to a `Number` the extractor
+(`style_value`/`style_text_value :2456`) consumes — the author-wired highlight, no
+new visual primitive. Resolve `selected`/`checked` in the focus-rect build
+(`collect_focus_node :950` / `export_focus_rects :908`) and carry the 0/1 on
+`FocusRect`/`NodeInteraction` (`tree.rs:2126/2147`) — the **renderer→app readback**
+(`export_ui_focus_rects`, `main.rs:2297`), NOT `UiReadSnapshot` (which is the
+app→renderer input). Add the `disabled` bit on the same `FocusRect` build. No
+shared per-node store — each consumer resolves independently (cheap, deterministic).
 `Depends on` Task 1. (This is the unblocking dependency for Task 3.)
 
 ### Task 2b: conditional visibility (`visibleWhen` via `Display::None`)
@@ -210,13 +226,18 @@ A false `visible_when` predicate (resolved in Task 2a) sets the taffy node
 **do not** apply visibility in the `reconcile` descriptor walk
 (`presentation_cells.rs:74`) so `localState` scopes survive. A change in a
 visibility predicate's resolved value marks layout dirty + re-exports the cached
-`FocusRectList` (cross-ref `lib/ui.md` §3 rebuild model). `Depends on` Task 2a
+`FocusRectList` (cross-ref `lib/ui.md` §3 rebuild model). Detect the change via a
+per-node prev-resolved-value compare in `resolve_bindings`; on change toggle the
+node's taffy `Display` and `mark_dirty` so the layout gate recomputes and the
+per-frame `export_ui_focus_rects` reflects it. `Depends on` Task 2a
 (the resolved per-node field). Concurrent with Tasks 3, 4.
 
 ### Task 3: `disabled` focus + activation honoring
 `input/ui_focus.rs`: skip `FocusRect.disabled` nodes in `move_focus`/`linear_step`/
 `spatial_step`/`initial_focus_id` and the pointer (`hit_test_topmost`) + hover
-(`tick`) paths. **`main.rs`:** block activation in `fire_focused_button_activation`
+(`tick`) paths. Linear nav advances **past consecutive** disabled members (loop
+until a focusable one or exhaustion, respecting wrap/clamp), not a single ±1 step;
+spatial nav excludes disabled from candidates. **`main.rs`:** block activation in `fire_focused_button_activation`
 (`:2923`, reads `NodeInteraction::Button`). Behavior only — the visual dim (a
 theme/styleRanges treatment) is out of scope (BIS); dynamic (bound) `disabled` is a
 later enhancement. `Depends on` Task 2a
@@ -229,7 +250,8 @@ XOR unions, `role`/`disabled` props, `selected`/`checked`/`visibleWhen` predicat
 props, `Image` label-xor-decorative, the `Tree` envelope, the `Announce` factory;
 add `LocalStateHandle.is(v)` + `StoreHandle.is(v)` (→ `{ local|slot, equals }`) and
 `Switch(cell, map)` sugar (reads the handle's `{ local }` name, injects
-`visibleWhen: cell.is(key)` per child in a **pinned key order**, TS/Luau identical).
+`visibleWhen: cell.is(key)` per child in **lexicographically-sorted key order** —
+TS/Luau identical, since Luau table iteration order is undefined).
 Update the `typedef.rs` widget SDK-block + regenerate. `Depends on` Task 1.
 **Wave seam (SE):** coordinate `typedef.rs` (widget block) + `sdk/lib/index.ts`
 barrel with SE (reaction block — different sections).
@@ -237,7 +259,8 @@ barrel with SE (reaction block — different sections).
 ### Task 5: narrowing fixtures + docs + demo
 Typedef snapshot tests (per-kind narrowing; unnamed-interactive type error; typed
 `.is()`); `@ts-expect-error` fixtures; the nav-intent doc; the working tabs demo
-(cell + `tablist` + `selected` highlight + `Switch` swap); regenerate typedefs;
+(cell + `tablist`; each tab `Button` with a `Predicate` `bind`+`styleRanges`
+highlight and `selected` a11y; `Switch` swap); regenerate typedefs;
 update `docs/scripting-reference.md`. `Depends on` Tasks 2a, 2b, 3, 4.
 
 ## Sequencing
@@ -259,13 +282,15 @@ slots from — coordinate (distinct concerns, same area). G2 owns all
 - Tabs end-to-end (buildable under this spec):
   ```ts
   const sel = ui.createLocalState({ tab: "loadout" });
-  VStack({ localState: sel.scope }, [          // localState lives on vstack/hstack, NOT Grid
-    HStack({ role: "tablist" }, [
-      Button({ id: "t-loadout", label: "Loadout", role: "tab",
-               selected: sel.cells.tab.is("loadout"), onPress: sel.cells.tab.set("loadout") }),
-      Button({ id: "t-stats", label: "Stats", role: "tab",
-               selected: sel.cells.tab.is("stats"),   onPress: sel.cells.tab.set("stats") }),
-    ]),
+  const tab = (key, label) => Button({           // localState lives on vstack/hstack, NOT Grid
+    id: `t-${key}`, label, role: "tab",
+    bind: sel.cells.tab.is(key),                 // highlight: predicate (0/1) -> styleRanges
+    styleRanges: { max: 1, entries: [{ upTo: 0, color: "tabDim" }, { color: "tabHot" }] },
+    selected: sel.cells.tab.is(key),             // a11y, same predicate
+    onPress: sel.cells.tab.set(key),
+  });
+  VStack({ localState: sel.scope }, [
+    HStack({ role: "tablist" }, [ tab("loadout", "Loadout"), tab("stats", "Stats") ]),
     Switch(sel.cells.tab, { loadout: LoadoutPanel(), stats: StatsPanel() }),
   ]);
   ```
@@ -284,11 +309,12 @@ slots from — coordinate (distinct concerns, same area). G2 owns all
 
 | Name | Rust | Wire / serde | JS / TS | Luau |
 |---|---|---|---|---|
-| Predicate | `Predicate { source: BindSource, equals: Option<Value> }` | `{ "local"\|"slot", "equals"? }` | `{ local\|slot, equals? }` | same |
+| Predicate (also a `bind` source) | `Predicate { source: BindSource, equals: Option<Value> }` | `{ "local"\|"slot", "equals"? }` | `{ local\|slot, equals? }` | same |
+| Button highlight | `bind`+`style_ranges` on `ButtonWidget` (pass-through to Text) | `"bind"`/`"styleRanges"` | `bind?: Predicate; styleRanges?` | same |
 | selected/checked | `Option<Predicate>` (omit absent) | `"selected"`/`"checked"` | `selected?: Predicate` | same |
 | visibleWhen | `visible_when: Option<Predicate>` (omit absent) | `"visibleWhen"` | `visibleWhen?: Predicate` | same |
 | `.is(v)` helper | n/a (SDK) | n/a | `LocalStateHandle.is(v): Predicate` | `:is(v)` |
-| Switch | n/a (SDK sugar → `visibleWhen`) | children w/ `visibleWhen` (pinned key order) | `Switch(cell, map)` | `Ui.Switch` |
+| Switch | n/a (SDK sugar → `visibleWhen`) | children w/ `visibleWhen` (sorted key order) | `Switch(cell, map)` | `Ui.Switch` |
 | disabled | `bool` (`skip_serializing_if = is_false`) | `"disabled"` (omit false) | `disabled?: boolean` | `disabled?` |
 | labelledBy / label | `labelled_by`/`label: Option<String>` | `"labelledBy"`/`"label"` | `labelledBy: NodeId` / `label?: LocalizedText` | same |
 | role | `role: Option<Role>` | `"role"` | `role?: Role` | `role?` |

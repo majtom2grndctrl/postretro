@@ -173,3 +173,27 @@ G2 touches `render/ui/descriptor.rs` (Announce variant + `labelled_by` fields),
 touches the **reaction** SDK-block in the same `typedef.rs` and the same barrel
 — different sections. No shared descriptor/bridge edits (SE touches neither).
 Regenerate typedefs after both land.
+
+## Review round 3 (implementability, 2026-06-14): 3 Blockers in the reactive core
+
+The implementability pass (simulating the task-only /orchestrate contract) found
+three real Blockers the structural reviews couldn't see:
+1. **`selected` → highlight path doesn't exist.** A `Button` is a bare
+   `NodeContext::Text` leaf (no `bind`/`styleRanges`, no backdrop, no highlight
+   rect). "Reuse existing styleRanges, no new primitive" was false for a Button.
+   **Owner decision: author-wired highlight** (defer engine selected-styling, like
+   the `disabled` dim): a `Predicate` is a **bind source** resolving to a `Number`;
+   the author wires the highlight with `styleRanges`. `Button` gains optional
+   `bind`+`style_ranges` (pass-through to its internal Text node via
+   `style_text_value`) so a tab self-highlights. `selected`/`checked` are a11y-only.
+2. **Wrong readback channel.** `UiReadSnapshot` (`mod.rs:311`) is app→renderer
+   *input* (`set_ui_snapshot`, `main.rs:2268`); the only renderer→app readback is
+   `export_ui_focus_rects() -> FocusRectList` (`main.rs:2297`). Resolved
+   `selected`/`checked` now ride **`FocusRect`** (beside the `disabled` bit), not
+   `UiReadSnapshot`. No shared per-node store — each consumer resolves independently
+   (cheap, deterministic), which also simplifies Task 2a.
+3. **`Switch` key order non-deterministic** (Luau table order undefined) — pinned to
+   **lexicographic** sort in both languages.
+Complicates folded in: enumerate `selected`/`checked` on `Button`, `visible_when`
+on every Widget (Task 1); visibility change-detection via prev-resolved compare +
+`mark_dirty` (Task 2b); disabled nav skips *past consecutive* disabled (Task 3).

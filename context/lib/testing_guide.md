@@ -54,6 +54,10 @@ When testing code that bridges two subsystems, derive mock inputs from the sourc
 
 **Example:** testing that PRL face data becomes renderable geometry. The input should match what prl-build actually produces (vertex layout, face indices, texture metadata). The assertion should match what the renderer expects (correct vertex format, valid atlas UVs, proper winding order).
 
+### Drift guards derive from the source
+
+A test guarding two representations against divergence — a Rust enum vs. its generated SDK union, a registry vs. its committed snapshot — derives its expectation from the source of truth, never a second hand-written copy. Map each variant through an exhaustive `match` (no `_` arm) so a new variant is a compile error, not a silently-passing test. Comparing two hand-maintained lists proves only that someone updated both — not that either is correct.
+
 ### Test naming
 
 Names describe the exact behavior and boundary under test. Pattern: `<subject>_<verb>_<expected_outcome>`.
@@ -99,6 +103,10 @@ Game logic tests must control time. Inject a fixed delta time rather than readin
 ### No GPU context in tests
 
 Tests run via `cargo test` with no window and no GPU context. The renderer's data-logic/GPU-interaction split ([Development Guide](./development_guide.md) §4.1) makes this a non-issue: data logic is testable as pure functions, and the thin GPU layer is verified by running the engine.
+
+### Sandboxed test runs
+
+In the web/sandbox environment, run tests with `CARGO_PROFILE_TEST_SPLIT_DEBUGINFO=off cargo test` — split debuginfo fails to link there. Local runs need no flag.
 
 ---
 

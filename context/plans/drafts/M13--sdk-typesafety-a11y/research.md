@@ -27,6 +27,44 @@ beats a second BIS retrofit. Consumption (screen reader) stays deferred; G2 ship
 the complete descriptor *shape* nothing reads yet, plus `disabled` honoring (a
 no-op disabled is a footgun).
 
+## Owner decision (2026-06-14 #2): pull reactive selection + visibility into G2
+
+Reviewing the tabs example, the owner rejected static `selected: true` — selection
+is runtime state, and a static flag desyncs the moment the player clicks. The grep
+confirmed the descriptor model has **no conditional-visibility / selection /
+equality primitive** today (only `bind` value/color/text, monotonic `styleRanges`
+bands, and `localState` cells). So a reactive tab strip is not buildable at all —
+not just the a11y part. Decision: **pull the reactive primitives into G2** so
+`selected`/`checked` are *derived* from the same bind that drives the visual.
+
+Design (grounded in `sdk/lib/ui/state.ts` + `widgets.ts`):
+- **`localState` already scopes to the descendant subtree** of the declaring
+  container (`.get()` resolves "the nearest enclosing `localState` declaration",
+  `state.ts:82`). So a tab group (strip + content under one container) shares a
+  cell with **no new Context primitive**. Cross-*disjoint*-subtree sharing (a
+  React-Context provider) is the genuine gap — **deferred to a later spec** (owner).
+- **`Predicate`** = existing `BindSource` (`{ local }`/`{ slot }`) + optional
+  `equals` → resolves **0/1** on the existing cell/slot resolution path (the
+  `equals` compare is the only new logic). 0/1 is a valid numeric value bind, so
+  existing `styleRanges` (`widgets.ts:286`) drives the highlight — **no new visual
+  primitive**. `selected`/`checked` consume the same `Predicate` → a11y state and
+  highlight identical by construction.
+- **`visibleWhen: Predicate`** is the one new structural field: false excludes the
+  subtree from layout/draw/focus-rect-list; does NOT tear down `localState` scopes
+  (cells persist; declare the scope above the toggle). `Switch(cell, map)` = pure
+  SDK sugar over `visibleWhen` (cellWrite/`{local}` infra already exists,
+  `state.ts:138`). Owner chose to **include content-swap** in this wave.
+- Static `selected: bool` / `checked: bool` / `expanded` from decision #1 are
+  **dropped**: `selected`/`checked` are now predicate-bound; `expanded` deferred
+  (pairs with disclosure animation > binary `visibleWhen`). `disabled` stays static
+  with teeth.
+
+Consequence: G2 grows to ~6 tasks and a new task-area (app-side predicate
+resolution + visibility in `render/ui/`), making it the wave's long pole and adding
+a second SE seam (both touch `render/ui` snapshot/resolution — distinct concerns).
+Task 2 (resolution + visibility + focus-rect build) is the novelty → the
+implementability pass should focus there and may split it.
+
 ## Expanded-scope anchors
 
 - `AnchoredTree` envelope — `descriptor.rs:193` (beside `capture_mode:200`,

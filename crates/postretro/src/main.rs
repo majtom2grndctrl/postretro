@@ -13,6 +13,11 @@ mod lighting;
 mod material;
 mod model;
 mod movement;
+// The runtime nav query surface is consumed only by the dev-tools navmesh
+// overlay today; the future baked-pathfinding plan extends it. Allow dead code
+// so shipping (non-`dev-tools`) builds stay warning-free until that lands.
+#[allow(dead_code)]
+mod nav;
 mod options;
 mod weapon;
 
@@ -344,6 +349,8 @@ fn main() -> Result<()> {
         audio: None,
         window_state: None,
         level: None,
+        #[cfg(feature = "dev-tools")]
+        nav_graph: None,
         map_path,
         content_root,
         exit_result: Ok(()),
@@ -500,6 +507,12 @@ struct App {
 
     window_state: Option<WindowState>,
     level: Option<prl::LevelWorld>,
+    /// Runtime navigation graph, built once when a level with a baked navmesh
+    /// loads. The future pathfinding plan reads this; today only the
+    /// `Alt+Shift+N` debug overlay consumes it, so it is dev-tools-gated to
+    /// stay dead-code-free in shipping builds.
+    #[cfg(feature = "dev-tools")]
+    nav_graph: Option<nav::NavGraph>,
 
     /// Map path resolved from CLI args. Handed to the level-load worker
     /// when it is spawned during the second splash frame.
@@ -2184,6 +2197,12 @@ impl ApplicationHandler for App {
                                     );
                                 }
                             }
+                            // Navmesh overlay: append region rectangles + portal
+                            // edges. No-op unless the `Alt+Shift+N` toggle is on
+                            // and the map carried a baked navmesh.
+                            if let Some(nav_graph) = self.nav_graph.as_ref() {
+                                renderer.emit_nav_diagnostics(nav_graph);
+                            }
                             out
                         };
 
@@ -3157,6 +3176,13 @@ impl App {
             debug_ui.sh_diagnostics_state.seeded = false;
         }
 
+        // Build the runtime navigation graph once, from the baked navmesh
+        // section. `None` when the map has no navmesh bake.
+        #[cfg(feature = "dev-tools")]
+        {
+            self.nav_graph = world.navmesh.as_ref().map(nav::NavGraph::from_section);
+        }
+
         // Stash the world after the mutations so downstream code paths that
         // read from `self.level` see the normalized vertices.
         self.level = Some(world);
@@ -3849,6 +3875,12 @@ impl App {
                 } else {
                     InputFocus::Gameplay
                 });
+            }
+            #[cfg(feature = "dev-tools")]
+            DiagnosticAction::ToggleNavOverlay => {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.toggle_navmesh_overlay();
+                }
             }
         }
     }

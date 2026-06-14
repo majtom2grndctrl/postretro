@@ -15,7 +15,7 @@ use shambler::face::{FaceWinding, face_centers, face_indices, face_vertices};
 use crate::format::quake_map;
 use crate::map_data::{
     BrushPlane, BrushSide, BrushVolume, EntityInfo, MapData, MapEntityRecord, MapFogVolume,
-    MapLight, TextureProjection,
+    MapLight, NavParams, TextureProjection,
 };
 use crate::map_format::MapFormat;
 use postretro_level_format::fog_volumes::{MAX_FOG_VOLUMES, MAX_PLANES_PER_VOLUME};
@@ -172,6 +172,39 @@ fn get_property(geo_map: &GeoMap, entity_id: &EntityId, key: &str) -> Option<Str
     props.iter().find(|p| p.key == key).map(|p| p.value.clone())
 }
 
+/// Resolve a positive-float worldspawn nav KVP, falling back to `default` when
+/// the key is absent or its value is non-finite/≤0. Mirrors the
+/// `_lightmap_density` parse posture: invalid values warn and fall back rather
+/// than halting the build (the key names the offending KVP — worldspawn has no
+/// meaningful per-entity origin to name).
+fn parse_positive_nav_kvp(
+    geo_map: &GeoMap,
+    worldspawn_id: &EntityId,
+    key: &str,
+    default: f32,
+) -> f32 {
+    match get_property(geo_map, worldspawn_id, key) {
+        None => default,
+        Some(raw) => match raw.trim().parse::<f32>() {
+            Ok(parsed) if parsed.is_finite() && parsed > 0.0 => parsed,
+            Ok(parsed) => {
+                log::warn!(
+                    "[Compiler] worldspawn `{key}` value `{parsed}` is non-finite or <= 0; \
+                     falling back to default {default}"
+                );
+                default
+            }
+            Err(e) => {
+                log::warn!(
+                    "[Compiler] worldspawn `{key}` value `{raw}` is not a valid float ({e}); \
+                     falling back to default {default}"
+                );
+                default
+            }
+        },
+    }
+}
+
 /// Extract all key-value pairs for an entity as a property bag. Thin
 /// wrapper that isolates the shambler dependency from the translator.
 fn collect_entity_properties(geo_map: &GeoMap, entity_id: &EntityId) -> HashMap<String, String> {
@@ -319,6 +352,46 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                 None
             }
         },
+    };
+
+    // Worldspawn `nav_*` navigation-bake parameters (meters, or degrees for
+    // slope). Optional per-map overrides of the engine defaults in
+    // `NavParams::default`; mirrors the `_lightmap_density` precedent above —
+    // each absent or invalid (non-finite/≤0) value falls back to its default
+    // with a warning. The keys lead without an underscore, following the
+    // `fog_pixel_scale` form (the majority for engine-authored worldspawn KVPs).
+    let nav_defaults = NavParams::default();
+    let nav_params = NavParams {
+        agent_radius: parse_positive_nav_kvp(
+            &geo_map,
+            &worldspawn_id,
+            "nav_agent_radius",
+            nav_defaults.agent_radius,
+        ),
+        agent_height: parse_positive_nav_kvp(
+            &geo_map,
+            &worldspawn_id,
+            "nav_agent_height",
+            nav_defaults.agent_height,
+        ),
+        step_height: parse_positive_nav_kvp(
+            &geo_map,
+            &worldspawn_id,
+            "nav_step_height",
+            nav_defaults.step_height,
+        ),
+        max_slope_deg: parse_positive_nav_kvp(
+            &geo_map,
+            &worldspawn_id,
+            "nav_max_slope",
+            nav_defaults.max_slope_deg,
+        ),
+        cell_size: parse_positive_nav_kvp(
+            &geo_map,
+            &worldspawn_id,
+            "nav_cell_size",
+            nav_defaults.cell_size,
+        ),
     };
 
     // Worldspawn `initialGravity` (m/s², negative = downward). Required —
@@ -692,6 +765,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         fog_pixel_scale,
         initial_gravity,
         lightmap_density,
+        nav_params,
     })
 }
 

@@ -24,6 +24,7 @@ use postretro_level_format::light_influence::{InfluenceRecord, LightInfluenceSec
 use postretro_level_format::light_tags::LightTagsSection;
 use postretro_level_format::lightmap::LightmapSection;
 use postretro_level_format::map_entity::{MapEntityRecord, MapEntitySection};
+use postretro_level_format::navmesh::NavMeshSection;
 use postretro_level_format::portals::{PortalRecord, PortalsSection};
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
@@ -356,6 +357,7 @@ pub fn pack_and_write_portals(
     fog_volumes: &FogVolumesSection,
     fog_cell_masks: Option<&FogCellMasksSection>,
     sdf_atlas: Option<&SdfAtlasSection>,
+    navmesh: Option<&NavMeshSection>,
 ) -> anyhow::Result<()> {
     let geometry_bytes = geo_result.geometry.to_bytes();
     let texture_names_bytes = geo_result.texture_names.to_bytes();
@@ -387,6 +389,7 @@ pub fn pack_and_write_portals(
     let fog_volumes_bytes = fog_volumes.to_bytes();
     let fog_cell_masks_bytes = fog_cell_masks.map(|s| s.to_bytes());
     let sdf_atlas_bytes = sdf_atlas.map(|s| s.to_bytes());
+    let navmesh_bytes = navmesh.map(|s| s.to_bytes());
 
     let mut sections = vec![
         SectionBlob {
@@ -518,6 +521,13 @@ pub fn pack_and_write_portals(
             data: bytes.clone(),
         });
     }
+    if let Some(ref bytes) = navmesh_bytes {
+        sections.push(SectionBlob {
+            section_id: SectionId::NavMesh as u32,
+            version: postretro_level_format::navmesh::NAVMESH_VERSION,
+            data: bytes.clone(),
+        });
+    }
 
     write_and_validate_sections(output, &sections)?;
 
@@ -616,6 +626,14 @@ pub fn pack_and_write_portals(
             "  FogCellMasks: {} bytes ({} cells)",
             bytes.len(),
             section.masks.len(),
+        );
+    }
+    if let (Some(section), Some(bytes)) = (navmesh, &navmesh_bytes) {
+        log::info!(
+            "  NavMesh: {} bytes ({} regions, {} portals)",
+            bytes.len(),
+            section.regions.len(),
+            section.portals.len(),
         );
     }
 
@@ -872,6 +890,7 @@ mod tests {
             &FogVolumesSection::default(),
             None,
             None,
+            None,
         )
         .expect("pack_and_write_portals should succeed");
 
@@ -943,6 +962,7 @@ mod tests {
             None,
             None,
             &FogVolumesSection::default(),
+            None,
             None,
             None,
         );
@@ -1027,6 +1047,7 @@ mod tests {
             None,
             None,
             &FogVolumesSection::default(),
+            None,
             None,
             None,
         )

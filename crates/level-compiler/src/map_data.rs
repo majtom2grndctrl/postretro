@@ -480,6 +480,46 @@ pub struct MapData {
     /// resolves the effective bake density from this plus the `--lightmap-density`
     /// CLI flag (CLI overrides the KVP; KVP overrides `DEFAULT_TEXEL_DENSITY_METERS`).
     pub lightmap_density: Option<f32>,
+    /// Resolved navigation-bake agent and grid parameters. Each field is taken
+    /// from its `nav_*` worldspawn KVP when authored and valid, else the engine
+    /// default in [`NavParams::default`]. These ride the map-data struct into
+    /// the navmesh bake stage (no CLI override). See
+    /// `context/lib/build_pipeline.md` §Navigation bake.
+    pub nav_params: NavParams,
+}
+
+/// Navigation-bake parameters resolved from worldspawn `nav_*` KVPs (or engine
+/// defaults). The navmesh bake stage consumes these to size the grid and apply
+/// the slope / clearance / step / radius filters. `Serialize` so the bake can
+/// fold them into its stage cache key alongside the geometry hash.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct NavParams {
+    /// Canonical agent radius (meters). Walkable cells within this distance of
+    /// a true non-walkable boundary are eroded. KVP `nav_agent_radius`.
+    pub agent_radius: f32,
+    /// Canonical agent standing height (meters). A span is walkable only when
+    /// its vertical clearance is at least this. KVP `nav_agent_height`.
+    pub agent_height: f32,
+    /// Maximum climbable floor delta between adjacent spans (meters). KVP
+    /// `nav_step_height`.
+    pub step_height: f32,
+    /// Maximum walkable slope (degrees); a surface is walkable when its upward
+    /// normal satisfies `normal.y >= cos(max_slope_deg)`. KVP `nav_max_slope`.
+    pub max_slope_deg: f32,
+    /// Navigation grid column edge length (meters). KVP `nav_cell_size`.
+    pub cell_size: f32,
+}
+
+impl Default for NavParams {
+    fn default() -> Self {
+        Self {
+            agent_radius: 0.4,
+            agent_height: 1.8,
+            step_height: 0.3,
+            max_slope_deg: 45.0,
+            cell_size: 0.25,
+        }
+    }
 }
 
 /// One fog volume entity, resolved to an AABB (and optionally a convex plane

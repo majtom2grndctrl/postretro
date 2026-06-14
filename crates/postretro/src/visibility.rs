@@ -824,6 +824,7 @@ mod tests {
             fog_pixel_scale: 4,
             initial_gravity: -9.81,
             fog_cell_masks: None,
+            navmesh: None,
         }
     }
 
@@ -882,6 +883,7 @@ mod tests {
             fog_pixel_scale: 4,
             initial_gravity: -9.81,
             fog_cell_masks: None,
+            navmesh: None,
         };
         let vp = wide_view_proj(Vec3::ZERO);
         let mut scratch = Vec::new();

@@ -24,6 +24,7 @@ use postretro_level_format::light_influence::LightInfluenceSection;
 use postretro_level_format::light_tags::LightTagsSection;
 use postretro_level_format::lightmap::LightmapSection;
 use postretro_level_format::map_entity::{MapEntityRecord, MapEntitySection};
+use postretro_level_format::navmesh::NavMeshSection;
 use postretro_level_format::portals::PortalsSection;
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
@@ -304,6 +305,13 @@ pub struct LevelWorld {
     /// `(Culled, None)` as all canonical slots active. Section 30 may be
     /// present without section 31.
     pub fog_cell_masks: Option<Vec<u32>>,
+    /// Baked navigation graph (PRL section 36). `None` for maps without a
+    /// navmesh bake; the runtime nav query surface (`crate::nav::NavGraph`) is
+    /// only built when this is present. A malformed section warns and decodes to
+    /// `None` rather than failing the load. Read only by the dev-tools nav graph
+    /// build today, so allowed dead in shipping builds until pathfinding lands.
+    #[allow(dead_code)]
+    pub navmesh: Option<NavMeshSection>,
 }
 
 impl LevelWorld {
@@ -997,6 +1005,35 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             None => None,
         };
 
+    // Optional — absent → no runtime navigation (logged at info, mirroring the
+    // SdfAtlas precedent). A malformed body warns and decodes to None rather
+    // than failing the whole load: a bad navmesh shouldn't make a map unplayable
+    // when nothing depends on it yet.
+    let navmesh: Option<NavMeshSection> =
+        match prl_format::read_section_data(&mut cursor, &meta, SectionId::NavMesh as u32)? {
+            Some(data) => match NavMeshSection::from_bytes(&data) {
+                Ok(section) => {
+                    log::info!(
+                        "[PRL] NavMesh: {}×{} grid, cell_size={:.4}m, {} region(s), {} portal(s)",
+                        section.dim_x,
+                        section.dim_z,
+                        section.cell_size,
+                        section.regions.len(),
+                        section.portals.len(),
+                    );
+                    Some(section)
+                }
+                Err(err) => {
+                    log::warn!("[PRL] NavMesh section malformed, ignoring: {err}");
+                    None
+                }
+            },
+            None => {
+                log::info!("[PRL] NavMesh section missing — no runtime navigation for this map");
+                None
+            }
+        };
+
     let has_portals = portals_section.is_some();
 
     let nodes: Vec<NodeData> = match &nodes_section {
@@ -1160,6 +1197,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         fog_pixel_scale,
         initial_gravity,
         fog_cell_masks,
+        navmesh,
     })
 }
 
@@ -1383,6 +1421,7 @@ mod tests {
             fog_pixel_scale: 4,
             initial_gravity: -9.81,
             fog_cell_masks: None,
+            navmesh: None,
         }
     }
 
@@ -1442,6 +1481,7 @@ mod tests {
             fog_pixel_scale: 4,
             initial_gravity: -9.81,
             fog_cell_masks: None,
+            navmesh: None,
         };
         assert_eq!(world.find_leaf(Vec3::new(50.0, 50.0, 50.0)), 0);
     }
@@ -1494,6 +1534,7 @@ mod tests {
             fog_pixel_scale: 4,
             initial_gravity: -9.81,
             fog_cell_masks: None,
+            navmesh: None,
         };
 
         let spawn = world.spawn_position();
@@ -1535,6 +1576,7 @@ mod tests {
             fog_pixel_scale: 4,
             initial_gravity: -9.81,
             fog_cell_masks: None,
+            navmesh: None,
         };
 
         let indices = face_leaf_indices(&world);

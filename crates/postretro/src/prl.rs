@@ -1006,9 +1006,10 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         };
 
     // Optional — absent → no runtime navigation (logged at info, mirroring the
-    // SdfAtlas precedent). A malformed body warns and decodes to None rather
-    // than failing the whole load: a bad navmesh shouldn't make a map unplayable
-    // when nothing depends on it yet.
+    // SdfAtlas precedent for the absent-section case). A malformed body warns
+    // and decodes to None (softer than SdfAtlas, which propagates with `?` and
+    // fails the load): nothing depends on the navmesh yet, so warn-and-continue
+    // is intentional rather than making a malformed navmesh unplayable.
     let navmesh: Option<NavMeshSection> =
         match prl_format::read_section_data(&mut cursor, &meta, SectionId::NavMesh as u32)? {
             Some(data) => match NavMeshSection::from_bytes(&data) {

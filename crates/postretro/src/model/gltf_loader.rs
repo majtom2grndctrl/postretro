@@ -1,5 +1,5 @@
 // glTF → engine skinned-model loader (CPU-only; no wgpu).
-// See: context/lib/rendering_pipeline.md §9 · context/lib/build_pipeline.md §Baked texture mips
+// See: context/lib/rendering_pipeline.md §9 · context/lib/build_pipeline.md §Baked texture mips · context/lib/entity_model.md §7
 
 use std::collections::HashMap;
 use std::path::Path;

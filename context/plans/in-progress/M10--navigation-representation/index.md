@@ -105,3 +105,7 @@ Canonical reference for Task 1's layout (reproduced in the task so an orchestrat
 
 - Step-edge erosion: erosion is wall-aware — a climbable step (delta ≤ `step_height` between two walkable spans) is not a boundary and does not erode its neighbors. The north star ("walks toward the player without clipping" through stepped geometry) makes the wall-vs-step distinction a correctness requirement, not an optimization; the implementer still logs eroded-cell counts at `info` for the fragmentation feedback above.
 - Triangle source filtering: `GeometryResult` is already filtered to empty, non-exterior leaf faces at extraction, so the bake's triangle source needs no `BspTree` / exterior-set re-filtering — those inputs were dropped from Task 2.
+
+## Implementation deviations
+
+- **Region granularity (deviation from spec).** Implemented as single-floor-level regions: merge tolerance ~1e-3 m via `LEVEL_EPS` in `navmesh_bake.rs`. Every climbable step (delta ≤ `step_height`) becomes a region boundary + portal rather than being absorbed into one multi-level region. This is a defensible reading of the spec's "cells merge only while delta ≤ `step_height`" rule — that rule bounds merging without mandating absorption of climbable steps. All ACs pass. Region count is higher than a multi-level implementation would produce; this is already anticipated by the Open Questions fragmentation note and is consumer-resolved by the pathfinding plan.

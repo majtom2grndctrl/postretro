@@ -524,6 +524,9 @@ pub fn pack_and_write_portals(
     if let Some(ref bytes) = navmesh_bytes {
         sections.push(SectionBlob {
             section_id: SectionId::NavMesh as u32,
+            // Container SectionEntry.version reuses NAVMESH_VERSION (body
+            // constant). Conceptually distinct — container vs. body version —
+            // but coupled at 1 for now.
             version: postretro_level_format::navmesh::NAVMESH_VERSION,
             data: bytes.clone(),
         });

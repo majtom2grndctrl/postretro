@@ -52,8 +52,8 @@ pub(crate) struct WeaponImpact {
     pub(crate) target: Option<EntityId>,
     /// The authored skeletal hit-zone tag the shot landed on (e.g. "head"),
     /// surfaced for an entity hit that struck a bone-posed capsule. `None` for a
-    /// world hit or an authored-AABB entity hit. Task 5 consumes this to apply
-    /// the descriptor's per-zone damage multiplier; here it is only surfaced.
+    /// world hit or an authored-AABB entity hit. The zone-multiplier damage
+    /// routing site reads this to scale the payload; here it is only surfaced.
     pub(crate) zone: Option<String>,
     pub(crate) outcome: ActivationOutcome,
 }
@@ -839,7 +839,7 @@ mod tests {
     }
 
     /// A zone hit through the full weapon path surfaces its zone tag on the
-    /// impact (Task 5 reads `impact.zone`; here we only surface it).
+    /// impact (the zone-multiplier damage routing site reads `impact.zone`; here we only surface it).
     #[test]
     fn zone_hit_reports_zone_tag_through_weapon_impact() {
         let mut registry = EntityRegistry::new();

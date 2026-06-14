@@ -2,7 +2,7 @@
 // Spawn and hot reload set `max` and the optional hitbox; `current` is live HP
 // that damage mutates and a later death sweep resolves.
 //
-// See: context/lib/entity_model.md §2 (Health component), §7 (hitbox AABB)
+// See: context/lib/entity_model.md §2 (Health component), §7 (Collision / hitscan targeting)
 
 use std::collections::HashMap;
 

@@ -1,17 +1,47 @@
 // Render-free per-instance animation sample-parameter types: the resolved clip
-// legs, crossfade, snapshot reference, and one-time capture instruction the
-// game side computes and the renderer's pose sampler consumes.
+// legs, crossfade, snapshot reference, and one-time capture instruction — plus
+// the per-instance phase offset that de-syncs a looping wave.
 //
 // CPU-only by contract (no wgpu, no `crate::render`). These are plain data, not
-// GPU types, so they live in the model layer where BOTH producers import them:
-// the game-side animation resolver (`scripting/systems/mesh_anim.rs`) and the
-// hit-zone raycast facility build them; the renderer's sample-params builder
-// (`render::mesh_pass`) consumes them. Relocated out of `render::mesh_instances`
-// so the hit-zone facility can resolve a pose without importing any renderer
-// type (honors the renderer-owns-GPU boundary).
+// GPU types, so they live in the model layer where every party imports them.
+// SOLE producer of the sample-param types: the game-side animation resolver
+// (`scripting/systems/mesh_anim.rs`). CONSUMERS: the renderer's pose sampler
+// (`render::mesh_pass`) AND the hit-zone raycast facility
+// (`scripting/systems/hit_zones.rs`). `instance_phase` is shared CPU logic both
+// the renderer and the hit-zone facility call to compute the SAME per-instance
+// phase, so capsules sample the clip-local time the renderer draws. Relocated
+// out of `render::mesh_instances` so the hit-zone facility can resolve a pose
+// without importing any renderer type (honors the renderer-owns-GPU boundary).
 // See: context/lib/rendering_pipeline.md §9 · entity_model.md §7
 
 use crate::model::anim::Loop;
+
+/// Derive a per-instance animation phase offset (seconds) from the instance's
+/// deterministic seed (raw `EntityId`). Spreads a spawned wave across the clip
+/// so instances do not animate lock-step. The seed's low bits (entity slot
+/// index) vary per entity, so hashing it and mapping to `[0, duration)` yields a
+/// stable, well-distributed offset. A zero-length clip yields phase 0.
+///
+/// Shared CPU logic with no GPU dependency: both the renderer's collector
+/// (`scripting/systems/mesh_render`) and the hit-zone facility
+/// (`scripting/systems/hit_zones`) call it with the SAME seed + clip duration so
+/// a hit capsule samples the same clip-local time the renderer draws.
+pub(crate) fn instance_phase(seed: u32, clip_duration: f32) -> f32 {
+    if clip_duration <= 0.0 {
+        return 0.0;
+    }
+    // Cheap integer hash (splitmix32-style finalizer) so adjacent seeds — which
+    // EntityId slot indices tend to be — scatter rather than march in lockstep.
+    let mut h = seed;
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x7feb_352d);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x846c_a68b);
+    h ^= h >> 16;
+    // Map to [0, 1) then to [0, duration).
+    let frac = (h as f32) / (u32::MAX as f32 + 1.0);
+    frac * clip_duration
+}
 
 /// One sampled clip leg: its index into the model's clip list, the clip-local
 /// time (seconds) to sample at, and whether time wraps (looping) or clamps
@@ -113,5 +143,36 @@ impl MeshSampleParams {
             },
             fade: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn instance_phase_spreads_distinct_seeds_across_the_clip() {
+        let duration = 2.0;
+        let p0 = instance_phase(0, duration);
+        let p1 = instance_phase(1, duration);
+        let p2 = instance_phase(2, duration);
+        // All in range.
+        for p in [p0, p1, p2] {
+            assert!((0.0..duration).contains(&p), "phase {p} in [0, {duration})");
+        }
+        // Adjacent seeds do not collapse to the same phase (de-sync the wave).
+        assert!(
+            (p0 - p1).abs() > 1.0e-4,
+            "seeds 0 and 1 produce distinct phases"
+        );
+        assert!(
+            (p1 - p2).abs() > 1.0e-4,
+            "seeds 1 and 2 produce distinct phases"
+        );
+    }
+
+    #[test]
+    fn instance_phase_zero_for_zero_length_clip() {
+        assert_eq!(instance_phase(12345, 0.0), 0.0);
     }
 }

@@ -14,10 +14,11 @@ use glam::{Mat4, Vec4};
 use crate::lighting::cone_frustum::{Aabb, aabb_intersects_frustum};
 use crate::model::ModelHandle;
 // The per-instance sample-parameter types (`ClipSample`, `MeshSampleParams`,
-// `FadeSource`, `MeshFade`, `SnapshotTag`, `CaptureInstruction`) are render-free
-// plain data and now live in `crate::model::sample_params`, imported directly by
-// both the renderer (`mesh_pass`) and the game side (`mesh_anim`, the hit-zone
-// facility) — no renderer dependency crosses into game code.
+// `FadeSource`, `MeshFade`, `SnapshotTag`, `CaptureInstruction`) and the
+// `instance_phase` per-instance phase helper are render-free plain data/logic
+// and now live in `crate::model::sample_params`, imported directly by both the
+// renderer (`mesh_pass`, `mesh_render`) and the game side (`mesh_anim`, the
+// hit-zone facility) — no renderer dependency crosses into game code.
 use crate::model::sample_params::{CaptureInstruction, MeshSampleParams};
 
 /// Fixed per-frame bone-palette budget, in `BonePaletteEntry` slots (one slot =
@@ -238,28 +239,6 @@ pub(crate) fn plan_mesh_frame(
     }
 }
 
-/// Derive a per-instance animation phase offset (seconds) from the instance's
-/// deterministic seed (raw `EntityId`). Spreads a spawned wave across the clip
-/// so instances do not animate lock-step. The seed's low bits (entity slot
-/// index) vary per entity, so hashing it and mapping to `[0, duration)` yields a
-/// stable, well-distributed offset. A zero-length clip yields phase 0.
-pub(crate) fn instance_phase(seed: u32, clip_duration: f32) -> f32 {
-    if clip_duration <= 0.0 {
-        return 0.0;
-    }
-    // Cheap integer hash (splitmix32-style finalizer) so adjacent seeds — which
-    // EntityId slot indices tend to be — scatter rather than march in lockstep.
-    let mut h = seed;
-    h ^= h >> 16;
-    h = h.wrapping_mul(0x7feb_352d);
-    h ^= h >> 15;
-    h = h.wrapping_mul(0x846c_a68b);
-    h ^= h >> 16;
-    // Map to [0, 1) then to [0, duration).
-    let frac = (h as f32) / (u32::MAX as f32 + 1.0);
-    frac * clip_duration
-}
-
 /// Whether a planned skinned instance casts into a spot light's shadow slot:
 /// its model's LOCAL-space bound, transformed by the instance's world matrix,
 /// must intersect the slot's cone frustum. Pure CPU data logic (no GPU, no BVH —
@@ -444,32 +423,6 @@ mod tests {
         assert_eq!(plan.dropped, 0, "an uncached model is not a budget drop");
         assert_eq!(plan.groups.len(), 1);
         assert_eq!(plan.groups[0].model.as_str(), "grunt");
-    }
-
-    #[test]
-    fn instance_phase_spreads_distinct_seeds_across_the_clip() {
-        let duration = 2.0;
-        let p0 = instance_phase(0, duration);
-        let p1 = instance_phase(1, duration);
-        let p2 = instance_phase(2, duration);
-        // All in range.
-        for p in [p0, p1, p2] {
-            assert!((0.0..duration).contains(&p), "phase {p} in [0, {duration})");
-        }
-        // Adjacent seeds do not collapse to the same phase (de-sync the wave).
-        assert!(
-            (p0 - p1).abs() > 1.0e-4,
-            "seeds 0 and 1 produce distinct phases"
-        );
-        assert!(
-            (p1 - p2).abs() > 1.0e-4,
-            "seeds 1 and 2 produce distinct phases"
-        );
-    }
-
-    #[test]
-    fn instance_phase_zero_for_zero_length_clip() {
-        assert_eq!(instance_phase(12345, 0.0), 0.0);
     }
 
     /// AC#2: the per-light caster cull keeps an instance whose transformed bound

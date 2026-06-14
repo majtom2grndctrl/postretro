@@ -20,7 +20,7 @@ use crate::lighting::cone_frustum::Aabb;
 use crate::model::ModelHandle;
 use crate::model::anim::{BlendSource, Loop, sample_blended_world, sample_clip_looped_world};
 use crate::model::gltf_loader::{self, JointZone};
-use crate::model::sample_params::{ClipSample, FadeSource, MeshSampleParams};
+use crate::model::sample_params::{ClipSample, FadeSource, MeshSampleParams, instance_phase};
 use crate::model::skeleton::{AnimationClip, Skeleton};
 use crate::scripting::components::health::HealthComponent;
 use crate::scripting::components::mesh::{MeshAnimation, MeshComponent};
@@ -44,12 +44,12 @@ pub(crate) const BOUND_SAMPLES_PER_CLIP: usize = 8;
 /// One model TYPE's retained CPU hit-zone data, keyed by [`ModelHandle`] in the
 /// [`HitZoneStore`].
 ///
-/// The skeleton and clips are `Arc`-wrapped so the future per-shot raycast path
-/// (Task 4) can clone a cheap handle to re-sample the live pose without ever
-/// deep-cloning keyframes. `joint_zones` is parallel to `skeleton.joints`
-/// (entry `i` describes joint `i`), exactly as the loader produced it.
+/// The skeleton and clips are `Arc`-wrapped so the per-shot raycast path can
+/// clone a cheap handle to re-sample the live pose without ever deep-cloning
+/// keyframes. `joint_zones` is parallel to `skeleton.joints` (entry `i` describes
+/// joint `i`), exactly as the loader produced it.
 ///
-/// The fields are read by the Task 4 raycast facility ([`nearest_entity_hit`])
+/// The fields are read by the entity-raycast facility ([`nearest_entity_hit`])
 /// in this module — the live shipping consumer.
 #[derive(Clone)]
 pub(crate) struct ModelHitZones {
@@ -78,9 +78,9 @@ impl ModelHitZones {
 
 /// All models' hit-zone data, keyed by handle. One entry per model TYPE (not per
 /// instance). Owned by the `App` beside `collision_world`; populated at the
-/// level-load model sweep and cleared on level change. Consumed by the Task 4
-/// raycast facility ([`nearest_entity_hit`]), which the weapon hitscan delegates
-/// to.
+/// level-load model sweep and cleared on level change. Consumed by the
+/// entity-raycast facility ([`nearest_entity_hit`]), which the weapon hitscan
+/// delegates to.
 #[derive(Default)]
 pub(crate) struct HitZoneStore {
     models: HashMap<ModelHandle, ModelHitZones>,
@@ -152,8 +152,8 @@ impl HitZoneStore {
     }
 
     /// The retained hit-zone data for a model handle, or `None` if the model was
-    /// never loaded (or its load failed). The Task 4 raycast facility looks the
-    /// per-instance model up here.
+    /// never loaded (or its load failed). The entity-raycast facility
+    /// [`nearest_entity_hit`] looks the per-instance model up here.
     pub(crate) fn get(&self, handle: &ModelHandle) -> Option<&ModelHitZones> {
         self.models.get(handle)
     }
@@ -268,7 +268,7 @@ fn sample_time(duration: f32, sample: usize) -> f32 {
 }
 
 // ---------------------------------------------------------------------------
-// Entity-raycast facility (Task 4)
+// Entity-raycast facility
 //
 // A standalone, weapon-agnostic ray query: given ANY origin / direction / range
 // it walks every TARGETABLE entity and returns the nearest hit. "Targetable"
@@ -316,8 +316,9 @@ pub(crate) struct EntityRayHit {
 ///
 /// Zero-HP entities (pending-despawn this tick) are skipped so a corpse cannot
 /// absorb a shot for one frame. `anim_time` is the game-layer animation clock;
-/// `store` is the per-model hit-zone data (Task 3). The result's `zone` carries
-/// the struck bone's tag for a capsule hit (Task 5 reads it).
+/// `store` is the per-model hit-zone data ([`HitZoneStore`]). The result's `zone`
+/// carries the struck bone's tag for a capsule hit (the zone-multiplier damage
+/// routing site reads it).
 pub(crate) fn nearest_entity_hit(
     registry: &EntityRegistry,
     store: &HitZoneStore,
@@ -357,15 +358,19 @@ pub(crate) fn nearest_entity_hit(
             (Some(zones), _) => {
                 // The entity's animation, if any, drives the posed skeleton; a
                 // mesh with no animation block (stateless prop) poses to the
-                // model's first clip at the clock.
-                let animation = registry
-                    .get_component::<MeshComponent>(id)
-                    .ok()
-                    .and_then(|m| m.animation.clone());
+                // model's first clip at the clock. The animation is cloned LAZILY
+                // — only AFTER the broad phase survives — so a broad-phase reject
+                // never deep-clones the state map. The closure keeps the registry
+                // borrow live so the reject path allocates nothing.
                 nearest_zone_hit(
                     zones,
                     transform,
-                    animation.as_ref(),
+                    || {
+                        registry
+                            .get_component::<MeshComponent>(id)
+                            .ok()
+                            .and_then(|m| m.animation.clone())
+                    },
                     anim_time,
                     id,
                     origin,
@@ -428,7 +433,7 @@ fn zone_bearing_entry<'a>(
 fn nearest_zone_hit(
     zones: &ModelHitZones,
     transform: &Transform,
-    animation: Option<&MeshAnimation>,
+    resolve_animation: impl FnOnce() -> Option<MeshAnimation>,
     anim_time: f64,
     id: EntityId,
     origin: Vec3,
@@ -442,13 +447,19 @@ fn nearest_zone_hit(
     // Broad phase: the derived bound is model-local; transform it to a tight
     // world-axis-aligned enclosure and ray-test that AABB. A reject here means
     // no capsule can be hit (the bound encloses every posed capsule by
-    // construction), so we skip the narrow phase entirely.
+    // construction), so we skip the narrow phase entirely — AND before resolving
+    // (cloning) the entity's animation, so a rejected entity pays no deep clone.
     let bound = zones.derived_bound.as_ref()?.transformed(&model_to_world);
     ray_aabb_slab(origin, direction, bound.min, bound.max, range)?;
 
-    // Narrow phase: pose the skeleton at the entity's current animation time and
-    // test one capsule per tagged joint.
-    let world_joints = pose_world_joints(zones, animation, anim_time);
+    // Broad phase survived: NOW resolve (clone) the entity's animation. A mesh
+    // with no animation block (stateless prop) poses to the model's first clip.
+    let animation = resolve_animation();
+
+    // Narrow phase: pose the skeleton at the entity's current animation time AND
+    // the SAME per-instance phase the renderer draws with (seed = the raw
+    // `EntityId`), then test one capsule per tagged joint.
+    let world_joints = pose_world_joints(zones, animation.as_ref(), anim_time, id.to_raw());
 
     let mut nearest: Option<EntityRayHit> = None;
     for (joint_index, zone) in zones.joint_zones.iter().enumerate() {
@@ -533,38 +544,73 @@ fn yaw_of(rotation: Quat) -> f32 {
 /// unresolved state, or a stateless / no-animation mesh, poses the model's first
 /// clip looped at the clock; a model with no clips poses each joint to rest.
 ///
-/// Phase de-sync is intentionally omitted: it is a looping-only cosmetic offset
-/// the renderer applies per instance (`mesh_instances::instance_phase`, a render
-/// module the facility must not import), so the facility hit-tests at the raw
-/// animation clock — faithful in pose, minus a cosmetic looping offset.
+/// Phase de-sync is fed in at the SAME per-instance phase the renderer applies,
+/// so a capsule tracks the drawn pose rather than lagging a whole clip behind it.
+/// The phase is [`instance_phase`] of the entity's `EntityId` seed against the
+/// CURRENT state's clip duration (the stateless/default path uses the first
+/// clip's duration) — the exact seed + duration the renderer's collector uses, so
+/// the values match. `instance_phase`/`state_time` apply it ONLY to looping legs;
+/// one-shot states ignore it, matching the renderer.
 fn pose_world_joints(
     zones: &ModelHitZones,
     animation: Option<&MeshAnimation>,
     anim_time: f64,
+    seed: u32,
 ) -> Vec<Mat4> {
     let mut out = Vec::new();
     let skeleton = zones.skeleton.as_ref();
     let clips = zones.clips.as_ref();
 
     // Resolve the entity's current animation to render-free sample params via the
-    // shared resolver (phase 0 — see the doc note). `animate_entity` returns
-    // `None` for an unresolved current state; fall through to the default pose.
-    if let Some(params) = animation
-        .and_then(|anim| super::mesh_anim::animate_entity(anim, anim_time, 0.0).map(|r| r.sample))
-    {
-        pose_from_params(skeleton, clips, &params, &mut out);
-        return out;
+    // shared resolver, feeding the SAME per-instance phase the renderer draws
+    // with so capsules track the drawn pose. `animate_entity` applies the phase
+    // only to looping legs; it returns `None` for an unresolved current state, so
+    // we fall through to the default pose.
+    if let Some(anim) = animation {
+        let phase = current_state_phase(anim, clips, seed);
+        if let Some(params) =
+            super::mesh_anim::animate_entity(anim, anim_time, phase).map(|r| r.sample)
+        {
+            pose_from_params(skeleton, clips, &params, &mut out);
+            return out;
+        }
     }
 
-    // Default pose: the model's first clip, looped at the clock; or rest if the
-    // model carries no clips at all.
+    // Default pose: the model's first clip, looped at the clock plus the SAME
+    // per-instance phase the renderer's stateless path applies (first clip's
+    // duration); or rest if the model carries no clips at all.
     match clips.first() {
         Some(clip) => {
-            sample_clip_looped_world(clip, skeleton, anim_time as f32, Loop::Wrap, &mut out)
+            let phase = instance_phase(seed, clip.duration);
+            sample_clip_looped_world(
+                clip,
+                skeleton,
+                anim_time as f32 + phase,
+                Loop::Wrap,
+                &mut out,
+            )
         }
         None => pose_rest(skeleton, &mut out),
     }
     out
+}
+
+/// The per-instance phase offset for an entity's CURRENT animation state, derived
+/// from that state's clip duration — the game-side mirror of the renderer
+/// collector's `current_state_phase`. The seed is the raw `EntityId`; the
+/// duration comes from the resolved current state's `clip_index` into the store's
+/// `clips`, so the phase matches the renderer's value exactly. A state with no
+/// resolved clip (or an out-of-range index) yields phase 0, matching the
+/// renderer's `unwrap_or(0.0)`. `instance_phase` then zeroes a zero-length clip.
+fn current_state_phase(anim: &MeshAnimation, clips: &[AnimationClip], seed: u32) -> f32 {
+    let duration = anim
+        .states
+        .get(&anim.current_state)
+        .and_then(|s| s.clip_index)
+        .and_then(|i| clips.get(i))
+        .map(|clip| clip.duration)
+        .unwrap_or(0.0);
+    instance_phase(seed, duration)
 }
 
 /// Pose the model's skeleton at `anim_time` per a resolved [`MeshSampleParams`]:
@@ -1002,7 +1048,7 @@ mod tests {
         );
     }
 
-    // --- Entity-raycast facility (Task 4) -----------------------------------
+    // --- Entity-raycast facility --------------------------------------------
 
     use crate::scripting::components::health::{HealthComponent, Hitbox};
     use crate::scripting::components::mesh::MeshComponent;
@@ -1201,6 +1247,108 @@ mod tests {
             .expect("the state-posed limb lies on the ray");
         assert_eq!(hit.target, id);
         assert_eq!(hit.zone.as_deref(), Some("hand"));
+    }
+
+    /// AC (zones never desync from visuals): a LOOPING entity with a NON-ZERO
+    /// per-instance phase poses its capsules at the PHASED clip-local time the
+    /// renderer draws — NOT the un-phased (zero-phase) time. The facility folds in
+    /// the SAME `instance_phase(seed, clip_duration)` the renderer's collector
+    /// uses, so a ray through the phased limb position hits while a ray through the
+    /// un-phased rest/zero-phase position misses.
+    ///
+    /// Setup: a looping state on the swing clip entered at t=0, sampled at
+    /// anim_time=0 → elapsed 0, so `state_time == phase` and the child sits at
+    /// `x = 5 * phase` (the clip ramps x from 0 at t=0 to 10 at t=2). Seed 0
+    /// hashes to phase 0, so a single dummy spawn advances the real entity to a
+    /// seed with a meaningful non-zero phase.
+    #[test]
+    fn looping_entity_poses_capsules_at_phased_time() {
+        use crate::scripting::components::mesh::{AnimationState, InterruptPolicy, MeshAnimation};
+
+        let mut reg = EntityRegistry::new();
+        let store = store_with("mob", swinging_limb_model());
+
+        // Burn entity id 0 (phase 0) so the real entity gets a seed whose
+        // `instance_phase` is non-zero — the whole point of the test.
+        let _dummy = reg.spawn(Transform::default());
+
+        let mut states = HashMap::new();
+        states.insert(
+            "move".to_string(),
+            AnimationState {
+                clip: "swing".into(),
+                looping: true,
+                crossfade_ms: 0.0,
+                interrupt: InterruptPolicy::Smooth,
+                clip_index: Some(0),
+            },
+        );
+        let mut anim = MeshAnimation::new(states, "move".into());
+        anim.entered_at = Some(0.0); // entered at the clock origin → elapsed == 0
+
+        let id = reg.spawn(Transform::default());
+        reg.set_component(
+            id,
+            HealthComponent {
+                max: 100.0,
+                current: 100.0,
+                hitbox: None,
+                death_handled: false,
+                zone_multipliers: std::collections::HashMap::new(),
+            },
+        )
+        .unwrap();
+        reg.set_component(
+            id,
+            MeshComponent {
+                model: "mob".into(),
+                animation: Some(anim),
+            },
+        )
+        .unwrap();
+
+        // The SAME phase the renderer computes: seed = the raw EntityId, duration
+        // = the current state's clip (the swing clip, duration 2.0). The child's
+        // posed x at anim_time 0 is `5 * phase` (x = 10 * (state_time / 2)).
+        let phase = instance_phase(id.to_raw(), 2.0);
+        assert!(
+            phase > 0.1,
+            "the chosen seed must produce a meaningful non-zero phase, got {phase}"
+        );
+        let phased_x = 5.0 * phase;
+
+        let dir = Vec3::new(0.0, 0.0, -1.0);
+
+        // A ray through the PHASED limb position hits (the capsule tracks the
+        // drawn pose, not the un-phased pose).
+        let hit = nearest_entity_hit(
+            &reg,
+            &store,
+            0.0,
+            Vec3::new(phased_x, 0.0, 10.0),
+            dir,
+            100.0,
+        )
+        .expect("a ray through the PHASED limb position hits");
+        assert_eq!(hit.target, id);
+        assert_eq!(hit.zone.as_deref(), Some("hand"));
+        // The reported impact sits at the phased x (within the sphere radius).
+        assert!(
+            approx(hit.point.x, phased_x) || (hit.point.x - phased_x).abs() < 0.3,
+            "impact x {} tracks the phased limb x {phased_x}",
+            hit.point.x
+        );
+
+        // A ray through the UN-PHASED (zero-phase) rest position x=0 MISSES: with
+        // phase folded in, the limb is at `phased_x`, far (≥ ~0.5) from x=0, so a
+        // facility that ignored phase (posing at clip-local 0) would wrongly hit
+        // here. The miss proves the phase is actually applied.
+        let unphased = nearest_entity_hit(&reg, &store, 0.0, Vec3::new(0.0, 0.0, 10.0), dir, 100.0);
+        assert!(
+            unphased.is_none(),
+            "a ray through the UN-PHASED rest position (x=0) must miss once phase \
+             moves the limb to x={phased_x}"
+        );
     }
 
     /// AC: a ray through a posed limb OUTSIDE an authored-hitbox-sized box still

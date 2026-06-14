@@ -176,9 +176,9 @@ Portal traversal is the sole visibility path: per-frame flood-fill from the came
 
 ---
 
-## Navigation bake (forthcoming, M10)
+## Navigation bake
 
-Walkable navigation is baked offline into a new PRL section, kin to the baked BVH. Design intent, not yet built. See `plans/ready/M10--navigation-representation/`.
+Walkable navigation is baked offline into a `NavMesh` PRL section (SectionId 36). Baked by `navmesh_bake.rs` after the BVH stage and before the lightmap bake; decoded by the runtime loader in `prl.rs`. Runtime pathfinding consumption is forthcoming. See `plans/in-progress/M10--navigation-representation/`.
 
 **Query contract.** Runtime consumes convex walkable **regions joined by portals** — the pathfinding query surface (A* over regions, funnel over portal segments). The shape is the durable contract; the bake *algorithm* swaps behind it (rectangular decomposition first, a contour tracer later). Off-mesh links and hints (jump links, cover) extend it as future portal kinds / region attachments — additive, no format break. Seed of a broader baked spatial-AI layer.
 
@@ -186,13 +186,25 @@ Walkable navigation is baked offline into a new PRL section, kin to the baked BV
 
 **Scope.** One graph per map, one canonical agent. The section records the agent parameters it was baked with (radius, height, step, slope), so multi-agent support is an explicit migration, not a silent reinterpretation.
 
+**Agent defaults (worldspawn KVPs).**
+
+| KVP | Default |
+|-----|---------|
+| `nav_agent_radius` | 0.4 m |
+| `nav_agent_height` | 1.8 m |
+| `nav_step_height` | 0.3 m |
+| `nav_max_slope` | 45.0° |
+| `nav_cell_size` | 0.25 m |
+
+**Region decomposition.** Each region covers a single floor level. Every climbable step (floor delta ≤ `nav_step_height`) becomes a region boundary joined by a portal rather than being absorbed into one multi-level region. This increases region count (logged at bake time) and is a defensible reading of the "merge ≤ step\_height" rule — the rule bounds what may merge; it does not mandate merging.
+
 ## Build Cache
 
 Disk-backed content-hash cache that lets `prl-build` skip the two expensive bake stages when their inputs are unchanged.
 
 **Location.** `.build-caches/prl-cache/` at the workspace root (the parent directory containing `Cargo.toml`). Created automatically on first build. Safe to delete at any time — the next build recreates it. The cache root `.build-caches/` also contains `prm-cache/` (texture mip sidecars; see §Baked texture mips).
 
-**Participating stages.** Lightmap bake and SH volume bake, plus the animated-light weight-map and SDF-atlas stages. Parse, BSP, portals, geometry, and BVH run uncached — they are fast enough that caching yields no measurable speedup.
+**Participating stages.** Lightmap bake and SH volume bake, plus the animated-light weight-map, SDF-atlas, and navmesh stages. Parse, BSP, portals, geometry, and BVH run uncached — they are fast enough that caching yields no measurable speedup.
 
 **Cache grain (lightmap + SH).** These two channels are cached *per element*, not per whole stage, so editing one light refreshes only the affected entries:
 
@@ -206,7 +218,7 @@ Disk-backed content-hash cache that lets `prl-build` skip the two expensive bake
 
 | Component | Form |
 |-----------|------|
-| `stage_id` | string literal — `"lightmap_layer"` (per-light), `"lightmap_section"` (composited-section memo), `"sh_group"` (per-probe-group), `"animated_lm_weight_maps"`, or `"sdf_atlas"` |
+| `stage_id` | string literal — `"lightmap_layer"` (per-light), `"lightmap_section"` (composited-section memo), `"sh_group"` (per-probe-group), `"animated_lm_weight_maps"`, `"sdf_atlas"`, or `"navmesh"` |
 | `stage_version` | `u32` constant in each stage's module, bumped manually when that stage's algorithm or payload format changes. Each stage owns its own constant and version-bumps independently — the per-light-layer and per-group-SH formats version separately from each other and from the legacy whole-stage bakes |
 | `input_hash` | `blake3(postcard(StageInputs) || postcard(StageConfig))` — covers the serialized data the stage reads |
 

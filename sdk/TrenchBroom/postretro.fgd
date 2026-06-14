@@ -25,6 +25,15 @@
     // maps need to author this. Non-finite / <= 0 values are warned and the
     // default is used. The `--lightmap-density` CLI flag overrides this KVP.
     _lightmap_density(float) : "Lightmap texel size in meters (default 0.04; smaller = finer)" : ""
+    // Navigation-bake agent and grid parameters. All values are in meters
+    // (nav_max_slope in degrees). Absent or invalid (non-finite / <= 0) values
+    // fall back to the engine default with a warning — only author these when
+    // the map needs non-default walkable-surface derivation.
+    nav_agent_radius(float) : "Navmesh agent radius (meters; default 0.4). Walkable cells within this distance of a non-walkable boundary are eroded from the nav graph." : ""
+    nav_agent_height(float) : "Navmesh agent standing height (meters; default 1.8). A span is only walkable when its vertical clearance is at least this value." : ""
+    nav_step_height(float) : "Navmesh maximum climbable step (meters; default 0.3). Adjacent spans whose floor heights differ by more than this are treated as ledges." : ""
+    nav_max_slope(float) : "Navmesh maximum walkable slope (degrees; default 45.0). Surfaces whose upward normal satisfies normal.y >= cos(angle) are considered walkable." : ""
+    nav_cell_size(float) : "Navmesh grid column edge length (meters; default 0.25). Smaller cells increase accuracy and bake time; larger cells are coarser but faster." : ""
 ]
 
 @BaseClass = EntitySpawn

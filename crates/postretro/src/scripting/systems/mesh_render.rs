@@ -319,7 +319,7 @@ fn resolve_sample(
     // Stateless / unresolved / un-uploaded: today's behavior. The primary clip is
     // index 0; phase folds in against its duration (0 if the model is uncached).
     let duration = table.and_then(|t| t.duration(0)).unwrap_or(0.0);
-    let phase = crate::render::mesh_instances::instance_phase(seed, duration);
+    let phase = crate::model::sample_params::instance_phase(seed, duration);
     (MeshSampleParams::stateless(anim_time as f32 + phase), None)
 }
 
@@ -337,7 +337,7 @@ fn current_state_phase(
         .and_then(|s| s.clip_index)
         .and_then(|i| table.duration(i))
         .unwrap_or(0.0);
-    crate::render::mesh_instances::instance_phase(seed, duration)
+    crate::model::sample_params::instance_phase(seed, duration)
 }
 
 impl Default for MeshRenderCollector {

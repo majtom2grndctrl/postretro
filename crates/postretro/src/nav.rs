@@ -161,9 +161,10 @@ impl NavGraph {
 
     /// World-space point → region index. Uses only the XZ footprint (regions
     /// partition the floor on the XZ plane); the floor band disambiguates only
-    /// when footprints overlap on XZ. Returns the first region whose footprint
-    /// contains the point, preferring the one whose floor band is nearest the
-    /// query Y when several overlap. `None` when no region covers the point.
+    /// when footprints overlap on XZ. Returns the region whose floor band is
+    /// nearest the query Y among all overlapping regions. When two regions are
+    /// equidistant in Y, the lower-index region wins (first-wins by iteration
+    /// order). `None` when no region covers the point.
     pub fn region_at(&self, position: Vec3) -> Option<usize> {
         let mut best: Option<(usize, f32)> = None;
         for (i, region) in self.regions.iter().enumerate() {

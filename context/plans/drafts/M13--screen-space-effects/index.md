@@ -51,8 +51,9 @@ tonemap and M10 post extend — not a side-channel SE has to unwind later.
 
 - **HDR / tonemap.** `scene_color` is the surface (LDR) format so output stays
   identical; an HDR upgrade + tonemap-in-the-resolve is M9's additive change.
-- **M10 post / other resolve effects** — they extend this resolve when they
-  land; SE ships only flash/vignette/shake.
+- **M10 post / other resolve effects** — they extend this *single* resolve when
+  they land (M9 tonemap / M10 post must not stack parallel resolves); SE ships only
+  flash/vignette/shake.
 - **Sustained / continuous effects** bound to a live value (low-health vignette
   that tracks `player.health`). v1 effects are one-shot reaction + decay, like
   flash; a continuous-bind model is deferred.
@@ -117,7 +118,8 @@ path (`render_splash_frame` / `record_splash_ui`) keeps writing the swapchain
 directly. Add a `ScreenEffectsPass` (`render/screen_effects.rs`, new) +
 `src/shaders/screen_effects.wgsl` (fullscreen-triangle, the `fog_composite`
 precedent) that samples `scene_color` and writes `view`; encoded after
-`ui.encode`, before timing resolve (`:5511`). Identity blit when no effect input is bound. Pre-Task-4: resolve uniform
+`ui.encode`, before timing resolve (`:5511`); the resolve runs every frame as the sole
+swapchain writer — never skip it at rest. Identity blit when no effect input is bound. Pre-Task-4: resolve uniform
 zeroed/unbound → identity. Post-Task-4: at-rest slot values (transparent flash,
 zero strength, zero shake) ALU-collapse to identity and MUST produce bit-identical
 output to the unbound path so the parity gate holds across both. Parity gate:
@@ -203,18 +205,3 @@ Coordinate; regenerate typedefs once both land. SE touches no
 | screenShake args | `{ amplitude, duration_ms, frequency: Option<f32> }` (`#[serde(default)]`) | `{ "amplitude", "durationMs", "frequency"? }` | `{ amplitude, durationMs, frequency? }` | same |
 | vignette slot | `"screen.vignette"` (`Array` RGBA) | n/a | read-only bind name | same |
 | shake slot | `"screen.shake"` (`Array [dx,dy]`) | n/a | read-only bind name | same |
-
-## Decisions & deferrals
-
-- **MSAA / format.** The surface is single-sample today (all pipelines use
-  `MultisampleState::default()` count 1; depth `sample_count: 1`), so `scene_color`
-  is single-sample at the surface (LDR) format and the resolve is a true identity
-  blit — byte-identical parity is achievable. M9's HDR upgrade (swap format + add
-  tonemap into the resolve) stays additive.
-- **Idle cost (accepted).** Routing through `scene_color` adds one fullscreen
-  resolve every frame even at rest — the standard cost of a compositor. The effect
-  math is ALU on top; no extra pass when effects are active.
-- **Cross-milestone coordination.** SE owns the resolve; M9 tonemap and M10 post
-  must *extend* it (one resolve), not stack parallel resolves. Flag for M9/M10.
-- **Sustained vignette deferred** (track a value while a condition holds) to a
-  future continuous-effect model; v1 is one-shot decay.

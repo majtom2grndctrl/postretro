@@ -191,7 +191,10 @@ errors, no panic. New fields skip-serialized when absent. `Depends on` Task 0.
 
 ### Task 2a: predicate resolution + a11y state + `FocusRect.disabled`
 Add `resolve_predicate(source, equals, scope, slots, cells) -> f32` riding
-`lookup_bound` (`tree.rs:43`); resolve each node's `selected`/`checked`/`visible_when`
+`lookup_bound` (`tree.rs:43`) — exact compare; `String`/`Enum` match by name; a
+type mismatch (or a no-`equals` predicate over a non-`Boolean` source) resolves
+`0.0`; a no-`equals` `Boolean` source resolves its truthiness. Resolve each node's
+`selected`/`checked`/`visible_when`
 predicate **once into a per-node resolved field** during bind resolution
 (`build_draw_data_retained`, `tree.rs:674`). Make the resolved 0/1 a `Number` the
 existing `styleRanges` extractors consume (`style_value :2456`); export the
@@ -214,7 +217,9 @@ visibility predicate's resolved value marks layout dirty + re-exports the cached
 `input/ui_focus.rs`: skip `FocusRect.disabled` nodes in `move_focus`/`linear_step`/
 `spatial_step`/`initial_focus_id` and the pointer (`hit_test_topmost`) + hover
 (`tick`) paths. **`main.rs`:** block activation in `fire_focused_button_activation`
-(`:2923`, reads `NodeInteraction::Button`). `Depends on` Task 2a
+(`:2923`, reads `NodeInteraction::Button`). Behavior only — the visual dim (a
+theme/styleRanges treatment) is out of scope (BIS); dynamic (bound) `disabled` is a
+later enhancement. `Depends on` Task 2a
 (`FocusRect.disabled`). **Note:** touches `main.rs` (shared) — coordinate with any
 concurrent `main.rs` edits.
 
@@ -290,18 +295,3 @@ slots from — coordinate (distinct concerns, same area). G2 owns all
 | image decorative | `decorative: bool` (XOR w/ `label`) | `"decorative"` | XOR: `{ decorative: true; label?: never }` | XOR in factory |
 | envelope name/role | `accessible_name`/`role` (`Option::is_none` skip) | `"accessibleName"`/`"role"` | `accessibleName?`/`role?` | same |
 | Announce / priority | `Widget::Announce(AnnounceWidget)`; `Priority` (`is_polite` skip) | `{ "kind":"announce","text","priority"? }` | `Announce(props, text)` | same |
-
-## Decisions & deferrals
-
-- **`Predicate.equals`:** v1 admits number / bool / string; exact compare;
-  `String`/`Enum` match by name; type mismatch → `0.0`; an rgba comparand is a
-  load-time error. A no-`equals` predicate requires a `Boolean` source.
-- **A11y `selected`/`checked` are snapshotted now.** The resolution already runs
-  for the highlight; exporting the 0/1 into `UiReadSnapshot` is near-free and makes
-  AC#2's one-resolution test observable.
-- **Visibility = `Display::None` + invalidate-on-change.** The node is retained
-  (lockstep preserved); a predicate-value change re-exports the `FocusRectList` +
-  dirties layout; applied in the layout/draw/focus walks, never the `reconcile`
-  descriptor walk. See `lib/ui.md` §3.
-- **`disabled` styling deferred.** Behavior only here; the visual dim is a
-  theme/styleRanges concern (BIS). Dynamic (bound) `disabled` is a later enhancement.

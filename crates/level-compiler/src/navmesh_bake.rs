@@ -12,7 +12,7 @@ use crate::map_data::NavParams;
 /// stage cache key so a stale on-disk entry from a prior version is a miss on
 /// the first build after the bump and a hit on the second (matches the SDF and
 /// SH stage pattern).
-pub const NAVMESH_STAGE_VERSION: u32 = 1;
+pub const NAVMESH_STAGE_VERSION: u32 = 2;
 
 /// Tolerance on every `step_height` comparison. A floor delta exactly equal to
 /// `step_height` must count as a climbable step (a one-step riser is reachable),
@@ -315,9 +315,15 @@ fn sample_triangle_y(t: &Triangle, x: f32, z: f32) -> Option<f32> {
 
 /// Merge a column's raw fragments into bottom-up spans and compute clearance.
 /// Fragments whose floors are within `merge_eps` collapse into one span; a span
-/// is walkable iff any contributing fragment is walkable (a walkable surface
-/// is not masked by a coincident non-walkable one). Clearance is the gap from a
-/// span's top to the next span's floor; the topmost span has open sky (+inf).
+/// is walkable iff any contributing fragment is walkable (a walkable surface is
+/// not masked by a coincident non-walkable one). A merged span's floor tracks
+/// the WALKABLE surface — the height an agent stands on — not the lowest
+/// fragment: a thin deck (walkable top + non-walkable underside within
+/// `merge_eps`) must record its floor at the top, or the region sinks a
+/// slab-thickness below the walk surface and the step delta to flush ground
+/// would exceed `step_height`, leaving it a disconnected island. Clearance is
+/// the gap from a span's top to the next span's floor; the topmost span has
+/// open sky (+inf).
 fn merge_column(fragments: &mut [Fragment], agent_height: f32) -> Vec<Span> {
     if fragments.is_empty() {
         return Vec::new();
@@ -334,7 +340,17 @@ fn merge_column(fragments: &mut [Fragment], agent_height: f32) -> Vec<Span> {
         if let Some(last) = spans.last_mut() {
             if frag.min_y - last.top_y <= merge_eps {
                 last.top_y = last.top_y.max(frag.max_y);
-                last.walkable = last.walkable || frag.walkable;
+                if frag.walkable {
+                    // The standable floor is the lowest walkable fragment; a
+                    // walkable fragment merging onto a non-walkable span (a thin
+                    // deck's top over its own underside) lifts the floor to it.
+                    last.floor_y = if last.walkable {
+                        last.floor_y.min(frag.min_y)
+                    } else {
+                        frag.min_y
+                    };
+                    last.walkable = true;
+                }
                 continue;
             }
         }
@@ -867,6 +883,30 @@ mod tests {
         assert_eq!(r.z1, 8);
         assert!((r.floor_y_min - 0.0).abs() < 1.0e-4);
         assert!((r.floor_y_max - 0.0).abs() < 1.0e-4);
+    }
+
+    #[test]
+    fn thin_deck_records_floor_at_walk_surface_not_underside() {
+        // Regression: a bridge deck thinner than merge_eps (= agent_height * 0.25
+        // = 0.45 m) has its walkable top and non-walkable underside merged into
+        // one span. The span's floor must be the TOP (1.0), the surface an agent
+        // stands on — not the underside (0.7). The old bug kept the underside,
+        // sinking the region a slab-thickness below the deck (it then read as a
+        // disconnected island: the step delta to flush ground exceeds step_height).
+        let mut tris: Vec<[[f32; 3]; 3]> = Vec::new();
+        tris.extend_from_slice(&floor_quad(0.0, 0.0, 2.0, 2.0, 1.0)); // deck top (walkable)
+        tris.extend_from_slice(&ceiling_quad(0.0, 0.0, 2.0, 2.0, 0.7)); // underside, 0.3 m thick
+        let geo = geo_from_triangles(&tris);
+        let section = bake_navmesh(&geo, &no_erode_params()).expect("thin deck must bake");
+
+        assert_eq!(section.regions.len(), 1);
+        let r = section.regions[0];
+        assert!(
+            (r.floor_y_min - 1.0).abs() < 1.0e-4,
+            "deck floor must sit on the walk surface (1.0), got {}",
+            r.floor_y_min
+        );
+        assert!((r.floor_y_max - 1.0).abs() < 1.0e-4);
     }
 
     #[test]

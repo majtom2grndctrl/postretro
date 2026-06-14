@@ -458,9 +458,6 @@ declare module "postretro" {
     component: LightComponent;
   };
 
-  /** Declare an engine-global typed state-store namespace during mod init. Every mod-owned slot requires a default. Supported types are number, boolean, string, enum, and array. Namespace registration is atomic and rejects existing or dotted-prefix-colliding namespaces. Returns an object keyed by slot name whose branded string values are stable dotted-name handles. Definition context. */
-  export function defineStore(namespace: string, schema: unknown): { readonly [slot: string]: StateValue<string> };
-
   /** Returns true if the entity id refers to a live entity. */
   export function entityExists(id: EntityId): boolean;
 
@@ -677,7 +674,19 @@ declare module "postretro" {
     crossings?: CrossingDescriptor[];
   };
 
-  /** Build a named reaction descriptor. Pure: returns a plain object, no FFI. */
+  /** Build a named reaction descriptor. Pure: returns a plain object, no FFI.
+   * The `name` argument is optional: when omitted a deterministic, run-stable id
+   * is derived from the descriptor body (content-derived, so re-running
+   * registration yields the same auto-id — crossings and the wire reference it).
+   * The returned handle is a `NamedReactionDescriptor`; pass it directly to a
+   * `Button`'s `onPress` or a crossing `fire` entry (typed, go-to-definition)
+   * instead of repeating the bare name string. */
+  export function defineReaction(
+    descriptor:
+      | ProgressReactionDescriptor
+      | PrimitiveReactionDescriptor
+      | SequenceReactionDescriptor,
+  ): NamedReactionDescriptor;
   export function defineReaction(
     name: string,
     descriptor:
@@ -686,11 +695,11 @@ declare module "postretro" {
       | SequenceReactionDescriptor,
   ): NamedReactionDescriptor;
 
-  /** Build a state-crossing watcher. Pure: returns a plain object, no FFI. Place the result in `setupLevel`'s returned `crossings` array. The engine fires every reaction in `fire` exactly once on a crossing in the condition's direction, re-arming only after a crossing back; a registration against a non-Number slot warns and is skipped at load. */
+  /** Build a state-crossing watcher. Pure: returns a plain object, no FFI. Place the result in `setupLevel`'s returned `crossings` array. The engine fires every reaction in `fire` exactly once on a crossing in the condition's direction, re-arming only after a crossing back; a registration against a non-Number slot warns and is skipped at load. Each `fire` entry is a `defineReaction` handle (typed) or a bare reaction-name string (the shipped path); handles are reduced to their `.name`, so the wire `CrossingDescriptor.fire` stays a `string[]`. */
   export function onStateCrossing(
     slot: string,
     condition: CrossingCondition,
-    fire: string[],
+    fire: (NamedReactionDescriptor | string)[],
   ): CrossingDescriptor;
 
   /** System-reaction body: play `sound` through the M12 audio module on the optional named `bus` (omitted when undefined → engine default bus). Pure: returns a `PrimitiveReactionDescriptor`, no FFI. Pass to `defineReaction("name", playSound(...))`. */
@@ -730,6 +739,33 @@ declare module "postretro" {
   export function clearText(slot: string): PrimitiveReactionDescriptor;
 
   // -------------------------------------------------------------------------
+  // State-store handles (M13 G1a). `defineStore` is special-cased in the typedef
+  // generator (mirroring `worldQuery`): per-slot value types live only in the
+  // runtime `schema` argument, absent at typedef emission, so the typed handle
+  // map is supplied by this hand-written generic instead of registry emission.
+
+  /** A read-only typed slot handle for an engine-owned slot. `.get()` yields the typed bind reference a widget binds to; carries the slot's declared value type `T`. No `.set()` — engine slots are read-only to mods (see `postretro/game-state`). */
+  export type ReadonlyStateValue<T> = { get(): StateValue<T> };
+
+  /** One slot's declaration inside the `defineStore` `schema` argument. The `type` discriminant selects the slot's value type; type-specific keys (`default`, `range`, `values`, …) are accepted alongside it. */
+  export type StoreSlotSchema = { type: "number" | "boolean" | "string" | "enum" | "array" } & Record<string, unknown>;
+
+  /** Maps one schema slot's `type` discriminant to its handle value type:
+   * `{type:"number"}` → `StateValue<number>`, `{type:"boolean"}` →
+   * `StateValue<boolean>`, every other type (`string`/`enum`/`array`) →
+   * `StateValue<string>` (the stable dotted-name handle is a branded string). */
+  export type StateValueForSlot<Slot> =
+    Slot extends { type: "number" } ? StateValue<number> :
+    Slot extends { type: "boolean" } ? StateValue<boolean> :
+    StateValue<string>;
+
+  /** Declare an engine-global typed state-store namespace during mod init. Every mod-owned slot requires a default. Supported types are number, boolean, string, enum, and array. Namespace registration is atomic and rejects existing or dotted-prefix-colliding namespaces. Returns an object keyed by slot name whose values are stable dotted-name handles carrying each slot's declared value type (`StateValue<number>` / `StateValue<boolean>` / `StateValue<string>`). Definition context. */
+  export function defineStore<const S extends Record<string, StoreSlotSchema>>(
+    namespace: string,
+    schema: S,
+  ): { readonly [K in keyof S]: StateValueForSlot<S[K]> };
+
+  // -------------------------------------------------------------------------
   // Interactive UI widget descriptors (M13 Goal F, Task 4). Authored as JSON in
   // a UI tree descriptor; the engine builds the retained tree from them. These
   // type-only aliases pin the wire shape (camelCase, internally tagged on `kind`).
@@ -743,8 +779,8 @@ declare module "postretro" {
   /** Continuous value→style map (M13 Goal E): fill fraction `value/max` maps to the first covering band; a trailing no-`upTo` band is the default. */
   export type WidgetStyleRanges = { max: number; entries: { upTo?: number; color?: WidgetColor; pulse?: { periodMs: number }; flash?: { durationMs: number } }[] };
 
-  /** Interactive button widget. Focusable; activation (gamepad confirm or pointer click) fires the `onPress` named reaction through the reaction registry. `id` is required (activation resolves the focused node id back to `onPress`). */
-  export type ButtonWidget = { kind: "button"; id: string; label: string; onPress: string; focusNeighbors?: Record<string, string> };
+  /** Interactive button widget. Focusable; activation (gamepad confirm or pointer click) fires the `onPress` named reaction through the reaction registry. `id` is required (activation resolves the focused node id back to `onPress`). `onPress` accepts a `defineReaction` handle (typed, go-to-definition) or a bare reaction-name string (the shipped path); the factory reads the handle's `.name` and emits the unchanged `onPress: string` wire form. */
+  export type ButtonWidget = { kind: "button"; id: string; label: string; onPress: NamedReactionDescriptor | string; focusNeighbors?: Record<string, string> };
 
   /** Interactive slider widget. Focusable; nav wires named in `capturesNav` (e.g. `["nav.left", "nav.right"]` — an array, not a bool) step the bound value by `step` within `[min, max]` and emit a `setState` write on the N+1 frame. */
   export type SliderWidget = { kind: "slider"; id: string; label: string; bind: SliderBind; min: number; max: number; step: number; capturesNav?: string[]; focusNeighbors?: Record<string, string> };
@@ -885,4 +921,27 @@ declare module "postretro" {
   /** A UI navigation intent wire name. Template-literal type over the closed
    * `NavIntentName` set, so only `"nav.up"` … `"nav.options"` type-check. */
   export type NavIntent = `nav.${NavIntentName}`;
+}
+
+declare module "postretro/game-state" {
+  import { ReadonlyStateValue } from "postretro";
+
+  // Generated from the engine slot registry (engine-owned, read-only slots).
+  // Imported named: `import { player } from "postretro/game-state"`.
+
+  /** Read-only handles for the engine-owned `input.*` slots. */
+  export const input: {
+    readonly mode: ReadonlyStateValue<"pointer" | "focus">;
+  };
+
+  /** Read-only handles for the engine-owned `player.*` slots. */
+  export const player: {
+    readonly ammo: ReadonlyStateValue<number>;
+    readonly health: ReadonlyStateValue<number>;
+  };
+
+  /** Read-only handles for the engine-owned `screen.*` slots. */
+  export const screen: {
+    readonly flash: ReadonlyStateValue<ReadonlyArray<number>>;
+  };
 }

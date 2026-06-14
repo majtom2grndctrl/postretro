@@ -457,9 +457,6 @@ export type LightEntity = {
   component: LightComponent,
 }
 
---- Declare an engine-global typed state-store namespace during mod init. Every mod-owned slot requires a default. Supported types are number, boolean, string, enum, and array. Namespace registration is atomic and rejects existing or dotted-prefix-colliding namespaces. Returns an object keyed by slot name whose branded string values are stable dotted-name handles. Definition context.
-declare function defineStore(namespace: string, schema: any): { [string]: StateValue<string> }
-
 --- Returns true if the entity id refers to a live entity.
 declare function entityExists(id: EntityId): boolean
 
@@ -701,10 +698,15 @@ export type LevelManifest = {
 }
 
 --- Build a named reaction descriptor. Pure: returns a plain table, no FFI.
-declare function defineReaction(
-  name: string,
-  descriptor: ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor
-): NamedReactionDescriptor
+--- The `name` argument is optional: when omitted a deterministic, run-stable id
+--- is derived from the descriptor body (content-derived, so re-running
+--- registration yields the same auto-id — crossings and the wire reference it).
+--- The returned handle is a `NamedReactionDescriptor`; pass it directly to a
+--- button's `onPress` or a crossing `fire` entry instead of repeating the name.
+declare defineReaction: (
+  ((descriptor: ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor) -> NamedReactionDescriptor)
+  & ((name: string, descriptor: ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor) -> NamedReactionDescriptor)
+)
 
 --- Pure identity builder for entity-type descriptors. Returns the
 --- descriptor as-is; its sole purpose is a typed construction site.
@@ -714,11 +716,14 @@ declare function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescr
 --- the result in `setupLevel`'s returned `crossings` array. On a crossing in
 --- the condition's direction the engine fires every reaction in `fire` exactly
 --- once, re-arming only after a crossing back; a registration against a
---- non-Number slot warns and is skipped at load.
+--- non-Number slot warns and is skipped at load. Each `fire` entry is a
+--- `defineReaction` handle (typed) or a bare reaction-name string (the shipped
+--- path); handles are reduced to their `.name`, so the wire `CrossingDescriptor.fire`
+--- stays a `{string}`.
 declare function onStateCrossing(
   slot: string,
   condition: CrossingCondition,
-  fire: {string}
+  fire: {NamedReactionDescriptor | string}
 ): CrossingDescriptor
 
 --- System-reaction body: play `sound` through the M12 audio module on the
@@ -794,6 +799,32 @@ declare function backspaceText(slot: string): PrimitiveReactionDescriptor
 declare function clearText(slot: string): PrimitiveReactionDescriptor
 
 -- ---------------------------------------------------------------------------
+-- State-store handles (M13 G1a). `defineStore` is special-cased in the typedef
+-- generator (mirroring `worldQuery`): per-slot value types live only in the
+-- runtime `schema` argument, absent at typedef emission. Luau's type system
+-- cannot map a schema table to per-slot handle types the way the TS generic
+-- does, so the Luau handle map is the uniform branded-string form; the per-slot
+-- typing contract is asserted on the TS surface.
+
+--- A read-only typed slot handle for an engine-owned slot. `get()` yields the
+--- typed bind reference a widget binds to; carries the slot's declared value
+--- type `T`. No `set` — engine slots are read-only to mods (see the
+--- `postretro/game-state` module below).
+export type ReadonlyStateValue<T> = { get: (self: any) -> StateValue<T> }
+
+--- One slot's declaration inside the `defineStore` `schema` argument. The `type`
+--- discriminant selects the slot's value type; type-specific keys (`default`,
+--- `range`, `values`, …) are accepted alongside it.
+export type StoreSlotSchema = { type: string, [string]: any }
+
+--- Declare an engine-global typed state-store namespace during mod init. Every
+--- mod-owned slot requires a default. Supported types are number, boolean,
+--- string, enum, and array. Namespace registration is atomic and rejects
+--- existing or dotted-prefix-colliding namespaces. Returns a table keyed by slot
+--- name whose values are stable dotted-name handles. Definition context.
+declare function defineStore(namespace: string, schema: { [string]: StoreSlotSchema }): { [string]: StateValue<string> }
+
+-- ---------------------------------------------------------------------------
 -- Interactive UI widget descriptors (M13 Goal F, Task 4). Authored as data in a
 -- UI tree descriptor; the engine builds the retained tree from them. These
 -- type-only aliases pin the wire shape (camelCase, internally tagged on `kind`).
@@ -810,8 +841,11 @@ export type SliderBind = { slot: string, tween: { durationMs: number, easing: st
 export type WidgetStyleRanges = { max: number, entries: { upTo: number?, color: WidgetColor?, pulse: { periodMs: number }?, flash: { durationMs: number }? } }
 
 --- Interactive button widget. Focusable; activation (gamepad confirm or pointer
---- click) fires the `onPress` named reaction. `id` is required.
-export type ButtonWidget = { kind: "button", id: string, label: string, onPress: string, focusNeighbors: { [string]: string }? }
+--- click) fires the `onPress` named reaction. `id` is required. `onPress` accepts
+--- a `defineReaction` handle (typed) or a bare reaction-name string (the shipped
+--- path); the factory reads the handle's `name` and emits the `onPress: string`
+--- wire form.
+export type ButtonWidget = { kind: "button", id: string, label: string, onPress: NamedReactionDescriptor | string, focusNeighbors: { [string]: string }? }
 
 --- Interactive slider widget. Focusable; nav wires named in `capturesNav` (an
 --- array, not a bool) step the bound value by `step` within [min, max] and emit a
@@ -927,3 +961,28 @@ declare runtime: Runtime
 -- so this is a flat string union over the same closed set.
 -- See: context/research/ui-layer.md §16.
 export type NavIntent = "nav.up" | "nav.down" | "nav.left" | "nav.right" | "nav.next" | "nav.prev" | "nav.confirm" | "nav.cancel" | "nav.menu" | "nav.options"
+
+-- ---------------------------------------------------------------------------
+-- `postretro/game-state` — read-only typed handles for engine-owned slots.
+-- Generated from the engine slot registry. Required as a sibling module:
+--   local gameState = require("postretro/game-state")
+-- Each slot exposes `:get()` only — engine slots are read-only to mods.
+
+--- Read-only handles for the engine-owned `input.*` slots.
+export type GameState_input = {
+  mode: ReadonlyStateValue<"pointer" | "focus">,
+}
+declare input: GameState_input
+
+--- Read-only handles for the engine-owned `player.*` slots.
+export type GameState_player = {
+  ammo: ReadonlyStateValue<number>,
+  health: ReadonlyStateValue<number>,
+}
+declare player: GameState_player
+
+--- Read-only handles for the engine-owned `screen.*` slots.
+export type GameState_screen = {
+  flash: ReadonlyStateValue<{number}>,
+}
+declare screen: GameState_screen

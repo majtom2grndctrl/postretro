@@ -73,15 +73,65 @@ export type LevelManifest = {
   crossings?: import("./ui/reactions").CrossingDescriptor[];
 };
 
-/** Returns a plain object — pure builder, no engine side effects. */
+type ReactionBody =
+  | ProgressReactionDescriptor
+  | PrimitiveReactionDescriptor
+  | SequenceReactionDescriptor;
+
+/**
+ * Deterministic, run-stable id derived from a reaction body. Content-derived
+ * (a stable string serialization of the body hashed with FNV-1a) so re-running
+ * registration yields the same id — crossings and the `onPress` wire form
+ * reference it, so it must not vary across runs.
+ */
+function autoReactionId(descriptor: ReactionBody): string {
+  const serialized = stableStringify(descriptor);
+  // FNV-1a (32-bit). Deterministic and dependency-free; collision risk is
+  // acceptable for author-named reaction ids and an explicit `name` overrides it.
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < serialized.length; i++) {
+    hash ^= serialized.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `reaction_${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+/** Order-stable JSON serialization: object keys are emitted sorted so two
+ * structurally identical bodies always serialize identically. */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  const keys = Object.keys(value as Record<string, unknown>).sort();
+  const entries = keys.map(
+    (k) => `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k])}`,
+  );
+  return `{${entries.join(",")}}`;
+}
+
+/**
+ * Returns a plain object — pure builder, no engine side effects. `name` is
+ * optional: when omitted a deterministic, run-stable id is derived from the
+ * body (see `autoReactionId`). The returned handle doubles as a typed reaction
+ * reference for `Button`'s `onPress` and crossing `fire` entries.
+ */
+export function defineReaction(body: ReactionBody): NamedReactionDescriptor;
 export function defineReaction(
   name: string,
-  descriptor:
-    | ProgressReactionDescriptor
-    | PrimitiveReactionDescriptor
-    | SequenceReactionDescriptor,
+  descriptor: ReactionBody,
+): NamedReactionDescriptor;
+export function defineReaction(
+  nameOrBody: string | ReactionBody,
+  descriptor?: ReactionBody,
 ): NamedReactionDescriptor {
-  return { name, ...descriptor } as NamedReactionDescriptor;
+  const [name, body] =
+    typeof nameOrBody === "string"
+      ? [nameOrBody, descriptor as ReactionBody]
+      : [autoReactionId(nameOrBody), nameOrBody];
+  return { name, ...body } as NamedReactionDescriptor;
 }
 
 /** Identity builder — gives authors a typed construction site for entity

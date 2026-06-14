@@ -44,6 +44,9 @@ impl DataRegistry {
         let LevelManifest {
             reactions,
             crossings,
+            // Parsed and held on the manifest (G1b Task 1); installation of
+            // level-scope UI trees into the app-side registry is later-task work.
+            ui_trees: _,
         } = manifest;
         self.reactions.extend(reactions);
         self.crossings.extend(crossings);
@@ -158,6 +161,7 @@ mod tests {
                 }),
             }],
             crossings: Vec::new(),
+            ui_trees: Vec::new(),
         }
     }
 

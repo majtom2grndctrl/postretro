@@ -10,7 +10,10 @@ use rquickjs::{
     Object as JsObject, Runtime as JsRuntime, Value as JsValue,
 };
 
-use super::data_descriptors::{EntityTypeDescriptor, entity_descriptor_from_js};
+use super::data_descriptors::{
+    EntityTypeDescriptor, drain_fonts_js, drain_fonts_lua, drain_theme_js, drain_theme_lua,
+    drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js,
+};
 use super::error::ScriptError;
 use super::luau::{LuauConfig, LuauRequireTracker};
 use super::primitives::store::{
@@ -494,9 +497,25 @@ fn manifest_from_js_value<'js>(
         }
     };
 
+    // UI fields drain via the G1a bridge fns; malformed entries log+skip inside
+    // the drains (ui.md §5). This is the hot-reload twin of `run_mod_init_quickjs`.
+    let ui_trees =
+        drain_ui_trees_js(ctx, &obj, "setupMod").map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` setupMod `uiTrees` invalid: {e}"),
+        })?;
+    let theme = drain_theme_js(&obj, "setupMod").map_err(|e| ScriptError::InvalidArgument {
+        reason: format!("mod-init: `{source_path}` setupMod `theme` invalid: {e}"),
+    })?;
+    let fonts = drain_fonts_js(&obj, "setupMod").map_err(|e| ScriptError::InvalidArgument {
+        reason: format!("mod-init: `{source_path}` setupMod `fonts` invalid: {e}"),
+    })?;
+
     Ok(ModManifestResult {
         name,
         entities,
+        ui_trees,
+        theme,
+        fonts,
         store_declarations: StoreDeclarationSet::default(),
     })
 }
@@ -612,9 +631,25 @@ fn run_staged_mod_init_luau(
         Vec::new()
     };
 
+    // UI fields drain via the G1a bridge fns; malformed entries log+skip inside
+    // the drains (ui.md §5). This is the hot-reload twin of `run_mod_init_luau`.
+    let ui_trees =
+        drain_ui_trees_lua(&table, "setupMod").map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` setupMod `uiTrees` invalid: {e}"),
+        })?;
+    let theme = drain_theme_lua(&table, "setupMod").map_err(|e| ScriptError::InvalidArgument {
+        reason: format!("mod-init: `{source_path}` setupMod `theme` invalid: {e}"),
+    })?;
+    let fonts = drain_fonts_lua(&table, "setupMod").map_err(|e| ScriptError::InvalidArgument {
+        reason: format!("mod-init: `{source_path}` setupMod `fonts` invalid: {e}"),
+    })?;
+
     Ok(ModManifestResult {
         name,
         entities,
+        ui_trees,
+        theme,
+        fonts,
         store_declarations: declaration_attempt.borrow().clone().finish()?,
     })
 }
@@ -910,5 +945,123 @@ mod tests {
             !completed.iter().any(|r| r.generation == 2),
             "middle pending generation should be coalesced, got {completed:?}"
         );
+    }
+
+    // --- G1b Task 1: hot-reload mod-init UI field drains --------------------
+
+    /// Hot-reload JS parser (`manifest_from_js_value`) drains `uiTrees` / `theme`
+    /// / `fonts` via the G1a bridge fns, the twin of the cold-boot path.
+    #[test]
+    fn manifest_from_js_value_drains_ui_fields() {
+        let rt = JsRuntime::new().unwrap();
+        let ctx = JsContext::full(&rt).unwrap();
+        ctx.with(|ctx| {
+            let returned: JsValue = ctx
+                .eval(
+                    r#"({
+                        name: "UiMod",
+                        uiTrees: [
+                            { name: "hud", alwaysOn: true,
+                              tree: { anchor: "topLeft", offset: [0.0, 0.0],
+                                      root: { kind: "spacer", flexGrow: 1.0 } } },
+                        ],
+                        theme: { colors: { critical: [1.0, 0.0, 0.0, 1.0] } },
+                        fonts: { body: "fonts/inter.ttf" },
+                    })"#,
+                )
+                .unwrap();
+            let manifest = manifest_from_js_value(&ctx, "/mod/start-script.js", returned)
+                .expect("hot-reload JS parser must drain UI fields");
+            assert_eq!(manifest.ui_trees.len(), 1);
+            assert_eq!(manifest.ui_trees[0].name, "hud");
+            assert!(manifest.ui_trees[0].always_on);
+            assert_eq!(manifest.theme.colors["critical"], [1.0, 0.0, 0.0, 1.0]);
+            assert_eq!(manifest.fonts.families["body"], "fonts/inter.ttf");
+        });
+    }
+
+    /// Hot-reload JS parser skips a malformed `uiTrees` entry rather than failing.
+    #[test]
+    fn manifest_from_js_value_skips_malformed_ui_tree() {
+        let rt = JsRuntime::new().unwrap();
+        let ctx = JsContext::full(&rt).unwrap();
+        ctx.with(|ctx| {
+            let returned: JsValue = ctx
+                .eval(
+                    r#"({
+                        name: "UiMod",
+                        uiTrees: [
+                            { name: "bad", tree: { anchor: "topLeft", offset: [0.0, 0.0], root: { kind: "carousel" } } },
+                            { name: "good", tree: { anchor: "topLeft", offset: [0.0, 0.0], root: { kind: "spacer", flexGrow: 1.0 } } },
+                        ],
+                    })"#,
+                )
+                .unwrap();
+            let manifest = manifest_from_js_value(&ctx, "/mod/start-script.js", returned)
+                .expect("malformed UI tree must not abort the hot-reload parse");
+            assert_eq!(manifest.ui_trees.len(), 1);
+            assert_eq!(manifest.ui_trees[0].name, "good");
+        });
+    }
+
+    /// Hot-reload Luau parser (`run_staged_mod_init_luau`) drains the UI fields,
+    /// the twin of the cold-boot Luau path.
+    #[test]
+    fn run_staged_mod_init_luau_drains_ui_fields() {
+        let dir = temp_mod_root("staged_luau_ui");
+        let source = r#"
+            function setupMod()
+                return {
+                    name = "UiMod",
+                    uiTrees = {
+                        { name = "hud", alwaysOn = true,
+                          tree = { anchor = "topLeft", offset = { 0, 0 },
+                                   root = { kind = "spacer", flexGrow = 1 } } },
+                    },
+                    theme = { colors = { critical = {1, 0, 0, 1} } },
+                    fonts = { body = "fonts/inter.ttf" },
+                }
+            end
+        "#;
+        let manifest = run_staged_mod_init_luau(
+            source,
+            &dir.join("start-script.luau").to_string_lossy(),
+            &dir,
+            &LuauConfig::default(),
+            None,
+        )
+        .expect("hot-reload Luau parser must drain UI fields");
+        assert_eq!(manifest.ui_trees.len(), 1);
+        assert_eq!(manifest.ui_trees[0].name, "hud");
+        assert!(manifest.ui_trees[0].always_on);
+        assert_eq!(manifest.theme.colors["critical"], [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(manifest.fonts.families["body"], "fonts/inter.ttf");
+    }
+
+    /// Hot-reload Luau parser skips a malformed `uiTrees` entry.
+    #[test]
+    fn run_staged_mod_init_luau_skips_malformed_ui_tree() {
+        let dir = temp_mod_root("staged_luau_ui_bad");
+        let source = r#"
+            function setupMod()
+                return {
+                    name = "UiMod",
+                    uiTrees = {
+                        { name = "bad", tree = { anchor = "topLeft", offset = { 0, 0 }, root = { kind = "carousel" } } },
+                        { name = "good", tree = { anchor = "topLeft", offset = { 0, 0 }, root = { kind = "spacer", flexGrow = 1 } } },
+                    },
+                }
+            end
+        "#;
+        let manifest = run_staged_mod_init_luau(
+            source,
+            &dir.join("start-script.luau").to_string_lossy(),
+            &dir,
+            &LuauConfig::default(),
+            None,
+        )
+        .expect("malformed UI tree must not abort the hot-reload parse");
+        assert_eq!(manifest.ui_trees.len(), 1);
+        assert_eq!(manifest.ui_trees[0].name, "good");
     }
 }

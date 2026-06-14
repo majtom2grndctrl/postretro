@@ -805,6 +805,43 @@ impl SwayParams {
     pub(crate) const DEFAULT_GROUNDED_ONLY: bool = false;
 }
 
+/// A script-registered UI tree: a named [`AnchoredTree`] plus the `alwaysOn`
+/// registration attribute. Drained from the `uiTrees` field of `setupMod()`
+/// (mod scope) and `setupLevel()` (level scope) returns. G1b Task 1 parses and
+/// holds these on the manifest results; the register→VM-drop lifecycle that
+/// installs them into the app-side registry is later-task work.
+/// See: context/lib/ui.md §1.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RegisteredUiTree {
+    /// Registry name the render path resolves the tree by.
+    pub(crate) name: String,
+    /// The placement envelope + widget tree, parsed via the G1a bridge.
+    pub(crate) tree: AnchoredTree,
+    /// `alwaysOn` registration attribute: a tree that stays resolvable even when
+    /// it is not on top of the modal stack. Defaults to `false` when absent.
+    pub(crate) always_on: bool,
+}
+
+/// Theme tokens supplied by `setupMod()` (the `theme` field). Three
+/// category-scoped maps mirroring the engine theme tables (colors linear-RGBA,
+/// fonts → registered family name, spacing → logical px). G1b Task 1 only parses
+/// and holds these; the `ThemeDescriptor` merge into the live theme is Task 4.
+/// See: context/lib/ui.md §2.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct ModThemeTokens {
+    pub(crate) colors: HashMap<String, [f32; 4]>,
+    pub(crate) fonts: HashMap<String, String>,
+    pub(crate) spacing: HashMap<String, f32>,
+}
+
+/// Font assets declared by `setupMod()` (the `fonts` field): family name → TTF
+/// asset path. G1b Task 1 only parses and holds these; `register_ui_font`
+/// installation is Task 4. See: context/lib/ui.md §2.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct ModFontAssets {
+    pub(crate) families: HashMap<String, String>,
+}
+
 /// The full bundle returned by a level's `setupLevel(ctx)` export.
 ///
 /// Entity-type descriptors are not part of this manifest — they arrive via
@@ -818,6 +855,9 @@ pub(crate) struct LevelManifest {
     /// from the widened `{ reactions, crossings }` setup-manifest return and
     /// drained into the per-level `DataRegistry`; cleared on level unload.
     pub(crate) crossings: Vec<CrossingDescriptor>,
+    /// Per-level UI trees declared via the `uiTrees` field. A malformed entry is
+    /// logged and skipped rather than aborting level load (`ui.md` §5).
+    pub(crate) ui_trees: Vec<RegisteredUiTree>,
 }
 
 #[derive(Debug, Error, PartialEq)]
@@ -950,9 +990,12 @@ impl LevelManifest {
             Vec::new()
         };
 
+        let ui_trees = drain_ui_trees_js(ctx, &obj, "setupLevel")?;
+
         Ok(Self {
             reactions,
             crossings,
+            ui_trees,
         })
     }
 
@@ -994,9 +1037,12 @@ impl LevelManifest {
             Vec::new()
         };
 
+        let ui_trees = drain_ui_trees_lua(&table, "setupLevel")?;
+
         Ok(Self {
             reactions,
             crossings,
+            ui_trees,
         })
     }
 }
@@ -4039,6 +4085,363 @@ fn children_from_lua(table: &Table) -> Result<Vec<Widget>, DescriptorError> {
     for i in 1..=(len as i64) {
         let item: LuaValue = arr.get(i).map_err(lua_err)?;
         out.push(widget_from_lua(item)?);
+    }
+    Ok(out)
+}
+
+// ===========================================================================
+// Manifest-level UI field drains (G1b Task 1).
+//
+// `uiTrees` / `theme` / `fonts` are optional fields on the `setupMod()` return
+// (mod scope); `uiTrees` is also optional on `setupLevel()` (level scope). Each
+// drain reads the field straight off the returned object/table via the per-
+// runtime field readers, building typed values held on the manifest result.
+//
+// Degradation contract (ui.md §5): a malformed UI *registration* (a tree entry
+// that fails its own parse, including the G1a `anchored_tree_from_*` bridge)
+// produces a named load-time diagnostic and is SKIPPED — it never aborts the
+// boot / level-load pass and never panics. A malformed *container* (the
+// `uiTrees`/`theme`/`fonts` field itself not being the expected shape) is also
+// logged and degraded to "no UI from this field" rather than failing the parse,
+// for the same reason: a bad UI field must not take down mod-init.
+// ===========================================================================
+
+/// Drain the `uiTrees` array from a QuickJS manifest object. `scope` is a short
+/// label ("setupMod" / "setupLevel") used in diagnostics. Malformed entries are
+/// logged and skipped; a non-array `uiTrees` field is logged and yields empty.
+pub(crate) fn drain_ui_trees_js<'js>(
+    ctx: &Ctx<'js>,
+    obj: &Object<'js>,
+    scope: &str,
+) -> Result<Vec<RegisteredUiTree>, DescriptorError> {
+    if !obj.contains_key("uiTrees").map_err(js_err)? {
+        return Ok(Vec::new());
+    }
+    let raw: JsValue = obj.get("uiTrees").map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(Vec::new());
+    }
+    let Some(arr) = raw.as_array() else {
+        log::warn!(
+            "[Scripting] {scope}: `uiTrees` must be an array of registered trees; ignoring the field"
+        );
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::with_capacity(arr.len());
+    for i in 0..arr.len() {
+        let item: JsValue = arr.get(i).map_err(js_err)?;
+        match registered_ui_tree_from_js(ctx, item) {
+            Ok(tree) => out.push(tree),
+            Err(e) => {
+                log::warn!("[Scripting] {scope}: `uiTrees[{i}]` is malformed and was skipped: {e}")
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Parse a single registered-tree entry (`{ name, tree, alwaysOn? }`) from JS.
+/// The `tree` field is converted via the G1a `anchored_tree_from_js_value`
+/// bridge. Returns a named [`DescriptorError`] (never panics) on malformed input.
+fn registered_ui_tree_from_js<'js>(
+    ctx: &Ctx<'js>,
+    value: JsValue<'js>,
+) -> Result<RegisteredUiTree, DescriptorError> {
+    let obj = Object::from_value(value).map_err(|_| DescriptorError::InvalidShape {
+        reason: "registered UI tree must be an object".to_string(),
+    })?;
+    let name = get_required_string_js(&obj, "name")?;
+    if !obj.contains_key("tree").map_err(js_err)? {
+        return Err(DescriptorError::MissingField { field: "tree" });
+    }
+    let tree_val: JsValue = obj.get("tree").map_err(js_err)?;
+    let tree = anchored_tree_from_js_value(ctx, tree_val)?;
+    let always_on = get_optional_bool_js(&obj, "alwaysOn")?.unwrap_or(false);
+    Ok(RegisteredUiTree {
+        name,
+        tree,
+        always_on,
+    })
+}
+
+/// Drain the optional `theme` token maps from a QuickJS manifest object. A
+/// malformed `theme` field is logged and degraded to default (empty) tokens.
+pub(crate) fn drain_theme_js<'js>(
+    obj: &Object<'js>,
+    scope: &str,
+) -> Result<ModThemeTokens, DescriptorError> {
+    if !obj.contains_key("theme").map_err(js_err)? {
+        return Ok(ModThemeTokens::default());
+    }
+    let raw: JsValue = obj.get("theme").map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(ModThemeTokens::default());
+    }
+    let Ok(theme_obj) = Object::from_value(raw) else {
+        log::warn!("[Scripting] {scope}: `theme` must be an object; ignoring the field");
+        return Ok(ModThemeTokens::default());
+    };
+    let colors = match theme_obj.contains_key("colors").map_err(js_err)? {
+        true => f32_array4_map_from_js(&theme_obj, "colors")?,
+        false => HashMap::new(),
+    };
+    let fonts = match theme_obj.contains_key("fonts").map_err(js_err)? {
+        true => string_map_from_js(&theme_obj, "fonts")?,
+        false => HashMap::new(),
+    };
+    let spacing = match theme_obj.contains_key("spacing").map_err(js_err)? {
+        true => f32_map_from_js(&theme_obj, "spacing")?,
+        false => HashMap::new(),
+    };
+    Ok(ModThemeTokens {
+        colors,
+        fonts,
+        spacing,
+    })
+}
+
+/// Drain the optional `fonts` (family → TTF path) map from a QuickJS manifest
+/// object. A malformed `fonts` field is logged and degraded to empty.
+pub(crate) fn drain_fonts_js<'js>(
+    obj: &Object<'js>,
+    scope: &str,
+) -> Result<ModFontAssets, DescriptorError> {
+    if !obj.contains_key("fonts").map_err(js_err)? {
+        return Ok(ModFontAssets::default());
+    }
+    let raw: JsValue = obj.get("fonts").map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(ModFontAssets::default());
+    }
+    if raw.as_object().is_none() {
+        log::warn!("[Scripting] {scope}: `fonts` must be a family→path object; ignoring the field");
+        return Ok(ModFontAssets::default());
+    }
+    Ok(ModFontAssets {
+        families: string_map_from_js(obj, "fonts")?,
+    })
+}
+
+/// Read an object-valued field as a `String → String` map.
+fn string_map_from_js<'js>(
+    obj: &Object<'js>,
+    field: &'static str,
+) -> Result<HashMap<String, String>, DescriptorError> {
+    let map: Object = obj.get(field).map_err(|_| DescriptorError::InvalidShape {
+        reason: format!("`{field}` must be an object"),
+    })?;
+    let mut out = HashMap::new();
+    for entry in map.props::<String, JsValue>() {
+        let (key, value) = entry.map_err(js_err)?;
+        let s = String::from_js_value_required(value, field)?;
+        out.insert(key, s);
+    }
+    Ok(out)
+}
+
+/// Read an object-valued field as a `String → f32` map.
+fn f32_map_from_js<'js>(
+    obj: &Object<'js>,
+    field: &'static str,
+) -> Result<HashMap<String, f32>, DescriptorError> {
+    let map: Object = obj.get(field).map_err(|_| DescriptorError::InvalidShape {
+        reason: format!("`{field}` must be an object"),
+    })?;
+    let mut out = HashMap::new();
+    for entry in map.props::<String, JsValue>() {
+        let (key, value) = entry.map_err(js_err)?;
+        out.insert(key, js_value_as_f32(&value, field)?);
+    }
+    Ok(out)
+}
+
+/// Read an object-valued field as a `String → [f32; 4]` map (linear-RGBA color
+/// tokens).
+fn f32_array4_map_from_js<'js>(
+    obj: &Object<'js>,
+    field: &'static str,
+) -> Result<HashMap<String, [f32; 4]>, DescriptorError> {
+    let map: Object = obj.get(field).map_err(|_| DescriptorError::InvalidShape {
+        reason: format!("`{field}` must be an object"),
+    })?;
+    let mut out = HashMap::new();
+    for entry in map.props::<String, JsValue>() {
+        let (key, value) = entry.map_err(js_err)?;
+        out.insert(key, read_f32_array_n_js::<4>(&value, field)?);
+    }
+    Ok(out)
+}
+
+/// Drain the `uiTrees` array from a Luau manifest table. Mirrors
+/// [`drain_ui_trees_js`]: malformed entries are logged and skipped, a non-table
+/// `uiTrees` field is logged and yields empty.
+pub(crate) fn drain_ui_trees_lua(
+    table: &Table,
+    scope: &str,
+) -> Result<Vec<RegisteredUiTree>, DescriptorError> {
+    let raw: LuaValue = table.get("uiTrees").map_err(lua_err)?;
+    let arr = match raw {
+        LuaValue::Nil => return Ok(Vec::new()),
+        LuaValue::Table(t) => t,
+        _ => {
+            log::warn!(
+                "[Scripting] {scope}: `uiTrees` must be an array of registered trees; ignoring the field"
+            );
+            return Ok(Vec::new());
+        }
+    };
+    let len = arr.raw_len();
+    let mut out = Vec::with_capacity(len);
+    for i in 1..=(len as i64) {
+        let item: LuaValue = arr.get(i).map_err(lua_err)?;
+        match registered_ui_tree_from_lua(item) {
+            Ok(tree) => out.push(tree),
+            Err(e) => {
+                log::warn!("[Scripting] {scope}: `uiTrees[{i}]` is malformed and was skipped: {e}")
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Parse a single registered-tree entry (`{ name, tree, alwaysOn? }`) from Luau.
+/// The `tree` field is converted via the G1a `anchored_tree_from_lua_value`
+/// bridge. Returns a named [`DescriptorError`] (never panics) on malformed input.
+fn registered_ui_tree_from_lua(value: LuaValue) -> Result<RegisteredUiTree, DescriptorError> {
+    let table = lua_table(value, "registered UI tree")?;
+    let name = get_required_string_lua(&table, "name")?;
+    let tree_val: LuaValue = table.get("tree").map_err(lua_err)?;
+    if matches!(tree_val, LuaValue::Nil) {
+        return Err(DescriptorError::MissingField { field: "tree" });
+    }
+    let tree = anchored_tree_from_lua_value(tree_val)?;
+    let always_on = get_optional_bool_lua(&table, "alwaysOn")?.unwrap_or(false);
+    Ok(RegisteredUiTree {
+        name,
+        tree,
+        always_on,
+    })
+}
+
+/// Drain the optional `theme` token maps from a Luau manifest table. A malformed
+/// `theme` field is logged and degraded to default (empty) tokens.
+pub(crate) fn drain_theme_lua(
+    table: &Table,
+    scope: &str,
+) -> Result<ModThemeTokens, DescriptorError> {
+    let raw: LuaValue = table.get("theme").map_err(lua_err)?;
+    let theme_table = match raw {
+        LuaValue::Nil => return Ok(ModThemeTokens::default()),
+        LuaValue::Table(t) => t,
+        _ => {
+            log::warn!("[Scripting] {scope}: `theme` must be a table; ignoring the field");
+            return Ok(ModThemeTokens::default());
+        }
+    };
+    Ok(ModThemeTokens {
+        colors: f32_array4_map_from_lua(&theme_table, "colors")?,
+        fonts: string_map_from_lua(&theme_table, "fonts")?,
+        spacing: f32_map_from_lua(&theme_table, "spacing")?,
+    })
+}
+
+/// Drain the optional `fonts` (family → TTF path) map from a Luau manifest
+/// table. A malformed `fonts` field is logged and degraded to empty.
+pub(crate) fn drain_fonts_lua(
+    table: &Table,
+    scope: &str,
+) -> Result<ModFontAssets, DescriptorError> {
+    let raw: LuaValue = table.get("fonts").map_err(lua_err)?;
+    match raw {
+        LuaValue::Nil => Ok(ModFontAssets::default()),
+        LuaValue::Table(_) => Ok(ModFontAssets {
+            families: string_map_from_lua(table, "fonts")?,
+        }),
+        _ => {
+            log::warn!(
+                "[Scripting] {scope}: `fonts` must be a family→path table; ignoring the field"
+            );
+            Ok(ModFontAssets::default())
+        }
+    }
+}
+
+/// Read a table-valued field as a `String → String` map. Absent → empty.
+fn string_map_from_lua(
+    table: &Table,
+    field: &'static str,
+) -> Result<HashMap<String, String>, DescriptorError> {
+    let raw: LuaValue = table.get(field).map_err(lua_err)?;
+    let map = match raw {
+        LuaValue::Nil => return Ok(HashMap::new()),
+        LuaValue::Table(t) => t,
+        other => {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!("`{field}` must be a table, got {}", other.type_name()),
+            });
+        }
+    };
+    let mut out = HashMap::new();
+    for pair in map.pairs::<String, LuaValue>() {
+        let (key, value) = pair.map_err(lua_err)?;
+        let s = match value {
+            LuaValue::String(s) => s.to_str().map_err(lua_err)?.to_string(),
+            other => {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`{field}.{key}` must be a string, got {}",
+                        other.type_name()
+                    ),
+                });
+            }
+        };
+        out.insert(key, s);
+    }
+    Ok(out)
+}
+
+/// Read a table-valued field as a `String → f32` map. Absent → empty.
+fn f32_map_from_lua(
+    table: &Table,
+    field: &'static str,
+) -> Result<HashMap<String, f32>, DescriptorError> {
+    let raw: LuaValue = table.get(field).map_err(lua_err)?;
+    let map = match raw {
+        LuaValue::Nil => return Ok(HashMap::new()),
+        LuaValue::Table(t) => t,
+        other => {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!("`{field}` must be a table, got {}", other.type_name()),
+            });
+        }
+    };
+    let mut out = HashMap::new();
+    for pair in map.pairs::<String, LuaValue>() {
+        let (key, value) = pair.map_err(lua_err)?;
+        out.insert(key, lua_value_as_f32(value, field)?);
+    }
+    Ok(out)
+}
+
+/// Read a table-valued field as a `String → [f32; 4]` map. Absent → empty.
+fn f32_array4_map_from_lua(
+    table: &Table,
+    field: &'static str,
+) -> Result<HashMap<String, [f32; 4]>, DescriptorError> {
+    let raw: LuaValue = table.get(field).map_err(lua_err)?;
+    let map = match raw {
+        LuaValue::Nil => return Ok(HashMap::new()),
+        LuaValue::Table(t) => t,
+        other => {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!("`{field}` must be a table, got {}", other.type_name()),
+            });
+        }
+    };
+    let mut out = HashMap::new();
+    for pair in map.pairs::<String, LuaValue>() {
+        let (key, value) = pair.map_err(lua_err)?;
+        out.insert(key, read_f32_array_n_lua::<4>(value, field)?);
     }
     Ok(out)
 }
@@ -7348,5 +7751,86 @@ mod tests {
         let js_wire = serde_json::to_string(&js_tree).unwrap();
 
         assert_eq!(lua_wire, js_wire);
+    }
+
+    // ======================================================================
+    // G1b Task 1: level-manifest `uiTrees` drain (both level parsers)
+    // ======================================================================
+
+    #[test]
+    fn level_manifest_js_drains_ui_trees() {
+        let manifest = eval_js(
+            r#"({
+                reactions: [],
+                uiTrees: [
+                    { name: "objective", alwaysOn: true,
+                      tree: { anchor: "top", offset: [0.0, 8.0],
+                              root: { kind: "spacer", flexGrow: 1.0 } } },
+                ],
+            })"#,
+            |ctx, v| LevelManifest::from_js_value(ctx, v).expect("must parse"),
+        );
+        assert_eq!(manifest.ui_trees.len(), 1);
+        assert_eq!(manifest.ui_trees[0].name, "objective");
+        assert!(manifest.ui_trees[0].always_on);
+    }
+
+    #[test]
+    fn level_manifest_js_skips_malformed_ui_tree() {
+        let manifest = eval_js(
+            r#"({
+                reactions: [],
+                uiTrees: [
+                    { name: "bad", tree: { anchor: "top", offset: [0.0, 0.0], root: { kind: "carousel" } } },
+                    { name: "good", tree: { anchor: "top", offset: [0.0, 0.0], root: { kind: "spacer", flexGrow: 1.0 } } },
+                ],
+            })"#,
+            |ctx, v| LevelManifest::from_js_value(ctx, v).expect("malformed entry must not abort"),
+        );
+        assert_eq!(manifest.ui_trees.len(), 1);
+        assert_eq!(manifest.ui_trees[0].name, "good");
+    }
+
+    #[test]
+    fn level_manifest_luau_drains_ui_trees() {
+        let lua = mlua::Lua::new();
+        let value: mlua::Value = lua
+            .load(
+                r#"return {
+                    reactions = {},
+                    uiTrees = {
+                        { name = "objective", alwaysOn = true,
+                          tree = { anchor = "top", offset = { 0, 8 },
+                                   root = { kind = "spacer", flexGrow = 1 } } },
+                    },
+                }"#,
+            )
+            .eval()
+            .unwrap();
+        let manifest = LevelManifest::from_lua_value(value).expect("must parse");
+        assert_eq!(manifest.ui_trees.len(), 1);
+        assert_eq!(manifest.ui_trees[0].name, "objective");
+        assert!(manifest.ui_trees[0].always_on);
+    }
+
+    #[test]
+    fn level_manifest_luau_skips_malformed_ui_tree() {
+        let lua = mlua::Lua::new();
+        let value: mlua::Value = lua
+            .load(
+                r#"return {
+                    reactions = {},
+                    uiTrees = {
+                        { name = "bad", tree = { anchor = "top", offset = { 0, 0 }, root = { kind = "carousel" } } },
+                        { name = "good", tree = { anchor = "top", offset = { 0, 0 }, root = { kind = "spacer", flexGrow = 1 } } },
+                    },
+                }"#,
+            )
+            .eval()
+            .unwrap();
+        let manifest =
+            LevelManifest::from_lua_value(value).expect("malformed entry must not abort");
+        assert_eq!(manifest.ui_trees.len(), 1);
+        assert_eq!(manifest.ui_trees[0].name, "good");
     }
 }

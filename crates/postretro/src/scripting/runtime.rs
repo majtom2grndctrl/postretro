@@ -18,7 +18,9 @@ use rquickjs::{
 
 use super::ctx::ScriptCtx;
 use super::data_descriptors::{
-    EntityTypeDescriptor, LevelManifest, entity_descriptor_from_js, entity_descriptor_from_lua,
+    EntityTypeDescriptor, LevelManifest, ModFontAssets, ModThemeTokens, RegisteredUiTree,
+    drain_fonts_js, drain_fonts_lua, drain_theme_js, drain_theme_lua, drain_ui_trees_js,
+    drain_ui_trees_lua, entity_descriptor_from_js, entity_descriptor_from_lua,
 };
 use super::error::ScriptError;
 use super::luau::{LuauConfig, LuauSubsystem, Which as LuauWhich};
@@ -48,6 +50,18 @@ pub(crate) struct ModManifestResult {
     /// returned object omits the `entities` field. Drained into `DataRegistry`
     /// by the boot caller after `run_mod_init` returns.
     pub(crate) entities: Vec<EntityTypeDescriptor>,
+    /// UI trees registered via `setupMod()`'s `uiTrees` field (each a name +
+    /// `AnchoredTree` + `alwaysOn`). Empty when absent. A malformed entry is
+    /// logged and skipped at parse time (`ui.md` §5). G1b Task 1 holds these;
+    /// installation into the app-side UI registry is later-task work.
+    pub(crate) ui_trees: Vec<RegisteredUiTree>,
+    /// Theme tokens from `setupMod()`'s `theme` field. Default (empty) when
+    /// absent. Held for the Task 4 `ThemeDescriptor` merge.
+    pub(crate) theme: ModThemeTokens,
+    /// Font assets (family → TTF path) from `setupMod()`'s `fonts` field.
+    /// Default (empty) when absent. Held for the Task 4 `register_ui_font`
+    /// install.
+    pub(crate) fonts: ModFontAssets,
     /// Validated state-store declarations collected during this mod-init
     /// attempt. This is engine metadata, not a `ModManifest` script field.
     pub(crate) store_declarations: StoreDeclarationSet,
@@ -1579,9 +1593,43 @@ fn run_mod_init_quickjs(
             }
         };
 
+        // UI fields drain via the G1a bridge fns. Malformed entries are logged
+        // and skipped inside the drains — a bad UI field never aborts mod-init
+        // (ui.md §5). A structurally broken read still surfaces as InvalidArgument.
+        let ui_trees = match drain_ui_trees_js(&ctx, &obj, "setupMod") {
+            Ok(t) => t,
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!("mod-init: `{source_path}` setupMod `uiTrees` invalid: {e}"),
+                });
+                return;
+            }
+        };
+        let theme = match drain_theme_js(&obj, "setupMod") {
+            Ok(t) => t,
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!("mod-init: `{source_path}` setupMod `theme` invalid: {e}"),
+                });
+                return;
+            }
+        };
+        let fonts = match drain_fonts_js(&obj, "setupMod") {
+            Ok(f) => f,
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!("mod-init: `{source_path}` setupMod `fonts` invalid: {e}"),
+                });
+                return;
+            }
+        };
+
         out = Ok(ModManifestResult {
             name,
             entities,
+            ui_trees,
+            theme,
+            fonts,
             store_declarations: StoreDeclarationSet::default(),
         });
     });
@@ -1704,9 +1752,25 @@ fn run_mod_init_luau(
         Vec::new()
     };
 
+    // UI fields drain via the G1a bridge fns; malformed entries log+skip inside
+    // the drains (ui.md §5). Errors here are structural read failures only.
+    let ui_trees =
+        drain_ui_trees_lua(&table, "setupMod").map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` setupMod `uiTrees` invalid: {e}"),
+        })?;
+    let theme = drain_theme_lua(&table, "setupMod").map_err(|e| ScriptError::InvalidArgument {
+        reason: format!("mod-init: `{source_path}` setupMod `theme` invalid: {e}"),
+    })?;
+    let fonts = drain_fonts_lua(&table, "setupMod").map_err(|e| ScriptError::InvalidArgument {
+        reason: format!("mod-init: `{source_path}` setupMod `fonts` invalid: {e}"),
+    })?;
+
     Ok(ModManifestResult {
         name,
         entities,
+        ui_trees,
+        theme,
+        fonts,
         store_declarations: declaration_attempt.borrow().clone().finish()?,
     })
 }
@@ -3300,6 +3364,141 @@ mod tests {
             }
             other => panic!("expected InvalidArgument, got {other:?}"),
         }
+    }
+
+    // --- G1b Task 1: mod-init UI field drains (cold-boot path) --------------
+
+    /// Cold-boot JS: `setupMod` returning `uiTrees`, `theme`, and `fonts` drains
+    /// each field via the G1a bridge fns onto the manifest.
+    #[test]
+    fn mod_init_quickjs_drains_ui_trees_theme_and_fonts() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("js_ui_fields");
+        std::fs::write(
+            dir.join("start-script.js"),
+            r#"
+            globalThis.setupMod = function() {
+                return {
+                    name: "UiMod",
+                    uiTrees: [
+                        { name: "hud", alwaysOn: true,
+                          tree: { anchor: "topLeft", offset: [0.0, 0.0],
+                                  root: { kind: "text", content: "hi", fontSize: 12.0, color: [1.0,1.0,1.0,1.0] } } },
+                    ],
+                    theme: { colors: { critical: [1.0, 0.0, 0.0, 1.0] }, spacing: { m: 8.0 } },
+                    fonts: { body: "fonts/inter.ttf" },
+                };
+            };
+            "#,
+        )
+        .unwrap();
+
+        rt.run_mod_init(&dir).unwrap();
+        let manifest = rt.mod_manifest().expect("Some manifest");
+        assert_eq!(manifest.ui_trees.len(), 1);
+        assert_eq!(manifest.ui_trees[0].name, "hud");
+        assert!(manifest.ui_trees[0].always_on);
+        assert_eq!(manifest.theme.colors["critical"], [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(manifest.theme.spacing["m"], 8.0);
+        assert_eq!(manifest.fonts.families["body"], "fonts/inter.ttf");
+    }
+
+    /// Cold-boot JS: a malformed `uiTrees` entry (unknown widget kind) is logged
+    /// and skipped — mod-init still succeeds and other trees survive.
+    #[test]
+    fn mod_init_quickjs_malformed_ui_tree_is_skipped_not_aborted() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("js_ui_malformed");
+        std::fs::write(
+            dir.join("start-script.js"),
+            r#"
+            globalThis.setupMod = function() {
+                return {
+                    name: "UiMod",
+                    uiTrees: [
+                        { name: "bad", tree: { anchor: "topLeft", offset: [0.0, 0.0], root: { kind: "carousel" } } },
+                        { name: "good", tree: { anchor: "topLeft", offset: [0.0, 0.0],
+                            root: { kind: "spacer", flexGrow: 1.0 } } },
+                    ],
+                };
+            };
+            "#,
+        )
+        .unwrap();
+
+        rt.run_mod_init(&dir)
+            .expect("malformed UI tree must not abort mod-init");
+        let manifest = rt.mod_manifest().expect("Some manifest");
+        assert_eq!(
+            manifest.ui_trees.len(),
+            1,
+            "the malformed tree must be skipped and the good one kept"
+        );
+        assert_eq!(manifest.ui_trees[0].name, "good");
+    }
+
+    /// Cold-boot Luau: `setupMod` returning `uiTrees`, `theme`, and `fonts`
+    /// drains each field via the G1a Luau bridge fns onto the manifest.
+    #[test]
+    fn mod_init_luau_drains_ui_trees_theme_and_fonts() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("luau_ui_fields");
+        std::fs::write(
+            dir.join("start-script.luau"),
+            r#"
+            function setupMod()
+                return {
+                    name = "UiMod",
+                    uiTrees = {
+                        { name = "hud", alwaysOn = true,
+                          tree = { anchor = "topLeft", offset = { 0, 0 },
+                                   root = { kind = "text", content = "hi", fontSize = 12, color = {1,1,1,1} } } },
+                    },
+                    theme = { colors = { critical = {1, 0, 0, 1} }, spacing = { m = 8 } },
+                    fonts = { body = "fonts/inter.ttf" },
+                }
+            end
+            "#,
+        )
+        .unwrap();
+
+        rt.run_mod_init(&dir).unwrap();
+        let manifest = rt.mod_manifest().expect("Some manifest");
+        assert_eq!(manifest.ui_trees.len(), 1);
+        assert_eq!(manifest.ui_trees[0].name, "hud");
+        assert!(manifest.ui_trees[0].always_on);
+        assert_eq!(manifest.theme.colors["critical"], [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(manifest.theme.spacing["m"], 8.0);
+        assert_eq!(manifest.fonts.families["body"], "fonts/inter.ttf");
+    }
+
+    /// Cold-boot Luau: a malformed `uiTrees` entry is logged and skipped.
+    #[test]
+    fn mod_init_luau_malformed_ui_tree_is_skipped_not_aborted() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("luau_ui_malformed");
+        std::fs::write(
+            dir.join("start-script.luau"),
+            r#"
+            function setupMod()
+                return {
+                    name = "UiMod",
+                    uiTrees = {
+                        { name = "bad", tree = { anchor = "topLeft", offset = { 0, 0 }, root = { kind = "carousel" } } },
+                        { name = "good", tree = { anchor = "topLeft", offset = { 0, 0 },
+                            root = { kind = "spacer", flexGrow = 1 } } },
+                    },
+                }
+            end
+            "#,
+        )
+        .unwrap();
+
+        rt.run_mod_init(&dir)
+            .expect("malformed UI tree must not abort mod-init");
+        let manifest = rt.mod_manifest().expect("Some manifest");
+        assert_eq!(manifest.ui_trees.len(), 1);
+        assert_eq!(manifest.ui_trees[0].name, "good");
     }
 
     #[test]

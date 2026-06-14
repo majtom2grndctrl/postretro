@@ -376,12 +376,38 @@ declare module "postretro" {
     jumpBufferMs?: number;
   };
 
+  /** A UI tree registered through `ModManifest.uiTrees` (or `LevelManifest.uiTrees`). Pairs a registry `name` with an `AnchoredTree` placement envelope and the `alwaysOn` registration flag. A malformed entry is logged and skipped at load time. */
+  export type ModUiTree = {
+    /** Registry name the render path resolves the tree by. Required. */
+    name: string;
+    /** The placement envelope + widget tree (the value produced by the `Tree` factory). Required. */
+    tree: AnchoredTreeDescriptor;
+    /** Whether the tree stays resolvable even when not on top of the modal stack. Optional; defaults to false. */
+    alwaysOn?: boolean;
+  };
+
+  /** Theme token maps supplied via `ModManifest.theme`. Three category-scoped maps: colors (linear-RGBA), fonts (registered family name), spacing (logical px). Each is optional; overrides merge per-token into the engine default. */
+  export type ThemeTokens = {
+    /** Color tokens: token name → linear-RGBA `[r, g, b, a]`. Optional. */
+    colors?: { readonly [token: string]: readonly [number, number, number, number] };
+    /** Font tokens: token name → registered family name. Optional. */
+    fonts?: { readonly [token: string]: string };
+    /** Spacing tokens: token name → logical px. Optional. */
+    spacing?: { readonly [token: string]: number };
+  };
+
   /** Object returned from `setupMod()` in `start-script.{ts,luau}`. Identifies the mod to the engine. */
   export type ModManifest = {
     /** Human-readable mod name. Required. */
     name: string;
     /** Engine-global entity-type registrations. Survive level unload. */
     entities?: ReadonlyArray<EntityTypeDescriptor>;
+    /** Script-registered UI trees (name + `AnchoredTree` + `alwaysOn`). Optional. Malformed entries are logged and skipped. */
+    uiTrees?: ReadonlyArray<ModUiTree>;
+    /** Theme token overrides (colors/fonts/spacing). Optional; merged per-token into the engine default. */
+    theme?: ThemeTokens;
+    /** Font assets: family name → TTF asset path. Optional. */
+    fonts?: { readonly [token: string]: string };
   };
 
   export type LightKind = "Point" | "Spot" | "Directional";

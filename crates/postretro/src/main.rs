@@ -416,6 +416,8 @@ fn main() -> Result<()> {
         script_runtime,
         ui_proxy: scripting_systems::ui_proxy::StaticUiProxy::new(script_ctx.clone()),
         flash_decay: scripting_systems::flash_decay::FlashDecay::new(script_ctx.clone()),
+        vignette_decay: scripting_systems::vignette_decay::VignetteDecay::new(script_ctx.clone()),
+        shake_decay: scripting_systems::shake_decay::ShakeDecay::new(script_ctx.clone()),
         presentation_cells: scripting_systems::presentation_cells::PresentationCellStore::new(),
         modal_stack: {
             // Register engine built-in trees at boot through the one shared
@@ -675,6 +677,20 @@ struct App {
     /// writes the decaying RGBA into `screen.flash` each game-logic tick (beside
     /// `ui_proxy.tick`). Reset on level load. See: context/lib/ui.md §3.
     flash_decay: scripting_systems::flash_decay::FlashDecay,
+
+    /// App-side vignette-decay state for the engine-owned `screen.vignette`
+    /// surface (SE). A drained vignette system-reaction command (Task 3) starts a
+    /// rise/peak/decay envelope; this writes the enveloped RGBA into
+    /// `screen.vignette` each game-logic tick (beside `flash_decay.tick`). Reset
+    /// on level load. See: context/lib/ui.md §3.
+    vignette_decay: scripting_systems::vignette_decay::VignetteDecay,
+
+    /// App-side screen-shake state for the engine-owned `screen.shake` surface
+    /// (SE). A drained shake system-reaction command (Task 3) starts a decaying
+    /// oscillation; this writes the current `[dx, dy]` offset into `screen.shake`
+    /// each game-logic tick (beside `flash_decay.tick`). Reset on level load.
+    /// See: context/lib/ui.md §3.
+    shake_decay: scripting_systems::shake_decay::ShakeDecay,
 
     /// App-side presentation-cell store for `ui.createLocalState()` (M13 G1b,
     /// Task 5). Seeded from a tree's declared `localState` initials when its scope
@@ -1805,6 +1821,13 @@ impl ApplicationHandler for App {
                 // publishes immediately; the crossing drain below may start
                 // another, decayed starting next frame.
                 self.flash_decay.tick(frame_dt);
+                // Vignette- and shake-decay drivers (SE) write the engine-owned
+                // `screen.vignette` and `screen.shake` surfaces at the same
+                // game-logic stage as `flash_decay.tick`, so the UI snapshot below
+                // freezes this frame's vignette color and shake offset. Delta-driven
+                // from `frame_dt` (not wall-clock) like the flash decay.
+                self.vignette_decay.tick(frame_dt);
+                self.shake_decay.tick(frame_dt);
 
                 // State-crossing detection (M13 HUD dynamics). Runs AFTER the
                 // frame's slot writes (game logic + `ui_proxy.tick`) settle, so
@@ -3288,6 +3311,10 @@ impl App {
         // Clear any in-flight `screen.flash` decay so a flash never bleeds
         // across a level load.
         self.flash_decay.reset();
+        // Clear any in-flight vignette/shake (SE) so neither bleeds across a
+        // level load — the slots reset to their identity rest values.
+        self.vignette_decay.reset();
+        self.shake_decay.reset();
         // Reset the input-mode tracker (re-seeds `input.mode` to `focus`) and the
         // `audio.master` consumer (re-applies the freshly-declared volume) so a
         // mid-transition mode or a stale master volume never bleeds across levels.
@@ -4749,17 +4776,29 @@ mod tests {
             Some(&SlotValue::String(String::new())),
             "engine-owned ui.textEntry defaults to empty string and is cloned",
         );
+        // `screen.vignette`/`screen.shake` default to zeroed arrays, so they are
+        // value-bearing and present (the screen-effects resolve reads them).
+        assert_eq!(
+            snapshot.get("screen.vignette"),
+            Some(&SlotValue::Array(vec![0.0, 0.0, 0.0, 0.0])),
+            "engine-owned screen.vignette defaults to zeroed rgba and is cloned",
+        );
+        assert_eq!(
+            snapshot.get("screen.shake"),
+            Some(&SlotValue::Array(vec![0.0, 0.0])),
+            "engine-owned screen.shake defaults to zero offset and is cloned",
+        );
         // `player.ammo` starts value-less and must be excluded, so only the slot
-        // we set plus the always-valued `screen.flash`, `input.mode`, and
-        // `ui.textEntry` appear.
+        // we set plus the always-valued `screen.flash`, `screen.vignette`,
+        // `screen.shake`, `input.mode`, and `ui.textEntry` appear.
         assert!(
             snapshot.get("player.ammo").is_none(),
             "value-less slots are skipped",
         );
         assert_eq!(
             snapshot.len(),
-            4,
-            "only the set player.health and the default-valued screen.flash + input.mode + ui.textEntry appear",
+            6,
+            "only the set player.health and the default-valued screen.flash + screen.vignette + screen.shake + input.mode + ui.textEntry appear",
         );
     }
 

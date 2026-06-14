@@ -13,6 +13,7 @@ pub mod mesh_instances;
 pub mod mesh_pass;
 #[cfg(feature = "dev-tools")]
 pub mod nav_diagnostics;
+pub mod screen_effects;
 pub mod sdf_atlas;
 pub mod sdf_shadow;
 pub mod sh_compose;
@@ -57,6 +58,7 @@ use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 
 use fog_pass::FogPass;
 use frame_timing::FrameTiming;
+use screen_effects::ScreenEffectsPass;
 use sdf_atlas::SdfAtlasResources;
 use sdf_shadow::{SdfShadowFrameInputs, SdfShadowPass, SdfShadowShGrid};
 use sh_compose::ShComposeResources;
@@ -1217,6 +1219,12 @@ pub struct Renderer {
 
     depth_view: wgpu::TextureView,
 
+    /// Post-scene compositor seam: owns the `scene_color` offscreen target every
+    /// gameplay scene/UI pass renders into, plus the resolve pass that blits it
+    /// to the swapchain (the sole gameplay-path swapchain writer). Recreated on
+    /// resize alongside `depth_view`. See `render/screen_effects.rs`.
+    screen_effects: ScreenEffectsPass,
+
     /// GPU textures indexed by texture index.
     gpu_textures: Vec<GpuTexture>,
     bvh_leaves: Vec<crate::geometry::BvhLeaf>,
@@ -2060,6 +2068,16 @@ impl Renderer {
         let (_depth_texture, depth_view) =
             create_depth_texture(&device, surface_config.width, surface_config.height);
 
+        // Post-scene compositor seam: `scene_color` offscreen target + identity
+        // resolve. Allocated at the sRGB surface format / surface size /
+        // single-sample for byte-identical resolve (see `screen_effects.rs`).
+        let screen_effects = ScreenEffectsPass::new(
+            &device,
+            surface_config.width,
+            surface_config.height,
+            surface_format,
+        );
+
         let sh_volume_resources = ShVolumeResources::new(
             &device,
             &queue,
@@ -2770,6 +2788,7 @@ impl Renderer {
             shadow_depth_pipeline,
             shadow_vs_stride,
             depth_view,
+            screen_effects,
             gpu_textures,
             bvh_leaves,
             compute_cull,
@@ -3902,6 +3921,9 @@ impl Renderer {
         self.surface.configure(&self.device, &self.surface_config);
         let (_depth_texture, depth_view) = create_depth_texture(&self.device, width, height);
         self.depth_view = depth_view;
+        // `scene_color` is surface-sized; recreate it (and rebuild the resolve
+        // bind group) alongside the depth target.
+        self.screen_effects.resize(&self.device, width, height);
         self.fog
             .resize(&self.device, width, height, &self.depth_view);
         // SDF shadow target is half-res relative to the surface; the depth view
@@ -5137,6 +5159,15 @@ impl Renderer {
             );
         }
 
+        // Post-scene compositor seam: every gameplay scene + UI pass renders into
+        // `scene_color` (the offscreen target) instead of the swapchain `view`.
+        // The resolve pass below is the sole swapchain writer for the gameplay
+        // path. Borrowing the field-method here keeps `scene_color` a disjoint
+        // borrow from the `&mut self.ui` / `&mut self.debug_lines` passes that
+        // also run in this region. The splash path is unaffected — it writes the
+        // swapchain directly and never touches this target.
+        let scene_color = self.screen_effects.scene_color_view();
+
         {
             let forward_ts = self
                 .frame_timing
@@ -5145,7 +5176,7 @@ impl Renderer {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Textured Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: scene_color,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -5234,7 +5265,7 @@ impl Renderer {
             let mut mesh_enc = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Skinned Mesh Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: scene_color,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -5272,7 +5303,7 @@ impl Renderer {
             let mut smoke_pass_enc = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Billboard Sprite Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: scene_color,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -5348,7 +5379,7 @@ impl Renderer {
             let mut composite = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Fog Composite Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: scene_color,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -5383,7 +5414,7 @@ impl Renderer {
                 let mut overlay_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Wireframe Overlay Pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
+                        view: scene_color,
                         depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
@@ -5426,7 +5457,7 @@ impl Renderer {
             self.debug_lines.render(
                 &self.queue,
                 &mut encoder,
-                &view,
+                scene_color,
                 &self.depth_view,
                 &self.uniform_bind_group,
             );
@@ -5529,7 +5560,7 @@ impl Renderer {
                 &self.device,
                 &self.queue,
                 &mut encoder,
-                &view,
+                scene_color,
                 ui_viewport,
                 wgpu::LoadOp::Load,
                 &composition,
@@ -5538,6 +5569,13 @@ impl Renderer {
         // Drop retained state for any layers popped since last frame (stack
         // shrank), so freed modal trees release their layout cache.
         self.ui.truncate_gameplay_stack(stack.len());
+
+        // Post-scene compositor resolve: blit `scene_color` into the swapchain
+        // `view`. Encoded AFTER the UI pass and BEFORE the timing resolve — the
+        // sole swapchain writer for the gameplay path, run every frame (never
+        // skipped at rest). Foundation task: identity blit (no effect uniform
+        // bound yet; a later SE task applies flash/vignette/shake here).
+        self.screen_effects.encode_resolve(&mut encoder, &view);
 
         if let Some(timing) = &self.frame_timing {
             timing.encode_resolve(&mut encoder);

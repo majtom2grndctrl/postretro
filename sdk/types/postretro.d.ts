@@ -1095,5 +1095,7 @@ declare module "postretro/game-state" {
   /** Read-only handles for the engine-owned `screen.*` slots. */
   export const screen: {
     readonly flash: ReadonlyStateValue<ReadonlyArray<number>>;
+    readonly shake: ReadonlyStateValue<ReadonlyArray<number>>;
+    readonly vignette: ReadonlyStateValue<ReadonlyArray<number>>;
   };
 }

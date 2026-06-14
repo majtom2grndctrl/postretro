@@ -1144,5 +1144,7 @@ declare player: GameState_player
 --- Read-only handles for the engine-owned `screen.*` slots.
 export type GameState_screen = {
   flash: ReadonlyStateValue<{number}>,
+  shake: ReadonlyStateValue<{number}>,
+  vignette: ReadonlyStateValue<{number}>,
 }
 declare screen: GameState_screen

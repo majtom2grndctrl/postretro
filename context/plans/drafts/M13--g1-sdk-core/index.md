@@ -30,27 +30,27 @@ This is the contract-locking convergence surface G2 and BIS bind against, so cas
 
 ## Acceptance criteria
 
-- [ ] `defineStore` returns handles whose type parameter matches the declared slot type: a `number` slot yields `StateValue<number>`, a `boolean` slot `StateValue<boolean>`. Binding a `StateValue<boolean>` handle to a numeric-only widget prop is a TypeScript compile error; a `StateValue<number>` to the same prop compiles. The parity guard (`primitives/mod.rs`) still passes.
+- [ ] The generated `.d.ts`/`.d.luau` (via the static SDK block) declare `defineStore` so a `number` slot's handle is typed `StateValue<number>` and a `boolean` slot `StateValue<boolean>` — asserted by a Rust snapshot test over the emitted typedef block (the `gen-script-types` drift mechanism). The `StateValue<boolean>`-to-numeric-prop mismatch ships as a documented author-facing `@ts-expect-error` fixture (a review gate / author example — the repo has no `tsc` CI to run it).
 - [ ] Every factory in `widgets.ts`/`layout.ts` produces an object that, passed through `anchored_tree_from_js_value`, yields the matching `Widget` variant and re-serializes byte-identically to the `descriptor.rs` round-trip fixture. Keys are camelCase (`fontSize`, `flexGrow`, `onPress`).
 - [ ] TS and Luau factories emit identical JSON for identical inputs (cross-runtime parity test, the `done/M7--movement-scripts` precedent).
 - [ ] A factory with an invalid prop throws an `Error` naming the factory and field; a valid call with optionals omitted succeeds with documented defaults.
 - [ ] A `bind` authored with a `tween` deserializes to `TextTween`/`PanelTween` byte-identically; a `styleRanges`-bearing `text`/`panel`/`bar` deserializes to the `StyleRanges` fixture; a bind without a tween emits no `tween` key and a widget without styleRanges emits no `styleRanges` key.
 - [ ] `Tree(...)` with `captureMode: "capture"` deserializes to `CaptureMode::Capture`; omitted → `Passthrough`, re-serialized without the key; explicit `"passthrough"` accepted and round-trips to omission.
-- [ ] A store handle's `.set(v)` produces a descriptor byte-identical to the shipped `setState(slot, v)`; `.get()` produces a typed bind reference a `Text`/`Bar`/`Slider` factory accepts, resolving to the same `TextBind`/`SliderBind { slot }` wire shape. Which kinds/props accept a bind is pinned in the Boundary inventory.
+- [ ] A store handle's `.set(v)` produces a descriptor byte-identical to the shipped `setState(slot, v)`; `.get()` produces a typed bind reference a `Text`/`Bar`/`Slider` factory accepts, resolving to the same `TextBind`/`SliderBind { slot }` wire shape. Bind capability per kind: `text`→`TextBind`, `panel`→`PanelBind`, `slider`/`bar`→`SliderBind`; other kinds none.
 - [ ] `anchored_tree_from_js_value` and `anchored_tree_from_lua_value` (in `data_descriptors.rs`) surface a named load-time error on a malformed tree and do not panic; a well-formed tree converts cleanly. Both mirror `entity_descriptor_from_js`/`_from_lua`.
-- [ ] Every user-facing text prop is typed `LocalizedText`, enforced by a permanent typed fixture in CI (not a manual revert): a fixture asserting all text props accept `LocalizedText`, so the future alias swap surfaces unmigrated call sites as compile errors.
+- [ ] Every user-facing text prop is typed `LocalizedText` (= `string`), verified by a grep/review gate over the factory signatures (the repo has no `tsc` CI to assert it as a compile error). The alias is a single definition, so a future swap is one edit; an author-facing fixture documents the intended compile-time effect.
 - [ ] `sdk/lib/index.ts` re-exports every new factory/type; typedefs regenerate clean and `gen-script-types` reports no drift.
 
 ## Tasks
 
 ### Task 1: Value-typed slot handles
-Replace the hardcoded `StateValue<string>` handle map (typedef generator, TS and Luau emission sites in `typedef.rs`) with a static generic `defineStore<const S>` in the SDK lib block that infers per-slot value types from the schema literal, special-cased in the generator the way `worldQuery` is. Update the `ModManifest`/`ModManifestResult` parity guard (`primitives/mod.rs`). `Depends on` nothing. **Note:** edits the shipped `done/mod-state-store` type surface; `defineStore`'s runtime behavior is unchanged — type-surface only.
+Replace the hardcoded `StateValue<string>` handle map at **both** emission sites — `typedef.rs:148` (TS `StoreHandles` mapping) and `typedef.rs:257` (Luau) — and give `defineStore` a `worldQuery`-style special-case in the generator (skip the registry-driven emission, ~`typedef.rs:450`) so a hand-written generic `defineStore<const S>` in the static SDK lib block supplies the type. The generic maps each schema slot's `type` discriminant to its value type (`{type:"number"}` → `StateValue<number>`, `"boolean"` → `StateValue<boolean>`, else `StateValue<string>`). `Depends on` nothing. **Note:** edits the shipped `done/mod-state-store` type surface; `defineStore`'s runtime behavior is unchanged — type-surface only. The `ModManifest` parity guard is untouched here (it concerns `name`/`entities`, not handles; the manifest-field update lives in G1b Task 1).
 
 ### Task 2: Text-alias chokepoint
 Add `LocalizedText` (= `string`) in `sdk/lib/ui/text.{ts,luau}`, exported through the barrel and emitted into the typedef blocks. Type-only, lands before factories consume it. `Depends on` nothing.
 
 ### Task 3: Widget + layout factories
-Implement `widgets.{ts,luau}` and `layout.{ts,luau}` mirroring `emitter()`: `Props` type, field-named validation, documented defaults, camelCase output keys. Text props use `LocalizedText`; bound props accept Task 1's typed handles and emit `bind`/`tween`/`styleRanges`. TS bare capitalized exports; Luau the same factories as members of a returned module table (the `UiReactionsSdk` precedent). `Depends on` Tasks 1, 2.
+Implement `widgets.{ts,luau}` and `layout.{ts,luau}` mirroring `emitter()`: `Props` type, field-named validation, documented defaults, camelCase output keys. Text props use `LocalizedText`; bound props accept Task 1's typed handles and emit `bind`/`tween`/`styleRanges`. Bind capability is per kind: `text`→`TextBind`, `panel`→`PanelBind`, `slider`/`bar`→`SliderBind`; `image`/`spacer`/`button` and the containers take no bind. TS bare capitalized exports; Luau the same factories as members of a returned module table (the `UiReactionsSdk` precedent). `Depends on` Tasks 1, 2.
 
 ### Task 4: Envelope + handle ergonomics
 Implement the `Tree(...)` envelope factory and the `.get()`/`.set()` wrappers over Task 1's typed handles; export the store-handle wrapper type through the barrel. `.set()` delegates to the shipped `setState` builder. `Depends on` Task 3.
@@ -59,7 +59,7 @@ Implement the `Tree(...)` envelope factory and the `.get()`/`.set()` wrappers ov
 Implement `anchored_tree_from_js_value` / `anchored_tree_from_lua_value` in `data_descriptors.rs` beside `entity_descriptor_from_js`/`_from_lua` (no `serde_json::Value` lowering), re-exported via `conv.rs` per the existing pattern; return a typed `AnchoredTree` or a named error. Not wired into any manifest parser — test-callable only; G1b wires them. `Depends on` Task 4.
 
 ### Task 6: Barrel, typedef emission, tests
-Wire exports into `index.ts`; update the typedef blocks; regenerate typedefs. Add parity, factory→bridge→round-trip, typed-handle compile-fail, and the `LocalizedText` type-fixture tests. `Depends on` Tasks 1–5.
+Wire exports into `index.ts`; update the typedef blocks; regenerate typedefs. Add parity, factory→bridge→round-trip, and generated-typedef snapshot tests (asserting `defineStore` emits per-slot `StateValue<T>`); the typed-handle and `LocalizedText` compile-fail cases ship as documented author-facing `@ts-expect-error` fixtures (review gates — no `tsc` CI exists). `Depends on` Tasks 1–5.
 
 ## Sequencing
 
@@ -95,7 +95,7 @@ Casing: Rust snake_case ↔ wire/JS/TS/Luau camelCase. Widget `kind` tags lowerc
 - **Slot handles are value-typed via a static generic + generator special-case, not registry-threaded types.** Per-slot types are a runtime call arg, absent at typedef emission; the feasible path is a generic `defineStore<const S>` in the static SDK block plus a `worldQuery`-style carve-out in the generator. Rejected: threading schema types through the Rust generator (structurally impossible); leaving `StateValue<string>` and validating only at runtime (loses the contract-locking type safety).
 - **The bridge mirrors `entity_descriptor_from_js/_from_lua` and lives in `data_descriptors.rs`.** That is the established per-runtime field-reader pattern; there is no `serde_json::Value` lowering and no single Luau twin. Rejected: the prior "in `staged_manifest.rs` via serde Deserialize" framing (wrong module, wrong mechanism).
 - **`ui.localState()` uses a distinct handle, so G1a exports no shared handle type for it.** G1a's store-handle `.set()` writes the authoritative store (`setState`); `localState` must never write the store, so it needs its own presentation handle (G1b). Rejected: a single shared handle type (would give `localState` store-writing semantics).
-- **`LocalizedText` lands in G1a**; it must exist before the first factory types a text prop. Verified by a permanent CI type-fixture, not a manual revert.
+- **`LocalizedText` lands in G1a**; it must exist before the first factory types a text prop. Verified by a grep/review gate (the repo has no `tsc` CI); the alias is one definition so a future `LocalizedText` swap is a single edit.
 - **UI-widget factories emit camelCase; TS bare / Luau module-table; equivalence by parity.** Each matches its own wire form and shipped per-runtime convention.
 
 ## Open questions

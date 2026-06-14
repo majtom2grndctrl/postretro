@@ -501,7 +501,10 @@ pub struct NavParams {
     /// its vertical clearance is at least this. KVP `nav_agent_height`.
     pub agent_height: f32,
     /// Maximum climbable floor delta between adjacent spans (meters). KVP
-    /// `nav_step_height`.
+    /// `nav_step_height`. Default matches the player descriptor's authored
+    /// `stepHeight` (0.5 m) so the canonical AI agent traverses the same stepped
+    /// geometry the player can — the M10 north star (enemies flow up stairs
+    /// toward the player). Covers standard 16–18 unit Quake stairs.
     pub step_height: f32,
     /// Maximum walkable slope (degrees); a surface is walkable when its upward
     /// normal satisfies `normal.y >= cos(max_slope_deg)`. KVP `nav_max_slope`.
@@ -515,7 +518,7 @@ impl Default for NavParams {
         Self {
             agent_radius: 0.4,
             agent_height: 1.8,
-            step_height: 0.3,
+            step_height: 0.5,
             max_slope_deg: 45.0,
             cell_size: 0.25,
         }

@@ -192,7 +192,7 @@ Walkable navigation is baked offline into a `NavMesh` PRL section (SectionId 36)
 |-----|---------|
 | `nav_agent_radius` | 0.4 m |
 | `nav_agent_height` | 1.8 m |
-| `nav_step_height` | 0.3 m |
+| `nav_step_height` | 0.5 m (matches the player's `stepHeight`) |
 | `nav_max_slope` | 45.0° |
 | `nav_cell_size` | 0.25 m |
 

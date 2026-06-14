@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use crate::model::ModelHandle;
 use crate::model::anim::Loop;
-use crate::render::mesh_instances::{
+use crate::model::sample_params::{
     CaptureInstruction, ClipSample, FadeSource, MeshFade, MeshSampleParams,
 };
 use crate::scripting::components::mesh::{
@@ -138,7 +138,7 @@ fn crossfade_seconds(crossfade_ms: f32) -> f32 {
 /// Pack an entry stamp's bit pattern into a snapshot-store tag. Quantizing to the
 /// raw `f64` bits makes a re-emitted capture under a frozen clock compare equal
 /// (idempotent capture): the same `entered_at` yields the same tag.
-fn snapshot_tag(entered_at: f64) -> crate::render::mesh_instances::SnapshotTag {
+fn snapshot_tag(entered_at: f64) -> crate::model::sample_params::SnapshotTag {
     entered_at.to_bits()
 }
 

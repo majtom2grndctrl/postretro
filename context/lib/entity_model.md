@@ -39,7 +39,7 @@ Capabilities attach via component columns in the registry. Current engine compon
 | FogVolume | Runtime fog-volume parameters |
 | Weapon | Runtime weapon params and per-instance cooldown state |
 | MeshComponent | Skinned model handle (`model: String`) plus optional declared animation states and per-entity animation state; spawned via `prop_mesh` or a descriptor carrying a mesh component |
-| Health | Hit points (`max`, `current`) plus optional hitscan hitbox (one world-aligned AABB, fixed per archetype); declared via the `components.health` descriptor block. Hitscan-targetable iff the hitbox is present. |
+| Health | Hit points (`max`, `current`) plus optional hitscan hitbox (one world-aligned AABB, fixed per archetype); declared via the `components.health` descriptor block. Hitscan-targetable iff health **and** (an authored AABB hitbox **or** a zone-bearing skinned model, §7) — a zone-bearing model is tested against bone-posed capsules rather than the AABB. |
 
 Type-specific data lives in the component. An entity is "a player" by virtue of carrying `PlayerMovement`, not by belonging to a typed collection. Future entity types (enemies, doors, projectiles, pickups) follow the same pattern — illustrative, not current scope.
 
@@ -145,7 +145,7 @@ The camera's current BSP leaf is computed each frame for portal-visibility culli
 
 Entities collide against static world geometry. At level load, PRL static geometry is built into a `parry3d` trimesh held by `CollisionWorld`. Queries use `parry3d::query::*` free functions against this collider — no `QueryPipeline`.
 
-**Skeletal hit zones (forthcoming, M10).** Today an entity is hitscan-targetable iff it carries a hitbox (one fixed AABB, §2). Hit zones widen this to: health **and** (an authored AABB hitbox **or** a zone-bearing skinned model); a zone-bearing model is tested against bone-posed capsules, not the AABB. Design intent; see `plans/ready/M10--skeletal-hit-zones/`. General division: **spatial structure rides on the asset** (per-joint hit-zone tags in the glTF), **balance rides in the script** (per-zone damage multipliers) — mirroring map `_tags` → entity behavior.
+**Skeletal hit zones (M10).** An entity is hitscan-targetable iff it has health **and** (an authored AABB hitbox **or** a zone-bearing skinned model — a glTF whose joints carry hit-zone `extras`). A zone-bearing model is tested against bone-posed capsules, not the AABB. The standalone entity-raycast facility (`scripting_systems::hit_zones::nearest_entity_hit`) resolves the nearest targetable entity for any ray: broad phase is the authored AABB for AABB-only entities and a clip-swept derived bound for zone-bearing ones; narrow phase is the AABB slab test or, per tagged joint, a `parry3d` ray-vs-capsule test (segment from the joint's posed origin to its first child's, a sphere for a tagged leaf; radius = the joint's authored `hitZoneRadius` or the engine default 0.12 m). The model→world transform uses the entity's game-tick position + yaw only (no pitch/roll/scale). The weapon's hitscan delegates to this facility and keeps only world-vs-entity nearest-of resolution; the struck zone tag rides on `WeaponImpact.zone`. General division: **spatial structure rides on the asset** (per-joint hit-zone tags in the glTF), **balance rides in the script** (per-zone damage multipliers — forthcoming, M10 Task 5). See `plans/ready/M10--skeletal-hit-zones/`.
 
 ### Entity-Entity Collision
 

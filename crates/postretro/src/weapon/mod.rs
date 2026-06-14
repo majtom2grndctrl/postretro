@@ -7,10 +7,10 @@ use parry3d::math::{Point, Vector};
 use crate::camera::Camera;
 use crate::collision::{CollisionWorld, cast_ray};
 use crate::input::{Action, ActionSnapshot, ButtonState};
-use crate::scripting::components::health::HealthComponent;
 use crate::scripting::components::weapon::WeaponComponent;
 use crate::scripting::data_descriptors::{FireMode, ResolutionMode};
-use crate::scripting::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
+use crate::scripting::registry::{EntityId, EntityRegistry};
+use crate::scripting_systems::hit_zones::{EntityRayHit, HitZoneStore, nearest_entity_hit};
 
 mod damage;
 mod impact;
@@ -34,8 +34,13 @@ pub(crate) struct WeaponActivation {
     pub(crate) direction: Vec3,
 }
 
+// Not `Copy`: `zone: Option<String>` carries a heap-backed tag for skeletal
+// hit-zone hits, so `WeaponImpact` (and `WeaponFireEvents`, which embeds it)
+// move/borrow rather than copy. Audited call sites: `fire_hitscan` constructs it
+// (the sole literal site, production), and `run_weapon_fire_tick` borrows
+// `events.impact` rather than copying it out.
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct WeaponImpact {
     pub(crate) point: Vec3,
     pub(crate) normal: Vec3,
@@ -45,10 +50,15 @@ pub(crate) struct WeaponImpact {
     /// rides here, beside the payload — never inside [`DamagePayload`]. The
     /// caller (the death/damage sweep) consumes this to route `apply_damage`.
     pub(crate) target: Option<EntityId>,
+    /// The authored skeletal hit-zone tag the shot landed on (e.g. "head"),
+    /// surfaced for an entity hit that struck a bone-posed capsule. `None` for a
+    /// world hit or an authored-AABB entity hit. Task 5 consumes this to apply
+    /// the descriptor's per-zone damage multiplier; here it is only surfaced.
+    pub(crate) zone: Option<String>,
     pub(crate) outcome: ActivationOutcome,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct WeaponFireEvents {
     pub(crate) activate: Option<WeaponActivation>,
     pub(crate) impact: Option<WeaponImpact>,
@@ -67,12 +77,15 @@ impl WeaponFireEvents {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // weapon fire genuinely needs all of these inputs.
 pub(crate) fn tick(
     registry: &mut EntityRegistry,
     active_wieldable: Option<EntityId>,
     snapshot: &ActionSnapshot,
     camera: &Camera,
     collision_world: &CollisionWorld,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
     tick_dt: f32,
 ) -> WeaponFireEvents {
     let Some(weapon_id) = active_wieldable else {
@@ -105,6 +118,8 @@ pub(crate) fn tick(
             camera,
             collision_world,
             registry,
+            hit_zone_store,
+            anim_time,
             stats.damage,
             stats.range,
             stats.resolution,
@@ -117,10 +132,13 @@ pub(crate) fn tick(
     events
 }
 
+#[allow(clippy::too_many_arguments)] // weapon fire genuinely needs all of these inputs.
 fn fire_hitscan(
     camera: &Camera,
     collision_world: &CollisionWorld,
     registry: &EntityRegistry,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
     damage: f32,
     range: f32,
     resolution: ResolutionMode,
@@ -141,169 +159,69 @@ fn fire_hitscan(
                 Vector::new(direction.x, direction.y, direction.z),
                 range,
             )
-            .map(|hit| RayHit {
+            .map(|hit| WorldHit {
                 toi: hit.time_of_impact,
                 point: origin + direction * hit.time_of_impact,
                 normal: Vec3::new(hit.normal.x, hit.normal.y, hit.normal.z),
-                target: None,
             });
 
-            // Nearest entity hitbox hit, clamped to the same range. A world hit
-            // nearer than every hitbox still wins; a hitbox behind the wall is
-            // never reached because its toi exceeds the wall's.
-            let entity_hit = nearest_entity_hit(registry, origin, direction, range);
+            // Nearest entity hit (authored AABB or bone-posed capsule), clamped
+            // to the same range — resolved entirely by the standalone facility. A
+            // world hit nearer than every entity still wins; an entity behind the
+            // wall is never reached because its toi exceeds the wall's.
+            let entity_hit = nearest_entity_hit(
+                registry,
+                hit_zone_store,
+                anim_time,
+                origin,
+                direction,
+                range,
+            );
 
-            // Resolve nearest-of(world, entity). On a tie or no contender,
-            // prefer whichever exists; entity ties to world keep the wall.
-            let resolved = match (world_hit, entity_hit) {
-                (Some(world), Some(entity)) => {
-                    if entity.toi < world.toi {
-                        Some(entity)
-                    } else {
-                        Some(world)
-                    }
+            // World-vs-entity nearest-of resolution stays in the weapon. On a tie
+            // (entity toi == world toi) the wall wins (`entity.toi < world.toi`).
+            let impact = match (world_hit, entity_hit) {
+                (Some(world), Some(entity)) if entity.toi < world.toi => {
+                    impact_from_entity(entity, damage)
                 }
-                (Some(world), None) => Some(world),
-                (None, Some(entity)) => Some(entity),
-                (None, None) => None,
-            };
-
-            if let Some(hit) = resolved {
-                events.impact = Some(WeaponImpact {
-                    point: hit.point,
-                    normal: hit.normal,
-                    target: hit.target,
+                (Some(world), _) => WeaponImpact {
+                    point: world.point,
+                    normal: world.normal,
+                    target: None,
+                    zone: None,
                     outcome: ActivationOutcome::Hit(DamagePayload { amount: damage }),
-                });
-            }
+                },
+                (None, Some(entity)) => impact_from_entity(entity, damage),
+                (None, None) => return events,
+            };
+            events.impact = Some(impact);
         }
     }
 
     events
 }
 
-/// A resolved point along the fire ray: world geometry or an entity hitbox.
-/// `target` is `Some` only for an entity hit. `toi` is the ray parameter
-/// (distance, since `direction` is unit length) used to pick the nearest.
+/// A resolved world-geometry point along the fire ray. `toi` is the ray
+/// parameter (distance, since `direction` is unit length) used to pick the
+/// nearest of world vs. entity. Entity hits are resolved by the hit-zone
+/// facility, which owns the AABB/capsule narrow phases and returns its own type.
 #[derive(Debug, Clone, Copy)]
-struct RayHit {
+struct WorldHit {
     toi: f32,
     point: Vec3,
     normal: Vec3,
-    target: Option<EntityId>,
 }
 
-/// Walk every `Health` entity carrying a hitbox, ray-vs-AABB test each (AABB
-/// centered at `transform.position + offset`, world-aligned — entity rotation
-/// ignored), and return the nearest hit within `range`. `None` when no hitbox
-/// entity lies along the ray within range.
-fn nearest_entity_hit(
-    registry: &EntityRegistry,
-    origin: Vec3,
-    direction: Vec3,
-    range: f32,
-) -> Option<RayHit> {
-    let mut nearest: Option<RayHit> = None;
-
-    for (id, value) in registry.iter_with_kind(ComponentKind::Health) {
-        let ComponentValue::Health(HealthComponent {
-            hitbox: Some(hitbox),
-            current,
-            ..
-        }) = value
-        else {
-            continue;
-        };
-
-        // Zero-HP entities are pending-despawn this tick (the death sweep runs
-        // after weapon fire / after the reaction drain); skip them so a corpse
-        // cannot absorb a shot and block the wall behind it for one frame.
-        // `current` is floored at exactly 0.0 by the apply_damage chokepoint —
-        // exact equality is sound here, zero is latched, never approached from
-        // below.
-        if *current == 0.0 {
-            continue;
-        }
-
-        let Ok(transform) = registry.get_component::<crate::scripting::registry::Transform>(id)
-        else {
-            continue;
-        };
-
-        let center = transform.position + hitbox.offset;
-        let aabb_min = center - hitbox.half_extents;
-        let aabb_max = center + hitbox.half_extents;
-
-        let Some((toi, normal)) = ray_aabb_slab(origin, direction, aabb_min, aabb_max, range)
-        else {
-            continue;
-        };
-
-        if nearest.is_none_or(|n| toi < n.toi) {
-            nearest = Some(RayHit {
-                toi,
-                point: origin + direction * toi,
-                normal,
-                target: Some(id),
-            });
-        }
+/// Build a [`WeaponImpact`] from a facility entity hit, attaching the damage
+/// payload and carrying the struck zone tag (if any) through to the caller.
+fn impact_from_entity(entity: EntityRayHit, damage: f32) -> WeaponImpact {
+    WeaponImpact {
+        point: entity.point,
+        normal: entity.normal,
+        target: Some(entity.target),
+        zone: entity.zone,
+        outcome: ActivationOutcome::Hit(DamagePayload { amount: damage }),
     }
-
-    nearest
-}
-
-/// Ray-vs-AABB slab test. Returns the entry time-of-impact (clamped to
-/// `[0, range]`) and the face normal of the entered slab — the axis whose
-/// near plane the ray crossed last, signed toward the ray origin so the impact
-/// burst ejects back along the shot. Returns `None` on a miss, when the box is
-/// entirely behind the origin, or when entry lies beyond `range`.
-///
-/// A degenerate (zero-thickness) slab on an axis the ray runs parallel to is
-/// handled by the IEEE-754 infinity arithmetic of `1.0 / 0.0`: an origin
-/// outside the slab on that axis yields `±inf` bounds that fail the overlap
-/// test (miss), and inside the slab yields a `-inf..inf` span that never
-/// constrains entry.
-fn ray_aabb_slab(
-    origin: Vec3,
-    direction: Vec3,
-    aabb_min: Vec3,
-    aabb_max: Vec3,
-    range: f32,
-) -> Option<(f32, Vec3)> {
-    let inv = Vec3::ONE / direction;
-
-    // Per-axis slab entry/exit times. `t1`/`t2` are the unordered crossings;
-    // `near`/`far` reorder them so `near <= far` regardless of ray direction.
-    let t1 = (aabb_min - origin) * inv;
-    let t2 = (aabb_max - origin) * inv;
-    let near = t1.min(t2);
-    let far = t1.max(t2);
-
-    // Latest entry across all three slabs, earliest exit across all three.
-    let t_entry = near.x.max(near.y).max(near.z);
-    let t_exit = far.x.min(far.y).min(far.z);
-
-    // Miss: the slabs do not overlap, or the box is entirely behind the origin,
-    // or entry is beyond weapon range.
-    if t_entry > t_exit || t_exit < 0.0 || t_entry > range {
-        return None;
-    }
-
-    // An origin inside the box has a negative entry; clamp the reported hit to
-    // the origin (toi 0). The struck face is the axis of the latest entry slab.
-    let toi = t_entry.max(0.0);
-
-    let axis = if near.x >= near.y && near.x >= near.z {
-        Vec3::X
-    } else if near.y >= near.z {
-        Vec3::Y
-    } else {
-        Vec3::Z
-    };
-    // Sign the normal toward the ray origin (against the ray on that axis).
-    let normal = axis * -direction.dot(axis).signum();
-
-    Some((toi, normal))
 }
 
 #[cfg(test)]
@@ -312,7 +230,7 @@ mod tests {
     use crate::input::{Binding, InputSystem, PhysicalInput};
     use crate::scripting::components::health::{HealthComponent, Hitbox};
     use crate::scripting::data_descriptors::WeaponDescriptor;
-    use crate::scripting::registry::Transform;
+    use crate::scripting::registry::{ComponentKind, Transform};
     use parry3d::math::Isometry;
     use parry3d::shape::TriMesh;
     use winit::event::MouseButton;
@@ -346,6 +264,32 @@ mod tests {
             fire_mode,
             resolution: ResolutionMode::Hitscan,
         })
+    }
+
+    /// Run a weapon `tick` with an EMPTY hit-zone store and a zero animation
+    /// clock — the no-skeletal-zones configuration, so these tests exercise the
+    /// authored-AABB path exactly as before the facility landed (byte-identical
+    /// behavior: an empty store routes every health+hitbox entity through the
+    /// AABB narrow phase). Keeps the existing test bodies a one-word rename.
+    fn fire_tick(
+        registry: &mut EntityRegistry,
+        active_wieldable: Option<EntityId>,
+        snapshot: &ActionSnapshot,
+        camera: &Camera,
+        world: &CollisionWorld,
+        tick_dt: f32,
+    ) -> WeaponFireEvents {
+        let store = HitZoneStore::new();
+        tick(
+            registry,
+            active_wieldable,
+            snapshot,
+            camera,
+            world,
+            &store,
+            0.0,
+            tick_dt,
+        )
     }
 
     fn spawn_weapon(registry: &mut EntityRegistry, component: WeaponComponent) -> EntityId {
@@ -421,7 +365,7 @@ mod tests {
         let mut input = input_system();
 
         let pressed = shoot_snapshot(&mut input, true);
-        let events = tick(
+        let events = fire_tick(
             &mut registry,
             Some(weapon_id),
             &pressed,
@@ -431,7 +375,7 @@ mod tests {
         );
         assert_eq!(events.event_names(), vec!["activate"]);
 
-        let same_pressed_snapshot = tick(
+        let same_pressed_snapshot = fire_tick(
             &mut registry,
             Some(weapon_id),
             &pressed,
@@ -442,12 +386,12 @@ mod tests {
         assert!(same_pressed_snapshot.event_names().is_empty());
 
         let held = shoot_snapshot(&mut input, true);
-        let events = tick(&mut registry, Some(weapon_id), &held, &camera, &world, 0.2);
+        let events = fire_tick(&mut registry, Some(weapon_id), &held, &camera, &world, 0.2);
         assert!(events.event_names().is_empty());
 
         let _released = shoot_snapshot(&mut input, false);
         let inactive = shoot_snapshot(&mut input, false);
-        let _ = tick(
+        let _ = fire_tick(
             &mut registry,
             Some(weapon_id),
             &inactive,
@@ -457,7 +401,7 @@ mod tests {
         );
 
         let pressed_again = shoot_snapshot(&mut input, true);
-        let events = tick(
+        let events = fire_tick(
             &mut registry,
             Some(weapon_id),
             &pressed_again,
@@ -477,7 +421,7 @@ mod tests {
         let mut input = input_system();
 
         let pressed = shoot_snapshot(&mut input, true);
-        let first = tick(
+        let first = fire_tick(
             &mut registry,
             Some(weapon_id),
             &pressed,
@@ -488,7 +432,7 @@ mod tests {
         assert_eq!(first.event_names(), vec!["activate"]);
 
         let held = shoot_snapshot(&mut input, true);
-        let blocked = tick(
+        let blocked = fire_tick(
             &mut registry,
             Some(weapon_id),
             &held,
@@ -499,7 +443,7 @@ mod tests {
         assert!(blocked.event_names().is_empty());
 
         let still_held = shoot_snapshot(&mut input, true);
-        let second = tick(
+        let second = fire_tick(
             &mut registry,
             Some(weapon_id),
             &still_held,
@@ -519,7 +463,7 @@ mod tests {
         let mut input = input_system();
         let pressed = shoot_snapshot(&mut input, true);
 
-        let events = tick(
+        let events = fire_tick(
             &mut registry,
             Some(weapon_id),
             &pressed,
@@ -547,7 +491,7 @@ mod tests {
         let mut input = input_system();
         let pressed = shoot_snapshot(&mut input, true);
 
-        let events = tick(
+        let events = fire_tick(
             &mut registry,
             Some(weapon_id),
             &pressed,
@@ -572,11 +516,11 @@ mod tests {
         let mut input = input_system();
         let pressed = shoot_snapshot(&mut input, true);
 
-        let events = tick(&mut registry, None, &pressed, &camera, &world, 1.0 / 60.0);
+        let events = fire_tick(&mut registry, None, &pressed, &camera, &world, 1.0 / 60.0);
         assert!(events.event_names().is_empty());
 
         let non_weapon = registry.spawn(Transform::default());
-        let events = tick(
+        let events = fire_tick(
             &mut registry,
             Some(non_weapon),
             &pressed,
@@ -593,149 +537,10 @@ mod tests {
         );
     }
 
-    // --- Ray-vs-AABB slab unit tests ------------------------------------
-
-    #[test]
-    fn ray_aabb_slab_hits_box_dead_ahead() {
-        // Ray down -Z toward a unit box centered at (0, 0, -3). Entry face is
-        // the +Z (near) face; normal points back toward the origin.
-        let origin = Vec3::ZERO;
-        let direction = Vec3::new(0.0, 0.0, -1.0);
-        let min = Vec3::new(-0.5, -0.5, -3.5);
-        let max = Vec3::new(0.5, 0.5, -2.5);
-
-        let (toi, normal) =
-            ray_aabb_slab(origin, direction, min, max, 10.0).expect("ray should hit the box");
-        assert!(approx_eq(toi, 2.5), "entry toi is the near face distance");
-        assert_vec3_approx(normal, Vec3::new(0.0, 0.0, 1.0));
-    }
-
-    #[test]
-    fn ray_aabb_slab_misses_off_axis_box() {
-        // Box shifted off the ray's path on +X: the ray never overlaps its X
-        // slab, so the slabs do not intersect.
-        let origin = Vec3::ZERO;
-        let direction = Vec3::new(0.0, 0.0, -1.0);
-        let min = Vec3::new(2.5, -0.5, -3.5);
-        let max = Vec3::new(3.5, 0.5, -2.5);
-
-        assert!(ray_aabb_slab(origin, direction, min, max, 10.0).is_none());
-    }
-
-    #[test]
-    fn ray_aabb_slab_rejects_box_behind_origin() {
-        // Box entirely behind the origin (+Z while the ray travels -Z): exit
-        // time is negative, so it is never struck.
-        let origin = Vec3::ZERO;
-        let direction = Vec3::new(0.0, 0.0, -1.0);
-        let min = Vec3::new(-0.5, -0.5, 2.5);
-        let max = Vec3::new(0.5, 0.5, 3.5);
-
-        assert!(ray_aabb_slab(origin, direction, min, max, 10.0).is_none());
-    }
-
-    #[test]
-    fn ray_aabb_slab_rejects_box_beyond_range() {
-        // Box is dead ahead but its entry exceeds the weapon range.
-        let origin = Vec3::ZERO;
-        let direction = Vec3::new(0.0, 0.0, -1.0);
-        let min = Vec3::new(-0.5, -0.5, -8.5);
-        let max = Vec3::new(0.5, 0.5, -7.5);
-
-        // Entry at 7.5 sits beyond a range of 5.0.
-        assert!(ray_aabb_slab(origin, direction, min, max, 5.0).is_none());
-        // ...but is reachable when the range covers it.
-        assert!(ray_aabb_slab(origin, direction, min, max, 10.0).is_some());
-    }
-
-    #[test]
-    fn ray_aabb_slab_face_normal_tracks_struck_side() {
-        // Shooting along +X strikes the box's -X (near) face; normal points
-        // back toward -X, against the ray.
-        let origin = Vec3::ZERO;
-        let direction = Vec3::new(1.0, 0.0, 0.0);
-        let min = Vec3::new(2.5, -0.5, -0.5);
-        let max = Vec3::new(3.5, 0.5, 0.5);
-
-        let (toi, normal) =
-            ray_aabb_slab(origin, direction, min, max, 10.0).expect("ray should hit the box");
-        assert!(approx_eq(toi, 2.5));
-        assert_vec3_approx(normal, Vec3::new(-1.0, 0.0, 0.0));
-    }
-
-    // --- nearest_entity_hit / nearest-of(world, entity) -----------------
-
-    #[test]
-    fn nearest_entity_hit_selects_box_along_ray() {
-        let mut registry = EntityRegistry::new();
-        let id = spawn_hitbox_entity(
-            &mut registry,
-            Vec3::new(0.0, 0.0, -4.0),
-            Vec3::splat(0.5),
-            Vec3::ZERO,
-        );
-
-        let hit = nearest_entity_hit(&registry, Vec3::ZERO, Vec3::new(0.0, 0.0, -1.0), 10.0)
-            .expect("hitbox entity along the ray should be hit");
-        assert_eq!(hit.target, Some(id));
-        assert!(approx_eq(hit.toi, 3.5), "near face is at z = -3.5");
-        assert_vec3_approx(hit.point, Vec3::new(0.0, 0.0, -3.5));
-        assert_vec3_approx(hit.normal, Vec3::new(0.0, 0.0, 1.0));
-    }
-
-    #[test]
-    fn nearest_entity_hit_keeps_nearest_of_two_boxes() {
-        let mut registry = EntityRegistry::new();
-        let far = spawn_hitbox_entity(
-            &mut registry,
-            Vec3::new(0.0, 0.0, -8.0),
-            Vec3::splat(0.5),
-            Vec3::ZERO,
-        );
-        let near = spawn_hitbox_entity(
-            &mut registry,
-            Vec3::new(0.0, 0.0, -3.0),
-            Vec3::splat(0.5),
-            Vec3::ZERO,
-        );
-        let _ = far;
-
-        let hit = nearest_entity_hit(&registry, Vec3::ZERO, Vec3::new(0.0, 0.0, -1.0), 10.0)
-            .expect("a box lies along the ray");
-        assert_eq!(hit.target, Some(near), "nearest box wins");
-    }
-
-    #[test]
-    fn nearest_entity_hit_misses_when_no_box_on_ray() {
-        let mut registry = EntityRegistry::new();
-        spawn_hitbox_entity(
-            &mut registry,
-            Vec3::new(5.0, 0.0, -4.0),
-            Vec3::splat(0.5),
-            Vec3::ZERO,
-        );
-
-        assert!(
-            nearest_entity_hit(&registry, Vec3::ZERO, Vec3::new(0.0, 0.0, -1.0), 10.0).is_none()
-        );
-    }
-
-    #[test]
-    fn nearest_entity_hit_respects_offset() {
-        // Box transform sits off-axis on +X, but its hitbox offset shifts the
-        // AABB back onto the ray's path.
-        let mut registry = EntityRegistry::new();
-        let id = spawn_hitbox_entity(
-            &mut registry,
-            Vec3::new(2.0, 0.0, -4.0),
-            Vec3::splat(0.5),
-            Vec3::new(-2.0, 0.0, 0.0),
-        );
-
-        let hit = nearest_entity_hit(&registry, Vec3::ZERO, Vec3::new(0.0, 0.0, -1.0), 10.0)
-            .expect("offset recenters the AABB onto the ray");
-        assert_eq!(hit.target, Some(id));
-    }
+    // The AABB slab test and the entity-hit walk relocated to the hit-zone
+    // facility (`scripting/systems/hit_zones.rs`) along with `ray_aabb_slab` /
+    // `nearest_entity_hit`; their unit tests live there now. The weapon-level
+    // tests below cover the delegation + world-vs-entity nearest-of resolution.
 
     #[test]
     fn entity_hit_reported_through_weapon_impact() {
@@ -753,7 +558,7 @@ mod tests {
         let mut input = input_system();
         let pressed = shoot_snapshot(&mut input, true);
 
-        let events = tick(
+        let events = fire_tick(
             &mut registry,
             Some(weapon_id),
             &pressed,
@@ -793,7 +598,7 @@ mod tests {
         let mut input = input_system();
         let pressed = shoot_snapshot(&mut input, true);
 
-        let events = tick(
+        let events = fire_tick(
             &mut registry,
             Some(weapon_id),
             &pressed,
@@ -824,7 +629,7 @@ mod tests {
         let mut input = input_system();
         let pressed = shoot_snapshot(&mut input, true);
 
-        let events = tick(
+        let events = fire_tick(
             &mut registry,
             Some(weapon_id),
             &pressed,
@@ -855,7 +660,7 @@ mod tests {
         let mut input = input_system();
         let pressed = shoot_snapshot(&mut input, true);
 
-        let events = tick(
+        let events = fire_tick(
             &mut registry,
             Some(weapon_id),
             &pressed,
@@ -887,7 +692,7 @@ mod tests {
         let mut input = input_system();
         let pressed = shoot_snapshot(&mut input, true);
 
-        let events = tick(
+        let events = fire_tick(
             &mut registry,
             Some(weapon_id),
             &pressed,
@@ -931,7 +736,7 @@ mod tests {
         let mut input = input_system();
         let pressed = shoot_snapshot(&mut input, true);
 
-        let events = tick(
+        let events = fire_tick(
             &mut registry,
             Some(weapon_id),
             &pressed,
@@ -943,5 +748,197 @@ mod tests {
         let impact = events.impact.expect("wall hit should emit impact");
         assert_eq!(impact.target, None, "zero-HP corpse is skipped; wall wins");
         assert_vec3_approx(impact.point, Vec3::new(0.0, 0.0, -5.0));
+    }
+
+    // --- Skeletal hit-zone delegation (Task 4) ------------------------------
+
+    use crate::lighting::cone_frustum::Aabb;
+    use crate::model::skeleton::{Joint, RestLocal, Skeleton};
+    use crate::scripting::components::mesh::MeshComponent;
+    use crate::scripting_systems::hit_zones::ModelHitZones;
+    use std::sync::Arc;
+
+    /// Build a store holding one model with a single TAGGED LEAF joint at the
+    /// model origin — a sphere of `radius`. The derived bound is the sphere's box
+    /// so the broad phase admits it. Static (no clip), so any anim_time poses the
+    /// joint to the origin.
+    fn head_zone_store(
+        handle: &str,
+        radius: f32,
+    ) -> crate::scripting_systems::hit_zones::HitZoneStore {
+        let skeleton = Skeleton {
+            joints: vec![Joint {
+                parent: None,
+                inverse_bind: glam::Mat4::IDENTITY.to_cols_array_2d(),
+                rest_local: RestLocal::default(),
+            }],
+        };
+        let model = ModelHitZones {
+            skeleton: Arc::new(skeleton),
+            clips: Arc::new(vec![]),
+            joint_zones: vec![Some(crate::model::gltf_loader::JointZone {
+                tag: "head".to_string(),
+                radius: Some(radius),
+            })],
+            derived_bound: Some(Aabb {
+                min: Vec3::splat(-radius),
+                max: Vec3::splat(radius),
+            }),
+        };
+        let mut store = HitZoneStore::new();
+        store.insert_for_test(crate::model::ModelHandle::from(handle), model);
+        store
+    }
+
+    /// Run `tick` with a populated hit-zone store and animation clock.
+    fn fire_tick_with(
+        registry: &mut EntityRegistry,
+        active_wieldable: Option<EntityId>,
+        snapshot: &ActionSnapshot,
+        camera: &Camera,
+        world: &CollisionWorld,
+        store: &HitZoneStore,
+        anim_time: f64,
+        tick_dt: f32,
+    ) -> WeaponFireEvents {
+        tick(
+            registry,
+            active_wieldable,
+            snapshot,
+            camera,
+            world,
+            store,
+            anim_time,
+            tick_dt,
+        )
+    }
+
+    /// Spawn a health + stateless-mesh entity that uses a zone-bearing model.
+    fn spawn_zone_entity(registry: &mut EntityRegistry, model: &str, position: Vec3) -> EntityId {
+        let id = registry.spawn(Transform {
+            position,
+            ..Transform::default()
+        });
+        registry
+            .set_component(
+                id,
+                HealthComponent {
+                    max: 100.0,
+                    current: 100.0,
+                    hitbox: None,
+                    death_handled: false,
+                },
+            )
+            .unwrap();
+        registry
+            .set_component(id, MeshComponent::stateless(model.to_string()))
+            .unwrap();
+        id
+    }
+
+    /// A zone hit through the full weapon path surfaces its zone tag on the
+    /// impact (Task 5 reads `impact.zone`; here we only surface it).
+    #[test]
+    fn zone_hit_reports_zone_tag_through_weapon_impact() {
+        let mut registry = EntityRegistry::new();
+        let weapon_id = spawn_weapon(&mut registry, weapon_component(FireMode::Semi, 100.0));
+        // Head sphere (r=0.5) at the entity, placed on the -Z ray at z=-4.
+        let store = head_zone_store("mob", 0.5);
+        let target = spawn_zone_entity(&mut registry, "mob", Vec3::new(0.0, 0.0, -4.0));
+        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let world = CollisionWorld::new(); // empty world: the zone is the only contender
+        let mut input = input_system();
+        let pressed = shoot_snapshot(&mut input, true);
+
+        let events = fire_tick_with(
+            &mut registry,
+            Some(weapon_id),
+            &pressed,
+            &camera,
+            &world,
+            &store,
+            0.0,
+            1.0 / 60.0,
+        );
+
+        let impact = events.impact.expect("zone hit should emit impact");
+        assert_eq!(impact.target, Some(target), "zone entity is targeted");
+        assert_eq!(
+            impact.zone.as_deref(),
+            Some("head"),
+            "the struck zone tag rides on the impact"
+        );
+    }
+
+    /// A wall in front of a zone-bearing entity still wins the nearest-of: the
+    /// world hit is nearer, so no entity target / zone is reported.
+    #[test]
+    fn wall_in_front_of_zone_still_wins() {
+        let mut registry = EntityRegistry::new();
+        let weapon_id = spawn_weapon(&mut registry, weapon_component(FireMode::Semi, 100.0));
+        let store = head_zone_store("mob", 0.5);
+        // Zone entity BEHIND the wall (wall at z=-5; entity at z=-8).
+        spawn_zone_entity(&mut registry, "mob", Vec3::new(0.0, 0.0, -8.0));
+        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let world = wall_world();
+        let mut input = input_system();
+        let pressed = shoot_snapshot(&mut input, true);
+
+        let events = fire_tick_with(
+            &mut registry,
+            Some(weapon_id),
+            &pressed,
+            &camera,
+            &world,
+            &store,
+            0.0,
+            1.0 / 60.0,
+        );
+
+        let impact = events.impact.expect("wall hit should emit impact");
+        assert_eq!(impact.target, None, "wall wins; no zone entity targeted");
+        assert_eq!(impact.zone, None, "no zone tag for a world hit");
+        assert_vec3_approx(impact.point, Vec3::new(0.0, 0.0, -5.0));
+    }
+
+    /// The facility, called directly with an arbitrary ray (no weapon, no
+    /// camera), reports the SAME nearest entity hit the weapon path reports for
+    /// that ray — proving the weapon merely delegates.
+    #[test]
+    fn facility_direct_call_matches_weapon_entity_hit() {
+        let mut registry = EntityRegistry::new();
+        let weapon_id = spawn_weapon(&mut registry, weapon_component(FireMode::Semi, 100.0));
+        let store = head_zone_store("mob", 0.5);
+        let target = spawn_zone_entity(&mut registry, "mob", Vec3::new(0.0, 0.0, -4.0));
+
+        // The weapon fires straight down -Z (camera at origin, yaw/pitch 0).
+        let origin = Vec3::ZERO;
+        let direction = Vec3::new(0.0, 0.0, -1.0);
+
+        // Direct facility call with the same ray + range (weapon range = 10).
+        let direct = nearest_entity_hit(&registry, &store, 0.0, origin, direction, 10.0)
+            .expect("facility resolves the entity directly");
+
+        // The weapon path for the same ray.
+        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let world = CollisionWorld::new();
+        let mut input = input_system();
+        let pressed = shoot_snapshot(&mut input, true);
+        let events = fire_tick_with(
+            &mut registry,
+            Some(weapon_id),
+            &pressed,
+            &camera,
+            &world,
+            &store,
+            0.0,
+            1.0 / 60.0,
+        );
+        let impact = events.impact.expect("weapon reports the entity hit");
+
+        assert_eq!(Some(direct.target), impact.target, "same target");
+        assert_eq!(direct.zone, impact.zone, "same zone tag");
+        assert_vec3_approx(direct.point, impact.point);
+        assert_eq!(direct.target, target);
     }
 }

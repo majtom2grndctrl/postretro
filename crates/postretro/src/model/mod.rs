@@ -8,6 +8,7 @@
 pub(crate) mod anim;
 pub(crate) mod gltf_loader;
 pub(crate) mod mesh;
+pub(crate) mod sample_params;
 pub(crate) mod skeleton;
 
 use bytemuck::{Pod, Zeroable};

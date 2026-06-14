@@ -6,8 +6,9 @@ use std::collections::HashMap;
 
 use super::mesh_anim::{self, MeshClipTables};
 use crate::model::ModelHandle;
+use crate::model::sample_params::MeshSampleParams;
 use crate::prl::LevelWorld;
-use crate::render::mesh_instances::{MeshInstanceInput, MeshSampleParams};
+use crate::render::mesh_instances::MeshInstanceInput;
 use crate::render::mesh_pass::mesh_visible;
 use crate::scripting::registry::{ComponentKind, ComponentValue, EntityRegistry, Transform};
 use crate::visibility::VisibleCells;
@@ -297,7 +298,7 @@ fn resolve_sample(
     seed: u32,
 ) -> (
     MeshSampleParams,
-    Option<crate::render::mesh_instances::CaptureInstruction>,
+    Option<crate::model::sample_params::CaptureInstruction>,
 ) {
     let table = tables.get(handle);
 
@@ -607,7 +608,7 @@ mod tests {
 
     use crate::model::ModelHandle;
     use crate::model::anim::Loop;
-    use crate::render::mesh_instances::FadeSource;
+    use crate::model::sample_params::FadeSource;
     use crate::render::mesh_pass::ClipMetadata;
     use crate::scripting::components::mesh::{AnimationState, InterruptPolicy, MeshAnimation};
     use crate::scripting::components::mesh::{

@@ -3659,14 +3659,20 @@ impl App {
             snapshot,
             &self.camera,
             &self.collision_world,
+            &self.hit_zone_store,
+            self.anim_time,
             tick_dt,
         );
-        if let Some(impact) = events.impact {
+        // Borrow the impact rather than move it out: `WeaponImpact` is no longer
+        // `Copy` (it carries a `zone: Option<String>` for skeletal hit-zone
+        // hits), and `event_names()` below still needs `events`.
+        if let Some(impact) = events.impact.as_ref() {
             weapon::spawn_impact_effect_at(&mut registry, impact.point, impact.normal);
             // Additive to the impact burst: when the nearest hit was an entity
             // hitbox, route the payload through the damage chokepoint. Spatial
             // targeting rides on the impact (`target`), never inside the
             // payload. The death sweep (run after this tick) resolves any kill.
+            // (The per-zone multiplier from `impact.zone` is Task 5.)
             if let (Some(target), weapon::ActivationOutcome::Hit(payload)) =
                 (impact.target, impact.outcome)
             {

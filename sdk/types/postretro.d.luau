@@ -833,10 +833,12 @@ declare function clearText(slot: string): PrimitiveReactionDescriptor
 -- typing contract is asserted on the TS surface.
 
 --- A read-only typed slot handle for an engine-owned slot. `get()` yields the
---- typed bind reference a widget binds to; carries the slot's declared value
---- type `T`. No `set` — engine slots are read-only to mods (see the
---- `postretro/game-state` module below).
-export type ReadonlyStateValue<T> = { get: (self: any) -> StateValue<T> }
+--- directly-bindable bind reference a widget's `bind` prop accepts — the
+--- `{ slot }` wire shape (`SliderBindProp`), symmetric with the writable
+--- `StoreHandle<T>:get()`. No `set` — engine slots are read-only to mods (see the
+--- `postretro/game-state` module below). `T` is carried for documentation; the
+--- runtime wire form is the bare `{ slot }` ref either handle's `get()` produces.
+export type ReadonlyStateValue<T> = { get: (self: any) -> SliderBindProp }
 
 --- One slot's declaration inside the `defineStore` `schema` argument. The `type`
 --- discriminant selects the slot's value type; type-specific keys (`default`,

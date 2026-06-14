@@ -770,8 +770,8 @@ declare module "postretro" {
   // runtime `schema` argument, absent at typedef emission, so the typed handle
   // map is supplied by this hand-written generic instead of registry emission.
 
-  /** A read-only typed slot handle for an engine-owned slot. `.get()` yields the typed bind reference a widget binds to; carries the slot's declared value type `T`. No `.set()` — engine slots are read-only to mods (see `postretro/game-state`). */
-  export type ReadonlyStateValue<T> = { get(): StateValue<T> };
+  /** A read-only typed slot handle for an engine-owned slot. `.get()` yields the directly-bindable bind reference a widget's `bind` prop accepts — the `{ slot }` wire shape (`SliderBindProp`), symmetric with the writable `StoreHandle<T>.get()`. No `.set()` — engine slots are read-only to mods (see `postretro/game-state`). `T` is the slot's declared value type; it is carried for documentation, the runtime wire form is the bare `{ slot }` ref either handle's `.get()` produces. */
+  export type ReadonlyStateValue<T> = { get(): SliderBindProp };
 
   /** One slot's declaration inside the `defineStore` `schema` argument. The `type` discriminant selects the slot's value type; type-specific keys (`default`, `range`, `values`, …) are accepted alongside it. */
   export type StoreSlotSchema = { type: "number" | "boolean" | "string" | "enum" | "array" } & Record<string, unknown>;
@@ -831,7 +831,7 @@ declare module "postretro" {
   export type WidgetAlign = "start" | "center" | "end" | "stretch";
   /** Easing curve for a value tween. */
   export type WidgetEasing = "linear" | "easeIn" | "easeOut" | "easeInOut";
-  /** A branded store-handle value (a `StateValue<T>` / the `.get()` of a `ReadonlyStateValue<T>`): a branded `string` carrying the dotted slot name. */
+  /** A branded store-handle value (a `StateValue<T>`): a branded `string` carrying the dotted slot name, carried in the `slot` field of the bind-ref returned by a handle's `.get()`. */
   export type StoreHandleRef = string & { readonly __brand?: "StateValue" };
   /** Number-shape value tween (text/slider/bar bind). */
   export type NumberTween = { durationMs: number; easing: WidgetEasing; from?: number };

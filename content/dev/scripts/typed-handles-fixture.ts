@@ -39,8 +39,11 @@ const _preset: StateValue<string> = opts.preset;
 const _wrong: StateValue<number> = opts.muted;
 
 // --- (2) Read-only engine-slot handles --------------------------------------
-// `player.health.get()` is a read-only `ReadonlyStateValue<number>` bind ref.
+// `player.health.get()` yields a directly-bindable `{ slot }` bind ref —
+// symmetric with `storeHandle(s).get()` for a mod slot. Binding an engine slot
+// reads the same as a mod slot: `Text({ bind: player.health.get() })`.
 const _health = player.health.get();
+const _healthText = Text({ content: "HP", bind: player.health.get() });
 
 // Engine slots are read-only to mods: `.set(...)` is absent from the handle.
 // @ts-expect-error — engine slots have no `.set()`; they are read-only to mods.
@@ -80,6 +83,7 @@ void _muted;
 void _preset;
 void _wrong;
 void _health;
+void _healthText;
 void _named;
 void _auto;
 void _greeting;

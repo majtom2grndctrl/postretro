@@ -966,8 +966,8 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   // runtime `schema` argument, absent at typedef emission, so the typed handle
   // map is supplied by this hand-written generic instead of registry emission.
 
-  /** A read-only typed slot handle for an engine-owned slot. `.get()` yields the typed bind reference a widget binds to; carries the slot's declared value type `T`. No `.set()` — engine slots are read-only to mods (see `postretro/game-state`). */
-  export type ReadonlyStateValue<T> = { get(): StateValue<T> };
+  /** A read-only typed slot handle for an engine-owned slot. `.get()` yields the directly-bindable bind reference a widget's `bind` prop accepts — the `{ slot }` wire shape (`SliderBindProp`), symmetric with the writable `StoreHandle<T>.get()`. No `.set()` — engine slots are read-only to mods (see `postretro/game-state`). `T` is the slot's declared value type; it is carried for documentation, the runtime wire form is the bare `{ slot }` ref either handle's `.get()` produces. */
+  export type ReadonlyStateValue<T> = { get(): SliderBindProp };
 
   /** One slot's declaration inside the `defineStore` `schema` argument. The `type` discriminant selects the slot's value type; type-specific keys (`default`, `range`, `values`, …) are accepted alongside it. */
   export type StoreSlotSchema = { type: "number" | "boolean" | "string" | "enum" | "array" } & Record<string, unknown>;
@@ -1027,7 +1027,7 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   export type WidgetAlign = "start" | "center" | "end" | "stretch";
   /** Easing curve for a value tween. */
   export type WidgetEasing = "linear" | "easeIn" | "easeOut" | "easeInOut";
-  /** A branded store-handle value (a `StateValue<T>` / the `.get()` of a `ReadonlyStateValue<T>`): a branded `string` carrying the dotted slot name. */
+  /** A branded store-handle value (a `StateValue<T>`): a branded `string` carrying the dotted slot name, carried in the `slot` field of the bind-ref returned by a handle's `.get()`. */
   export type StoreHandleRef = string & { readonly __brand?: "StateValue" };
   /** Number-shape value tween (text/slider/bar bind). */
   export type NumberTween = { durationMs: number; easing: WidgetEasing; from?: number };
@@ -1798,10 +1798,12 @@ declare function clearText(slot: string): PrimitiveReactionDescriptor
 -- typing contract is asserted on the TS surface.
 
 --- A read-only typed slot handle for an engine-owned slot. `get()` yields the
---- typed bind reference a widget binds to; carries the slot's declared value
---- type `T`. No `set` — engine slots are read-only to mods (see the
---- `postretro/game-state` module below).
-export type ReadonlyStateValue<T> = { get: (self: any) -> StateValue<T> }
+--- directly-bindable bind reference a widget's `bind` prop accepts — the
+--- `{ slot }` wire shape (`SliderBindProp`), symmetric with the writable
+--- `StoreHandle<T>:get()`. No `set` — engine slots are read-only to mods (see the
+--- `postretro/game-state` module below). `T` is carried for documentation; the
+--- runtime wire form is the bare `{ slot }` ref either handle's `get()` produces.
+export type ReadonlyStateValue<T> = { get: (self: any) -> SliderBindProp }
 
 --- One slot's declaration inside the `defineStore` `schema` argument. The `type`
 --- discriminant selects the slot's value type; type-specific keys (`default`,
@@ -3416,13 +3418,23 @@ export type Event = {
                 && ts.contains("readonly health: ReadonlyStateValue<number>;"),
             "ts game-state missing read-only player.health handle:\n{ts}"
         );
-        // `ReadonlyStateValue` exposes `.get()` only — no `.set()`.
+        // `ReadonlyStateValue.get()` returns the directly-bindable `{ slot }` ref
+        // (`SliderBindProp`), symmetric with the writable `StoreHandle<T>.get()` —
+        // so `Text({ bind: player.health.get() })` type-checks the same as a mod
+        // slot. It is NOT a bare `StateValue<T>`.
         assert!(
-            ts.contains("export type ReadonlyStateValue<T> = { get(): StateValue<T> };"),
-            "ts ReadonlyStateValue must declare get() only"
+            ts.contains("export type ReadonlyStateValue<T> = { get(): SliderBindProp };"),
+            "ts ReadonlyStateValue.get() must return the bind-ref shape (SliderBindProp)"
         );
+        // The writable handle's `.get()` returns the same bind-ref shape — the two
+        // `.get()` contracts are symmetric.
         assert!(
-            !ts.contains("ReadonlyStateValue<T> = { get(): StateValue<T>; set("),
+            ts.contains("export type StoreHandle<T> = { get(): SliderBindProp;"),
+            "ts StoreHandle.get() must return SliderBindProp (symmetry anchor)"
+        );
+        // `ReadonlyStateValue` stays read-only: still `.get()` only, no `.set()`.
+        assert!(
+            !ts.contains("ReadonlyStateValue<T> = { get(): SliderBindProp; set("),
             "ReadonlyStateValue must not expose set()"
         );
 
@@ -3434,6 +3446,18 @@ export type Event = {
         assert!(
             luau.contains("health: ReadonlyStateValue<number>,"),
             "luau game-state missing read-only player.health handle"
+        );
+        // Luau twin: `ReadonlyStateValue:get()` returns the `{ slot }` bind ref
+        // (`SliderBindProp`), symmetric with the writable handle; no `set`.
+        assert!(
+            luau.contains(
+                "export type ReadonlyStateValue<T> = { get: (self: any) -> SliderBindProp }"
+            ),
+            "luau ReadonlyStateValue:get() must return the bind-ref shape (SliderBindProp)"
+        );
+        assert!(
+            !luau.contains("ReadonlyStateValue<T> = { get: (self: any) -> SliderBindProp, set"),
+            "luau ReadonlyStateValue must not expose set"
         );
     }
 

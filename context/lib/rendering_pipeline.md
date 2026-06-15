@@ -212,7 +212,7 @@ Immediate-mode line segments uploaded from a CPU buffer each frame. Depth test o
 
 ### 7.8 Screen-space effects resolve pass
 
-The renderer owns a `scene_color` offscreen target: surface (sRGB) format, single-sample, surface-sized. Every gameplay scene pass and UI pass writes into `scene_color`. The resolve pass is the sole swapchain writer for the gameplay path — it runs every frame as a fullscreen-triangle blit from `scene_color` into the swapchain.
+The renderer owns a `scene_color` offscreen target: surface (sRGB) format, single-sample, surface-sized. Every gameplay scene pass and gameplay UI pass writes into `scene_color`; the resolve pass is the sole swapchain writer for the gameplay path — it runs every frame as a fullscreen-triangle blit from `scene_color` into the swapchain. The boot-splash path predates this pass and bypasses it entirely: `render_splash_frame` writes directly to the swapchain `view`, never touching `scene_color` or the screen-effects compose.
 
 Three effects are composited on top of the identity blit: flash (over-blend toward a tint color, weighted by `flash.a`), vignette (edge darken/tint, strength-scaled radial blend), and shake (pure UV offset applied before the sample). All three are packed CPU-side from the frame's `UiReadSnapshot` into a per-frame `EffectUniform` (binding 2 of group 0). At rest, every term is exactly 0 — the mix factors collapse to 0 and the resolve is bit-identical to a direct passthrough. The resolve sampler is NEAREST / pixel-aligned so the 1:1 texel mapping holds for the identity case. See `crates/postretro/src/render/screen_effects.rs` and `crates/postretro/src/shaders/screen_effects.wgsl`.
 

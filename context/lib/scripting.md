@@ -232,9 +232,10 @@ primitives resolve tags and mutate the `EntityRegistry`; **system reactions**
 `screenShake`) carry no `tag` (the descriptor's `tag` is optional; absent =
 system-targeted) and push typed commands onto a queue drained once per frame
 by the app after the post-tick event drains — audio/input/UI subsystems
-consume their commands without threading engine services into scripting. Crossing watchers
-(`onStateCrossing`) return through `setupLevel`'s manifest, which carries
-`{reactions, crossings}`.
+consume their commands without threading engine services into scripting.
+
+Crossing watchers (`onStateCrossing`) return through `setupLevel`'s manifest,
+which carries `{reactions, crossings}`.
 
 ### 10.5 Damage
 

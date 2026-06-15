@@ -66,8 +66,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // corners; it is scaled by the authored strength `vignette.w`. At rest
     // `vignette.w == 0`, so `clamp(0 * radial, 0.0, 1.0) == 0.0` →
     // `mix(color, _, 0.0)` returns `color` unchanged.
-    // Clamped to [0,1]: over-1 vignette-strength would extrapolate past the
-    // tint color (primitive-surface contract — valid range is [0,1]).
+    // Clamped here as a shader-side guard: over-1 vignette-strength would
+    // otherwise extrapolate past the tint color.
     let centered = in.uv - vec2<f32>(0.5, 0.5);
     let radial = clamp(dot(centered, centered) * 2.0, 0.0, 1.0);
     let vignette_factor = clamp(effect.vignette.w * radial, 0.0, 1.0);
@@ -75,8 +75,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 
     // Flash: over-blend toward `flash.rgb` by `flash.a`. At rest `flash.a == 0`,
     // so `clamp(0.0, 0.0, 1.0) == 0.0` → `mix(color, _, 0.0)` returns `color`
-    // unchanged. Clamped to [0,1]: over-1 alpha extrapolates past the flash
-    // color (primitive-surface contract — valid range is [0,1]).
+    // unchanged. Clamped here as a shader-side guard: over-1 alpha would
+    // otherwise extrapolate past the flash color.
     color = mix(color, effect.flash.xyz, clamp(effect.flash.a, 0.0, 1.0));
 
     // Preserve the sampled alpha so the at-rest path is byte-identical to the

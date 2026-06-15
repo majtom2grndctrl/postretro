@@ -193,6 +193,14 @@ impl std::fmt::Debug for SystemReactionRegistry {
     }
 }
 
+/// Maximum `screenShake` amplitude in logical-reference px. Matches
+/// `SHAKE_REFERENCE_WIDTH` in `render/screen_effects.rs` (1280 px): at this
+/// amplitude the peak UV offset is exactly 1.0 — one full reference frame-width
+/// — which is the natural ceiling of the 1280×720 reference coordinate system.
+/// Amplitudes beyond this produce UV offsets > 1.0 that cause whole-frame
+/// ClampToEdge edge-smear with no meaningful additional shake effect.
+const MAX_SHAKE_AMPLITUDE_PX: f32 = 1280.0;
+
 /// Register the system-reaction primitives onto `registry`:
 /// - Audio: `playSound`
 /// - Input/rumble: `rumble`
@@ -246,6 +254,10 @@ pub(crate) fn register_system_reaction_primitives(registry: &mut SystemReactionR
             serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
                 reason: format!("vignette: failed to deserialize args: {e}"),
             })?;
+        // The JSON bridge (serde_json::Number::from_f64) maps non-finite f32
+        // values to JSON null, so NaN/Infinity arrive as null and are rejected
+        // at deserialize before reaching this guard. The is_finite() arm is
+        // defense-in-depth for any future non-JSON caller.
         if !parsed.duration_ms.is_finite() || parsed.duration_ms <= 0.0 {
             return Err(ReactionError::InvalidArgument {
                 reason: format!(
@@ -270,6 +282,10 @@ pub(crate) fn register_system_reaction_primitives(registry: &mut SystemReactionR
             serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
                 reason: format!("screenShake: failed to deserialize args: {e}"),
             })?;
+        // The JSON bridge (serde_json::Number::from_f64) maps non-finite f32
+        // values to JSON null, so NaN/Infinity arrive as null and are rejected
+        // at deserialize before reaching this guard. The is_finite() arm is
+        // defense-in-depth for any future non-JSON caller.
         if !parsed.duration_ms.is_finite() || parsed.duration_ms <= 0.0 {
             return Err(ReactionError::InvalidArgument {
                 reason: format!(
@@ -278,7 +294,30 @@ pub(crate) fn register_system_reaction_primitives(registry: &mut SystemReactionR
                 ),
             });
         }
+        // amplitude == 0.0 is a valid no-op shake (zero displacement); reject
+        // only non-finite and negative. The upper bound caps the peak UV offset
+        // at 1.0 (one full reference frame-width) to prevent whole-frame
+        // ClampToEdge edge-smear. The JSON bridge maps non-finite to null
+        // (rejected at deserialize); the is_finite() arm is defense-in-depth.
+        if !parsed.amplitude.is_finite() || parsed.amplitude < 0.0 {
+            return Err(ReactionError::InvalidArgument {
+                reason: format!(
+                    "screenShake: amplitude must be finite and >= 0, got {}",
+                    parsed.amplitude
+                ),
+            });
+        }
+        if parsed.amplitude > MAX_SHAKE_AMPLITUDE_PX {
+            return Err(ReactionError::InvalidArgument {
+                reason: format!(
+                    "screenShake: amplitude must be <= {MAX_SHAKE_AMPLITUDE_PX} px, got {}",
+                    parsed.amplitude
+                ),
+            });
+        }
         if let Some(freq) = parsed.frequency {
+            // The JSON bridge maps non-finite to null (rejected at deserialize);
+            // the is_finite() arm is defense-in-depth for non-JSON callers.
             if !freq.is_finite() || freq <= 0.0 {
                 return Err(ReactionError::InvalidArgument {
                     reason: format!("screenShake: frequency must be finite and > 0, got {freq}"),
@@ -847,6 +886,14 @@ mod tests {
     }
 
     // --- vignette durationMs validation -------------------------------------
+    //
+    // The nan/inf tests below assert that the bad arg IS rejected — that is the
+    // guarantee under test. The rejection layer differs by arg source: the JSON
+    // bridge (serde_json::Number::from_f64) maps non-finite f32 to null, so
+    // NaN/Infinity arrive as null and are refused at deserialize ("invalid type:
+    // null, expected f32") before the is_finite() guard runs. The is_finite()
+    // arm is defense-in-depth for any future non-JSON caller. The tests remain
+    // valuable as rejection guarantees regardless of which layer fires.
 
     #[test]
     fn vignette_nan_duration_ms_rejected_with_invalid_argument() {
@@ -914,7 +961,15 @@ mod tests {
         );
     }
 
-    // --- screenShake durationMs and frequency validation --------------------
+    // --- screenShake durationMs, frequency, and amplitude validation ---------
+    //
+    // The nan/inf tests below assert that the bad arg IS rejected — that is the
+    // guarantee under test. The rejection layer differs by arg source: the JSON
+    // bridge (serde_json::Number::from_f64) maps non-finite f32 to null, so
+    // NaN/Infinity arrive as null and are refused at deserialize ("invalid type:
+    // null, expected f32") before the is_finite() guard runs. The is_finite()
+    // arm is defense-in-depth for any future non-JSON caller. The tests remain
+    // valuable as rejection guarantees regardless of which layer fires.
 
     #[test]
     fn screen_shake_nan_duration_ms_rejected_with_invalid_argument() {
@@ -1006,6 +1061,51 @@ mod tests {
                 amplitude: 6.0,
                 duration_ms: 300.0,
                 frequency: Some(20.0),
+            }]
+        );
+    }
+
+    #[test]
+    fn screen_shake_negative_amplitude_rejected_with_invalid_argument() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "amplitude": -1.0, "durationMs": 200.0 });
+        let err = r.dispatch("screenShake", &args, &queue).unwrap_err();
+        assert!(matches!(err, ReactionError::InvalidArgument { .. }));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn screen_shake_amplitude_above_max_rejected_with_invalid_argument() {
+        // Amplitude above MAX_SHAKE_AMPLITUDE_PX (1280.0 px) produces a UV
+        // offset > 1.0 that causes whole-frame ClampToEdge edge-smear.
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "amplitude": 1281.0, "durationMs": 200.0 });
+        let err = r.dispatch("screenShake", &args, &queue).unwrap_err();
+        assert!(matches!(err, ReactionError::InvalidArgument { .. }));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn screen_shake_zero_amplitude_accepted_enqueues_command() {
+        // amplitude == 0.0 is a valid no-op shake (zero displacement).
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "amplitude": 0.0, "durationMs": 200.0 });
+        assert!(r.dispatch("screenShake", &args, &queue).unwrap());
+        assert_eq!(
+            queue.take(),
+            vec![SystemReactionCommand::ScreenShake {
+                amplitude: 0.0,
+                duration_ms: 200.0,
+                frequency: None,
             }]
         );
     }

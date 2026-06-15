@@ -681,7 +681,7 @@ export type ButtonProps = {
  * An interactive `button`. `id` is required (activation resolves the focused
  * node id back to `onPress`). `onPress` accepts a reaction handle (the `.name`
  * is read) or a bare reaction-name string. Exactly one of `label` / `labelledBy`
- * is required (the bridge enforces the same precondition). Mirrors `ButtonWidget`.
+ * is required (the bridge enforces the same precondition).
  */
 export function Button(props: ButtonProps): WidgetDescriptor {
   requireObject(props, "Button");
@@ -774,8 +774,7 @@ export type SliderProps = {
 /**
  * An interactive `slider`. Nav wires in `capturesNav` step the bound value by
  * `step` within `[min, max]`. `id` is required. Exactly one of `label` /
- * `labelledBy` is required (the bridge enforces the same precondition). Mirrors
- * `SliderWidget`.
+ * `labelledBy` is required (the bridge enforces the same precondition).
  */
 export function Slider(props: SliderProps): WidgetDescriptor {
   requireObject(props, "Slider");
@@ -846,7 +845,7 @@ export type BarProps = {
 
 /**
  * A passive `bar`: fill fraction is `value/max` clamped to `[0, 1]`.
- * `styleRanges` recolors the fill. Mirrors `BarWidget`.
+ * `styleRanges` recolors the fill.
  */
 export function Bar(props: BarProps): WidgetDescriptor {
   requireObject(props, "Bar");

@@ -1,6 +1,6 @@
 // Post-UI screen-space effects resolve pass + the renderer-owned `scene_color`
 // offscreen target every gameplay scene/UI pass renders into.
-// See: context/lib/rendering_pipeline.md §7
+// See: context/lib/rendering_pipeline.md §7.8
 
 use std::collections::HashMap;
 

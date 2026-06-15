@@ -1,9 +1,6 @@
 // App-side vignette-decay state for the engine-owned `screen.vignette` surface.
-// A drained vignette system-reaction command (Task 3) starts an envelope (rise →
-// peak → decay) over RGBA, where `a` is the vignette strength; each game-logic
-// tick this writes `screen.vignette` via the engine write path, fading strength
-// back to zero. A later GPU resolve pass consumes the slot; at rest the slot is
-// `[0,0,0,0]` so the consumer collapses to identity.
+// The screen-effects resolve pass (render/screen_effects.rs) consumes this slot
+// each frame; at rest the slot is `[0,0,0,0]` so the consumer collapses to identity.
 // See: context/lib/ui.md §3 · context/lib/scripting.md §10.4
 
 use crate::scripting::ctx::ScriptCtx;
@@ -104,11 +101,6 @@ impl VignetteDecay {
     /// Start (or restart) a vignette envelope: a `tint` (linear RGB) at `peak`
     /// strength, rising over `rise_ms` then decaying over `decay_ms`. The new
     /// envelope replaces any in-flight one so the latest trigger wins.
-    ///
-    /// Tests consume this now; the drained vignette system-reaction command is
-    /// the named non-test consumer (Task 3) — `allow(dead_code)` off the test
-    /// build until that lands.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn start(&mut self, tint: [f32; 3], peak: f32, rise_ms: f32, decay_ms: f32) {
         self.active = Some(ActiveVignette {
             tint,

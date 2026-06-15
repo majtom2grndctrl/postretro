@@ -449,7 +449,7 @@ end
 --- unchanged `onPress: string` wire form. Name-XOR (M13 G2): exactly one of
 --- `label` / `labelledBy` is required -- neither or both errors. `selected`/
 --- `checked` are reactive predicates; `bind`+`styleRanges` drive the reactive
---- highlight; `disabled` makes it non-interactive. Mirrors `ButtonWidget`.
+--- highlight; `disabled` makes it non-interactive.
 function UiWidgetsSdk.Button(props: any): WidgetDescriptor
   requireObject(props, "Button")
   requireNonemptyString(props.id, "id", "Button")
@@ -513,7 +513,7 @@ end
 --- An interactive `slider`. Nav wires in `capturesNav` step the bound value by
 --- `step` within `[min, max]`. `id` and `bind` are required. Name-XOR (M13 G2):
 --- exactly one of `label` / `labelledBy` is required. `disabled` makes it
---- non-interactive. Mirrors `SliderWidget`.
+--- non-interactive.
 function UiWidgetsSdk.Slider(props: any): WidgetDescriptor
   requireObject(props, "Slider")
   requireNonemptyString(props.id, "id", "Slider")
@@ -581,7 +581,7 @@ end
 -- --- Bar --------------------------------------------------------------------
 
 --- A passive `bar`: fill fraction is `value/max` clamped to `[0, 1]`.
---- `styleRanges` recolors the fill. `bind` is required. Mirrors `BarWidget`.
+--- `styleRanges` recolors the fill. `bind` is required.
 function UiWidgetsSdk.Bar(props: any): WidgetDescriptor
   requireObject(props, "Bar")
   local bind = buildBind(props.bind, "Bar", "slider")

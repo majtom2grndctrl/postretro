@@ -3683,11 +3683,17 @@ fn bar_widget_from_js<'js>(
 
 /// Read an `announce` widget (M13 G2): a required `text` and an optional
 /// `priority` (`"polite"`|`"assertive"`, default polite). A garbled shape — a
-/// non-string `text`, a missing `text`, or an unknown `priority` — is a named
-/// load-time error.
+/// non-string `text`, a missing `text`, an empty `text`, or an unknown
+/// `priority` — is a named load-time error.
 fn announce_widget_from_js<'js>(obj: &Object<'js>) -> Result<AnnounceWidget, DescriptorError> {
+    let text = get_required_string_js(obj, "text")?;
+    if text.is_empty() {
+        return Err(DescriptorError::InvalidShape {
+            reason: "`announce.text` must be a non-empty string".to_string(),
+        });
+    }
     Ok(AnnounceWidget {
-        text: get_required_string_js(obj, "text")?,
+        text,
         priority: match get_optional_string_js(obj, "priority")? {
             Some(s) => parse_priority(&s)?,
             None => Priority::Polite,
@@ -4404,10 +4410,18 @@ fn bar_widget_from_lua(table: &Table) -> Result<BarWidget, DescriptorError> {
     })
 }
 
-/// Lua twin of [`announce_widget_from_js`]: required `text`, optional `priority`.
+/// Lua twin of [`announce_widget_from_js`]: required non-empty `text`, optional
+/// `priority`. An empty `text` is a named load-time error (same condition as the
+/// JS path).
 fn announce_widget_from_lua(table: &Table) -> Result<AnnounceWidget, DescriptorError> {
+    let text = get_required_string_lua(table, "text")?;
+    if text.is_empty() {
+        return Err(DescriptorError::InvalidShape {
+            reason: "`announce.text` must be a non-empty string".to_string(),
+        });
+    }
     Ok(AnnounceWidget {
-        text: get_required_string_lua(table, "text")?,
+        text,
         priority: match get_optional_string_lua(table, "priority")? {
             Some(s) => parse_priority(&s)?,
             None => Priority::Polite,
@@ -8879,5 +8893,28 @@ mod tests {
                 "precondition must be a named load-time error (no panic), got {err:?} for {src}"
             );
         }
+    }
+
+    #[test]
+    fn announce_widget_js_rejects_empty_text() {
+        let src = r#"({ anchor:"center", offset:[0.0,0.0], root:{ kind:"announce", text:"" } })"#;
+        let err = eval_js(src, |ctx, v| {
+            anchored_tree_from_js_value(ctx, v).unwrap_err()
+        });
+        assert!(
+            matches!(err, DescriptorError::InvalidShape { ref reason } if reason.contains("announce.text")),
+            "empty announce text must be a named InvalidShape error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn announce_widget_lua_rejects_empty_text() {
+        let src =
+            r#"return { anchor="center", offset={0.0,0.0}, root={ kind="announce", text="" } }"#;
+        let err = eval_lua(src, |v| anchored_tree_from_lua_value(v).unwrap_err());
+        assert!(
+            matches!(err, DescriptorError::InvalidShape { ref reason } if reason.contains("announce.text")),
+            "empty announce text must be a named InvalidShape error, got {err:?}"
+        );
     }
 }

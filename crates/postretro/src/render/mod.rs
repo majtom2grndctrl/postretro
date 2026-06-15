@@ -5474,10 +5474,10 @@ impl Renderer {
             // leaking segments across frames.
         }
 
-        // UI pass: records into the surface `view` with `LoadOp::Load` after the
-        // world/fog/wireframe/debug-line passes, before the timing resolve and
-        // submit — beneath the egui overlay (which draws in the caller's separate
-        // submission).
+        // UI pass: records into `scene_color` (offscreen) with `LoadOp::Load`
+        // after the world/fog/wireframe/debug-line passes, before the timing
+        // resolve and submit — beneath the egui overlay (which draws in the
+        // caller's separate submission).
         //
         // The gameplay path lays out the snapshot's descriptor tree (renderer
         // owns layout) and records its draw data. EMPTY-TREE EARLY-OUT: when the

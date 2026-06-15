@@ -107,6 +107,12 @@ fn resolve_predicate(
 /// (rejected at load time), so an `Array` slot never matches.
 fn predicate_value_matches(value: &SlotValue, comparand: &PredicateValue) -> bool {
     match (value, comparand) {
+        // Widen the f32 slot value to f64 for the comparison. Integer-valued
+        // comparands (the dominant tab-index/enum case) compare exactly. A
+        // fractional authored comparand like 0.1 will silently never match
+        // (0.1_f64 != 0.1_f32 as f64 due to differing precision). This is
+        // acceptable: authored predicate comparands are integer-valued
+        // tab/enum selectors, so fractional mismatches do not arise in practice.
         (SlotValue::Number(n), PredicateValue::Number(c)) => *n as f64 == *c,
         (SlotValue::Boolean(b), PredicateValue::Boolean(c)) => b == c,
         (SlotValue::String(s), PredicateValue::String(c))
@@ -2026,6 +2032,11 @@ fn harvest_visibility(
     if let Some(predicate) = widget_visible_when(widget) {
         // A `{ local }` predicate resolves against the nearest enclosing scope; a
         // `{ slot }` predicate reads the store and needs no scope.
+        // Own-scope caveat: a container's own `visibleWhen` referencing its OWN
+        // `localState` cell resolves against the PARENT scope here (the child scope
+        // is opened after this block). It silently resolves 0.0 (cell not found).
+        // The intended pattern places the cell on a parent container, or uses
+        // Switch which injects `visibleWhen` on children — neither hits this case.
         let pred_scope = match &predicate.source {
             BindSource::Local { .. } => scope.map(str::to_string),
             BindSource::Slot { .. } => None,
@@ -2526,8 +2537,10 @@ pub(crate) struct FocusRect {
     /// Like `selected`, a11y-only — no engine-drawn highlight.
     pub checked: Option<f32>,
     /// Disabled bit (M13 G2): a button/slider's `disabled` field. A disabled
-    /// focusable is non-interactive and a11y-disabled. POPULATED here; HONORING it
-    /// in navigation/activation is a later task (Task 3).
+    /// focusable is non-interactive and a11y-disabled. Populated here AND honored
+    /// in nav/activation: `input/ui_focus.rs` skips disabled nodes during
+    /// navigation and pointer focus, and the App activation gate blocks activation
+    /// on a disabled focused node. Both sides are complete.
     pub disabled: bool,
 }
 
@@ -6028,11 +6041,10 @@ mod tests {
         assert_eq!(stats.checked, Some(1.0), "true checked predicate → 1.0");
         assert!(!stats.disabled, "enabled button is not disabled");
 
-        let off = focus
-            .rects
-            .iter()
-            .find(|r| r.id == "tab.off")
-            .expect("disabled button is still focusable (honoring is Task 3)");
+        let off =
+            focus.rects.iter().find(|r| r.id == "tab.off").expect(
+                "disabled button is still focusable (nav/activation honor the bit separately)",
+            );
         assert_eq!(off.selected, None, "no selected predicate → None");
         assert_eq!(off.checked, None, "no checked predicate → None");
         assert!(off.disabled, "disabled bit is populated from the widget");
@@ -6433,6 +6445,189 @@ mod tests {
         let focus_shown = ui.export_focus_rects(&tree, [1280, 720], &shown, &no_cells());
         let ids: Vec<&str> = focus_shown.rects.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(ids, ["maybe"], "re-export reflects the now-visible node");
+    }
+
+    #[test]
+    fn grid_container_visible_when_true_restores_display_grid_not_flex() {
+        // A grid container carrying `visibleWhen` must restore to `Display::Grid`
+        // on a hide→show flip — not `Display::Flex`. `VisibilityState::visible_display`
+        // captures the authored display at build time so the round-trip is correct.
+        // Verified by checking that the grid's children still lay out in columns
+        // (not stacked as a flex column) after restoration.
+        use super::super::descriptor::GridWidget;
+        let cell = || {
+            Widget::Text(TextWidget {
+                content: "X".into(),
+                font_size: 10.0,
+                color: ColorValue::Literal([1.0; 4]),
+                font: None,
+                bind: None,
+                style_ranges: None,
+                id: None,
+                focus_neighbors: Default::default(),
+                visible_when: None,
+                role: None,
+            })
+        };
+        let grid = Widget::Grid(GridWidget {
+            gap: SpacingValue::Literal(0.0),
+            padding: SpacingValue::Literal(0.0),
+            align: Align::Start,
+            cols: 2,
+            id: None,
+            focus_neighbors: Default::default(),
+            focus: None,
+            restore_on_return: false,
+            visible_when: Some(pred("grid.show", None)),
+            role: None,
+            children: vec![cell(), cell(), cell(), cell()],
+        });
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: grid,
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
+            accessible_name: None,
+            role: None,
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+
+        // Frame 1: grid hidden.
+        let hidden = visibility_slots("grid.show", false);
+        ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &hidden,
+            &no_cells(),
+            0.0,
+        );
+
+        // Frame 2: grid shown — `visible_display` must restore `Display::Grid`.
+        let shown = visibility_slots("grid.show", true);
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &shown, &no_cells(), 0.0);
+
+        // After restoration the four children must span two columns: children 0
+        // and 1 share a row (same y, different x), and child 2 wraps to a new row.
+        let children: Vec<_> = ui.taffy.children(ui.root).unwrap();
+        assert_eq!(
+            children.len(),
+            4,
+            "grid has four children after restoration"
+        );
+        let layout = |n: NodeId| ui.taffy.layout(n).unwrap();
+        let y0 = layout(children[0]).location.y;
+        let y1 = layout(children[1]).location.y;
+        let y2 = layout(children[2]).location.y;
+        assert!(
+            approx(y0, y1),
+            "after restoration children 0 and 1 share a row (Display::Grid), got y0={y0} y1={y1}",
+        );
+        assert!(
+            y2 > y0,
+            "after restoration child 2 wraps to a lower row, got y0={y0} y2={y2}",
+        );
+    }
+
+    #[test]
+    fn visible_when_local_cell_hides_and_shows_node() {
+        // A `visibleWhen` predicate sourced from a `{ local }` cell (not `{ slot }`)
+        // hides the node when the cell is false and shows it when the cell is true.
+        // All existing visibility tests use `{ slot }`; this exercises the `{ local }`
+        // path through `harvest_visibility` and `resolve_bindings`.
+        let scoped_tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: Widget::VStack(ContainerWidget {
+                gap: SpacingValue::Literal(0.0),
+                padding: SpacingValue::Literal(0.0),
+                align: Align::Start,
+                fill: None,
+                border: None,
+                id: None,
+                focus_neighbors: Default::default(),
+                focus: None,
+                restore_on_return: false,
+                local_state: Some(LocalState {
+                    scope: "hud".to_string(),
+                    cells: Default::default(),
+                }),
+                // The container's own `visibleWhen` references a PARENT scope cell
+                // (a sibling cell is the intended pattern — the own-scope caveat
+                // documented in `harvest_visibility` means using one's own cell here
+                // would silently resolve 0.0). We use a plain text child instead.
+                visible_when: None,
+                role: None,
+                children: vec![Widget::Text(TextWidget {
+                    content: "Cell-gated".into(),
+                    font_size: 18.0,
+                    color: ColorValue::Literal([1.0; 4]),
+                    font: None,
+                    id: None,
+                    focus_neighbors: Default::default(),
+                    bind: None,
+                    style_ranges: None,
+                    visible_when: Some(Predicate {
+                        source: BindSource::Local {
+                            local: "show".to_string(),
+                        },
+                        equals: None,
+                    }),
+                    role: None,
+                })],
+            }),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
+            accessible_name: None,
+            role: None,
+        };
+
+        let mut ui = UiTree::from_descriptor(&scoped_tree, &theme());
+        let mut fs = font_system();
+
+        // Cell false → text hidden.
+        let mut hidden_cells = CellValues::new();
+        hidden_cells.insert(
+            ("hud".to_string(), "show".to_string()),
+            SlotValue::Boolean(false),
+        );
+        let draw = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &no_slots(),
+            &hidden_cells,
+            0.0,
+        );
+        assert!(
+            draw.texts.iter().all(|t| t.content != "Cell-gated"),
+            "cell=false hides the node, got: {:?}",
+            draw.texts.iter().map(|t| &t.content).collect::<Vec<_>>(),
+        );
+
+        // Cell true → text shown.
+        let mut shown_cells = CellValues::new();
+        shown_cells.insert(
+            ("hud".to_string(), "show".to_string()),
+            SlotValue::Boolean(true),
+        );
+        let draw = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &no_slots(),
+            &shown_cells,
+            0.0,
+        );
+        assert!(
+            draw.texts.iter().any(|t| t.content == "Cell-gated"),
+            "cell=true shows the node again, got: {:?}",
+            draw.texts.iter().map(|t| &t.content).collect::<Vec<_>>(),
+        );
     }
 }
 

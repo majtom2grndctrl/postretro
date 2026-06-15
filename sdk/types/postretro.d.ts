@@ -802,9 +802,8 @@ declare module "postretro" {
   ): { readonly [K in keyof S]: StateValueForSlot<S[K]> };
 
   // -------------------------------------------------------------------------
-  // Interactive UI widget descriptors (M13 Goal F, Task 4). Authored as JSON in
-  // a UI tree descriptor; the engine builds the retained tree from them. These
-  // type-only aliases pin the wire shape (camelCase, internally tagged on `kind`).
+  // Shared UI widget value slots (M13 Goal F). Type-only aliases for the slot
+  // and value types the widget factory props compose (camelCase wire shape).
 
   /** The type of every user-facing text string a widget displays. A single alias (`= string` today) so a future localization scheme — message keys, ICU handles — is one edit, not a sweep across every text prop. */
   export type LocalizedText = string;
@@ -817,15 +816,6 @@ declare module "postretro" {
 
   /** Continuous value→style map (M13 Goal E): fill fraction `value/max` maps to the first covering band; a trailing no-`upTo` band is the default. */
   export type WidgetStyleRanges = { max: number; entries: { upTo?: number; color?: WidgetColor; pulse?: { periodMs: number }; flash?: { durationMs: number } }[] };
-
-  /** Interactive button widget. Focusable; activation (gamepad confirm or pointer click) fires the `onPress` named reaction through the reaction registry. `id` is required (activation resolves the focused node id back to `onPress`). `onPress` accepts a `defineReaction` handle (typed, go-to-definition) or a bare reaction-name string (the shipped path); the factory reads the handle's `.name` and emits the unchanged `onPress: string` wire form. */
-  export type ButtonWidget = { kind: "button"; id: string; label: string; onPress: NamedReactionDescriptor | string; focusNeighbors?: Record<string, string> };
-
-  /** Interactive slider widget. Focusable; nav wires named in `capturesNav` (e.g. `["nav.left", "nav.right"]` — an array, not a bool) step the bound value by `step` within `[min, max]` and emit a `setState` write on the N+1 frame. */
-  export type SliderWidget = { kind: "slider"; id: string; label: string; bind: SliderBind; min: number; max: number; step: number; capturesNav?: string[]; focusNeighbors?: Record<string, string> };
-
-  /** Passive horizontal value bar. Fill fraction is `value/max` clamped to [0, 1]; `styleRanges` recolors the fill; a bind tween eases the displayed fraction. */
-  export type BarWidget = { kind: "bar"; bind: SliderBind; max: number; fill: WidgetColor; background: WidgetColor; id?: string; styleRanges?: WidgetStyleRanges };
 
   // -------------------------------------------------------------------------
   // UI widget / layout / tree / state factories (M13 G1a). Pure builders

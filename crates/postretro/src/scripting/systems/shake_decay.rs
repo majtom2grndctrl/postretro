@@ -1,10 +1,6 @@
 // App-side screen-shake state for the engine-owned `screen.shake` surface.
-// A drained shake system-reaction command (Task 3) starts a decaying oscillation
-// (amplitude in logical-reference px, a duration, and an optional frequency); each
-// game-logic tick this writes the current `[dx, dy]` offset into `screen.shake`
-// via the engine write path, fading the amplitude to zero. A later compositor
-// pass consumes the slot; at rest the slot is exact `[0, 0]` so there is no
-// displacement.
+// The screen-effects resolve pass (render/screen_effects.rs) consumes this slot
+// each frame; at rest the slot is exact `[0, 0]` so the consumer collapses to identity.
 // See: context/lib/ui.md §3 · context/lib/scripting.md §10.4
 
 use std::f32::consts::TAU;
@@ -22,11 +18,8 @@ const SHAKE_SLOT: &str = "screen.shake";
 const REST: [f32; 2] = [0.0, 0.0];
 
 /// Default oscillation frequency in Hz, applied HERE by the driver when a `start`
-/// omits the frequency (the reaction surface lands in Task 3). 18 Hz reads as a
-/// sharp, percussive shake rather than a slow sway. Tests consume `start` (and
-/// thus this default) now; the shake reaction command is the named non-test
-/// consumer — `allow(dead_code)` off the test build until that lands.
-#[cfg_attr(not(test), allow(dead_code))]
+/// omits the frequency. 18 Hz reads as a sharp, percussive shake rather than a
+/// slow sway.
 const DEFAULT_FREQUENCY_HZ: f32 = 18.0;
 
 /// One active shake: its peak amplitude (logical-reference px), oscillation
@@ -105,13 +98,8 @@ impl ShakeDecay {
     /// zero over `duration_ms`, oscillating at `frequency_hz` if supplied, else
     /// the engine default (18 Hz). The default is applied here in the driver, not
     /// by an arg deserializer, so the omitted-frequency case is one behavior
-    /// regardless of how the reaction surface (Task 3) parses its args. The new
-    /// shake replaces any in-flight one so the latest trigger wins.
-    ///
-    /// Tests consume this now; the drained shake system-reaction command is the
-    /// named non-test consumer (Task 3) — `allow(dead_code)` off the test build
-    /// until that lands.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// regardless of how the reaction surface parses its args. The new shake
+    /// replaces any in-flight one so the latest trigger wins.
     pub(crate) fn start(&mut self, amplitude: f32, duration_ms: f32, frequency_hz: Option<f32>) {
         self.active = Some(ActiveShake {
             amplitude,

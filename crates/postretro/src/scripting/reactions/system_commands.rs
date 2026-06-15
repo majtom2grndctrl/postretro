@@ -246,6 +246,14 @@ pub(crate) fn register_system_reaction_primitives(registry: &mut SystemReactionR
             serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
                 reason: format!("vignette: failed to deserialize args: {e}"),
             })?;
+        if !parsed.duration_ms.is_finite() || parsed.duration_ms <= 0.0 {
+            return Err(ReactionError::InvalidArgument {
+                reason: format!(
+                    "vignette: durationMs must be finite and > 0, got {}",
+                    parsed.duration_ms
+                ),
+            });
+        }
         queue.push(SystemReactionCommand::Vignette {
             color: parsed.color,
             strength: parsed.strength,
@@ -262,6 +270,21 @@ pub(crate) fn register_system_reaction_primitives(registry: &mut SystemReactionR
             serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
                 reason: format!("screenShake: failed to deserialize args: {e}"),
             })?;
+        if !parsed.duration_ms.is_finite() || parsed.duration_ms <= 0.0 {
+            return Err(ReactionError::InvalidArgument {
+                reason: format!(
+                    "screenShake: durationMs must be finite and > 0, got {}",
+                    parsed.duration_ms
+                ),
+            });
+        }
+        if let Some(freq) = parsed.frequency {
+            if !freq.is_finite() || freq <= 0.0 {
+                return Err(ReactionError::InvalidArgument {
+                    reason: format!("screenShake: frequency must be finite and > 0, got {freq}"),
+                });
+            }
+        }
         queue.push(SystemReactionCommand::ScreenShake {
             amplitude: parsed.amplitude,
             duration_ms: parsed.duration_ms,
@@ -821,5 +844,169 @@ mod tests {
         assert!(!queue.is_empty());
         let _ = queue.take();
         assert!(queue.is_empty());
+    }
+
+    // --- vignette durationMs validation -------------------------------------
+
+    #[test]
+    fn vignette_nan_duration_ms_rejected_with_invalid_argument() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "strength": 0.8, "durationMs": f32::NAN });
+        let err = r.dispatch("vignette", &args, &queue).unwrap_err();
+        assert!(matches!(err, ReactionError::InvalidArgument { .. }));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn vignette_inf_duration_ms_rejected_with_invalid_argument() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "strength": 0.5, "durationMs": f32::INFINITY });
+        let err = r.dispatch("vignette", &args, &queue).unwrap_err();
+        assert!(matches!(err, ReactionError::InvalidArgument { .. }));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn vignette_zero_duration_ms_rejected_with_invalid_argument() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "strength": 0.5, "durationMs": 0.0 });
+        let err = r.dispatch("vignette", &args, &queue).unwrap_err();
+        assert!(matches!(err, ReactionError::InvalidArgument { .. }));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn vignette_negative_duration_ms_rejected_with_invalid_argument() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "strength": 0.5, "durationMs": -100.0 });
+        let err = r.dispatch("vignette", &args, &queue).unwrap_err();
+        assert!(matches!(err, ReactionError::InvalidArgument { .. }));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn vignette_valid_args_enqueues_command() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "strength": 0.7, "durationMs": 400.0 });
+        assert!(r.dispatch("vignette", &args, &queue).unwrap());
+        assert_eq!(
+            queue.take(),
+            vec![SystemReactionCommand::Vignette {
+                color: None,
+                strength: 0.7,
+                duration_ms: 400.0,
+            }]
+        );
+    }
+
+    // --- screenShake durationMs and frequency validation --------------------
+
+    #[test]
+    fn screen_shake_nan_duration_ms_rejected_with_invalid_argument() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "amplitude": 10.0, "durationMs": f32::NAN });
+        let err = r.dispatch("screenShake", &args, &queue).unwrap_err();
+        assert!(matches!(err, ReactionError::InvalidArgument { .. }));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn screen_shake_inf_duration_ms_rejected_with_invalid_argument() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "amplitude": 10.0, "durationMs": f32::INFINITY });
+        let err = r.dispatch("screenShake", &args, &queue).unwrap_err();
+        assert!(matches!(err, ReactionError::InvalidArgument { .. }));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn screen_shake_zero_duration_ms_rejected_with_invalid_argument() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "amplitude": 10.0, "durationMs": 0.0 });
+        let err = r.dispatch("screenShake", &args, &queue).unwrap_err();
+        assert!(matches!(err, ReactionError::InvalidArgument { .. }));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn screen_shake_negative_duration_ms_rejected_with_invalid_argument() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "amplitude": 10.0, "durationMs": -50.0 });
+        let err = r.dispatch("screenShake", &args, &queue).unwrap_err();
+        assert!(matches!(err, ReactionError::InvalidArgument { .. }));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn screen_shake_negative_frequency_rejected_with_invalid_argument() {
+        // JSON cannot represent f32::INFINITY (serde_json::json! maps it to null,
+        // which deserializes to None — the absent-frequency path — rather than a
+        // non-finite value). A negative frequency is the JSON-reachable equivalent:
+        // it hits the `freq <= 0.0` guard and is a realistic authoring error.
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "amplitude": 10.0, "durationMs": 200.0, "frequency": -1.0 });
+        let err = r.dispatch("screenShake", &args, &queue).unwrap_err();
+        assert!(matches!(err, ReactionError::InvalidArgument { .. }));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn screen_shake_zero_frequency_rejected_with_invalid_argument() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "amplitude": 10.0, "durationMs": 200.0, "frequency": 0.0 });
+        let err = r.dispatch("screenShake", &args, &queue).unwrap_err();
+        assert!(matches!(err, ReactionError::InvalidArgument { .. }));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn screen_shake_valid_args_enqueues_command() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "amplitude": 6.0, "durationMs": 300.0, "frequency": 20.0 });
+        assert!(r.dispatch("screenShake", &args, &queue).unwrap());
+        assert_eq!(
+            queue.take(),
+            vec![SystemReactionCommand::ScreenShake {
+                amplitude: 6.0,
+                duration_ms: 300.0,
+                frequency: Some(20.0),
+            }]
+        );
     }
 }

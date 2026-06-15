@@ -8,8 +8,10 @@ Replace the development HUD with a production HUD authored through the
 TypeScript UI SDK.
 
 Use the HUD as an end-to-end validation of the SDK authoring contract:
-`setupMod()` returns all engine-bound data, the authoring VM drops, and Rust
-retains and renders the resulting UI and state references.
+`setupMod()` returns all engine-bound data, the short-lived mod-init context
+drops, and Rust retains and renders the resulting UI and state references.
+The long-lived QuickJS definition context is not subject to this lifecycle
+statement.
 
 Keep the engine JSON HUD as a minimal fallback when no mod HUD is registered.
 
@@ -19,7 +21,8 @@ Keep the engine JSON HUD as a minimal fallback when no mod HUD is registered.
 - A centered text reticle remains independent of the status panel.
 - Health text displays current player health.
 - A normalized health bar updates and changes style across authored bands.
-- Mod theme tokens drive HUD colors, spacing, and placement.
+- Mod theme tokens drive HUD colors, fonts, and spacing.
+- HUD anchors and offsets remain literal tree-definition values.
 - Demo ammo, intro flash color, and HUD screen-flash swatches are absent.
 - Launch without mod HUD registration shows a minimal engine fallback.
 
@@ -33,6 +36,7 @@ Add `content/dev/scripts/hud.ts`. Import all authoring vocabulary from
 ```ts
 // Proposed design
 import {
+  bindState,
   getGameState,
   Tree,
   VStack,
@@ -68,11 +72,16 @@ export function buildHud() {
 
   const status = Text({
     content: "HP",
-    bind: { ...health.current, format: "HP {}" },
+    bind: bindState(health.current, { format: "HP {}" }),
   });
 
   const bar = Bar({
-    bind: health.fraction,
+    bind: bindState(health.fraction, {
+      tween: {
+        durationMs: 180,
+        easing: "easeOut",
+      },
+    }),
     max: 1,
     fill: "hud.health.ok",
     background: "hud.health.background",
@@ -113,6 +122,10 @@ export function buildHud() {
 pass `player` or a state tree into the HUD builder. These references are
 authoring vocabulary, not component props or current runtime values.
 
+Luau uses the same tree shape and the same
+`bindState(ref, options)` helper. The contract does not rely on TypeScript
+object-spread syntax for binding options.
+
 The reticle uses `Text({ content: "+", font: "mono" })`.
 
 `content/dev/start-script.ts` returns the HUD and theme:
@@ -136,10 +149,36 @@ The pause-menu store module is a pure definition imported by this entry.
 ### Registry replacement
 
 Keep the engine tree name `hud`. The mod tree shadows the engine fallback
-through existing registry tier precedence. `hud.reticle` is an additional
-always-on mod tree.
+through registry tier precedence. Refactor the registry to retain engine and
+mod entries by tier rather than destructively overwriting the lower tier.
+`hud.reticle` is an additional always-on mod tree.
 
 This validates replacement by name and composition of another always-on tree.
+
+### Staged reload
+
+Cold and staged mod init use the same returned-manifest contract. Extend
+`StagedManifest` to retain parsed UI trees and the complete mod theme override
+instead of dropping them after script evaluation.
+
+A successful, current staged result commits stores, UI trees, and theme
+together:
+
+- the returned mod UI-tree set replaces the previous mod tier as a whole;
+- a tree omitted from the new snapshot is removed from the mod tier, revealing
+  an engine fallback with the same name when one exists;
+- the returned theme replaces the complete previous mod override and merges
+  fresh over engine defaults, so omitted tokens revert to defaults;
+- always-on layers resolve the updated registry on the next frame;
+- already-pushed modal instances remain stable until closed and pushed again.
+
+Failed and stale staged results preserve the previously committed stores, UI
+trees, and theme.
+
+This HUD uses engine-provided body and mono fonts. Staged replacement or
+removal of custom font assets is outside this plan because the runtime has no
+font replacement/removal contract. Mods that change custom font declarations
+must restart.
 
 ### Engine state
 
@@ -201,6 +240,22 @@ The integration test:
 
 The test does not claim that `ScriptRuntime` itself is dropped.
 
+### Tween behavior
+
+The health bar uses a 180 ms `easeOut` controlled tween. The deterministic
+fixture begins at fraction `1.0`, publishes `0.2`, verifies that the displayed
+value remains strictly between those values around the tween midpoint, and
+then verifies that it settles at `0.2`. Style ranges evaluate the displayed
+tween value, so the critical band must not activate before the displayed value
+crosses its threshold.
+
+### Non-goals
+
+- Theme-tokenized tree anchors or offsets.
+- Staged replacement or removal of custom font assets.
+- Mutating already-pushed modal instances in place.
+- Automated GPU framebuffer comparison.
+
 ## End-to-End Validation
 
 Add a headless cold-launch regression:
@@ -216,8 +271,8 @@ Add a headless cold-launch regression:
 9. Build retained draw data for each layer.
 10. Inspect the resulting primitives.
 
-Use at least two health snapshots and enough time progression to settle the
-authored tween.
+Use at least two health snapshots and controlled time progression that
+observes both an in-flight and settled tween value.
 
 Assert:
 
@@ -226,12 +281,21 @@ Assert:
 - mod `hud` shadows the fallback-only marker;
 - reticle text is present;
 - health text changes after the second snapshot;
-- bar fraction changes;
-- tween progression reaches the expected style band;
+- the bar has an intermediate displayed fraction around the tween midpoint;
+- the bar settles at the destination and reaches the expected style band;
 - theme colors and spacing resolve;
 - anchored placement resolves;
 - ammo, intro flash, and HUD flash swatches are absent;
 - retained data remains usable after the mod-init context drops.
+
+After the cold-launch assertions, exercise the staged path:
+
+1. Commit a successful staged result with an updated HUD tree and theme.
+2. Assert the always-on draw data and resolved theme update on the next frame.
+3. Commit a successful staged result that omits the mod `hud`.
+4. Assert the engine fallback marker is revealed.
+5. Assert failed and stale staged results preserve the last committed mod
+   UI-tree snapshot and theme.
 
 This test covers draw-data construction, not GPU encoding. Verify final GPU
 composition through manual launch.
@@ -249,6 +313,8 @@ composition through manual launch.
 | `ModManifest.theme` | `setupMod()` | theme merge | partial token maps |
 | `hud` | fallback and mod HUD | UI registry | mod scope shadows engine scope |
 | `hud.reticle` | mod HUD | UI registry | additional always-on layer |
+| staged UI snapshot | successful current staged result | tiered UI registry | complete mod tree set replaces prior mod tier |
+| staged theme snapshot | successful current staged result | theme store | complete mod override replaces prior override |
 
 ## Acceptance Criteria
 
@@ -259,15 +325,25 @@ composition through manual launch.
   engine-state domain into it.
 - [ ] HUD binds `player.health.current` and `player.health.fraction` references
   directly, without `.get()`.
-- [ ] Bind formatting composes by spreading the current-health reference.
+- [ ] Bind formatting and tween options compose through
+  `bindState(ref, options)` in TypeScript and Luau.
 - [ ] `setupMod()` returns all stores, UI trees, and theme data consumed by the
   engine. Import-time calls perform no engine registration.
 - [ ] Reticle uses `Text({ content: "+", font: "mono" })`.
-- [ ] Controlled snapshots update health text, bar fraction, and eventual style
-  band.
+- [ ] Controlled snapshots update health text and prove both an in-flight
+  180 ms `easeOut` bar value and the settled critical style band.
 - [ ] Fraction bar and style ranges use max `1`.
 - [ ] Mod `hud` shadows the fallback marker; `hud.reticle` composes separately.
-- [ ] Theme tokens affect colors, spacing, and placement.
+- [ ] Theme tokens affect colors, fonts, and spacing. Anchors and offsets
+  remain literal tree values.
+- [ ] Successful current staged results atomically commit stores, replace the
+  complete mod UI-tree tier, and replace the complete mod theme override.
+- [ ] Omitting `hud` from a staged mod snapshot removes the mod tree and reveals
+  the engine fallback. Omitting theme tokens reverts them to engine defaults.
+- [ ] Failed and stale staged results preserve the current UI-tree snapshot and
+  theme.
+- [ ] Always-on layers observe committed staged trees on the next frame;
+  already-pushed modal instances remain stable until reopened.
 - [ ] Headless coverage bundles TypeScript, runs mod init, drops its authoring
   context, composes always-on layers, and builds retained draw data.
 - [ ] Fake ammo, intro flash state, obsolete intro stores, and HUD flash
@@ -278,6 +354,9 @@ composition through manual launch.
 - [ ] `player.healthFraction` is clamped and carries static range `[0, 1]`.
 - [ ] Minimal fallback loads in a focused fixture and debug manual launch.
 - [ ] GPU composition is verified manually.
+- [ ] SDK and modding documentation shows the final `getGameState()` plus
+  `bindState()` HUD pattern and documents staged replacement semantics,
+  literal placement, modal behavior, and the custom-font limitation.
 - [ ] No tracked generated `start-script.js` is added.
 - [ ] No new `unsafe` code or renderer ownership violation is introduced.
 
@@ -304,25 +383,51 @@ repair an invalid maximum.
 Build the health and reticle trees with SDK factories. Return their envelopes
 and custom theme from `setupMod()`.
 
+Use `bindState(ref, options)` for health formatting and the explicit 180 ms
+`easeOut` bar tween. Keep anchors and offsets literal; use theme tokens for
+colors, fonts, and spacing only.
+
 Migrate remaining development stores to the prerequisite's returned
 `stores` contract. Remove intro store setup and flash swatches. Simplify the
 engine JSON HUD to its fallback role.
 
 Add compiler and manifest parsing coverage.
 
-### Task 3: Add the headless cold-launch regression
+### Task 3: Complete staged UI and theme commit plumbing
+
+Retain returned UI trees and the complete mod theme override in
+`StagedManifest`. Commit them only with a successful current staged result,
+alongside returned stores.
+
+Refactor UI registry storage to retain engine and mod tiers. Add
+replacement-style commit for the complete mod tree snapshot so omitted mod
+trees are removed and engine fallbacks become visible.
+
+Replace the previous mod theme override as a whole and merge the new snapshot
+fresh over engine defaults. Preserve current UI trees and theme on failed or
+stale results.
+
+Keep already-pushed modal instances stable while making always-on layers
+observe committed registry changes on the next frame.
+
+### Task 4: Add the headless cold-launch and staged regression
 
 Exercise the TypeScript-source-to-retained-draw-data path described above.
 Prove setup-return publication, state binding, fallback shadowing, reticle
-composition, updates, tween settlement, and theme resolution.
+composition, updates, tween progress and settlement, and theme resolution.
+
+Then exercise successful UI/theme replacement, omission of the mod `hud`,
+fallback reveal, and preservation on failed and stale staged results.
 
 Keep generated typedef drift in the prerequisite's generation tests. Keep GPU
 verification manual.
 
-### Task 4: Document and verify
+### Task 5: Document and verify
 
 Update durable UI and scripting docs for the SDK-authored HUD, fallback
-shadowing, direct state references, and health fraction.
+shadowing, direct state references, `bindState`, health fraction, literal
+placement, staged replacement semantics, modal-instance behavior, and the
+custom-font restart limitation.
 
 Run formatting, focused tests, workspace clippy, workspace tests, normal debug
 launch, and fallback debug launch.
@@ -335,9 +440,11 @@ launch, and fallback debug launch.
 
 **Phase 2 (sequential):** Task 2 authors against that state contract.
 
-**Phase 3 (sequential):** Task 3 validates the complete headless path.
+**Phase 3 (sequential):** Task 3 completes staged UI and theme ownership.
 
-**Phase 4 (sequential):** Task 4 documents and manually verifies rendering.
+**Phase 4 (sequential):** Task 4 validates cold and staged headless paths.
+
+**Phase 5 (sequential):** Task 5 documents and manually verifies rendering.
 
 ## Open Questions
 

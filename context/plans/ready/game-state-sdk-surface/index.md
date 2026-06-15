@@ -20,7 +20,7 @@ The production HUD plan depends on this surface.
   QuickJS/Luau runtime installation.
 - A generated `getGameState()` accessor exported from `"postretro"`.
 - Nested state domains such as
-  `getGameState().player.health.current`.
+  `getGameState().player.health`.
 - Directly bindable state references. No `.get()`.
 - Readonly and writable reference capabilities.
 - Pure mod-state declarations returned through `setupMod().stores`.
@@ -55,17 +55,16 @@ import { bindState, getGameState, Text, Bar } from "postretro";
 
 function buildHud() {
   const { player } = getGameState();
-  const health = player.health;
 
   return [
     Text({
       content: "HP",
-      bind: bindState(health.current, { format: "HP {}" }),
+      bind: bindState(player.health, { format: "HP {}" }),
     }),
 
     Bar({
-      bind: health.fraction,
-      max: 1,
+      bind: player.health,
+      max: player.maxHealth,
       fill: "ok",
       background: "panel.default",
     }),
@@ -98,7 +97,7 @@ type WritableStateRef<T> = ReadonlyStateRef<T> & {
 ```
 
 The writable marker is type-only. Both reference types have the same runtime
-shape. For example, `getGameState().player.health.current` is
+shape. For example, `getGameState().player.health` is
 `{ slot: "player.health" }`. Property access does not read current health.
 
 Readonly versus writable is a capability:
@@ -188,6 +187,7 @@ Capabilities and value types are explicit:
 | `Text.bind` | readonly scalar | text bind |
 | `Panel.bind` | readonly numeric-array | color bind |
 | `Bar.bind` | readonly number | numeric bind |
+| `Bar.max` | readonly number or literal number | max field extended to accept literals or state refs |
 | `Slider.bind` | writable number | numeric bind and event-time writes |
 | `bindState` | any bind-compatible reference plus matching options | existing `{ slot, format?, tween? }` bind |
 | `stateEquals` | readonly number, boolean, string, or enum | `{ slot, equals }` predicate |
@@ -203,12 +203,12 @@ references also satisfy it. Array equality remains unsupported.
 
 ```ts
 // Proposed design
-bindState(player.health.current, { format: "HP {}" });
+bindState(player.health, { format: "HP {}" });
 ```
 
 ```luau
 -- Proposed design
-bindState(player.health.current, { format = "HP {}" })
+bindState(player.health, { format = "HP {}" })
 ```
 
 Passing a bare reference remains valid when no bind options are needed.
@@ -241,8 +241,8 @@ allows:
 
 | Stable wire name | SDK path |
 | --- | --- |
-| `player.health` | `getGameState().player.health.current` |
-| `player.healthFraction` | `getGameState().player.health.fraction` |
+| `player.health` | `getGameState().player.health` |
+| `player.maxHealth` | `getGameState().player.maxHealth` |
 | `screen.flash` | `getGameState().screen.flash` |
 | `input.mode` | `getGameState().input.mode` |
 | `ui.textEntry` | `getGameState().ui.textEntry` |
@@ -333,10 +333,10 @@ Main-thread commit keeps existing store semantics:
 
 - [ ] `import { getGameState } from "postretro"` bundles and executes in mod
   init.
-- [ ] `getGameState().player.health.current` is exactly the immutable
+- [ ] `getGameState().player.health` is exactly the immutable
   descriptor `{ slot: "player.health" }` in QuickJS and Luau.
-- [ ] `getGameState().player.health.fraction` maps to
-  `{ slot: "player.healthFraction" }`.
+- [ ] `getGameState().player.maxHealth` maps to the immutable descriptor
+  `{ slot: "player.maxHealth" }` in QuickJS and Luau.
 - [ ] Repeated calls in one authoring context return the same frozen reference
   tree, invoke no host callback, and leave no bridge global visible.
 - [ ] A UI builder can call `getGameState()` internally; its caller passes no

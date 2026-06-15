@@ -68,25 +68,24 @@ const hudTheme = {
 
 export function buildHud() {
   const { player } = getGameState();
-  const health = player.health;
 
   const status = Text({
     content: "HP",
-    bind: bindState(health.current, { format: "HP {}" }),
+    bind: bindState(player.health, { format: "HP {}" }),
   });
 
   const bar = Bar({
-    bind: bindState(health.fraction, {
+    bind: bindState(player.health, {
       tween: {
         durationMs: 180,
         easing: "easeOut",
       },
     }),
-    max: 1,
+    max: player.maxHealth,
     fill: "hud.health.ok",
     background: "hud.health.background",
     styleRanges: {
-      max: 1,
+      max: player.maxHealth,
       entries: [
         { upTo: 0.25, color: "critical" },
         { upTo: 0.5, color: "warning" },
@@ -188,17 +187,19 @@ It publishes:
 
 | SDK path | Stable slot | Value | Range |
 | --- | --- | --- | --- |
-| `getGameState().player.health.current` | `player.health` | current health | dynamic `[0, max HP]` |
-| `getGameState().player.health.fraction` | `player.healthFraction` | `current / max` | static `[0, 1]` |
+| `getGameState().player.health` | `player.health` | current health | dynamic `[0, max HP]` |
+| `getGameState().player.maxHealth` | `player.maxHealth` | maximum health | static `[1, +∞)` |
 
 The game-state prerequisite owns the catalog and SDK path mapping. This plan
-changes catalog entries by removing fake ammo and adding health fraction.
+changes catalog entries by removing fake ammo and adding maximum health.
 
 Both health values are engine-owned and readonly. If no pawn or health
 component exists, skip both writes and preserve stale values.
 
 Use the existing player-with-health lookup. Read current and maximum health in
-one registry borrow. Clamp fraction to `[0, 1]`.
+one registry borrow. The UI derives normalized bar fill from
+`player.health / player.maxHealth`; the engine does not publish a separate
+health-fraction slot.
 
 The publisher ticks after game-logic writes settle and before state-crossing
 detection and UI snapshot construction. Crossings and same-frame UI reads then
@@ -243,11 +244,11 @@ The test does not claim that `ScriptRuntime` itself is dropped.
 ### Tween behavior
 
 The health bar uses a 180 ms `easeOut` controlled tween. The deterministic
-fixture begins at fraction `1.0`, publishes `0.2`, verifies that the displayed
-value remains strictly between those values around the tween midpoint, and
-then verifies that it settles at `0.2`. Style ranges evaluate the displayed
-tween value, so the critical band must not activate before the displayed value
-crosses its threshold.
+fixture begins at `100 / 100`, publishes `20 / 100`, verifies that the
+displayed normalized value remains strictly between `1.0` and `0.2` around
+the tween midpoint, and then verifies that it settles at `0.2`. Style ranges
+evaluate the displayed normalized value, so the critical band must not
+activate before the displayed value crosses its threshold.
 
 ### Non-goals
 
@@ -281,7 +282,8 @@ Assert:
 - mod `hud` shadows the fallback-only marker;
 - reticle text is present;
 - health text changes after the second snapshot;
-- the bar has an intermediate displayed fraction around the tween midpoint;
+- the bar has an intermediate displayed normalized value around the tween
+  midpoint;
 - the bar settles at the destination and reaches the expected style band;
 - theme colors and spacing resolve;
 - anchored placement resolves;
@@ -304,10 +306,10 @@ composition through manual launch.
 
 | Boundary | Producer | Consumer | Contract |
 | --- | --- | --- | --- |
-| `getGameState().player.health.current` | game-state catalog | HUD SDK | readonly ref to `player.health` |
-| `getGameState().player.health.fraction` | game-state catalog | HUD SDK | readonly ref to `player.healthFraction` |
+| `getGameState().player.health` | game-state catalog | HUD SDK | readonly ref to `player.health` |
+| `getGameState().player.maxHealth` | game-state catalog | HUD SDK | readonly ref to `player.maxHealth` |
 | `player.health` | player HUD publisher | state snapshot | current HP; dynamic range |
-| `player.healthFraction` | player HUD publisher | state snapshot | clamped fraction; static range |
+| `player.maxHealth` | player HUD publisher | state snapshot | maximum HP; dynamic range |
 | `ModManifest.stores` | `setupMod()` | manifest parser | returned store declarations only |
 | `ModManifest.uiTrees` | `setupMod()` | manifest parser | `{ name, tree, alwaysOn }[]` |
 | `ModManifest.theme` | `setupMod()` | theme merge | partial token maps |
@@ -323,8 +325,8 @@ composition through manual launch.
   game-state module.
 - [ ] `buildHud()` calls `getGameState()` internally. `setupMod()` passes no
   engine-state domain into it.
-- [ ] HUD binds `player.health.current` and `player.health.fraction` references
-  directly, without `.get()`.
+- [ ] HUD binds `player.health` and `player.maxHealth` references directly,
+  without `.get()`.
 - [ ] Bind formatting and tween options compose through
   `bindState(ref, options)` in TypeScript and Luau.
 - [ ] `setupMod()` returns all stores, UI trees, and theme data consumed by the
@@ -332,7 +334,9 @@ composition through manual launch.
 - [ ] Reticle uses `Text({ content: "+", font: "mono" })`.
 - [ ] Controlled snapshots update health text and prove both an in-flight
   180 ms `easeOut` bar value and the settled critical style band.
-- [ ] Fraction bar and style ranges use max `1`.
+- [ ] Health bar and style ranges derive normalized display from
+  `player.health / player.maxHealth`; no `player.healthFraction` slot is
+  published.
 - [ ] Mod `hud` shadows the fallback marker; `hud.reticle` composes separately.
 - [ ] Theme tokens affect colors, fonts, and spacing. Anchors and offsets
   remain literal tree values.
@@ -351,7 +355,8 @@ composition through manual launch.
 - [ ] `screen.flash` and its decay path remain supported.
 - [ ] `player.health` keeps dynamic range attachment during install and hot
   reload.
-- [ ] `player.healthFraction` is clamped and carries static range `[0, 1]`.
+- [ ] `player.maxHealth` publishes maximum HP and carries static finite-number
+  validation for `[1, +∞)`.
 - [ ] Minimal fallback loads in a focused fixture and debug manual launch.
 - [ ] GPU composition is verified manually.
 - [ ] SDK and modding documentation shows the final `getGameState()` plus
@@ -365,17 +370,18 @@ composition through manual launch.
 ### Task 1: Publish production HUD state
 
 Refocus the existing UI proxy as the player HUD state publisher. Publish
-current and fractional health in the required frame position.
+current and maximum health in the required frame position.
 
-Update the shared engine-state catalog: remove fake ammo, add health fraction,
-and map both stable wire slots under `getGameState().player.health`.
+Update the shared engine-state catalog: remove fake ammo, add maximum health,
+and map `player.health` / `player.maxHealth` under
+`getGameState().player`.
 
 Preserve current-health range attachment during level installation and hot
 reload. Add focused publisher, range, ordering, and generated-path tests.
 
 Defensive policy: health descriptors reject invalid maximums. If invalid live
-data still reaches the publisher, publish current health, skip fraction, and
-log once per affected player lifetime. Do not divide by, clamp, or silently
+data still reaches the publisher, publish current health, skip maximum health,
+and log once per affected player lifetime. Do not divide by, clamp, or silently
 repair an invalid maximum.
 
 ### Task 2: Author and register the HUD
@@ -384,7 +390,8 @@ Build the health and reticle trees with SDK factories. Return their envelopes
 and custom theme from `setupMod()`.
 
 Use `bindState(ref, options)` for health formatting and the explicit 180 ms
-`easeOut` bar tween. Keep anchors and offsets literal; use theme tokens for
+`easeOut` bar tween. Bind the bar to current health and set its max from
+`player.maxHealth`. Keep anchors and offsets literal; use theme tokens for
 colors, fonts, and spacing only.
 
 Migrate remaining development stores to the prerequisite's returned
@@ -425,9 +432,9 @@ verification manual.
 ### Task 5: Document and verify
 
 Update durable UI and scripting docs for the SDK-authored HUD, fallback
-shadowing, direct state references, `bindState`, health fraction, literal
-placement, staged replacement semantics, modal-instance behavior, and the
-custom-font restart limitation.
+shadowing, direct state references, `bindState`, health/max-health
+normalization, literal placement, staged replacement semantics,
+modal-instance behavior, and the custom-font restart limitation.
 
 Run formatting, focused tests, workspace clippy, workspace tests, normal debug
 launch, and fallback debug launch.

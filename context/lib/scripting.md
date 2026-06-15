@@ -78,7 +78,7 @@ Declarations establish slot schemas and defaults before persisted values are res
 
 ### Engine State SDK
 
-Scripts obtain engine-owned state references with `getGameState()` from `"postretro"`. It returns an immutable generated tree of descriptor references such as `getGameState().player.health.current`, not live values. Property access never reads current engine state.
+Scripts obtain engine-owned state references with `getGameState()` from `"postretro"`. It returns an immutable generated tree of descriptor references such as `getGameState().player.health`, not live values. Property access never reads current engine state.
 
 State leaves carry a stable dotted slot name and a type-level capability:
 
@@ -98,8 +98,8 @@ Engine state paths are generated from an explicit catalog. The catalog owns stab
 
 | SDK path | Stable wire name |
 | --- | --- |
-| `getGameState().player.health.current` | `player.health` |
-| `getGameState().player.health.fraction` | `player.healthFraction` |
+| `getGameState().player.health` | `player.health` |
+| `getGameState().player.maxHealth` | `player.maxHealth` |
 | `getGameState().screen.flash` | `screen.flash` |
 | `getGameState().input.mode` | `input.mode` |
 | `getGameState().ui.textEntry` | `ui.textEntry` |

@@ -44,6 +44,7 @@ Widgets bind authoritative store slots by state reference at the SDK layer and b
 - The authoritative slot is always the target; the widget renders the display value, never the slot directly.
 - Display state is presentation-only and renderer-local — no store write ever originates in the UI module.
 - Retargeting is continuous: a target change mid-flight eases from the current display value, never snaps.
+- Bar widgets may resolve `max` from either a literal number or a readonly numeric state reference. The bar fill and style range thresholds normalize the displayed value against that resolved max.
 - UI time is dt-accumulated game time, never wall clock — pausing game logic pauses presentation.
 - Structural tree rebuilds discard display state (in-flight values snap to target); rebuilds are rare, authored events.
 - `styleRanges` (continuous value→style) evaluate the value the widget renders — the display value mid-tween; state crossings (`onStateCrossing`) watch the **authoritative** slot, engine-side, after game-logic writes. The two may diverge mid-tween by design.

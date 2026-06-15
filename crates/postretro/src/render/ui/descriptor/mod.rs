@@ -4,19 +4,27 @@
 // API surface stays addressable from `render::ui::descriptor::*`.
 // See: context/lib/ui.md
 
+mod accessibility;
 mod envelope;
 mod focus;
 mod values;
 mod widgets;
 
+pub use accessibility::Role;
+// Consumed by later G2 tasks (role projection); re-exported now so the descriptor
+// API surface is complete, but unused outside `cfg(test)` until a consumer lands.
+#[cfg_attr(not(test), allow(unused_imports))]
+pub use accessibility::implicit_role;
 pub use envelope::{AnchoredTree, CaptureMode};
 pub use focus::{FocusKind, FocusNeighbors, FocusPolicy, RepeatPolicy};
 pub use values::{
-    Align, BindSource, Border, CellInit, ColorValue, Easing, LocalState, SpacingValue,
+    Align, BindSource, Border, CellInit, ColorValue, Easing, LocalState, Predicate, PredicateValue,
+    SpacingValue,
 };
 pub use widgets::{
-    BarWidget, ButtonWidget, ContainerWidget, GridWidget, ImageWidget, PanelBind, PanelTween,
-    PanelWidget, SliderBind, SliderWidget, SpacerWidget, TextBind, TextTween, TextWidget, Widget,
+    AnnounceWidget, BarWidget, ButtonWidget, ContainerWidget, GridWidget, ImageWidget, PanelBind,
+    PanelTween, PanelWidget, Priority, SliderBind, SliderWidget, SpacerWidget, TextBind, TextTween,
+    TextWidget, Widget,
 };
 
 #[cfg(test)]
@@ -854,5 +862,190 @@ mod tests {
         let json = r#"{"kind":"panel","fill":[0.0,0.0,0.0,1.0],"border":null,"bind":{"local":"flash","tween":{"durationMs":150.0,"easing":"linear"}}}"#;
         let w: Widget = serde_json::from_str(json).expect("must deserialize");
         assert_eq!(serde_json::to_string(&w).unwrap(), json);
+    }
+
+    // --- M13 G2: descriptor vocabulary (predicate / a11y / announce) --------
+
+    #[test]
+    fn predicate_round_trips_with_and_without_equals() {
+        // A predicate flattens its `{ slot }`/`{ local }` source beside an optional
+        // `equals` comparand. With `equals` present and absent, each round-trips
+        // byte-identically; an absent `equals` omits the key.
+        let with_eq = r#"{"slot":"hud.tab","equals":"stats"}"#;
+        let p: Predicate = serde_json::from_str(with_eq).expect("deserialize");
+        assert_eq!(serde_json::to_string(&p).unwrap(), with_eq);
+
+        let truthy = r#"{"local":"open"}"#;
+        let p: Predicate = serde_json::from_str(truthy).expect("deserialize");
+        assert_eq!(serde_json::to_string(&p).unwrap(), truthy);
+        assert!(p.equals.is_none());
+    }
+
+    #[test]
+    fn predicate_equals_accepts_scalars_and_rejects_array() {
+        // `equals` admits number / bool / string only.
+        let n: Predicate = serde_json::from_str(r#"{"slot":"a.b","equals":5}"#).unwrap();
+        assert_eq!(n.equals, Some(PredicateValue::Number(5.0)));
+        let b: Predicate = serde_json::from_str(r#"{"slot":"a.b","equals":true}"#).unwrap();
+        assert_eq!(b.equals, Some(PredicateValue::Boolean(true)));
+        let s: Predicate = serde_json::from_str(r#"{"slot":"a.b","equals":"on"}"#).unwrap();
+        assert_eq!(s.equals, Some(PredicateValue::String("on".into())));
+
+        // An rgba/array comparand is a load-time error: it matches no scalar
+        // variant of the untagged `PredicateValue`, so serde rejects it.
+        let arr: Result<Predicate, _> =
+            serde_json::from_str(r#"{"slot":"a.b","equals":[1.0,0.0,0.0,1.0]}"#);
+        assert!(
+            arr.is_err(),
+            "an rgba/array `equals` comparand must be a load-time error"
+        );
+    }
+
+    #[test]
+    fn button_with_selected_checked_bind_disabled_round_trips() {
+        // The G2 button reactive-state fields (selected/checked predicates, a
+        // styleRanges value `bind`, and `disabled`) round-trip byte-identically.
+        // Field order: id, label, onPress, selected, checked, bind, styleRanges,
+        // disabled.
+        let json = r#"{"kind":"button","id":"tab1","label":"Stats","onPress":"openStats","selected":{"slot":"hud.tab","equals":"stats"},"checked":{"local":"on"},"bind":{"slot":"hud.charge"},"styleRanges":{"max":100.0,"entries":[{"color":"ok"}]},"disabled":true}"#;
+        let w: Widget = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(serde_json::to_string(&w).unwrap(), json);
+    }
+
+    #[test]
+    fn button_g2_fields_absent_round_trips_byte_identically() {
+        // A pre-G2 button (no selected/checked/bind/styleRanges/disabled/
+        // visibleWhen/role) keeps its EXACT wire form: every new field skip-
+        // serializes when absent/false. label stays present (one-of name).
+        let json = r#"{"kind":"button","id":"resume","label":"Resume","onPress":"resumeGame"}"#;
+        let w: Widget = serde_json::from_str(json).expect("deserialize");
+        let re = serde_json::to_string(&w).unwrap();
+        assert_eq!(re, json);
+        for key in [
+            "selected",
+            "checked",
+            "\"bind\"",
+            "styleRanges",
+            "disabled",
+            "visibleWhen",
+            "\"role\"",
+        ] {
+            assert!(!re.contains(key), "absent {key} emits no key");
+        }
+    }
+
+    #[test]
+    fn button_labelled_by_round_trips_with_label_omitted() {
+        // A `labelledBy` button omits the inline `label` key entirely (label is now
+        // Option, skip-serialized when absent).
+        let json = r#"{"kind":"button","id":"x","labelledBy":"xLabel","onPress":"go"}"#;
+        let w: Widget = serde_json::from_str(json).expect("deserialize");
+        let re = serde_json::to_string(&w).unwrap();
+        assert_eq!(re, json);
+        assert!(
+            !re.contains("\"label\""),
+            "labelledBy button omits inline label"
+        );
+    }
+
+    #[test]
+    fn visible_when_round_trips_on_every_kind_and_absent_omits_the_key() {
+        // `visibleWhen` rides every widget variant. A predicate-bearing widget
+        // round-trips byte-identically; absent it omits the key (locked-wire).
+        let with = r#"{"kind":"text","content":"x","fontSize":12.0,"color":[1.0,1.0,1.0,1.0],"visibleWhen":{"slot":"hud.show"}}"#;
+        let w: Widget = serde_json::from_str(with).expect("deserialize");
+        assert_eq!(serde_json::to_string(&w).unwrap(), with);
+
+        let without = r#"{"kind":"text","content":"x","fontSize":12.0,"color":[1.0,1.0,1.0,1.0]}"#;
+        let w: Widget = serde_json::from_str(without).expect("deserialize");
+        let re = serde_json::to_string(&w).unwrap();
+        assert_eq!(re, without);
+        assert!(
+            !re.contains("visibleWhen"),
+            "absent visibleWhen emits no key"
+        );
+    }
+
+    #[test]
+    fn role_override_round_trips_and_absent_omits_the_key() {
+        // An authored `role` override round-trips in its camelCase wire literal;
+        // absent omits the key (the implicit role is runtime-only).
+        let json = r#"{"kind":"button","id":"t","label":"Tab","onPress":"go","role":"tab"}"#;
+        let w: Widget = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(serde_json::to_string(&w).unwrap(), json);
+
+        let plain = r#"{"kind":"button","id":"t","label":"Tab","onPress":"go"}"#;
+        let w: Widget = serde_json::from_str(plain).expect("deserialize");
+        assert!(!serde_json::to_string(&w).unwrap().contains("\"role\""));
+    }
+
+    #[test]
+    fn role_variants_serialize_to_camel_case_wire_form() {
+        assert_eq!(
+            serde_json::to_string(&Role::Progressbar).unwrap(),
+            r#""progressbar""#
+        );
+        assert_eq!(
+            serde_json::to_string(&Role::Tablist).unwrap(),
+            r#""tablist""#
+        );
+        assert_eq!(serde_json::to_string(&Role::None).unwrap(), r#""none""#);
+        let parsed: Role = serde_json::from_str(r#""checkbox""#).unwrap();
+        assert_eq!(parsed, Role::Checkbox);
+    }
+
+    #[test]
+    fn image_label_and_decorative_round_trip() {
+        // An image carries label OR decorative; each round-trips byte-identically.
+        let named = r#"{"kind":"image","asset":"ui/portrait","label":"Hero portrait"}"#;
+        let w: Widget = serde_json::from_str(named).expect("deserialize");
+        let re = serde_json::to_string(&w).unwrap();
+        assert_eq!(re, named);
+        // `decorative` skip-serializes when false.
+        assert!(
+            !re.contains("decorative"),
+            "named image omits decorative:false"
+        );
+
+        let deco = r#"{"kind":"image","asset":"ui/logo","decorative":true}"#;
+        let w: Widget = serde_json::from_str(deco).expect("deserialize");
+        assert_eq!(serde_json::to_string(&w).unwrap(), deco);
+    }
+
+    #[test]
+    fn announce_polite_round_trips_byte_identically_omitting_priority() {
+        // A polite announce (default) omits the `priority` key entirely.
+        let json = r#"{"kind":"announce","text":"Saved"}"#;
+        let w: Widget = serde_json::from_str(json).expect("deserialize");
+        let re = serde_json::to_string(&w).unwrap();
+        assert_eq!(re, json);
+        assert!(!re.contains("priority"), "polite priority emits no key");
+        assert!(matches!(w, Widget::Announce(_)));
+    }
+
+    #[test]
+    fn announce_assertive_round_trips_with_priority_present() {
+        let json = r#"{"kind":"announce","text":"Alert","priority":"assertive"}"#;
+        let w: Widget = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(serde_json::to_string(&w).unwrap(), json);
+    }
+
+    #[test]
+    fn anchored_tree_accessible_name_and_role_round_trip_and_absent_is_byte_identical() {
+        // The envelope carries optional `accessibleName` + `role` (Option::is_none
+        // skip). Present they round-trip; absent the tree is byte-identical to its
+        // pre-G2 wire (no new keys).
+        let with = r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"spacer","flexGrow":1.0},"accessibleName":"Pause menu","role":"group"}"#;
+        let tree: AnchoredTree = serde_json::from_str(with).expect("deserialize");
+        assert_eq!(tree.accessible_name.as_deref(), Some("Pause menu"));
+        assert_eq!(tree.role, Some(Role::Group));
+        assert_eq!(serde_json::to_string(&tree).unwrap(), with);
+
+        let without =
+            r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"spacer","flexGrow":1.0}}"#;
+        let tree: AnchoredTree = serde_json::from_str(without).expect("deserialize");
+        let re = serde_json::to_string(&tree).unwrap();
+        assert_eq!(re, without);
+        assert!(!re.contains("accessibleName") && !re.contains("\"role\""));
     }
 }

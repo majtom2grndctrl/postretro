@@ -98,6 +98,12 @@ use crate::visibility::{VisibilityPath, VisibilityResult, VisibilityStats, Visib
 
 const DEFAULT_MAP_PATH: &str = "content/dev/maps/campaign-test.prl";
 
+/// Fraction of a vignette reaction's single `durationMs` spent ramping in. The
+/// author supplies one duration (mirroring `flashScreen`); the drain splits it
+/// into a short rise so the vignette eases in rather than snapping to peak, with
+/// the remainder spent decaying back to rest. See `dispatch_system_commands`.
+const VIGNETTE_RISE_FRACTION: f32 = 0.2;
+
 fn resolve_map_path(args: &[String]) -> String {
     args.iter()
         .skip(1)
@@ -3219,6 +3225,29 @@ impl App {
                 }
                 SystemReactionCommand::FlashScreen { color, duration_ms } => {
                     self.flash_decay.start(color, duration_ms);
+                }
+                SystemReactionCommand::Vignette {
+                    color,
+                    strength,
+                    duration_ms,
+                } => {
+                    // Absent color ⇒ black: a pure strength-only edge-darken. The
+                    // single `durationMs` splits into a short rise (so the vignette
+                    // ramps in rather than snapping) and the remaining decay,
+                    // matching the flash precedent of one author-facing duration.
+                    let tint = color.unwrap_or([0.0, 0.0, 0.0]);
+                    let rise_ms = duration_ms * VIGNETTE_RISE_FRACTION;
+                    let decay_ms = duration_ms - rise_ms;
+                    self.vignette_decay.start(tint, strength, rise_ms, decay_ms);
+                }
+                SystemReactionCommand::ScreenShake {
+                    amplitude,
+                    duration_ms,
+                    frequency,
+                } => {
+                    // Pass the optional frequency straight through: the driver
+                    // applies its 18 Hz default when it is `None`.
+                    self.shake_decay.start(amplitude, duration_ms, frequency);
                 }
                 SystemReactionCommand::PushTree { tree, on_commit } => {
                     // Resolve the registered tree by name onto the modal stack.

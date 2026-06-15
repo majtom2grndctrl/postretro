@@ -16,10 +16,11 @@ use super::components::mesh::{AnimationState, InterruptPolicy};
 use super::registry::EntityId;
 use crate::movement::MovementScope;
 use crate::render::ui::descriptor::{
-    Align, AnchoredTree, BarWidget, BindSource, Border, ButtonWidget, CaptureMode, CellInit,
-    ColorValue, ContainerWidget, Easing, FocusKind, FocusNeighbors, FocusPolicy, GridWidget,
-    ImageWidget, LocalState, PanelBind, PanelTween, PanelWidget, RepeatPolicy, SliderBind,
-    SliderWidget, SpacerWidget, SpacingValue, TextBind, TextTween, TextWidget, Widget,
+    Align, AnchoredTree, AnnounceWidget, BarWidget, BindSource, Border, ButtonWidget, CaptureMode,
+    CellInit, ColorValue, ContainerWidget, Easing, FocusKind, FocusNeighbors, FocusPolicy,
+    GridWidget, ImageWidget, LocalState, PanelBind, PanelTween, PanelWidget, Predicate,
+    PredicateValue, Priority, RepeatPolicy, Role, SliderBind, SliderWidget, SpacerWidget,
+    SpacingValue, TextBind, TextTween, TextWidget, Widget,
 };
 use crate::render::ui::layout::Anchor;
 use crate::render::ui::style_ranges::{Flash, Pulse, StyleEntry, StyleRanges};
@@ -3328,6 +3329,81 @@ fn parse_focus_kind(s: &str) -> Result<FocusKind, DescriptorError> {
     })
 }
 
+/// Parse a widget `role` override (M13 G2) from its camelCase wire literal. Shared
+/// by the JS and Lua bridges so both reject the same unknown roles.
+fn parse_role(s: &str) -> Result<Role, DescriptorError> {
+    Ok(match s {
+        "tab" => Role::Tab,
+        "tablist" => Role::Tablist,
+        "checkbox" => Role::Checkbox,
+        "radio" => Role::Radio,
+        "listitem" => Role::Listitem,
+        "button" => Role::Button,
+        "slider" => Role::Slider,
+        "progressbar" => Role::Progressbar,
+        "image" => Role::Image,
+        "group" => Role::Group,
+        "none" => Role::None,
+        other => {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!("unknown widget `role` \"{other}\""),
+            });
+        }
+    })
+}
+
+/// Parse an `announce` widget `priority` (M13 G2). Shared by both bridges.
+fn parse_priority(s: &str) -> Result<Priority, DescriptorError> {
+    Ok(match s {
+        "polite" => Priority::Polite,
+        "assertive" => Priority::Assertive,
+        other => {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`announce.priority` must be \"polite\"|\"assertive\", got \"{other}\""
+                ),
+            });
+        }
+    })
+}
+
+/// Accessible-name precondition for an interactive widget (M13 G2): EXACTLY one of
+/// `label` / `labelledBy` must be present. Neither or both is a named load-time
+/// error (no panic). Shared by the JS and Lua bridges. `kind` names the widget for
+/// diagnostics ("button"/"slider").
+fn validate_interactive_name(
+    kind: &str,
+    has_label: bool,
+    has_labelled_by: bool,
+) -> Result<(), DescriptorError> {
+    match (has_label, has_labelled_by) {
+        (true, false) | (false, true) => Ok(()),
+        (false, false) => Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "a `{kind}` needs an accessible name: set exactly one of `label` or `labelledBy` (got neither)"
+            ),
+        }),
+        (true, true) => Err(DescriptorError::InvalidShape {
+            reason: format!("a `{kind}` must set exactly one of `label` or `labelledBy`, not both"),
+        }),
+    }
+}
+
+/// Accessible-name precondition for an `image` (M13 G2): EXACTLY one of `label` /
+/// `decorative: true` must be present. Neither or both is a named load-time error.
+/// Shared by both bridges.
+fn validate_image_name(has_label: bool, decorative: bool) -> Result<(), DescriptorError> {
+    match (has_label, decorative) {
+        (true, false) | (false, true) => Ok(()),
+        (false, false) => Err(DescriptorError::InvalidShape {
+            reason: "an `image` needs an accessible name: set exactly one of `label` or `decorative: true` (got neither)".to_string(),
+        }),
+        (true, true) => Err(DescriptorError::InvalidShape {
+            reason: "an `image` must set exactly one of `label` or `decorative: true`, not both".to_string(),
+        }),
+    }
+}
+
 // --- JS UI deserialization --------------------------------------------------
 
 /// Convert a QuickJS descriptor value (the object returned by the `tree`
@@ -3358,6 +3434,8 @@ pub(crate) fn anchored_tree_from_js_value<'js>(
     };
     let initial_focus = get_optional_string_js(&obj, "initialFocus")?;
     let text_entry_target = get_optional_string_js(&obj, "textEntryTarget")?;
+    let accessible_name = get_optional_string_js(&obj, "accessibleName")?;
+    let role = role_opt_from_js(&obj)?;
 
     Ok(AnchoredTree {
         anchor,
@@ -3366,6 +3444,8 @@ pub(crate) fn anchored_tree_from_js_value<'js>(
         capture_mode,
         initial_focus,
         text_entry_target,
+        accessible_name,
+        role,
     })
 }
 
@@ -3382,9 +3462,10 @@ fn widget_from_js<'js>(ctx: &Ctx<'js>, value: JsValue<'js>) -> Result<Widget, De
         "hstack" => Widget::HStack(container_widget_from_js(ctx, &obj)?),
         "grid" => Widget::Grid(grid_widget_from_js(ctx, &obj)?),
         "spacer" => Widget::Spacer(spacer_widget_from_js(&obj)?),
-        "button" => Widget::Button(button_widget_from_js(&obj)?),
+        "button" => Widget::Button(button_widget_from_js(ctx, &obj)?),
         "slider" => Widget::Slider(slider_widget_from_js(ctx, &obj)?),
         "bar" => Widget::Bar(bar_widget_from_js(ctx, &obj)?),
+        "announce" => Widget::Announce(announce_widget_from_js(&obj)?),
         other => {
             return Err(DescriptorError::InvalidShape {
                 reason: format!("unknown widget `kind` \"{other}\""),
@@ -3406,6 +3487,8 @@ fn text_widget_from_js<'js>(
         font: get_optional_string_js(obj, "font")?,
         bind: text_bind_from_js(ctx, obj)?,
         style_ranges: style_ranges_from_js(ctx, obj)?,
+        visible_when: predicate_opt_from_js(obj, "visibleWhen")?,
+        role: role_opt_from_js(obj)?,
     })
 }
 
@@ -3420,14 +3503,23 @@ fn panel_widget_from_js<'js>(
         focus_neighbors: focus_neighbors_from_js(obj)?,
         bind: panel_bind_from_js(ctx, obj)?,
         style_ranges: style_ranges_from_js(ctx, obj)?,
+        visible_when: predicate_opt_from_js(obj, "visibleWhen")?,
+        role: role_opt_from_js(obj)?,
     })
 }
 
 fn image_widget_from_js<'js>(obj: &Object<'js>) -> Result<ImageWidget, DescriptorError> {
+    let label = get_optional_string_js(obj, "label")?;
+    let decorative = get_optional_bool_js(obj, "decorative")?.unwrap_or(false);
+    validate_image_name(label.is_some(), decorative)?;
     Ok(ImageWidget {
         asset: get_required_string_js(obj, "asset")?,
         id: get_optional_string_js(obj, "id")?,
         focus_neighbors: focus_neighbors_from_js(obj)?,
+        label,
+        decorative,
+        visible_when: predicate_opt_from_js(obj, "visibleWhen")?,
+        role: role_opt_from_js(obj)?,
     })
 }
 
@@ -3446,6 +3538,8 @@ fn container_widget_from_js<'js>(
         focus: focus_policy_from_js(obj)?,
         restore_on_return: get_optional_bool_js(obj, "restoreOnReturn")?.unwrap_or(false),
         local_state: local_state_from_js(obj)?,
+        visible_when: predicate_opt_from_js(obj, "visibleWhen")?,
+        role: role_opt_from_js(obj)?,
         children: children_from_js(ctx, obj)?,
     })
 }
@@ -3507,6 +3601,8 @@ fn grid_widget_from_js<'js>(
         focus_neighbors: focus_neighbors_from_js(obj)?,
         focus: focus_policy_from_js(obj)?,
         restore_on_return: get_optional_bool_js(obj, "restoreOnReturn")?.unwrap_or(false),
+        visible_when: predicate_opt_from_js(obj, "visibleWhen")?,
+        role: role_opt_from_js(obj)?,
         children: children_from_js(ctx, obj)?,
     })
 }
@@ -3515,16 +3611,32 @@ fn spacer_widget_from_js<'js>(obj: &Object<'js>) -> Result<SpacerWidget, Descrip
     Ok(SpacerWidget {
         flex_grow: get_required_f32_js(obj, "flexGrow")?,
         id: get_optional_string_js(obj, "id")?,
+        visible_when: predicate_opt_from_js(obj, "visibleWhen")?,
+        role: role_opt_from_js(obj)?,
     })
 }
 
-fn button_widget_from_js<'js>(obj: &Object<'js>) -> Result<ButtonWidget, DescriptorError> {
+fn button_widget_from_js<'js>(
+    ctx: &Ctx<'js>,
+    obj: &Object<'js>,
+) -> Result<ButtonWidget, DescriptorError> {
+    let label = get_optional_string_js(obj, "label")?;
+    let labelled_by = get_optional_string_js(obj, "labelledBy")?;
+    validate_interactive_name("button", label.is_some(), labelled_by.is_some())?;
     Ok(ButtonWidget {
         id: get_required_string_js(obj, "id")?,
-        label: get_required_string_js(obj, "label")?,
+        label,
+        labelled_by,
         on_press: get_required_string_js(obj, "onPress")?,
         focus_neighbors: focus_neighbors_from_js(obj)?,
         repeat_on_hold: repeat_policy_opt_from_js(obj, "repeatOnHold")?,
+        selected: predicate_opt_from_js(obj, "selected")?,
+        checked: predicate_opt_from_js(obj, "checked")?,
+        bind: predicate_opt_from_js(obj, "bind")?,
+        style_ranges: style_ranges_from_js(ctx, obj)?,
+        disabled: get_optional_bool_js(obj, "disabled")?.unwrap_or(false),
+        visible_when: predicate_opt_from_js(obj, "visibleWhen")?,
+        role: role_opt_from_js(obj)?,
     })
 }
 
@@ -3532,9 +3644,13 @@ fn slider_widget_from_js<'js>(
     ctx: &Ctx<'js>,
     obj: &Object<'js>,
 ) -> Result<SliderWidget, DescriptorError> {
+    let label = get_optional_string_js(obj, "label")?;
+    let labelled_by = get_optional_string_js(obj, "labelledBy")?;
+    validate_interactive_name("slider", label.is_some(), labelled_by.is_some())?;
     Ok(SliderWidget {
         id: get_required_string_js(obj, "id")?,
-        label: get_required_string_js(obj, "label")?,
+        label,
+        labelled_by,
         bind: slider_bind_from_js(ctx, obj, "bind")?
             .ok_or(DescriptorError::MissingField { field: "bind" })?,
         min: get_required_f32_js(obj, "min")?,
@@ -3542,6 +3658,9 @@ fn slider_widget_from_js<'js>(
         step: get_required_f32_js(obj, "step")?,
         captures_nav: string_array_from_js(obj, "capturesNav")?,
         focus_neighbors: focus_neighbors_from_js(obj)?,
+        disabled: get_optional_bool_js(obj, "disabled")?.unwrap_or(false),
+        visible_when: predicate_opt_from_js(obj, "visibleWhen")?,
+        role: role_opt_from_js(obj)?,
     })
 }
 
@@ -3557,6 +3676,23 @@ fn bar_widget_from_js<'js>(
         background: color_value_from_js(obj, "background")?,
         id: get_optional_string_js(obj, "id")?,
         style_ranges: style_ranges_from_js(ctx, obj)?,
+        visible_when: predicate_opt_from_js(obj, "visibleWhen")?,
+        role: role_opt_from_js(obj)?,
+    })
+}
+
+/// Read an `announce` widget (M13 G2): a required `text` and an optional
+/// `priority` (`"polite"`|`"assertive"`, default polite). A garbled shape — a
+/// non-string `text`, a missing `text`, or an unknown `priority` — is a named
+/// load-time error.
+fn announce_widget_from_js<'js>(obj: &Object<'js>) -> Result<AnnounceWidget, DescriptorError> {
+    Ok(AnnounceWidget {
+        text: get_required_string_js(obj, "text")?,
+        priority: match get_optional_string_js(obj, "priority")? {
+            Some(s) => parse_priority(&s)?,
+            None => Priority::Polite,
+        },
+        visible_when: predicate_opt_from_js(obj, "visibleWhen")?,
     })
 }
 
@@ -3876,6 +4012,60 @@ fn bind_source_from_js<'js>(bind_obj: &Object<'js>) -> Result<BindSource, Descri
     })
 }
 
+/// Read an optional [`Predicate`] field (M13 G2). Absent/null yields `None`. The
+/// predicate carries a `{ slot }`/`{ local }` source flattened beside an optional
+/// `equals` comparand whose value must be a number, boolean, or string — an
+/// rgba/array comparand is a named load-time error (mirrors the serde reject of
+/// the array form). `field` names the source key for diagnostics.
+fn predicate_opt_from_js<'js>(
+    obj: &Object<'js>,
+    field: &'static str,
+) -> Result<Option<Predicate>, DescriptorError> {
+    let Some(pred_obj) = optional_object_js(obj, field)? else {
+        return Ok(None);
+    };
+    let source = bind_source_from_js(&pred_obj)?;
+    let equals = predicate_value_opt_from_js(&pred_obj, field)?;
+    Ok(Some(Predicate { source, equals }))
+}
+
+/// Read a predicate's optional `equals` comparand (M13 G2). Number/bool/string
+/// only; an array (rgba) or any other shape is a named load-time error.
+fn predicate_value_opt_from_js<'js>(
+    obj: &Object<'js>,
+    field: &str,
+) -> Result<Option<PredicateValue>, DescriptorError> {
+    if !obj.contains_key("equals").map_err(js_err)? {
+        return Ok(None);
+    }
+    let raw: JsValue = obj.get("equals").map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(None);
+    }
+    if let Some(b) = raw.as_bool() {
+        return Ok(Some(PredicateValue::Boolean(b)));
+    }
+    if let Some(n) = raw.as_number() {
+        return Ok(Some(PredicateValue::Number(n)));
+    }
+    if let Some(s) = raw.as_string() {
+        return Ok(Some(PredicateValue::String(s.to_string().map_err(js_err)?)));
+    }
+    Err(DescriptorError::InvalidShape {
+        reason: format!(
+            "`{field}.equals` must be a number, boolean, or string (rgba/array comparands are unsupported)"
+        ),
+    })
+}
+
+/// Read an optional widget `role` override (M13 G2). Absent/null yields `None`.
+fn role_opt_from_js<'js>(obj: &Object<'js>) -> Result<Option<Role>, DescriptorError> {
+    match get_optional_string_js(obj, "role")? {
+        Some(s) => Ok(Some(parse_role(&s)?)),
+        None => Ok(None),
+    }
+}
+
 fn text_tween_from_js<'js>(
     _ctx: &Ctx<'js>,
     obj: &Object<'js>,
@@ -3999,6 +4189,8 @@ pub(crate) fn anchored_tree_from_lua_value(
     };
     let initial_focus = get_optional_string_lua(&table, "initialFocus")?;
     let text_entry_target = get_optional_string_lua(&table, "textEntryTarget")?;
+    let accessible_name = get_optional_string_lua(&table, "accessibleName")?;
+    let role = role_opt_from_lua(&table)?;
 
     Ok(AnchoredTree {
         anchor,
@@ -4007,6 +4199,8 @@ pub(crate) fn anchored_tree_from_lua_value(
         capture_mode,
         initial_focus,
         text_entry_target,
+        accessible_name,
+        role,
     })
 }
 
@@ -4024,6 +4218,7 @@ fn widget_from_lua(value: LuaValue) -> Result<Widget, DescriptorError> {
         "button" => Widget::Button(button_widget_from_lua(&table)?),
         "slider" => Widget::Slider(slider_widget_from_lua(&table)?),
         "bar" => Widget::Bar(bar_widget_from_lua(&table)?),
+        "announce" => Widget::Announce(announce_widget_from_lua(&table)?),
         other => {
             return Err(DescriptorError::InvalidShape {
                 reason: format!("unknown widget `kind` \"{other}\""),
@@ -4042,6 +4237,8 @@ fn text_widget_from_lua(table: &Table) -> Result<TextWidget, DescriptorError> {
         font: get_optional_string_lua(table, "font")?,
         bind: text_bind_from_lua(table)?,
         style_ranges: style_ranges_from_lua(table)?,
+        visible_when: predicate_opt_from_lua(table, "visibleWhen")?,
+        role: role_opt_from_lua(table)?,
     })
 }
 
@@ -4053,14 +4250,23 @@ fn panel_widget_from_lua(table: &Table) -> Result<PanelWidget, DescriptorError> 
         focus_neighbors: focus_neighbors_from_lua(table)?,
         bind: panel_bind_from_lua(table)?,
         style_ranges: style_ranges_from_lua(table)?,
+        visible_when: predicate_opt_from_lua(table, "visibleWhen")?,
+        role: role_opt_from_lua(table)?,
     })
 }
 
 fn image_widget_from_lua(table: &Table) -> Result<ImageWidget, DescriptorError> {
+    let label = get_optional_string_lua(table, "label")?;
+    let decorative = get_optional_bool_lua(table, "decorative")?.unwrap_or(false);
+    validate_image_name(label.is_some(), decorative)?;
     Ok(ImageWidget {
         asset: get_required_string_lua(table, "asset")?,
         id: get_optional_string_lua(table, "id")?,
         focus_neighbors: focus_neighbors_from_lua(table)?,
+        label,
+        decorative,
+        visible_when: predicate_opt_from_lua(table, "visibleWhen")?,
+        role: role_opt_from_lua(table)?,
     })
 }
 
@@ -4076,6 +4282,8 @@ fn container_widget_from_lua(table: &Table) -> Result<ContainerWidget, Descripto
         focus: focus_policy_from_lua(table)?,
         restore_on_return: get_optional_bool_lua(table, "restoreOnReturn")?.unwrap_or(false),
         local_state: local_state_from_lua(table)?,
+        visible_when: predicate_opt_from_lua(table, "visibleWhen")?,
+        role: role_opt_from_lua(table)?,
         children: children_from_lua(table)?,
     })
 }
@@ -4125,6 +4333,8 @@ fn grid_widget_from_lua(table: &Table) -> Result<GridWidget, DescriptorError> {
         focus_neighbors: focus_neighbors_from_lua(table)?,
         focus: focus_policy_from_lua(table)?,
         restore_on_return: get_optional_bool_lua(table, "restoreOnReturn")?.unwrap_or(false),
+        visible_when: predicate_opt_from_lua(table, "visibleWhen")?,
+        role: role_opt_from_lua(table)?,
         children: children_from_lua(table)?,
     })
 }
@@ -4133,23 +4343,40 @@ fn spacer_widget_from_lua(table: &Table) -> Result<SpacerWidget, DescriptorError
     Ok(SpacerWidget {
         flex_grow: get_required_f32_lua(table, "flexGrow")?,
         id: get_optional_string_lua(table, "id")?,
+        visible_when: predicate_opt_from_lua(table, "visibleWhen")?,
+        role: role_opt_from_lua(table)?,
     })
 }
 
 fn button_widget_from_lua(table: &Table) -> Result<ButtonWidget, DescriptorError> {
+    let label = get_optional_string_lua(table, "label")?;
+    let labelled_by = get_optional_string_lua(table, "labelledBy")?;
+    validate_interactive_name("button", label.is_some(), labelled_by.is_some())?;
     Ok(ButtonWidget {
         id: get_required_string_lua(table, "id")?,
-        label: get_required_string_lua(table, "label")?,
+        label,
+        labelled_by,
         on_press: get_required_string_lua(table, "onPress")?,
         focus_neighbors: focus_neighbors_from_lua(table)?,
         repeat_on_hold: repeat_policy_opt_from_lua(table, "repeatOnHold")?,
+        selected: predicate_opt_from_lua(table, "selected")?,
+        checked: predicate_opt_from_lua(table, "checked")?,
+        bind: predicate_opt_from_lua(table, "bind")?,
+        style_ranges: style_ranges_from_lua(table)?,
+        disabled: get_optional_bool_lua(table, "disabled")?.unwrap_or(false),
+        visible_when: predicate_opt_from_lua(table, "visibleWhen")?,
+        role: role_opt_from_lua(table)?,
     })
 }
 
 fn slider_widget_from_lua(table: &Table) -> Result<SliderWidget, DescriptorError> {
+    let label = get_optional_string_lua(table, "label")?;
+    let labelled_by = get_optional_string_lua(table, "labelledBy")?;
+    validate_interactive_name("slider", label.is_some(), labelled_by.is_some())?;
     Ok(SliderWidget {
         id: get_required_string_lua(table, "id")?,
-        label: get_required_string_lua(table, "label")?,
+        label,
+        labelled_by,
         bind: slider_bind_from_lua(table, "bind")?
             .ok_or(DescriptorError::MissingField { field: "bind" })?,
         min: get_required_f32_lua(table, "min")?,
@@ -4157,6 +4384,9 @@ fn slider_widget_from_lua(table: &Table) -> Result<SliderWidget, DescriptorError
         step: get_required_f32_lua(table, "step")?,
         captures_nav: string_array_from_lua(table, "capturesNav")?,
         focus_neighbors: focus_neighbors_from_lua(table)?,
+        disabled: get_optional_bool_lua(table, "disabled")?.unwrap_or(false),
+        visible_when: predicate_opt_from_lua(table, "visibleWhen")?,
+        role: role_opt_from_lua(table)?,
     })
 }
 
@@ -4169,6 +4399,20 @@ fn bar_widget_from_lua(table: &Table) -> Result<BarWidget, DescriptorError> {
         background: color_value_from_lua(table, "background")?,
         id: get_optional_string_lua(table, "id")?,
         style_ranges: style_ranges_from_lua(table)?,
+        visible_when: predicate_opt_from_lua(table, "visibleWhen")?,
+        role: role_opt_from_lua(table)?,
+    })
+}
+
+/// Lua twin of [`announce_widget_from_js`]: required `text`, optional `priority`.
+fn announce_widget_from_lua(table: &Table) -> Result<AnnounceWidget, DescriptorError> {
+    Ok(AnnounceWidget {
+        text: get_required_string_lua(table, "text")?,
+        priority: match get_optional_string_lua(table, "priority")? {
+            Some(s) => parse_priority(&s)?,
+            None => Priority::Polite,
+        },
+        visible_when: predicate_opt_from_lua(table, "visibleWhen")?,
     })
 }
 
@@ -4919,6 +5163,51 @@ fn bind_source_from_lua(bind: &Table) -> Result<BindSource, DescriptorError> {
     Err(DescriptorError::InvalidShape {
         reason: "a widget `bind` must carry either `slot` or `local`".to_string(),
     })
+}
+
+/// Lua twin of [`predicate_opt_from_js`]: read an optional [`Predicate`] field.
+fn predicate_opt_from_lua(
+    table: &Table,
+    field: &'static str,
+) -> Result<Option<Predicate>, DescriptorError> {
+    let Some(pred) = optional_table_lua(table, field)? else {
+        return Ok(None);
+    };
+    let source = bind_source_from_lua(&pred)?;
+    let equals = predicate_value_opt_from_lua(&pred, field)?;
+    Ok(Some(Predicate { source, equals }))
+}
+
+/// Lua twin of [`predicate_value_opt_from_js`]: read a predicate's optional
+/// `equals` comparand. Number/bool/string only; an array (rgba) or any other
+/// shape is a named load-time error.
+fn predicate_value_opt_from_lua(
+    table: &Table,
+    field: &str,
+) -> Result<Option<PredicateValue>, DescriptorError> {
+    let raw: LuaValue = table.get("equals").map_err(lua_err)?;
+    match raw {
+        LuaValue::Nil => Ok(None),
+        LuaValue::Boolean(b) => Ok(Some(PredicateValue::Boolean(b))),
+        LuaValue::Integer(i) => Ok(Some(PredicateValue::Number(i as f64))),
+        LuaValue::Number(n) => Ok(Some(PredicateValue::Number(n))),
+        LuaValue::String(s) => Ok(Some(PredicateValue::String(
+            s.to_str().map_err(lua_err)?.to_string(),
+        ))),
+        _ => Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{field}.equals` must be a number, boolean, or string (rgba/array comparands are unsupported)"
+            ),
+        }),
+    }
+}
+
+/// Lua twin of [`role_opt_from_js`]: read an optional widget `role` override.
+fn role_opt_from_lua(table: &Table) -> Result<Option<Role>, DescriptorError> {
+    match get_optional_string_lua(table, "role")? {
+        Some(s) => Ok(Some(parse_role(&s)?)),
+        None => Ok(None),
+    }
 }
 
 fn text_tween_from_lua(table: &Table) -> Result<Option<TextTween>, DescriptorError> {
@@ -7751,17 +8040,20 @@ mod tests {
                   border: { texture: "ui/frame", slice: [8.0, 8.0, 8.0, 8.0], tint: [1.0, 1.0, 1.0, 1.0] } },
                 { kind: "hstack", gap: 2.0, padding: 0.0, align: "center",
                   children: [
-                      { kind: "image", asset: "ui/logo" },
+                      { kind: "image", asset: "ui/logo", decorative: true },
                       { kind: "spacer", flexGrow: 1.0 }
                   ] },
                 { kind: "grid", gap: 1.0, padding: 3.0, align: "stretch", cols: 2,
-                  children: [ { kind: "image", asset: "ui/icon" } ] }
+                  children: [ { kind: "image", asset: "ui/icon", decorative: true } ] }
             ]
         }
     })"#;
 
-    /// Expected wire form — byte-identical to `descriptor::tests::ALL_KINDS_JSON`.
-    const UI_ALL_KINDS_WIRE: &str = r#"{"anchor":"center","offset":[10.0,-20.0],"root":{"kind":"vstack","gap":4.0,"padding":8.0,"align":"start","children":[{"kind":"text","content":"hello","fontSize":18.0,"color":[1.0,1.0,1.0,1.0]},{"kind":"panel","fill":[0.1,0.2,0.3,1.0],"border":{"texture":"ui/frame","slice":[8.0,8.0,8.0,8.0],"tint":[1.0,1.0,1.0,1.0]}},{"kind":"hstack","gap":2.0,"padding":0.0,"align":"center","children":[{"kind":"image","asset":"ui/logo"},{"kind":"spacer","flexGrow":1.0}]},{"kind":"grid","gap":1.0,"padding":3.0,"align":"stretch","cols":2,"children":[{"kind":"image","asset":"ui/icon"}]}]}}"#;
+    /// Expected wire form. Mirrors `descriptor::tests::ALL_KINDS_JSON` but the two
+    /// images carry `decorative: true` — the bridge enforces the M13 G2 image
+    /// name-XOR-decorative precondition, so a bare-asset image is no longer valid
+    /// authored input through the live path.
+    const UI_ALL_KINDS_WIRE: &str = r#"{"anchor":"center","offset":[10.0,-20.0],"root":{"kind":"vstack","gap":4.0,"padding":8.0,"align":"start","children":[{"kind":"text","content":"hello","fontSize":18.0,"color":[1.0,1.0,1.0,1.0]},{"kind":"panel","fill":[0.1,0.2,0.3,1.0],"border":{"texture":"ui/frame","slice":[8.0,8.0,8.0,8.0],"tint":[1.0,1.0,1.0,1.0]}},{"kind":"hstack","gap":2.0,"padding":0.0,"align":"center","children":[{"kind":"image","asset":"ui/logo","decorative":true},{"kind":"spacer","flexGrow":1.0}]},{"kind":"grid","gap":1.0,"padding":3.0,"align":"stretch","cols":2,"children":[{"kind":"image","asset":"ui/icon","decorative":true}]}]}}"#;
 
     #[test]
     fn js_bridge_converts_all_kinds_tree_and_reserializes_byte_identically() {
@@ -7952,11 +8244,15 @@ mod tests {
                 W.Text({ content = "hello", fontSize = 18, color = {1,1,1,1} }),
                 W.Panel({ fill = {0.1,0.2,0.3,1}, border = { texture = "ui/frame", slice = {8,8,8,8}, tint = {1,1,1,1} } }),
                 L.HStack({ gap = 2, padding = 0, align = "center" }, {
-                    W.Image({ asset = "ui/logo" }),
+                    -- M13 G2: the bridge now enforces image name-XOR-decorative. The
+                    -- SDK Image factory gains a `decorative`/`label` arg in Task 4
+                    -- (SDK factories+typedefs); until then these decorative icons are
+                    -- authored as raw tables so this round-trip fixture stays valid.
+                    { kind = "image", asset = "ui/logo", decorative = true },
                     W.Spacer({ flexGrow = 1 }),
                 }),
                 L.Grid({ gap = 1, padding = 3, align = "stretch", cols = 2 }, {
-                    W.Image({ asset = "ui/icon" }),
+                    { kind = "image", asset = "ui/icon", decorative = true },
                 }),
             }))"#;
         let value: mlua::Value = lua.load(src).eval().expect("factories must build a tree");
@@ -8339,5 +8635,249 @@ mod tests {
             Some(&[1.0f32, 0.0, 0.0, 1.0]),
             "the valid color token must survive"
         );
+    }
+
+    // --- M13 G2: bridge reads every new descriptor field (JS + Lua) ---------
+    //
+    // A serde-only field would round-trip through `descriptor.rs` yet SILENTLY
+    // DROP on the live authoring path, because the hand-written bridge — not
+    // serde — converts authored JS/Luau tables into descriptors. These tests
+    // author each new G2 field through the bridge and assert it ARRIVES on the
+    // typed descriptor, in BOTH runtimes.
+
+    #[test]
+    fn js_bridge_reads_all_g2_fields() {
+        // A capture tree exercising: envelope accessibleName + role; a button with
+        // selected/checked/bind predicates, styleRanges, disabled, labelledBy,
+        // visibleWhen, role; a decorative image; and a polite/assertive announce.
+        let src = r#"({
+            anchor: "center", offset: [0.0, 0.0], captureMode: "capture",
+            accessibleName: "Pause menu", role: "group",
+            root: {
+                kind: "vstack", gap: 0.0, padding: 0.0, align: "start",
+                visibleWhen: { slot: "hud.menuOpen", equals: true },
+                role: "tablist",
+                children: [
+                    { kind: "button", id: "tab1", labelledBy: "tab1Label", onPress: "openStats",
+                      selected: { slot: "hud.tab", equals: "stats" },
+                      checked: { local: "on" },
+                      bind: { slot: "hud.charge" },
+                      styleRanges: { max: 100.0, entries: [ { color: "ok" } ] },
+                      disabled: true, visibleWhen: { slot: "hud.show" }, role: "tab" },
+                    { kind: "slider", id: "vol", labelledBy: "volLabel", bind: { slot: "audio.master" },
+                      min: 0.0, max: 1.0, step: 0.1, disabled: true },
+                    { kind: "image", asset: "ui/logo", decorative: true },
+                    { kind: "image", asset: "ui/portrait", label: "Hero" },
+                    { kind: "announce", text: "Saved" },
+                    { kind: "announce", text: "Alert", priority: "assertive" }
+                ]
+            }
+        })"#;
+        let tree = eval_js(src, |ctx, v| {
+            anchored_tree_from_js_value(ctx, v).expect("g2 tree must convert")
+        });
+
+        assert_eq!(tree.accessible_name.as_deref(), Some("Pause menu"));
+        assert_eq!(tree.role, Some(Role::Group));
+        let Widget::VStack(root) = &tree.root else {
+            panic!("root must be vstack");
+        };
+        assert_eq!(
+            root.visible_when.as_ref().map(|p| &p.source),
+            Some(&BindSource::Slot {
+                slot: "hud.menuOpen".into()
+            })
+        );
+        assert_eq!(
+            root.visible_when.as_ref().and_then(|p| p.equals.clone()),
+            Some(PredicateValue::Boolean(true))
+        );
+        assert_eq!(root.role, Some(Role::Tablist));
+
+        let Widget::Button(b) = &root.children[0] else {
+            panic!("child 0 must be button");
+        };
+        assert_eq!(b.label, None);
+        assert_eq!(b.labelled_by.as_deref(), Some("tab1Label"));
+        assert_eq!(
+            b.selected.as_ref().and_then(|p| p.equals.clone()),
+            Some(PredicateValue::String("stats".into()))
+        );
+        assert!(b.checked.is_some(), "checked predicate must arrive");
+        assert!(b.bind.is_some(), "styleRanges bind predicate must arrive");
+        assert!(b.style_ranges.is_some(), "styleRanges must arrive");
+        assert!(b.disabled, "disabled must arrive");
+        assert!(b.visible_when.is_some(), "visibleWhen must arrive");
+        assert_eq!(b.role, Some(Role::Tab));
+
+        let Widget::Slider(s) = &root.children[1] else {
+            panic!("child 1 must be slider");
+        };
+        assert_eq!(s.labelled_by.as_deref(), Some("volLabel"));
+        assert!(s.disabled, "slider disabled must arrive");
+
+        let Widget::Image(deco) = &root.children[2] else {
+            panic!("child 2 must be image");
+        };
+        assert!(deco.decorative && deco.label.is_none());
+        let Widget::Image(named) = &root.children[3] else {
+            panic!("child 3 must be image");
+        };
+        assert_eq!(named.label.as_deref(), Some("Hero"));
+        assert!(!named.decorative);
+
+        let Widget::Announce(polite) = &root.children[4] else {
+            panic!("child 4 must be announce");
+        };
+        assert_eq!(polite.text, "Saved");
+        assert_eq!(polite.priority, Priority::Polite);
+        let Widget::Announce(assertive) = &root.children[5] else {
+            panic!("child 5 must be announce");
+        };
+        assert_eq!(assertive.priority, Priority::Assertive);
+    }
+
+    #[test]
+    fn lua_bridge_reads_all_g2_fields() {
+        // The Luau twin of `js_bridge_reads_all_g2_fields`: identical field set,
+        // identical arrival assertions. A field read on one runtime but not the
+        // other would diverge the behavioral-twin contract.
+        let src = r#"return {
+            anchor = "center", offset = {0.0, 0.0}, captureMode = "capture",
+            accessibleName = "Pause menu", role = "group",
+            root = {
+                kind = "vstack", gap = 0.0, padding = 0.0, align = "start",
+                visibleWhen = { slot = "hud.menuOpen", equals = true },
+                role = "tablist",
+                children = {
+                    { kind = "button", id = "tab1", labelledBy = "tab1Label", onPress = "openStats",
+                      selected = { slot = "hud.tab", equals = "stats" },
+                      checked = { ["local"] = "on" },
+                      bind = { slot = "hud.charge" },
+                      styleRanges = { max = 100.0, entries = { { color = "ok" } } },
+                      disabled = true, visibleWhen = { slot = "hud.show" }, role = "tab" },
+                    { kind = "slider", id = "vol", labelledBy = "volLabel", bind = { slot = "audio.master" },
+                      min = 0.0, max = 1.0, step = 0.1, disabled = true },
+                    { kind = "image", asset = "ui/logo", decorative = true },
+                    { kind = "image", asset = "ui/portrait", label = "Hero" },
+                    { kind = "announce", text = "Saved" },
+                    { kind = "announce", text = "Alert", priority = "assertive" }
+                }
+            }
+        }"#;
+        let tree = eval_lua(src, |v| {
+            anchored_tree_from_lua_value(v).expect("g2 tree must convert")
+        });
+
+        assert_eq!(tree.accessible_name.as_deref(), Some("Pause menu"));
+        assert_eq!(tree.role, Some(Role::Group));
+        let Widget::VStack(root) = &tree.root else {
+            panic!("root must be vstack");
+        };
+        assert_eq!(
+            root.visible_when.as_ref().and_then(|p| p.equals.clone()),
+            Some(PredicateValue::Boolean(true))
+        );
+        assert_eq!(root.role, Some(Role::Tablist));
+
+        let Widget::Button(b) = &root.children[0] else {
+            panic!("child 0 must be button");
+        };
+        assert_eq!(b.label, None);
+        assert_eq!(b.labelled_by.as_deref(), Some("tab1Label"));
+        assert_eq!(
+            b.selected.as_ref().and_then(|p| p.equals.clone()),
+            Some(PredicateValue::String("stats".into()))
+        );
+        assert!(b.checked.is_some());
+        assert!(b.bind.is_some());
+        assert!(b.style_ranges.is_some());
+        assert!(b.disabled);
+        assert!(b.visible_when.is_some());
+        assert_eq!(b.role, Some(Role::Tab));
+
+        let Widget::Slider(s) = &root.children[1] else {
+            panic!("child 1 must be slider");
+        };
+        assert_eq!(s.labelled_by.as_deref(), Some("volLabel"));
+        assert!(s.disabled);
+
+        let Widget::Image(deco) = &root.children[2] else {
+            panic!("child 2 must be image");
+        };
+        assert!(deco.decorative && deco.label.is_none());
+        let Widget::Image(named) = &root.children[3] else {
+            panic!("child 3 must be image");
+        };
+        assert_eq!(named.label.as_deref(), Some("Hero"));
+
+        let Widget::Announce(polite) = &root.children[4] else {
+            panic!("child 4 must be announce");
+        };
+        assert_eq!(polite.priority, Priority::Polite);
+        let Widget::Announce(assertive) = &root.children[5] else {
+            panic!("child 5 must be announce");
+        };
+        assert_eq!(assertive.priority, Priority::Assertive);
+    }
+
+    #[test]
+    fn js_bridge_enforces_g2_preconditions() {
+        // Each precondition surfaces as a named load-time error (no panic).
+        let cases: &[&str] = &[
+            // Button with neither name.
+            r#"({ anchor:"center", offset:[0.0,0.0], root:{ kind:"button", id:"a", onPress:"go" } })"#,
+            // Button with both names.
+            r#"({ anchor:"center", offset:[0.0,0.0], root:{ kind:"button", id:"a", label:"A", labelledBy:"x", onPress:"go" } })"#,
+            // Image with neither name nor decorative.
+            r#"({ anchor:"center", offset:[0.0,0.0], root:{ kind:"image", asset:"x" } })"#,
+            // Image with both label and decorative.
+            r#"({ anchor:"center", offset:[0.0,0.0], root:{ kind:"image", asset:"x", label:"A", decorative:true } })"#,
+            // Announce missing text.
+            r#"({ anchor:"center", offset:[0.0,0.0], root:{ kind:"announce", priority:"polite" } })"#,
+            // Announce with an unknown priority.
+            r#"({ anchor:"center", offset:[0.0,0.0], root:{ kind:"announce", text:"x", priority:"shouty" } })"#,
+            // Predicate `equals` with an rgba/array comparand.
+            r#"({ anchor:"center", offset:[0.0,0.0], root:{ kind:"text", content:"x", fontSize:12.0, color:[1.0,1.0,1.0,1.0], visibleWhen:{ slot:"a.b", equals:[1.0,0.0,0.0,1.0] } } })"#,
+            // Unknown role.
+            r#"({ anchor:"center", offset:[0.0,0.0], root:{ kind:"button", id:"a", label:"A", onPress:"go", role:"wizard" } })"#,
+        ];
+        for src in cases {
+            let err = eval_js(src, |ctx, v| {
+                anchored_tree_from_js_value(ctx, v).unwrap_err()
+            });
+            assert!(
+                matches!(
+                    err,
+                    DescriptorError::InvalidShape { .. } | DescriptorError::MissingField { .. }
+                ),
+                "precondition must be a named load-time error (no panic), got {err:?} for {src}"
+            );
+        }
+    }
+
+    #[test]
+    fn lua_bridge_enforces_g2_preconditions() {
+        // The Luau twin: identical preconditions surface the same named error.
+        let cases: &[&str] = &[
+            r#"return { anchor="center", offset={0.0,0.0}, root={ kind="button", id="a", onPress="go" } }"#,
+            r#"return { anchor="center", offset={0.0,0.0}, root={ kind="button", id="a", label="A", labelledBy="x", onPress="go" } }"#,
+            r#"return { anchor="center", offset={0.0,0.0}, root={ kind="image", asset="x" } }"#,
+            r#"return { anchor="center", offset={0.0,0.0}, root={ kind="image", asset="x", label="A", decorative=true } }"#,
+            r#"return { anchor="center", offset={0.0,0.0}, root={ kind="announce", priority="polite" } }"#,
+            r#"return { anchor="center", offset={0.0,0.0}, root={ kind="announce", text="x", priority="shouty" } }"#,
+            r#"return { anchor="center", offset={0.0,0.0}, root={ kind="text", content="x", fontSize=12.0, color={1.0,1.0,1.0,1.0}, visibleWhen={ slot="a.b", equals={1.0,0.0,0.0,1.0} } } }"#,
+            r#"return { anchor="center", offset={0.0,0.0}, root={ kind="button", id="a", label="A", onPress="go", role="wizard" } }"#,
+        ];
+        for src in cases {
+            let err = eval_lua(src, |v| anchored_tree_from_lua_value(v).unwrap_err());
+            assert!(
+                matches!(
+                    err,
+                    DescriptorError::InvalidShape { .. } | DescriptorError::MissingField { .. }
+                ),
+                "precondition must be a named load-time error (no panic), got {err:?} for {src}"
+            );
+        }
     }
 }

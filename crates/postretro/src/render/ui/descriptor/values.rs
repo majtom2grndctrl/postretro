@@ -106,6 +106,50 @@ impl BindSource {
     }
 }
 
+/// A scalar comparand for a [`Predicate`] (M13 G2). v1 admits ONLY a number,
+/// boolean, or string — the three SlotValue/CellInit shapes a predicate equality
+/// can meaningfully compare against. Untagged so the wire form is a bare JSON
+/// scalar (`5`, `true`, `"on"`), with no wrapper object. An rgba/array comparand
+/// is deliberately unrepresentable: a JSON array matches none of these variants,
+/// so serde rejects it at deserialize time and the hand-written bridge surfaces
+/// the same as a named load-time error (see `data_descriptors`).
+///
+/// `Number` is declared first so an integral JSON literal lands on it (untagged
+/// variants are tried in declaration order; a JSON number can only match
+/// `Number`, a bool only `Boolean`, a string only `String` — the forms are
+/// disjoint and ordering merely pins the number path first).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PredicateValue {
+    Number(f64),
+    Boolean(bool),
+    String(String),
+}
+
+/// A reactive predicate (M13 G2): a [`BindSource`] read against an optional
+/// `equals` comparand. With `equals` present the predicate is true when the bound
+/// value equals the comparand; with `equals` absent it is the bound value's own
+/// truthiness (a later task — Task 2a — defines resolution). Carried by a widget's
+/// `visibleWhen`, a button's `selected`/`checked`, and accepted as a `bind` source
+/// for a button's styleRanges.
+///
+/// The `source` is `#[serde(flatten)]` so the wire form keeps `slot`/`local` as
+/// flat siblings of `equals`: `{ "slot": "hud.tab", "equals": "stats" }` or
+/// `{ "local": "open" }`. `equals` skip-serializes when absent, so a truthiness
+/// predicate round-trips byte-identically with no `equals` key.
+//
+// `deny_unknown_fields` is omitted: it is incompatible with `#[serde(flatten)]`,
+// which the `source` alternative requires. The shape is otherwise closed by
+// `BindSource` + `PredicateValue`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Predicate {
+    #[serde(flatten)]
+    pub source: BindSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub equals: Option<PredicateValue>,
+}
+
 /// Declared initial value for a presentation cell (M13 G1b, Task 5). Mirrors the
 /// `SlotValue` shapes a bind resolves: a number, boolean, string, or length-4
 /// linear-RGBA array. Untagged so the wire form is a bare JSON scalar/array —

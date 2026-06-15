@@ -384,11 +384,15 @@ mod tests {
                 focus: None,
                 restore_on_return: false,
                 local_state: None,
+                visible_when: None,
+                role: None,
                 children: vec![],
             }),
             capture_mode,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         }
     }
 

@@ -772,6 +772,22 @@ declare function rumble(strong: number, durationMs: number, weak: number?): Prim
 --- `PrimitiveReactionDescriptor`, no FFI.
 declare function flashScreen(color: {number}, durationMs: number): PrimitiveReactionDescriptor
 
+--- System-reaction body: darken (or tint) the screen edges by writing the
+--- engine-owned `screen.vignette` slot, which rises to peak then decays to rest.
+--- `strength` is the peak edge-darken amount; `durationMs` is the total
+--- rise-plus-decay time. Optional `color` is an `{r, g, b}` linear-RGB tint
+--- (omitted when nil -> black, a pure strength-only edge-darken). Pure: returns
+--- a `PrimitiveReactionDescriptor`, no FFI.
+declare function vignette(strength: number, durationMs: number, color: {number}?): PrimitiveReactionDescriptor
+
+--- System-reaction body: shake the screen by writing the engine-owned
+--- `screen.shake` offset slot, a decaying oscillation that fades to rest.
+--- `amplitude` is the peak displacement in logical-reference px; `durationMs`
+--- is the total decay time. Optional `frequency` is the oscillation rate in Hz
+--- (omitted when nil -> the engine applies its default frequency). Pure: returns
+--- a `PrimitiveReactionDescriptor`, no FFI.
+declare function screenShake(amplitude: number, durationMs: number, frequency: number?): PrimitiveReactionDescriptor
+
 --- System-reaction body: push the dialog UI tree `tree` onto the modal stack,
 --- with an optional `onCommit` reaction (omitted when nil). Warn-once
 --- "no stack" until Goal F's modal stack lands. Pure: returns a

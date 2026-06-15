@@ -71,6 +71,8 @@ fn text(content: &str, font_size: f32) -> Widget {
         style_ranges: None,
         id: None,
         focus_neighbors: Default::default(),
+        visible_when: None,
+        role: None,
     })
 }
 
@@ -96,6 +98,8 @@ fn composite_fixture() -> AnchoredTree {
             focus: None,
             restore_on_return: false,
             local_state: None,
+            visible_when: None,
+            role: None,
             children: vec![
                 Widget::HStack(ContainerWidget {
                     gap: SpacingValue::Literal(10.0),
@@ -108,6 +112,8 @@ fn composite_fixture() -> AnchoredTree {
                     focus: None,
                     restore_on_return: false,
                     local_state: None,
+                    visible_when: None,
+                    role: None,
                     children: vec![text("HP 100", 24.0), text("ARMOR 50", 24.0)],
                 }),
                 Widget::Grid(GridWidget {
@@ -119,16 +125,26 @@ fn composite_fixture() -> AnchoredTree {
                     focus_neighbors: Default::default(),
                     focus: None,
                     restore_on_return: false,
+                    visible_when: None,
+                    role: None,
                     children: vec![
                         Widget::Image(ImageWidget {
                             asset: "ui/icon_a".into(),
                             id: None,
                             focus_neighbors: Default::default(),
+                            label: None,
+                            decorative: true,
+                            visible_when: None,
+                            role: None,
                         }),
                         Widget::Image(ImageWidget {
                             asset: "ui/icon_b".into(),
                             id: None,
                             focus_neighbors: Default::default(),
+                            label: None,
+                            decorative: true,
+                            visible_when: None,
+                            role: None,
                         }),
                     ],
                 }),
@@ -137,6 +153,8 @@ fn composite_fixture() -> AnchoredTree {
         capture_mode: CaptureMode::Passthrough,
         initial_focus: None,
         text_entry_target: None,
+        accessible_name: None,
+        role: None,
     }
 }
 
@@ -290,11 +308,15 @@ fn empty_gameplay_tree_early_outs_the_ui_pass() {
             focus: None,
             restore_on_return: false,
             local_state: None,
+            visible_when: None,
+            role: None,
             children: vec![],
         }),
         capture_mode: CaptureMode::Passthrough,
         initial_focus: None,
         text_entry_target: None,
+        accessible_name: None,
+        role: None,
     };
     let draw_empty = {
         let mut ui = UiTree::from_descriptor(&empty, &UiTheme::engine_default());

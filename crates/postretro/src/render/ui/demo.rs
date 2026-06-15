@@ -346,11 +346,12 @@ mod tests {
         let Widget::Button(opener) = &col.children[5] else {
             panic!("sixth row is the open-text-entry button");
         };
+        // M13 G2 migration: `label` is now `Option` (label-XOR-labelledBy).
         let opener_label = opener.label.clone();
 
         // Preconditions: the label and readout-format are the strings a careless
         // edit could eat into; they are NOT the slot the edit targets.
-        assert_eq!(opener_label, "ENTER TEXT");
+        assert_eq!(opener_label.as_deref(), Some("ENTER TEXT"));
         assert_eq!(readout_format, "ENTRY {}");
         assert_eq!(readout_slot, "ui.textEntry");
         assert_ne!(

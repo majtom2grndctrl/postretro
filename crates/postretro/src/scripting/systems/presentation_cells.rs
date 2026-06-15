@@ -203,6 +203,8 @@ mod tests {
                     scope: scope.to_string(),
                     cells: cells(init),
                 }),
+                visible_when: None,
+                role: None,
                 children: vec![Widget::Text(TextWidget {
                     content: "fallback".into(),
                     font_size: 12.0,
@@ -218,6 +220,8 @@ mod tests {
                     style_ranges: None,
                     id: None,
                     focus_neighbors: Default::default(),
+                    visible_when: None,
+                    role: None,
                 })],
             }),
         )

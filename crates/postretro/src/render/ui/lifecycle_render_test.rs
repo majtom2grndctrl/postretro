@@ -77,10 +77,14 @@ fn text_tree(content: &str, color: ColorValue, font: Option<String>) -> Anchored
             style_ranges: None,
             id: None,
             focus_neighbors: Default::default(),
+            visible_when: None,
+            role: None,
         }),
         capture_mode: CaptureMode::Passthrough,
         initial_focus: None,
         text_entry_target: None,
+        accessible_name: None,
+        role: None,
     }
 }
 
@@ -268,10 +272,14 @@ fn mod_theme_token_overrides_engine_default_in_a_rendered_panel() {
             focus_neighbors: Default::default(),
             bind: None,
             style_ranges: None,
+            visible_when: None,
+            role: None,
         }),
         capture_mode: CaptureMode::Passthrough,
         initial_focus: None,
         text_entry_target: None,
+        accessible_name: None,
+        role: None,
     };
 
     // Engine default renders the default panel surface...
@@ -373,6 +381,8 @@ fn mixed_tree(scope: &str) -> AnchoredTree {
                 scope: scope.to_string(),
                 cells: Default::default(),
             }),
+            visible_when: None,
+            role: None,
             children: vec![
                 // Store-bound: reads the authoritative slot table.
                 Widget::Text(TextWidget {
@@ -390,6 +400,8 @@ fn mixed_tree(scope: &str) -> AnchoredTree {
                     style_ranges: None,
                     id: None,
                     focus_neighbors: Default::default(),
+                    visible_when: None,
+                    role: None,
                 }),
                 // Local-bound: reads the presentation cell.
                 Widget::Text(TextWidget {
@@ -407,6 +419,8 @@ fn mixed_tree(scope: &str) -> AnchoredTree {
                     style_ranges: None,
                     id: None,
                     focus_neighbors: Default::default(),
+                    visible_when: None,
+                    role: None,
                 }),
                 // Store-bound panel fill, so the tree mixes color + text binds.
                 Widget::Panel(PanelWidget {
@@ -421,6 +435,8 @@ fn mixed_tree(scope: &str) -> AnchoredTree {
                         tween: None,
                     }),
                     style_ranges: None,
+                    visible_when: None,
+                    role: None,
                 }),
                 Widget::Text(TextWidget {
                     content: "tail".into(),
@@ -431,12 +447,16 @@ fn mixed_tree(scope: &str) -> AnchoredTree {
                     style_ranges: None,
                     id: None,
                     focus_neighbors: Default::default(),
+                    visible_when: None,
+                    role: None,
                 }),
             ],
         }),
         capture_mode: CaptureMode::Passthrough,
         initial_focus: None,
         text_entry_target: None,
+        accessible_name: None,
+        role: None,
     }
 }
 

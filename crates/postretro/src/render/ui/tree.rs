@@ -1659,6 +1659,8 @@ fn focus_meta(widget: &Widget) -> (Option<&String>, FocusNeighbors) {
         Widget::Button(w) => (Some(&w.id), (&w.focus_neighbors).into()),
         Widget::Slider(w) => (Some(&w.id), (&w.focus_neighbors).into()),
         Widget::Bar(w) => (w.id.as_ref(), FocusNeighbors::default()),
+        // M13 G2: a non-visual announcement carries no focus id/neighbors.
+        Widget::Announce(_) => (None, FocusNeighbors::default()),
     }
 }
 
@@ -1860,6 +1862,11 @@ fn build_node(
         Widget::Button(button) => build_button(taffy, button, theme),
         Widget::Slider(slider) => build_slider(taffy, slider, theme, scope),
         Widget::Bar(bar) => build_bar(taffy, bar, theme, scope),
+        // M13 G2: a non-visual announcement lays out as an empty zero-size leaf
+        // (no quad, no glyph). Routing its text to the a11y layer is a later task.
+        Widget::Announce(_) => taffy
+            .new_leaf(Style::default())
+            .expect("taffy leaf creation must succeed"),
     }
 }
 
@@ -1878,7 +1885,10 @@ fn build_button(
         .new_leaf_with_context(
             Style::default(),
             NodeContext::Text {
-                content: button.label.clone(),
+                // M13 G2 migration: `label` is now `Option` (label-XOR-labelledBy).
+                // The label-text rendering and `labelledBy` resolution are a later
+                // task; for now an absent inline label renders empty.
+                content: button.label.clone().unwrap_or_default(),
                 font_size: INTERACTIVE_LABEL_FONT_SIZE,
                 color: resolve_color(&ColorValue::Token("body".to_string()), theme),
                 family: resolve_font(&None, theme),
@@ -1909,7 +1919,7 @@ fn build_slider(
     // Synthesize a text bind so the value display rides the bound-text path:
     // `content` is the fallback (label with no value yet), `format` injects the
     // resolved number after the label. The slider's bind tween carries through.
-    let format = format!("{}: {{}}", slider.label);
+    let format = format!("{}: {{}}", slider.label.as_deref().unwrap_or_default());
     let bind = TextBind {
         source: slider.bind.source.clone(),
         format: Some(format),
@@ -1923,7 +1933,7 @@ fn build_slider(
         .new_leaf_with_context(
             Style::default(),
             NodeContext::Text {
-                content: slider.label.clone(),
+                content: slider.label.clone().unwrap_or_default(),
                 font_size: INTERACTIVE_LABEL_FONT_SIZE,
                 color: resolve_color(&ColorValue::Token("body".to_string()), theme),
                 family: resolve_font(&None, theme),
@@ -2575,6 +2585,8 @@ mod tests {
         Widget::Spacer(SpacerWidget {
             flex_grow,
             id: None,
+            visible_when: None,
+            role: None,
         })
     }
 
@@ -2590,6 +2602,8 @@ mod tests {
             focus: None,
             restore_on_return: false,
             local_state: None,
+            visible_when: None,
+            role: None,
             children,
         })
     }
@@ -2606,6 +2620,8 @@ mod tests {
             focus: None,
             restore_on_return: false,
             local_state: None,
+            visible_when: None,
+            role: None,
             children,
         })
     }
@@ -2625,6 +2641,8 @@ mod tests {
             style_ranges: None,
             id: None,
             focus_neighbors: Default::default(),
+            visible_when: None,
+            role: None,
         })
     }
 
@@ -2651,6 +2669,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2706,6 +2726,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2751,6 +2773,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2793,6 +2817,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut fs = font_system();
         let mut ui_ref = UiTree::from_descriptor(&tree, &theme());
@@ -2835,6 +2861,8 @@ mod tests {
                 style_ranges: None,
                 id: None,
                 focus_neighbors: Default::default(),
+                visible_when: None,
+                role: None,
             })
         };
         let tree = AnchoredTree {
@@ -2849,11 +2877,15 @@ mod tests {
                 focus_neighbors: Default::default(),
                 focus: None,
                 restore_on_return: false,
+                visible_when: None,
+                role: None,
                 children: vec![cell(), cell(), cell(), cell()],
             }),
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2904,10 +2936,14 @@ mod tests {
                 style_ranges: None,
                 id: None,
                 focus_neighbors: Default::default(),
+                visible_when: None,
+                role: None,
             }),
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2951,6 +2987,8 @@ mod tests {
             focus: None,
             restore_on_return: false,
             local_state: None,
+            visible_when: None,
+            role: None,
             children: vec![text("x", 13.0), text("y", 13.0)],
         });
         let tree = AnchoredTree {
@@ -2960,6 +2998,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2992,6 +3032,8 @@ mod tests {
             focus: None,
             restore_on_return: false,
             local_state: None,
+            visible_when: None,
+            role: None,
             children: vec![text("AB", 40.0)],
         });
         let tree = AnchoredTree {
@@ -3001,6 +3043,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3048,6 +3092,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3137,6 +3183,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         }
     }
 
@@ -3312,6 +3360,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut second = UiTree::from_descriptor(&reshaped, &theme());
         second.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
@@ -3370,6 +3420,8 @@ mod tests {
             style_ranges: None,
             id: None,
             focus_neighbors: Default::default(),
+            visible_when: None,
+            role: None,
         })
     }
 
@@ -3388,6 +3440,8 @@ mod tests {
             focus: None,
             restore_on_return: false,
             local_state: None,
+            visible_when: None,
+            role: None,
             children: vec![Widget::Panel(PanelWidget {
                 fill: ColorValue::Literal(fill),
                 border: None,
@@ -3398,6 +3452,8 @@ mod tests {
                 style_ranges: None,
                 id: None,
                 focus_neighbors: Default::default(),
+                visible_when: None,
+                role: None,
             })],
         })
     }
@@ -3414,6 +3470,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut slots = HashMap::new();
         slots.insert("player.health".to_string(), SlotValue::Number(87.0));
@@ -3440,6 +3498,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut slots = HashMap::new();
         slots.insert("player.ammo".to_string(), SlotValue::Number(12.5));
@@ -3462,6 +3522,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3485,6 +3547,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut slots = HashMap::new();
         slots.insert(
@@ -3519,6 +3583,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut slots = HashMap::new();
         slots.insert(
@@ -3553,6 +3619,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3603,6 +3671,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3653,6 +3723,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3700,6 +3772,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3741,6 +3815,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3813,10 +3889,14 @@ mod tests {
                 style_ranges: None,
                 id: None,
                 focus_neighbors: Default::default(),
+                visible_when: None,
+                role: None,
             }),
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         }
     }
 
@@ -3876,11 +3956,15 @@ mod tests {
                 focus: None,
                 restore_on_return: false,
                 local_state: None,
+                visible_when: None,
+                role: None,
                 children: vec![text("AB", 30.0), text("CD", 30.0)],
             }),
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme);
         let mut fs = font_system();
@@ -3913,11 +3997,15 @@ mod tests {
                 focus: None,
                 restore_on_return: false,
                 local_state: None,
+                visible_when: None,
+                role: None,
                 children: vec![text("AB", 30.0), text("CD", 30.0)],
             }),
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme);
         let mut fs = font_system();
@@ -4044,6 +4132,8 @@ mod tests {
             style_ranges: None,
             id: None,
             focus_neighbors: Default::default(),
+            visible_when: None,
+            role: None,
         })
     }
 
@@ -4061,6 +4151,8 @@ mod tests {
             focus: None,
             restore_on_return: false,
             local_state: None,
+            visible_when: None,
+            role: None,
             children: vec![Widget::Panel(PanelWidget {
                 fill: ColorValue::Literal(fill),
                 border: None,
@@ -4071,6 +4163,8 @@ mod tests {
                 style_ranges: None,
                 id: None,
                 focus_neighbors: Default::default(),
+                visible_when: None,
+                role: None,
             })],
         })
     }
@@ -4112,6 +4206,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -4183,6 +4279,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -4224,6 +4322,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -4316,6 +4416,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -4364,6 +4466,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -4403,6 +4507,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -4455,6 +4561,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -4526,6 +4634,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -4598,6 +4708,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -4654,6 +4766,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -4695,6 +4809,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -4728,6 +4844,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -4773,6 +4891,8 @@ mod tests {
             style_ranges: Some(ranges),
             id: None,
             focus_neighbors: Default::default(),
+            visible_when: None,
+            role: None,
         })
     }
 
@@ -4817,6 +4937,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut fs = font_system();
 
@@ -4868,6 +4990,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -4900,10 +5024,14 @@ mod tests {
                 style_ranges: Some(health_style_ranges()),
                 id: None,
                 focus_neighbors: Default::default(),
+                visible_when: None,
+                role: None,
             }),
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -4952,10 +5080,14 @@ mod tests {
                 style_ranges: Some(health_style_ranges()),
                 id: None,
                 focus_neighbors: Default::default(),
+                visible_when: None,
+                role: None,
             }),
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -5007,6 +5139,8 @@ mod tests {
             focus_neighbors: super::super::descriptor::FocusNeighbors::default(),
             bind: None,
             style_ranges: None,
+            visible_when: None,
+            role: None,
         })
     }
 
@@ -5025,6 +5159,8 @@ mod tests {
             focus: Some(FocusPolicy::Shorthand(FocusKind::Linear)),
             restore_on_return: false,
             local_state: None,
+            visible_when: None,
+            role: None,
             children: vec![text_id("A", "a"), text_id("B", "b"), text_id("C", "c")],
         });
         let tree = AnchoredTree {
@@ -5034,6 +5170,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: Some("b".to_string()),
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -5079,6 +5217,8 @@ mod tests {
             focus: Some(FocusPolicy::Shorthand(FocusKind::Linear)),
             restore_on_return: false,
             local_state: None,
+            visible_when: None,
+            role: None,
             children: vec![text("X", 20.0), text("Y", 20.0)],
         });
         let tree = AnchoredTree {
@@ -5088,6 +5228,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -5105,17 +5247,26 @@ mod tests {
     fn button(id: &str, on_press: &str) -> Widget {
         Widget::Button(ButtonWidget {
             id: id.into(),
-            label: id.into(),
+            label: Some(id.into()),
+            labelled_by: None,
             on_press: on_press.into(),
             focus_neighbors: Default::default(),
             repeat_on_hold: None,
+            selected: None,
+            checked: None,
+            bind: None,
+            style_ranges: None,
+            disabled: false,
+            visible_when: None,
+            role: None,
         })
     }
 
     fn slider(id: &str, slot: &str, captures: &[&str]) -> Widget {
         Widget::Slider(SliderWidget {
             id: id.into(),
-            label: "Vol".into(),
+            label: Some("Vol".into()),
+            labelled_by: None,
             bind: SliderBind {
                 source: BindSource::Slot { slot: slot.into() },
                 tween: None,
@@ -5125,6 +5276,9 @@ mod tests {
             step: 0.1,
             captures_nav: captures.iter().map(|s| s.to_string()).collect(),
             focus_neighbors: Default::default(),
+            disabled: false,
+            visible_when: None,
+            role: None,
         })
     }
 
@@ -5136,6 +5290,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         }
     }
 
@@ -5210,6 +5366,8 @@ mod tests {
             background: ColorValue::Literal([0.1, 0.1, 0.1, 1.0]),
             id: None,
             style_ranges,
+            visible_when: None,
+            role: None,
         })
     }
 
@@ -5312,6 +5470,8 @@ mod tests {
             background: ColorValue::Literal([0.1, 0.1, 0.1, 1.0]),
             id: None,
             style_ranges: None,
+            visible_when: None,
+            role: None,
         }));
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -5392,6 +5552,8 @@ mod local_state_tests {
                     scope: scope_id.to_string(),
                     cells: Default::default(),
                 }),
+                visible_when: None,
+                role: None,
                 children: vec![Widget::Text(TextWidget {
                     content: "FB".into(),
                     font_size: 18.0,
@@ -5405,6 +5567,8 @@ mod local_state_tests {
                     style_ranges: None,
                     id: None,
                     focus_neighbors: Default::default(),
+                    visible_when: None,
+                    role: None,
                 })],
             }),
         )
@@ -5587,6 +5751,8 @@ mod local_state_tests {
                 style_ranges: None,
                 id: None,
                 focus_neighbors: Default::default(),
+                visible_when: None,
+                role: None,
             }),
         );
 

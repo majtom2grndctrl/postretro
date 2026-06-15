@@ -597,10 +597,14 @@ fn srgb_of(linear: [f32; 4]) -> [u8; 4] {
             style_ranges: None,
             id: None,
             focus_neighbors: Default::default(),
+            visible_when: None,
+            role: None,
         }),
         capture_mode: CaptureMode::Passthrough,
         initial_focus: None,
         text_entry_target: None,
+        accessible_name: None,
+        role: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &UiTheme::engine_default());
     let mut fs = font_system();

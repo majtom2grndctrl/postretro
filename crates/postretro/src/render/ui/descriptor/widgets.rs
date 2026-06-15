@@ -1,13 +1,16 @@
-// The widget vocabulary: the internally-tagged `Widget` enum (ten kinds) and its
-// per-kind field structs, plus the bind/tween value types those widgets carry.
+// The widget vocabulary: the internally-tagged `Widget` enum (eleven kinds) and
+// its per-kind field structs, plus the bind/tween value types those widgets carry.
 // Pure serde data — no rendering, no taffy, no retained tree.
 // See: context/lib/ui.md
 
 use serde::{Deserialize, Serialize};
 
 use super::super::style_ranges::StyleRanges;
+use super::accessibility::Role;
 use super::focus::{FocusNeighbors, FocusPolicy, RepeatPolicy};
-use super::values::{Align, BindSource, Border, ColorValue, Easing, LocalState, SpacingValue};
+use super::values::{
+    Align, BindSource, Border, ColorValue, Easing, LocalState, Predicate, SpacingValue,
+};
 
 /// One node in the UI widget tree. Internally tagged on `kind` (`"text"`,
 /// `"panel"`, …) so the wire form is a flat object — `{ "kind": "text", ... }`.
@@ -16,7 +19,7 @@ use super::values::{Align, BindSource, Border, ColorValue, Easing, LocalState, S
 /// tag is read by buffering the object through `serde_json::Value`, which a
 /// tuple variant cannot map onto. Container kinds (`vstack`/`hstack`/`grid`)
 /// carry positional `children`; leaf kinds (`text`/`panel`/`image`/`spacer`/
-/// `button`/`slider`/`bar`) carry no
+/// `button`/`slider`/`bar`/`announce`) carry no
 /// `children` field. Compare `scripting::data_descriptors::ReactionDescriptor`,
 /// which discriminates by manual key-presence instead — this enum deliberately
 /// uses serde's tag mechanism.
@@ -40,6 +43,10 @@ pub enum Widget {
     Button(ButtonWidget),
     Slider(SliderWidget),
     Bar(BarWidget),
+    // M13 G2 — a net-new non-visual widget. It lays out as nothing (no quad, no
+    // glyph); its sole payload is an a11y live-region announcement a later task
+    // routes to the platform a11y layer with the declared `priority`.
+    Announce(AnnounceWidget),
 }
 
 /// Leaf text run. `content` is the literal string; `font_size` is logical px;
@@ -82,6 +89,15 @@ pub struct TextWidget {
     /// `null`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style_ranges: Option<StyleRanges>,
+    /// Optional reactive visibility predicate (M13 G2). When present, the node is
+    /// shown only while the predicate resolves true (resolution is Task 2b).
+    /// Absent on every pre-G2 widget, so a predicate-less widget round-trips
+    /// byte-identically (skip-serialized).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible_when: Option<Predicate>,
+    /// Optional a11y role override (M13 G2). Absent uses the kind's implicit role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<Role>,
 }
 
 /// State binding for a `text` widget. The bind source is either a `{ slot }`
@@ -165,6 +181,12 @@ pub struct PanelWidget {
     /// unchanged (the key is omitted, not `null`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style_ranges: Option<StyleRanges>,
+    /// Optional reactive visibility predicate (M13 G2). See `TextWidget::visible_when`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible_when: Option<Predicate>,
+    /// Optional a11y role override (M13 G2). See `TextWidget::role`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<Role>,
 }
 
 /// Bind source for a `panel` widget: either a `{ slot }` dotted store name whose
@@ -208,6 +230,9 @@ pub struct PanelTween {
 /// same category as text measurement). The renderer threads each asset's natural
 /// reference size into the measure seam (see `tree::UiTree::build_draw_data`), so
 /// the on-screen image is always shaped to the real asset and never stretched.
+///
+/// Accessible name (M13 G2): an image is name-XOR-decorative — exactly one of
+/// `label` or `decorative: true` is required (the bridge enforces it).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ImageWidget {
@@ -219,6 +244,22 @@ pub struct ImageWidget {
     /// `TextWidget::focus_neighbors`.
     #[serde(default, skip_serializing_if = "FocusNeighbors::is_empty")]
     pub focus_neighbors: FocusNeighbors,
+    /// Accessible name (M13 G2). A named image announces `label`; a decorative one
+    /// is hidden from a11y. Name-XOR-decorative is a bridge precondition, not a
+    /// serde constraint. Skip-serialized when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Marks the image purely decorative (M13 G2) — hidden from a11y, no name
+    /// required. Skip-serialized when `false` so a pre-G2 image round-trips
+    /// byte-identically.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub decorative: bool,
+    /// Optional reactive visibility predicate (M13 G2). See `TextWidget::visible_when`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible_when: Option<Predicate>,
+    /// Optional a11y role override (M13 G2). See `TextWidget::role`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<Role>,
 }
 
 /// Stack container (`vstack`/`hstack`). Lays its `children` out along one axis
@@ -267,6 +308,12 @@ pub struct ContainerWidget {
     /// localState-less container round-trips byte-identically (skip-serialized).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_state: Option<LocalState>,
+    /// Optional reactive visibility predicate (M13 G2). See `TextWidget::visible_when`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible_when: Option<Predicate>,
+    /// Optional a11y role override (M13 G2). See `TextWidget::role`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<Role>,
     pub children: Vec<Widget>,
 }
 
@@ -292,11 +339,18 @@ pub struct GridWidget {
     /// Restore this grid's last-focused descendant on return (see `ContainerWidget`).
     #[serde(default, skip_serializing_if = "is_false")]
     pub restore_on_return: bool,
+    /// Optional reactive visibility predicate (M13 G2). See `TextWidget::visible_when`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible_when: Option<Predicate>,
+    /// Optional a11y role override (M13 G2). See `TextWidget::role`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<Role>,
     pub children: Vec<Widget>,
 }
 
-/// `skip_serializing_if` predicate for `restore_on_return`: omit when `false`
-/// (the default) so a pre-F container round-trips byte-identically.
+/// `skip_serializing_if` predicate for boolean flags that default to `false`
+/// (`restore_on_return`, `decorative`, `disabled`): omit when `false` so a
+/// pre-feature widget round-trips byte-identically.
 fn is_false(b: &bool) -> bool {
     !*b
 }
@@ -311,21 +365,39 @@ pub struct SpacerWidget {
     /// not focusable, but it may still carry an id for neighbor references.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    /// Optional reactive visibility predicate (M13 G2). See `TextWidget::visible_when`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible_when: Option<Predicate>,
+    /// Optional a11y role override (M13 G2). See `TextWidget::role`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<Role>,
 }
 
 /// Interactive button (M13 Goal F, Task 4). Focusable; activation — a focus-engine
 /// `confirm` on the focused button, or a pointer click — fires the `on_press`
 /// named reaction through the same reaction registry every entity/system reaction
-/// uses. The button renders its `label` as a centered text run.
+/// uses. The button renders its accessible name as a centered text run.
 ///
 /// `id` is required (unlike the optional `id` on passive widgets): activation maps
 /// the focused node id back to this button's `on_press`, so the id must be stable.
 /// `focus_neighbors` carries directional overrides exactly like the passive widgets.
+///
+/// Accessible name (M13 G2): exactly one of `label` or `labelled_by` is required
+/// (the bridge enforces it). `label` is the inline name; `labelled_by` names an
+/// authored node id whose text supplies the name. Both are `Option` at the type
+/// level — the exactly-one-of rule is a bridge precondition, not a serde constraint.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ButtonWidget {
     pub id: String,
-    pub label: String,
+    /// Inline accessible name (M13 G2 migration: was a required `String`, now
+    /// `Option`). Skip-serialized when absent so a `labelledBy` button omits it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Accessible name by reference (M13 G2): an authored node id whose text names
+    /// this button. Skip-serialized when absent. Exactly-one-of with `label`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labelled_by: Option<String>,
     /// Named reaction fired on activation (confirm or click). Resolved against the
     /// reaction registry by the app — the same vocabulary entity/system reactions use.
     pub on_press: String,
@@ -343,21 +415,60 @@ pub struct ButtonWidget {
     /// identically with its pre-text-entry wire form.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repeat_on_hold: Option<RepeatPolicy>,
+    /// Reactive selected state (M13 G2): the tab/segmented-control `aria-selected`
+    /// predicate. There is NO static-bool form — selection is always reactive.
+    /// Skip-serialized when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected: Option<Predicate>,
+    /// Reactive checked state (M13 G2): the checkbox/radio `aria-checked` predicate.
+    /// No static-bool form. Skip-serialized when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked: Option<Predicate>,
+    /// Optional value-binding for `style_ranges` (M13 G2): a [`Predicate`] accepted
+    /// as the styleRanges value source on a button (a later task wires
+    /// `build_button` to feed its internal Text NodeContext). Passed through for
+    /// round-trip here. Skip-serialized when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind: Option<Predicate>,
+    /// Optional continuous value→style map (M13 G2), reusing the Text `styleRanges`
+    /// shape. Meaningful alongside `bind`; passed through for round-trip here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style_ranges: Option<StyleRanges>,
+    /// Disabled state (M13 G2): a disabled button is non-interactive and a11y-
+    /// disabled. Skip-serialized when `false` so a pre-G2 button is byte-identical.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub disabled: bool,
+    /// Optional reactive visibility predicate (M13 G2). See `TextWidget::visible_when`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible_when: Option<Predicate>,
+    /// Optional a11y role override (M13 G2). See `TextWidget::role`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<Role>,
 }
 
 /// Interactive slider (M13 Goal F, Task 4). Focusable; nav steps it captures
 /// (`captures_nav`, e.g. `["nav.left", "nav.right"]`) adjust its value by `step`
 /// within `[min, max]` and emit a `setState` write to the bound slot on the N+1
-/// frame. The slider renders its `label` and current numeric value as text.
+/// frame. The slider renders its accessible name and current numeric value as text.
 ///
 /// `bind` follows the `PanelBind`/`TextBind` shape (`BindSource` + optional tween).
 /// `id` is required for the same reason as `ButtonWidget::id` — nav-capture and
 /// value-step resolve through the focused node id.
+///
+/// Accessible name (M13 G2): exactly one of `label` or `labelled_by` is required
+/// (the bridge enforces it), mirroring `ButtonWidget`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SliderWidget {
     pub id: String,
-    pub label: String,
+    /// Inline accessible name (M13 G2 migration: was a required `String`, now
+    /// `Option`). Skip-serialized when absent. Exactly-one-of with `labelled_by`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Accessible name by reference (M13 G2): an authored node id whose text names
+    /// this slider. Skip-serialized when absent. Exactly-one-of with `label`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labelled_by: Option<String>,
     pub bind: SliderBind,
     pub min: f32,
     pub max: f32,
@@ -372,6 +483,16 @@ pub struct SliderWidget {
     /// Directional focus-neighbor overrides (M13 Goal F, Task 3).
     #[serde(default, skip_serializing_if = "FocusNeighbors::is_empty")]
     pub focus_neighbors: FocusNeighbors,
+    /// Disabled state (M13 G2). See `ButtonWidget::disabled`. Skip-serialized when
+    /// `false` so a pre-G2 slider is byte-identical.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub disabled: bool,
+    /// Optional reactive visibility predicate (M13 G2). See `TextWidget::visible_when`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible_when: Option<Predicate>,
+    /// Optional a11y role override (M13 G2). See `TextWidget::role`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<Role>,
 }
 
 /// Bind source for a `slider` widget: either a `{ slot }` dotted store name or a
@@ -413,4 +534,46 @@ pub struct BarWidget {
     /// on a plain bar (skip-serialized), so a styleRange-less bar omits the key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style_ranges: Option<StyleRanges>,
+    /// Optional reactive visibility predicate (M13 G2). See `TextWidget::visible_when`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible_when: Option<Predicate>,
+    /// Optional a11y role override (M13 G2). See `TextWidget::role`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<Role>,
+}
+
+/// Non-visual a11y announcement (M13 G2). Lays out as nothing; its `text` is a
+/// live-region message a later task routes to the platform a11y layer at the
+/// declared `priority`. `text` is required; `priority` defaults to `polite` and
+/// skip-serializes when polite (the `CaptureMode::is_passthrough` pattern), so an
+/// `{ kind: "announce", text }` widget round-trips byte-identically.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AnnounceWidget {
+    pub text: String,
+    /// Live-region urgency. Defaults to `polite`; skip-serialized when polite.
+    #[serde(default, skip_serializing_if = "Priority::is_polite")]
+    pub priority: Priority,
+    /// Optional reactive visibility predicate (M13 G2). See `TextWidget::visible_when`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible_when: Option<Predicate>,
+}
+
+/// Live-region announcement urgency (M13 G2). `polite` waits for a pause in the
+/// a11y output queue; `assertive` interrupts. `Default` + `is_polite` skip mirror
+/// `CaptureMode`'s passthrough handling so a default-priority announce omits the key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Priority {
+    #[default]
+    Polite,
+    Assertive,
+}
+
+impl Priority {
+    /// True for the default `Polite`. Used by `skip_serializing_if` so a polite
+    /// announce omits the `priority` key (round-trip byte-identity).
+    fn is_polite(&self) -> bool {
+        matches!(self, Priority::Polite)
+    }
 }

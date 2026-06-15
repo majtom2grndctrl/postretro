@@ -29,6 +29,23 @@ pub(crate) enum SystemReactionCommand {
     },
     /// Full-screen color flash fading over `duration_ms`.
     FlashScreen { color: [f32; 4], duration_ms: f32 },
+    /// Edge-darkening vignette: a `color` (linear RGB tint, absent ⇒ black —
+    /// strength-only edge-darken) at `strength`, rising then decaying over
+    /// `duration_ms`. The drain maps this onto `VignetteDecay::start`, splitting
+    /// `duration_ms` into a short rise and the remaining decay.
+    Vignette {
+        color: Option<[f32; 3]>,
+        strength: f32,
+        duration_ms: f32,
+    },
+    /// Screen shake: a decaying oscillation at `amplitude` (logical-reference px)
+    /// over `duration_ms`. `frequency` absent ⇒ the driver applies its 18 Hz
+    /// default (the deserializer passes `None` through unchanged).
+    ScreenShake {
+        amplitude: f32,
+        duration_ms: f32,
+        frequency: Option<f32>,
+    },
     /// Push a registered UI tree onto the stack, optionally firing the named
     /// reaction when the pushed tree commits.
     PushTree {
@@ -176,10 +193,11 @@ impl std::fmt::Debug for SystemReactionRegistry {
     }
 }
 
-/// Register all ten system-reaction primitives onto `registry`:
+/// Register the system-reaction primitives onto `registry`:
 /// - Audio: `playSound`
 /// - Input/rumble: `rumble`
 /// - Display/flash: `flashScreen`
+/// - Screen-space effects: `vignette`, `screenShake`
 /// - UI stack: `showDialog`, `openMenu`, `closeDialog` (push/pop `PushTree`/`PopTree`)
 /// - Slot write: `setState`
 /// - Presentation-cell write: `cellWrite`
@@ -216,6 +234,38 @@ pub(crate) fn register_system_reaction_primitives(registry: &mut SystemReactionR
         queue.push(SystemReactionCommand::FlashScreen {
             color: parsed.color,
             duration_ms: parsed.duration_ms,
+        });
+        Ok(())
+    });
+    // `vignette` darkens (or tints) the screen edges, rising then decaying. An
+    // omitted `color` defaults to black (pure strength-only edge-darken); the
+    // default is applied at the drain when the command maps onto
+    // `VignetteDecay::start`, so the absent-color case is one behavior.
+    registry.register("vignette", |args, queue| {
+        let parsed: VignetteArgs =
+            serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
+                reason: format!("vignette: failed to deserialize args: {e}"),
+            })?;
+        queue.push(SystemReactionCommand::Vignette {
+            color: parsed.color,
+            strength: parsed.strength,
+            duration_ms: parsed.duration_ms,
+        });
+        Ok(())
+    });
+    // `screenShake` starts a decaying oscillation. The omitted-frequency 18 Hz
+    // default is applied by the DRIVER (`ShakeDecay::start`), not here — the
+    // deserializer passes `None` through unchanged so the absent-frequency case
+    // is one behavior regardless of how the reaction surface parses its args.
+    registry.register("screenShake", |args, queue| {
+        let parsed: ScreenShakeArgs =
+            serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
+                reason: format!("screenShake: failed to deserialize args: {e}"),
+            })?;
+        queue.push(SystemReactionCommand::ScreenShake {
+            amplitude: parsed.amplitude,
+            duration_ms: parsed.duration_ms,
+            frequency: parsed.frequency,
         });
         Ok(())
     });
@@ -347,6 +397,27 @@ struct FlashScreenArgs {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct VignetteArgs {
+    // Absent ⇒ the drain defaults to black (strength-only edge-darken).
+    #[serde(default)]
+    color: Option<[f32; 3]>,
+    strength: f32,
+    duration_ms: f32,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScreenShakeArgs {
+    amplitude: f32,
+    duration_ms: f32,
+    // Absent ⇒ `None` rides to the driver, which applies its 18 Hz default. The
+    // default is NOT applied here.
+    #[serde(default)]
+    frequency: Option<f32>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ShowDialogArgs {
     tree: String,
     #[serde(default)]
@@ -398,6 +469,8 @@ mod tests {
         assert!(r.contains("playSound"));
         assert!(r.contains("rumble"));
         assert!(r.contains("flashScreen"));
+        assert!(r.contains("vignette"));
+        assert!(r.contains("screenShake"));
         assert!(r.contains("showDialog"));
         assert!(r.contains("openMenu"));
         assert!(r.contains("closeDialog"));
@@ -460,6 +533,83 @@ mod tests {
                 strong: 0.8,
                 weak: None,
                 duration_ms: 200.0,
+            }]
+        );
+    }
+
+    #[test]
+    fn vignette_dispatch_enqueues_command_with_color() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args =
+            serde_json::json!({ "color": [0.1, 0.0, 0.2], "strength": 0.8, "durationMs": 300.0 });
+        assert!(r.dispatch("vignette", &args, &queue).unwrap());
+        assert_eq!(
+            queue.take(),
+            vec![SystemReactionCommand::Vignette {
+                color: Some([0.1, 0.0, 0.2]),
+                strength: 0.8,
+                duration_ms: 300.0,
+            }]
+        );
+    }
+
+    #[test]
+    fn vignette_dispatch_defaults_absent_color_to_none() {
+        // The command carries `None`; the drain applies the black default when it
+        // maps onto `VignetteDecay::start`.
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "strength": 0.5, "durationMs": 200.0 });
+        assert!(r.dispatch("vignette", &args, &queue).unwrap());
+        assert_eq!(
+            queue.take(),
+            vec![SystemReactionCommand::Vignette {
+                color: None,
+                strength: 0.5,
+                duration_ms: 200.0,
+            }]
+        );
+    }
+
+    #[test]
+    fn screen_shake_dispatch_enqueues_command_with_frequency() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "amplitude": 12.0, "durationMs": 250.0, "frequency": 24.0 });
+        assert!(r.dispatch("screenShake", &args, &queue).unwrap());
+        assert_eq!(
+            queue.take(),
+            vec![SystemReactionCommand::ScreenShake {
+                amplitude: 12.0,
+                duration_ms: 250.0,
+                frequency: Some(24.0),
+            }]
+        );
+    }
+
+    #[test]
+    fn screen_shake_dispatch_passes_absent_frequency_through_as_none() {
+        // The omitted-frequency default is the DRIVER's job (18 Hz); the
+        // deserializer carries `None` through unchanged.
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "amplitude": 8.0, "durationMs": 150.0 });
+        assert!(r.dispatch("screenShake", &args, &queue).unwrap());
+        assert_eq!(
+            queue.take(),
+            vec![SystemReactionCommand::ScreenShake {
+                amplitude: 8.0,
+                duration_ms: 150.0,
+                frequency: None,
             }]
         );
     }

@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::super::layout::Anchor;
-use super::Widget;
+use super::{Role, Widget};
 
 /// Whether a tree captures input (freezing gameplay + lower trees and releasing
 /// the cursor) or passes it through to gameplay. Declared on the `AnchoredTree`
@@ -70,6 +70,16 @@ pub struct AnchoredTree {
     /// byte-identically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text_entry_target: Option<String>,
+    /// Accessible name for the tree as a whole (M13 G2) — e.g. the pause menu's
+    /// "Pause menu". Follows the `initial_focus`/`text_entry_target` pattern:
+    /// `Option` + skip-when-`None`, so a pre-G2 tree omits the key entirely and
+    /// round-trips byte-identically. Wire key `accessibleName`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accessible_name: Option<String>,
+    /// A11y role for the tree's root group (M13 G2). Same Option/skip pattern as
+    /// `accessible_name`; absent omits the key. Wire key `role`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<Role>,
 }
 
 impl AnchoredTree {
@@ -85,6 +95,8 @@ impl AnchoredTree {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         }
     }
 }

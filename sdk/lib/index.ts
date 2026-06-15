@@ -97,6 +97,8 @@ export {
   playSound,
   rumble,
   flashScreen,
+  vignette,
+  screenShake,
   showDialog,
   openTextEntry,
   KEYBOARD_TREE,

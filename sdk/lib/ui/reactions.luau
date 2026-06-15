@@ -93,6 +93,42 @@ function UiReactionsSdk.flashScreen(color: {number}, durationMs: number): Primit
   return { primitive = "flashScreen", args = { color = color, durationMs = durationMs } }
 end
 
+--- Darken (or tint) the screen edges by writing the engine-owned
+--- `screen.vignette` slot, which rises to peak then decays back to rest. Pure:
+--- returns a primitive reaction body, no engine side effect. `strength` is the
+--- peak edge-darken amount; `durationMs` is the total rise-plus-decay time in
+--- milliseconds. The optional `color` is an `{r, g, b}` linear-RGB tint (omitted
+--- when nil ⇒ black, a pure strength-only edge-darken).
+function UiReactionsSdk.vignette(
+  strength: number,
+  durationMs: number,
+  color: {number}?
+): PrimitiveReactionDescriptor
+  local args: { [string]: any } = { strength = strength, durationMs = durationMs }
+  if color ~= nil then
+    args.color = color
+  end
+  return { primitive = "vignette", args = args }
+end
+
+--- Shake the screen by writing the engine-owned `screen.shake` offset slot, a
+--- decaying oscillation that fades to rest. Pure: returns a primitive reaction
+--- body, no engine side effect. `amplitude` is the peak displacement in
+--- logical-reference px; `durationMs` is the total decay time in milliseconds.
+--- The optional `frequency` is the oscillation rate in Hz (omitted when nil ⇒
+--- the engine applies its default frequency).
+function UiReactionsSdk.screenShake(
+  amplitude: number,
+  durationMs: number,
+  frequency: number?
+): PrimitiveReactionDescriptor
+  local args: { [string]: any } = { amplitude = amplitude, durationMs = durationMs }
+  if frequency ~= nil then
+    args.frequency = frequency
+  end
+  return { primitive = "screenShake", args = args }
+end
+
 --- Push a dialog UI tree onto the modal stack. Pure: returns a primitive
 --- reaction body, no engine side effect. `tree` names the UI tree to show; the
 --- optional `onCommit` (omitted when nil) names a reaction fired when the

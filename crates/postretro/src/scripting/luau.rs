@@ -116,7 +116,8 @@ const DATA_SCRIPT_FIELDS: &[&str] = &["defineReaction", "defineEntity"];
 /// UI-reactions SDK fields lifted to globals after evaluating
 /// `ui/reactions.luau`. `onStateCrossing` builds a state-crossing watcher; the
 /// rest are system-reaction body constructors that pair with `defineReaction` to
-/// emit `playSound` / `rumble` / `flashScreen`, the UI-stack (`showDialog` /
+/// emit `playSound` / `rumble` / `flashScreen` / `vignette` / `screenShake`,
+/// the UI-stack (`showDialog` /
 /// `openMenu` / `closeDialog`) primitives, the `setState` slot write (Goal F),
 /// the text-entry helpers (`openTextEntry` wraps `showDialog` for the engine
 /// keyboard; `KEYBOARD_TREE` is its registry name constant), and the text-edit
@@ -126,6 +127,8 @@ const UI_REACTIONS_FIELDS: &[&str] = &[
     "playSound",
     "rumble",
     "flashScreen",
+    "vignette",
+    "screenShake",
     "showDialog",
     "openMenu",
     "closeDialog",
@@ -1439,6 +1442,8 @@ mod tests {
             "playSound",
             "rumble",
             "flashScreen",
+            "vignette",
+            "screenShake",
             "showDialog",
             "openMenu",
             "closeDialog",

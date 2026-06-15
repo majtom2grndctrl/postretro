@@ -64,38 +64,38 @@ tonemap and M10 post extend — not a side-channel SE has to unwind later.
 
 ## Acceptance criteria
 
-- [ ] All scene/UI passes render into `scene_color`; the resolve pass is the sole
+- [x] All scene/UI passes render into `scene_color`; the resolve pass is the sole
   swapchain writer. With `screen.flash`/`screen.vignette`/`screen.shake` all at
   rest, output is byte-identical to the pre-SE pipeline — the foundation parity gate.
   (Depends on ALL re-point sites including Skinned Mesh `:5206` and Billboard
   `:5244`, `scene_color` at the sRGB surface format, and NEAREST resolve sampler.)
-- [ ] A `flashScreen` reaction produces a full-screen color flash over scene +
+- [x] A `flashScreen` reaction produces a full-screen color flash over scene +
   HUD decaying to transparent; `vignette` darkens/tints the edges to a peak then
   decays, center unaffected; `screenShake` offsets the whole composited image
   with a decaying oscillation that returns to exact center — shake samples
   `scene_color` and writes a different target (no read/write hazard). [Runnable:
   assert no read/write hazard. Manual verification: decay shape, return to exact
   center.]
-- [ ] All three pause when game logic pauses (dt-accumulated time, never wall
+- [x] All three pause when game logic pauses (dt-accumulated time, never wall
   clock) and compose simultaneously in the single resolve.
-- [ ] The pure pack fn `(UiReadSnapshot slot_values) -> EffectUniform` maps
+- [x] The pure pack fn `(UiReadSnapshot slot_values) -> EffectUniform` maps
   snapshot slot values into the resolve uniform (a test asserts the
   snapshot→uniform mapping). "Never the live slot table" is structural — the
   renderer holds no SlotTable/ScriptCtx handle — so the test asserts the mapping,
   not the absence of a table read.
-- [ ] `screen.vignette`/`screen.shake` are engine-owned slots registered like
+- [x] `screen.vignette`/`screen.shake` are engine-owned slots registered like
   `screen.flash`; a mod write no-ops (assertable, precedent `store.rs:1215`) and
   emits `log::warn!` (observable via log-capture harness — not required as a
   test assertion).
-- [ ] `vignette`/`screenShake` exist in both TS + Luau SDK with emitted typedefs,
+- [x] `vignette`/`screenShake` exist in both TS + Luau SDK with emitted typedefs,
   dispatch through the same `SystemReactionCommand` path as `flashScreen`, and a
   descriptor without them keeps its pre-SE wire form byte-identical.
-- [ ] The effect composes on top of the fog already composited into `scene_color`
+- [x] The effect composes on top of the fog already composited into `scene_color`
   (samples the post-fog, post-UI image).
-- [ ] Demo in the dev map: a low-health `onStateCrossing` fires flash + vignette +
+- [x] Demo in the dev map: a low-health `onStateCrossing` fires flash + vignette +
   `screenShake` (all bound to the same crossing in
   `content/dev/scripts/arena-lights.ts`) — manual verification.
-- [ ] `docs/scripting-reference.md` covers the two new reactions.
+- [x] `docs/scripting-reference.md` covers the two new reactions.
 
 ## Tasks
 

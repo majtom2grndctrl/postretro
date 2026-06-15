@@ -927,6 +927,14 @@ export type NumberTween = { durationMs: number, easing: WidgetEasing, from: numb
 export type ColorTween = { durationMs: number, easing: WidgetEasing, from: {number}? }
 --- A `{ ["local"] = name }` presentation-cell bind reference (`ui.createLocalState`).
 export type LocalBindRef = { ["local"]: string }
+--- A scalar comparand for a `Predicate` (M13 G2): number, boolean, or string.
+export type PredicateValue = number | boolean | string
+--- A reactive predicate (M13 G2): a `slot` store source or `["local"]` cell source against an optional `equals` comparand. Produced by `StoreHandle:is(v)` / `LocalStateHandle:is(v)`.
+export type Predicate = { slot: string?, ["local"]: string?, equals: PredicateValue? }
+--- A11y role override (M13 G2). Absent leaves the widget at its implicit role.
+export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none"
+--- Live-region announcement urgency (M13 G2). `"polite"` is the default and round-trips to omission.
+export type AnnouncePriority = "polite" | "assertive"
 --- State binding for a `text` widget (`slot` store or `["local"]` cell; one of the two).
 export type TextBindProp = { slot: string?, ["local"]: string?, format: string?, tween: NumberTween? }
 --- State binding for a `panel` widget (color slot or `["local"]` cell).
@@ -949,39 +957,44 @@ export type ReactionHandleRef = { name: string }
 export type WidgetDescriptor = { [string]: any }
 
 --- Props for `Text`. `content` is `LocalizedText`. `fontSize` defaults to 12; `color` to opaque white.
-export type TextProps = { content: LocalizedText, fontSize: number?, color: WidgetColor?, font: string?, bind: TextBindProp?, styleRanges: StyleRangesProp?, id: string?, focusNeighbors: FocusNeighborsProp? }
+export type TextProps = { content: LocalizedText, fontSize: number?, color: WidgetColor?, font: string?, bind: TextBindProp?, styleRanges: StyleRangesProp?, id: string?, focusNeighbors: FocusNeighborsProp?, visibleWhen: Predicate?, role: WidgetRole? }
 --- A `text` leaf. An optional `bind` resolves the rendered string from a store slot; `styleRanges` recolors by value.
 declare function Text(props: TextProps): WidgetDescriptor
 
 --- Props for `Panel`. `bind` is a `PanelBindProp` (color slot).
-export type PanelProps = { fill: WidgetColor, border: BorderProp?, bind: PanelBindProp?, styleRanges: StyleRangesProp?, id: string?, focusNeighbors: FocusNeighborsProp? }
+export type PanelProps = { fill: WidgetColor, border: BorderProp?, bind: PanelBindProp?, styleRanges: StyleRangesProp?, id: string?, focusNeighbors: FocusNeighborsProp?, visibleWhen: Predicate?, role: WidgetRole? }
 --- A `panel` leaf: a solid `fill` with an optional 9-slice `border`.
 declare function Panel(props: PanelProps): WidgetDescriptor
 
---- Props for `Image`. No bind.
-export type ImageProps = { asset: string, id: string?, focusNeighbors: FocusNeighborsProp? }
---- An `image` leaf referencing a texture asset by key; sizes from the asset's natural dimensions.
+--- Props for `Image`. No bind. Name-XOR-decorative (M13 G2): exactly one of `label` or `decorative = true` (the union narrows it; neither/both errors).
+export type ImageProps = { asset: string, id: string?, focusNeighbors: FocusNeighborsProp?, visibleWhen: Predicate?, role: WidgetRole? } & ({ label: string } | { decorative: true })
+--- An `image` leaf referencing a texture asset by key; sizes from the asset's natural dimensions. Exactly one of `label` / `decorative = true` is required.
 declare function Image(props: ImageProps): WidgetDescriptor
 
 --- Props for `Spacer`. `flexGrow` defaults to 1. No bind.
-export type SpacerProps = { flexGrow: number?, id: string? }
+export type SpacerProps = { flexGrow: number?, id: string?, visibleWhen: Predicate?, role: WidgetRole? }
 --- A `spacer` leaf claiming a proportional share of leftover space.
 declare function Spacer(props: SpacerProps?): WidgetDescriptor
 
---- Props for `Button`. `onPress` is a reaction handle or a bare name string. No bind.
-export type ButtonProps = { id: string, label: LocalizedText, onPress: ReactionHandleRef | string, repeatOnHold: RepeatPolicyProp?, focusNeighbors: FocusNeighborsProp? }
---- An interactive `button`. `id` is required. `onPress` accepts a `defineReaction` handle (its `.name` is read) or a bare reaction-name string, emitting the unchanged `onPress: string` wire form.
+--- Props for `Button`. `onPress` is a reaction handle or a bare name string. Name-XOR (M13 G2): exactly one of `label` / `labelledBy`. `selected`/`checked` are reactive predicates; `bind`+`styleRanges` drive the highlight; `disabled` makes it non-interactive.
+export type ButtonProps = { id: string, onPress: ReactionHandleRef | string, repeatOnHold: RepeatPolicyProp?, focusNeighbors: FocusNeighborsProp?, selected: Predicate?, checked: Predicate?, bind: Predicate?, styleRanges: StyleRangesProp?, disabled: boolean?, visibleWhen: Predicate?, role: WidgetRole? } & ({ label: LocalizedText } | { labelledBy: string })
+--- An interactive `button`. `id` is required. `onPress` accepts a `defineReaction` handle (its `.name` is read) or a bare reaction-name string, emitting the unchanged `onPress: string` wire form. Exactly one of `label` / `labelledBy` is required.
 declare function Button(props: ButtonProps): WidgetDescriptor
 
---- Props for `Slider`. `bind` is a `SliderBindProp` (numeric slot); required.
-export type SliderProps = { id: string, label: LocalizedText, bind: SliderBindProp, min: number, max: number, step: number, capturesNav: {string}?, focusNeighbors: FocusNeighborsProp? }
---- An interactive `slider`. Nav wires in `capturesNav` step the bound value by `step` within `[min, max]`.
+--- Props for `Slider`. `bind` is a `SliderBindProp` (numeric slot); required. Name-XOR (M13 G2): exactly one of `label` / `labelledBy`. `disabled` makes it non-interactive.
+export type SliderProps = { id: string, bind: SliderBindProp, min: number, max: number, step: number, capturesNav: {string}?, focusNeighbors: FocusNeighborsProp?, disabled: boolean?, visibleWhen: Predicate?, role: WidgetRole? } & ({ label: LocalizedText } | { labelledBy: string })
+--- An interactive `slider`. Nav wires in `capturesNav` step the bound value by `step` within `[min, max]`. Exactly one of `label` / `labelledBy` is required.
 declare function Slider(props: SliderProps): WidgetDescriptor
 
 --- Props for `Bar`. `bind` is a `SliderBindProp` (numeric slot); required.
-export type BarProps = { bind: SliderBindProp, max: number, fill: WidgetColor, background: WidgetColor, styleRanges: StyleRangesProp?, id: string? }
+export type BarProps = { bind: SliderBindProp, max: number, fill: WidgetColor, background: WidgetColor, styleRanges: StyleRangesProp?, id: string?, visibleWhen: Predicate?, role: WidgetRole? }
 --- A passive `bar`: fill fraction is `value/max` clamped to `[0, 1]`. `styleRanges` recolors the fill.
 declare function Bar(props: BarProps): WidgetDescriptor
+
+--- Props for `Announce`. `text` is the POSITIONAL second argument; `priority` defaults to `"polite"` (round-trips to omission).
+export type AnnounceProps = { priority: AnnouncePriority?, visibleWhen: Predicate? }
+--- A non-visual `announce` widget (M13 G2): a live-region message routed to the platform a11y layer at the declared `priority`. `text` is a POSITIONAL second argument.
+declare function Announce(props: AnnounceProps, text: LocalizedText): WidgetDescriptor
 
 --- Container focus traversal kind.
 export type FocusKind = "linear" | "spatial"
@@ -1003,32 +1016,38 @@ declare function Grid(props: GridProps, children: {WidgetDescriptor}?): WidgetDe
 export type WidgetAnchor = "topLeft" | "top" | "topRight" | "left" | "center" | "right" | "bottomLeft" | "bottom" | "bottomRight"
 --- Whether a tree captures input or passes it through (HUD). `"passthrough"` is the default and round-trips to omission.
 export type WidgetCaptureMode = "capture" | "passthrough"
---- Placement-envelope props for `Tree`. `captureMode` defaults to `"passthrough"`.
-export type TreeProps = { anchor: WidgetAnchor, offset: {number}, captureMode: WidgetCaptureMode?, initialFocus: string?, textEntryTarget: string? }
+--- Placement-envelope props for `Tree`. `captureMode` defaults to `"passthrough"`. `accessibleName`/`role` (M13 G2) annotate the tree's root group.
+export type TreeProps = { anchor: WidgetAnchor, offset: {number}, captureMode: WidgetCaptureMode?, initialFocus: string?, textEntryTarget: string?, accessibleName: string?, role: WidgetRole? }
 --- The flat `AnchoredTree` envelope `Tree` produces.
-export type AnchoredTreeDescriptor = { anchor: WidgetAnchor, offset: {number}, root: WidgetDescriptor, captureMode: WidgetCaptureMode?, initialFocus: string?, textEntryTarget: string? }
+export type AnchoredTreeDescriptor = { anchor: WidgetAnchor, offset: {number}, root: WidgetDescriptor, captureMode: WidgetCaptureMode?, initialFocus: string?, textEntryTarget: string?, accessibleName: string?, role: WidgetRole? }
 --- Wrap a root widget descriptor in the `AnchoredTree` placement envelope. `root` is a POSITIONAL second argument.
 declare function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDescriptor
 
---- A `:get()`/`:set()` accessor wrapper over a writable, value-typed store-slot
+--- A `:get()`/`:set()`/`:is()` accessor wrapper over a writable, value-typed store-slot
 --- handle (`StateValue<T>`). `:get()` yields the typed bind reference a widget
 --- binds to; `:set(v)` produces a `setState` reaction descriptor (typed to the
---- slot's `T`). Read-only engine slots use `ReadonlyStateValue<T>` (`:get()` only).
+--- slot's `T`); `:is(v)` produces an equality `Predicate` (comparand typed to `T`).
+--- Read-only engine slots use `ReadonlyStateValue<T>` (`:get()` only).
 export type StoreHandle<T> = {
   get: (self: StoreHandle<T>) -> SliderBindProp,
   set: (self: StoreHandle<T>, value: T) -> PrimitiveReactionDescriptor,
+  is: (self: StoreHandle<T>, value: T) -> Predicate,
 }
---- Wrap a value-typed store-slot handle (`defineStore`'s `StateValue<T>` return) in a `:get()`/`:set()` accessor. Pure: `:set(...)` returns a descriptor, it does not write.
+--- Wrap a value-typed store-slot handle (`defineStore`'s `StateValue<T>` return) in a `:get()`/`:set()`/`:is()` accessor. Pure: `:set(...)`/`:is(...)` return descriptors, they do not write.
 declare function storeHandle(slot: any): StoreHandle<any>
 
 --- A presentation-cell handle (`ui.createLocalState`): `:get()` yields a `{ ["local"] }`
---- bind ref; `:set(v)` emits a `cellWrite` reaction (NEVER `setState`). Presentation-only.
+--- bind ref; `:set(v)` emits a `cellWrite` reaction (NEVER `setState`); `:is(v)` produces
+--- an equality `Predicate` (comparand typed to the cell's `T`). Presentation-only.
 export type LocalStateHandle<T> = {
   get: (self: LocalStateHandle<T>) -> LocalBindRef,
   set: (self: LocalStateHandle<T>, value: T) -> PrimitiveReactionDescriptor,
+  is: (self: LocalStateHandle<T>, value: T) -> Predicate,
 }
 --- Declare a presentation-cell scope (M13 G1b). SDK-lib function, not a registered primitive. Pure: no engine side effect. Returns a `{ scope, cells }` bundle.
 declare function createLocalState(init: { [string]: any }): { scope: any, cells: any }
+--- `Switch(cell, map)` (M13 G2) — expand a string-valued cell's `map` of `value -> subtree` into an array, injecting `visibleWhen = cell:is(key)` onto each subtree in LEXICOGRAPHICALLY-SORTED key order (byte-identical TS/Luau). Splice the result into a container's `children`.
+declare function Switch(cell: LocalStateHandle<string>, map: { [string]: WidgetDescriptor }): {WidgetDescriptor}
 --- State-helper namespace (state helpers are namespaced; reactions stay bare).
 declare ui: { createLocalState: (init: { [string]: any }) -> { scope: any, cells: any } }
 

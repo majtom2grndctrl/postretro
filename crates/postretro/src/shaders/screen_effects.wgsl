@@ -3,9 +3,12 @@
 // swapchain. The sole swapchain writer for the gameplay path — runs every
 // frame, never skipped at rest.
 //
-// Foundation task (M13 Goal SE Task 1): this is an IDENTITY BLIT. A later task
-// packs flash/vignette/shake into an effect uniform and applies the math here;
-// pre-effects there is no uniform bound and the pass just copies through.
+// Composes screen effects (flash / vignette / shake) on top of an identity blit.
+// The effect values arrive in `EffectUniform`, packed CPU-side from the frame's
+// `screen.flash` / `screen.vignette` / `screen.shake` slots (see
+// render/screen_effects.rs::pack_effect_uniform). At rest every term is an exact
+// no-op, so the resolve collapses to a bit-identical identity blit and the parity
+// gate holds for both the unbound and at-rest paths.
 //
 // sRGB byte-identity: `scene_color` is the sRGB surface format at single sample,
 // and the resolve sampler is NEAREST / pixel-aligned, so each source texel maps
@@ -15,6 +18,18 @@
 
 @group(0) @binding(0) var scene_color_tex: texture_2d<f32>;
 @group(0) @binding(1) var scene_color_sampler: sampler;
+
+// Mirrors `EffectUniform` in render/screen_effects.rs.
+//   flash    — rgba; `flash.a` is the over-blend weight (0 at rest → no-op).
+//   vignette — `xyz` linear tint + `w` strength (0 at rest → no edge tint).
+//   shake    — UV offset (px→UV conversion done CPU-side); (0,0) at rest.
+struct EffectUniform {
+    flash: vec4<f32>,
+    vignette: vec4<f32>,
+    shake: vec2<f32>,
+    _pad: vec2<f32>,
+}
+@group(0) @binding(2) var<uniform> effect: EffectUniform;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -37,8 +52,28 @@ fn vs_main(@builtin(vertex_index) vid: u32) -> VsOut {
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    // NEAREST sample (pipeline sampler is NEAREST) — 1:1 texel passthrough.
-    // Identity blit: no effect uniform yet; a later task applies effect math
-    // here against the sampled scene color.
-    return textureSample(scene_color_tex, scene_color_sampler, in.uv);
+    // Shake: pure UV add (px→UV conversion already done CPU-side). At rest
+    // `effect.shake == (0,0)`, so `in.uv + shake == in.uv` exactly — the sample
+    // is the same NEAREST 1:1 texel passthrough as the identity blit.
+    let sample_uv = in.uv + effect.shake;
+    let scene = textureSample(scene_color_tex, scene_color_sampler, sample_uv);
+    var color = scene.rgb;
+
+    // Vignette: tint/darken toward `vignette.rgb` near the edges, center
+    // unaffected. The radial falloff is 0 at the center and rises toward the
+    // corners; it is scaled by the authored strength `vignette.w`. At rest
+    // `vignette.w == 0`, so the mix factor is exactly 0 → `mix(color, _, 0.0)`
+    // returns `color` unchanged.
+    let centered = in.uv - vec2<f32>(0.5, 0.5);
+    let radial = clamp(dot(centered, centered) * 2.0, 0.0, 1.0);
+    let vignette_factor = effect.vignette.w * radial;
+    color = mix(color, effect.vignette.xyz, vignette_factor);
+
+    // Flash: over-blend toward `flash.rgb` by `flash.a`. At rest `flash.a == 0`,
+    // so `mix(color, _, 0.0)` returns `color` unchanged.
+    color = mix(color, effect.flash.xyz, effect.flash.a);
+
+    // Preserve the sampled alpha so the at-rest path is byte-identical to the
+    // pre-SE identity blit (which returned the full sampled RGBA).
+    return vec4<f32>(color, scene.a);
 }

@@ -41,6 +41,20 @@ local ANCHORS: { [string]: boolean } = {
   bottomRight = true,
 }
 
+local TREE_ROLES: { [string]: boolean } = {
+  tab = true,
+  tablist = true,
+  checkbox = true,
+  radio = true,
+  listitem = true,
+  button = true,
+  slider = true,
+  progressbar = true,
+  image = true,
+  group = true,
+  none = true,
+}
+
 local function requireObject(value: any, factory: string)
   if type(value) ~= "table" then
     error(`{factory}: props must be a table`)
@@ -109,6 +123,18 @@ function UiTreeSdk.Tree(props: any, root: any): WidgetDescriptor
   if props.textEntryTarget ~= nil then
     requireNonemptyString(props.textEntryTarget, "textEntryTarget", "Tree")
     out.textEntryTarget = props.textEntryTarget
+  end
+  if props.accessibleName ~= nil then
+    requireNonemptyString(props.accessibleName, "accessibleName", "Tree")
+    out.accessibleName = props.accessibleName
+  end
+  if props.role ~= nil then
+    if type(props.role) ~= "string" or not TREE_ROLES[props.role] then
+      error(
+        'Tree: `role` must be one of "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none"'
+      )
+    end
+    out.role = props.role
   end
   return out
 end

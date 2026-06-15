@@ -51,6 +51,10 @@ export type {
   PanelBindProp,
   SliderBindProp,
   LocalBindRef,
+  PredicateValue,
+  Predicate,
+  WidgetRole,
+  AnnouncePriority,
   StyleRangeEntry,
   StyleRangesProp,
   BorderProp,
@@ -65,8 +69,9 @@ export type {
   ButtonProps,
   SliderProps,
   BarProps,
+  AnnounceProps,
 } from "./ui/widgets";
-export { Text, Panel, Image, Spacer, Button, Slider, Bar } from "./ui/widgets";
+export { Text, Panel, Image, Spacer, Button, Slider, Bar, Announce } from "./ui/widgets";
 
 export type {
   FocusKind,
@@ -89,7 +94,7 @@ export type {
   LocalStateHandle,
   LocalStateBundle,
 } from "./ui/state";
-export { storeHandle, createLocalState, ui } from "./ui/state";
+export { storeHandle, createLocalState, ui, Switch } from "./ui/state";
 
 export type { CrossingCondition, CrossingDescriptor } from "./ui/reactions";
 export {

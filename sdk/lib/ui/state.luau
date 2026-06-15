@@ -31,14 +31,20 @@ export type PrimitiveReactionDescriptor = {
 --- The typed bind reference a widget's `bind` prop accepts (`{ slot = name }`).
 export type SliderBindProp = { slot: string, tween: any? }
 
---- A `:get()`/`:set()` accessor wrapper over a writable, value-typed store-slot
---- handle (`StateValue<T>`). `:get()` yields the `{ slot }` bind reference a
---- widget binds to; `:set(v)` produces a `setState` reaction descriptor (typed
---- to the slot's `T`). Read-only engine slots use `ReadonlyStateValue<T>`
+--- A reactive predicate (M13 G2): `{ slot }` or `{ local }` source + optional
+--- `equals` comparand. Produced by `StoreHandle:is(v)` / `LocalStateHandle:is(v)`.
+export type Predicate = { slot: string?, ["local"]: string?, equals: any? }
+
+--- A `:get()`/`:set()`/`:is()` accessor wrapper over a writable, value-typed
+--- store-slot handle (`StateValue<T>`). `:get()` yields the `{ slot }` bind
+--- reference a widget binds to; `:set(v)` produces a `setState` reaction
+--- descriptor (typed to the slot's `T`); `:is(v)` produces an equality
+--- `Predicate` (typed to `T`). Read-only engine slots use `ReadonlyStateValue<T>`
 --- instead -- `:get()` only, no `:set()`.
 export type StoreHandle<T> = {
   get: (self: StoreHandle<T>) -> SliderBindProp,
   set: (self: StoreHandle<T>, value: T) -> PrimitiveReactionDescriptor,
+  is: (self: StoreHandle<T>, value: T) -> Predicate,
 }
 
 local UiStateSdk = {}
@@ -60,6 +66,9 @@ function UiStateSdk.storeHandle<T>(slot: T): StoreHandle<T>
       -- Byte-identical to `UiReactionsSdk.setState(name, value)`.
       return { primitive = "setState", args = { slot = name, value = value } }
     end,
+    is = function(self: StoreHandle<T>, value: T): Predicate
+      return { slot = name, equals = value }
+    end,
   }
 end
 
@@ -72,10 +81,12 @@ export type LocalBindRef = { ["local"]: string }
 --- A presentation-cell handle for ONE cell, returned inside `createLocalState`'s
 --- bundle. Distinct from `StoreHandle` (which writes the authoritative store):
 --- `:get()` yields the `{ local }` bind reference; `:set(v)` emits a `cellWrite`
---- reaction (NEVER `setState`) updating the cell at the game-logic stage.
+--- reaction (NEVER `setState`) updating the cell at the game-logic stage; `:is(v)`
+--- produces an equality `Predicate` (typed to the cell's `T`).
 export type LocalStateHandle<T> = {
   get: (self: LocalStateHandle<T>) -> LocalBindRef,
   set: (self: LocalStateHandle<T>, value: T) -> PrimitiveReactionDescriptor,
+  is: (self: LocalStateHandle<T>, value: T) -> Predicate,
 }
 
 --- Monotonic counter stabilizing each `createLocalState` call's scope id.
@@ -105,9 +116,61 @@ function UiStateSdk.createLocalState(init: { [string]: any }): { scope: any, cel
         -- A `cellWrite` reaction (NEVER `setState`): presentation cell, scoped.
         return { primitive = "cellWrite", args = { scope = scopeId, cell = cellName, value = value } }
       end,
+      is = function(self, value): Predicate
+        return { ["local"] = cellName, equals = value }
+      end,
     }
   end
   return { scope = { scope = scopeId, cells = init }, cells = cells }
+end
+
+-- --- Switch(cell, map) -----------------------------------------------------
+
+--- `Switch(cell, map)` -- declarative reactive branching sugar. Reads the
+--- handle's `{ local }` cell name and expands the `map`'s subtrees into an array,
+--- injecting `visibleWhen = cell:is(key)` onto a shallow clone of each (the input
+--- subtree is not mutated). Splice the result into a container's `children`: at
+--- runtime exactly the subtree whose key equals the cell value is visible.
+---
+--- Keys expand in LEXICOGRAPHICALLY-SORTED order so the emitted array is
+--- byte-IDENTICAL to the TS `Switch` (Luau table iteration order is undefined, so
+--- the sort is load-bearing). A key already carrying `visibleWhen` errors.
+function UiStateSdk.Switch(cell: any, map: { [string]: any }): { any }
+  if type(cell) ~= "table" or type(cell.is) ~= "function" then
+    error("Switch: `cell` must be a `ui.createLocalState` cell handle")
+  end
+  if type(map) ~= "table" then
+    error("Switch: `map` must be a table of value -> subtree")
+  end
+  -- Collect keys, then sort lexicographically -- Luau pair iteration order is
+  -- undefined, so this sort is what makes the output match TS byte-for-byte.
+  local keys: { string } = {}
+  for key in map do
+    table.insert(keys, key)
+  end
+  if #keys == 0 then
+    error("Switch: `map` must declare at least one case")
+  end
+  table.sort(keys)
+
+  local out: { any } = {}
+  for i, key in ipairs(keys) do
+    local subtree = map[key]
+    if type(subtree) ~= "table" or type(subtree.kind) ~= "string" then
+      error(`Switch: case \`{key}\` must be a widget descriptor (a \`kind\`-tagged table)`)
+    end
+    if subtree.visibleWhen ~= nil then
+      error(`Switch: case \`{key}\` already declares \`visibleWhen\`; Switch injects it`)
+    end
+    -- Shallow clone the subtree, then inject the predicate.
+    local clone: { [string]: any } = {}
+    for k, v in subtree do
+      clone[k] = v
+    end
+    clone.visibleWhen = cell:is(key)
+    out[i] = clone
+  end
+  return out
 end
 
 --- The `ui` namespace object: state-helper SDK functions are namespaced

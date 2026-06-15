@@ -508,6 +508,38 @@ pub(crate) struct UiTree {
     /// it to prove a settled frame performs NO draw-list rebuild.
     #[cfg(test)]
     draw_rebuild_count: u32,
+    /// Per-node reactive-visibility state for nodes carrying a `visibleWhen`
+    /// predicate (M13 G2, Task 2b). Keyed by the taffy `NodeId`; populated once at
+    /// build from the descriptor's `visible_when` fields (harvested in lockstep
+    /// with the taffy tree, so each predicate carries its nearest `localState`
+    /// scope for `{ local }` resolution). The diff (`resolve_bindings`) resolves
+    /// each predicate per frame against the snapshot and, on a resolved-value
+    /// flip, toggles the node's taffy `Display` (`None` ⇄ `Flex`) and marks it
+    /// dirty. A node without `visibleWhen` never appears here and stays visible.
+    visibility: HashMap<NodeId, VisibilityState>,
+}
+
+/// Reactive-visibility state for one node carrying a `visibleWhen` predicate. The
+/// predicate + its build-time `localState` scope are immutable; `prev` is the last
+/// resolved value (`None` until the first diff, so the first frame always applies
+/// the resolved state). Stored on `UiTree::visibility` — never inside
+/// `NodeContext`, since a `visibleWhen` may sit on a pure layout container (a
+/// stack/grid) that carries no draw context. Keeping it off the descriptor walk
+/// is the invariant: visibility is a layout/draw/focus concern only, so a hidden
+/// subtree never tears down its `localState` cells (see `presentation_cells.rs`).
+#[derive(Debug, Clone)]
+struct VisibilityState {
+    predicate: Predicate,
+    /// Nearest declaring `localState` scope for a `{ local }` predicate; `None`
+    /// for a `{ slot }` predicate or a local predicate with no enclosing scope.
+    scope: Option<String>,
+    /// The node's authored `Display` when visible — `Flex` for a stack/leaf,
+    /// `Grid` for a grid container. Restored on a hide→show flip so a grid's
+    /// track layout survives the round-trip (restoring a grid to `Flex` would
+    /// corrupt it). Captured at build from the just-set taffy style.
+    visible_display: Display,
+    /// Last resolved `0.0`/`1.0`. `None` before the first diff resolves it.
+    prev: Option<f32>,
 }
 
 impl UiTree {
@@ -526,6 +558,12 @@ impl UiTree {
         // No enclosing scope at the root: a container declaring its own
         // `localState` opens one for its subtree inside `build_node`.
         let root = build_node(&mut taffy, &tree.root, theme, None);
+        // Harvest `visibleWhen` predicates in lockstep with the just-built taffy
+        // tree (M13 G2, Task 2b). The first `resolve_bindings` applies each
+        // predicate's resolved state (`prev` starts `None`, so the first frame is
+        // always treated as a change).
+        let mut visibility = HashMap::new();
+        harvest_visibility(&taffy, &tree.root, root, None, &mut visibility);
         Self {
             taffy,
             root,
@@ -539,6 +577,7 @@ impl UiTree {
             cached_draw_data: None,
             #[cfg(test)]
             draw_rebuild_count: 0,
+            visibility,
         }
     }
 
@@ -571,6 +610,16 @@ impl UiTree {
         self.taffy
             .mark_dirty(node)
             .expect("node exists in its own tree");
+    }
+
+    /// Whether `node` is currently hidden (`Display::None`) by a false
+    /// `visibleWhen` predicate (M13 G2, Task 2b). The draw and focus walks query
+    /// this to skip a hidden subtree without removing it from the taffy tree (the
+    /// descriptor↔taffy 1:1 lockstep must hold). taffy's flexbox/grid layout
+    /// already gives a `Display::None` node zero size, so this only excludes it
+    /// from the per-frame draw/focus read-back.
+    fn is_display_none(&self, node: NodeId) -> bool {
+        self.taffy.style(node).expect("node has a style").display == Display::None
     }
 
     /// Compute layout against the 1280x720 logical-reference canvas, then read
@@ -954,6 +1003,54 @@ impl UiTree {
         for node in dirty_text {
             self.mark_dirty(node);
         }
+
+        // Reactive visibility (M13 G2, Task 2b): resolve each `visibleWhen`
+        // predicate against this frame's snapshot and, on a resolved-value FLIP
+        // since the last diff, toggle the node's taffy `Display` (`None` ⇄ `Flex`)
+        // and mark it dirty so the layout gate recomputes and the per-frame
+        // focus-rect re-export reflects it. A targeted invalidation: visibility
+        // flips are rare, authored-frequency events (`lib/ui.md` §3), so this
+        // re-uses the same relayout path bound content changes take. The first
+        // diff always applies (`prev` is `None`). The node STAYS in the taffy tree
+        // — only its `Display` flips — so the descriptor↔taffy 1:1 lockstep that
+        // `export_focus_rects` walks survives. Visibility is NEVER applied in the
+        // descriptor walk (`presentation_cells.rs::reconcile`), so a hidden subtree
+        // never tears down its `localState` cells.
+        let mut visibility_flips: Vec<(NodeId, Display)> = Vec::new();
+        for (node, state) in self.visibility.iter_mut() {
+            let resolved = resolve_predicate(
+                &state.predicate.source,
+                state.predicate.equals.as_ref(),
+                state.scope.as_deref(),
+                slot_values,
+                cell_values,
+            );
+            if state.prev != Some(resolved) {
+                state.prev = Some(resolved);
+                // A true predicate (`1.0`) shows the node at its authored
+                // `Display` (`Flex`/`Grid`); a false one (`0.0`) hides it via
+                // `Display::None` while leaving it in the tree.
+                let display = if resolved >= 0.5 {
+                    state.visible_display
+                } else {
+                    Display::None
+                };
+                visibility_flips.push((*node, display));
+            }
+        }
+        for (node, display) in visibility_flips {
+            let mut style = self.taffy.style(node).expect("node has a style").clone();
+            style.display = display;
+            self.taffy
+                .set_style(node, style)
+                .expect("node exists in its own tree");
+            // Mark dirty so the layout gate recomputes (a `Display::None` subtree
+            // contributes zero size) and `export_ui_focus_rects` re-exports.
+            self.mark_dirty(node);
+            // A flip flags the draw list for rebuild: the hidden/shown subtree's
+            // quads/glyphs must drop or reappear in the next collect.
+            diff.appearance_changed = true;
+        }
         diff
     }
 
@@ -1036,6 +1133,15 @@ impl UiTree {
         slot_values: &HashMap<String, SlotValue>,
         cell_values: &CellValues,
     ) {
+        // Reactive visibility (M13 G2, Task 2b): a `Display::None` node (a false
+        // `visibleWhen`) and its subtree are unreachable for focus — emit no
+        // FocusRect, register no focus group, and never recurse. The subtree's
+        // focusables thus drop out of the rect list (so they cannot be navigated
+        // to) and out of any `initial_focus` candidacy (the engine cannot select
+        // an id that isn't present).
+        if self.is_display_none(node) {
+            return;
+        }
         let layout = self.taffy.layout(node).expect("node has computed layout");
         let this_z = *z;
         *z += 1;
@@ -1138,6 +1244,13 @@ impl UiTree {
         walk: &DrawWalkCtx<'_>,
         data: &mut UiDrawData,
     ) {
+        // Reactive visibility (M13 G2, Task 2b): a `Display::None` node (a false
+        // `visibleWhen`) and its entire subtree draw nothing — skip the whole
+        // subtree so zero quads/glyphs are emitted. The node stays in the taffy
+        // tree (just hidden), so this only affects the draw, not the structure.
+        if self.is_display_none(node) {
+            return;
+        }
         let DrawWalkCtx {
             canvas_origin,
             scale,
@@ -1873,6 +1986,73 @@ fn widget_children(widget: &Widget) -> Option<&[Widget]> {
         Widget::VStack(w) | Widget::HStack(w) => Some(&w.children),
         Widget::Grid(w) => Some(&w.children),
         _ => None,
+    }
+}
+
+/// A widget's optional `visibleWhen` reactive-visibility predicate (M13 G2, Task
+/// 2b). Lives on every widget variant; `None` means the node is always visible.
+/// Harvested in lockstep with the taffy tree (`harvest_visibility`) so the diff
+/// can toggle the matching node's taffy `Display`.
+fn widget_visible_when(widget: &Widget) -> Option<&Predicate> {
+    match widget {
+        Widget::Text(w) => w.visible_when.as_ref(),
+        Widget::Panel(w) => w.visible_when.as_ref(),
+        Widget::Image(w) => w.visible_when.as_ref(),
+        Widget::Spacer(w) => w.visible_when.as_ref(),
+        Widget::VStack(w) | Widget::HStack(w) => w.visible_when.as_ref(),
+        Widget::Grid(w) => w.visible_when.as_ref(),
+        Widget::Button(w) => w.visible_when.as_ref(),
+        Widget::Slider(w) => w.visible_when.as_ref(),
+        Widget::Bar(w) => w.visible_when.as_ref(),
+        Widget::Announce(w) => w.visible_when.as_ref(),
+    }
+}
+
+/// Harvest reactive-visibility state in lockstep with the just-built taffy tree
+/// (M13 G2, Task 2b). Walks the descriptor and the taffy graph together — they are
+/// structurally 1:1 (`build_node` maps each widget to exactly one node, children in
+/// order) — and records a `VisibilityState` for every node carrying a `visibleWhen`
+/// predicate. Each predicate carries its nearest enclosing `localState` scope so a
+/// `{ local }` predicate resolves against the same scope the draw/focus walks use;
+/// a `{ slot }` predicate carries `None`. Nodes with no `visibleWhen` never enter
+/// the map and stay visible.
+fn harvest_visibility(
+    taffy: &TaffyTree<NodeContext>,
+    widget: &Widget,
+    node: NodeId,
+    scope: Option<&str>,
+    out: &mut HashMap<NodeId, VisibilityState>,
+) {
+    if let Some(predicate) = widget_visible_when(widget) {
+        // A `{ local }` predicate resolves against the nearest enclosing scope; a
+        // `{ slot }` predicate reads the store and needs no scope.
+        let pred_scope = match &predicate.source {
+            BindSource::Local { .. } => scope.map(str::to_string),
+            BindSource::Slot { .. } => None,
+        };
+        // Capture the authored `Display` (`Grid` for a grid, `Flex`/default
+        // otherwise) so a hide→show flip restores the right one.
+        let visible_display = taffy.style(node).expect("node has a style").display;
+        out.insert(
+            node,
+            VisibilityState {
+                predicate: predicate.clone(),
+                scope: pred_scope,
+                visible_display,
+                prev: None,
+            },
+        );
+    }
+
+    // A container declaring its own `localState` opens a scope for its subtree
+    // (mirrors `build_stack`); children inherit otherwise.
+    let child_scope = container_local_scope(widget).or(scope);
+
+    if let Some(children) = widget_children(widget) {
+        let taffy_children = taffy.children(node).expect("node children resolve");
+        for (child_widget, child_node) in children.iter().zip(taffy_children) {
+            harvest_visibility(taffy, child_widget, child_node, child_scope, out);
+        }
     }
 }
 
@@ -6040,6 +6220,219 @@ mod tests {
             (fraction - 0.5).abs() < 0.05,
             "mid-tween fill fraction eases to ~0.5, got {fraction}"
         );
+    }
+
+    // --- M13 G2 Task 2b: conditional visibility (`visibleWhen` via Display::None) ---
+
+    /// A focusable text leaf carrying a `visibleWhen` predicate over `slot`
+    /// (boolean truthiness). Drawn (one glyph run) and focusable when shown.
+    fn text_id_visible(content: &str, id: &str, slot: &str) -> Widget {
+        Widget::Text(TextWidget {
+            content: content.into(),
+            font_size: 20.0,
+            color: ColorValue::Literal([1.0; 4]),
+            font: None,
+            id: Some(id.to_string()),
+            focus_neighbors: super::super::descriptor::FocusNeighbors::default(),
+            bind: None,
+            style_ranges: None,
+            visible_when: Some(pred(slot, None)),
+            role: None,
+        })
+    }
+
+    /// A linear-focus vstack wrapping `children` (each its own focusable leaf).
+    fn focus_vstack(children: Vec<Widget>) -> Widget {
+        use super::super::descriptor::{FocusKind, FocusPolicy};
+        Widget::VStack(ContainerWidget {
+            gap: SpacingValue::Literal(10.0),
+            padding: SpacingValue::Literal(0.0),
+            align: Align::Start,
+            fill: None,
+            border: None,
+            id: None,
+            focus_neighbors: super::super::descriptor::FocusNeighbors::default(),
+            focus: Some(FocusPolicy::Shorthand(FocusKind::Linear)),
+            restore_on_return: false,
+            local_state: None,
+            visible_when: None,
+            role: None,
+            children,
+        })
+    }
+
+    fn visibility_slots(slot: &str, value: bool) -> HashMap<String, SlotValue> {
+        let mut m = HashMap::new();
+        m.insert(slot.to_string(), SlotValue::Boolean(value));
+        m
+    }
+
+    #[test]
+    fn visible_when_false_hides_subtree_from_draw_and_focus() {
+        // A false `visibleWhen` sets the node Display::None: zero glyph runs for the
+        // hidden leaf, its focusable drops out of the rect list, and it is not a
+        // candidate for the declared initial focus.
+        let root = focus_vstack(vec![
+            text_id("Always", "always"),
+            text_id_visible("Maybe", "maybe", "hud.advanced"),
+        ]);
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root,
+            capture_mode: CaptureMode::Passthrough,
+            // The hidden node is the declared initial focus — it must NOT be a
+            // candidate while hidden (its id is absent from the rect list).
+            initial_focus: Some("maybe".to_string()),
+            text_entry_target: None,
+            accessible_name: None,
+            role: None,
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+
+        // Predicate false → "maybe" hidden.
+        let hidden = visibility_slots("hud.advanced", false);
+        let draw = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &hidden,
+            &no_cells(),
+            0.0,
+        );
+        let focus = ui.export_focus_rects(&tree, [1280, 720], &hidden, &no_cells());
+
+        assert!(
+            draw.texts.iter().all(|t| t.content != "Maybe"),
+            "hidden leaf draws zero glyph runs, got: {:?}",
+            draw.texts.iter().map(|t| &t.content).collect::<Vec<_>>(),
+        );
+        assert!(
+            draw.texts.iter().any(|t| t.content == "Always"),
+            "visible sibling still draws",
+        );
+        let ids: Vec<&str> = focus.rects.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, ["always"], "hidden focusable is unreachable");
+        assert!(
+            !focus.rects.iter().any(|r| r.id == "maybe"),
+            "hidden node is not an initial-focus candidate",
+        );
+    }
+
+    #[test]
+    fn visible_when_true_restores_draw_and_focus() {
+        // Round-trip the same tree with the predicate true: the previously hidden
+        // node draws its glyph run and rejoins the focus rect list.
+        let root = focus_vstack(vec![
+            text_id("Always", "always"),
+            text_id_visible("Maybe", "maybe", "hud.advanced"),
+        ]);
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root,
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: Some("maybe".to_string()),
+            text_entry_target: None,
+            accessible_name: None,
+            role: None,
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+
+        // Frame 1: hidden.
+        let hidden = visibility_slots("hud.advanced", false);
+        ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &hidden,
+            &no_cells(),
+            0.0,
+        );
+
+        // Frame 2: predicate true → restored.
+        let shown = visibility_slots("hud.advanced", true);
+        let draw = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &shown,
+            &no_cells(),
+            0.0,
+        );
+        let focus = ui.export_focus_rects(&tree, [1280, 720], &shown, &no_cells());
+
+        assert!(
+            draw.texts.iter().any(|t| t.content == "Maybe"),
+            "shown leaf draws its glyph run again",
+        );
+        let ids: Vec<&str> = focus.rects.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, ["always", "maybe"], "shown focusable rejoins the list");
+    }
+
+    #[test]
+    fn visible_when_resolved_change_marks_dirty_and_reexports() {
+        // A change in the predicate's resolved value relays out (marks dirty) and
+        // the re-exported focus rect list reflects the new visibility; an unchanged
+        // resolved value does NOT relayout (targeted invalidation).
+        let root = focus_vstack(vec![text_id_visible("Maybe", "maybe", "hud.advanced")]);
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root,
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
+            accessible_name: None,
+            role: None,
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+
+        // Frame 1: hidden (false). First frame always computes once.
+        let hidden = visibility_slots("hud.advanced", false);
+        ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &hidden,
+            &no_cells(),
+            0.0,
+        );
+        let after_first = ui.recompute_count();
+        let focus_hidden = ui.export_focus_rects(&tree, [1280, 720], &hidden, &no_cells());
+        assert!(
+            focus_hidden.rects.is_empty(),
+            "hidden node exports no focus rect",
+        );
+
+        // Frame 2: same resolved value (still false) — no flip, no relayout.
+        ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &hidden,
+            &no_cells(),
+            0.0,
+        );
+        assert_eq!(
+            ui.recompute_count(),
+            after_first,
+            "an unchanged predicate value must not relayout",
+        );
+
+        // Frame 3: resolved value flips to true — marks dirty, relays out.
+        let shown = visibility_slots("hud.advanced", true);
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &shown, &no_cells(), 0.0);
+        assert!(
+            ui.recompute_count() > after_first,
+            "a resolved-value flip marks layout dirty and relays out",
+        );
+        let focus_shown = ui.export_focus_rects(&tree, [1280, 720], &shown, &no_cells());
+        let ids: Vec<&str> = focus_shown.rects.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, ["maybe"], "re-export reflects the now-visible node");
     }
 }
 

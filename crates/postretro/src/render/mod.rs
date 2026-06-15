@@ -5582,11 +5582,17 @@ impl Renderer {
         self.ui.truncate_gameplay_stack(stack.len());
 
         // Post-scene compositor resolve: blit `scene_color` into the swapchain
-        // `view`. Encoded AFTER the UI pass and BEFORE the timing resolve — the
-        // sole swapchain writer for the gameplay path, run every frame (never
-        // skipped at rest). Foundation task: identity blit (no effect uniform
-        // bound yet; a later SE task applies flash/vignette/shake here).
-        self.screen_effects.encode_resolve(&mut encoder, &view);
+        // `view`, composing flash/vignette/shake from the frame's UI slot
+        // snapshot on top. Encoded AFTER the UI pass and BEFORE the timing
+        // resolve — the sole swapchain writer for the gameplay path, run every
+        // frame (never skipped at rest). At-rest slot values pack to the identity
+        // uniform, so the output stays byte-identical to the pre-SE blit.
+        self.screen_effects.encode_resolve(
+            &self.queue,
+            &mut encoder,
+            &view,
+            &self.ui_snapshot.slot_values,
+        );
 
         if let Some(timing) = &self.frame_timing {
             timing.encode_resolve(&mut encoder);

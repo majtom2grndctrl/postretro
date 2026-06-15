@@ -10,7 +10,7 @@
 // `root` widget's own concern; this factory only places the whole tree once.
 // See: context/lib/ui.md · context/lib/scripting.md §7
 
-import type { WidgetDescriptor } from "./widgets";
+import type { WidgetDescriptor, WidgetRole } from "./widgets";
 
 /**
  * The nine placement anchors a tree may be pinned to. Mirrors `descriptor.rs`
@@ -51,6 +51,8 @@ export type TreeProps = {
   captureMode?: WidgetCaptureMode;
   initialFocus?: string;
   textEntryTarget?: string;
+  accessibleName?: string;
+  role?: WidgetRole;
 };
 
 /**
@@ -65,6 +67,8 @@ export type AnchoredTreeDescriptor = {
   captureMode?: WidgetCaptureMode;
   initialFocus?: string;
   textEntryTarget?: string;
+  accessibleName?: string;
+  role?: WidgetRole;
 };
 
 const ANCHORS: ReadonlySet<string> = new Set([
@@ -77,6 +81,20 @@ const ANCHORS: ReadonlySet<string> = new Set([
   "bottomLeft",
   "bottom",
   "bottomRight",
+]);
+
+const TREE_ROLES: ReadonlySet<string> = new Set([
+  "tab",
+  "tablist",
+  "checkbox",
+  "radio",
+  "listitem",
+  "button",
+  "slider",
+  "progressbar",
+  "image",
+  "group",
+  "none",
 ]);
 
 function requireObject(value: unknown, factory: string): void {
@@ -147,6 +165,18 @@ export function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDesc
   if (props.textEntryTarget !== undefined) {
     requireNonemptyString(props.textEntryTarget, "textEntryTarget", "Tree");
     out.textEntryTarget = props.textEntryTarget;
+  }
+  if (props.accessibleName !== undefined) {
+    requireNonemptyString(props.accessibleName, "accessibleName", "Tree");
+    out.accessibleName = props.accessibleName;
+  }
+  if (props.role !== undefined) {
+    if (typeof props.role !== "string" || !TREE_ROLES.has(props.role)) {
+      throw new Error(
+        'Tree: `role` must be one of "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none"',
+      );
+    }
+    out.role = props.role;
   }
   return out;
 }

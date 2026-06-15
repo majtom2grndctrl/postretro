@@ -74,6 +74,9 @@ impl PresentationCellStore {
     pub(crate) fn reconcile(&mut self, trees: &[&AnchoredTree]) {
         let mut declarations: HashMap<String, &LocalState> = HashMap::new();
         for tree in trees {
+            // Walks the DESCRIPTOR (`tree.root`), never the visible/taffy tree, so a
+            // `visibleWhen` flip (M13 G2, Task 2b — applied only in the layout/draw/
+            // focus walks) never drops a hidden subtree's `localState` cells.
             collect_local_states(&tree.root, &mut declarations);
         }
 
@@ -272,6 +275,35 @@ mod tests {
                 .snapshot()
                 .get(&("counter".to_string(), "count".to_string())),
             Some(&SlotValue::Number(3.0)),
+        );
+    }
+
+    #[test]
+    fn cell_survives_hide_show_because_reconcile_walks_the_descriptor() {
+        // M13 G2 Task 2b: a `visibleWhen` flip hides a subtree via `Display::None`
+        // in the render walks ONLY — the descriptor stays composed, so `reconcile`
+        // (which walks `tree.root`, the descriptor, NOT the visible/taffy tree)
+        // keeps the scope present and never tears down its `localState` cells. A
+        // value written before a hide survives the hidden frames and is intact when
+        // the subtree shows again.
+        let mut store = PresentationCellStore::new();
+        let tree = scoped_tree("panel", &[("count", CellInit::Number(0.0))]);
+        store.reconcile(&[&tree]);
+        store.write("panel".into(), "count".into(), SlotValue::Number(99.0));
+
+        // "Hidden" frames: the descriptor is still composed (visibility is a render
+        // concern the store never sees), so reconcile keeps the cell intact.
+        store.reconcile(&[&tree]);
+        store.reconcile(&[&tree]);
+
+        // "Shown" again: the round-tripped value is unchanged (no re-seed to 0.0).
+        store.reconcile(&[&tree]);
+        assert_eq!(
+            store
+                .snapshot()
+                .get(&("panel".to_string(), "count".to_string())),
+            Some(&SlotValue::Number(99.0)),
+            "a hidden subtree's localState cell survives hide/show",
         );
     }
 

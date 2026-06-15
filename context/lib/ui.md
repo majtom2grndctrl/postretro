@@ -20,7 +20,9 @@ Scripts author UI as the same descriptor trees, built by SDK factory functions (
 
 **Modder components are plain functions.** A reusable component is a function returning a descriptor subtree — no component registry, decorator, or inheritance. It takes the same props-first(-then-children) shape as a factory and nests inside SDK containers; the bridge sees no difference between a factory call and a component call. A component that uses presentation cells (via `ui.createLocalState`) declares its scope on the container it returns, since cell scope resolves to the nearest declaring ancestor — so each component instance owns an independent scope.
 
-**Registration lifecycle.** `setupMod` / `setupLevel` returns carry UI registrations (named trees, theme tokens, font assets) alongside their other fields. The engine drains them into the registry, the live theme, and the font system **before** the authoring VM context drops — no new lifecycle stage, the same register→VM-drop boundary entity types use. A registered tree marked always-on composes as a per-frame base layer (the HUD case); otherwise it shows only when pushed. Tree precedence is **engine < mod** (per-level tier deferred until runtime level unload exists): a mod registration under an engine built-in's name shadows it (last-wins + a one-line warning — the reskin path). Malformed registrations are contained: a single malformed tree is logged and skipped; a structurally broken theme/font field surfaces a named load-time diagnostic the caller logs before continuing — a bad UI registration never aborts boot or level load.
+**Registration lifecycle.** `setupMod` / `setupLevel` returns carry UI registrations (named trees, theme tokens, font assets) alongside their other fields. The engine drains them into the registry, the live theme, and the font system **before** the short-lived authoring VM context drops — no new lifecycle stage, the same return→VM-drop boundary entity types use. A registered tree marked always-on composes as a per-frame base layer (the HUD case); otherwise it shows only when pushed. Tree precedence is **engine < mod** (per-level tier deferred until runtime level unload exists): a mod registration under an engine built-in's name shadows it. The registry retains tiers rather than overwriting lower-tier entries, so removing a mod tree reveals the engine fallback. Malformed registrations are contained: a single malformed tree is logged and skipped; a structurally broken theme/font field surfaces a named load-time diagnostic the caller logs before continuing — a bad UI registration never aborts boot or level load.
+
+**Staged replacement.** Staged mod init commits UI trees and theme with the same successful-generation boundary as returned stores. A successful current staged result replaces the complete mod tree tier and the complete mod theme override. Omitted mod trees are removed from the mod tier, revealing engine fallbacks. Omitted theme tokens revert to engine defaults. Failed or stale staged results preserve the current registry and theme. Always-on layers resolve the updated registry on the next frame. Already-pushed modal instances keep their cloned descriptor until closed and pushed again.
 
 ## 2. Theme Tokens
 
@@ -33,11 +35,11 @@ Theme is three category-scoped maps — colors (linear RGBA), fonts (registered 
 - **Unknown tokens degrade visibly, never panic:** unknown color → opaque magenta, unknown font → `body`, unknown spacing → zero, each with a warning per tree build.
 - **Token aliasing** (semantic → primitive references) is deferred; it widens theme entries additively when a consumer justifies it.
 
-Theme registration is engine-side today; script-facing registration arrives with the UI SDK.
+Theme registration arrives through returned manifest data. Custom font asset replacement/removal is not hot-reloadable until the font system has an explicit replacement contract; changing custom font declarations requires restart.
 
 ## 3. Display vs. Authoritative Values
 
-Widgets bind authoritative store slots by dotted name. The renderer may hold a per-node **display value** that eases toward the authoritative target over a declared duration and curve (tweening). Contract:
+Widgets bind authoritative store slots by state reference at the SDK layer and by dotted slot name on the retained wire. The renderer may hold a per-node **display value** that eases toward the authoritative target over a declared duration and curve (tweening). Contract:
 
 - The authoritative slot is always the target; the widget renders the display value, never the slot directly.
 - Display state is presentation-only and renderer-local — no store write ever originates in the UI module.
@@ -51,7 +53,11 @@ Engine-owned UI slots: `screen.flash` (RGBA, engine-decayed flash surface; the s
 
 ## 4. Interaction
 
-UI input rides one queued seam (`input/ui_dispatch.rs`) with kinded intents (nav / pointer-click / text): an event a capturing tree consumes on frame N reaches game logic no earlier than frame N+1 — the system's defining ordering contract. The focus engine is **app-side** (frame-order rule: it consumes intents, fires reactions, and writes slots — game-logic work; the renderer only displays). The renderer publishes a flat hit-test rect list once per frame (the reverse twin of the snapshot); the focused-node id rides the next snapshot, so the focus ring may trail a focus change by one frame, the same latency every UI event carries. Activation resolves to named, pre-registered reactions — never a script callback. Hover is tracked cursor state, never a queued event.
+UI input rides one queued seam (`input/ui_dispatch.rs`) with kinded intents (nav / pointer-click / text): an event a capturing tree consumes on frame N reaches game logic no earlier than frame N+1 — the system's defining ordering contract. The focus engine is **app-side** (frame-order rule: it consumes intents, fires reactions, and writes slots — game-logic work; the renderer only displays). The renderer publishes a flat hit-test rect list once per frame (the reverse twin of the snapshot); the focused-node id rides the next snapshot, so the focus ring may trail a focus change by one frame, the same latency every UI event carries. Activation resolves to named, pre-registered reactions or closed engine-reserved UI actions — never a script callback. Hover is tracked cursor state, never a queued event.
+
+Reserved UI actions live in the `ui.*` namespace. They are button `onPress` values that the App intercepts before named-reaction dispatch. `ui.commitTextEntry` commits the active text-entry modal. `ui.closeDialog` pops the active modal. Other `onPress` names keep the normal named-reaction path.
+
+The production pause menu is a capturing modal, not a true simulation pause. While it is active, UI capture suppresses player controls and releases the cursor. Game simulation, animation clocks, particles, audio, and UI time continue unless a separate true-pause system is added.
 
 ## 5. Render Path & Asset Loading
 

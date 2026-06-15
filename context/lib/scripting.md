@@ -23,7 +23,7 @@ Scripting is **strictly single-threaded**. Both rquickjs contexts and mlua state
 | Context | Purpose | Lifetime |
 |---------|---------|----------|
 | Definition | Cross-script data declarations | Engine lifetime |
-| Mod-init | One-time mod entry-point run: `start-script.{ts,luau}` evaluates, then `setupMod()` is called; its `ModManifest` return value carries engine-global entity-type registrations alongside the mod name | Engine init only — created and dropped within `run_mod_init` |
+| Mod-init | One-time mod entry-point run: `start-script.{ts,luau}` evaluates, then `setupMod()` is called; its `ModManifest` return value carries engine-global entity-type registrations, store declarations, UI trees, and UI theme data alongside the mod name | Engine init only — created and dropped within `run_mod_init` |
 | Data | One-time data-script run: `setupLevel(ctx)` returns the level manifest carrying reactions | Level load only — created once, dropped after the data script completes |
 
 Both are the authoring path: scripts run once at load time and register intent. The shared Definition context accumulates definitions across calls; cross-script globals are intentional. All persistent state flows through Rust primitives, not script globals.
@@ -32,7 +32,7 @@ Both are the authoring path: scripts run once at load time and register intent. 
 
 The context is dropped after the data script completes. No live reference to the data VM remains. The reaction registry is per-level and clears on unload; the entity-type registry is engine-global. The two registries are separate Rust structures — each can be cleared and repopulated independently.
 
-**Mod-init context lifecycle.** Engine init runs `start-script.{ts,luau}` at the mod root (the content root resolved from the loaded map's path). The script must export a `setupMod()` function that returns a `ModManifest` (`{ name: string }` minimum). Entity-type registrations arrive as `entities: EntityTypeDescriptor[]` on the return value; the engine drains them into the engine-global type registry after manifest validation. Store declarations are collected in the same attempt and commit only after script evaluation and manifest validation succeed. A failed attempt changes neither registry. Repeated init after platform resume accepts identical store schemas without resetting values. They survive level loads. Each descriptor declares an optional `canonicalName`; the second dispatch sweep (see `build_pipeline.md §Built-in Classname Routing`) matches map placements only when that value belongs to a descriptor with a placeable component. Absence, or a descriptor with no placeable component, means the archetype is not directly placeable from a map source. Weapon-only descriptors still use `canonicalName` as equip targets for player/default weapon selection. The engine errors at init if: both `.js` and `.lua[u]` start-scripts exist; in release builds, neither exists; `setupMod` is not exported; `setupMod` throws; or its return value is missing `name`. In debug builds, an absent start-script is a no-op (no mod-init context is created). Domain scripts (actors, weapons, etc.) are pulled in by the start-script via `import` (TS) or `require` (Luau) — there is no auto-scan.
+**Mod-init context lifecycle.** Engine init runs `start-script.{ts,luau}` at the mod root (the content root resolved from the loaded map's path). The script must export a `setupMod()` function that returns a `ModManifest` (`{ name: string }` minimum). Entity-type registrations arrive as `entities: EntityTypeDescriptor[]` on the return value; the engine drains them into the engine-global type registry after manifest validation. Store declarations arrive as returned declaration data, not import-time side effects, and commit only after script evaluation and manifest validation succeed. A failed attempt changes neither registry. Repeated init after platform resume accepts identical store schemas without resetting values. They survive level loads. Each descriptor declares an optional `canonicalName`; the second dispatch sweep (see `build_pipeline.md §Built-in Classname Routing`) matches map placements only when that value belongs to a descriptor with a placeable component. Absence, or a descriptor with no placeable component, means the archetype is not directly placeable from a map source. Weapon-only descriptors still use `canonicalName` as equip targets for player/default weapon selection. The engine errors at init if: both `.js` and `.lua[u]` start-scripts exist; in release builds, neither exists; `setupMod` is not exported; `setupMod` throws; or its return value is missing `name`. In debug builds, an absent start-script is a no-op (no mod-init context is created). Domain scripts (actors, weapons, etc.) are pulled in by the start-script via `import` (TS) or `require` (Luau) — there is no auto-scan.
 
 **Luau `require` resolver.** The mod-init Luau VM installs a `require` global rooted at the mod root. `require("./actors/player")` reads `<mod_root>/actors/player.luau`, compiles it, and returns its export. `..` segments and absolute paths are rejected (mods must not escape their root). Module caching, init-file conventions, and upward search are deliberately omitted — the resolver is the minimum needed to share descriptors across files. The long-lived definition Luau state has no `require` (the deny-list nil's it out); only short-lived VMs with a known mod root install the resolver.
 
@@ -66,7 +66,7 @@ Primitive closures access engine state through a shared handle (`ScriptCtx`) cap
 
 The state store has engine-global lifetime and is never cleared on level unload, platform suspend, or hot reload. Slots use stable dotted names grouped into unique namespaces.
 
-`defineStore` returns a table keyed by declared slot name. Each value is the stable dotted name as a branded string (`StateValue<string>`). The runtime representation is a plain string, such as `"audio.master"`; it carries no methods. Namespaced `.get()` / `.set()` wrappers remain SDK work.
+`defineStore` is a pure SDK builder. It returns `declaration` data for `setupMod().stores` and a `state` reference tree keyed by schema field. Calling it performs no FFI and changes no engine state. Unreturned declarations disappear when the short-lived setup VM drops.
 
 Engine-owned slots may be readonly to scripts while remaining writable by engine systems. Engine writes bypass readonly but still apply declared type, enum, finite-number, and range validation. Mod-owned slots are script-writable unless declared otherwise. Scripts and engine systems address slots by dotted name so references remain valid after the authoring VM drops.
 
@@ -75,6 +75,36 @@ An engine-owned numeric slot may gain its declared range after registration: the
 Declaration attempts validate as a whole before commit. Repeating an identical schema preserves current values. New non-overlapping namespaces may commit during staged hot reload. Changed schemas, duplicate declarations, and namespace overlap reject the whole staged result. Removed declarations do not clear committed stores.
 
 Declarations establish slot schemas and defaults before persisted values are restored. Persistence overlays compatible declared slots once per process, after the first successful mod-init commit. Missing or malformed files leave defaults active and still permit later clean-exit saving. Failed or absent mod init cannot overwrite persistence. Persisted slots save best-effort on clean engine exit; abnormal termination may lose unsaved changes.
+
+### Engine State SDK
+
+Scripts obtain engine-owned state references with `getGameState()` from `"postretro"`. It returns an immutable generated tree of descriptor references such as `getGameState().player.health.current`, not live values. Property access never reads current engine state.
+
+State leaves carry a stable dotted slot name and a type-level capability:
+
+- readonly references bind display and predicate consumers;
+- writable references may also feed write-producing consumers;
+- runtime validation remains authoritative.
+
+There is no `.get()`, `.set()`, `gameState` global, `playerState` global, `gameState.query()`, or `"postretro/game-state"` module. Nouns select state. Helpers describe how a reference is used:
+
+- `bindState(ref, options)` adds bind-only options such as `format` or `tween`;
+- `stateEquals(ref, value)` builds an equality predicate;
+- `updateState(ref, value)` builds a `setState` reaction descriptor.
+
+The retained wire stays dotted-name based. State references are an SDK authoring affordance that serialize their `slot` field into existing descriptor and reaction shapes.
+
+Engine state paths are generated from an explicit catalog. The catalog owns stable wire names, SDK path segments, value type, default, and read/write capability. Examples:
+
+| SDK path | Stable wire name |
+| --- | --- |
+| `getGameState().player.health.current` | `player.health` |
+| `getGameState().player.health.fraction` | `player.healthFraction` |
+| `getGameState().screen.flash` | `screen.flash` |
+| `getGameState().input.mode` | `input.mode` |
+| `getGameState().ui.textEntry` | `ui.textEntry` |
+
+The runtime installs the generated tree before SDK prelude evaluation, captures it into a language-native `getGameState()` closure, and hides the bridge global before author code runs. Calling `getGameState()` invokes no host callback or FFI.
 
 ---
 

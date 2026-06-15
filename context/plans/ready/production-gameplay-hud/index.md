@@ -1,6 +1,6 @@
 # Production Gameplay HUD Through the UI SDK
 
-> Prerequisite: `drafts/game-state-sdk-surface` ships first.
+> Prerequisite: `ready/game-state-sdk-surface` ships first.
 
 ## Goal
 

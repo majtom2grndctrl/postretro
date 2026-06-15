@@ -1,6 +1,6 @@
 # Production Pause Menu Through the UI SDK
 
-> Prerequisite: `drafts/production-gameplay-hud`.
+> Prerequisite: `ready/production-gameplay-hud`.
 
 ## Goal
 

@@ -72,6 +72,42 @@ export type ColorTween = {
 export type LocalBindRef = { local: string };
 
 /**
+ * A scalar comparand for a `Predicate` (M13 G2): a number, boolean, or string.
+ * Mirrors `descriptor.rs` `PredicateValue`. An array comparand is unrepresentable.
+ */
+export type PredicateValue = number | boolean | string;
+
+/**
+ * A reactive predicate (M13 G2): a `{ slot }` store source or `{ local }` cell
+ * source read against an optional `equals` comparand. Mirrors `descriptor.rs`
+ * `Predicate`. Constructed by `LocalStateHandle.is(v)` / `StoreHandle.is(v)`; the
+ * comparand there is typed to the cell/slot value type.
+ */
+export type Predicate = (
+  | { slot: StoreHandleRef; local?: never }
+  | LocalBindRef
+) & {
+  equals?: PredicateValue;
+};
+
+/** A11y role override (M13 G2). Mirrors `descriptor.rs` `Role` (camelCase). */
+export type WidgetRole =
+  | "tab"
+  | "tablist"
+  | "checkbox"
+  | "radio"
+  | "listitem"
+  | "button"
+  | "slider"
+  | "progressbar"
+  | "image"
+  | "group"
+  | "none";
+
+/** Live-region announcement urgency (M13 G2). `"polite"` round-trips to omission. */
+export type AnnouncePriority = "polite" | "assertive";
+
+/**
  * State binding for a `text` widget. The source is either a `{ slot }` store
  * binding (a dotted slot name or a store handle) or a `{ local }`
  * presentation-cell binding; `format` is an optional one-`{}` template; `tween`
@@ -355,6 +391,74 @@ function buildRepeatPolicy(value: unknown, field: string, factory: string): Repe
   return { initialDelayMs: r.initialDelayMs as number, intervalMs: r.intervalMs as number };
 }
 
+const ROLES: ReadonlySet<string> = new Set([
+  "tab",
+  "tablist",
+  "checkbox",
+  "radio",
+  "listitem",
+  "button",
+  "slider",
+  "progressbar",
+  "image",
+  "group",
+  "none",
+]);
+
+/** Validate an optional `role` prop, appending it to `out` when present. */
+function applyRole(out: WidgetDescriptor, role: unknown, factory: string): void {
+  if (role === undefined) return;
+  if (typeof role !== "string" || !ROLES.has(role)) {
+    throw new Error(
+      `${factory}: \`role\` must be one of "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none"`,
+    );
+  }
+  out.role = role;
+}
+
+/**
+ * Validate + clone a `Predicate` prop (`visibleWhen`/`selected`/`checked`, or a
+ * Button `bind`), or `undefined` when absent. Source is `{ slot }` or `{ local }`;
+ * `equals` is an optional scalar comparand. `slot` wins when present.
+ */
+function buildPredicate(value: unknown, field: string, factory: string): Predicate | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || typeof value !== "object") {
+    throw new Error(`${factory}: \`${field}\` must be an object`);
+  }
+  const p = value as Record<string, unknown>;
+  let out: Predicate;
+  if (p.slot !== undefined) {
+    requireNonemptyString(p.slot, `${field}.slot`, factory);
+    out = { slot: p.slot as string };
+  } else {
+    requireNonemptyString(p.local, `${field}.local`, factory);
+    out = { local: p.local as string } as Predicate;
+  }
+  if (p.equals !== undefined) {
+    const e = p.equals;
+    if (typeof e !== "number" && typeof e !== "boolean" && typeof e !== "string") {
+      throw new Error(`${factory}: \`${field}.equals\` must be a number, boolean, or string`);
+    }
+    if (typeof e === "number" && !Number.isFinite(e)) {
+      throw new Error(`${factory}: \`${field}.equals\` number must be finite`);
+    }
+    out.equals = e;
+  }
+  return out;
+}
+
+/** Append an optional `visibleWhen` predicate + `role` shared by every widget. */
+function applyA11yFields(
+  out: WidgetDescriptor,
+  props: { visibleWhen?: unknown; role?: unknown },
+  factory: string,
+): void {
+  const visibleWhen = buildPredicate(props.visibleWhen, "visibleWhen", factory);
+  if (visibleWhen !== undefined) out.visibleWhen = visibleWhen;
+  applyRole(out, props.role, factory);
+}
+
 /** Append an optional `focusNeighbors`/`id` to a leaf widget descriptor in place. */
 function applyFocusFields(
   out: WidgetDescriptor,
@@ -381,6 +485,8 @@ export type TextProps = {
   styleRanges?: StyleRangesProp;
   id?: string;
   focusNeighbors?: FocusNeighborsProp;
+  visibleWhen?: Predicate;
+  role?: WidgetRole;
 };
 
 /**
@@ -407,6 +513,7 @@ export function Text(props: TextProps): WidgetDescriptor {
   if (bind !== undefined) out.bind = bind;
   const styleRanges = buildStyleRanges(props.styleRanges, "Text");
   if (styleRanges !== undefined) out.styleRanges = styleRanges;
+  applyA11yFields(out, props, "Text");
   return out;
 }
 
@@ -420,6 +527,8 @@ export type PanelProps = {
   styleRanges?: StyleRangesProp;
   id?: string;
   focusNeighbors?: FocusNeighborsProp;
+  visibleWhen?: Predicate;
+  role?: WidgetRole;
 };
 
 /**
@@ -443,6 +552,7 @@ export function Panel(props: PanelProps): WidgetDescriptor {
   if (bind !== undefined) out.bind = bind;
   const styleRanges = buildStyleRanges(props.styleRanges, "Panel");
   if (styleRanges !== undefined) out.styleRanges = styleRanges;
+  applyA11yFields(out, props, "Panel");
   return out;
 }
 
@@ -469,22 +579,50 @@ export function validateBorder(value: unknown, factory: string): BorderProp {
 
 // --- Image ------------------------------------------------------------------
 
-/** Props for `Image`. No bind. */
+/**
+ * Props for `Image`. No bind. Name-XOR-decorative (M13 G2): exactly one of
+ * `label` or `decorative: true` is required — neither or both throws. The union
+ * narrows this at compile time.
+ */
 export type ImageProps = {
   asset: string;
   id?: string;
   focusNeighbors?: FocusNeighborsProp;
-};
+  visibleWhen?: Predicate;
+  role?: WidgetRole;
+} & ({ label: string; decorative?: never } | { decorative: true; label?: never });
 
 /**
  * An `image` leaf referencing a texture asset by key; it sizes from the asset's
- * natural pixel dimensions. No bind capability. Mirrors `ImageWidget`.
+ * natural pixel dimensions. No bind capability. Exactly one of `label` /
+ * `decorative: true` is required (the bridge enforces the same precondition).
+ * Mirrors `ImageWidget`.
  */
 export function Image(props: ImageProps): WidgetDescriptor {
   requireObject(props, "Image");
   requireNonemptyString(props.asset, "asset", "Image");
+  const p = props as { label?: unknown; decorative?: unknown };
+  const hasLabel = p.label !== undefined;
+  if (p.decorative !== undefined && typeof p.decorative !== "boolean") {
+    throw new Error("Image: `decorative` must be a boolean");
+  }
+  const decorative = p.decorative === true;
+  if (hasLabel && decorative) {
+    throw new Error("Image: set exactly one of `label` or `decorative: true`, not both");
+  }
+  if (!hasLabel && !decorative) {
+    throw new Error(
+      "Image: needs an accessible name: set exactly one of `label` or `decorative: true`",
+    );
+  }
   const out: WidgetDescriptor = { kind: "image", asset: props.asset };
   applyFocusFields(out, props, "Image");
+  if (hasLabel) {
+    requireNonemptyString(p.label, "label", "Image");
+    out.label = p.label;
+  }
+  if (decorative) out.decorative = true;
+  applyA11yFields(out, props, "Image");
   return out;
 }
 
@@ -494,6 +632,8 @@ export function Image(props: ImageProps): WidgetDescriptor {
 export type SpacerProps = {
   flexGrow?: number;
   id?: string;
+  visibleWhen?: Predicate;
+  role?: WidgetRole;
 };
 
 /**
@@ -509,33 +649,62 @@ export function Spacer(props: SpacerProps = {}): WidgetDescriptor {
     requireNonemptyString(props.id, "id", "Spacer");
     out.id = props.id;
   }
+  applyA11yFields(out, props, "Spacer");
   return out;
 }
 
 // --- Button -----------------------------------------------------------------
 
-/** Props for `Button`. `onPress` is a reaction handle or a bare name string. No bind. */
+/**
+ * Props for `Button`. `onPress` is a reaction handle or a bare name string.
+ * Name-XOR (M13 G2): exactly one of `label` (inline accessible name) or
+ * `labelledBy` (a node id whose text names this button) is required — neither or
+ * both throws, and the union narrows it at compile time. `selected`/`checked` are
+ * reactive `Predicate`s; `bind`+`styleRanges` drive the reactive highlight;
+ * `disabled` makes it non-interactive.
+ */
 export type ButtonProps = {
   id: string;
-  label: LocalizedText;
   onPress: ReactionHandleRef | string;
   repeatOnHold?: RepeatPolicyProp;
   focusNeighbors?: FocusNeighborsProp;
-};
+  selected?: Predicate;
+  checked?: Predicate;
+  bind?: Predicate;
+  styleRanges?: StyleRangesProp;
+  disabled?: boolean;
+  visibleWhen?: Predicate;
+  role?: WidgetRole;
+} & ({ label: LocalizedText; labelledBy?: never } | { labelledBy: string; label?: never });
 
 /**
  * An interactive `button`. `id` is required (activation resolves the focused
  * node id back to `onPress`). `onPress` accepts a reaction handle (the `.name`
- * is read) or a bare reaction-name string, emitting the unchanged `onPress:
- * string` wire form. Mirrors `ButtonWidget`.
+ * is read) or a bare reaction-name string. Exactly one of `label` / `labelledBy`
+ * is required (the bridge enforces the same precondition).
  */
 export function Button(props: ButtonProps): WidgetDescriptor {
   requireObject(props, "Button");
   requireNonemptyString(props.id, "id", "Button");
-  requireString(props.label, "label", "Button");
+  const p = props as { label?: unknown; labelledBy?: unknown };
+  const hasLabel = p.label !== undefined;
+  const hasLabelledBy = p.labelledBy !== undefined;
+  if (hasLabel && hasLabelledBy) {
+    throw new Error("Button: set exactly one of `label` or `labelledBy`, not both");
+  }
+  if (!hasLabel && !hasLabelledBy) {
+    throw new Error("Button: needs an accessible name: set exactly one of `label` or `labelledBy`");
+  }
 
   const onPress = resolveReactionName(props.onPress, "Button");
-  const out: WidgetDescriptor = { kind: "button", id: props.id, label: props.label, onPress };
+  const out: WidgetDescriptor = { kind: "button", id: props.id, onPress };
+  if (hasLabel) {
+    requireString(p.label, "label", "Button");
+    out.label = p.label;
+  } else {
+    requireNonemptyString(p.labelledBy, "labelledBy", "Button");
+    out.labelledBy = p.labelledBy;
+  }
   if (props.focusNeighbors !== undefined) {
     const neighbors = buildFocusNeighbors(props.focusNeighbors, "Button");
     if (neighbors !== undefined) out.focusNeighbors = neighbors;
@@ -543,6 +712,21 @@ export function Button(props: ButtonProps): WidgetDescriptor {
   if (props.repeatOnHold !== undefined) {
     out.repeatOnHold = buildRepeatPolicy(props.repeatOnHold, "repeatOnHold", "Button");
   }
+  const selected = buildPredicate(props.selected, "selected", "Button");
+  if (selected !== undefined) out.selected = selected;
+  const checked = buildPredicate(props.checked, "checked", "Button");
+  if (checked !== undefined) out.checked = checked;
+  const bind = buildPredicate(props.bind, "bind", "Button");
+  if (bind !== undefined) out.bind = bind;
+  const styleRanges = buildStyleRanges(props.styleRanges, "Button");
+  if (styleRanges !== undefined) out.styleRanges = styleRanges;
+  if (props.disabled !== undefined) {
+    if (typeof props.disabled !== "boolean") {
+      throw new Error("Button: `disabled` must be a boolean");
+    }
+    if (props.disabled) out.disabled = true;
+  }
+  applyA11yFields(out, props, "Button");
   return out;
 }
 
@@ -569,26 +753,41 @@ export function resolveReactionName(value: unknown, factory: string): string {
 
 // --- Slider -----------------------------------------------------------------
 
-/** Props for `Slider`. `bind` is a `SliderBindProp` (numeric slot). */
+/**
+ * Props for `Slider`. `bind` is a `SliderBindProp` (numeric slot). Name-XOR
+ * (M13 G2): exactly one of `label` / `labelledBy` is required, mirroring
+ * `Button`. `disabled` makes it non-interactive.
+ */
 export type SliderProps = {
   id: string;
-  label: LocalizedText;
   bind: SliderBindProp;
   min: number;
   max: number;
   step: number;
   capturesNav?: string[];
   focusNeighbors?: FocusNeighborsProp;
-};
+  disabled?: boolean;
+  visibleWhen?: Predicate;
+  role?: WidgetRole;
+} & ({ label: LocalizedText; labelledBy?: never } | { labelledBy: string; label?: never });
 
 /**
  * An interactive `slider`. Nav wires in `capturesNav` step the bound value by
- * `step` within `[min, max]`. `id` is required. Mirrors `SliderWidget`.
+ * `step` within `[min, max]`. `id` is required. Exactly one of `label` /
+ * `labelledBy` is required (the bridge enforces the same precondition).
  */
 export function Slider(props: SliderProps): WidgetDescriptor {
   requireObject(props, "Slider");
   requireNonemptyString(props.id, "id", "Slider");
-  requireString(props.label, "label", "Slider");
+  const p = props as { label?: unknown; labelledBy?: unknown };
+  const hasLabel = p.label !== undefined;
+  const hasLabelledBy = p.labelledBy !== undefined;
+  if (hasLabel && hasLabelledBy) {
+    throw new Error("Slider: set exactly one of `label` or `labelledBy`, not both");
+  }
+  if (!hasLabel && !hasLabelledBy) {
+    throw new Error("Slider: needs an accessible name: set exactly one of `label` or `labelledBy`");
+  }
   requireFiniteNumber(props.min, "min", "Slider");
   requireFiniteNumber(props.max, "max", "Slider");
   requireFiniteNumber(props.step, "step", "Slider");
@@ -597,15 +796,18 @@ export function Slider(props: SliderProps): WidgetDescriptor {
     throw new Error("Slider: `bind` is required");
   }
 
-  const out: WidgetDescriptor = {
-    kind: "slider",
-    id: props.id,
-    label: props.label,
-    bind,
-    min: props.min,
-    max: props.max,
-    step: props.step,
-  };
+  const out: WidgetDescriptor = { kind: "slider", id: props.id };
+  if (hasLabel) {
+    requireString(p.label, "label", "Slider");
+    out.label = p.label;
+  } else {
+    requireNonemptyString(p.labelledBy, "labelledBy", "Slider");
+    out.labelledBy = p.labelledBy;
+  }
+  out.bind = bind;
+  out.min = props.min;
+  out.max = props.max;
+  out.step = props.step;
   if (props.capturesNav !== undefined) {
     if (!Array.isArray(props.capturesNav)) {
       throw new Error("Slider: `capturesNav` must be a string array");
@@ -617,6 +819,13 @@ export function Slider(props: SliderProps): WidgetDescriptor {
     const neighbors = buildFocusNeighbors(props.focusNeighbors, "Slider");
     if (neighbors !== undefined) out.focusNeighbors = neighbors;
   }
+  if (props.disabled !== undefined) {
+    if (typeof props.disabled !== "boolean") {
+      throw new Error("Slider: `disabled` must be a boolean");
+    }
+    if (props.disabled) out.disabled = true;
+  }
+  applyA11yFields(out, props, "Slider");
   return out;
 }
 
@@ -630,11 +839,13 @@ export type BarProps = {
   background: WidgetColor;
   styleRanges?: StyleRangesProp;
   id?: string;
+  visibleWhen?: Predicate;
+  role?: WidgetRole;
 };
 
 /**
  * A passive `bar`: fill fraction is `value/max` clamped to `[0, 1]`.
- * `styleRanges` recolors the fill. Mirrors `BarWidget`.
+ * `styleRanges` recolors the fill.
  */
 export function Bar(props: BarProps): WidgetDescriptor {
   requireObject(props, "Bar");
@@ -659,5 +870,40 @@ export function Bar(props: BarProps): WidgetDescriptor {
   }
   const styleRanges = buildStyleRanges(props.styleRanges, "Bar");
   if (styleRanges !== undefined) out.styleRanges = styleRanges;
+  applyA11yFields(out, props, "Bar");
+  return out;
+}
+
+// --- Announce ---------------------------------------------------------------
+
+/**
+ * Props for `Announce`. `text` is the positional second argument (not a prop);
+ * `priority` defaults to `"polite"` and round-trips to omission. `visibleWhen`
+ * gates the announcement reactively.
+ */
+export type AnnounceProps = {
+  priority?: AnnouncePriority;
+  visibleWhen?: Predicate;
+};
+
+/**
+ * A non-visual `announce` widget (M13 G2): lays out as nothing; its `text` is a
+ * live-region message routed to the platform a11y layer at the declared
+ * `priority`. `text` is the POSITIONAL second argument. `priority` is emitted
+ * ONLY for `"assertive"`; `"polite"` (and an omitted value) drop the key,
+ * matching the Rust `skip_serializing_if = "is_polite"`. Mirrors `AnnounceWidget`.
+ */
+export function Announce(props: AnnounceProps, text: LocalizedText): WidgetDescriptor {
+  requireObject(props, "Announce");
+  requireString(text, "text", "Announce");
+  const out: WidgetDescriptor = { kind: "announce", text };
+  if (props.priority !== undefined) {
+    if (props.priority !== "polite" && props.priority !== "assertive") {
+      throw new Error('Announce: `priority` must be "polite" or "assertive"');
+    }
+    if (props.priority === "assertive") out.priority = "assertive";
+  }
+  const visibleWhen = buildPredicate(props.visibleWhen, "visibleWhen", "Announce");
+  if (visibleWhen !== undefined) out.visibleWhen = visibleWhen;
   return out;
 }

@@ -86,10 +86,14 @@ fn text_tree(content: &str, offset: [f32; 2]) -> AnchoredTree {
             style_ranges: None,
             id: None,
             focus_neighbors: Default::default(),
+            visible_when: None,
+            role: None,
         }),
         capture_mode: super::descriptor::CaptureMode::Passthrough,
         initial_focus: None,
         text_entry_target: None,
+        accessible_name: None,
+        role: None,
     }
 }
 

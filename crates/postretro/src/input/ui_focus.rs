@@ -450,9 +450,11 @@ impl UiFocusEngine {
             return;
         };
 
-        // 1) Neighbor override wins.
+        // 1) Neighbor override wins — but never onto a disabled node (M13 G2-T3):
+        // a disabled target is unreachable, so the override is ignored and the
+        // governing group policy resolves the move instead (which also skips it).
         if let Some(target) = neighbor_override(current, dir) {
-            if rects.rects.iter().any(|r| r.id == target) {
+            if rects.rects.iter().any(|r| r.id == target && !r.disabled) {
                 self.set_focused(key, Some(target.to_string()));
                 return;
             }
@@ -615,14 +617,20 @@ fn neighbor_override(rect: &FocusRect, dir: Dir) -> Option<&str> {
 }
 
 /// The id focus should start on: the tree's `initialFocus` when it names an
-/// existing focusable node, else the first focusable node in tree order.
+/// existing, non-disabled focusable node, else the first non-disabled focusable
+/// node in tree order. A `disabled` node is never selected as initial focus
+/// (M13 G2-T3) — even when explicitly named by `initialFocus`.
 fn initial_focus_id(rects: &FocusRectList) -> Option<String> {
     if let Some(initial) = &rects.initial_focus {
-        if rects.rects.iter().any(|r| &r.id == initial) {
+        if rects.rects.iter().any(|r| &r.id == initial && !r.disabled) {
             return Some(initial.clone());
         }
     }
-    rects.rects.first().map(|r| r.id.clone())
+    rects
+        .rects
+        .iter()
+        .find(|r| !r.disabled)
+        .map(|r| r.id.clone())
 }
 
 /// Linear traversal: step the current node to the previous/next member of its
@@ -645,6 +653,14 @@ fn linear_step(
 
 /// Shared index walk for linear `move_focus` and next/prev: find `current_id` in
 /// the group's member list and step by `delta`, wrapping or clamping per `wrap`.
+///
+/// Disabled members are skipped (M13 G2-T3): the walk advances by `delta` repeatedly
+/// until it lands on a non-disabled member or exhausts the group, so a run of
+/// consecutive disabled members is stepped over in one move (not a single ±1 step
+/// that could settle on a disabled node). Wrap and clamp semantics are unchanged —
+/// a wrapping group keeps walking around the ring (bounded to its length so an
+/// all-disabled group terminates), a non-wrapping group stops at the edge. Returns
+/// `None` when no non-disabled member lies that way.
 fn linear_index_step(
     rects: &FocusRectList,
     group: &crate::render::ui::tree::FocusGroup,
@@ -660,15 +676,24 @@ fn linear_index_step(
     if len == 0 {
         return None;
     }
-    let raw = pos as i32 + delta;
-    let next = if wrap {
-        ((raw % len) + len) % len
-    } else if raw < 0 || raw >= len {
-        return None;
-    } else {
-        raw
-    };
-    Some(rects.rects[group.members[next as usize]].id.clone())
+    // Walk by `delta` past consecutive disabled members. Bounded to `len` steps so
+    // a fully-disabled (or wrapping) group can't loop forever.
+    let mut raw = pos as i32;
+    for _ in 0..len {
+        raw += delta;
+        let idx = if wrap {
+            ((raw % len) + len) % len
+        } else if raw < 0 || raw >= len {
+            return None;
+        } else {
+            raw
+        };
+        let member = group.members[idx as usize];
+        if !rects.rects[member].disabled {
+            return Some(rects.rects[member].id.clone());
+        }
+    }
+    None
 }
 
 /// Spatial traversal: among the group's members lying in `dir`'s half-plane
@@ -688,6 +713,10 @@ fn spatial_step(
     for &m in &group.members {
         let cand = &rects.rects[m];
         if cand.id == current.id {
+            continue;
+        }
+        // Disabled members are excluded from the candidate set (M13 G2-T3).
+        if cand.disabled {
             continue;
         }
         let (tx, ty) = center(cand.rect);
@@ -724,13 +753,18 @@ fn center(rect: [f32; 4]) -> (f32, f32) {
 /// Resolve a pointer position to the topmost focusable node under it: among all
 /// rects containing the point, the one with the highest z (later in tree order
 /// draws on top). `None` when the point is over no focusable node.
+///
+/// Disabled nodes are excluded (M13 G2-T3): a click or hover over a disabled node
+/// falls through as if it were not focusable — it neither focuses nor activates it.
+/// A disabled node on top does NOT mask a non-disabled node beneath it; the hit
+/// resolves to the topmost *non-disabled* rect under the point.
 fn hit_test_topmost(rects: &FocusRectList, pos: PointerPos) -> Option<&str> {
     let px = pos.x as f32;
     let py = pos.y as f32;
     rects
         .rects
         .iter()
-        .filter(|r| contains(r.rect, px, py))
+        .filter(|r| !r.disabled && contains(r.rect, px, py))
         .max_by_key(|r| r.z)
         .map(|r| r.id.as_str())
 }
@@ -753,7 +787,19 @@ mod tests {
             group,
             neighbors: FocusNeighbors::default(),
             interaction: None,
+            // M13 G2 a11y readback fields. `disabled` is honored by the nav/pointer
+            // paths (G2-T3); the `disabled_*` fixtures below flip it.
+            selected: None,
+            checked: None,
+            disabled: false,
         }
+    }
+
+    /// Like [`rect`] but `disabled` — the nav/pointer paths must skip it (G2-T3).
+    fn disabled_rect(id: &str, r: [f32; 4], z: u32, group: Option<usize>) -> FocusRect {
+        let mut rect = rect(id, r, z, group);
+        rect.disabled = true;
+        rect
     }
 
     /// A vstack-style linear group of three stacked rects.
@@ -1673,6 +1719,23 @@ mod tests {
             })
     }
 
+    /// The button `on_press` the App's `fire_focused_button_activation` would fire,
+    /// mirroring its disabled gate (`.filter(|r| !r.disabled)` before reading the
+    /// `Button` interaction). A disabled focused node yields `None` — no activation
+    /// (M13 G2-T3). Used to pin the App-side activation block at this layer.
+    fn focused_activation<'a>(rects: &'a FocusRectList, focused: Option<&str>) -> Option<&'a str> {
+        let id = focused?;
+        rects
+            .rects
+            .iter()
+            .find(|r| r.id == id)
+            .filter(|r| !r.disabled)
+            .and_then(|r| match &r.interaction {
+                Some(NodeInteraction::Button { on_press, .. }) => Some(on_press.as_str()),
+                _ => None,
+            })
+    }
+
     #[test]
     fn confirm_on_key_button_types_and_keeps_keyboard_open_then_done_commits() {
         // End-to-end (Fix 1): with a text-entry tree open and an on-screen keyboard
@@ -1748,6 +1811,437 @@ mod tests {
             focused_on_press(&list, r.focused.as_deref()),
             Some("ui.commitTextEntry"),
             "done's sentinel routes to commit_text_entry (fires on_commit, pops)"
+        );
+    }
+
+    // --- M13 G2-T3: disabled focus + activation honoring ---
+
+    #[test]
+    fn linear_nav_skips_a_run_of_consecutive_disabled_members() {
+        // A 4-member vstack a [b c disabled] d: pressing Down from a must skip the
+        // run of TWO consecutive disabled members (b, c) in one move and land on d
+        // — not stop on b or c. No-wrap, so clamp semantics still apply at the edge.
+        let list = FocusRectList {
+            rects: vec![
+                rect("a", [0.0, 0.0, 100.0, 20.0], 0, Some(0)),
+                disabled_rect("b", [0.0, 30.0, 100.0, 20.0], 1, Some(0)),
+                disabled_rect("c", [0.0, 60.0, 100.0, 20.0], 2, Some(0)),
+                rect("d", [0.0, 90.0, 100.0, 20.0], 3, Some(0)),
+            ],
+            groups: vec![FocusGroup {
+                kind: FocusKind::Linear,
+                wrap: false,
+                repeat: None,
+                members: vec![0, 1, 2, 3],
+            }],
+            initial_focus: None,
+            restore_on_return: false,
+        };
+        let mut fe = UiFocusEngine::new();
+        let r = fe.tick(
+            Some("t"),
+            Some(&list),
+            &[],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+        assert_eq!(
+            r.focused.as_deref(),
+            Some("a"),
+            "init focuses first enabled"
+        );
+        let r = fe.tick(
+            Some("t"),
+            Some(&list),
+            &[NavIntent::Down],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+        assert_eq!(
+            r.focused.as_deref(),
+            Some("d"),
+            "Down steps PAST both consecutive disabled members onto d"
+        );
+    }
+
+    #[test]
+    fn linear_nav_clamps_when_only_disabled_lie_ahead() {
+        // a [b c disabled] with no wrap: Down from a finds no enabled member ahead
+        // (only the disabled run), so focus stays on a (clamp respected — no landing
+        // on a disabled node, no wrap-around).
+        let list = FocusRectList {
+            rects: vec![
+                rect("a", [0.0, 0.0, 100.0, 20.0], 0, Some(0)),
+                disabled_rect("b", [0.0, 30.0, 100.0, 20.0], 1, Some(0)),
+                disabled_rect("c", [0.0, 60.0, 100.0, 20.0], 2, Some(0)),
+            ],
+            groups: vec![FocusGroup {
+                kind: FocusKind::Linear,
+                wrap: false,
+                repeat: None,
+                members: vec![0, 1, 2],
+            }],
+            initial_focus: None,
+            restore_on_return: false,
+        };
+        let mut fe = UiFocusEngine::new();
+        fe.tick(
+            Some("t"),
+            Some(&list),
+            &[],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+        let r = fe.tick(
+            Some("t"),
+            Some(&list),
+            &[NavIntent::Down],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+        assert_eq!(
+            r.focused.as_deref(),
+            Some("a"),
+            "no enabled member ahead: clamp keeps focus on a, never on a disabled node"
+        );
+    }
+
+    #[test]
+    fn linear_nav_wraps_past_disabled_run_to_an_enabled_member() {
+        // a [b c disabled] d, WRAP enabled: Up from a wraps to d (skipping the
+        // disabled b/c at the tail), proving the wrap walk skips disabled members.
+        let list = FocusRectList {
+            rects: vec![
+                rect("a", [0.0, 0.0, 100.0, 20.0], 0, Some(0)),
+                disabled_rect("b", [0.0, 30.0, 100.0, 20.0], 1, Some(0)),
+                disabled_rect("c", [0.0, 60.0, 100.0, 20.0], 2, Some(0)),
+                rect("d", [0.0, 90.0, 100.0, 20.0], 3, Some(0)),
+            ],
+            groups: vec![FocusGroup {
+                kind: FocusKind::Linear,
+                wrap: true,
+                repeat: None,
+                members: vec![0, 1, 2, 3],
+            }],
+            initial_focus: None,
+            restore_on_return: false,
+        };
+        let mut fe = UiFocusEngine::new();
+        fe.tick(
+            Some("t"),
+            Some(&list),
+            &[],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+        let r = fe.tick(
+            Some("t"),
+            Some(&list),
+            &[NavIntent::Up],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+        assert_eq!(
+            r.focused.as_deref(),
+            Some("d"),
+            "Up wraps past the disabled tail run to the last enabled member d"
+        );
+    }
+
+    #[test]
+    fn spatial_nav_never_returns_a_disabled_candidate() {
+        // In the 2x2 grid a b / c d, disable the natural right-neighbor b. Right
+        // from a must NOT pick b; with b excluded the only candidate to the right
+        // is d (diagonal), so spatial resolves to d — never the disabled b.
+        let mut list = grid_list();
+        list.rects[1].disabled = true; // disable b
+        let mut fe = UiFocusEngine::new();
+        fe.tick(
+            Some("t"),
+            Some(&list),
+            &[],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+        let r = fe.tick(
+            Some("t"),
+            Some(&list),
+            &[NavIntent::Right],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+        assert_eq!(
+            r.focused.as_deref(),
+            Some("d"),
+            "disabled b is excluded from the spatial candidate set; d is chosen"
+        );
+        assert_ne!(r.focused.as_deref(), Some("b"), "never lands on disabled b");
+    }
+
+    #[test]
+    fn neighbor_override_onto_a_disabled_node_is_ignored() {
+        // a's "right" override names the disabled b; the override must be ignored and
+        // the spatial policy resolves instead (also skipping b → d).
+        let mut list = grid_list();
+        list.rects[1].disabled = true; // disable b
+        list.rects[0].neighbors.right = Some("b".to_string());
+        let mut fe = UiFocusEngine::new();
+        fe.tick(
+            Some("t"),
+            Some(&list),
+            &[],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+        let r = fe.tick(
+            Some("t"),
+            Some(&list),
+            &[NavIntent::Right],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+        assert_eq!(
+            r.focused.as_deref(),
+            Some("d"),
+            "an override onto a disabled node is ignored; policy resolves to d"
+        );
+    }
+
+    #[test]
+    fn initial_focus_skips_a_leading_disabled_node() {
+        // First member a is disabled: initial focus must fall through to the first
+        // ENABLED member b, never selecting the leading disabled node.
+        let list = FocusRectList {
+            rects: vec![
+                disabled_rect("a", [0.0, 0.0, 100.0, 20.0], 0, Some(0)),
+                rect("b", [0.0, 30.0, 100.0, 20.0], 1, Some(0)),
+                rect("c", [0.0, 60.0, 100.0, 20.0], 2, Some(0)),
+            ],
+            groups: vec![FocusGroup {
+                kind: FocusKind::Linear,
+                wrap: false,
+                repeat: None,
+                members: vec![0, 1, 2],
+            }],
+            initial_focus: None,
+            restore_on_return: false,
+        };
+        let mut fe = UiFocusEngine::new();
+        let r = fe.tick(
+            Some("t"),
+            Some(&list),
+            &[],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+        assert_eq!(
+            r.focused.as_deref(),
+            Some("b"),
+            "initial focus skips the leading disabled node and selects b"
+        );
+    }
+
+    #[test]
+    fn initial_focus_ignores_initial_focus_naming_a_disabled_node() {
+        // `initialFocus` explicitly names the disabled b: it must be ignored and the
+        // first enabled member (a) chosen instead — a disabled node is never initial.
+        let mut list = linear_list(false, None);
+        list.rects[1].disabled = true; // disable b
+        list.initial_focus = Some("b".to_string());
+        let mut fe = UiFocusEngine::new();
+        let r = fe.tick(
+            Some("t"),
+            Some(&list),
+            &[],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+        assert_eq!(
+            r.focused.as_deref(),
+            Some("a"),
+            "initialFocus naming a disabled node is ignored; first enabled (a) wins"
+        );
+    }
+
+    #[test]
+    fn pointer_click_on_a_disabled_node_does_not_focus_or_activate_it() {
+        // A click directly over a disabled node falls through as if not focusable: it
+        // neither focuses nor activates it. Here the disabled node is the only rect
+        // under the cursor, so focus stays at the initial node and nothing activates.
+        let list = FocusRectList {
+            rects: vec![
+                rect("a", [0.0, 0.0, 100.0, 20.0], 0, Some(0)),
+                disabled_rect("b", [0.0, 30.0, 100.0, 20.0], 1, Some(0)),
+            ],
+            groups: vec![FocusGroup {
+                kind: FocusKind::Linear,
+                wrap: false,
+                repeat: None,
+                members: vec![0, 1],
+            }],
+            initial_focus: None,
+            restore_on_return: false,
+        };
+        let mut fe = UiFocusEngine::new();
+        fe.tick(
+            Some("t"),
+            Some(&list),
+            &[],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+        // Click at y=40 → over disabled "b".
+        let r = fe.tick(
+            Some("t"),
+            Some(&list),
+            &[],
+            None,
+            &[PointerPos { x: 10.0, y: 40.0 }],
+            InputMode::Pointer,
+            0.0,
+        );
+        assert_eq!(
+            r.focused.as_deref(),
+            Some("a"),
+            "a click on a disabled node does not move focus to it"
+        );
+        assert!(
+            !r.confirmed,
+            "a click on a disabled node does not activate (it falls through)"
+        );
+    }
+
+    #[test]
+    fn pointer_hover_over_a_disabled_node_does_not_focus_it() {
+        // In pointer mode, hovering a disabled node must not hover-focus it (it falls
+        // through as not-focusable); focus stays put at the initial node.
+        let list = FocusRectList {
+            rects: vec![
+                rect("a", [0.0, 0.0, 100.0, 20.0], 0, Some(0)),
+                disabled_rect("b", [0.0, 30.0, 100.0, 20.0], 1, Some(0)),
+            ],
+            groups: vec![FocusGroup {
+                kind: FocusKind::Linear,
+                wrap: false,
+                repeat: None,
+                members: vec![0, 1],
+            }],
+            initial_focus: None,
+            restore_on_return: false,
+        };
+        let mut fe = UiFocusEngine::new();
+        let r = fe.tick(
+            Some("t"),
+            Some(&list),
+            &[],
+            Some(PointerPos { x: 10.0, y: 40.0 }),
+            &[],
+            InputMode::Pointer,
+            0.0,
+        );
+        assert_eq!(
+            r.focused.as_deref(),
+            Some("a"),
+            "hover over a disabled node does not move focus to it"
+        );
+    }
+
+    #[test]
+    fn click_falls_through_a_disabled_top_node_to_an_enabled_one_beneath() {
+        // A disabled node on top must NOT mask an enabled node beneath it: the hit
+        // resolves to the topmost ENABLED rect under the point. Here "over" (disabled,
+        // z=5) overlaps "under" (enabled, z=0); a click resolves to "under".
+        let list = FocusRectList {
+            rects: vec![
+                rect("under", [0.0, 0.0, 100.0, 100.0], 0, None),
+                disabled_rect("over", [0.0, 0.0, 100.0, 100.0], 5, None),
+            ],
+            groups: vec![],
+            initial_focus: None,
+            restore_on_return: false,
+        };
+        let mut fe = UiFocusEngine::new();
+        let r = fe.tick(
+            Some("t"),
+            Some(&list),
+            &[],
+            None,
+            &[PointerPos { x: 50.0, y: 50.0 }],
+            InputMode::Pointer,
+            0.0,
+        );
+        assert_eq!(
+            r.focused.as_deref(),
+            Some("under"),
+            "a disabled top node does not mask the enabled node beneath it"
+        );
+        assert!(r.confirmed, "the fall-through enabled node activates");
+    }
+
+    #[test]
+    fn focused_activation_no_ops_on_a_disabled_focused_node() {
+        // Mirrors the App-side `fire_focused_button_activation` gate: even if the
+        // focus result somehow names a disabled button (e.g. a node that became
+        // disabled after focus landed), the activation resolves to None — no
+        // `on_press` fires.
+        let mut enabled = rect("go", [0.0, 0.0, 40.0, 40.0], 0, Some(0));
+        enabled.interaction = Some(NodeInteraction::Button {
+            on_press: "fire".to_string(),
+            repeat_on_hold: None,
+        });
+        let mut disabled = disabled_rect("blocked", [0.0, 50.0, 40.0, 40.0], 1, Some(0));
+        disabled.interaction = Some(NodeInteraction::Button {
+            on_press: "nope".to_string(),
+            repeat_on_hold: None,
+        });
+        let list = FocusRectList {
+            rects: vec![enabled, disabled],
+            groups: vec![FocusGroup {
+                kind: FocusKind::Linear,
+                wrap: false,
+                repeat: None,
+                members: vec![0, 1],
+            }],
+            initial_focus: None,
+            restore_on_return: false,
+        };
+        // Enabled focused node activates normally.
+        assert_eq!(
+            focused_activation(&list, Some("go")),
+            Some("fire"),
+            "an enabled focused button activates"
+        );
+        // Disabled focused node is gated: no activation.
+        assert_eq!(
+            focused_activation(&list, Some("blocked")),
+            None,
+            "a disabled focused button does not activate (App-side gate)"
         );
     }
 }

@@ -1,747 +1,40 @@
-// Serde descriptor model for the UI widget tree: the internally-tagged `Widget`
-// enum (ten kinds), its field structs, and the `AnchoredTree` placement
-// envelope. Pure data — no rendering, no taffy, no retained tree.
+// Serde descriptor model for the UI widget tree: the barrel that wires together
+// the shared value types, focus-traversal types, widget vocabulary, and the
+// `AnchoredTree` placement envelope, and re-exports them so the whole descriptor
+// API surface stays addressable from `render::ui::descriptor::*`.
 // See: context/lib/ui.md
 
-use std::collections::BTreeMap;
+mod accessibility;
+mod envelope;
+mod focus;
+mod values;
+mod widgets;
 
-use serde::{Deserialize, Serialize};
-
-use super::layout::Anchor;
-use super::style_ranges::StyleRanges;
-
-/// A color slot on a widget: either a literal linear-RGBA value or a named theme
-/// token resolved against the active theme (resolution is a later step — the wire
-/// model only records which form was authored). Untagged so the wire form stays a
-/// bare array (`[r, g, b, a]`) or a bare string (`"critical"`), with no wrapper
-/// object — every pre-theming literal descriptor round-trips byte-identically.
-///
-/// `Literal` is declared FIRST: serde tries untagged variants in declaration
-/// order, and a JSON array can only match `Literal`, a JSON string only `Token`,
-/// so the forms are disjoint and the ordering merely pins the array path first.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum ColorValue {
-    Literal([f32; 4]),
-    Token(String),
-}
-
-/// A spacing slot (gap/padding) on a container: either a literal logical-px value
-/// or a named theme token. Untagged so the wire form stays a bare JSON number
-/// (`4.0`) or a bare string (`"tight"`). `Literal` wraps a bare `f32` (no newtype)
-/// so a literal re-serializes as the same number the pre-theming fixtures emit.
-///
-/// `Literal` is declared FIRST for the same reason as `ColorValue`: a JSON number
-/// can only match `Literal`, a JSON string only `Token`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum SpacingValue {
-    Literal(f32),
-    Token(String),
-}
-
-/// Whether a tree captures input (freezing gameplay + lower trees and releasing
-/// the cursor) or passes it through to gameplay. Declared on the `AnchoredTree`
-/// envelope so a JSON-authored tree states its own behavior. `Passthrough` is the
-/// default — a HUD never captures, and an omitted `captureMode` keeps the pre-F
-/// wire form byte-identical (`skip_serializing_if` below). The app-side modal
-/// stack reads the TOP tree's mode to drive the input-dispatch seam and focus.
-///
-/// This is the descriptor/wire twin of `input::UiCaptureMode`; the modal stack
-/// converts one to the other via `into()`. Kept separate so the descriptor module
-/// carries no input-subsystem dependency.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum CaptureMode {
-    /// Tree consumes input; gameplay + lower trees freeze, cursor releases.
-    Capture,
-    /// Tree ignores input; events flow through to gameplay (HUD behavior).
-    #[default]
-    Passthrough,
-}
-
-/// How a container moves focus among its children (M13 Goal F, Task 3). Authored
-/// on a container as the additive `focus` field — an untagged union so the wire
-/// form is either a bare string (`"linear"` / `"spatial"`) or an object carrying
-/// the policy plus optional `wrap`/`repeat`. The string forms are shorthand for
-/// the object with default `wrap`/`repeat`. The focus engine (app-side) reads the
-/// resolved policy off the exported focus-rect list to move focus through the tree.
-///
-/// `Shorthand` is declared FIRST so a bare JSON string lands on it (untagged
-/// variants are tried in declaration order; a string can only match `Shorthand`,
-/// an object only `Detailed`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum FocusPolicy {
-    /// Bare-string shorthand: `"linear"` or `"spatial"`, default wrap, no repeat.
-    Shorthand(FocusKind),
-    /// Object form: the policy kind plus optional `wrap` and hold-to-repeat config.
-    Detailed {
-        policy: FocusKind,
-        /// Whether directional/next-prev nav wraps past the ends (defaults true).
-        #[serde(default = "default_wrap", skip_serializing_if = "is_true")]
-        wrap: bool,
-        /// Hold-to-repeat timing for held directions; absent means no repeat.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        repeat: Option<RepeatPolicy>,
-    },
-}
-
-/// The two focus-traversal kinds. `Linear` walks the container's children in tree
-/// order; `Spatial` picks the nearest child center in the pressed direction's
-/// half-plane (grid navigation). Maps to the camelCase wire literals `"linear"` /
-/// `"spatial"`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum FocusKind {
-    Linear,
-    Spatial,
-}
-
-/// Hold-to-repeat timing for a container's directional nav (M13 Goal F, Task 3).
-/// `initial_delay_ms` is the dwell before the first auto-repeat; `interval_ms` is
-/// the cadence after that. The focus engine accumulates dt against these. Confirm
-/// and cancel never repeat regardless of this policy.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RepeatPolicy {
-    pub initial_delay_ms: f32,
-    pub interval_ms: f32,
-}
-
-impl FocusPolicy {
-    /// The traversal kind, regardless of which wire form authored it.
-    pub fn kind(&self) -> FocusKind {
-        match self {
-            FocusPolicy::Shorthand(kind) => *kind,
-            FocusPolicy::Detailed { policy, .. } => *policy,
-        }
-    }
-
-    /// Whether nav wraps past the ends. The shorthand form defaults to `true`.
-    pub fn wrap(&self) -> bool {
-        match self {
-            FocusPolicy::Shorthand(_) => true,
-            FocusPolicy::Detailed { wrap, .. } => *wrap,
-        }
-    }
-
-    /// The hold-to-repeat policy, if the container declared one.
-    pub fn repeat(&self) -> Option<RepeatPolicy> {
-        match self {
-            FocusPolicy::Shorthand(_) => None,
-            FocusPolicy::Detailed { repeat, .. } => *repeat,
-        }
-    }
-}
-
-/// serde default for `FocusPolicy::Detailed::wrap` — wrap is on unless authored off.
-fn default_wrap() -> bool {
-    true
-}
-
-/// `skip_serializing_if` predicate: omit `wrap` when it is the `true` default, so
-/// a wrap-on container round-trips without emitting the key.
-fn is_true(b: &bool) -> bool {
-    *b
-}
-
-/// `skip_serializing_if` predicate for `restore_on_return`: omit when `false`
-/// (the default) so a pre-F container round-trips byte-identically.
-fn is_false(b: &bool) -> bool {
-    !*b
-}
-
-/// Per-direction focus-neighbor overrides authored on a node (M13 Goal F, Task 3).
-/// Each field, when set, names the node id focus jumps to when that direction is
-/// pressed while this node is focused — overriding the container's focus policy.
-/// All fields default to absent, and the whole struct skip-serializes when empty,
-/// so a node that authors no override round-trips byte-identically.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct FocusNeighbors {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub up: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub down: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub left: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub right: Option<String>,
-}
-
-impl FocusNeighbors {
-    /// True when no direction is overridden — the `skip_serializing_if` predicate
-    /// so an override-less node omits the `focusNeighbors` key entirely.
-    pub fn is_empty(&self) -> bool {
-        self.up.is_none() && self.down.is_none() && self.left.is_none() && self.right.is_none()
-    }
-}
-
-/// Top-level placement envelope wrapping the root widget. `anchor`/`offset`
-/// live ONLY here, not on widget variants: a widget tree is placed once, as a
-/// whole, against the logical-reference canvas (see `layout::Anchor`). `offset`
-/// is logical-reference px, `[x, y]` (+x right, +y down), matching
-/// `UiElement::offset`.
-///
-/// `capture_mode` declares whether the tree captures input or passes it through;
-/// it defaults to `Passthrough` and skip-serializes when passthrough, so a
-/// pre-F descriptor (no `captureMode` key) round-trips byte-identically. The
-/// modal stack reads the TOP tree's mode to drive the input seam.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AnchoredTree {
-    pub anchor: Anchor,
-    pub offset: [f32; 2],
-    pub root: Widget,
-    /// Input capture behavior; defaults to `Passthrough`. Skip-serialized when
-    /// passthrough so a HUD/pre-F tree omits the key entirely (wire-identical).
-    #[serde(default, skip_serializing_if = "CaptureMode::is_passthrough")]
-    pub capture_mode: CaptureMode,
-    /// Authored id of the node focus starts on when this tree becomes the top of
-    /// the modal stack (M13 Goal F, Task 3). Absent selects the first focusable
-    /// node in tree order. Skip-serialized when absent so a pre-F tree omits it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub initial_focus: Option<String>,
-    /// Writable String slot this tree's text entry edits (M13 Text-Entry, Task 3).
-    /// `Some(slot)` is the "text entry is open" condition for the TOP tree: while
-    /// it is set, the input stage routes hardware key text events into edit
-    /// reactions against this slot (append / backspace), and Enter/Escape
-    /// commit/cancel the entry. Absent on every non-text-entry tree, so a tree
-    /// without text entry omits the key entirely (skip-serialized) and round-trips
-    /// byte-identically.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text_entry_target: Option<String>,
-}
-
-impl CaptureMode {
-    /// True for the default `Passthrough`. Used by `skip_serializing_if` so a
-    /// passthrough tree omits the `captureMode` key (pre-F wire compatibility).
-    fn is_passthrough(&self) -> bool {
-        matches!(self, CaptureMode::Passthrough)
-    }
-}
-
-impl AnchoredTree {
-    /// Build a passthrough-mode tree (the HUD/splash default). Most programmatic
-    /// trees never capture, so this keeps their construction terse and lets the
-    /// `capture_mode` field be added without touching every call site.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn passthrough(anchor: Anchor, offset: [f32; 2], root: Widget) -> Self {
-        Self {
-            anchor,
-            offset,
-            root,
-            capture_mode: CaptureMode::Passthrough,
-            initial_focus: None,
-            text_entry_target: None,
-        }
-    }
-}
-
-/// One node in the UI widget tree. Internally tagged on `kind` (`"text"`,
-/// `"panel"`, …) so the wire form is a flat object — `{ "kind": "text", ... }`.
-///
-/// Internally-tagged serde requires struct variants (not tuple variants): the
-/// tag is read by buffering the object through `serde_json::Value`, which a
-/// tuple variant cannot map onto. Container kinds (`vstack`/`hstack`/`grid`)
-/// carry positional `children`; leaf kinds (`text`/`panel`/`image`/`spacer`/
-/// `button`/`slider`/`bar`) carry no
-/// `children` field. Compare `scripting::data_descriptors::ReactionDescriptor`,
-/// which discriminates by manual key-presence instead — this enum deliberately
-/// uses serde's tag mechanism.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum Widget {
-    Text(TextWidget),
-    Panel(PanelWidget),
-    Image(ImageWidget),
-    // `rename_all = "camelCase"` would emit `"vStack"`/`"hStack"`; the wire form
-    // is all-lowercase `"vstack"`/`"hstack"`, so pin those two explicitly.
-    #[serde(rename = "vstack")]
-    VStack(ContainerWidget),
-    #[serde(rename = "hstack")]
-    HStack(ContainerWidget),
-    Grid(GridWidget),
-    Spacer(SpacerWidget),
-    // M13 Goal F, Task 4 — the first interactive widgets. `button`/`slider` are
-    // focusable (their focusable marker is plugged into `tree::focus_meta` /
-    // `tree::widget_interaction`); `bar` is a passive bound display widget.
-    Button(ButtonWidget),
-    Slider(SliderWidget),
-    Bar(BarWidget),
-}
-
-/// Leaf text run. `content` is the literal string; `font_size` is logical px;
-/// `color` is linear RGBA. The run is sized by the glyphon measure seam and laid
-/// out in its container's flow.
-///
-/// `bind` is the optional state-binding: when present, the rendered string is
-/// resolved from a store slot at draw-data build time and `content` serves only
-/// as the fallback for an absent slot (see `tree::resolve_text`).
-/// Absent on every static widget, so unbound text round-trips unchanged.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct TextWidget {
-    pub content: String,
-    pub font_size: f32,
-    pub color: ColorValue,
-    /// Authored stable id (M13 Goal F, Task 3). When present it carries across
-    /// structural rebuilds for focus restore. Absent on every pre-F widget, so
-    /// id-less text round-trips byte-identically (auto-gen ids are runtime-only,
-    /// never serialized — see `tree`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-    /// Directional focus-neighbor overrides (M13 Goal F, Task 3). When a direction
-    /// is set, nav in that direction jumps straight to the named node, bypassing
-    /// the container policy. Absent on every pre-F widget (skip-serialized empty).
-    #[serde(default, skip_serializing_if = "FocusNeighbors::is_empty")]
-    pub focus_neighbors: FocusNeighbors,
-    /// Optional theme font name. Absent on every pre-theming widget, so fontless
-    /// text keeps its old wire form exactly (the key is omitted, not `null`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub font: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bind: Option<TextBind>,
-    /// Optional continuous value→style map (M13 Goal E). When present, the
-    /// rendered value (the display value mid-tween) is mapped to a band color +
-    /// pulse/flash effect, overriding `color`. Meaningful only alongside `bind`
-    /// (the bound slot supplies the value); present without `bind` it warns once
-    /// per tree build and never fires. Absent on every pre-E widget, so a
-    /// styleRange-less widget keeps its old wire form (the key is omitted, not
-    /// `null`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub style_ranges: Option<StyleRanges>,
-}
-
-/// The source a widget bind reads from — the `{ slot }` vs `{ local }` wire
-/// alternative shared by every bound widget (M13 G1b, Task 5). Untagged so the
-/// wire form stays a flat sibling key inside the bind object: a store binding is
-/// `{ "slot": "player.health" }`; a presentation-cell binding is
-/// `{ "local": "count" }`. The two are disjoint (each carries a different key),
-/// so serde's untagged dispatch is unambiguous.
-///
-/// `Slot` is declared FIRST so a bind object carrying a `slot` key lands on it
-/// (untagged variants are tried in declaration order). `Slot` references the
-/// authoritative store by dotted name; `Local` references a presentation cell
-/// declared on the nearest ancestor's `localState` scope BY NAME — the scope id
-/// is resolved at tree-build time against the nearest declaring ancestor, never
-/// authored on the bind itself (so the bind stays scope-agnostic and the same
-/// descriptor round-trips byte-identically).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum BindSource {
-    /// Authoritative store slot read by dotted name (`"player.health"`).
-    Slot { slot: String },
-    /// Presentation cell read by name from the nearest `localState` scope.
-    Local { local: String },
-}
-
-impl BindSource {
-    /// The store slot name when this is a `{ slot }` binding, else `None`. The
-    /// retained tree's tween/styleRanges paths that read the raw store snapshot
-    /// use this; a `{ local }` binding has no store slot.
-    pub fn slot(&self) -> Option<&str> {
-        match self {
-            BindSource::Slot { slot } => Some(slot),
-            BindSource::Local { .. } => None,
-        }
-    }
-}
-
-/// Declared initial value for a presentation cell (M13 G1b, Task 5). Mirrors the
-/// `SlotValue` shapes a bind resolves: a number, boolean, string, or length-4
-/// linear-RGBA array. Untagged so the wire form is a bare JSON scalar/array —
-/// `{ "count": 0 }`, `{ "flash": [1,0,0,1] }` — with no wrapper object. `Number`
-/// is declared first so an integral JSON literal lands on it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum CellInit {
-    Number(f64),
-    Boolean(bool),
-    Array([f32; 4]),
-    String(String),
-}
-
-/// Presentation-cell scope declared on a container (M13 G1b, Task 5). `scope` is
-/// a stable id (author-supplied or SDK-stabilized) addressable from BOTH the app
-/// stage (cell writes) and the render stage (`{ local }` bind resolution). `cells`
-/// maps each cell name to its declared initial value, used to seed the app-side
-/// cell store the first time this scope is composed.
-///
-/// This is presentation-only state — NOT the authoritative store (`ui.md` §3/§6):
-/// no schema, no persistence, no dotted-name namespace. `cells` is a `BTreeMap`
-/// so serialization is deterministic (stable key order) and the descriptor
-/// round-trips byte-identically.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct LocalState {
-    pub scope: String,
-    pub cells: BTreeMap<String, CellInit>,
-}
-
-/// State binding for a `text` widget. The bind source is either a `{ slot }`
-/// store binding (a dotted slot name like `"player.health"`) or a `{ local }`
-/// presentation-cell binding, flattened into the bind object as a sibling of
-/// `format`/`tween`. `format` is an optional template with a single `{}`
-/// placeholder substituted by the resolved value's string form; with `format`
-/// absent, the value's default string form is drawn. One `{}` max.
-//
-// `deny_unknown_fields` is omitted: it is incompatible with `#[serde(flatten)]`,
-// which the `source` alternative requires to keep `slot`/`local` flat siblings
-// of `format`/`tween`. The bind shape is otherwise closed by `BindSource`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TextBind {
-    #[serde(flatten)]
-    pub source: BindSource,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub format: Option<String>,
-    /// Optional value-tweening config (M13 UI Value-Tweening). When present, the
-    /// tween runtime eases the resolved numeric value toward each new target
-    /// over `duration_ms` using `easing` instead of snapping. Absent on every
-    /// pre-tweening bind, so a tween-less bind keeps its old wire form (the key
-    /// is omitted, not `null`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tween: Option<TextTween>,
-}
-
-/// Easing curve for a value tween (M13). A closed serde enum: each variant maps
-/// to a camelCase wire literal (`"linear"`, `"easeIn"`, `"easeOut"`,
-/// `"easeInOut"`). Shared by `TextTween` and `PanelTween`; the tween runtime
-/// samples the curve at each frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Easing {
-    Linear,
-    EaseIn,
-    EaseOut,
-    EaseInOut,
-}
-
-/// Value-tweening config for a `text` bind (M13). When a bound numeric slot's
-/// value changes, the displayed value eases toward the new target over
-/// `duration_ms` (milliseconds) using `easing`. `from` is the optional explicit
-/// starting value for the FIRST tween (before any slot value has been seen);
-/// when absent the runtime starts from the first observed value. The wire shape
-/// differs from `PanelTween` only in `from`'s JSON type (a number here).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct TextTween {
-    pub duration_ms: f32,
-    pub easing: Easing,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub from: Option<f32>,
-}
-
-/// Solid-fill panel with an optional 9-slice border. `fill` is linear RGBA. The
-/// panel fills its flex/grid slot (it has no intrinsic size). Container-level
-/// backdrops (the splash's framed panel) are expressed as a `ContainerWidget`
-/// `fill`/`border` instead — a parent drawing its own backdrop beneath flowed
-/// children — so an overlapping composition needs no standalone sized panel.
-///
-/// `bind` is the optional state-binding: when present, the panel `fill` is
-/// resolved from a store slot holding a length-4 linear-RGBA array at draw-data
-/// build time, with the literal `fill` serving as the fallback for an absent or
-/// malformed slot (see `tree::resolve_panel_fill`). Absent on static panels, so
-/// unbound panels round-trip unchanged.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PanelWidget {
-    pub fill: ColorValue,
-    // `default` (without `skip_serializing_if`) so an absent `border` key
-    // deserializes to `None` — the SDK Luau factory cannot emit an explicit
-    // `null` table value (the lua→json walker drops nil-valued keys), so a
-    // border-less panel omits the key. Serialization is unchanged: `None` still
-    // emits `border: null` (no skip), so every existing fixture round-trips
-    // byte-identically; only the *absent-key* input is newly accepted.
-    #[serde(default)]
-    pub border: Option<Border>,
-    /// Authored stable id (M13 Goal F, Task 3). See `TextWidget::id`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-    /// Directional focus-neighbor overrides (M13 Goal F, Task 3). See
-    /// `TextWidget::focus_neighbors`.
-    #[serde(default, skip_serializing_if = "FocusNeighbors::is_empty")]
-    pub focus_neighbors: FocusNeighbors,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bind: Option<PanelBind>,
-    /// Optional continuous value→style map (M13 Goal E). When present, the
-    /// rendered value (the display value mid-tween) is mapped to a band color +
-    /// pulse/flash effect, overriding `fill`. Meaningful only alongside `bind`;
-    /// present without `bind` it warns once per tree build and never fires.
-    /// Absent on every pre-E panel, so a styleRange-less panel round-trips
-    /// unchanged (the key is omitted, not `null`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub style_ranges: Option<StyleRanges>,
-}
-
-/// Bind source for a `panel` widget: either a `{ slot }` dotted store name whose
-/// value must be a `SlotValue::Array` of exactly 4 f32 (linear `[r, g, b, a]`)
-/// replacing the literal `fill`, or a `{ local }` presentation-cell name. A wrong
-/// variant, wrong length, absent value, or undeclared cell falls back to the
-/// literal `fill` (see `tree::resolve_panel_fill`).
-//
-// `deny_unknown_fields` omitted — see `TextBind` (incompatible with the flattened
-// `source` alternative).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PanelBind {
-    #[serde(flatten)]
-    pub source: BindSource,
-    /// Optional value-tweening config (M13). When present, the tween runtime
-    /// eases the resolved RGBA fill toward each new target over `duration_ms`.
-    /// Absent on every pre-tweening bind, so a tween-less bind keeps its old wire
-    /// form (the key is omitted, not `null`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tween: Option<PanelTween>,
-}
-
-/// Value-tweening config for a `panel` bind (M13). When the bound RGBA slot's
-/// value changes, the displayed fill eases toward the new target over
-/// `duration_ms` (milliseconds) using `easing`. `from` is the optional explicit
-/// starting color for the FIRST tween; when absent the runtime starts from the
-/// first observed value. The wire shape differs from `TextTween` only in
-/// `from`'s JSON type (a length-4 linear-RGBA array here).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PanelTween {
-    pub duration_ms: f32,
-    pub easing: Easing,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub from: Option<[f32; 4]>,
-}
-
-/// Leaf image referencing a texture asset by key. The image has no wire-level
-/// size: it sizes from the asset's NATURAL pixel dimensions (content-driven, the
-/// same category as text measurement). The renderer threads each asset's natural
-/// reference size into the measure seam (see `tree::UiTree::build_draw_data`), so
-/// the on-screen image is always shaped to the real asset and never stretched.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ImageWidget {
-    pub asset: String,
-    /// Authored stable id (M13 Goal F, Task 3). See `TextWidget::id`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-    /// Directional focus-neighbor overrides (M13 Goal F, Task 3). See
-    /// `TextWidget::focus_neighbors`.
-    #[serde(default, skip_serializing_if = "FocusNeighbors::is_empty")]
-    pub focus_neighbors: FocusNeighbors,
-}
-
-/// Stack container (`vstack`/`hstack`). Lays its `children` out along one axis
-/// with `gap` between them, `padding` inside its bounds, and cross-axis
-/// `align`. `children` carries no `skip_serializing_if`: an empty container
-/// must serialize `"children":[]` so round-trip identity holds.
-///
-/// A container may carry its own backdrop: an optional solid `fill` (linear
-/// RGBA) and/or 9-slice `border`, drawn as a quad sized to the container's full
-/// laid-out rect, BENEATH its flowed children (painter's order — see
-/// `tree::collect_node`). This expresses "a backing panel wrapping content"
-/// natively: the splash's framed panel is an outer container (border-colored
-/// fill + padding) wrapping an inner container (panel-colored fill) that flows
-/// the logo + version text, with no absolute overlap. Both skip-serialize when
-/// absent, so a fill-less container round-trips byte-identically.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ContainerWidget {
-    pub gap: SpacingValue,
-    pub padding: SpacingValue,
-    pub align: Align,
-    /// Optional backdrop fill (linear RGBA), drawn beneath the children.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fill: Option<ColorValue>,
-    /// Optional 9-slice border framing the backdrop (drawn with the fill).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub border: Option<Border>,
-    /// Authored stable id (M13 Goal F, Task 3). See `TextWidget::id`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-    /// Directional focus-neighbor overrides on the container node itself.
-    #[serde(default, skip_serializing_if = "FocusNeighbors::is_empty")]
-    pub focus_neighbors: FocusNeighbors,
-    /// Focus-traversal policy for this container's children (M13 Goal F, Task 3).
-    /// Absent leaves the container's children outside any focus group of its own.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub focus: Option<FocusPolicy>,
-    /// Restore this container's last-focused descendant when a tree popped above
-    /// it returns focus here (M13 Goal F, Task 3). Skip-serialized when `false`.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub restore_on_return: bool,
-    /// Presentation-cell scope declared on this container (M13 G1b, Task 5). When
-    /// present, descendant `{ local }` binds resolve against the named cells, the
-    /// cells seed the app-side cell store, and the scope id keys the cell store +
-    /// the reconcile/clear sweep. Absent on every pre-G1b container, so a
-    /// localState-less container round-trips byte-identically (skip-serialized).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub local_state: Option<LocalState>,
-    pub children: Vec<Widget>,
-}
-
-/// Grid container. Like a stack but flows `children` across a fixed number of
-/// columns. Shares the stack fields; adds `cols`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GridWidget {
-    pub gap: SpacingValue,
-    pub padding: SpacingValue,
-    pub align: Align,
-    pub cols: u32,
-    /// Authored stable id (M13 Goal F, Task 3). See `TextWidget::id`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-    /// Directional focus-neighbor overrides on the grid node itself.
-    #[serde(default, skip_serializing_if = "FocusNeighbors::is_empty")]
-    pub focus_neighbors: FocusNeighbors,
-    /// Focus-traversal policy for this grid's children. A grid typically authors
-    /// `"spatial"` so nav moves nearest-neighbor by direction.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub focus: Option<FocusPolicy>,
-    /// Restore this grid's last-focused descendant on return (see `ContainerWidget`).
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub restore_on_return: bool,
-    pub children: Vec<Widget>,
-}
-
-/// Flexible-space leaf. `flex_grow` is the proportional share of leftover space
-/// it claims inside its parent container.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SpacerWidget {
-    pub flex_grow: f32,
-    /// Authored stable id (M13 Goal F, Task 3). See `TextWidget::id`. A spacer is
-    /// not focusable, but it may still carry an id for neighbor references.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-}
-
-/// Interactive button (M13 Goal F, Task 4). Focusable; activation — a focus-engine
-/// `confirm` on the focused button, or a pointer click — fires the `on_press`
-/// named reaction through the same reaction registry every entity/system reaction
-/// uses. The button renders its `label` as a centered text run.
-///
-/// `id` is required (unlike the optional `id` on passive widgets): activation maps
-/// the focused node id back to this button's `on_press`, so the id must be stable.
-/// `focus_neighbors` carries directional overrides exactly like the passive widgets.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ButtonWidget {
-    pub id: String,
-    pub label: String,
-    /// Named reaction fired on activation (confirm or click). Resolved against the
-    /// reaction registry by the app — the same vocabulary entity/system reactions use.
-    pub on_press: String,
-    /// Directional focus-neighbor overrides (M13 Goal F, Task 3). See
-    /// `TextWidget::focus_neighbors`.
-    #[serde(default, skip_serializing_if = "FocusNeighbors::is_empty")]
-    pub focus_neighbors: FocusNeighbors,
-    /// Opt-in activation-repeat (M13 Text-Entry, Task 2). When set, a HELD confirm
-    /// on this focused button re-fires `on_press` on the focus engine's existing
-    /// hold-to-repeat clock — initial delay, then interval — reusing the exact wire
-    /// shape (`{ initialDelayMs, intervalMs }`) of a container's nav `repeat`. This
-    /// is the ONE activation-repeat exception (the on-screen keyboard's backspace);
-    /// absent keeps F's single-fire rule (one `on_press` per press regardless of
-    /// hold). Skip-serialized when absent so a flag-less button round-trips byte-
-    /// identically with its pre-text-entry wire form.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub repeat_on_hold: Option<RepeatPolicy>,
-}
-
-/// Interactive slider (M13 Goal F, Task 4). Focusable; nav steps it captures
-/// (`captures_nav`, e.g. `["nav.left", "nav.right"]`) adjust its value by `step`
-/// within `[min, max]` and emit a `setState` write to the bound slot on the N+1
-/// frame. The slider renders its `label` and current numeric value as text.
-///
-/// `bind` follows the `PanelBind`/`TextBind` shape (`BindSource` + optional tween).
-/// `id` is required for the same reason as `ButtonWidget::id` — nav-capture and
-/// value-step resolve through the focused node id.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SliderWidget {
-    pub id: String,
-    pub label: String,
-    pub bind: SliderBind,
-    pub min: f32,
-    pub max: f32,
-    pub step: f32,
-    /// Nav wire names this slider consumes (e.g. `["nav.left", "nav.right"]`).
-    /// An array, NOT a bool — a slider gives the named nav intents first refusal,
-    /// stepping its value instead of moving focus. Absent/empty means the slider
-    /// captures no nav (focus moves normally). Skip-serialized when empty so a
-    /// capture-less slider omits the key.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub captures_nav: Vec<String>,
-    /// Directional focus-neighbor overrides (M13 Goal F, Task 3).
-    #[serde(default, skip_serializing_if = "FocusNeighbors::is_empty")]
-    pub focus_neighbors: FocusNeighbors,
-}
-
-/// Bind source for a `slider` widget: either a `{ slot }` dotted store name or a
-/// `{ local }` cell name; mirrors `PanelBind`'s `BindSource`-based shape so the
-/// bind vocabulary stays uniform across bound widgets. A slider binds a numeric
-/// value, so its tween follows the `TextTween` (number) shape.
-//
-// `deny_unknown_fields` omitted — see `TextBind` (incompatible with the flattened
-// `source` alternative).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SliderBind {
-    #[serde(flatten)]
-    pub source: BindSource,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tween: Option<TextTween>,
-}
-
-/// Passive horizontal value bar (M13 Goal F, Task 4). Not focusable. Renders a
-/// `background` quad with a `fill` quad whose width is `value/max` clamped to
-/// `[0, 1]` of the bar's laid-out width. `bind` follows the `PanelBind`/`TextBind`
-/// shape; the bar uses the eased display value like other bound widgets, and
-/// `style_ranges` (M13 Goal E) recolors the fill when present.
-///
-/// `fill`/`background` are color slots (literal or theme token). `bar` is
-/// horizontal-only in v1 (a vertical field is a later additive change).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BarWidget {
-    pub bind: SliderBind,
-    pub max: f32,
-    pub fill: ColorValue,
-    pub background: ColorValue,
-    /// Authored stable id (M13 Goal F, Task 3). See `TextWidget::id`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-    /// Optional continuous value→style map (M13 Goal E): recolors the `fill` band
-    /// by `value/max`. Calls the widget-agnostic `style_ranges::evaluate`. Absent
-    /// on a plain bar (skip-serialized), so a styleRange-less bar omits the key.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub style_ranges: Option<StyleRanges>,
-}
-
-/// Cross-axis alignment of a container's children.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Align {
-    Start,
-    Center,
-    End,
-    Stretch,
-}
-
-/// 9-slice border descriptor: the source `texture` asset key, the `slice`
-/// inset (logical px, `[left, top, right, bottom]`) that splits it into the
-/// nine regions, and a linear-RGBA `tint`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Border {
-    pub texture: String,
-    pub slice: [f32; 4],
-    pub tint: ColorValue,
-}
+pub use accessibility::Role;
+// Consumed by later G2 tasks (role projection); re-exported now so the descriptor
+// API surface is complete, but has no consumer yet (the role-projection sink is
+// deferred). Allow unconditionally so the test-target build stays clippy-clean.
+#[allow(unused_imports)]
+pub use accessibility::implicit_role;
+pub use envelope::{AnchoredTree, CaptureMode};
+pub use focus::{FocusKind, FocusNeighbors, FocusPolicy, RepeatPolicy};
+pub use values::{
+    Align, BindSource, Border, CellInit, ColorValue, Easing, LocalState, Predicate, PredicateValue,
+    SpacingValue,
+};
+pub use widgets::{
+    AnnounceWidget, BarWidget, ButtonWidget, ContainerWidget, GridWidget, ImageWidget, PanelBind,
+    PanelTween, PanelWidget, Priority, SliderBind, SliderWidget, SpacerWidget, TextBind, TextTween,
+    TextWidget, Widget,
+};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `Anchor` lives in `layout`, not the descriptor surface; the envelope embeds
+    // it. The wire tests reference it directly, so pull it into test scope (it is
+    // not re-exported because the descriptor API does not own it).
+    use super::super::layout::Anchor;
 
     /// A tree exercising the seven non-interactive kinds wrapped in the placement envelope.
     /// Button/Slider/Bar (Goal F interactive widgets) are covered by their own round-trip tests.
@@ -1570,5 +863,190 @@ mod tests {
         let json = r#"{"kind":"panel","fill":[0.0,0.0,0.0,1.0],"border":null,"bind":{"local":"flash","tween":{"durationMs":150.0,"easing":"linear"}}}"#;
         let w: Widget = serde_json::from_str(json).expect("must deserialize");
         assert_eq!(serde_json::to_string(&w).unwrap(), json);
+    }
+
+    // --- M13 G2: descriptor vocabulary (predicate / a11y / announce) --------
+
+    #[test]
+    fn predicate_round_trips_with_and_without_equals() {
+        // A predicate flattens its `{ slot }`/`{ local }` source beside an optional
+        // `equals` comparand. With `equals` present and absent, each round-trips
+        // byte-identically; an absent `equals` omits the key.
+        let with_eq = r#"{"slot":"hud.tab","equals":"stats"}"#;
+        let p: Predicate = serde_json::from_str(with_eq).expect("deserialize");
+        assert_eq!(serde_json::to_string(&p).unwrap(), with_eq);
+
+        let truthy = r#"{"local":"open"}"#;
+        let p: Predicate = serde_json::from_str(truthy).expect("deserialize");
+        assert_eq!(serde_json::to_string(&p).unwrap(), truthy);
+        assert!(p.equals.is_none());
+    }
+
+    #[test]
+    fn predicate_equals_accepts_scalars_and_rejects_array() {
+        // `equals` admits number / bool / string only.
+        let n: Predicate = serde_json::from_str(r#"{"slot":"a.b","equals":5}"#).unwrap();
+        assert_eq!(n.equals, Some(PredicateValue::Number(5.0)));
+        let b: Predicate = serde_json::from_str(r#"{"slot":"a.b","equals":true}"#).unwrap();
+        assert_eq!(b.equals, Some(PredicateValue::Boolean(true)));
+        let s: Predicate = serde_json::from_str(r#"{"slot":"a.b","equals":"on"}"#).unwrap();
+        assert_eq!(s.equals, Some(PredicateValue::String("on".into())));
+
+        // An rgba/array comparand is a load-time error: it matches no scalar
+        // variant of the untagged `PredicateValue`, so serde rejects it.
+        let arr: Result<Predicate, _> =
+            serde_json::from_str(r#"{"slot":"a.b","equals":[1.0,0.0,0.0,1.0]}"#);
+        assert!(
+            arr.is_err(),
+            "an rgba/array `equals` comparand must be a load-time error"
+        );
+    }
+
+    #[test]
+    fn button_with_selected_checked_bind_disabled_round_trips() {
+        // The G2 button reactive-state fields (selected/checked predicates, a
+        // styleRanges value `bind`, and `disabled`) round-trip byte-identically.
+        // Field order: id, label, onPress, selected, checked, bind, styleRanges,
+        // disabled.
+        let json = r#"{"kind":"button","id":"tab1","label":"Stats","onPress":"openStats","selected":{"slot":"hud.tab","equals":"stats"},"checked":{"local":"on"},"bind":{"slot":"hud.charge"},"styleRanges":{"max":100.0,"entries":[{"color":"ok"}]},"disabled":true}"#;
+        let w: Widget = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(serde_json::to_string(&w).unwrap(), json);
+    }
+
+    #[test]
+    fn button_g2_fields_absent_round_trips_byte_identically() {
+        // A pre-G2 button (no selected/checked/bind/styleRanges/disabled/
+        // visibleWhen/role) keeps its EXACT wire form: every new field skip-
+        // serializes when absent/false. label stays present (one-of name).
+        let json = r#"{"kind":"button","id":"resume","label":"Resume","onPress":"resumeGame"}"#;
+        let w: Widget = serde_json::from_str(json).expect("deserialize");
+        let re = serde_json::to_string(&w).unwrap();
+        assert_eq!(re, json);
+        for key in [
+            "selected",
+            "checked",
+            "\"bind\"",
+            "styleRanges",
+            "disabled",
+            "visibleWhen",
+            "\"role\"",
+        ] {
+            assert!(!re.contains(key), "absent {key} emits no key");
+        }
+    }
+
+    #[test]
+    fn button_labelled_by_round_trips_with_label_omitted() {
+        // A `labelledBy` button omits the inline `label` key entirely (label is now
+        // Option, skip-serialized when absent).
+        let json = r#"{"kind":"button","id":"x","labelledBy":"xLabel","onPress":"go"}"#;
+        let w: Widget = serde_json::from_str(json).expect("deserialize");
+        let re = serde_json::to_string(&w).unwrap();
+        assert_eq!(re, json);
+        assert!(
+            !re.contains("\"label\""),
+            "labelledBy button omits inline label"
+        );
+    }
+
+    #[test]
+    fn visible_when_round_trips_on_every_kind_and_absent_omits_the_key() {
+        // `visibleWhen` rides every widget variant. A predicate-bearing widget
+        // round-trips byte-identically; absent it omits the key (locked-wire).
+        let with = r#"{"kind":"text","content":"x","fontSize":12.0,"color":[1.0,1.0,1.0,1.0],"visibleWhen":{"slot":"hud.show"}}"#;
+        let w: Widget = serde_json::from_str(with).expect("deserialize");
+        assert_eq!(serde_json::to_string(&w).unwrap(), with);
+
+        let without = r#"{"kind":"text","content":"x","fontSize":12.0,"color":[1.0,1.0,1.0,1.0]}"#;
+        let w: Widget = serde_json::from_str(without).expect("deserialize");
+        let re = serde_json::to_string(&w).unwrap();
+        assert_eq!(re, without);
+        assert!(
+            !re.contains("visibleWhen"),
+            "absent visibleWhen emits no key"
+        );
+    }
+
+    #[test]
+    fn role_override_round_trips_and_absent_omits_the_key() {
+        // An authored `role` override round-trips in its camelCase wire literal;
+        // absent omits the key (the implicit role is runtime-only).
+        let json = r#"{"kind":"button","id":"t","label":"Tab","onPress":"go","role":"tab"}"#;
+        let w: Widget = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(serde_json::to_string(&w).unwrap(), json);
+
+        let plain = r#"{"kind":"button","id":"t","label":"Tab","onPress":"go"}"#;
+        let w: Widget = serde_json::from_str(plain).expect("deserialize");
+        assert!(!serde_json::to_string(&w).unwrap().contains("\"role\""));
+    }
+
+    #[test]
+    fn role_variants_serialize_to_camel_case_wire_form() {
+        assert_eq!(
+            serde_json::to_string(&Role::Progressbar).unwrap(),
+            r#""progressbar""#
+        );
+        assert_eq!(
+            serde_json::to_string(&Role::Tablist).unwrap(),
+            r#""tablist""#
+        );
+        assert_eq!(serde_json::to_string(&Role::None).unwrap(), r#""none""#);
+        let parsed: Role = serde_json::from_str(r#""checkbox""#).unwrap();
+        assert_eq!(parsed, Role::Checkbox);
+    }
+
+    #[test]
+    fn image_label_and_decorative_round_trip() {
+        // An image carries label OR decorative; each round-trips byte-identically.
+        let named = r#"{"kind":"image","asset":"ui/portrait","label":"Hero portrait"}"#;
+        let w: Widget = serde_json::from_str(named).expect("deserialize");
+        let re = serde_json::to_string(&w).unwrap();
+        assert_eq!(re, named);
+        // `decorative` skip-serializes when false.
+        assert!(
+            !re.contains("decorative"),
+            "named image omits decorative:false"
+        );
+
+        let deco = r#"{"kind":"image","asset":"ui/logo","decorative":true}"#;
+        let w: Widget = serde_json::from_str(deco).expect("deserialize");
+        assert_eq!(serde_json::to_string(&w).unwrap(), deco);
+    }
+
+    #[test]
+    fn announce_polite_round_trips_byte_identically_omitting_priority() {
+        // A polite announce (default) omits the `priority` key entirely.
+        let json = r#"{"kind":"announce","text":"Saved"}"#;
+        let w: Widget = serde_json::from_str(json).expect("deserialize");
+        let re = serde_json::to_string(&w).unwrap();
+        assert_eq!(re, json);
+        assert!(!re.contains("priority"), "polite priority emits no key");
+        assert!(matches!(w, Widget::Announce(_)));
+    }
+
+    #[test]
+    fn announce_assertive_round_trips_with_priority_present() {
+        let json = r#"{"kind":"announce","text":"Alert","priority":"assertive"}"#;
+        let w: Widget = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(serde_json::to_string(&w).unwrap(), json);
+    }
+
+    #[test]
+    fn anchored_tree_accessible_name_and_role_round_trip_and_absent_is_byte_identical() {
+        // The envelope carries optional `accessibleName` + `role` (Option::is_none
+        // skip). Present they round-trip; absent the tree is byte-identical to its
+        // pre-G2 wire (no new keys).
+        let with = r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"spacer","flexGrow":1.0},"accessibleName":"Pause menu","role":"group"}"#;
+        let tree: AnchoredTree = serde_json::from_str(with).expect("deserialize");
+        assert_eq!(tree.accessible_name.as_deref(), Some("Pause menu"));
+        assert_eq!(tree.role, Some(Role::Group));
+        assert_eq!(serde_json::to_string(&tree).unwrap(), with);
+
+        let without =
+            r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"spacer","flexGrow":1.0}}"#;
+        let tree: AnchoredTree = serde_json::from_str(without).expect("deserialize");
+        let re = serde_json::to_string(&tree).unwrap();
+        assert_eq!(re, without);
+        assert!(!re.contains("accessibleName") && !re.contains("\"role\""));
     }
 }

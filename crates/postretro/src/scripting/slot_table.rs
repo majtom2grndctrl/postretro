@@ -385,25 +385,59 @@ fn namespaces_overlap(left: &str, right: &str) -> bool {
             .is_some_and(|suffix| suffix.starts_with('.'))
 }
 
-/// Engine-owned UI surface slots. `screen.flash` is the engine-decayed
-/// full-screen flash surface (linear RGBA `[r, g, b, a]`): the App-side
-/// flash-decay state writes it each tick via the engine write path (bypassing
-/// readonly) from `FlashScreen` commands, decaying to transparent; a full-screen
-/// panel binds it. Readonly to scripts — a later wave (post-UI effects, SE)
-/// consumes the same published slot. Default transparent so the panel renders
-/// nothing until a flash fires. See: context/lib/ui.md §3.
+/// Engine-owned UI surface slots — the post-scene screen-space effects (SE).
+/// Each is an engine-decayed surface written by an App-side decay driver via the
+/// engine write path (bypassing readonly), and readonly to scripts: scripts read
+/// the published slot, while the engine is the sole writer.
+///
+/// - `screen.flash` — full-screen flash (linear RGBA `[r, g, b, a]`): the
+///   flash-decay state writes it from `FlashScreen` commands, decaying to
+///   transparent; a full-screen panel binds it. Default transparent so the panel
+///   renders nothing until a flash fires.
+/// - `screen.vignette` — vignette tint (linear RGBA `[r, g, b, a]`, `a` =
+///   strength): the vignette-decay driver writes an envelope (rise/peak/decay).
+///   Default `[0,0,0,0]` so the later GPU consumer collapses to identity at rest.
+/// - `screen.shake` — current-frame screen-shake offset `[dx, dy]` in
+///   logical-reference px: the shake-decay driver writes a decaying oscillation.
+///   Default `[0,0]` (exact zero offset) so at rest there is no displacement.
+///
+/// See: context/lib/ui.md §3.
 fn engine_screen_slots() -> Vec<(String, SlotRecord)> {
-    vec![(
-        "flash".to_string(),
-        SlotRecord::new(SlotSchema {
-            slot_type: SlotType::Array,
-            default: Some(SlotValue::Array(vec![0.0, 0.0, 0.0, 0.0])),
-            range: None,
-            persist: false,
-            readonly: true,
-            ownership: SlotOwnership::Engine,
-        }),
-    )]
+    vec![
+        (
+            "flash".to_string(),
+            SlotRecord::new(SlotSchema {
+                slot_type: SlotType::Array,
+                default: Some(SlotValue::Array(vec![0.0, 0.0, 0.0, 0.0])),
+                range: None,
+                persist: false,
+                readonly: true,
+                ownership: SlotOwnership::Engine,
+            }),
+        ),
+        (
+            "vignette".to_string(),
+            SlotRecord::new(SlotSchema {
+                slot_type: SlotType::Array,
+                default: Some(SlotValue::Array(vec![0.0, 0.0, 0.0, 0.0])),
+                range: None,
+                persist: false,
+                readonly: true,
+                ownership: SlotOwnership::Engine,
+            }),
+        ),
+        (
+            "shake".to_string(),
+            SlotRecord::new(SlotSchema {
+                slot_type: SlotType::Array,
+                default: Some(SlotValue::Array(vec![0.0, 0.0])),
+                range: None,
+                persist: false,
+                readonly: true,
+                ownership: SlotOwnership::Engine,
+            }),
+        ),
+    ]
 }
 
 /// Engine-owned input-observation slots. `input.mode` is the pointer-vs-focus
@@ -543,6 +577,38 @@ mod tests {
         assert!(slot.schema.readonly);
         assert!(!slot.schema.persist);
         assert_eq!(slot.value, Some(SlotValue::Array(vec![0.0, 0.0, 0.0, 0.0])));
+    }
+
+    #[test]
+    fn new_registers_engine_screen_vignette_slot() {
+        // `screen.vignette` is the engine-owned vignette surface (SE): a readonly
+        // (to scripts) RGBA Array slot (`a` = strength) defaulting to all-zero so
+        // the later GPU consumer collapses to identity until a vignette fires.
+        let table = SlotTable::new();
+        let slot = table
+            .get("screen.vignette")
+            .expect("engine screen.vignette slot exists");
+        assert_eq!(slot.schema.slot_type, SlotType::Array);
+        assert_eq!(slot.schema.ownership, SlotOwnership::Engine);
+        assert!(slot.schema.readonly);
+        assert!(!slot.schema.persist);
+        assert_eq!(slot.value, Some(SlotValue::Array(vec![0.0, 0.0, 0.0, 0.0])));
+    }
+
+    #[test]
+    fn new_registers_engine_screen_shake_slot() {
+        // `screen.shake` is the engine-owned screen-shake offset surface (SE): a
+        // readonly (to scripts) `[dx, dy]` Array slot defaulting to exact zero so
+        // there is no displacement at rest.
+        let table = SlotTable::new();
+        let slot = table
+            .get("screen.shake")
+            .expect("engine screen.shake slot exists");
+        assert_eq!(slot.schema.slot_type, SlotType::Array);
+        assert_eq!(slot.schema.ownership, SlotOwnership::Engine);
+        assert!(slot.schema.readonly);
+        assert!(!slot.schema.persist);
+        assert_eq!(slot.value, Some(SlotValue::Array(vec![0.0, 0.0])));
     }
 
     #[test]

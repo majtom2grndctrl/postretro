@@ -13,6 +13,7 @@ pub mod mesh_instances;
 pub mod mesh_pass;
 #[cfg(feature = "dev-tools")]
 pub mod nav_diagnostics;
+pub mod screen_effects;
 pub mod sdf_atlas;
 pub mod sdf_shadow;
 pub mod sh_compose;
@@ -57,6 +58,7 @@ use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 
 use fog_pass::FogPass;
 use frame_timing::FrameTiming;
+use screen_effects::ScreenEffectsPass;
 use sdf_atlas::SdfAtlasResources;
 use sdf_shadow::{SdfShadowFrameInputs, SdfShadowPass, SdfShadowShGrid};
 use sh_compose::ShComposeResources;
@@ -1217,6 +1219,12 @@ pub struct Renderer {
 
     depth_view: wgpu::TextureView,
 
+    /// Post-scene compositor seam: owns the `scene_color` offscreen target every
+    /// gameplay scene/UI pass renders into, plus the resolve pass that blits it
+    /// to the swapchain (the sole gameplay-path swapchain writer). Recreated on
+    /// resize alongside `depth_view`. See `render/screen_effects.rs`.
+    screen_effects: ScreenEffectsPass,
+
     /// GPU textures indexed by texture index.
     gpu_textures: Vec<GpuTexture>,
     bvh_leaves: Vec<crate::geometry::BvhLeaf>,
@@ -2060,6 +2068,16 @@ impl Renderer {
         let (_depth_texture, depth_view) =
             create_depth_texture(&device, surface_config.width, surface_config.height);
 
+        // Post-scene compositor seam: `scene_color` offscreen target + identity
+        // resolve. Allocated at the sRGB surface format / surface size /
+        // single-sample for byte-identical resolve (see `screen_effects.rs`).
+        let screen_effects = ScreenEffectsPass::new(
+            &device,
+            surface_config.width,
+            surface_config.height,
+            surface_format,
+        );
+
         let sh_volume_resources = ShVolumeResources::new(
             &device,
             &queue,
@@ -2770,6 +2788,7 @@ impl Renderer {
             shadow_depth_pipeline,
             shadow_vs_stride,
             depth_view,
+            screen_effects,
             gpu_textures,
             bvh_leaves,
             compute_cull,
@@ -3520,7 +3539,14 @@ impl Renderer {
     /// (N→N+1 in reverse). Empty when no gameplay layer is active. See: ui.md §4.
     pub fn export_ui_focus_rects(&self) -> ui::tree::FocusRectList {
         let viewport = [self.surface_config.width, self.surface_config.height];
-        self.ui.export_top_focus_rects(viewport)
+        // Resolve each focusable button's `selected`/`checked` predicate (M13 G2)
+        // against the same frame snapshot the draw build used, so the a11y readback
+        // matches the author-wired highlight.
+        self.ui.export_top_focus_rects(
+            viewport,
+            &self.ui_snapshot.slot_values,
+            &self.ui_snapshot.cell_values,
+        )
     }
 
     /// Install an override UI theme and bump the theme generation. Engine-side
@@ -3902,6 +3928,9 @@ impl Renderer {
         self.surface.configure(&self.device, &self.surface_config);
         let (_depth_texture, depth_view) = create_depth_texture(&self.device, width, height);
         self.depth_view = depth_view;
+        // `scene_color` is surface-sized; recreate it (and rebuild the resolve
+        // bind group) alongside the depth target.
+        self.screen_effects.resize(&self.device, width, height);
         self.fog
             .resize(&self.device, width, height, &self.depth_view);
         // SDF shadow target is half-res relative to the surface; the depth view
@@ -5137,6 +5166,15 @@ impl Renderer {
             );
         }
 
+        // Post-scene compositor seam: every gameplay scene + UI pass renders into
+        // `scene_color` (the offscreen target) instead of the swapchain `view`.
+        // The resolve pass below is the sole swapchain writer for the gameplay
+        // path. Borrowing the field-method here keeps `scene_color` a disjoint
+        // borrow from the `&mut self.ui` / `&mut self.debug_lines` passes that
+        // also run in this region. The splash path is unaffected — it writes the
+        // swapchain directly and never touches this target.
+        let scene_color = self.screen_effects.scene_color_view();
+
         {
             let forward_ts = self
                 .frame_timing
@@ -5145,7 +5183,7 @@ impl Renderer {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Textured Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: scene_color,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -5234,7 +5272,7 @@ impl Renderer {
             let mut mesh_enc = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Skinned Mesh Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: scene_color,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -5272,7 +5310,7 @@ impl Renderer {
             let mut smoke_pass_enc = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Billboard Sprite Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: scene_color,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -5348,7 +5386,7 @@ impl Renderer {
             let mut composite = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Fog Composite Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: scene_color,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -5383,7 +5421,7 @@ impl Renderer {
                 let mut overlay_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Wireframe Overlay Pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
+                        view: scene_color,
                         depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
@@ -5426,7 +5464,7 @@ impl Renderer {
             self.debug_lines.render(
                 &self.queue,
                 &mut encoder,
-                &view,
+                scene_color,
                 &self.depth_view,
                 &self.uniform_bind_group,
             );
@@ -5436,10 +5474,10 @@ impl Renderer {
             // leaking segments across frames.
         }
 
-        // UI pass: records into the surface `view` with `LoadOp::Load` after the
-        // world/fog/wireframe/debug-line passes, before the timing resolve and
-        // submit — beneath the egui overlay (which draws in the caller's separate
-        // submission).
+        // UI pass: records into `scene_color` (offscreen) with `LoadOp::Load`
+        // after the world/fog/wireframe/debug-line passes, before the timing
+        // resolve and submit — beneath the egui overlay (which draws in the
+        // caller's separate submission).
         //
         // The gameplay path lays out the snapshot's descriptor tree (renderer
         // owns layout) and records its draw data. EMPTY-TREE EARLY-OUT: when the
@@ -5499,7 +5537,11 @@ impl Renderer {
             let is_top = layer + 1 == stack.len();
             if is_top {
                 if let Some(focused) = self.ui_snapshot.focused_id.as_deref() {
-                    let focus_rects = self.ui.export_top_focus_rects(ui_viewport);
+                    let focus_rects = self.ui.export_top_focus_rects(
+                        ui_viewport,
+                        &self.ui_snapshot.slot_values,
+                        &self.ui_snapshot.cell_values,
+                    );
                     if let Some(fr) = focus_rects.rects.iter().find(|r| r.id == focused) {
                         let inset = self.ui_theme.spacing("xs").unwrap_or(0.0)
                             * ui::layout::device_scale(ui_viewport);
@@ -5529,7 +5571,7 @@ impl Renderer {
                 &self.device,
                 &self.queue,
                 &mut encoder,
-                &view,
+                scene_color,
                 ui_viewport,
                 wgpu::LoadOp::Load,
                 &composition,
@@ -5538,6 +5580,19 @@ impl Renderer {
         // Drop retained state for any layers popped since last frame (stack
         // shrank), so freed modal trees release their layout cache.
         self.ui.truncate_gameplay_stack(stack.len());
+
+        // Post-scene compositor resolve: blit `scene_color` into the swapchain
+        // `view`, composing flash/vignette/shake from the frame's UI slot
+        // snapshot on top. Encoded AFTER the UI pass and BEFORE the timing
+        // resolve — the sole swapchain writer for the gameplay path, run every
+        // frame (never skipped at rest). At-rest slot values pack to the identity
+        // uniform, so the output stays byte-identical to the pre-SE blit.
+        self.screen_effects.encode_resolve(
+            &self.queue,
+            &mut encoder,
+            &view,
+            &self.ui_snapshot.slot_values,
+        );
 
         if let Some(timing) = &self.frame_timing {
             timing.encode_resolve(&mut encoder);

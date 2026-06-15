@@ -198,6 +198,11 @@ fn fallback_splash_tree() -> AnchoredTree {
         asset: SPLASH_LOGO_ASSET.to_string(),
         id: None,
         focus_neighbors: Default::default(),
+        // The splash logo is presentational chrome — decorative, no a11y name.
+        label: None,
+        decorative: true,
+        visible_when: None,
+        role: None,
     });
     let version = Widget::Text(TextWidget {
         content: VERSION_SENTINEL.to_string(),
@@ -208,6 +213,8 @@ fn fallback_splash_tree() -> AnchoredTree {
         style_ranges: None,
         id: None,
         focus_neighbors: Default::default(),
+        visible_when: None,
+        role: None,
     });
     let panel = Widget::VStack(ContainerWidget {
         gap: SpacingValue::Literal(LOGO_TEXT_GAP),
@@ -220,6 +227,8 @@ fn fallback_splash_tree() -> AnchoredTree {
         focus: None,
         restore_on_return: false,
         local_state: None,
+        visible_when: None,
+        role: None,
         children: vec![logo, version],
     });
     AnchoredTree::passthrough(Anchor::Center, [0.0, 0.0], panel)
@@ -247,7 +256,8 @@ fn substitute_version(widget: &mut Widget, version_line: &str) {
         | Widget::Spacer(_)
         | Widget::Button(_)
         | Widget::Slider(_)
-        | Widget::Bar(_) => {}
+        | Widget::Bar(_)
+        | Widget::Announce(_) => {}
     }
 }
 

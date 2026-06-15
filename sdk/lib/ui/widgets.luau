@@ -225,6 +225,74 @@ local function applyFocusFields(out: { [string]: any }, props: any, factory: str
   end
 end
 
+local ROLES: { [string]: boolean } = {
+  tab = true,
+  tablist = true,
+  checkbox = true,
+  radio = true,
+  listitem = true,
+  button = true,
+  slider = true,
+  progressbar = true,
+  image = true,
+  group = true,
+  none = true,
+}
+
+-- Validate an optional `role` prop, appending it to `out` when present.
+local function applyRole(out: { [string]: any }, role: any, factory: string)
+  if role == nil then
+    return
+  end
+  if type(role) ~= "string" or not ROLES[role] then
+    error(
+      `{factory}: \`role\` must be one of "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none"`
+    )
+  end
+  out.role = role
+end
+
+-- Validate + clone a `Predicate` prop (`visibleWhen`/`selected`/`checked`, or a
+-- Button `bind`), or nil when absent. The source is `{ slot }` (a store
+-- handle/string) or `{ local }`; `equals` is an optional scalar comparand. `slot`
+-- wins when present.
+local function buildPredicate(value: any, field: string, factory: string): any?
+  if value == nil then
+    return nil
+  end
+  if type(value) ~= "table" then
+    error(`{factory}: \`{field}\` must be a table`)
+  end
+  local out: { [string]: any }
+  if value.slot ~= nil then
+    requireNonemptyString(value.slot, `{field}.slot`, factory)
+    out = { slot = value.slot }
+  else
+    requireNonemptyString(value["local"], `{field}.local`, factory)
+    out = { ["local"] = value["local"] }
+  end
+  if value.equals ~= nil then
+    local e = value.equals
+    if type(e) ~= "number" and type(e) ~= "boolean" and type(e) ~= "string" then
+      error(`{factory}: \`{field}.equals\` must be a number, boolean, or string`)
+    end
+    if type(e) == "number" and (e ~= e or e == math.huge or e == -math.huge) then
+      error(`{factory}: \`{field}.equals\` number must be finite`)
+    end
+    out.equals = e
+  end
+  return out
+end
+
+-- Append an optional `visibleWhen` predicate + `role` shared by every widget.
+local function applyA11yFields(out: { [string]: any }, props: any, factory: string)
+  local visibleWhen = buildPredicate(props.visibleWhen, "visibleWhen", factory)
+  if visibleWhen ~= nil then
+    out.visibleWhen = visibleWhen
+  end
+  applyRole(out, props.role, factory)
+end
+
 -- Validate a 9-slice border prop, returning the wire table. Exported for reuse
 -- by `layout.luau` stacks (which redeclare the helper -- see that file).
 local function validateBorder(value: any, factory: string): any
@@ -289,6 +357,7 @@ function UiWidgetsSdk.Text(props: any): WidgetDescriptor
   if styleRanges ~= nil then
     out.styleRanges = styleRanges
   end
+  applyA11yFields(out, props, "Text")
   return out
 end
 
@@ -318,18 +387,40 @@ function UiWidgetsSdk.Panel(props: any): WidgetDescriptor
   if styleRanges ~= nil then
     out.styleRanges = styleRanges
   end
+  applyA11yFields(out, props, "Panel")
   return out
 end
 
 -- --- Image ------------------------------------------------------------------
 
 --- An `image` leaf referencing a texture asset by key; sizes from the asset's
---- natural pixel dimensions. No bind capability. Mirrors `ImageWidget`.
+--- natural pixel dimensions. No bind capability. Name-XOR-decorative (M13 G2):
+--- exactly one of `label` (accessible name) or `decorative = true` (hidden from
+--- a11y) is required -- neither or both errors. Mirrors `ImageWidget`.
 function UiWidgetsSdk.Image(props: any): WidgetDescriptor
   requireObject(props, "Image")
   requireNonemptyString(props.asset, "asset", "Image")
+  local hasLabel = props.label ~= nil
+  if props.decorative ~= nil and type(props.decorative) ~= "boolean" then
+    error("Image: `decorative` must be a boolean")
+  end
+  local decorative = props.decorative == true
+  if hasLabel and decorative then
+    error("Image: set exactly one of `label` or `decorative: true`, not both")
+  end
+  if not hasLabel and not decorative then
+    error("Image: needs an accessible name: set exactly one of `label` or `decorative: true`")
+  end
   local out: { [string]: any } = { kind = "image", asset = props.asset }
   applyFocusFields(out, props, "Image")
+  if hasLabel then
+    requireNonemptyString(props.label, "label", "Image")
+    out.label = props.label
+  end
+  if decorative then
+    out.decorative = true
+  end
+  applyA11yFields(out, props, "Image")
   return out
 end
 
@@ -347,6 +438,7 @@ function UiWidgetsSdk.Spacer(props: any?): WidgetDescriptor
     requireNonemptyString(p.id, "id", "Spacer")
     out.id = p.id
   end
+  applyA11yFields(out, p, "Spacer")
   return out
 end
 
@@ -354,14 +446,31 @@ end
 
 --- An interactive `button`. `id` is required. `onPress` accepts a reaction
 --- handle (the `.name` is read) or a bare reaction-name string, emitting the
---- unchanged `onPress: string` wire form. Mirrors `ButtonWidget`.
+--- unchanged `onPress: string` wire form. Name-XOR (M13 G2): exactly one of
+--- `label` / `labelledBy` is required -- neither or both errors. `selected`/
+--- `checked` are reactive predicates; `bind`+`styleRanges` drive the reactive
+--- highlight; `disabled` makes it non-interactive.
 function UiWidgetsSdk.Button(props: any): WidgetDescriptor
   requireObject(props, "Button")
   requireNonemptyString(props.id, "id", "Button")
-  requireString(props.label, "label", "Button")
+  local hasLabel = props.label ~= nil
+  local hasLabelledBy = props.labelledBy ~= nil
+  if hasLabel and hasLabelledBy then
+    error("Button: set exactly one of `label` or `labelledBy`, not both")
+  end
+  if not hasLabel and not hasLabelledBy then
+    error("Button: needs an accessible name: set exactly one of `label` or `labelledBy`")
+  end
 
   local onPress = resolveReactionName(props.onPress, "Button")
-  local out: { [string]: any } = { kind = "button", id = props.id, label = props.label, onPress = onPress }
+  local out: { [string]: any } = { kind = "button", id = props.id, onPress = onPress }
+  if hasLabel then
+    requireString(props.label, "label", "Button")
+    out.label = props.label
+  else
+    requireNonemptyString(props.labelledBy, "labelledBy", "Button")
+    out.labelledBy = props.labelledBy
+  end
   if props.focusNeighbors ~= nil then
     local neighbors = buildFocusNeighbors(props.focusNeighbors, "Button")
     if neighbors ~= nil then
@@ -371,18 +480,51 @@ function UiWidgetsSdk.Button(props: any): WidgetDescriptor
   if props.repeatOnHold ~= nil then
     out.repeatOnHold = buildRepeatPolicy(props.repeatOnHold, "repeatOnHold", "Button")
   end
+  local selected = buildPredicate(props.selected, "selected", "Button")
+  if selected ~= nil then
+    out.selected = selected
+  end
+  local checked = buildPredicate(props.checked, "checked", "Button")
+  if checked ~= nil then
+    out.checked = checked
+  end
+  local bind = buildPredicate(props.bind, "bind", "Button")
+  if bind ~= nil then
+    out.bind = bind
+  end
+  local styleRanges = buildStyleRanges(props.styleRanges, "Button")
+  if styleRanges ~= nil then
+    out.styleRanges = styleRanges
+  end
+  if props.disabled ~= nil then
+    if type(props.disabled) ~= "boolean" then
+      error("Button: `disabled` must be a boolean")
+    end
+    if props.disabled then
+      out.disabled = true
+    end
+  end
+  applyA11yFields(out, props, "Button")
   return out
 end
 
 -- --- Slider -----------------------------------------------------------------
 
 --- An interactive `slider`. Nav wires in `capturesNav` step the bound value by
---- `step` within `[min, max]`. `id` and `bind` are required. Mirrors
---- `SliderWidget`.
+--- `step` within `[min, max]`. `id` and `bind` are required. Name-XOR (M13 G2):
+--- exactly one of `label` / `labelledBy` is required. `disabled` makes it
+--- non-interactive.
 function UiWidgetsSdk.Slider(props: any): WidgetDescriptor
   requireObject(props, "Slider")
   requireNonemptyString(props.id, "id", "Slider")
-  requireString(props.label, "label", "Slider")
+  local hasLabel = props.label ~= nil
+  local hasLabelledBy = props.labelledBy ~= nil
+  if hasLabel and hasLabelledBy then
+    error("Slider: set exactly one of `label` or `labelledBy`, not both")
+  end
+  if not hasLabel and not hasLabelledBy then
+    error("Slider: needs an accessible name: set exactly one of `label` or `labelledBy`")
+  end
   requireFiniteNumber(props.min, "min", "Slider")
   requireFiniteNumber(props.max, "max", "Slider")
   requireFiniteNumber(props.step, "step", "Slider")
@@ -391,15 +533,18 @@ function UiWidgetsSdk.Slider(props: any): WidgetDescriptor
     error("Slider: `bind` is required")
   end
 
-  local out: { [string]: any } = {
-    kind = "slider",
-    id = props.id,
-    label = props.label,
-    bind = bind,
-    min = props.min,
-    max = props.max,
-    step = props.step,
-  }
+  local out: { [string]: any } = { kind = "slider", id = props.id }
+  if hasLabel then
+    requireString(props.label, "label", "Slider")
+    out.label = props.label
+  else
+    requireNonemptyString(props.labelledBy, "labelledBy", "Slider")
+    out.labelledBy = props.labelledBy
+  end
+  out.bind = bind
+  out.min = props.min
+  out.max = props.max
+  out.step = props.step
   if props.capturesNav ~= nil then
     if type(props.capturesNav) ~= "table" then
       error("Slider: `capturesNav` must be a string array")
@@ -421,13 +566,22 @@ function UiWidgetsSdk.Slider(props: any): WidgetDescriptor
       out.focusNeighbors = neighbors
     end
   end
+  if props.disabled ~= nil then
+    if type(props.disabled) ~= "boolean" then
+      error("Slider: `disabled` must be a boolean")
+    end
+    if props.disabled then
+      out.disabled = true
+    end
+  end
+  applyA11yFields(out, props, "Slider")
   return out
 end
 
 -- --- Bar --------------------------------------------------------------------
 
 --- A passive `bar`: fill fraction is `value/max` clamped to `[0, 1]`.
---- `styleRanges` recolors the fill. `bind` is required. Mirrors `BarWidget`.
+--- `styleRanges` recolors the fill. `bind` is required.
 function UiWidgetsSdk.Bar(props: any): WidgetDescriptor
   requireObject(props, "Bar")
   local bind = buildBind(props.bind, "Bar", "slider")
@@ -452,6 +606,33 @@ function UiWidgetsSdk.Bar(props: any): WidgetDescriptor
   local styleRanges = buildStyleRanges(props.styleRanges, "Bar")
   if styleRanges ~= nil then
     out.styleRanges = styleRanges
+  end
+  applyA11yFields(out, props, "Bar")
+  return out
+end
+
+-- --- Announce ---------------------------------------------------------------
+
+--- A non-visual `announce` widget (M13 G2): lays out as nothing; its `text` is a
+--- live-region message routed to the platform a11y layer at the declared
+--- `priority`. `text` is the POSITIONAL second argument. `priority` is emitted
+--- ONLY for `"assertive"`; `"polite"` (and an omitted value) drop the key,
+--- matching the Rust `skip_serializing_if = "is_polite"`. Mirrors `AnnounceWidget`.
+function UiWidgetsSdk.Announce(props: any, text: any): WidgetDescriptor
+  requireObject(props, "Announce")
+  requireString(text, "text", "Announce")
+  local out: { [string]: any } = { kind = "announce", text = text }
+  if props.priority ~= nil then
+    if props.priority ~= "polite" and props.priority ~= "assertive" then
+      error('Announce: `priority` must be "polite" or "assertive"')
+    end
+    if props.priority == "assertive" then
+      out.priority = "assertive"
+    end
+  end
+  local visibleWhen = buildPredicate(props.visibleWhen, "visibleWhen", "Announce")
+  if visibleWhen ~= nil then
+    out.visibleWhen = visibleWhen
   end
   return out
 end

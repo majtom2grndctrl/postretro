@@ -7,9 +7,12 @@ import {
   flashScreen,
   onStateCrossing,
   playSound,
+  screenShake,
   showDialog,
+  vignette,
   world,
 } from "postretro";
+import { tabsDemo } from "./tabs-demo";
 
 export function setupLevel(_ctx: unknown) {
   const reactions: NamedReactionDescriptor[] = [];
@@ -146,8 +149,16 @@ export function setupLevel(_ctx: unknown) {
   // critical (red) styleRanges band — the bar shows the band, the crossing
   // fires the flash + sound. `flashScreen`/`playSound` are system reactions
   // (no entity tag); they enqueue typed commands the app drains each frame.
+  //
+  // M13 Goal SE demo: the same low-health crossing ALSO fires a red-tinted
+  // vignette (edges darken/tint then decay, center untouched) and a screen
+  // shake (decaying oscillation returning to exact center). All three compose
+  // in the single post-UI resolve pass and pause with game logic. There is no
+  // entity-hit event seam, so `onStateCrossing` is the trigger surface.
   reactions.push(
     defineReaction("lowHealthFlash", flashScreen([1.0, 0.0, 0.0, 0.5], 250)),
+    defineReaction("lowHealthVignette", vignette(0.7, 400, [0.6, 0.0, 0.0])),
+    defineReaction("lowHealthShake", screenShake(12, 300)),
     defineReaction("lowHealthAlert", playSound("sfx/test_tone", "sfx")),
   );
 
@@ -193,9 +204,18 @@ export function setupLevel(_ctx: unknown) {
   const crossings = [
     onStateCrossing("player.health", { below: 20, max: 100 }, [
       "lowHealthFlash",
+      "lowHealthVignette",
+      "lowHealthShake",
       "lowHealthAlert",
     ]),
   ];
 
-  return { reactions, crossings };
+  // M13 G2 demo: the reactive-UI tabs strip (localState cell + role:"tablist" +
+  // predicate-bound highlight/selected + Switch content swap). Its named
+  // `cellWrite` reactions merge into this level's reaction registry and its
+  // `alwaysOn` tree composes as a HUD-layer base every frame.
+  const tabs = tabsDemo();
+  reactions.push(...tabs.reactions);
+
+  return { reactions, crossings, uiTrees: tabs.uiTrees };
 }

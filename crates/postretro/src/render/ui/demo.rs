@@ -346,11 +346,12 @@ mod tests {
         let Widget::Button(opener) = &col.children[5] else {
             panic!("sixth row is the open-text-entry button");
         };
+        // M13 G2 migration: `label` is now `Option` (label-XOR-labelledBy).
         let opener_label = opener.label.clone();
 
         // Preconditions: the label and readout-format are the strings a careless
         // edit could eat into; they are NOT the slot the edit targets.
-        assert_eq!(opener_label, "ENTER TEXT");
+        assert_eq!(opener_label.as_deref(), Some("ENTER TEXT"));
         assert_eq!(readout_format, "ENTRY {}");
         assert_eq!(readout_slot, "ui.textEntry");
         assert_ne!(
@@ -513,9 +514,10 @@ mod tests {
         let mut font_system = crate::render::ui::text::build_font_system();
         let images = ImageSizes::new();
         let slots: HashMap<String, SlotValue> = HashMap::new();
+        let cells = crate::render::ui::tree::CellValues::new();
         // Lay out + export the focus rects exactly as the renderer does each frame.
         ui.build_draw_data([1280, 720], &mut font_system, &images, &slots);
-        let rects = ui.export_focus_rects(&tree, [1280, 720]);
+        let rects = ui.export_focus_rects(&tree, [1280, 720], &slots, &cells);
 
         // The interactive widgets export as focusable in tree order under one group.
         let ids: Vec<&str> = rects.rects.iter().map(|r| r.id.as_str()).collect();

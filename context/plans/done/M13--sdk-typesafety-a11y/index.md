@@ -116,63 +116,63 @@ announce — shape nothing reads yet, the durable contract BIS authors against).
 
 ## Acceptance criteria
 
-- [ ] `resolve_predicate` resolves a `Predicate` to `0.0`/`1.0`: a `Boolean`
+- [x] `resolve_predicate` resolves a `Predicate` to `0.0`/`1.0`: a `Boolean`
   source without `equals` → its truthiness; a source with `equals` → `1.0` iff the
   resolved `SlotValue` equals the comparand. `equals` v1 admits **number / bool /
   string** only (exact compare; `String`/`Enum` match by name; a type mismatch →
   `0.0`); rgba/array comparands are a load-time error. A `Predicate` used as a
   widget `bind` resolves to a `Number` the existing `styleRanges` extractor
   (`style_value`) consumes — the author-wired highlight, no new visual primitive.
-- [ ] `selected`/`checked` (`Option<Predicate>`) resolve in the focus-rect build
+- [x] `selected`/`checked` (`Option<Predicate>`) resolve in the focus-rect build
   and are carried on `FocusRect`/`FocusRectList`; a test reads the exported
   `FocusRectList` and asserts the value matches the predicate. No static-bool form
   compiles. (The engine draws no highlight from them — see Out of scope.)
-- [ ] `visibleWhen: false` sets the node `Display::None` — excluded from layout
+- [x] `visibleWhen: false` sets the node `Display::None` — excluded from layout
   size, the draw walk (zero rects/glyphs), and the focus-rect list (its focusables
   are unreachable + not chosen as initial focus); `true` restores all three. A
   change in the predicate's resolved value re-exports the `FocusRectList` and marks
   layout dirty. Toggling visibility does **not** reset `localState` cells declared
   above the toggle (a test round-trips a cell value across a hide/show) — because
   `reconcile` walks the descriptor, not the visible tree.
-- [ ] `Switch(cell, map)` expands to the map's subtrees each with `visibleWhen:
+- [x] `Switch(cell, map)` expands to the map's subtrees each with `visibleWhen:
   cell.is(key)` injected, in **lexicographically-sorted key order** (pinned
   identically in TS + Luau, since Luau table iteration order is undefined) — assert
   byte-identical wire; a `Switch` over a 3-key cell shows exactly the matching child.
-- [ ] `disabled` widgets are skipped by focus navigation, initial-focus, and the
+- [x] `disabled` widgets are skipped by focus navigation, initial-focus, and the
   pointer/hover paths, and cannot be activated (`FocusRect.disabled` populated in
   the focus-rect build; honored in `ui_focus.rs` nav + `main.rs::fire_focused_button_activation`).
-- [ ] `Button`/`Slider` accept `labelledBy`; `label` optional at type level;
+- [x] `Button`/`Slider` accept `labelledBy`; `label` optional at type level;
   neither/both throws a field-named `Error`, exactly one succeeds; the bridge
   surfaces a named load-time error (no panic) for the zero/both raw-wire case.
-- [ ] `Image` requires `label` xor `decorative: true` — neither/both is a factory
+- [x] `Image` requires `label` xor `decorative: true` — neither/both is a factory
   throw + named bridge error.
-- [ ] A widget accepts an optional `role`; `role` round-trips, absent by default;
+- [x] A widget accepts an optional `role`; `role` round-trips, absent by default;
   `implicit_role(kind) -> Role` has a unit test; a `role` override does not force a
   name.
-- [ ] `AnchoredTree` carries optional `accessibleName` + `role` (`Option` +
+- [x] `AnchoredTree` carries optional `accessibleName` + `role` (`Option` +
   `Option::is_none` skip, alongside `capture_mode`/`initial_focus`/`text_entry_target`);
   a tree without the new fields deserializes byte-identically to its pre-G2 wire.
-- [ ] `Announce({}, "…")` (polite, omitted via `is_polite` skip) round-trips
+- [x] `Announce({}, "…")` (polite, omitted via `is_polite` skip) round-trips
   byte-identically; `{ priority: "assertive" }` round-trips with the field present;
   layout zero rects + draw zero glyphs; a garbled `Announce` is a named load-time
   error, not a panic.
-- [ ] Every pre-G2 tree deserializes byte-identically — new fields skip-serialized
+- [x] Every pre-G2 tree deserializes byte-identically — new fields skip-serialized
   when absent (`Option` standard skip; `disabled` bool the existing `is_false`
   helper, `descriptor.rs:570`).
-- [ ] Each new descriptor field is read by the **hand-written**
+- [x] Each new descriptor field is read by the **hand-written**
   `data_descriptors.rs` bridge in **both** the JS and Lua per-kind converters (a
   serde-only field would pass `descriptor.rs` round-trip tests yet silently drop on
   the live authoring path — a test authors each field through the bridge and
   asserts arrival).
-- [ ] Emitted typedefs narrow props per kind (a `Button` with Text-only `content`
+- [x] Emitted typedefs narrow props per kind (a `Button` with Text-only `content`
   is a type error; `Bar` needs no name); `LocalStateHandle.is(v)`/`StoreHandle.is(v)`
   are typed to the cell/slot value type — `@ts-expect-error` fixtures + a typedef
   snapshot; `gen-script-types` reports no drift; TS/Luau parity.
-- [ ] A working **tabs demo** in the dev UI: a `localState` cell + `role:"tablist"`
+- [x] A working **tabs demo** in the dev UI: a `localState` cell + `role:"tablist"`
   strip where each tab `Button` carries a `Predicate` `bind` + `styleRanges` (the
   highlight) and `selected` (a11y), with `Switch` swapping the content panel —
   manual verification.
-- [ ] `docs/scripting-reference.md` covers the predicate bind, `selected`/`checked`,
+- [x] `docs/scripting-reference.md` covers the predicate bind, `selected`/`checked`,
   `visibleWhen`/`Switch`, name/role/disabled, image alt/decorative, modal naming,
   and `Announce`.
 

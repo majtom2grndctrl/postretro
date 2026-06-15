@@ -14,8 +14,8 @@ use taffy::prelude::{
 
 use super::descriptor::{
     Align, AnchoredTree, BarWidget, BindSource, Border, ButtonWidget, ColorValue, ContainerWidget,
-    Easing, GridWidget, ImageWidget, LocalState, PanelBind, PanelWidget, SliderBind, SliderWidget,
-    SpacingValue, TextBind, TextWidget, Widget,
+    Easing, GridWidget, ImageWidget, LocalState, PanelBind, PanelWidget, Predicate, PredicateValue,
+    SliderBind, SliderWidget, SpacingValue, TextBind, TextWidget, Widget,
 };
 use super::layout::{Anchor, REFERENCE_HEIGHT, REFERENCE_WIDTH};
 use super::style_ranges::{StyleEffectState, StyleRanges, evaluate};
@@ -51,6 +51,73 @@ fn lookup_bound<'a>(
         BindSource::Local { local } => {
             scope.and_then(|s| cells.get(&(s.to_string(), local.to_string())))
         }
+    }
+}
+
+/// Resolve a [`Predicate`] against the frame's snapshot to a deterministic
+/// `0.0`/`1.0` (M13 G2). This single helper drives BOTH the author-wired highlight
+/// (a button's `styleRanges` `bind`) AND the a11y `selected`/`checked` state on the
+/// focus-rect readback — each consumer resolves independently (no shared per-node
+/// store; the resolve is cheap and deterministic). Semantics:
+///
+/// - **No `equals`, `Boolean` source** → its truthiness (`1.0` if true, else `0.0`).
+/// - **No `equals`, non-`Boolean` source** → `0.0` (a bare value with no comparand
+///   has no defined truthiness here).
+/// - **With `equals`** → `1.0` iff the resolved `SlotValue` equals the comparand,
+///   else `0.0`. `String`/`Enum` match the comparand by name; number/bool match
+///   exactly. A type mismatch (e.g. a `Number` slot vs a string comparand) is `0.0`.
+/// - **Absent slot/cell** (the bind resolves to nothing) → `0.0`.
+fn resolve_predicate(
+    source: &BindSource,
+    equals: Option<&PredicateValue>,
+    scope: Option<&str>,
+    slots: &HashMap<String, SlotValue>,
+    cells: &CellValues,
+) -> f32 {
+    let Some(value) = lookup_bound(source, scope, slots, cells) else {
+        return 0.0;
+    };
+    match equals {
+        None => match value {
+            SlotValue::Boolean(b) => {
+                if *b {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            // A bare (no-`equals`) predicate over a non-boolean source has no
+            // defined truthiness — it resolves false.
+            _ => 0.0,
+        },
+        Some(comparand) => {
+            if predicate_value_matches(value, comparand) {
+                1.0
+            } else {
+                0.0
+            }
+        }
+    }
+}
+
+/// Whether a resolved `SlotValue` equals a `PredicateValue` comparand. Number and
+/// boolean compare exactly; a `String` comparand matches both `String` and `Enum`
+/// slots by name (an enum's wire form is its name). Any other pairing is a type
+/// mismatch and does not match. `rgba`/array comparands are unrepresentable
+/// (rejected at load time), so an `Array` slot never matches.
+fn predicate_value_matches(value: &SlotValue, comparand: &PredicateValue) -> bool {
+    match (value, comparand) {
+        // Widen the f32 slot value to f64 for the comparison. Integer-valued
+        // comparands (the dominant tab-index/enum case) compare exactly. A
+        // fractional authored comparand like 0.1 will silently never match
+        // (0.1_f64 != 0.1_f32 as f64 due to differing precision). This is
+        // acceptable: authored predicate comparands are integer-valued
+        // tab/enum selectors, so fractional mismatches do not arise in practice.
+        (SlotValue::Number(n), PredicateValue::Number(c)) => *n as f64 == *c,
+        (SlotValue::Boolean(b), PredicateValue::Boolean(c)) => b == c,
+        (SlotValue::String(s), PredicateValue::String(c))
+        | (SlotValue::Enum(s), PredicateValue::String(c)) => s == c,
+        _ => false,
     }
 }
 
@@ -314,6 +381,14 @@ enum NodeContext {
         /// styleRange-less node.
         style_ranges: Option<StyleRanges>,
         style_state: RefCell<StyleEffectState>,
+        /// Optional `Predicate` styleRanges value source (M13 G2 — a button's
+        /// `bind`). When `Some`, the styleRanges value is the predicate resolved to
+        /// `0.0`/`1.0` (the author-wired self-highlight), taking priority over the
+        /// `bind` slot/tween path. `None` for an ordinary `text` node, whose
+        /// styleRanges read the bound numeric slot. `predicate_scope` is the
+        /// nearest declaring `localState` scope for a `{ local }` predicate.
+        predicate_bind: Option<Predicate>,
+        predicate_scope: Option<String>,
     },
     /// Solid-fill panel quad, optionally framed by a 9-slice `border`. `fill`
     /// stays linear `[f32; 4]` — no sRGB conversion on the quad path. Carried by
@@ -439,6 +514,38 @@ pub(crate) struct UiTree {
     /// it to prove a settled frame performs NO draw-list rebuild.
     #[cfg(test)]
     draw_rebuild_count: u32,
+    /// Per-node reactive-visibility state for nodes carrying a `visibleWhen`
+    /// predicate (M13 G2, Task 2b). Keyed by the taffy `NodeId`; populated once at
+    /// build from the descriptor's `visible_when` fields (harvested in lockstep
+    /// with the taffy tree, so each predicate carries its nearest `localState`
+    /// scope for `{ local }` resolution). The diff (`resolve_bindings`) resolves
+    /// each predicate per frame against the snapshot and, on a resolved-value
+    /// flip, toggles the node's taffy `Display` (`None` ⇄ `Flex`) and marks it
+    /// dirty. A node without `visibleWhen` never appears here and stays visible.
+    visibility: HashMap<NodeId, VisibilityState>,
+}
+
+/// Reactive-visibility state for one node carrying a `visibleWhen` predicate. The
+/// predicate + its build-time `localState` scope are immutable; `prev` is the last
+/// resolved value (`None` until the first diff, so the first frame always applies
+/// the resolved state). Stored on `UiTree::visibility` — never inside
+/// `NodeContext`, since a `visibleWhen` may sit on a pure layout container (a
+/// stack/grid) that carries no draw context. Keeping it off the descriptor walk
+/// is the invariant: visibility is a layout/draw/focus concern only, so a hidden
+/// subtree never tears down its `localState` cells (see `presentation_cells.rs`).
+#[derive(Debug, Clone)]
+struct VisibilityState {
+    predicate: Predicate,
+    /// Nearest declaring `localState` scope for a `{ local }` predicate; `None`
+    /// for a `{ slot }` predicate or a local predicate with no enclosing scope.
+    scope: Option<String>,
+    /// The node's authored `Display` when visible — `Flex` for a stack/leaf,
+    /// `Grid` for a grid container. Restored on a hide→show flip so a grid's
+    /// track layout survives the round-trip (restoring a grid to `Flex` would
+    /// corrupt it). Captured at build from the just-set taffy style.
+    visible_display: Display,
+    /// Last resolved `0.0`/`1.0`. `None` before the first diff resolves it.
+    prev: Option<f32>,
 }
 
 impl UiTree {
@@ -457,6 +564,12 @@ impl UiTree {
         // No enclosing scope at the root: a container declaring its own
         // `localState` opens one for its subtree inside `build_node`.
         let root = build_node(&mut taffy, &tree.root, theme, None);
+        // Harvest `visibleWhen` predicates in lockstep with the just-built taffy
+        // tree (M13 G2, Task 2b). The first `resolve_bindings` applies each
+        // predicate's resolved state (`prev` starts `None`, so the first frame is
+        // always treated as a change).
+        let mut visibility = HashMap::new();
+        harvest_visibility(&taffy, &tree.root, root, None, &mut visibility);
         Self {
             taffy,
             root,
@@ -470,6 +583,7 @@ impl UiTree {
             cached_draw_data: None,
             #[cfg(test)]
             draw_rebuild_count: 0,
+            visibility,
         }
     }
 
@@ -502,6 +616,16 @@ impl UiTree {
         self.taffy
             .mark_dirty(node)
             .expect("node exists in its own tree");
+    }
+
+    /// Whether `node` is currently hidden (`Display::None`) by a false
+    /// `visibleWhen` predicate (M13 G2, Task 2b). The draw and focus walks query
+    /// this to skip a hidden subtree without removing it from the taffy tree (the
+    /// descriptor↔taffy 1:1 lockstep must hold). taffy's flexbox/grid layout
+    /// already gives a `Display::None` node zero size, so this only excludes it
+    /// from the per-frame draw/focus read-back.
+    fn is_display_none(&self, node: NodeId) -> bool {
+        self.taffy.style(node).expect("node has a style").display == Display::None
     }
 
     /// Compute layout against the 1280x720 logical-reference canvas, then read
@@ -885,6 +1009,54 @@ impl UiTree {
         for node in dirty_text {
             self.mark_dirty(node);
         }
+
+        // Reactive visibility (M13 G2, Task 2b): resolve each `visibleWhen`
+        // predicate against this frame's snapshot and, on a resolved-value FLIP
+        // since the last diff, toggle the node's taffy `Display` (`None` ⇄ `Flex`)
+        // and mark it dirty so the layout gate recomputes and the per-frame
+        // focus-rect re-export reflects it. A targeted invalidation: visibility
+        // flips are rare, authored-frequency events (`lib/ui.md` §3), so this
+        // re-uses the same relayout path bound content changes take. The first
+        // diff always applies (`prev` is `None`). The node STAYS in the taffy tree
+        // — only its `Display` flips — so the descriptor↔taffy 1:1 lockstep that
+        // `export_focus_rects` walks survives. Visibility is NEVER applied in the
+        // descriptor walk (`presentation_cells.rs::reconcile`), so a hidden subtree
+        // never tears down its `localState` cells.
+        let mut visibility_flips: Vec<(NodeId, Display)> = Vec::new();
+        for (node, state) in self.visibility.iter_mut() {
+            let resolved = resolve_predicate(
+                &state.predicate.source,
+                state.predicate.equals.as_ref(),
+                state.scope.as_deref(),
+                slot_values,
+                cell_values,
+            );
+            if state.prev != Some(resolved) {
+                state.prev = Some(resolved);
+                // A true predicate (`1.0`) shows the node at its authored
+                // `Display` (`Flex`/`Grid`); a false one (`0.0`) hides it via
+                // `Display::None` while leaving it in the tree.
+                let display = if resolved >= 0.5 {
+                    state.visible_display
+                } else {
+                    Display::None
+                };
+                visibility_flips.push((*node, display));
+            }
+        }
+        for (node, display) in visibility_flips {
+            let mut style = self.taffy.style(node).expect("node has a style").clone();
+            style.display = display;
+            self.taffy
+                .set_style(node, style)
+                .expect("node exists in its own tree");
+            // Mark dirty so the layout gate recomputes (a `Display::None` subtree
+            // contributes zero size) and `export_ui_focus_rects` re-exports.
+            self.mark_dirty(node);
+            // A flip flags the draw list for rebuild: the hidden/shown subtree's
+            // quads/glyphs must drop or reappear in the next collect.
+            diff.appearance_changed = true;
+        }
         diff
     }
 
@@ -909,6 +1081,8 @@ impl UiTree {
         &self,
         descriptor: &AnchoredTree,
         device_size: [u32; 2],
+        slot_values: &HashMap<String, SlotValue>,
+        cell_values: &CellValues,
     ) -> FocusRectList {
         let root_size = self.taffy.layout(self.root).expect("root has layout").size;
         let (afx, afy) = anchor_fractions(self.anchor);
@@ -932,11 +1106,14 @@ impl UiTree {
             self.root,
             String::new(),
             None,
+            None,
             root_origin,
             scale,
             canvas_origin,
             &mut z,
             &mut out,
+            slot_values,
+            cell_values,
         );
         out
     }
@@ -953,12 +1130,24 @@ impl UiTree {
         node: NodeId,
         path: String,
         group: Option<usize>,
+        scope: Option<&str>,
         ref_origin: [f32; 2],
         scale: f32,
         canvas_origin: [f32; 2],
         z: &mut u32,
         out: &mut FocusRectList,
+        slot_values: &HashMap<String, SlotValue>,
+        cell_values: &CellValues,
     ) {
+        // Reactive visibility (M13 G2, Task 2b): a `Display::None` node (a false
+        // `visibleWhen`) and its subtree are unreachable for focus — emit no
+        // FocusRect, register no focus group, and never recurse. The subtree's
+        // focusables thus drop out of the rect list (so they cannot be navigated
+        // to) and out of any `initial_focus` candidacy (the engine cannot select
+        // an id that isn't present).
+        if self.is_display_none(node) {
+            return;
+        }
         let layout = self.taffy.layout(node).expect("node has computed layout");
         let this_z = *z;
         *z += 1;
@@ -977,6 +1166,12 @@ impl UiTree {
         if focusable {
             let rect = project_rect(ref_origin, layout, scale, canvas_origin);
             let rect_index = out.rects.len();
+            // M13 G2: resolve the widget's a11y `selected`/`checked` predicates (if
+            // any) to 0.0/1.0 and read its `disabled` bit. These ride the readback
+            // as a11y metadata — the engine draws no highlight from them; the author
+            // wires the visual through `styleRanges` (resolved in the draw build).
+            let (selected, checked, disabled) =
+                widget_a11y_state(widget, scope, slot_values, cell_values);
             out.rects.push(FocusRect {
                 id: id.clone(),
                 rect,
@@ -984,11 +1179,18 @@ impl UiTree {
                 group,
                 neighbors,
                 interaction: widget_interaction(widget),
+                selected,
+                checked,
+                disabled,
             });
             if let Some(g) = group {
                 out.groups[g].members.push(rect_index);
             }
         }
+
+        // A container declaring its own `localState` opens a scope its subtree's
+        // `{ local }` predicate binds resolve against (mirrors `build_stack`).
+        let child_scope = container_local_scope(widget).or(scope);
 
         // A container declaring a focus policy opens a new group its DIRECT
         // children join. Register the group before recursing so children carry its
@@ -1025,11 +1227,14 @@ impl UiTree {
                     child_node,
                     child_path,
                     child_group,
+                    child_scope,
                     child_origin,
                     scale,
                     canvas_origin,
                     z,
                     out,
+                    slot_values,
+                    cell_values,
                 );
             }
         }
@@ -1045,6 +1250,13 @@ impl UiTree {
         walk: &DrawWalkCtx<'_>,
         data: &mut UiDrawData,
     ) {
+        // Reactive visibility (M13 G2, Task 2b): a `Display::None` node (a false
+        // `visibleWhen`) and its entire subtree draw nothing — skip the whole
+        // subtree so zero quads/glyphs are emitted. The node stays in the taffy
+        // tree (just hidden), so this only affects the draw, not the structure.
+        if self.is_display_none(node) {
+            return;
+        }
         let DrawWalkCtx {
             canvas_origin,
             scale,
@@ -1187,6 +1399,8 @@ impl UiTree {
                 tween,
                 style_ranges,
                 style_state,
+                predicate_bind,
+                predicate_scope,
             }) => {
                 // A bound text node resolves its drawn string from the slot
                 // snapshot (through the optional `{}` format template); an absent
@@ -1217,13 +1431,28 @@ impl UiTree {
                 // were pre-resolved to literals at build, so the theme arg is inert.
                 let color = match style_ranges {
                     Some(ranges) => {
-                        match style_text_value(
-                            bind.as_ref(),
-                            bind_scope.as_deref(),
-                            tween.as_ref(),
-                            slot_values,
-                            cell_values,
-                        ) {
+                        // A button's `bind` Predicate (M13 G2) is the styleRanges
+                        // value source when present: resolve it to 0.0/1.0 (the
+                        // author-wired self-highlight). An ordinary text node has no
+                        // predicate, so it reads the bound numeric slot via
+                        // `style_text_value` (the eased tween display when active).
+                        let value = match predicate_bind {
+                            Some(p) => Some(resolve_predicate(
+                                &p.source,
+                                p.equals.as_ref(),
+                                predicate_scope.as_deref(),
+                                slot_values,
+                                cell_values,
+                            )),
+                            None => style_text_value(
+                                bind.as_ref(),
+                                bind_scope.as_deref(),
+                                tween.as_ref(),
+                                slot_values,
+                                cell_values,
+                            ),
+                        };
+                        match value {
                             Some(value) => evaluate(
                                 ranges,
                                 value,
@@ -1659,6 +1888,8 @@ fn focus_meta(widget: &Widget) -> (Option<&String>, FocusNeighbors) {
         Widget::Button(w) => (Some(&w.id), (&w.focus_neighbors).into()),
         Widget::Slider(w) => (Some(&w.id), (&w.focus_neighbors).into()),
         Widget::Bar(w) => (w.id.as_ref(), FocusNeighbors::default()),
+        // M13 G2: a non-visual announcement carries no focus id/neighbors.
+        Widget::Announce(_) => (None, FocusNeighbors::default()),
     }
 }
 
@@ -1680,6 +1911,54 @@ fn widget_interaction(widget: &Widget) -> Option<NodeInteraction> {
             captures_nav: w.captures_nav.clone(),
         }),
         _ => None,
+    }
+}
+
+/// The `localState` scope a container opens for the focus walk's `{ local }`
+/// predicate resolution, or `None`. Only `vstack`/`hstack` (`ContainerWidget`)
+/// declare a scope; `grid` carries none. Mirrors `build_stack`'s `child_scope` so
+/// the focus walk resolves a `selected`/`checked` `{ local }` predicate against the
+/// same scope the draw build's bind resolution uses.
+fn container_local_scope(widget: &Widget) -> Option<&str> {
+    match widget {
+        Widget::VStack(w) | Widget::HStack(w) => local_state_scope(w.local_state.as_ref()),
+        _ => None,
+    }
+}
+
+/// Resolve a widget's a11y state for the focus-rect readback (M13 G2):
+/// `(selected, checked, disabled)`. `selected`/`checked` are a button's optional
+/// `Predicate`s resolved against the frame snapshot to `1.0`/`0.0` (`None` when the
+/// widget declares no predicate or is not a button). `disabled` is the button's or
+/// slider's `disabled` bit (`false` for every other kind). The engine draws no
+/// highlight from selected/checked — they are a11y metadata only.
+fn widget_a11y_state(
+    widget: &Widget,
+    scope: Option<&str>,
+    slot_values: &HashMap<String, SlotValue>,
+    cell_values: &CellValues,
+) -> (Option<f32>, Option<f32>, bool) {
+    let resolve = |p: &Predicate| {
+        let predicate_scope = match &p.source {
+            BindSource::Local { .. } => scope,
+            BindSource::Slot { .. } => None,
+        };
+        resolve_predicate(
+            &p.source,
+            p.equals.as_ref(),
+            predicate_scope,
+            slot_values,
+            cell_values,
+        )
+    };
+    match widget {
+        Widget::Button(w) => (
+            w.selected.as_ref().map(&resolve),
+            w.checked.as_ref().map(&resolve),
+            w.disabled,
+        ),
+        Widget::Slider(w) => (None, None, w.disabled),
+        _ => (None, None, false),
     }
 }
 
@@ -1713,6 +1992,78 @@ fn widget_children(widget: &Widget) -> Option<&[Widget]> {
         Widget::VStack(w) | Widget::HStack(w) => Some(&w.children),
         Widget::Grid(w) => Some(&w.children),
         _ => None,
+    }
+}
+
+/// A widget's optional `visibleWhen` reactive-visibility predicate (M13 G2, Task
+/// 2b). Lives on every widget variant; `None` means the node is always visible.
+/// Harvested in lockstep with the taffy tree (`harvest_visibility`) so the diff
+/// can toggle the matching node's taffy `Display`.
+fn widget_visible_when(widget: &Widget) -> Option<&Predicate> {
+    match widget {
+        Widget::Text(w) => w.visible_when.as_ref(),
+        Widget::Panel(w) => w.visible_when.as_ref(),
+        Widget::Image(w) => w.visible_when.as_ref(),
+        Widget::Spacer(w) => w.visible_when.as_ref(),
+        Widget::VStack(w) | Widget::HStack(w) => w.visible_when.as_ref(),
+        Widget::Grid(w) => w.visible_when.as_ref(),
+        Widget::Button(w) => w.visible_when.as_ref(),
+        Widget::Slider(w) => w.visible_when.as_ref(),
+        Widget::Bar(w) => w.visible_when.as_ref(),
+        Widget::Announce(w) => w.visible_when.as_ref(),
+    }
+}
+
+/// Harvest reactive-visibility state in lockstep with the just-built taffy tree
+/// (M13 G2, Task 2b). Walks the descriptor and the taffy graph together — they are
+/// structurally 1:1 (`build_node` maps each widget to exactly one node, children in
+/// order) — and records a `VisibilityState` for every node carrying a `visibleWhen`
+/// predicate. Each predicate carries its nearest enclosing `localState` scope so a
+/// `{ local }` predicate resolves against the same scope the draw/focus walks use;
+/// a `{ slot }` predicate carries `None`. Nodes with no `visibleWhen` never enter
+/// the map and stay visible.
+fn harvest_visibility(
+    taffy: &TaffyTree<NodeContext>,
+    widget: &Widget,
+    node: NodeId,
+    scope: Option<&str>,
+    out: &mut HashMap<NodeId, VisibilityState>,
+) {
+    if let Some(predicate) = widget_visible_when(widget) {
+        // A `{ local }` predicate resolves against the nearest enclosing scope; a
+        // `{ slot }` predicate reads the store and needs no scope.
+        // Own-scope caveat: a container's own `visibleWhen` referencing its OWN
+        // `localState` cell resolves against the PARENT scope here (the child scope
+        // is opened after this block). It silently resolves 0.0 (cell not found).
+        // The intended pattern places the cell on a parent container, or uses
+        // Switch which injects `visibleWhen` on children — neither hits this case.
+        let pred_scope = match &predicate.source {
+            BindSource::Local { .. } => scope.map(str::to_string),
+            BindSource::Slot { .. } => None,
+        };
+        // Capture the authored `Display` (`Grid` for a grid, `Flex`/default
+        // otherwise) so a hide→show flip restores the right one.
+        let visible_display = taffy.style(node).expect("node has a style").display;
+        out.insert(
+            node,
+            VisibilityState {
+                predicate: predicate.clone(),
+                scope: pred_scope,
+                visible_display,
+                prev: None,
+            },
+        );
+    }
+
+    // A container declaring its own `localState` opens a scope for its subtree
+    // (mirrors `build_stack`); children inherit otherwise.
+    let child_scope = container_local_scope(widget).or(scope);
+
+    if let Some(children) = widget_children(widget) {
+        let taffy_children = taffy.children(node).expect("node children resolve");
+        for (child_widget, child_node) in children.iter().zip(taffy_children) {
+            harvest_visibility(taffy, child_widget, child_node, child_scope, out);
+        }
     }
 }
 
@@ -1796,6 +2147,10 @@ fn build_node(
                         tween: None,
                         style_ranges,
                         style_state: RefCell::new(StyleEffectState::default()),
+                        // A `text` widget's styleRanges read its bound numeric slot,
+                        // not a predicate (the predicate path is the button's).
+                        predicate_bind: None,
+                        predicate_scope: None,
                     },
                 )
                 .expect("taffy leaf creation must succeed")
@@ -1857,9 +2212,14 @@ fn build_node(
                 .new_leaf(style)
                 .expect("taffy leaf creation must succeed")
         }
-        Widget::Button(button) => build_button(taffy, button, theme),
+        Widget::Button(button) => build_button(taffy, button, theme, scope),
         Widget::Slider(slider) => build_slider(taffy, slider, theme, scope),
         Widget::Bar(bar) => build_bar(taffy, bar, theme, scope),
+        // M13 G2: a non-visual announcement lays out as an empty zero-size leaf
+        // (no quad, no glyph). Routing its text to the a11y layer is a later task.
+        Widget::Announce(_) => taffy
+            .new_leaf(Style::default())
+            .expect("taffy leaf creation must succeed"),
     }
 }
 
@@ -1869,26 +2229,52 @@ fn build_node(
 /// ride the focus-rect export (`focus_meta` / `widget_interaction`), not the draw
 /// payload. The label color resolves the theme `body`-text default (white), the
 /// same flat color a literal text widget would carry.
+///
+/// M13 G2: a button's `bind` is a [`Predicate`] (not a slot bind) accepted as the
+/// `styleRanges` value source — a tab/segmented button self-highlights when its
+/// predicate is true. The predicate + styleRanges thread onto the internal Text
+/// `NodeContext` so the existing styleRanges color path drives the label color (the
+/// author-wired highlight; no new visual primitive). The styleRanges bind
+/// precondition is satisfied by the predicate, so its band-color tokens pre-resolve
+/// the same way a bound text/panel's do.
 fn build_button(
     taffy: &mut TaffyTree<NodeContext>,
     button: &ButtonWidget,
     theme: &UiTheme,
+    scope: Option<&str>,
 ) -> NodeId {
+    let style_ranges = build_node_style_ranges(
+        button.style_ranges.as_ref(),
+        button.bind.is_some(),
+        theme,
+        "button",
+    );
+    let predicate_scope = match button.bind.as_ref().map(|p| &p.source) {
+        Some(BindSource::Local { .. }) => scope.map(str::to_string),
+        _ => None,
+    };
     taffy
         .new_leaf_with_context(
             Style::default(),
             NodeContext::Text {
-                content: button.label.clone(),
+                // M13 G2 migration: `label` is now `Option` (label-XOR-labelledBy).
+                // The label-text rendering and `labelledBy` resolution are a later
+                // task; for now an absent inline label renders empty.
+                content: button.label.clone().unwrap_or_default(),
                 font_size: INTERACTIVE_LABEL_FONT_SIZE,
                 color: resolve_color(&ColorValue::Token("body".to_string()), theme),
                 family: resolve_font(&None, theme),
-                // A button label is static text — no bind, tween, or styleRanges.
+                // A button label is static text — no slot bind, tween, or format.
                 bind_scope: None,
                 bind: None,
                 last_resolved: None,
                 tween: None,
-                style_ranges: None,
+                style_ranges,
                 style_state: RefCell::new(StyleEffectState::default()),
+                // The button's reactive highlight: its `bind` Predicate drives the
+                // styleRanges value (resolved to 0.0/1.0 at draw build).
+                predicate_bind: button.bind.clone(),
+                predicate_scope,
             },
         )
         .expect("taffy leaf creation must succeed")
@@ -1909,7 +2295,7 @@ fn build_slider(
     // Synthesize a text bind so the value display rides the bound-text path:
     // `content` is the fallback (label with no value yet), `format` injects the
     // resolved number after the label. The slider's bind tween carries through.
-    let format = format!("{}: {{}}", slider.label);
+    let format = format!("{}: {{}}", slider.label.as_deref().unwrap_or_default());
     let bind = TextBind {
         source: slider.bind.source.clone(),
         format: Some(format),
@@ -1923,7 +2309,7 @@ fn build_slider(
         .new_leaf_with_context(
             Style::default(),
             NodeContext::Text {
-                content: slider.label.clone(),
+                content: slider.label.clone().unwrap_or_default(),
                 font_size: INTERACTIVE_LABEL_FONT_SIZE,
                 color: resolve_color(&ColorValue::Token("body".to_string()), theme),
                 family: resolve_font(&None, theme),
@@ -1933,6 +2319,9 @@ fn build_slider(
                 tween: None,
                 style_ranges: None,
                 style_state: RefCell::new(StyleEffectState::default()),
+                // A slider's value display binds a numeric slot, not a predicate.
+                predicate_bind: None,
+                predicate_scope: None,
             },
         )
         .expect("taffy leaf creation must succeed")
@@ -2137,6 +2526,22 @@ pub(crate) struct FocusRect {
     /// off the focused node to fire activation (button `on_press`) or to apply a
     /// captured nav step (slider), keeping the focus engine widget-agnostic.
     pub interaction: Option<NodeInteraction>,
+    /// Resolved a11y `aria-selected` state (M13 G2): a button's `selected`
+    /// [`Predicate`] resolved against the frame snapshot to `1.0`/`0.0`. `None` when
+    /// the widget declares no `selected`. This is a11y METADATA carried on the
+    /// readback — the engine draws NO highlight from it (the author wires the visual
+    /// highlight through `styleRanges`); the app surfaces it to the a11y layer.
+    pub selected: Option<f32>,
+    /// Resolved a11y `aria-checked` state (M13 G2): a button's `checked`
+    /// [`Predicate`] resolved against the frame snapshot. `None` when undeclared.
+    /// Like `selected`, a11y-only — no engine-drawn highlight.
+    pub checked: Option<f32>,
+    /// Disabled bit (M13 G2): a button/slider's `disabled` field. A disabled
+    /// focusable is non-interactive and a11y-disabled. Populated here AND honored
+    /// in nav/activation: `input/ui_focus.rs` skips disabled nodes during
+    /// navigation and pointer focus, and the App activation gate blocks activation
+    /// on a disabled focused node. Both sides are complete.
+    pub disabled: bool,
 }
 
 /// Per-node interaction metadata exported with an interactive focusable node.
@@ -2575,6 +2980,8 @@ mod tests {
         Widget::Spacer(SpacerWidget {
             flex_grow,
             id: None,
+            visible_when: None,
+            role: None,
         })
     }
 
@@ -2590,6 +2997,8 @@ mod tests {
             focus: None,
             restore_on_return: false,
             local_state: None,
+            visible_when: None,
+            role: None,
             children,
         })
     }
@@ -2606,6 +3015,8 @@ mod tests {
             focus: None,
             restore_on_return: false,
             local_state: None,
+            visible_when: None,
+            role: None,
             children,
         })
     }
@@ -2625,6 +3036,8 @@ mod tests {
             style_ranges: None,
             id: None,
             focus_neighbors: Default::default(),
+            visible_when: None,
+            role: None,
         })
     }
 
@@ -2651,6 +3064,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2706,6 +3121,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2751,6 +3168,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2793,6 +3212,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut fs = font_system();
         let mut ui_ref = UiTree::from_descriptor(&tree, &theme());
@@ -2835,6 +3256,8 @@ mod tests {
                 style_ranges: None,
                 id: None,
                 focus_neighbors: Default::default(),
+                visible_when: None,
+                role: None,
             })
         };
         let tree = AnchoredTree {
@@ -2849,11 +3272,15 @@ mod tests {
                 focus_neighbors: Default::default(),
                 focus: None,
                 restore_on_return: false,
+                visible_when: None,
+                role: None,
                 children: vec![cell(), cell(), cell(), cell()],
             }),
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2904,10 +3331,14 @@ mod tests {
                 style_ranges: None,
                 id: None,
                 focus_neighbors: Default::default(),
+                visible_when: None,
+                role: None,
             }),
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2951,6 +3382,8 @@ mod tests {
             focus: None,
             restore_on_return: false,
             local_state: None,
+            visible_when: None,
+            role: None,
             children: vec![text("x", 13.0), text("y", 13.0)],
         });
         let tree = AnchoredTree {
@@ -2960,6 +3393,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -2992,6 +3427,8 @@ mod tests {
             focus: None,
             restore_on_return: false,
             local_state: None,
+            visible_when: None,
+            role: None,
             children: vec![text("AB", 40.0)],
         });
         let tree = AnchoredTree {
@@ -3001,6 +3438,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3048,6 +3487,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3137,6 +3578,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         }
     }
 
@@ -3312,6 +3755,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut second = UiTree::from_descriptor(&reshaped, &theme());
         second.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
@@ -3370,6 +3815,8 @@ mod tests {
             style_ranges: None,
             id: None,
             focus_neighbors: Default::default(),
+            visible_when: None,
+            role: None,
         })
     }
 
@@ -3388,6 +3835,8 @@ mod tests {
             focus: None,
             restore_on_return: false,
             local_state: None,
+            visible_when: None,
+            role: None,
             children: vec![Widget::Panel(PanelWidget {
                 fill: ColorValue::Literal(fill),
                 border: None,
@@ -3398,6 +3847,8 @@ mod tests {
                 style_ranges: None,
                 id: None,
                 focus_neighbors: Default::default(),
+                visible_when: None,
+                role: None,
             })],
         })
     }
@@ -3414,6 +3865,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut slots = HashMap::new();
         slots.insert("player.health".to_string(), SlotValue::Number(87.0));
@@ -3440,6 +3893,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut slots = HashMap::new();
         slots.insert("player.ammo".to_string(), SlotValue::Number(12.5));
@@ -3462,6 +3917,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3485,6 +3942,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut slots = HashMap::new();
         slots.insert(
@@ -3519,6 +3978,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut slots = HashMap::new();
         slots.insert(
@@ -3553,6 +4014,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3603,6 +4066,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3653,6 +4118,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3700,6 +4167,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3741,6 +4210,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -3813,10 +4284,14 @@ mod tests {
                 style_ranges: None,
                 id: None,
                 focus_neighbors: Default::default(),
+                visible_when: None,
+                role: None,
             }),
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         }
     }
 
@@ -3876,11 +4351,15 @@ mod tests {
                 focus: None,
                 restore_on_return: false,
                 local_state: None,
+                visible_when: None,
+                role: None,
                 children: vec![text("AB", 30.0), text("CD", 30.0)],
             }),
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme);
         let mut fs = font_system();
@@ -3913,11 +4392,15 @@ mod tests {
                 focus: None,
                 restore_on_return: false,
                 local_state: None,
+                visible_when: None,
+                role: None,
                 children: vec![text("AB", 30.0), text("CD", 30.0)],
             }),
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme);
         let mut fs = font_system();
@@ -4044,6 +4527,8 @@ mod tests {
             style_ranges: None,
             id: None,
             focus_neighbors: Default::default(),
+            visible_when: None,
+            role: None,
         })
     }
 
@@ -4061,6 +4546,8 @@ mod tests {
             focus: None,
             restore_on_return: false,
             local_state: None,
+            visible_when: None,
+            role: None,
             children: vec![Widget::Panel(PanelWidget {
                 fill: ColorValue::Literal(fill),
                 border: None,
@@ -4071,6 +4558,8 @@ mod tests {
                 style_ranges: None,
                 id: None,
                 focus_neighbors: Default::default(),
+                visible_when: None,
+                role: None,
             })],
         })
     }
@@ -4112,6 +4601,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -4183,6 +4674,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -4224,6 +4717,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -4316,6 +4811,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -4364,6 +4861,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -4403,6 +4902,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -4455,6 +4956,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -4526,6 +5029,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -4598,6 +5103,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -4654,6 +5161,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -4695,6 +5204,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -4728,6 +5239,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -4773,6 +5286,8 @@ mod tests {
             style_ranges: Some(ranges),
             id: None,
             focus_neighbors: Default::default(),
+            visible_when: None,
+            role: None,
         })
     }
 
@@ -4817,6 +5332,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut fs = font_system();
 
@@ -4868,6 +5385,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -4900,10 +5419,14 @@ mod tests {
                 style_ranges: Some(health_style_ranges()),
                 id: None,
                 focus_neighbors: Default::default(),
+                visible_when: None,
+                role: None,
             }),
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -4952,10 +5475,14 @@ mod tests {
                 style_ranges: Some(health_style_ranges()),
                 id: None,
                 focus_neighbors: Default::default(),
+                visible_when: None,
+                role: None,
             }),
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -5007,6 +5534,8 @@ mod tests {
             focus_neighbors: super::super::descriptor::FocusNeighbors::default(),
             bind: None,
             style_ranges: None,
+            visible_when: None,
+            role: None,
         })
     }
 
@@ -5025,6 +5554,8 @@ mod tests {
             focus: Some(FocusPolicy::Shorthand(FocusKind::Linear)),
             restore_on_return: false,
             local_state: None,
+            visible_when: None,
+            role: None,
             children: vec![text_id("A", "a"), text_id("B", "b"), text_id("C", "c")],
         });
         let tree = AnchoredTree {
@@ -5034,11 +5565,13 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: Some("b".to_string()),
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         let draw = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
-        let focus = ui.export_focus_rects(&tree, [1280, 720]);
+        let focus = ui.export_focus_rects(&tree, [1280, 720], &no_slots(), &no_cells());
 
         // Three focusable nodes, one linear group with all three as members.
         let ids: Vec<&str> = focus.rects.iter().map(|r| r.id.as_str()).collect();
@@ -5079,6 +5612,8 @@ mod tests {
             focus: Some(FocusPolicy::Shorthand(FocusKind::Linear)),
             restore_on_return: false,
             local_state: None,
+            visible_when: None,
+            role: None,
             children: vec![text("X", 20.0), text("Y", 20.0)],
         });
         let tree = AnchoredTree {
@@ -5088,11 +5623,13 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         };
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
-        let focus = ui.export_focus_rects(&tree, [1280, 720]);
+        let focus = ui.export_focus_rects(&tree, [1280, 720], &no_slots(), &no_cells());
         let ids: Vec<&str> = focus.rects.iter().map(|r| r.id.as_str()).collect();
         // Auto-ids are the slash-joined child paths from the root.
         assert_eq!(ids, ["0", "1"], "auto-id is the tree-position path");
@@ -5105,17 +5642,26 @@ mod tests {
     fn button(id: &str, on_press: &str) -> Widget {
         Widget::Button(ButtonWidget {
             id: id.into(),
-            label: id.into(),
+            label: Some(id.into()),
+            labelled_by: None,
             on_press: on_press.into(),
             focus_neighbors: Default::default(),
             repeat_on_hold: None,
+            selected: None,
+            checked: None,
+            bind: None,
+            style_ranges: None,
+            disabled: false,
+            visible_when: None,
+            role: None,
         })
     }
 
     fn slider(id: &str, slot: &str, captures: &[&str]) -> Widget {
         Widget::Slider(SliderWidget {
             id: id.into(),
-            label: "Vol".into(),
+            label: Some("Vol".into()),
+            labelled_by: None,
             bind: SliderBind {
                 source: BindSource::Slot { slot: slot.into() },
                 tween: None,
@@ -5125,6 +5671,9 @@ mod tests {
             step: 0.1,
             captures_nav: captures.iter().map(|s| s.to_string()).collect(),
             focus_neighbors: Default::default(),
+            disabled: false,
+            visible_when: None,
+            role: None,
         })
     }
 
@@ -5136,6 +5685,8 @@ mod tests {
             capture_mode: CaptureMode::Passthrough,
             initial_focus: None,
             text_entry_target: None,
+            accessible_name: None,
+            role: None,
         }
     }
 
@@ -5152,7 +5703,7 @@ mod tests {
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
-        let focus = ui.export_focus_rects(&tree, [1280, 720]);
+        let focus = ui.export_focus_rects(&tree, [1280, 720], &no_slots(), &no_cells());
         let rect = focus
             .rects
             .iter()
@@ -5181,7 +5732,7 @@ mod tests {
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
-        let focus = ui.export_focus_rects(&tree, [1280, 720]);
+        let focus = ui.export_focus_rects(&tree, [1280, 720], &no_slots(), &no_cells());
         let rect = focus
             .rects
             .iter()
@@ -5199,6 +5750,334 @@ mod tests {
         );
     }
 
+    // --- M13 G2: predicate resolution + a11y state + FocusRect.disabled ---
+
+    fn pred(slot: &str, equals: Option<PredicateValue>) -> Predicate {
+        Predicate {
+            source: BindSource::Slot { slot: slot.into() },
+            equals,
+        }
+    }
+
+    fn bool_slots(slot: &str, value: bool) -> HashMap<String, SlotValue> {
+        let mut m = HashMap::new();
+        m.insert(slot.to_string(), SlotValue::Boolean(value));
+        m
+    }
+
+    #[test]
+    fn resolve_predicate_boolean_no_equals_is_truthiness() {
+        // A bare (no-`equals`) predicate over a Boolean source resolves to its
+        // truthiness: 1.0 when true, 0.0 when false.
+        let p = pred("flag.on", None);
+        assert_eq!(
+            resolve_predicate(
+                &p.source,
+                None,
+                None,
+                &bool_slots("flag.on", true),
+                &no_cells()
+            ),
+            1.0,
+        );
+        assert_eq!(
+            resolve_predicate(
+                &p.source,
+                None,
+                None,
+                &bool_slots("flag.on", false),
+                &no_cells()
+            ),
+            0.0,
+        );
+    }
+
+    #[test]
+    fn resolve_predicate_non_boolean_no_equals_is_zero() {
+        // A bare predicate over a non-Boolean source has no defined truthiness → 0.0.
+        let p = pred("player.health", None);
+        assert_eq!(
+            resolve_predicate(
+                &p.source,
+                None,
+                None,
+                &number_slots("player.health", 100.0),
+                &no_cells(),
+            ),
+            0.0,
+        );
+    }
+
+    #[test]
+    fn resolve_predicate_equals_matches_and_mismatches() {
+        // With `equals`, the predicate is 1.0 iff the resolved value equals the
+        // comparand (number exact), else 0.0.
+        let p = pred("hud.tab", Some(PredicateValue::Number(2.0)));
+        let comparand = PredicateValue::Number(2.0);
+        assert_eq!(
+            resolve_predicate(
+                &p.source,
+                Some(&comparand),
+                None,
+                &number_slots("hud.tab", 2.0),
+                &no_cells(),
+            ),
+            1.0,
+            "exact number match → 1.0",
+        );
+        assert_eq!(
+            resolve_predicate(
+                &p.source,
+                Some(&comparand),
+                None,
+                &number_slots("hud.tab", 3.0),
+                &no_cells(),
+            ),
+            0.0,
+            "number mismatch → 0.0",
+        );
+    }
+
+    #[test]
+    fn resolve_predicate_string_and_enum_match_by_name() {
+        // A String comparand matches both a String slot and an Enum slot by name.
+        let comparand = PredicateValue::String("stats".into());
+        let source = BindSource::Slot {
+            slot: "hud.tab".into(),
+        };
+        let mut string_slot = HashMap::new();
+        string_slot.insert("hud.tab".to_string(), SlotValue::String("stats".into()));
+        assert_eq!(
+            resolve_predicate(&source, Some(&comparand), None, &string_slot, &no_cells()),
+            1.0,
+            "String slot matches by name",
+        );
+        let mut enum_slot = HashMap::new();
+        enum_slot.insert("hud.tab".to_string(), SlotValue::Enum("stats".into()));
+        assert_eq!(
+            resolve_predicate(&source, Some(&comparand), None, &enum_slot, &no_cells()),
+            1.0,
+            "Enum slot matches by name",
+        );
+        let mut other = HashMap::new();
+        other.insert("hud.tab".to_string(), SlotValue::Enum("inventory".into()));
+        assert_eq!(
+            resolve_predicate(&source, Some(&comparand), None, &other, &no_cells()),
+            0.0,
+            "by-name mismatch → 0.0",
+        );
+    }
+
+    #[test]
+    fn resolve_predicate_type_mismatch_is_zero() {
+        // A type mismatch (Number slot vs String comparand) does not match → 0.0.
+        let source = BindSource::Slot {
+            slot: "hud.tab".into(),
+        };
+        let comparand = PredicateValue::String("stats".into());
+        assert_eq!(
+            resolve_predicate(
+                &source,
+                Some(&comparand),
+                None,
+                &number_slots("hud.tab", 1.0),
+                &no_cells(),
+            ),
+            0.0,
+        );
+        // An absent slot also resolves to 0.0 (no value to compare).
+        assert_eq!(
+            resolve_predicate(&source, Some(&comparand), None, &no_slots(), &no_cells()),
+            0.0,
+            "absent slot → 0.0",
+        );
+    }
+
+    /// A button carrying a `Predicate` `bind` + a styleRanges map that highlights
+    /// the label when the predicate is true (value 1.0) vs false (0.0).
+    fn predicate_button(id: &str, bind: Predicate) -> Widget {
+        // Two bands: value < 0.5 → unselected gray; value >= 0.5 → selected cyan.
+        let ranges = StyleRanges {
+            max: 1.0,
+            entries: vec![
+                StyleEntry {
+                    up_to: Some(0.5),
+                    color: Some(ColorValue::Literal([0.2, 0.2, 0.2, 1.0])),
+                    pulse: None,
+                    flash: None,
+                },
+                StyleEntry {
+                    up_to: None,
+                    color: Some(ColorValue::Literal([0.0, 1.0, 1.0, 1.0])),
+                    pulse: None,
+                    flash: None,
+                },
+            ],
+        };
+        Widget::Button(ButtonWidget {
+            id: id.into(),
+            label: Some(id.into()),
+            labelled_by: None,
+            on_press: "noop".into(),
+            focus_neighbors: Default::default(),
+            repeat_on_hold: None,
+            selected: None,
+            checked: None,
+            bind: Some(bind),
+            style_ranges: Some(ranges),
+            disabled: false,
+            visible_when: None,
+            role: None,
+        })
+    }
+
+    #[test]
+    fn button_predicate_bind_drives_style_ranges_highlight() {
+        // A tab Button whose `bind` Predicate matches self-highlights through its
+        // styleRanges (the author-wired highlight, no new visual primitive): the
+        // label color tracks the predicate's 0/1 value.
+        let tree = anchored(vstack(
+            0.0,
+            0.0,
+            Align::Start,
+            vec![predicate_button(
+                "tab.stats",
+                pred("hud.tab", Some(PredicateValue::Number(1.0))),
+            )],
+        ));
+        let mut fs = font_system();
+
+        // Predicate true → value 1.0 → trailing cyan band.
+        let mut ui_on = UiTree::from_descriptor(&tree, &theme());
+        let on = ui_on.build_draw_data(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &number_slots("hud.tab", 1.0),
+        );
+        assert_eq!(
+            on.texts[0].color,
+            srgb_of([0.0, 1.0, 1.0, 1.0]),
+            "matching predicate (1.0) highlights with the cyan band",
+        );
+
+        // Predicate false → value 0.0 → first (gray) band.
+        let mut ui_off = UiTree::from_descriptor(&tree, &theme());
+        let off = ui_off.build_draw_data(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &number_slots("hud.tab", 2.0),
+        );
+        assert_eq!(
+            off.texts[0].color,
+            srgb_of([0.2, 0.2, 0.2, 1.0]),
+            "non-matching predicate (0.0) draws the unselected band",
+        );
+    }
+
+    /// A button declaring `selected`/`checked` predicates and a `disabled` bit, for
+    /// the focus-rect a11y readback test.
+    fn a11y_button(
+        id: &str,
+        selected: Option<Predicate>,
+        checked: Option<Predicate>,
+        disabled: bool,
+    ) -> Widget {
+        Widget::Button(ButtonWidget {
+            id: id.into(),
+            label: Some(id.into()),
+            labelled_by: None,
+            on_press: "noop".into(),
+            focus_neighbors: Default::default(),
+            repeat_on_hold: None,
+            selected,
+            checked,
+            bind: None,
+            style_ranges: None,
+            disabled,
+            visible_when: None,
+            role: None,
+        })
+    }
+
+    #[test]
+    fn focus_rect_carries_resolved_selected_checked_and_disabled() {
+        // selected/checked predicates resolve in the focus-rect build and ride the
+        // exported FocusRectList as a11y metadata; the disabled bit is populated
+        // from the widget. The engine draws no highlight from selected/checked.
+        let tree = anchored(vstack(
+            0.0,
+            0.0,
+            Align::Start,
+            vec![
+                a11y_button(
+                    "tab.stats",
+                    Some(pred("hud.tab", Some(PredicateValue::Number(2.0)))),
+                    Some(pred("flag.checked", None)),
+                    false,
+                ),
+                a11y_button("tab.off", None, None, true),
+            ],
+        ));
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        // hud.tab == 2 (selected true), flag.checked == true (checked true).
+        let mut slots = number_slots("hud.tab", 2.0);
+        slots.insert("flag.checked".to_string(), SlotValue::Boolean(true));
+        ui.build_draw_data([1280, 720], &mut fs, &no_images(), &slots);
+        let focus = ui.export_focus_rects(&tree, [1280, 720], &slots, &no_cells());
+
+        let stats = focus
+            .rects
+            .iter()
+            .find(|r| r.id == "tab.stats")
+            .expect("selected button is focusable");
+        assert_eq!(
+            stats.selected,
+            Some(1.0),
+            "matching selected predicate → 1.0"
+        );
+        assert_eq!(stats.checked, Some(1.0), "true checked predicate → 1.0");
+        assert!(!stats.disabled, "enabled button is not disabled");
+
+        let off =
+            focus.rects.iter().find(|r| r.id == "tab.off").expect(
+                "disabled button is still focusable (nav/activation honor the bit separately)",
+            );
+        assert_eq!(off.selected, None, "no selected predicate → None");
+        assert_eq!(off.checked, None, "no checked predicate → None");
+        assert!(off.disabled, "disabled bit is populated from the widget");
+    }
+
+    #[test]
+    fn focus_rect_selected_predicate_resolves_false_when_unmatched() {
+        // A declared selected predicate that does NOT match resolves to 0.0 (not
+        // None) — the metadata is present and reads false.
+        let tree = anchored(vstack(
+            0.0,
+            0.0,
+            Align::Start,
+            vec![a11y_button(
+                "tab.stats",
+                Some(pred("hud.tab", Some(PredicateValue::Number(2.0)))),
+                None,
+                false,
+            )],
+        ));
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let slots = number_slots("hud.tab", 5.0);
+        ui.build_draw_data([1280, 720], &mut fs, &no_images(), &slots);
+        let focus = ui.export_focus_rects(&tree, [1280, 720], &slots, &no_cells());
+        let stats = focus.rects.iter().find(|r| r.id == "tab.stats").unwrap();
+        assert_eq!(
+            stats.selected,
+            Some(0.0),
+            "unmatched selected predicate resolves to 0.0, not None",
+        );
+    }
+
     fn bar(slot: &str, max: f32, style_ranges: Option<StyleRanges>) -> Widget {
         Widget::Bar(BarWidget {
             bind: SliderBind {
@@ -5210,6 +6089,8 @@ mod tests {
             background: ColorValue::Literal([0.1, 0.1, 0.1, 1.0]),
             id: None,
             style_ranges,
+            visible_when: None,
+            role: None,
         })
     }
 
@@ -5312,6 +6193,8 @@ mod tests {
             background: ColorValue::Literal([0.1, 0.1, 0.1, 1.0]),
             id: None,
             style_ranges: None,
+            visible_when: None,
+            role: None,
         }));
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
@@ -5348,6 +6231,402 @@ mod tests {
         assert!(
             (fraction - 0.5).abs() < 0.05,
             "mid-tween fill fraction eases to ~0.5, got {fraction}"
+        );
+    }
+
+    // --- M13 G2 Task 2b: conditional visibility (`visibleWhen` via Display::None) ---
+
+    /// A focusable text leaf carrying a `visibleWhen` predicate over `slot`
+    /// (boolean truthiness). Drawn (one glyph run) and focusable when shown.
+    fn text_id_visible(content: &str, id: &str, slot: &str) -> Widget {
+        Widget::Text(TextWidget {
+            content: content.into(),
+            font_size: 20.0,
+            color: ColorValue::Literal([1.0; 4]),
+            font: None,
+            id: Some(id.to_string()),
+            focus_neighbors: super::super::descriptor::FocusNeighbors::default(),
+            bind: None,
+            style_ranges: None,
+            visible_when: Some(pred(slot, None)),
+            role: None,
+        })
+    }
+
+    /// A linear-focus vstack wrapping `children` (each its own focusable leaf).
+    fn focus_vstack(children: Vec<Widget>) -> Widget {
+        use super::super::descriptor::{FocusKind, FocusPolicy};
+        Widget::VStack(ContainerWidget {
+            gap: SpacingValue::Literal(10.0),
+            padding: SpacingValue::Literal(0.0),
+            align: Align::Start,
+            fill: None,
+            border: None,
+            id: None,
+            focus_neighbors: super::super::descriptor::FocusNeighbors::default(),
+            focus: Some(FocusPolicy::Shorthand(FocusKind::Linear)),
+            restore_on_return: false,
+            local_state: None,
+            visible_when: None,
+            role: None,
+            children,
+        })
+    }
+
+    fn visibility_slots(slot: &str, value: bool) -> HashMap<String, SlotValue> {
+        let mut m = HashMap::new();
+        m.insert(slot.to_string(), SlotValue::Boolean(value));
+        m
+    }
+
+    #[test]
+    fn visible_when_false_hides_subtree_from_draw_and_focus() {
+        // A false `visibleWhen` sets the node Display::None: zero glyph runs for the
+        // hidden leaf, its focusable drops out of the rect list, and it is not a
+        // candidate for the declared initial focus.
+        let root = focus_vstack(vec![
+            text_id("Always", "always"),
+            text_id_visible("Maybe", "maybe", "hud.advanced"),
+        ]);
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root,
+            capture_mode: CaptureMode::Passthrough,
+            // The hidden node is the declared initial focus — it must NOT be a
+            // candidate while hidden (its id is absent from the rect list).
+            initial_focus: Some("maybe".to_string()),
+            text_entry_target: None,
+            accessible_name: None,
+            role: None,
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+
+        // Predicate false → "maybe" hidden.
+        let hidden = visibility_slots("hud.advanced", false);
+        let draw = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &hidden,
+            &no_cells(),
+            0.0,
+        );
+        let focus = ui.export_focus_rects(&tree, [1280, 720], &hidden, &no_cells());
+
+        assert!(
+            draw.texts.iter().all(|t| t.content != "Maybe"),
+            "hidden leaf draws zero glyph runs, got: {:?}",
+            draw.texts.iter().map(|t| &t.content).collect::<Vec<_>>(),
+        );
+        assert!(
+            draw.texts.iter().any(|t| t.content == "Always"),
+            "visible sibling still draws",
+        );
+        let ids: Vec<&str> = focus.rects.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, ["always"], "hidden focusable is unreachable");
+        assert!(
+            !focus.rects.iter().any(|r| r.id == "maybe"),
+            "hidden node is not an initial-focus candidate",
+        );
+    }
+
+    #[test]
+    fn visible_when_true_restores_draw_and_focus() {
+        // Round-trip the same tree with the predicate true: the previously hidden
+        // node draws its glyph run and rejoins the focus rect list.
+        let root = focus_vstack(vec![
+            text_id("Always", "always"),
+            text_id_visible("Maybe", "maybe", "hud.advanced"),
+        ]);
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root,
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: Some("maybe".to_string()),
+            text_entry_target: None,
+            accessible_name: None,
+            role: None,
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+
+        // Frame 1: hidden.
+        let hidden = visibility_slots("hud.advanced", false);
+        ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &hidden,
+            &no_cells(),
+            0.0,
+        );
+
+        // Frame 2: predicate true → restored.
+        let shown = visibility_slots("hud.advanced", true);
+        let draw = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &shown,
+            &no_cells(),
+            0.0,
+        );
+        let focus = ui.export_focus_rects(&tree, [1280, 720], &shown, &no_cells());
+
+        assert!(
+            draw.texts.iter().any(|t| t.content == "Maybe"),
+            "shown leaf draws its glyph run again",
+        );
+        let ids: Vec<&str> = focus.rects.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, ["always", "maybe"], "shown focusable rejoins the list");
+    }
+
+    #[test]
+    fn visible_when_resolved_change_marks_dirty_and_reexports() {
+        // A change in the predicate's resolved value relays out (marks dirty) and
+        // the re-exported focus rect list reflects the new visibility; an unchanged
+        // resolved value does NOT relayout (targeted invalidation).
+        let root = focus_vstack(vec![text_id_visible("Maybe", "maybe", "hud.advanced")]);
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root,
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
+            accessible_name: None,
+            role: None,
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+
+        // Frame 1: hidden (false). First frame always computes once.
+        let hidden = visibility_slots("hud.advanced", false);
+        ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &hidden,
+            &no_cells(),
+            0.0,
+        );
+        let after_first = ui.recompute_count();
+        let focus_hidden = ui.export_focus_rects(&tree, [1280, 720], &hidden, &no_cells());
+        assert!(
+            focus_hidden.rects.is_empty(),
+            "hidden node exports no focus rect",
+        );
+
+        // Frame 2: same resolved value (still false) — no flip, no relayout.
+        ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &hidden,
+            &no_cells(),
+            0.0,
+        );
+        assert_eq!(
+            ui.recompute_count(),
+            after_first,
+            "an unchanged predicate value must not relayout",
+        );
+
+        // Frame 3: resolved value flips to true — marks dirty, relays out.
+        let shown = visibility_slots("hud.advanced", true);
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &shown, &no_cells(), 0.0);
+        assert!(
+            ui.recompute_count() > after_first,
+            "a resolved-value flip marks layout dirty and relays out",
+        );
+        let focus_shown = ui.export_focus_rects(&tree, [1280, 720], &shown, &no_cells());
+        let ids: Vec<&str> = focus_shown.rects.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, ["maybe"], "re-export reflects the now-visible node");
+    }
+
+    #[test]
+    fn grid_container_visible_when_true_restores_display_grid_not_flex() {
+        // A grid container carrying `visibleWhen` must restore to `Display::Grid`
+        // on a hide→show flip — not `Display::Flex`. `VisibilityState::visible_display`
+        // captures the authored display at build time so the round-trip is correct.
+        // Verified by checking that the grid's children still lay out in columns
+        // (not stacked as a flex column) after restoration.
+        use super::super::descriptor::GridWidget;
+        let cell = || {
+            Widget::Text(TextWidget {
+                content: "X".into(),
+                font_size: 10.0,
+                color: ColorValue::Literal([1.0; 4]),
+                font: None,
+                bind: None,
+                style_ranges: None,
+                id: None,
+                focus_neighbors: Default::default(),
+                visible_when: None,
+                role: None,
+            })
+        };
+        let grid = Widget::Grid(GridWidget {
+            gap: SpacingValue::Literal(0.0),
+            padding: SpacingValue::Literal(0.0),
+            align: Align::Start,
+            cols: 2,
+            id: None,
+            focus_neighbors: Default::default(),
+            focus: None,
+            restore_on_return: false,
+            visible_when: Some(pred("grid.show", None)),
+            role: None,
+            children: vec![cell(), cell(), cell(), cell()],
+        });
+        let tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: grid,
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
+            accessible_name: None,
+            role: None,
+        };
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+
+        // Frame 1: grid hidden.
+        let hidden = visibility_slots("grid.show", false);
+        ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &hidden,
+            &no_cells(),
+            0.0,
+        );
+
+        // Frame 2: grid shown — `visible_display` must restore `Display::Grid`.
+        let shown = visibility_slots("grid.show", true);
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &shown, &no_cells(), 0.0);
+
+        // After restoration the four children must span two columns: children 0
+        // and 1 share a row (same y, different x), and child 2 wraps to a new row.
+        let children: Vec<_> = ui.taffy.children(ui.root).unwrap();
+        assert_eq!(
+            children.len(),
+            4,
+            "grid has four children after restoration"
+        );
+        let layout = |n: NodeId| ui.taffy.layout(n).unwrap();
+        let y0 = layout(children[0]).location.y;
+        let y1 = layout(children[1]).location.y;
+        let y2 = layout(children[2]).location.y;
+        assert!(
+            approx(y0, y1),
+            "after restoration children 0 and 1 share a row (Display::Grid), got y0={y0} y1={y1}",
+        );
+        assert!(
+            y2 > y0,
+            "after restoration child 2 wraps to a lower row, got y0={y0} y2={y2}",
+        );
+    }
+
+    #[test]
+    fn visible_when_local_cell_hides_and_shows_node() {
+        // A `visibleWhen` predicate sourced from a `{ local }` cell (not `{ slot }`)
+        // hides the node when the cell is false and shows it when the cell is true.
+        // All existing visibility tests use `{ slot }`; this exercises the `{ local }`
+        // path through `harvest_visibility` and `resolve_bindings`.
+        let scoped_tree = AnchoredTree {
+            anchor: Anchor::TopLeft,
+            offset: [0.0, 0.0],
+            root: Widget::VStack(ContainerWidget {
+                gap: SpacingValue::Literal(0.0),
+                padding: SpacingValue::Literal(0.0),
+                align: Align::Start,
+                fill: None,
+                border: None,
+                id: None,
+                focus_neighbors: Default::default(),
+                focus: None,
+                restore_on_return: false,
+                local_state: Some(LocalState {
+                    scope: "hud".to_string(),
+                    cells: Default::default(),
+                }),
+                // The container's own `visibleWhen` references a PARENT scope cell
+                // (a sibling cell is the intended pattern — the own-scope caveat
+                // documented in `harvest_visibility` means using one's own cell here
+                // would silently resolve 0.0). We use a plain text child instead.
+                visible_when: None,
+                role: None,
+                children: vec![Widget::Text(TextWidget {
+                    content: "Cell-gated".into(),
+                    font_size: 18.0,
+                    color: ColorValue::Literal([1.0; 4]),
+                    font: None,
+                    id: None,
+                    focus_neighbors: Default::default(),
+                    bind: None,
+                    style_ranges: None,
+                    visible_when: Some(Predicate {
+                        source: BindSource::Local {
+                            local: "show".to_string(),
+                        },
+                        equals: None,
+                    }),
+                    role: None,
+                })],
+            }),
+            capture_mode: CaptureMode::Passthrough,
+            initial_focus: None,
+            text_entry_target: None,
+            accessible_name: None,
+            role: None,
+        };
+
+        let mut ui = UiTree::from_descriptor(&scoped_tree, &theme());
+        let mut fs = font_system();
+
+        // Cell false → text hidden.
+        let mut hidden_cells = CellValues::new();
+        hidden_cells.insert(
+            ("hud".to_string(), "show".to_string()),
+            SlotValue::Boolean(false),
+        );
+        let draw = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &no_slots(),
+            &hidden_cells,
+            0.0,
+        );
+        assert!(
+            draw.texts.iter().all(|t| t.content != "Cell-gated"),
+            "cell=false hides the node, got: {:?}",
+            draw.texts.iter().map(|t| &t.content).collect::<Vec<_>>(),
+        );
+
+        // Cell true → text shown.
+        let mut shown_cells = CellValues::new();
+        shown_cells.insert(
+            ("hud".to_string(), "show".to_string()),
+            SlotValue::Boolean(true),
+        );
+        let draw = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &no_slots(),
+            &shown_cells,
+            0.0,
+        );
+        assert!(
+            draw.texts.iter().any(|t| t.content == "Cell-gated"),
+            "cell=true shows the node again, got: {:?}",
+            draw.texts.iter().map(|t| &t.content).collect::<Vec<_>>(),
         );
     }
 }
@@ -5392,6 +6671,8 @@ mod local_state_tests {
                     scope: scope_id.to_string(),
                     cells: Default::default(),
                 }),
+                visible_when: None,
+                role: None,
                 children: vec![Widget::Text(TextWidget {
                     content: "FB".into(),
                     font_size: 18.0,
@@ -5405,6 +6686,8 @@ mod local_state_tests {
                     style_ranges: None,
                     id: None,
                     focus_neighbors: Default::default(),
+                    visible_when: None,
+                    role: None,
                 })],
             }),
         )
@@ -5587,6 +6870,8 @@ mod local_state_tests {
                 style_ranges: None,
                 id: None,
                 focus_neighbors: Default::default(),
+                visible_when: None,
+                role: None,
             }),
         );
 

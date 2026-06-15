@@ -116,7 +116,8 @@ const DATA_SCRIPT_FIELDS: &[&str] = &["defineReaction", "defineEntity"];
 /// UI-reactions SDK fields lifted to globals after evaluating
 /// `ui/reactions.luau`. `onStateCrossing` builds a state-crossing watcher; the
 /// rest are system-reaction body constructors that pair with `defineReaction` to
-/// emit `playSound` / `rumble` / `flashScreen`, the UI-stack (`showDialog` /
+/// emit `playSound` / `rumble` / `flashScreen` / `vignette` / `screenShake`,
+/// the UI-stack (`showDialog` /
 /// `openMenu` / `closeDialog`) primitives, the `setState` slot write (Goal F),
 /// the text-entry helpers (`openTextEntry` wraps `showDialog` for the engine
 /// keyboard; `KEYBOARD_TREE` is its registry name constant), and the text-edit
@@ -126,6 +127,8 @@ const UI_REACTIONS_FIELDS: &[&str] = &[
     "playSound",
     "rumble",
     "flashScreen",
+    "vignette",
+    "screenShake",
     "showDialog",
     "openMenu",
     "closeDialog",
@@ -142,7 +145,7 @@ const UI_REACTIONS_FIELDS: &[&str] = &[
 /// `validateBorder` / `resolveReactionName` are internal helpers that
 /// `layout.luau` redeclares locally, so they stay off the global table.
 const UI_WIDGETS_FIELDS: &[&str] = &[
-    "Text", "Panel", "Image", "Spacer", "Button", "Slider", "Bar",
+    "Text", "Panel", "Image", "Spacer", "Button", "Slider", "Bar", "Announce",
 ];
 
 /// UI layout-factory SDK fields lifted to globals after evaluating
@@ -156,7 +159,7 @@ const UI_TREE_FIELDS: &[&str] = &["Tree"];
 /// `ui/state.luau`. `storeHandle` wraps writable store-slot handles; `ui` is
 /// the namespaced object exposing `ui.createLocalState` (G1b). Both must be
 /// promoted to bare globals so Luau authors can call them directly.
-const UI_STATE_FIELDS: &[&str] = &["storeHandle", "ui"];
+const UI_STATE_FIELDS: &[&str] = &["storeHandle", "ui", "Switch"];
 
 /// Evaluate the Luau SDK prelude in `lua` and promote the return values to
 /// globals. Must be called after primitives are installed and before
@@ -1439,6 +1442,8 @@ mod tests {
             "playSound",
             "rumble",
             "flashScreen",
+            "vignette",
+            "screenShake",
             "showDialog",
             "openMenu",
             "closeDialog",
@@ -1709,8 +1714,12 @@ mod tests {
                 r#"{"kind":"panel","fill":[0,0,0,1],"bind":{"slot":"intro.flashColor","tween":{"durationMs":300,"easing":"linear","from":[1,0,0,1]}}}"#,
             ),
             (
-                r#"W.Image({ asset = "ui/logo" })"#,
-                r#"{"kind":"image","asset":"ui/logo"}"#,
+                r#"W.Image({ asset = "ui/logo", decorative = true })"#,
+                r#"{"kind":"image","asset":"ui/logo","decorative":true}"#,
+            ),
+            (
+                r#"W.Image({ asset = "ui/portrait", label = "Hero portrait" })"#,
+                r#"{"kind":"image","asset":"ui/portrait","label":"Hero portrait"}"#,
             ),
             (
                 r#"W.Spacer({ flexGrow = 1 })"#,
@@ -1737,8 +1746,8 @@ mod tests {
                 r#"{"kind":"vstack","gap":4,"padding":8,"align":"start","children":[{"kind":"text","content":"hi","fontSize":12,"color":[1,1,1,1]}]}"#,
             ),
             (
-                r#"L.Grid({ gap = 1, padding = 3, align = "stretch", cols = 2 }, { W.Image({ asset = "ui/icon" }) })"#,
-                r#"{"kind":"grid","gap":1,"padding":3,"align":"stretch","cols":2,"children":[{"kind":"image","asset":"ui/icon"}]}"#,
+                r#"L.Grid({ gap = 1, padding = 3, align = "stretch", cols = 2 }, { W.Image({ asset = "ui/icon", decorative = true }) })"#,
+                r#"{"kind":"grid","gap":1,"padding":3,"align":"stretch","cols":2,"children":[{"kind":"image","asset":"ui/icon","decorative":true}]}"#,
             ),
             (
                 // Detailed focus policy (wrap:false + repeat) + a child. (A child
@@ -1746,8 +1755,31 @@ mod tests {
                 // `lua_to_json` walker — an EMPTY Lua table is `{}`, not `[]`, a
                 // limitation the Task 5 bridge resolves by deserializing straight
                 // into the typed `ContainerWidget` rather than a generic `Value`.)
-                r#"L.Grid({ cols = 2, focus = { policy = "spatial", wrap = false, ["repeat"] = { initialDelayMs = 300, intervalMs = 80 } } }, { W.Image({ asset = "x" }) })"#,
-                r#"{"kind":"grid","gap":0,"padding":0,"align":"start","cols":2,"focus":{"policy":"spatial","wrap":false,"repeat":{"initialDelayMs":300,"intervalMs":80}},"children":[{"kind":"image","asset":"x"}]}"#,
+                r#"L.Grid({ cols = 2, focus = { policy = "spatial", wrap = false, ["repeat"] = { initialDelayMs = 300, intervalMs = 80 } } }, { W.Image({ asset = "x", decorative = true }) })"#,
+                r#"{"kind":"grid","gap":0,"padding":0,"align":"start","cols":2,"focus":{"policy":"spatial","wrap":false,"repeat":{"initialDelayMs":300,"intervalMs":80}},"children":[{"kind":"image","asset":"x","decorative":true}]}"#,
+            ),
+            // M13 G2: name-XOR via labelledBy, reactive predicates, disabled, role,
+            // visibleWhen, and the Announce widget — each emits the camelCase wire
+            // form the SE/G2 Rust descriptor round-trips.
+            (
+                r#"W.Button({ id = "tab1", labelledBy = "tab1Label", onPress = "selectTab", selected = { ["local"] = "tab", equals = "stats" }, role = "tab" })"#,
+                r#"{"kind":"button","id":"tab1","labelledBy":"tab1Label","onPress":"selectTab","selected":{"local":"tab","equals":"stats"},"role":"tab"}"#,
+            ),
+            (
+                r#"W.Button({ id = "mute", label = "Mute", onPress = "toggleMute", checked = { slot = "audio.muted", equals = true }, disabled = true })"#,
+                r#"{"kind":"button","id":"mute","label":"Mute","onPress":"toggleMute","checked":{"slot":"audio.muted","equals":true},"disabled":true}"#,
+            ),
+            (
+                r#"W.Slider({ id = "vol", labelledBy = "volLabel", bind = { slot = "audio.master" }, min = 0, max = 1, step = 0.1, visibleWhen = { ["local"] = "open" } })"#,
+                r#"{"kind":"slider","id":"vol","labelledBy":"volLabel","bind":{"slot":"audio.master"},"min":0,"max":1,"step":0.1,"visibleWhen":{"local":"open"}}"#,
+            ),
+            (
+                r#"W.Announce({ priority = "assertive" }, "Wave incoming")"#,
+                r#"{"kind":"announce","text":"Wave incoming","priority":"assertive"}"#,
+            ),
+            (
+                r#"W.Announce({}, "Saved")"#,
+                r#"{"kind":"announce","text":"Saved"}"#,
             ),
         ];
 
@@ -1791,6 +1823,21 @@ mod tests {
                 "bind",
             ),
             (r#"L.Grid({ cols = 0 }, {})"#, "cols"),
+            // M13 G2 name-XOR preconditions: neither or both is an error.
+            (r#"W.Button({ id = "b", onPress = "go" })"#, "label"),
+            (
+                r#"W.Button({ id = "b", label = "B", labelledBy = "x", onPress = "go" })"#,
+                "labelledBy",
+            ),
+            (
+                r#"W.Slider({ id = "s", bind = { slot = "a.b" }, min = 0, max = 1, step = 1 })"#,
+                "label",
+            ),
+            (r#"W.Image({ asset = "x" })"#, "label"),
+            (
+                r#"W.Image({ asset = "x", label = "L", decorative = true })"#,
+                "decorative",
+            ),
         ];
         for (expr, field) in cases {
             let err = lua
@@ -1803,5 +1850,74 @@ mod tests {
                 "error for `{expr}` must name `{field}`, got: {msg}"
             );
         }
+    }
+
+    /// M13 G2 Task 4: `Switch(cell, map)` expands a string-valued cell's case map
+    /// into an array of subtrees, each carrying an injected
+    /// `visibleWhen = cell:is(key)`, in LEXICOGRAPHICALLY-SORTED key order. The
+    /// sort is load-bearing: Luau pair iteration is undefined, so without it the
+    /// Luau array order would diverge from TS. The expected JSON is the TS `Switch`
+    /// contract (the cross-runtime parity anchor — `widgets.luau` parity test
+    /// pattern); a 3-key cell here proves the order and per-case injection.
+    #[test]
+    fn luau_switch_injects_sorted_visiblewhen_predicates() {
+        const WIDGETS_SRC: &str = include_str!("../../../../sdk/lib/ui/widgets.luau");
+        const STATE_SRC: &str = include_str!("../../../../sdk/lib/ui/state.luau");
+
+        let lua = mlua::Lua::new();
+        let widgets: mlua::Table = lua
+            .load(WIDGETS_SRC)
+            .set_name("widgets.luau")
+            .eval()
+            .unwrap();
+        let state: mlua::Table = lua.load(STATE_SRC).set_name("state.luau").eval().unwrap();
+        lua.globals().set("W", widgets).unwrap();
+        lua.globals().set("S", state).unwrap();
+
+        // A 3-key map authored OUT of sorted order ("stats"/"gear"/"map") to prove
+        // the factory sorts rather than preserving authoring order.
+        let expr = r#"
+            local bundle = S.createLocalState({ tab = "map" })
+            local tab = bundle.cells.tab
+            return S.Switch(tab, {
+              stats = W.Text({ content = "Stats" }),
+              gear = W.Text({ content = "Gear" }),
+              map = W.Text({ content = "Map" }),
+            })
+        "#;
+        let value: mlua::Value = lua
+            .load(expr)
+            .set_name("switch_case")
+            .eval()
+            .unwrap_or_else(|e| panic!("Switch call failed:\n{e}"));
+        let got = super::super::conv::lua_to_json(value).expect("lua_to_json");
+
+        // The byte-identical TS contract: sorted "gear" < "map" < "stats", each
+        // subtree carrying `visibleWhen = { local = "tab", equals = <key> }`.
+        let expected: serde_json::Value = serde_json::from_str(
+            r#"[
+              {"kind":"text","content":"Gear","fontSize":12,"color":[1,1,1,1],"visibleWhen":{"local":"tab","equals":"gear"}},
+              {"kind":"text","content":"Map","fontSize":12,"color":[1,1,1,1],"visibleWhen":{"local":"tab","equals":"map"}},
+              {"kind":"text","content":"Stats","fontSize":12,"color":[1,1,1,1],"visibleWhen":{"local":"tab","equals":"stats"}}
+            ]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            got, expected,
+            "Switch output diverges from the TS contract:\n{got}"
+        );
+
+        // The sorted-key order is positional, so assert it explicitly too (a
+        // value-compare would not catch a reordering if the objects were equal).
+        let arr = got.as_array().expect("Switch returns an array");
+        let order: Vec<&str> = arr
+            .iter()
+            .map(|e| e["visibleWhen"]["equals"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            order,
+            ["gear", "map", "stats"],
+            "Switch keys must be lexicographically sorted"
+        );
     }
 }

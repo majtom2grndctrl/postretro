@@ -679,6 +679,8 @@ omitted from the emitted `args` entirely when not supplied — they are never se
 | `playSound(sound, bus?)` | `{ primitive: "playSound", args: { sound, bus? } }` | Routes to the M12 audio module on the optional named mixer `bus` (engine default bus when omitted). |
 | `rumble(strong, durationMs, weak?)` | `{ primitive: "rumble", args: { strong, weak?, durationMs } }` | Drives gilrs gamepad force feedback. `strong`/optional `weak` are 0–1 motor intensities; `durationMs` is the rumble length. Warn-once no-op when force feedback is unsupported. |
 | `flashScreen(color, durationMs)` | `{ primitive: "flashScreen", args: { color, durationMs } }` | Writes the engine-owned `screen.flash` RGBA slot, which decays back to transparent. `color` is `[r, g, b, a]` (0–1); `durationMs` is the decay time. |
+| `vignette(strength, durationMs, color?)` | `{ primitive: "vignette", args: { color?, strength, durationMs } }` | Writes the engine-owned `screen.vignette` slot, which rises to peak then decays back to rest. `strength` is the peak edge-darken amount; `durationMs` is the total rise-plus-decay time. Optional `color` is an `[r, g, b]` linear-RGB tint (omitted → black, a pure strength-only edge-darken). |
+| `screenShake(amplitude, durationMs, frequency?)` | `{ primitive: "screenShake", args: { amplitude, durationMs, frequency? } }` | Writes the engine-owned `screen.shake` offset slot, a decaying oscillation that fades to rest. `amplitude` is the peak displacement in logical-reference px; `durationMs` is the total decay time. Optional `frequency` is the oscillation rate in Hz (omitted → the engine applies its default frequency). |
 | `showDialog(tree, onCommit?)` | `{ primitive: "showDialog", args: { tree, onCommit? } }` | Pushes the dialog UI `tree` onto the modal stack; optional `onCommit` names a reaction fired on commit. |
 | `openTextEntry(onCommit?)` | `{ primitive: "showDialog", args: { tree: "keyboard", onCommit? } }` | Opens the engine-shipped on-screen keyboard (a capturing modal editing `ui.textEntry`). A `showDialog` wrapper targeting the `keyboard` tree. See the text-entry walkthrough below. |
 | `openMenu(tree)` | `{ primitive: "openMenu", args: { tree } }` | A v1 alias of `showDialog` (identical push behavior) without the `onCommit` hook. |
@@ -786,6 +788,43 @@ Escape is context-sensitive: from gameplay it is `nav.menu` (opens a menu); insi
 a capturing UI tree it is `nav.cancel` (backs out). The left stick produces one
 directional intent per push past the dead zone (a flick to the opposite direction
 re-fires); holding a direction repeats on a delay→interval timer, not per frame.
+
+#### The `NavIntent` type
+
+The nav vocabulary is **closed** — those eleven `nav.*` wire names and no others.
+Wherever an author names a nav intent (a `slider`'s `capturesNav`, a
+`focusNeighbors` direction key), the value is typed `NavIntent` so a misspelled
+wire name is a compile error rather than a silently-ignored field at load.
+
+The type is spelled to fit each runtime's idiom; both constrain to the identical
+closed set:
+
+```typescript
+// TypeScript — a template-literal type. The `nav.` prefix is part of the type,
+// so `"nav.up"` checks and `"up"` / `"nav.upp"` do not.
+type NavDirection = "up" | "down" | "left" | "right";
+type NavIntent =
+  | `nav.${NavDirection}`
+  | "nav.next" | "nav.prev"
+  | "nav.confirm" | "nav.cancel" | "nav.menu" | "nav.options";
+```
+
+```lua
+-- Luau — a string-literal union (Luau has no template-literal types). Same
+-- closed set, spelled out.
+type NavIntent =
+  "nav.up" | "nav.down" | "nav.left" | "nav.right"
+  | "nav.next" | "nav.prev"
+  | "nav.confirm" | "nav.cancel" | "nav.menu" | "nav.options"
+```
+
+> **Status — documented, deferred as implementation.** The `NavIntent` *type*
+> is the authoring contract above; today `capturesNav` / `focusNeighbors` accept
+> the wider `string` in the emitted typedefs, and a typo degrades at load
+> (an unknown nav wire name is logged and the field is skipped). Narrowing the
+> emitted prop types to `NavIntent` is a later pass — the wire names and the
+> closed set are frozen by this table, so author code written against the union
+> above stays correct when the narrowing lands.
 
 ### Focus and repeat props
 
@@ -1033,3 +1072,189 @@ A malformed registration is contained: a single malformed `uiTrees` entry is
 logged and skipped (the rest register), and a structurally broken `theme` /
 `fonts` field surfaces a named load-time diagnostic the engine logs before
 continuing — a bad UI registration never aborts boot or level load.
+
+## Reactive UI (selection, visibility, a11y)
+
+The reactive-UI layer makes **selection-driven** widgets — tabs, segmented
+controls, radio groups, toggles — buildable from declarative data, plus the
+**accessibility metadata** a screen reader needs. The unifying idea: a single
+author **predicate** drives both the visual highlight (via `styleRanges`) and the
+a11y state (`selected` / `checked`). One expression, resolved deterministically in
+two places, so the highlight and the announced state can never disagree.
+
+> **Scripts declare; Rust resolves.** A predicate crosses the FFI as plain data
+> and the engine re-evaluates it from live UI state each frame. There is no script
+> callback at draw time — you describe *when* a widget is selected; the engine
+> reads it. This is the UI twin of the [`RuntimeValue`](#runtime-values)
+> contract.
+
+### The predicate `bind` — author-wired highlight
+
+A **`Predicate`** is a bind source (a `{ local }` cell or a `{ slot }` store
+reference) plus an optional `equals` comparand. It resolves to `1.0` (true) or
+`0.0` (false):
+
+- **No `equals`** — the source must be a boolean cell/slot; the predicate is its
+  truthiness.
+- **With `equals`** — the resolved value is compared to the comparand (`1.0` iff
+  equal). Comparands are **number / boolean / string** only (strings/enums match by
+  name); an array/color comparand is a load-time error.
+
+Construct one with a handle's `.is(v)`:
+
+```typescript
+const sel = ui.createLocalState({ tab: "loadout" });
+sel.cells.tab.is("loadout");        // { local: "tab", equals: "loadout" }
+storeHandle(opts.muted).is(true);   // { slot: "fixtureOpts.muted", equals: true }
+```
+
+A `Predicate` is a valid **`bind` source for `styleRanges`-capable widgets**
+(`Text` / `Panel` / `Bar` / `Button`). The predicate resolves to a `0/1` number
+the existing `styleRanges` extractor consumes, so the author drives a highlight
+with a `max: 1` band — **no new visual primitive**. The engine itself draws *no*
+selected/checked styling; the highlight is always author-wired (consistent with
+the deferred `disabled` dim).
+
+```typescript
+Button({
+  id: "t-loadout", label: "Loadout", role: "tab",
+  bind: sel.cells.tab.is("loadout"),     // 0/1 → styleRanges
+  styleRanges: { max: 1, entries: [
+    { upTo: 0, color: "panel.default" }, // value 0 (inactive) → dim
+    { color: "ok" },                      // value 1 (active)   → highlight
+  ] },
+  selected: sel.cells.tab.is("loadout"), // SAME predicate, a11y
+  onPress: "selectLoadout",
+});
+```
+
+The `.is(v)` comparand is **typed to the cell/slot's value type** — a string cell's
+`.is(3)` is a compile error (see `content/dev/scripts/reactive-ui-fixture.ts`).
+
+### `selected` / `checked` (a11y state)
+
+`selected` and `checked` are **reactive a11y state**, each an optional
+`Predicate`. There is **no static-boolean form** — a `selected: true` would
+duplicate the runtime selection and desync from the highlight, so the API refuses
+it. They resolve in the focus-rect build and ride the renderer→app focus readback,
+where a screen reader reads them. Wire them from the **same predicate** as the
+highlight `bind` (as above) and the two agree by construction.
+
+`checked` is the toggle/checkbox/radio analogue; pair it with `role: "checkbox"` /
+`role: "radio"`.
+
+### `visibleWhen` and `Switch`
+
+`visibleWhen: Predicate` on **any** widget conditionally hides it. A false
+predicate sets the node `Display::None`: it is excluded from layout size, draws
+zero rects/glyphs, and its focusables become unreachable (and are never picked as
+initial focus). A `true` predicate restores all three.
+
+Hiding a subtree does **not** tear down `localState` cells declared above the
+toggle — a cell's value round-trips across a hide/show. (Visibility is applied in
+the layout/draw/focus walks, never in the reconcile walk that owns cell scopes.)
+
+`Switch(cell, map)` is **pure SDK sugar** over `visibleWhen`. It expands a
+string-cell's `{ value → subtree }` map into an array, injecting
+`visibleWhen: cell.is(key)` onto each subtree. Splice the result into a
+container's `children`; exactly the subtree whose key equals the cell value is
+visible:
+
+```typescript
+VStack({ localState: sel.scope }, [
+  HStack({ role: "tablist" }, [tab("loadout", "Loadout"), tab("stats", "Stats")]),
+  ...Switch(sel.cells.tab, {
+    loadout: LoadoutPanel(),
+    stats: StatsPanel(),
+  }),
+]);
+```
+
+Keys expand in **lexicographically-sorted order** so the emitted array is
+byte-identical between TypeScript and Luau (Luau table iteration order is
+undefined, so the sort is load-bearing for cross-runtime wire identity). A subtree
+that already carries a `visibleWhen` is rejected — `Switch` owns that field. The
+canonical end-to-end example is the campaign-test tabs demo
+(`content/dev/scripts/tabs-demo.ts`).
+
+### Accessible name, role, and `disabled`
+
+- **Name (one-of).** An interactive widget (`Button` / `Slider`) and `Image`
+  require **exactly one** of `label` (the accessible name) or `labelledBy` (the
+  id of an authored node that names it). Neither or both is a factory throw and a
+  named load-time bridge error — never a panic. Passive widgets (`Bar`, `Text`,
+  containers) need no name.
+- **`role`.** An optional `role` override; absent, a widget keeps its implicit
+  role (`Button`→button, `Slider`→slider, `Bar`→progressbar, `Image`→image,
+  containers→group, `Text`→none). The closed `Role` set adds the selection-aware
+  roles `tab` / `tablist` / `checkbox` / `radio` / `listitem`. A `role` override
+  does **not** introduce a name requirement.
+- **`disabled`.** A static `disabled: true` is the one a11y bit with teeth: a
+  disabled widget is skipped by focus navigation and initial-focus, ignored by the
+  pointer/hover paths, and cannot be activated. The visual dim is author-wired
+  (theme / `styleRanges`), not engine-drawn. Omitted (`false`) by default and
+  skip-serialized.
+
+```typescript
+Button({ id: "save", label: "Save", onPress: "save", disabled: true });
+Slider({ id: "vol", labelledBy: "volumeTitle", bind: storeHandle(master).get(),
+         min: 0, max: 1, step: 0.05 });
+```
+
+### Image alt vs. decorative
+
+An `Image` requires exactly one of:
+
+- `label: "..."` — alt text (the accessible name), for a meaningful image; or
+- `decorative: true` — the image is purely ornamental and is hidden from the a11y
+  tree (no alt text).
+
+Neither or both is a factory throw + named bridge error.
+
+```typescript
+Image({ asset: "ui/portrait", label: "Player portrait" }); // meaningful
+Image({ asset: "ui/divider", decorative: true });           // ornamental
+```
+
+### Modal naming (`accessibleName` / `role` on the tree)
+
+The `Tree` envelope carries optional `accessibleName` and `role` that annotate
+the tree's root group — the name a screen reader announces when a modal (dialog /
+menu) takes focus. Both are optional and skip-serialized when absent, so a tree
+without them deserializes byte-identically to its pre-G2 wire form.
+
+```typescript
+Tree(
+  { anchor: "center", offset: [0, 0], captureMode: "capture",
+    role: "group", accessibleName: "Pause menu" },
+  pauseMenuRoot,
+);
+```
+
+### `Announce` — live-region messages
+
+`Announce(props, text)` is a **non-visual** widget: a live-region message routed
+to the platform a11y layer. `text` is the **positional second argument**;
+`priority` (`"polite"` | `"assertive"`) lives in props and defaults to `"polite"`
+(round-tripping to omission). Layout reserves zero space and draw emits zero
+glyphs — it exists only for assistive technology. A garbled `Announce` is a named
+load-time error, not a panic.
+
+```typescript
+Announce({}, "Settings saved");                       // polite (default)
+Announce({ priority: "assertive" }, "Connection lost"); // interrupts
+```
+
+### Proving the type-safety surface
+
+The repo has no `tsc` CI; per-kind narrowing is proven two ways, both committed:
+
+- **Typedef snapshot tests** (`crates/postretro/src/scripting/typedef.rs`) assert
+  the emitted `.d.ts` / `.d.luau` narrows per kind — `content` is a `Text`-only
+  prop (so a `Button({ content })` is a type error), `Bar` requires no name, the
+  interactive widgets carry the `label` xor `labelledBy` union, `Image` narrows
+  to `label` xor `decorative`, and `.is(v)` is typed to the cell/slot value type.
+- **`@ts-expect-error` fixtures** (`content/dev/scripts/reactive-ui-fixture.ts`)
+  are a documented review gate: each marked line MUST be a type error in an IDE;
+  if a future change makes one compile cleanly, `tsc --noEmit` flags the now-unused
+  directive and the gate fails.

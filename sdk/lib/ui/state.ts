@@ -18,7 +18,7 @@
 
 import type { StateValue } from "postretro";
 import type { PrimitiveReactionDescriptor } from "../data_script";
-import type { LocalBindRef, SliderBindProp } from "./widgets";
+import type { LocalBindRef, Predicate, SliderBindProp } from "./widgets";
 import { setState } from "./reactions";
 
 /**
@@ -40,6 +40,11 @@ export type StoreHandle<T> = {
   get(): SliderBindProp;
   /** A `setState` reaction descriptor writing `value` to this slot. */
   set(value: T): PrimitiveReactionDescriptor;
+  /**
+   * An equality `Predicate` against this slot (`{ slot, equals: value }`).
+   * `value` is typed to the slot's `T`, so a mismatched comparand is a TS error.
+   */
+  is(value: T): Predicate;
 };
 
 /**
@@ -63,6 +68,9 @@ export function storeHandle<T extends number | boolean | string | number[]>(
       // Delegate to the shipped builder so the descriptor is byte-identical to a
       // direct `setState(slot, value)` call.
       return setState(name, value as number | boolean | string | number[]);
+    },
+    is(value: T): Predicate {
+      return { slot: name, equals: value as number | boolean | string };
     },
   };
 }
@@ -88,6 +96,12 @@ export type LocalStateHandle<T extends CellInit> = {
   get(): LocalBindRef;
   /** A `cellWrite` reaction descriptor writing `value` to this cell. */
   set(value: T): PrimitiveReactionDescriptor;
+  /**
+   * An equality `Predicate` against this cell (`{ local, equals: value }`).
+   * `value` is typed to the cell's `T`, so a mismatched comparand is a TS error.
+   * `Switch(cell, map)` uses this to inject each subtree's `visibleWhen`.
+   */
+  is(value: T): Predicate;
 };
 
 /**
@@ -142,9 +156,65 @@ export function createLocalState<I extends Record<string, CellInit>>(
           args: { scope: scopeId, cell: name as string, value },
         };
       },
+      is(value): Predicate {
+        return { local: name as string, equals: value as number | boolean | string } as Predicate;
+      },
     };
   }
   return { scope: { scope: scopeId, cells: init }, cells };
+}
+
+/**
+ * The `ui` namespace object: state-helper SDK functions are namespaced
+ * (reactions stay bare exports, state helpers are namespaced).
+ * `ui.createLocalState` is the entry point.
+ */
+// --- Switch(cell, map) ------------------------------------------------------
+
+/**
+ * A widget subtree the `Switch` map associates with a cell value: a `kind`-tagged
+ * descriptor (any factory's output). Re-declared structurally (no cyclic import).
+ */
+type SwitchSubtree = { kind: string; [field: string]: unknown };
+
+/**
+ * `Switch(cell, map)` — declarative reactive branching sugar. Reads the handle's
+ * `{ local }` cell name and expands the `map`'s subtrees into an array, injecting
+ * `visibleWhen: cell.is(key)` onto each (a shallow clone — the input subtree is
+ * not mutated). Splice the result into a container's `children`: at runtime
+ * exactly the subtree whose key equals the cell value is visible.
+ *
+ * Keys are string cell values; `cell.is(key)` carries the string key as the
+ * `equals` comparand. Keys expand in LEXICOGRAPHICALLY-SORTED order so the emitted
+ * array is byte-IDENTICAL between TS and Luau (Luau table iteration order is
+ * undefined, so the sort is load-bearing for cross-runtime wire identity). A key
+ * already carrying a `visibleWhen` is rejected (the injected predicate would be
+ * lost).
+ */
+export function Switch(
+  cell: LocalStateHandle<string>,
+  map: Record<string, SwitchSubtree>,
+): SwitchSubtree[] {
+  if (cell === null || typeof cell !== "object" || typeof cell.is !== "function") {
+    throw new Error("Switch: `cell` must be a `ui.createLocalState` cell handle");
+  }
+  if (map === null || typeof map !== "object") {
+    throw new Error("Switch: `map` must be an object of value → subtree");
+  }
+  const keys = Object.keys(map).sort();
+  if (keys.length === 0) {
+    throw new Error("Switch: `map` must declare at least one case");
+  }
+  return keys.map((key) => {
+    const subtree = map[key];
+    if (subtree === null || typeof subtree !== "object" || typeof subtree.kind !== "string") {
+      throw new Error(`Switch: case \`${key}\` must be a widget descriptor (a \`kind\`-tagged object)`);
+    }
+    if (subtree.visibleWhen !== undefined) {
+      throw new Error(`Switch: case \`${key}\` already declares \`visibleWhen\`; Switch injects it`);
+    }
+    return { ...subtree, visibleWhen: cell.is(key) };
+  });
 }
 
 /**

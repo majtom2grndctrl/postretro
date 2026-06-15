@@ -93,6 +93,49 @@ export function flashScreen(
 }
 
 /**
+ * Darken (or tint) the screen edges by writing the engine-owned
+ * `screen.vignette` slot, which rises to peak then decays back to rest. Pure —
+ * returns a primitive reaction body, no engine side effect. `strength` is the
+ * peak edge-darken amount; `durationMs` is the total rise-plus-decay time in
+ * milliseconds. The optional `color` is an `[r, g, b]` linear-RGB tint (omitted
+ * when undefined ⇒ black, a pure strength-only edge-darken).
+ */
+export function vignette(
+  strength: number,
+  durationMs: number,
+  color?: [number, number, number],
+): import("../data_script").PrimitiveReactionDescriptor {
+  const args: {
+    color?: [number, number, number];
+    strength: number;
+    durationMs: number;
+  } = { strength, durationMs };
+  if (color !== undefined) args.color = color;
+  return { primitive: "vignette", args };
+}
+
+/**
+ * Shake the screen by writing the engine-owned `screen.shake` offset slot, a
+ * decaying oscillation that fades to rest. Pure — returns a primitive reaction
+ * body, no engine side effect. `amplitude` is the peak displacement in
+ * logical-reference px; `durationMs` is the total decay time in milliseconds.
+ * The optional `frequency` is the oscillation rate in Hz (omitted when
+ * undefined ⇒ the engine applies its default frequency).
+ */
+export function screenShake(
+  amplitude: number,
+  durationMs: number,
+  frequency?: number,
+): import("../data_script").PrimitiveReactionDescriptor {
+  const args: { amplitude: number; durationMs: number; frequency?: number } = {
+    amplitude,
+    durationMs,
+  };
+  if (frequency !== undefined) args.frequency = frequency;
+  return { primitive: "screenShake", args };
+}
+
+/**
  * Push a dialog UI tree onto the modal stack. Pure — returns a primitive
  * reaction body, no engine side effect. `tree` names the UI tree to show; the
  * optional `onCommit` (omitted when undefined) names a reaction fired when the

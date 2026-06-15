@@ -71,6 +71,10 @@ export type LevelManifest = {
   reactions: NamedReactionDescriptor[];
   /** State-crossing watchers (HUD dynamics). See `onStateCrossing`. */
   crossings?: import("./ui/reactions").CrossingDescriptor[];
+  /** Per-level UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; same
+   * shape as `ModManifest.uiTrees` but level-scoped (cleared on unload).
+   * Malformed entries are logged and skipped. */
+  uiTrees?: import("postretro").ModUiTree[];
 };
 
 type ReactionBody =

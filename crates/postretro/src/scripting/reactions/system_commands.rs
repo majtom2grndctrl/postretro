@@ -29,6 +29,23 @@ pub(crate) enum SystemReactionCommand {
     },
     /// Full-screen color flash fading over `duration_ms`.
     FlashScreen { color: [f32; 4], duration_ms: f32 },
+    /// Edge-darkening vignette: a `color` (linear RGB tint, absent ⇒ black —
+    /// strength-only edge-darken) at `strength`, rising then decaying over
+    /// `duration_ms`. The drain maps this onto `VignetteDecay::start`, splitting
+    /// `duration_ms` into a short rise and the remaining decay.
+    Vignette {
+        color: Option<[f32; 3]>,
+        strength: f32,
+        duration_ms: f32,
+    },
+    /// Screen shake: a decaying oscillation at `amplitude` (logical-reference px)
+    /// over `duration_ms`. `frequency` absent ⇒ the driver applies its 18 Hz
+    /// default (the deserializer passes `None` through unchanged).
+    ScreenShake {
+        amplitude: f32,
+        duration_ms: f32,
+        frequency: Option<f32>,
+    },
     /// Push a registered UI tree onto the stack, optionally firing the named
     /// reaction when the pushed tree commits.
     PushTree {
@@ -176,10 +193,19 @@ impl std::fmt::Debug for SystemReactionRegistry {
     }
 }
 
-/// Register all ten system-reaction primitives onto `registry`:
+/// Maximum `screenShake` amplitude in logical-reference px. Matches
+/// `SHAKE_REFERENCE_WIDTH` in `render/screen_effects.rs` (1280 px): at this
+/// amplitude the peak UV offset is exactly 1.0 — one full reference frame-width
+/// — which is the natural ceiling of the 1280×720 reference coordinate system.
+/// Amplitudes beyond this produce UV offsets > 1.0 that cause whole-frame
+/// ClampToEdge edge-smear with no meaningful additional shake effect.
+const MAX_SHAKE_AMPLITUDE_PX: f32 = 1280.0;
+
+/// Register the system-reaction primitives onto `registry`:
 /// - Audio: `playSound`
 /// - Input/rumble: `rumble`
 /// - Display/flash: `flashScreen`
+/// - Screen-space effects: `vignette`, `screenShake`
 /// - UI stack: `showDialog`, `openMenu`, `closeDialog` (push/pop `PushTree`/`PopTree`)
 /// - Slot write: `setState`
 /// - Presentation-cell write: `cellWrite`
@@ -216,6 +242,92 @@ pub(crate) fn register_system_reaction_primitives(registry: &mut SystemReactionR
         queue.push(SystemReactionCommand::FlashScreen {
             color: parsed.color,
             duration_ms: parsed.duration_ms,
+        });
+        Ok(())
+    });
+    // `vignette` darkens (or tints) the screen edges, rising then decaying. An
+    // omitted `color` defaults to black (pure strength-only edge-darken); the
+    // default is applied at the drain when the command maps onto
+    // `VignetteDecay::start`, so the absent-color case is one behavior.
+    registry.register("vignette", |args, queue| {
+        let parsed: VignetteArgs =
+            serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
+                reason: format!("vignette: failed to deserialize args: {e}"),
+            })?;
+        // The JSON bridge (serde_json::Number::from_f64) maps non-finite f32
+        // values to JSON null, so NaN/Infinity arrive as null and are rejected
+        // at deserialize before reaching this guard. The is_finite() arm is
+        // defense-in-depth for any future non-JSON caller.
+        if !parsed.duration_ms.is_finite() || parsed.duration_ms <= 0.0 {
+            return Err(ReactionError::InvalidArgument {
+                reason: format!(
+                    "vignette: durationMs must be finite and > 0, got {}",
+                    parsed.duration_ms
+                ),
+            });
+        }
+        queue.push(SystemReactionCommand::Vignette {
+            color: parsed.color,
+            strength: parsed.strength,
+            duration_ms: parsed.duration_ms,
+        });
+        Ok(())
+    });
+    // `screenShake` starts a decaying oscillation. The omitted-frequency 18 Hz
+    // default is applied by the DRIVER (`ShakeDecay::start`), not here — the
+    // deserializer passes `None` through unchanged so the absent-frequency case
+    // is one behavior regardless of how the reaction surface parses its args.
+    registry.register("screenShake", |args, queue| {
+        let parsed: ScreenShakeArgs =
+            serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
+                reason: format!("screenShake: failed to deserialize args: {e}"),
+            })?;
+        // The JSON bridge (serde_json::Number::from_f64) maps non-finite f32
+        // values to JSON null, so NaN/Infinity arrive as null and are rejected
+        // at deserialize before reaching this guard. The is_finite() arm is
+        // defense-in-depth for any future non-JSON caller.
+        if !parsed.duration_ms.is_finite() || parsed.duration_ms <= 0.0 {
+            return Err(ReactionError::InvalidArgument {
+                reason: format!(
+                    "screenShake: durationMs must be finite and > 0, got {}",
+                    parsed.duration_ms
+                ),
+            });
+        }
+        // amplitude == 0.0 is a valid no-op shake (zero displacement); reject
+        // only non-finite and negative. The upper bound caps the peak UV offset
+        // at 1.0 (one full reference frame-width) to prevent whole-frame
+        // ClampToEdge edge-smear. The JSON bridge maps non-finite to null
+        // (rejected at deserialize); the is_finite() arm is defense-in-depth.
+        if !parsed.amplitude.is_finite() || parsed.amplitude < 0.0 {
+            return Err(ReactionError::InvalidArgument {
+                reason: format!(
+                    "screenShake: amplitude must be finite and >= 0, got {}",
+                    parsed.amplitude
+                ),
+            });
+        }
+        if parsed.amplitude > MAX_SHAKE_AMPLITUDE_PX {
+            return Err(ReactionError::InvalidArgument {
+                reason: format!(
+                    "screenShake: amplitude must be <= {MAX_SHAKE_AMPLITUDE_PX} px, got {}",
+                    parsed.amplitude
+                ),
+            });
+        }
+        if let Some(freq) = parsed.frequency {
+            // The JSON bridge maps non-finite to null (rejected at deserialize);
+            // the is_finite() arm is defense-in-depth for non-JSON callers.
+            if !freq.is_finite() || freq <= 0.0 {
+                return Err(ReactionError::InvalidArgument {
+                    reason: format!("screenShake: frequency must be finite and > 0, got {freq}"),
+                });
+            }
+        }
+        queue.push(SystemReactionCommand::ScreenShake {
+            amplitude: parsed.amplitude,
+            duration_ms: parsed.duration_ms,
+            frequency: parsed.frequency,
         });
         Ok(())
     });
@@ -347,6 +459,27 @@ struct FlashScreenArgs {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct VignetteArgs {
+    // Absent ⇒ the drain defaults to black (strength-only edge-darken).
+    #[serde(default)]
+    color: Option<[f32; 3]>,
+    strength: f32,
+    duration_ms: f32,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScreenShakeArgs {
+    amplitude: f32,
+    duration_ms: f32,
+    // Absent ⇒ `None` rides to the driver, which applies its 18 Hz default. The
+    // default is NOT applied here.
+    #[serde(default)]
+    frequency: Option<f32>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ShowDialogArgs {
     tree: String,
     #[serde(default)]
@@ -398,6 +531,8 @@ mod tests {
         assert!(r.contains("playSound"));
         assert!(r.contains("rumble"));
         assert!(r.contains("flashScreen"));
+        assert!(r.contains("vignette"));
+        assert!(r.contains("screenShake"));
         assert!(r.contains("showDialog"));
         assert!(r.contains("openMenu"));
         assert!(r.contains("closeDialog"));
@@ -460,6 +595,83 @@ mod tests {
                 strong: 0.8,
                 weak: None,
                 duration_ms: 200.0,
+            }]
+        );
+    }
+
+    #[test]
+    fn vignette_dispatch_enqueues_command_with_color() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args =
+            serde_json::json!({ "color": [0.1, 0.0, 0.2], "strength": 0.8, "durationMs": 300.0 });
+        assert!(r.dispatch("vignette", &args, &queue).unwrap());
+        assert_eq!(
+            queue.take(),
+            vec![SystemReactionCommand::Vignette {
+                color: Some([0.1, 0.0, 0.2]),
+                strength: 0.8,
+                duration_ms: 300.0,
+            }]
+        );
+    }
+
+    #[test]
+    fn vignette_dispatch_defaults_absent_color_to_none() {
+        // The command carries `None`; the drain applies the black default when it
+        // maps onto `VignetteDecay::start`.
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "strength": 0.5, "durationMs": 200.0 });
+        assert!(r.dispatch("vignette", &args, &queue).unwrap());
+        assert_eq!(
+            queue.take(),
+            vec![SystemReactionCommand::Vignette {
+                color: None,
+                strength: 0.5,
+                duration_ms: 200.0,
+            }]
+        );
+    }
+
+    #[test]
+    fn screen_shake_dispatch_enqueues_command_with_frequency() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "amplitude": 12.0, "durationMs": 250.0, "frequency": 24.0 });
+        assert!(r.dispatch("screenShake", &args, &queue).unwrap());
+        assert_eq!(
+            queue.take(),
+            vec![SystemReactionCommand::ScreenShake {
+                amplitude: 12.0,
+                duration_ms: 250.0,
+                frequency: Some(24.0),
+            }]
+        );
+    }
+
+    #[test]
+    fn screen_shake_dispatch_passes_absent_frequency_through_as_none() {
+        // The omitted-frequency default is the DRIVER's job (18 Hz); the
+        // deserializer carries `None` through unchanged.
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "amplitude": 8.0, "durationMs": 150.0 });
+        assert!(r.dispatch("screenShake", &args, &queue).unwrap());
+        assert_eq!(
+            queue.take(),
+            vec![SystemReactionCommand::ScreenShake {
+                amplitude: 8.0,
+                duration_ms: 150.0,
+                frequency: None,
             }]
         );
     }
@@ -671,5 +883,230 @@ mod tests {
         assert!(!queue.is_empty());
         let _ = queue.take();
         assert!(queue.is_empty());
+    }
+
+    // --- vignette durationMs validation -------------------------------------
+    //
+    // The nan/inf tests below assert that the bad arg IS rejected — that is the
+    // guarantee under test. The rejection layer differs by arg source: the JSON
+    // bridge (serde_json::Number::from_f64) maps non-finite f32 to null, so
+    // NaN/Infinity arrive as null and are refused at deserialize ("invalid type:
+    // null, expected f32") before the is_finite() guard runs. The is_finite()
+    // arm is defense-in-depth for any future non-JSON caller. The tests remain
+    // valuable as rejection guarantees regardless of which layer fires.
+
+    #[test]
+    fn vignette_nan_duration_ms_rejected_with_invalid_argument() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "strength": 0.8, "durationMs": f32::NAN });
+        let err = r.dispatch("vignette", &args, &queue).unwrap_err();
+        assert!(matches!(err, ReactionError::InvalidArgument { .. }));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn vignette_inf_duration_ms_rejected_with_invalid_argument() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "strength": 0.5, "durationMs": f32::INFINITY });
+        let err = r.dispatch("vignette", &args, &queue).unwrap_err();
+        assert!(matches!(err, ReactionError::InvalidArgument { .. }));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn vignette_zero_duration_ms_rejected_with_invalid_argument() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "strength": 0.5, "durationMs": 0.0 });
+        let err = r.dispatch("vignette", &args, &queue).unwrap_err();
+        assert!(matches!(err, ReactionError::InvalidArgument { .. }));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn vignette_negative_duration_ms_rejected_with_invalid_argument() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "strength": 0.5, "durationMs": -100.0 });
+        let err = r.dispatch("vignette", &args, &queue).unwrap_err();
+        assert!(matches!(err, ReactionError::InvalidArgument { .. }));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn vignette_valid_args_enqueues_command() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "strength": 0.7, "durationMs": 400.0 });
+        assert!(r.dispatch("vignette", &args, &queue).unwrap());
+        assert_eq!(
+            queue.take(),
+            vec![SystemReactionCommand::Vignette {
+                color: None,
+                strength: 0.7,
+                duration_ms: 400.0,
+            }]
+        );
+    }
+
+    // --- screenShake durationMs, frequency, and amplitude validation ---------
+    //
+    // The nan/inf tests below assert that the bad arg IS rejected — that is the
+    // guarantee under test. The rejection layer differs by arg source: the JSON
+    // bridge (serde_json::Number::from_f64) maps non-finite f32 to null, so
+    // NaN/Infinity arrive as null and are refused at deserialize ("invalid type:
+    // null, expected f32") before the is_finite() guard runs. The is_finite()
+    // arm is defense-in-depth for any future non-JSON caller. The tests remain
+    // valuable as rejection guarantees regardless of which layer fires.
+
+    #[test]
+    fn screen_shake_nan_duration_ms_rejected_with_invalid_argument() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "amplitude": 10.0, "durationMs": f32::NAN });
+        let err = r.dispatch("screenShake", &args, &queue).unwrap_err();
+        assert!(matches!(err, ReactionError::InvalidArgument { .. }));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn screen_shake_inf_duration_ms_rejected_with_invalid_argument() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "amplitude": 10.0, "durationMs": f32::INFINITY });
+        let err = r.dispatch("screenShake", &args, &queue).unwrap_err();
+        assert!(matches!(err, ReactionError::InvalidArgument { .. }));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn screen_shake_zero_duration_ms_rejected_with_invalid_argument() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "amplitude": 10.0, "durationMs": 0.0 });
+        let err = r.dispatch("screenShake", &args, &queue).unwrap_err();
+        assert!(matches!(err, ReactionError::InvalidArgument { .. }));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn screen_shake_negative_duration_ms_rejected_with_invalid_argument() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "amplitude": 10.0, "durationMs": -50.0 });
+        let err = r.dispatch("screenShake", &args, &queue).unwrap_err();
+        assert!(matches!(err, ReactionError::InvalidArgument { .. }));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn screen_shake_negative_frequency_rejected_with_invalid_argument() {
+        // JSON cannot represent f32::INFINITY (serde_json::json! maps it to null,
+        // which deserializes to None — the absent-frequency path — rather than a
+        // non-finite value). A negative frequency is the JSON-reachable equivalent:
+        // it hits the `freq <= 0.0` guard and is a realistic authoring error.
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "amplitude": 10.0, "durationMs": 200.0, "frequency": -1.0 });
+        let err = r.dispatch("screenShake", &args, &queue).unwrap_err();
+        assert!(matches!(err, ReactionError::InvalidArgument { .. }));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn screen_shake_zero_frequency_rejected_with_invalid_argument() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "amplitude": 10.0, "durationMs": 200.0, "frequency": 0.0 });
+        let err = r.dispatch("screenShake", &args, &queue).unwrap_err();
+        assert!(matches!(err, ReactionError::InvalidArgument { .. }));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn screen_shake_valid_args_enqueues_command() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "amplitude": 6.0, "durationMs": 300.0, "frequency": 20.0 });
+        assert!(r.dispatch("screenShake", &args, &queue).unwrap());
+        assert_eq!(
+            queue.take(),
+            vec![SystemReactionCommand::ScreenShake {
+                amplitude: 6.0,
+                duration_ms: 300.0,
+                frequency: Some(20.0),
+            }]
+        );
+    }
+
+    #[test]
+    fn screen_shake_negative_amplitude_rejected_with_invalid_argument() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "amplitude": -1.0, "durationMs": 200.0 });
+        let err = r.dispatch("screenShake", &args, &queue).unwrap_err();
+        assert!(matches!(err, ReactionError::InvalidArgument { .. }));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn screen_shake_amplitude_above_max_rejected_with_invalid_argument() {
+        // Amplitude above MAX_SHAKE_AMPLITUDE_PX (1280.0 px) produces a UV
+        // offset > 1.0 that causes whole-frame ClampToEdge edge-smear.
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "amplitude": 1281.0, "durationMs": 200.0 });
+        let err = r.dispatch("screenShake", &args, &queue).unwrap_err();
+        assert!(matches!(err, ReactionError::InvalidArgument { .. }));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn screen_shake_zero_amplitude_accepted_enqueues_command() {
+        // amplitude == 0.0 is a valid no-op shake (zero displacement).
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "amplitude": 0.0, "durationMs": 200.0 });
+        assert!(r.dispatch("screenShake", &args, &queue).unwrap());
+        assert_eq!(
+            queue.take(),
+            vec![SystemReactionCommand::ScreenShake {
+                amplitude: 0.0,
+                duration_ms: 200.0,
+                frequency: None,
+            }]
+        );
     }
 }

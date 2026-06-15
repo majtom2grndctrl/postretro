@@ -4,10 +4,10 @@
 
 Ship one coherent scripting surface for durable game state.
 
-Authors reference engine state through `gameState`, declare mod state through a
-pure builder, and describe writes through reactions. Only values returned from
-`setupMod()` or `setupLevel()` cross into the engine. The authoring VM then
-drops.
+Authors obtain engine-state references through `getGameState()`, declare mod
+state through a pure builder, and describe writes through reactions. Only
+values returned from `setupMod()` or `setupLevel()` cross into the engine. The
+authoring VM then drops.
 
 The production HUD plan depends on this surface.
 
@@ -17,8 +17,9 @@ The production HUD plan depends on this surface.
 
 - One engine-state catalog shared by slot registration, generated types, and
   QuickJS/Luau runtime installation.
-- A generated `gameState` root exported from `"postretro"`.
-- Nested state domains such as `gameState.player.health.current`.
+- A generated `getGameState()` accessor exported from `"postretro"`.
+- Nested state domains such as
+  `getGameState().player.health.current`.
 - Directly bindable state references. No `.get()`.
 - Readonly and writable reference capabilities.
 - Pure mod-state declarations returned through `setupMod().stores`.
@@ -32,6 +33,7 @@ The production HUD plan depends on this surface.
 - Per-frame VM access or retained script functions.
 - Publishing movement fields to game state.
 - A `gameState.query()` API.
+- A `gameState` global.
 - A `playerState` global.
 - A `"postretro/game-state"` module.
 - Renaming stable slot wire names solely to match SDK nesting.
@@ -40,29 +42,44 @@ The production HUD plan depends on this surface.
 
 ## Author Contract
 
-`gameState` is the generated root for engine-owned durable state:
+`getGameState()` returns the generated reference tree for engine-owned durable
+state:
 
 ```ts
-import { gameState, Text, Bar } from "postretro";
+// Proposed design
+import { getGameState, Text, Bar } from "postretro";
 
-const health = gameState.player.health;
+function buildHud() {
+  const { player } = getGameState();
+  const health = player.health;
 
-Text({
-  content: "HP",
-  bind: { ...health.current, format: "HP {}" },
-});
+  return [
+    Text({
+      content: "HP",
+      bind: { ...health.current, format: "HP {}" },
+    }),
 
-Bar({
-  bind: health.fraction,
-  max: 1,
-  fill: "ok",
-  background: "panel.default",
-});
+    Bar({
+      bind: health.fraction,
+      max: 1,
+      fill: "ok",
+      background: "panel.default",
+    }),
+  ];
+}
 ```
+
+Domain builders obtain the references they consume. Callers do not pass
+`player`, `screen`, or other engine-state domains as component props.
+
+`getGameState()` is pure, deterministic, and idempotent. It returns immutable
+descriptor references. It does not read current game values, register data, or
+cross FFI.
 
 State leaves are immutable descriptor references:
 
 ```ts
+// Proposed design
 declare const stateRefValueBrand: unique symbol;
 declare const writableStateRefBrand: unique symbol;
 
@@ -77,9 +94,8 @@ type WritableStateRef<T> = ReadonlyStateRef<T> & {
 ```
 
 The writable marker is type-only. Both reference types have the same runtime
-shape. For example,
-`gameState.player.health.current` is `{ slot: "player.health" }`. Property
-access does not read the current health value.
+shape. For example, `getGameState().player.health.current` is
+`{ slot: "player.health" }`. Property access does not read current health.
 
 Readonly versus writable is a capability:
 
@@ -98,6 +114,7 @@ constructors build writes.
 `defineStore` becomes a pure SDK builder:
 
 ```ts
+// Proposed design
 const objectives = defineStore("objectives", {
   killCount: { type: "number", default: 0 },
 });
@@ -107,6 +124,7 @@ The store lives in a shared source module. The mod-init entry imports it and
 publishes the declaration:
 
 ```ts
+// Proposed design
 export function setupMod() {
   return {
     name: "example",
@@ -119,6 +137,7 @@ A level data entry imports the same pure module. Its VM reconstructs the same
 stable references without attempting another declaration:
 
 ```ts
+// Proposed design
 const resetKills = defineReaction(
   "resetKills",
   updateState(objectives.state.killCount, 0),
@@ -187,23 +206,24 @@ The same catalog:
 
 - constructs the built-in `SlotTable`;
 - generates TypeScript and Luau state types;
-- installs QuickJS and Luau `gameState` objects.
+- supplies the frozen reference tree returned by QuickJS and Luau
+  `getGameState()`.
 
 SDK paths are explicit metadata, not inferred from camelCase wire names. This
 allows:
 
 | Stable wire name | SDK path |
 | --- | --- |
-| `player.health` | `gameState.player.health.current` |
-| `player.healthFraction` | `gameState.player.health.fraction` |
-| `screen.flash` | `gameState.screen.flash` |
-| `input.mode` | `gameState.input.mode` |
-| `ui.textEntry` | `gameState.ui.textEntry` |
+| `player.health` | `getGameState().player.health.current` |
+| `player.healthFraction` | `getGameState().player.health.fraction` |
+| `screen.flash` | `getGameState().screen.flash` |
+| `input.mode` | `getGameState().input.mode` |
+| `ui.textEntry` | `getGameState().ui.textEntry` |
 
 Future movement observations may use
-`gameState.player.movement.<field>`. This plan does not publish any. Movement
-remains engine-private until a use case specifies each field's producer,
-lifetime, and capability.
+`getGameState().player.movement.<field>`. This plan does not publish any.
+Movement remains engine-private until a use case specifies each field's
+producer, lifetime, and capability.
 
 Catalog validation rejects:
 
@@ -216,18 +236,20 @@ Ordering is deterministic.
 
 ## Runtime Installation
 
-Install one frozen `gameState` object before author code executes.
+Install `getGameState` before author code executes. Each call returns the same
+frozen reference tree for that authoring context.
 
 TypeScript imports it from the normal SDK module:
 
 ```ts
-import { gameState } from "postretro";
+// Proposed design
+import { getGameState } from "postretro";
 ```
 
 The script compiler strips the import as it does other SDK imports. The
 QuickJS prelude/global installation supplies the value.
 
-Luau receives the same `gameState` global through the shared prelude/state
+Luau receives the same `getGameState` function through the shared prelude/state
 builder. No virtual module or filesystem `require` path is added.
 
 Nested objects and leaf references are frozen. Author code cannot replace a
@@ -237,7 +259,7 @@ domain, slot reference, or `slot` value.
 
 | Concept | Rust / catalog | Wire | TypeScript | Luau |
 | --- | --- | --- | --- | --- |
-| engine root | catalog tree | n/a | `gameState` | `gameState` |
+| engine accessor | catalog tree | n/a | `getGameState(): GameStateRefs` | `getGameState(): GameStateRefs` |
 | readonly leaf | readonly catalog entry | dotted slot string | `ReadonlyStateRef<T>` | `ReadonlyStateRef<T>` |
 | writable leaf | writable catalog entry | dotted slot string | `WritableStateRef<T>` | `WritableStateRef<T>` |
 | mod declaration | namespace + schema | `ModManifest.stores[]` | `defineStore(...).declaration` | same |
@@ -248,11 +270,16 @@ domain, slot reference, or `slot` value.
 
 ## Acceptance Criteria
 
-- [ ] `import { gameState } from "postretro"` bundles and executes in mod init.
-- [ ] `gameState.player.health.current` is exactly the immutable descriptor
-  `{ slot: "player.health" }` in QuickJS and Luau.
-- [ ] `gameState.player.health.fraction` maps to
+- [ ] `import { getGameState } from "postretro"` bundles and executes in mod
+  init.
+- [ ] `getGameState().player.health.current` is exactly the immutable
+  descriptor `{ slot: "player.health" }` in QuickJS and Luau.
+- [ ] `getGameState().player.health.fraction` maps to
   `{ slot: "player.healthFraction" }`.
+- [ ] Repeated calls in one authoring context return the same frozen reference
+  tree and perform no FFI.
+- [ ] A UI builder can call `getGameState()` internally; its caller passes no
+  engine-state domain as a prop.
 - [ ] Generated types and both runtimes contain the same catalog paths,
   value types, and write capabilities.
 - [ ] Writable engine state appears as `WritableStateRef<T>`; readonly state
@@ -268,10 +295,11 @@ domain, slot reference, or `slot` value.
 - [ ] `stateEquals`, crossing watchers, and text-edit reactions accept typed
   references and preserve their existing wire formats.
 - [ ] Nested runtime objects and state references cannot be mutated.
-- [ ] QuickJS definition, data, and mod-init contexts install `gameState`.
-- [ ] Every Luau authoring state installs `gameState` before sandbox freeze.
+- [ ] QuickJS definition, data, and mod-init contexts install `getGameState`.
+- [ ] Every Luau authoring state installs `getGameState` before sandbox freeze.
 - [ ] No `.get()`-based engine handle, `gameState.query`, `playerState` global,
-  or `"postretro/game-state"` module remains in generated SDK declarations.
+  `gameState` global, or `"postretro/game-state"` module remains in generated
+  SDK declarations.
 - [ ] No live state read primitive or retained VM reference is introduced.
 
 ## Tasks
@@ -315,18 +343,19 @@ Replace authoritative `StoreHandle.is` with `stateEquals`. Update crossing
 watchers and text-edit builders to take state references. Preserve
 game-logic-stage dispatch and readonly runtime gating.
 
-### Task 5: Install `gameState` in QuickJS and Luau
+### Task 5: Install `getGameState` in QuickJS and Luau
 
-Build frozen nested objects from the shared catalog. Install them in every
-authoring context before user code. Reject collisions with existing SDK
-globals.
+Build one frozen nested reference tree from the shared catalog per authoring
+context. Install a pure `getGameState` accessor that returns it. Reject
+collisions with existing SDK globals.
 
 Add TypeScript source-to-bundle-to-mod-init coverage and Luau parity coverage.
 
 ### Task 6: Align generated declarations and regressions
 
-Generate `gameState` under `"postretro"` for both languages. Remove the special
-game-state module and `.get()` declarations.
+Generate `GameStateRefs` and `getGameState()` under `"postretro"` for both
+languages. Remove the special game-state module, `gameState` global, and
+`.get()` declarations.
 
 Add catalog/type/runtime parity tests, negative capability tests, setup-return
 commit tests, and generated-file drift coverage.

@@ -31,8 +31,9 @@ Add `content/dev/scripts/hud.ts`. Import all authoring vocabulary from
 `"postretro"`:
 
 ```ts
+// Proposed design
 import {
-  gameState,
+  getGameState,
   Tree,
   VStack,
   HStack,
@@ -56,38 +57,70 @@ Two trees are required because one anchored tree has one viewport anchor.
 The health tree uses direct state references:
 
 ```ts
-const health = gameState.player.health;
+// Proposed design
+const hudTheme = {
+  // Custom HUD color, font, and spacing tokens.
+};
 
-Text({
-  content: "HP",
-  bind: { ...health.current, format: "HP {}" },
-});
+export function buildHud() {
+  const { player } = getGameState();
+  const health = player.health;
 
-Bar({
-  bind: health.fraction,
-  max: 1,
-  fill: "hud.health.ok",
-  background: "hud.health.background",
-  styleRanges: {
+  const status = Text({
+    content: "HP",
+    bind: { ...health.current, format: "HP {}" },
+  });
+
+  const bar = Bar({
+    bind: health.fraction,
     max: 1,
-    entries: [
-      { upTo: 0.25, color: "critical" },
-      { upTo: 0.5, color: "warning" },
-      { color: "ok" },
+    fill: "hud.health.ok",
+    background: "hud.health.background",
+    styleRanges: {
+      max: 1,
+      entries: [
+        { upTo: 0.25, color: "critical" },
+        { upTo: 0.5, color: "warning" },
+        { color: "ok" },
+      ],
+    },
+  });
+
+  const healthTree = Tree(
+    { anchor: "bottomLeft", offset: [24, -24] },
+    VStack({ gap: "hud.gap", padding: "hud.padding" }, [
+      HStack({ gap: "hud.gap" }, [status]),
+      bar,
+    ]),
+  );
+
+  const reticleTree = Tree(
+    { anchor: "center", offset: [0, 0] },
+    Text({ content: "+", font: "mono" }),
+  );
+
+  return {
+    uiTrees: [
+      { name: "hud", tree: healthTree, alwaysOn: true },
+      { name: "hud.reticle", tree: reticleTree, alwaysOn: true },
     ],
-  },
-});
+    theme: hudTheme,
+  };
+}
 ```
 
-The reticle uses:
+`buildHud()` obtains its own engine-state references. `setupMod()` does not
+pass `player` or a state tree into the HUD builder. These references are
+authoring vocabulary, not component props or current runtime values.
 
-```ts
-Text({ content: "+", font: "mono" });
-```
+The reticle uses `Text({ content: "+", font: "mono" })`.
 
 `content/dev/start-script.ts` returns the HUD and theme:
 
 ```ts
+// Proposed design
+const hud = buildHud();
+
 return {
   name: "Development Content",
   entities,
@@ -116,8 +149,8 @@ It publishes:
 
 | SDK path | Stable slot | Value | Range |
 | --- | --- | --- | --- |
-| `gameState.player.health.current` | `player.health` | current health | dynamic `[0, max HP]` |
-| `gameState.player.health.fraction` | `player.healthFraction` | `current / max` | static `[0, 1]` |
+| `getGameState().player.health.current` | `player.health` | current health | dynamic `[0, max HP]` |
+| `getGameState().player.health.fraction` | `player.healthFraction` | `current / max` | static `[0, 1]` |
 
 The game-state prerequisite owns the catalog and SDK path mapping. This plan
 changes catalog entries by removing fake ammo and adding health fraction.
@@ -207,8 +240,8 @@ composition through manual launch.
 
 | Boundary | Producer | Consumer | Contract |
 | --- | --- | --- | --- |
-| `gameState.player.health.current` | game-state catalog | HUD SDK | readonly ref to `player.health` |
-| `gameState.player.health.fraction` | game-state catalog | HUD SDK | readonly ref to `player.healthFraction` |
+| `getGameState().player.health.current` | game-state catalog | HUD SDK | readonly ref to `player.health` |
+| `getGameState().player.health.fraction` | game-state catalog | HUD SDK | readonly ref to `player.healthFraction` |
 | `player.health` | player HUD publisher | state snapshot | current HP; dynamic range |
 | `player.healthFraction` | player HUD publisher | state snapshot | clamped fraction; static range |
 | `ModManifest.stores` | `setupMod()` | manifest parser | returned store declarations only |
@@ -220,10 +253,12 @@ composition through manual launch.
 ## Acceptance Criteria
 
 - [ ] Development HUD is authored in TypeScript with UI SDK factories.
-- [ ] HUD imports `gameState` from `"postretro"` and uses no special
+- [ ] HUD imports `getGameState` from `"postretro"` and uses no special
   game-state module.
-- [ ] HUD binds `gameState.player.health.current` and
-  `gameState.player.health.fraction` directly, without `.get()`.
+- [ ] `buildHud()` calls `getGameState()` internally. `setupMod()` passes no
+  engine-state domain into it.
+- [ ] HUD binds `player.health.current` and `player.health.fraction` references
+  directly, without `.get()`.
 - [ ] Bind formatting composes by spreading the current-health reference.
 - [ ] `setupMod()` returns all stores, UI trees, and theme data consumed by the
   engine. Import-time calls perform no engine registration.
@@ -254,7 +289,7 @@ Refocus the existing UI proxy as the player HUD state publisher. Publish
 current and fractional health in the required frame position.
 
 Update the shared engine-state catalog: remove fake ammo, add health fraction,
-and map both stable wire slots under `gameState.player.health`.
+and map both stable wire slots under `getGameState().player.health`.
 
 Preserve current-health range attachment during level installation and hot
 reload. Add focused publisher, range, ordering, and generated-path tests.

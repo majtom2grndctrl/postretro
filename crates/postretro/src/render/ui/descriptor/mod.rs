@@ -12,8 +12,9 @@ mod widgets;
 
 pub use accessibility::Role;
 // Consumed by later G2 tasks (role projection); re-exported now so the descriptor
-// API surface is complete, but unused outside `cfg(test)` until a consumer lands.
-#[cfg_attr(not(test), allow(unused_imports))]
+// API surface is complete, but has no consumer yet (the role-projection sink is
+// deferred). Allow unconditionally so the test-target build stays clippy-clean.
+#[allow(unused_imports)]
 pub use accessibility::implicit_role;
 pub use envelope::{AnchoredTree, CaptureMode};
 pub use focus::{FocusKind, FocusNeighbors, FocusPolicy, RepeatPolicy};

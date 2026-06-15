@@ -1,7 +1,6 @@
 # Production Pause Menu Through the UI SDK
 
-> Prerequisites: `drafts/game-state-sdk-surface` and
-> `drafts/production-gameplay-hud`.
+> Prerequisite: `drafts/production-gameplay-hud`.
 
 ## Goal
 
@@ -9,8 +8,8 @@ Replace the development JSON pause menu with a production pause menu authored
 through the TypeScript UI SDK.
 
 Use the menu as an end-to-end validation of interactive SDK UI: returned tree
-registration, modal capture, focus navigation, button activation, named
-reaction dispatch, and retained rendering after the mod-init context drops.
+registration, modal capture, focus navigation, button activation, reserved UI
+actions, and retained rendering after the mod-init context drops.
 
 Keep a minimal engine JSON fallback when no mod pause menu is registered.
 
@@ -20,13 +19,14 @@ Keep a minimal engine JSON fallback when no mod pause menu is registered.
 
 - SDK-authored `pauseMenu` tree returned through `setupMod().uiTrees`.
 - Capturing modal behavior with centered placement and explicit initial focus.
-- Resume through a named reaction returned by `setupLevel()`.
+- Resume through an engine-reserved UI close action exposed by the SDK.
 - Keyboard, pointer, and gamepad operation through the existing focus engine.
 - Mod-tree shadowing of the engine fallback.
 - Staged UI/theme replacement semantics from the HUD prerequisite.
 - Removal of pause-menu-only demo state and controls.
-- Headless validation through retained draw data and the real input/reaction
-  path.
+- Deterministic CPU coverage of descriptor, registry, focus, activation, and
+  modal-stack behavior.
+- Manual runtime verification of the complete input, cursor, and render path.
 
 ### Out of scope
 
@@ -37,16 +37,19 @@ Keep a minimal engine JSON fallback when no mod pause menu is registered.
 - Text entry from the pause menu.
 - New widget kinds.
 - Live mutation of an already-pushed menu instance.
+- Freezing game simulation, animation clocks, particles, audio, or UI time.
 - GPU framebuffer comparison.
+- Window-system or GPU-backed automated tests.
 
 ## User Experience
 
 - Escape or gamepad Start opens a centered pause menu.
-- Opening the menu freezes gameplay and releases the cursor.
+- Opening the menu captures UI input, suppresses player controls, and releases
+  the cursor. Game simulation continues.
 - The menu shows a `PAUSED` heading and one `RESUME` button.
 - Resume works through pointer click, keyboard confirm, and gamepad confirm.
 - Escape, gamepad B, or Start closes the menu.
-- Closing the menu restores gameplay input and cursor capture.
+- Closing the menu restores player controls and cursor capture.
 - A mod-authored `pauseMenu` shadows the engine fallback.
 - Without mod registration, the engine fallback still opens and closes through
   Start, Escape, and gamepad B.
@@ -62,12 +65,10 @@ import {
   Text,
   Tree,
   VStack,
-  closeDialog,
-  defineReaction,
+  CLOSE_DIALOG_ACTION,
 } from "postretro";
 
 export const PAUSE_MENU_TREE = "pauseMenu";
-export const RESUME_PAUSE_MENU = "pauseMenu.resume";
 
 export function buildPauseMenu() {
   return Tree(
@@ -96,17 +97,11 @@ export function buildPauseMenu() {
         Button({
           id: "pauseResume",
           label: "RESUME",
-          onPress: RESUME_PAUSE_MENU,
+          onPress: CLOSE_DIALOG_ACTION,
         }),
       ],
     ),
   );
-}
-
-export function pauseMenuReactions() {
-  return [
-    defineReaction(RESUME_PAUSE_MENU, closeDialog()),
-  ];
 }
 ```
 
@@ -128,13 +123,13 @@ return {
 };
 ```
 
-The level data entry returns `pauseMenuReactions()` with its other reactions.
-The tree and reaction are reconstructed independently in short-lived contexts.
-Their shared contract is the stable `pauseMenu.resume` name, not a retained
-script object or function.
+`CLOSE_DIALOG_ACTION` is an SDK constant whose wire value is the reserved
+`"ui.closeDialog"` action. Button activation intercepts that value App-side
+and pops the active modal. It does not depend on a level data script or named
+reaction registration.
 
-Every engine-bound value remains reachable from a setup return. Importing the
-module performs no registration or FFI.
+The tree is plain returned data. Importing the module performs no registration
+or FFI.
 
 ## Modal Contract
 
@@ -151,11 +146,18 @@ The tree envelope owns:
 - tree-level accessible name.
 
 The container owns linear wrapping focus. The button owns its stable id and
-reaction name.
+reserved UI action.
 
 `nav.cancel` closes only the active `pauseMenu`. It must not pop the keyboard
 or another dialog. `nav.menu` closes the pause menu when it is active and opens
-it from gameplay.
+it only when the modal stack is empty. When another modal is active,
+`nav.menu` is ignored.
+
+`CLOSE_DIALOG_ACTION` follows the existing `ui.commitTextEntry` precedent:
+SDK-authored button data names a closed engine UI action that the App
+intercepts before named-reaction dispatch. Add the TypeScript and Luau SDK
+constant and a matching engine constant. Other `onPress` names keep the
+existing named-reaction path.
 
 The HUD prerequisite changes the registry to retain engine and mod tiers. A
 mod `pauseMenu` shadows the engine fallback without deleting it.
@@ -166,7 +168,7 @@ Reduce `content/base/ui/pauseMenu.json` to a minimal capturing fallback:
 
 - centered `PAUSED` text;
 - short `PRESS ESC OR B TO RESUME` instruction;
-- no button or named reaction dependency;
+- no button, reserved-action, or named-reaction dependency;
 - no volume, input-mode, or text-entry controls.
 
 The fallback relies on engine `nav.menu` and `nav.cancel` handling, so it
@@ -208,51 +210,66 @@ Use the HUD prerequisite's staged replacement contract:
 - an already-pushed pause menu keeps its cloned descriptor until closed;
 - reopening resolves the current registry entry.
 
-The reaction name stays `pauseMenu.resume`. Staged mod-init reload may change
-layout and theme, but does not rename the per-level reaction contract.
+The reserved close action is engine-owned and unaffected by staged mod-init.
+Reload may change layout and theme without creating a cross-manifest action
+dependency.
 
-## End-to-End Validation
+## Validation
 
-Add a headless regression using the production script-loading path:
+Automated tests run without a window or GPU context. Split coverage across the
+CPU seams the engine already exposes:
 
-1. Bundle the development TypeScript mod entry.
-2. Run mod init and retain the returned pause tree.
-3. Run the level data script and retain the returned resume reaction.
-4. Drop both short-lived authoring contexts.
-5. Register the engine fallback and returned mod tree.
-6. Push `pauseMenu` through the same named engine path used by `nav.menu`.
-7. Build retained layout, draw data, and focus rectangles.
-8. Advance the UI dispatch queue through its N-to-N+1 boundary.
-9. Activate Resume through focus confirm.
-10. Dispatch `pauseMenu.resume` and drain its `closeDialog` command.
+1. Bundle the development TypeScript mod entry, run mod init, and parse the
+   returned `pauseMenu` envelope.
+2. Drop the mod-init context and prove the retained descriptor still builds
+   layout, draw data, and focus rectangles.
+3. Register engine and mod trees in the tiered registry. Prove the mod tree
+   shadows the fallback and staged omission reveals it.
+4. Push the tree by name. Prove capture mode, active name, and initial focus
+   metadata reach the modal/focus seams.
+5. Feed keyboard/gamepad confirm and pointer click through focus-engine
+   fixtures. Prove each resolves the Resume button's same
+   `CLOSE_DIALOG_ACTION`.
+6. Exercise the App-side reserved-action router as pure CPU logic. Prove
+   `ui.closeDialog` pops the active modal and ordinary names retain named
+   reaction dispatch.
+7. Exercise the `nav.menu` policy: open on an empty stack, close an active
+   pause menu, and ignore the action while another modal is active.
 
 Assert:
 
 - the returned mod tree shadows the fallback marker;
 - the active tree captures input and selects `pauseResume`;
-- gameplay input is frozen and menu focus releases the cursor;
-- keyboard/gamepad confirm and pointer click reach the same named reaction;
-- activation does not pop until the queued reaction reaches game logic;
-- `closeDialog` pops the pause menu;
-- gameplay focus and cursor capture return after reconciliation;
-- retained tree and reaction data remain usable after both contexts drop;
+- keyboard/gamepad confirm and pointer click resolve the same reserved action;
+- the reserved action pops the active pause menu;
+- ordinary button action names still follow named-reaction dispatch;
+- retained tree data remains usable after the mod-init context drops;
 - staged omission reveals the fallback on the next open;
 - a menu already open during staged replacement remains stable until reopened.
 
-Use CPU layout, focus, registry, command, and draw-data assertions. Manual
-launch verifies final GPU composition and OS cursor behavior.
+These tests do not claim to prove winit cursor capture, real device input,
+frame-loop suppression of player controls, or GPU composition.
+
+Manual debug launch verifies:
+
+- Escape and gamepad Start open the menu from gameplay;
+- keyboard, pointer, and gamepad activate Resume;
+- Escape, gamepad B, and Start close the active pause menu;
+- Start does not stack the pause menu over another modal;
+- player controls are suppressed while the menu captures input;
+- cursor release/recapture and pointer/focus mode switching behave correctly;
+- final layout, focus ring, text, and panel render correctly;
+- world simulation continues while the menu is open.
 
 ## Boundary Inventory
 
 | Boundary | Producer | Consumer | Contract |
 | --- | --- | --- | --- |
 | `pauseMenu` | mod manifest or engine fallback | named UI registry | pushed-only capturing tree |
-| `pauseMenu.resume` | level data manifest | button activation | named reaction containing `closeDialog` |
 | `setupMod().uiTrees` | mod-init context | UI registry | returned owned tree envelopes |
-| `setupLevel().reactions` | data context | per-level reaction registry | returned named reactions |
+| `ui.closeDialog` | SDK button descriptor | App activation router | reserved action that pops active modal |
 | focus rectangles | UI draw-data build | app focus engine | stable node ids and device rects |
 | UI intent queue | input phase | game-logic focus engine | consumed events arrive no earlier than N+1 |
-| `PopTree` | `closeDialog` system reaction | modal stack | pop active tree during game logic |
 | staged mod UI snapshot | successful current staged result | tiered UI registry | complete mod tree replacement |
 
 ## Acceptance Criteria
@@ -262,19 +279,23 @@ launch verifies final GPU composition and OS cursor behavior.
 - [ ] Importing the pause-menu module performs no registration or FFI.
 - [ ] The tree declares capture, centered placement, accessible name, initial
   focus, and linear wrapping navigation through public SDK props.
-- [ ] Resume is a stable named reaction returned by `setupLevel()` and built
-  from `closeDialog()`.
+- [ ] Resume uses the SDK-exported `CLOSE_DIALOG_ACTION`. TypeScript and Luau
+  emit the reserved `"ui.closeDialog"` wire name.
+- [ ] The App intercepts `"ui.closeDialog"` before named-reaction dispatch and
+  pops the active modal. Ordinary button names retain named-reaction behavior.
 - [ ] Mod `pauseMenu` shadows the engine fallback without deleting it.
 - [ ] Start or Escape opens the menu from gameplay. While `pauseMenu` is active,
   Start, Escape, gamepad B, or Resume closes it without popping unrelated
   dialogs.
-- [ ] Opening freezes gameplay and releases the cursor; closing restores both
-  after the game-logic reconciliation point.
-- [ ] Pointer click, keyboard confirm, and gamepad confirm on Resume produce the
-  same named-reaction effect through the N-to-N+1 UI dispatch contract.
-- [ ] Headless coverage reaches retained layout, focus rectangles, draw data,
-  named reaction dispatch, system-command drain, and modal pop after both
-  authoring contexts drop.
+- [ ] `nav.menu` opens only when the modal stack is empty, closes an active
+  `pauseMenu`, and is ignored while another modal is active.
+- [ ] CPU tests prove the returned descriptor survives mod-init context drop,
+  builds layout/draw data/focus rectangles, shadows the fallback, resolves
+  initial focus, and routes all three activation sources to the same reserved
+  action.
+- [ ] CPU tests prove reserved-action pop, ordinary named-action routing, staged
+  fallback reveal, and pushed-instance stability. They make no window, GPU, or
+  real-device-input claim.
 - [ ] The fallback has no script reaction dependency and remains openable and
   closable without mod or level registrations.
 - [ ] Successful staged replacement updates the menu on its next open.
@@ -286,22 +307,25 @@ launch verifies final GPU composition and OS cursor behavior.
   is removed without removing generic audio, input-mode, keyboard, or
   text-entry systems.
 - [ ] UI and scripting documentation shows the final returned tree plus
-  returned reaction pattern and documents fallback and staged-instance
-  behavior.
-- [ ] Manual launch verifies final composition, focus ring, cursor release, and
-  keyboard/mouse/gamepad Resume behavior.
+  reserved-action pattern and documents fallback, modal policy, simulation,
+  and staged-instance behavior.
+- [ ] Manual launch verifies player-control suppression, continued world
+  simulation, final composition, focus ring, cursor release/recapture,
+  non-stacking Start behavior, and keyboard/mouse/gamepad Resume.
 - [ ] No tracked generated bundle, new `unsafe`, or renderer ownership
   violation is introduced.
 
 ## Tasks
 
-### Task 1: Author the pause menu and reaction module
+### Task 1: Add the reserved close action and author the pause menu
 
-Create the pure TypeScript module with stable tree and reaction names. Return
-the tree from `setupMod()` and the reaction from `setupLevel()`.
+Add the `ui.closeDialog` reserved button action beside the existing text-entry
+commit sentinel. Export `CLOSE_DIALOG_ACTION` in TypeScript and Luau. Route it
+App-side to modal pop before ordinary named-reaction dispatch.
 
-Use only public SDK factories and reaction builders. Add compiler and manifest
-coverage proving both returned wire values parse through the production path.
+Create the pure TypeScript pause-menu module and return its tree from
+`setupMod()`. Use only public SDK factories and constants. Add SDK parity,
+compiler, manifest, and activation-routing coverage.
 
 ### Task 2: Replace the fallback and remove demo plumbing
 
@@ -314,26 +338,28 @@ infrastructure intact. Update stale demo comments and focused fixtures.
 
 ### Task 3: Add interactive end-to-end coverage
 
-Exercise source bundle, mod manifest, level manifest, tiered registration,
-named push, retained layout, focus, input latency, reaction dispatch, command
-drain, modal pop, and focus reconciliation.
+Add deterministic CPU integration coverage for source bundle, mod manifest,
+tiered registration, named push, retained layout, draw data, focus rectangles,
+activation routing, modal pop, and staged replacement.
 
 Cover keyboard/gamepad confirm and pointer click as equivalent activation
-sources. Cover fallback-only operation and staged replacement behavior.
+sources. Cover fallback-only operation, ordinary named-action preservation,
+pushed-instance stability, and the complete `nav.menu` policy.
 
 ### Task 4: Document and verify
 
 Update durable UI and scripting docs for SDK-authored pushed menus, split
-tree/reaction publication, fallback behavior, and pushed-instance reload
-semantics.
+reserved/ordinary button actions, fallback behavior, input capture versus true
+pause, modal stacking policy, and pushed-instance reload semantics.
 
-Run formatting, focused tests, workspace clippy, workspace tests, normal debug
-launch, and fallback debug launch.
+Run formatting, focused CPU tests, workspace clippy, and workspace tests.
+Perform normal and fallback debug-launch checklists for behavior that requires
+a window, devices, or GPU output.
 
 ## Sequencing
 
-**Phase 1 (sequential):** Task 1 establishes the authored tree and reaction
-contract.
+**Phase 1 (sequential):** Task 1 establishes the authored tree and reserved
+action contract.
 
 **Phase 2 (sequential):** Task 2 replaces demo content and establishes the
 fallback behavior Task 3 validates.

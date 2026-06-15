@@ -14,8 +14,8 @@ use taffy::prelude::{
 
 use super::descriptor::{
     Align, AnchoredTree, BarWidget, BindSource, Border, ButtonWidget, ColorValue, ContainerWidget,
-    Easing, GridWidget, ImageWidget, LocalState, PanelBind, PanelWidget, SliderBind, SliderWidget,
-    SpacingValue, TextBind, TextWidget, Widget,
+    Easing, GridWidget, ImageWidget, LocalState, PanelBind, PanelWidget, Predicate, PredicateValue,
+    SliderBind, SliderWidget, SpacingValue, TextBind, TextWidget, Widget,
 };
 use super::layout::{Anchor, REFERENCE_HEIGHT, REFERENCE_WIDTH};
 use super::style_ranges::{StyleEffectState, StyleRanges, evaluate};
@@ -51,6 +51,67 @@ fn lookup_bound<'a>(
         BindSource::Local { local } => {
             scope.and_then(|s| cells.get(&(s.to_string(), local.to_string())))
         }
+    }
+}
+
+/// Resolve a [`Predicate`] against the frame's snapshot to a deterministic
+/// `0.0`/`1.0` (M13 G2). This single helper drives BOTH the author-wired highlight
+/// (a button's `styleRanges` `bind`) AND the a11y `selected`/`checked` state on the
+/// focus-rect readback — each consumer resolves independently (no shared per-node
+/// store; the resolve is cheap and deterministic). Semantics:
+///
+/// - **No `equals`, `Boolean` source** → its truthiness (`1.0` if true, else `0.0`).
+/// - **No `equals`, non-`Boolean` source** → `0.0` (a bare value with no comparand
+///   has no defined truthiness here).
+/// - **With `equals`** → `1.0` iff the resolved `SlotValue` equals the comparand,
+///   else `0.0`. `String`/`Enum` match the comparand by name; number/bool match
+///   exactly. A type mismatch (e.g. a `Number` slot vs a string comparand) is `0.0`.
+/// - **Absent slot/cell** (the bind resolves to nothing) → `0.0`.
+fn resolve_predicate(
+    source: &BindSource,
+    equals: Option<&PredicateValue>,
+    scope: Option<&str>,
+    slots: &HashMap<String, SlotValue>,
+    cells: &CellValues,
+) -> f32 {
+    let Some(value) = lookup_bound(source, scope, slots, cells) else {
+        return 0.0;
+    };
+    match equals {
+        None => match value {
+            SlotValue::Boolean(b) => {
+                if *b {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            // A bare (no-`equals`) predicate over a non-boolean source has no
+            // defined truthiness — it resolves false.
+            _ => 0.0,
+        },
+        Some(comparand) => {
+            if predicate_value_matches(value, comparand) {
+                1.0
+            } else {
+                0.0
+            }
+        }
+    }
+}
+
+/// Whether a resolved `SlotValue` equals a `PredicateValue` comparand. Number and
+/// boolean compare exactly; a `String` comparand matches both `String` and `Enum`
+/// slots by name (an enum's wire form is its name). Any other pairing is a type
+/// mismatch and does not match. `rgba`/array comparands are unrepresentable
+/// (rejected at load time), so an `Array` slot never matches.
+fn predicate_value_matches(value: &SlotValue, comparand: &PredicateValue) -> bool {
+    match (value, comparand) {
+        (SlotValue::Number(n), PredicateValue::Number(c)) => *n as f64 == *c,
+        (SlotValue::Boolean(b), PredicateValue::Boolean(c)) => b == c,
+        (SlotValue::String(s), PredicateValue::String(c))
+        | (SlotValue::Enum(s), PredicateValue::String(c)) => s == c,
+        _ => false,
     }
 }
 
@@ -314,6 +375,14 @@ enum NodeContext {
         /// styleRange-less node.
         style_ranges: Option<StyleRanges>,
         style_state: RefCell<StyleEffectState>,
+        /// Optional `Predicate` styleRanges value source (M13 G2 — a button's
+        /// `bind`). When `Some`, the styleRanges value is the predicate resolved to
+        /// `0.0`/`1.0` (the author-wired self-highlight), taking priority over the
+        /// `bind` slot/tween path. `None` for an ordinary `text` node, whose
+        /// styleRanges read the bound numeric slot. `predicate_scope` is the
+        /// nearest declaring `localState` scope for a `{ local }` predicate.
+        predicate_bind: Option<Predicate>,
+        predicate_scope: Option<String>,
     },
     /// Solid-fill panel quad, optionally framed by a 9-slice `border`. `fill`
     /// stays linear `[f32; 4]` — no sRGB conversion on the quad path. Carried by
@@ -909,6 +978,8 @@ impl UiTree {
         &self,
         descriptor: &AnchoredTree,
         device_size: [u32; 2],
+        slot_values: &HashMap<String, SlotValue>,
+        cell_values: &CellValues,
     ) -> FocusRectList {
         let root_size = self.taffy.layout(self.root).expect("root has layout").size;
         let (afx, afy) = anchor_fractions(self.anchor);
@@ -932,11 +1003,14 @@ impl UiTree {
             self.root,
             String::new(),
             None,
+            None,
             root_origin,
             scale,
             canvas_origin,
             &mut z,
             &mut out,
+            slot_values,
+            cell_values,
         );
         out
     }
@@ -953,11 +1027,14 @@ impl UiTree {
         node: NodeId,
         path: String,
         group: Option<usize>,
+        scope: Option<&str>,
         ref_origin: [f32; 2],
         scale: f32,
         canvas_origin: [f32; 2],
         z: &mut u32,
         out: &mut FocusRectList,
+        slot_values: &HashMap<String, SlotValue>,
+        cell_values: &CellValues,
     ) {
         let layout = self.taffy.layout(node).expect("node has computed layout");
         let this_z = *z;
@@ -977,6 +1054,12 @@ impl UiTree {
         if focusable {
             let rect = project_rect(ref_origin, layout, scale, canvas_origin);
             let rect_index = out.rects.len();
+            // M13 G2: resolve the widget's a11y `selected`/`checked` predicates (if
+            // any) to 0.0/1.0 and read its `disabled` bit. These ride the readback
+            // as a11y metadata — the engine draws no highlight from them; the author
+            // wires the visual through `styleRanges` (resolved in the draw build).
+            let (selected, checked, disabled) =
+                widget_a11y_state(widget, scope, slot_values, cell_values);
             out.rects.push(FocusRect {
                 id: id.clone(),
                 rect,
@@ -984,11 +1067,18 @@ impl UiTree {
                 group,
                 neighbors,
                 interaction: widget_interaction(widget),
+                selected,
+                checked,
+                disabled,
             });
             if let Some(g) = group {
                 out.groups[g].members.push(rect_index);
             }
         }
+
+        // A container declaring its own `localState` opens a scope its subtree's
+        // `{ local }` predicate binds resolve against (mirrors `build_stack`).
+        let child_scope = container_local_scope(widget).or(scope);
 
         // A container declaring a focus policy opens a new group its DIRECT
         // children join. Register the group before recursing so children carry its
@@ -1025,11 +1115,14 @@ impl UiTree {
                     child_node,
                     child_path,
                     child_group,
+                    child_scope,
                     child_origin,
                     scale,
                     canvas_origin,
                     z,
                     out,
+                    slot_values,
+                    cell_values,
                 );
             }
         }
@@ -1187,6 +1280,8 @@ impl UiTree {
                 tween,
                 style_ranges,
                 style_state,
+                predicate_bind,
+                predicate_scope,
             }) => {
                 // A bound text node resolves its drawn string from the slot
                 // snapshot (through the optional `{}` format template); an absent
@@ -1217,13 +1312,28 @@ impl UiTree {
                 // were pre-resolved to literals at build, so the theme arg is inert.
                 let color = match style_ranges {
                     Some(ranges) => {
-                        match style_text_value(
-                            bind.as_ref(),
-                            bind_scope.as_deref(),
-                            tween.as_ref(),
-                            slot_values,
-                            cell_values,
-                        ) {
+                        // A button's `bind` Predicate (M13 G2) is the styleRanges
+                        // value source when present: resolve it to 0.0/1.0 (the
+                        // author-wired self-highlight). An ordinary text node has no
+                        // predicate, so it reads the bound numeric slot via
+                        // `style_text_value` (the eased tween display when active).
+                        let value = match predicate_bind {
+                            Some(p) => Some(resolve_predicate(
+                                &p.source,
+                                p.equals.as_ref(),
+                                predicate_scope.as_deref(),
+                                slot_values,
+                                cell_values,
+                            )),
+                            None => style_text_value(
+                                bind.as_ref(),
+                                bind_scope.as_deref(),
+                                tween.as_ref(),
+                                slot_values,
+                                cell_values,
+                            ),
+                        };
+                        match value {
                             Some(value) => evaluate(
                                 ranges,
                                 value,
@@ -1685,6 +1795,54 @@ fn widget_interaction(widget: &Widget) -> Option<NodeInteraction> {
     }
 }
 
+/// The `localState` scope a container opens for the focus walk's `{ local }`
+/// predicate resolution, or `None`. Only `vstack`/`hstack` (`ContainerWidget`)
+/// declare a scope; `grid` carries none. Mirrors `build_stack`'s `child_scope` so
+/// the focus walk resolves a `selected`/`checked` `{ local }` predicate against the
+/// same scope the draw build's bind resolution uses.
+fn container_local_scope(widget: &Widget) -> Option<&str> {
+    match widget {
+        Widget::VStack(w) | Widget::HStack(w) => local_state_scope(w.local_state.as_ref()),
+        _ => None,
+    }
+}
+
+/// Resolve a widget's a11y state for the focus-rect readback (M13 G2):
+/// `(selected, checked, disabled)`. `selected`/`checked` are a button's optional
+/// `Predicate`s resolved against the frame snapshot to `1.0`/`0.0` (`None` when the
+/// widget declares no predicate or is not a button). `disabled` is the button's or
+/// slider's `disabled` bit (`false` for every other kind). The engine draws no
+/// highlight from selected/checked — they are a11y metadata only.
+fn widget_a11y_state(
+    widget: &Widget,
+    scope: Option<&str>,
+    slot_values: &HashMap<String, SlotValue>,
+    cell_values: &CellValues,
+) -> (Option<f32>, Option<f32>, bool) {
+    let resolve = |p: &Predicate| {
+        let predicate_scope = match &p.source {
+            BindSource::Local { .. } => scope,
+            BindSource::Slot { .. } => None,
+        };
+        resolve_predicate(
+            &p.source,
+            p.equals.as_ref(),
+            predicate_scope,
+            slot_values,
+            cell_values,
+        )
+    };
+    match widget {
+        Widget::Button(w) => (
+            w.selected.as_ref().map(&resolve),
+            w.checked.as_ref().map(&resolve),
+            w.disabled,
+        ),
+        Widget::Slider(w) => (None, None, w.disabled),
+        _ => (None, None, false),
+    }
+}
+
 /// The focus policy a container declares, or `None` for leaves and policy-less
 /// containers. A declaring container opens a focus group its direct children join.
 fn container_focus_policy(widget: &Widget) -> Option<&super::descriptor::FocusPolicy> {
@@ -1798,6 +1956,10 @@ fn build_node(
                         tween: None,
                         style_ranges,
                         style_state: RefCell::new(StyleEffectState::default()),
+                        // A `text` widget's styleRanges read its bound numeric slot,
+                        // not a predicate (the predicate path is the button's).
+                        predicate_bind: None,
+                        predicate_scope: None,
                     },
                 )
                 .expect("taffy leaf creation must succeed")
@@ -1859,7 +2021,7 @@ fn build_node(
                 .new_leaf(style)
                 .expect("taffy leaf creation must succeed")
         }
-        Widget::Button(button) => build_button(taffy, button, theme),
+        Widget::Button(button) => build_button(taffy, button, theme, scope),
         Widget::Slider(slider) => build_slider(taffy, slider, theme, scope),
         Widget::Bar(bar) => build_bar(taffy, bar, theme, scope),
         // M13 G2: a non-visual announcement lays out as an empty zero-size leaf
@@ -1876,11 +2038,30 @@ fn build_node(
 /// ride the focus-rect export (`focus_meta` / `widget_interaction`), not the draw
 /// payload. The label color resolves the theme `body`-text default (white), the
 /// same flat color a literal text widget would carry.
+///
+/// M13 G2: a button's `bind` is a [`Predicate`] (not a slot bind) accepted as the
+/// `styleRanges` value source — a tab/segmented button self-highlights when its
+/// predicate is true. The predicate + styleRanges thread onto the internal Text
+/// `NodeContext` so the existing styleRanges color path drives the label color (the
+/// author-wired highlight; no new visual primitive). The styleRanges bind
+/// precondition is satisfied by the predicate, so its band-color tokens pre-resolve
+/// the same way a bound text/panel's do.
 fn build_button(
     taffy: &mut TaffyTree<NodeContext>,
     button: &ButtonWidget,
     theme: &UiTheme,
+    scope: Option<&str>,
 ) -> NodeId {
+    let style_ranges = build_node_style_ranges(
+        button.style_ranges.as_ref(),
+        button.bind.is_some(),
+        theme,
+        "button",
+    );
+    let predicate_scope = match button.bind.as_ref().map(|p| &p.source) {
+        Some(BindSource::Local { .. }) => scope.map(str::to_string),
+        _ => None,
+    };
     taffy
         .new_leaf_with_context(
             Style::default(),
@@ -1892,13 +2073,17 @@ fn build_button(
                 font_size: INTERACTIVE_LABEL_FONT_SIZE,
                 color: resolve_color(&ColorValue::Token("body".to_string()), theme),
                 family: resolve_font(&None, theme),
-                // A button label is static text — no bind, tween, or styleRanges.
+                // A button label is static text — no slot bind, tween, or format.
                 bind_scope: None,
                 bind: None,
                 last_resolved: None,
                 tween: None,
-                style_ranges: None,
+                style_ranges,
                 style_state: RefCell::new(StyleEffectState::default()),
+                // The button's reactive highlight: its `bind` Predicate drives the
+                // styleRanges value (resolved to 0.0/1.0 at draw build).
+                predicate_bind: button.bind.clone(),
+                predicate_scope,
             },
         )
         .expect("taffy leaf creation must succeed")
@@ -1943,6 +2128,9 @@ fn build_slider(
                 tween: None,
                 style_ranges: None,
                 style_state: RefCell::new(StyleEffectState::default()),
+                // A slider's value display binds a numeric slot, not a predicate.
+                predicate_bind: None,
+                predicate_scope: None,
             },
         )
         .expect("taffy leaf creation must succeed")
@@ -2147,6 +2335,20 @@ pub(crate) struct FocusRect {
     /// off the focused node to fire activation (button `on_press`) or to apply a
     /// captured nav step (slider), keeping the focus engine widget-agnostic.
     pub interaction: Option<NodeInteraction>,
+    /// Resolved a11y `aria-selected` state (M13 G2): a button's `selected`
+    /// [`Predicate`] resolved against the frame snapshot to `1.0`/`0.0`. `None` when
+    /// the widget declares no `selected`. This is a11y METADATA carried on the
+    /// readback — the engine draws NO highlight from it (the author wires the visual
+    /// highlight through `styleRanges`); the app surfaces it to the a11y layer.
+    pub selected: Option<f32>,
+    /// Resolved a11y `aria-checked` state (M13 G2): a button's `checked`
+    /// [`Predicate`] resolved against the frame snapshot. `None` when undeclared.
+    /// Like `selected`, a11y-only — no engine-drawn highlight.
+    pub checked: Option<f32>,
+    /// Disabled bit (M13 G2): a button/slider's `disabled` field. A disabled
+    /// focusable is non-interactive and a11y-disabled. POPULATED here; HONORING it
+    /// in navigation/activation is a later task (Task 3).
+    pub disabled: bool,
 }
 
 /// Per-node interaction metadata exported with an interactive focusable node.
@@ -5176,7 +5378,7 @@ mod tests {
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         let draw = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
-        let focus = ui.export_focus_rects(&tree, [1280, 720]);
+        let focus = ui.export_focus_rects(&tree, [1280, 720], &no_slots(), &no_cells());
 
         // Three focusable nodes, one linear group with all three as members.
         let ids: Vec<&str> = focus.rects.iter().map(|r| r.id.as_str()).collect();
@@ -5234,7 +5436,7 @@ mod tests {
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
-        let focus = ui.export_focus_rects(&tree, [1280, 720]);
+        let focus = ui.export_focus_rects(&tree, [1280, 720], &no_slots(), &no_cells());
         let ids: Vec<&str> = focus.rects.iter().map(|r| r.id.as_str()).collect();
         // Auto-ids are the slash-joined child paths from the root.
         assert_eq!(ids, ["0", "1"], "auto-id is the tree-position path");
@@ -5308,7 +5510,7 @@ mod tests {
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
-        let focus = ui.export_focus_rects(&tree, [1280, 720]);
+        let focus = ui.export_focus_rects(&tree, [1280, 720], &no_slots(), &no_cells());
         let rect = focus
             .rects
             .iter()
@@ -5337,7 +5539,7 @@ mod tests {
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
-        let focus = ui.export_focus_rects(&tree, [1280, 720]);
+        let focus = ui.export_focus_rects(&tree, [1280, 720], &no_slots(), &no_cells());
         let rect = focus
             .rects
             .iter()
@@ -5352,6 +5554,335 @@ mod tests {
                 step: 0.1,
                 captures_nav: vec!["nav.left".to_string(), "nav.right".to_string()],
             }),
+        );
+    }
+
+    // --- M13 G2: predicate resolution + a11y state + FocusRect.disabled ---
+
+    fn pred(slot: &str, equals: Option<PredicateValue>) -> Predicate {
+        Predicate {
+            source: BindSource::Slot { slot: slot.into() },
+            equals,
+        }
+    }
+
+    fn bool_slots(slot: &str, value: bool) -> HashMap<String, SlotValue> {
+        let mut m = HashMap::new();
+        m.insert(slot.to_string(), SlotValue::Boolean(value));
+        m
+    }
+
+    #[test]
+    fn resolve_predicate_boolean_no_equals_is_truthiness() {
+        // A bare (no-`equals`) predicate over a Boolean source resolves to its
+        // truthiness: 1.0 when true, 0.0 when false.
+        let p = pred("flag.on", None);
+        assert_eq!(
+            resolve_predicate(
+                &p.source,
+                None,
+                None,
+                &bool_slots("flag.on", true),
+                &no_cells()
+            ),
+            1.0,
+        );
+        assert_eq!(
+            resolve_predicate(
+                &p.source,
+                None,
+                None,
+                &bool_slots("flag.on", false),
+                &no_cells()
+            ),
+            0.0,
+        );
+    }
+
+    #[test]
+    fn resolve_predicate_non_boolean_no_equals_is_zero() {
+        // A bare predicate over a non-Boolean source has no defined truthiness → 0.0.
+        let p = pred("player.health", None);
+        assert_eq!(
+            resolve_predicate(
+                &p.source,
+                None,
+                None,
+                &number_slots("player.health", 100.0),
+                &no_cells(),
+            ),
+            0.0,
+        );
+    }
+
+    #[test]
+    fn resolve_predicate_equals_matches_and_mismatches() {
+        // With `equals`, the predicate is 1.0 iff the resolved value equals the
+        // comparand (number exact), else 0.0.
+        let p = pred("hud.tab", Some(PredicateValue::Number(2.0)));
+        let comparand = PredicateValue::Number(2.0);
+        assert_eq!(
+            resolve_predicate(
+                &p.source,
+                Some(&comparand),
+                None,
+                &number_slots("hud.tab", 2.0),
+                &no_cells(),
+            ),
+            1.0,
+            "exact number match → 1.0",
+        );
+        assert_eq!(
+            resolve_predicate(
+                &p.source,
+                Some(&comparand),
+                None,
+                &number_slots("hud.tab", 3.0),
+                &no_cells(),
+            ),
+            0.0,
+            "number mismatch → 0.0",
+        );
+    }
+
+    #[test]
+    fn resolve_predicate_string_and_enum_match_by_name() {
+        // A String comparand matches both a String slot and an Enum slot by name.
+        let comparand = PredicateValue::String("stats".into());
+        let source = BindSource::Slot {
+            slot: "hud.tab".into(),
+        };
+        let mut string_slot = HashMap::new();
+        string_slot.insert("hud.tab".to_string(), SlotValue::String("stats".into()));
+        assert_eq!(
+            resolve_predicate(&source, Some(&comparand), None, &string_slot, &no_cells()),
+            1.0,
+            "String slot matches by name",
+        );
+        let mut enum_slot = HashMap::new();
+        enum_slot.insert("hud.tab".to_string(), SlotValue::Enum("stats".into()));
+        assert_eq!(
+            resolve_predicate(&source, Some(&comparand), None, &enum_slot, &no_cells()),
+            1.0,
+            "Enum slot matches by name",
+        );
+        let mut other = HashMap::new();
+        other.insert("hud.tab".to_string(), SlotValue::Enum("inventory".into()));
+        assert_eq!(
+            resolve_predicate(&source, Some(&comparand), None, &other, &no_cells()),
+            0.0,
+            "by-name mismatch → 0.0",
+        );
+    }
+
+    #[test]
+    fn resolve_predicate_type_mismatch_is_zero() {
+        // A type mismatch (Number slot vs String comparand) does not match → 0.0.
+        let source = BindSource::Slot {
+            slot: "hud.tab".into(),
+        };
+        let comparand = PredicateValue::String("stats".into());
+        assert_eq!(
+            resolve_predicate(
+                &source,
+                Some(&comparand),
+                None,
+                &number_slots("hud.tab", 1.0),
+                &no_cells(),
+            ),
+            0.0,
+        );
+        // An absent slot also resolves to 0.0 (no value to compare).
+        assert_eq!(
+            resolve_predicate(&source, Some(&comparand), None, &no_slots(), &no_cells()),
+            0.0,
+            "absent slot → 0.0",
+        );
+    }
+
+    /// A button carrying a `Predicate` `bind` + a styleRanges map that highlights
+    /// the label when the predicate is true (value 1.0) vs false (0.0).
+    fn predicate_button(id: &str, bind: Predicate) -> Widget {
+        // Two bands: value < 0.5 → unselected gray; value >= 0.5 → selected cyan.
+        let ranges = StyleRanges {
+            max: 1.0,
+            entries: vec![
+                StyleEntry {
+                    up_to: Some(0.5),
+                    color: Some(ColorValue::Literal([0.2, 0.2, 0.2, 1.0])),
+                    pulse: None,
+                    flash: None,
+                },
+                StyleEntry {
+                    up_to: None,
+                    color: Some(ColorValue::Literal([0.0, 1.0, 1.0, 1.0])),
+                    pulse: None,
+                    flash: None,
+                },
+            ],
+        };
+        Widget::Button(ButtonWidget {
+            id: id.into(),
+            label: Some(id.into()),
+            labelled_by: None,
+            on_press: "noop".into(),
+            focus_neighbors: Default::default(),
+            repeat_on_hold: None,
+            selected: None,
+            checked: None,
+            bind: Some(bind),
+            style_ranges: Some(ranges),
+            disabled: false,
+            visible_when: None,
+            role: None,
+        })
+    }
+
+    #[test]
+    fn button_predicate_bind_drives_style_ranges_highlight() {
+        // A tab Button whose `bind` Predicate matches self-highlights through its
+        // styleRanges (the author-wired highlight, no new visual primitive): the
+        // label color tracks the predicate's 0/1 value.
+        let tree = anchored(vstack(
+            0.0,
+            0.0,
+            Align::Start,
+            vec![predicate_button(
+                "tab.stats",
+                pred("hud.tab", Some(PredicateValue::Number(1.0))),
+            )],
+        ));
+        let mut fs = font_system();
+
+        // Predicate true → value 1.0 → trailing cyan band.
+        let mut ui_on = UiTree::from_descriptor(&tree, &theme());
+        let on = ui_on.build_draw_data(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &number_slots("hud.tab", 1.0),
+        );
+        assert_eq!(
+            on.texts[0].color,
+            srgb_of([0.0, 1.0, 1.0, 1.0]),
+            "matching predicate (1.0) highlights with the cyan band",
+        );
+
+        // Predicate false → value 0.0 → first (gray) band.
+        let mut ui_off = UiTree::from_descriptor(&tree, &theme());
+        let off = ui_off.build_draw_data(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &number_slots("hud.tab", 2.0),
+        );
+        assert_eq!(
+            off.texts[0].color,
+            srgb_of([0.2, 0.2, 0.2, 1.0]),
+            "non-matching predicate (0.0) draws the unselected band",
+        );
+    }
+
+    /// A button declaring `selected`/`checked` predicates and a `disabled` bit, for
+    /// the focus-rect a11y readback test.
+    fn a11y_button(
+        id: &str,
+        selected: Option<Predicate>,
+        checked: Option<Predicate>,
+        disabled: bool,
+    ) -> Widget {
+        Widget::Button(ButtonWidget {
+            id: id.into(),
+            label: Some(id.into()),
+            labelled_by: None,
+            on_press: "noop".into(),
+            focus_neighbors: Default::default(),
+            repeat_on_hold: None,
+            selected,
+            checked,
+            bind: None,
+            style_ranges: None,
+            disabled,
+            visible_when: None,
+            role: None,
+        })
+    }
+
+    #[test]
+    fn focus_rect_carries_resolved_selected_checked_and_disabled() {
+        // selected/checked predicates resolve in the focus-rect build and ride the
+        // exported FocusRectList as a11y metadata; the disabled bit is populated
+        // from the widget. The engine draws no highlight from selected/checked.
+        let tree = anchored(vstack(
+            0.0,
+            0.0,
+            Align::Start,
+            vec![
+                a11y_button(
+                    "tab.stats",
+                    Some(pred("hud.tab", Some(PredicateValue::Number(2.0)))),
+                    Some(pred("flag.checked", None)),
+                    false,
+                ),
+                a11y_button("tab.off", None, None, true),
+            ],
+        ));
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        // hud.tab == 2 (selected true), flag.checked == true (checked true).
+        let mut slots = number_slots("hud.tab", 2.0);
+        slots.insert("flag.checked".to_string(), SlotValue::Boolean(true));
+        ui.build_draw_data([1280, 720], &mut fs, &no_images(), &slots);
+        let focus = ui.export_focus_rects(&tree, [1280, 720], &slots, &no_cells());
+
+        let stats = focus
+            .rects
+            .iter()
+            .find(|r| r.id == "tab.stats")
+            .expect("selected button is focusable");
+        assert_eq!(
+            stats.selected,
+            Some(1.0),
+            "matching selected predicate → 1.0"
+        );
+        assert_eq!(stats.checked, Some(1.0), "true checked predicate → 1.0");
+        assert!(!stats.disabled, "enabled button is not disabled");
+
+        let off = focus
+            .rects
+            .iter()
+            .find(|r| r.id == "tab.off")
+            .expect("disabled button is still focusable (honoring is Task 3)");
+        assert_eq!(off.selected, None, "no selected predicate → None");
+        assert_eq!(off.checked, None, "no checked predicate → None");
+        assert!(off.disabled, "disabled bit is populated from the widget");
+    }
+
+    #[test]
+    fn focus_rect_selected_predicate_resolves_false_when_unmatched() {
+        // A declared selected predicate that does NOT match resolves to 0.0 (not
+        // None) — the metadata is present and reads false.
+        let tree = anchored(vstack(
+            0.0,
+            0.0,
+            Align::Start,
+            vec![a11y_button(
+                "tab.stats",
+                Some(pred("hud.tab", Some(PredicateValue::Number(2.0)))),
+                None,
+                false,
+            )],
+        ));
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let slots = number_slots("hud.tab", 5.0);
+        ui.build_draw_data([1280, 720], &mut fs, &no_images(), &slots);
+        let focus = ui.export_focus_rects(&tree, [1280, 720], &slots, &no_cells());
+        let stats = focus.rects.iter().find(|r| r.id == "tab.stats").unwrap();
+        assert_eq!(
+            stats.selected,
+            Some(0.0),
+            "unmatched selected predicate resolves to 0.0, not None",
         );
     }
 

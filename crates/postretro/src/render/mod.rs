@@ -3539,7 +3539,14 @@ impl Renderer {
     /// (N→N+1 in reverse). Empty when no gameplay layer is active. See: ui.md §4.
     pub fn export_ui_focus_rects(&self) -> ui::tree::FocusRectList {
         let viewport = [self.surface_config.width, self.surface_config.height];
-        self.ui.export_top_focus_rects(viewport)
+        // Resolve each focusable button's `selected`/`checked` predicate (M13 G2)
+        // against the same frame snapshot the draw build used, so the a11y readback
+        // matches the author-wired highlight.
+        self.ui.export_top_focus_rects(
+            viewport,
+            &self.ui_snapshot.slot_values,
+            &self.ui_snapshot.cell_values,
+        )
     }
 
     /// Install an override UI theme and bump the theme generation. Engine-side
@@ -5530,7 +5537,11 @@ impl Renderer {
             let is_top = layer + 1 == stack.len();
             if is_top {
                 if let Some(focused) = self.ui_snapshot.focused_id.as_deref() {
-                    let focus_rects = self.ui.export_top_focus_rects(ui_viewport);
+                    let focus_rects = self.ui.export_top_focus_rects(
+                        ui_viewport,
+                        &self.ui_snapshot.slot_values,
+                        &self.ui_snapshot.cell_values,
+                    );
                     if let Some(fr) = focus_rects.rects.iter().find(|r| r.id == focused) {
                         let inset = self.ui_theme.spacing("xs").unwrap_or(0.0)
                             * ui::layout::device_scale(ui_viewport);

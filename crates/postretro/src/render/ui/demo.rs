@@ -514,9 +514,10 @@ mod tests {
         let mut font_system = crate::render::ui::text::build_font_system();
         let images = ImageSizes::new();
         let slots: HashMap<String, SlotValue> = HashMap::new();
+        let cells = crate::render::ui::tree::CellValues::new();
         // Lay out + export the focus rects exactly as the renderer does each frame.
         ui.build_draw_data([1280, 720], &mut font_system, &images, &slots);
-        let rects = ui.export_focus_rects(&tree, [1280, 720]);
+        let rects = ui.export_focus_rects(&tree, [1280, 720], &slots, &cells);
 
         // The interactive widgets export as focusable in tree order under one group.
         let ids: Vec<&str> = rects.rects.iter().map(|r| r.id.as_str()).collect();

@@ -753,6 +753,11 @@ mod tests {
             group,
             neighbors: FocusNeighbors::default(),
             interaction: None,
+            // M13 G2 a11y readback fields; the focus-engine tests don't exercise
+            // them (selected/checked/disabled honoring is a later task).
+            selected: None,
+            checked: None,
+            disabled: false,
         }
     }
 

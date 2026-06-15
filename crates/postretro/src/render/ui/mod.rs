@@ -962,13 +962,25 @@ impl UiPass {
     /// The renderer publishes this back to the app (the reverse twin of the
     /// app→renderer snapshot); the app's focus engine consumes it the NEXT frame.
     ///
+    /// `slot_values`/`cell_values` are the frame's read snapshot: the export resolves
+    /// each focusable button's `selected`/`checked` predicate (M13 G2) against them
+    /// for the a11y readback. Pass the same snapshot the draw build used.
+    ///
     /// Must be called after `layout_gameplay_tree` has laid out every layer this
     /// frame, so the top layer's taffy layout is current for `viewport`.
-    pub fn export_top_focus_rects(&self, viewport: [u32; 2]) -> tree::FocusRectList {
+    pub fn export_top_focus_rects(
+        &self,
+        viewport: [u32; 2],
+        slot_values: &std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
+        cell_values: &tree::CellValues,
+    ) -> tree::FocusRectList {
         match self.gameplay_trees.last() {
-            Some(retained) => retained
-                .tree
-                .export_focus_rects(&retained.descriptor, viewport),
+            Some(retained) => retained.tree.export_focus_rects(
+                &retained.descriptor,
+                viewport,
+                slot_values,
+                cell_values,
+            ),
             None => tree::FocusRectList::default(),
         }
     }

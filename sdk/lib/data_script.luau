@@ -144,6 +144,10 @@ export type LevelManifest = {
   -- in postretro.d.luau (the generated SDK-lib type block). See
   -- `onStateCrossing`.
   crossings: {CrossingDescriptor}?,
+  -- Per-level UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; same shape
+  -- as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed
+  -- entries are logged and skipped.
+  uiTrees: {ModUiTree}?,
 }
 
 local DataScriptSdk = {}

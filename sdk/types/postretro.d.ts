@@ -700,6 +700,8 @@ declare module "postretro" {
   export type LevelManifest = {
     reactions: NamedReactionDescriptor[];
     crossings?: CrossingDescriptor[];
+    /** Per-level UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; same shape as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed entries are logged and skipped. */
+    uiTrees?: ReadonlyArray<ModUiTree>;
   };
 
   /** Build a named reaction descriptor. Pure: returns a plain object, no FFI.

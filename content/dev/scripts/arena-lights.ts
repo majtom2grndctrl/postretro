@@ -12,6 +12,7 @@ import {
   vignette,
   world,
 } from "postretro";
+import { tabsDemo } from "./tabs-demo";
 
 export function setupLevel(_ctx: unknown) {
   const reactions: NamedReactionDescriptor[] = [];
@@ -209,5 +210,12 @@ export function setupLevel(_ctx: unknown) {
     ]),
   ];
 
-  return { reactions, crossings };
+  // M13 G2 demo: the reactive-UI tabs strip (localState cell + role:"tablist" +
+  // predicate-bound highlight/selected + Switch content swap). Its named
+  // `cellWrite` reactions merge into this level's reaction registry and its
+  // `alwaysOn` tree composes as a HUD-layer base every frame.
+  const tabs = tabsDemo();
+  reactions.push(...tabs.reactions);
+
+  return { reactions, crossings, uiTrees: tabs.uiTrees };
 }

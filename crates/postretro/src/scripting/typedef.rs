@@ -896,6 +896,8 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   export type LevelManifest = {
     reactions: NamedReactionDescriptor[];
     crossings?: CrossingDescriptor[];
+    /** Per-level UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; same shape as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed entries are logged and skipped. */
+    uiTrees?: ReadonlyArray<ModUiTree>;
   };
 
   /** Build a named reaction descriptor. Pure: returns a plain object, no FFI.
@@ -1709,6 +1711,10 @@ export type CrossingDescriptor = { slot: string, below: number?, above: number?,
 export type LevelManifest = {
   reactions: {NamedReactionDescriptor},
   crossings: {CrossingDescriptor}?,
+  --- Per-level UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; same shape
+  --- as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed
+  --- entries are logged and skipped.
+  uiTrees: {ModUiTree}?,
 }
 
 --- Build a named reaction descriptor. Pure: returns a plain table, no FFI.
@@ -3731,5 +3737,146 @@ export type Event = {
             "luau d.luau WidgetAnchor union does not exactly match `Anchor::ALL`/`wire()`.\n\
              Expected line: {luau_union_line}"
         );
+    }
+
+    /// M13 G2 Task 5: the emitted typedefs must NARROW props per widget kind, so
+    /// an author wiring the wrong prop to the wrong widget gets a compile error
+    /// in their editor (the no-`tsc`-CI contract — the committed `.d.ts`/`.d.luau`
+    /// IS the type-safety surface; `@ts-expect-error` fixtures under
+    /// `content/dev/scripts/` pin the negative cases for a human/IDE reviewer).
+    ///
+    /// This test guards the narrowing at the typedef-block level: it asserts that
+    /// `content` lives ONLY on the `Text` prop type (so `Button({ content })` is a
+    /// type error — `ButtonProps`/`SliderProps` carry no `content`), that the
+    /// passive `Bar` prop type requires no accessible name (no `label`/`labelledBy`
+    /// XOR appended), and that the interactive `Button`/`Slider` prop types DO
+    /// carry the name XOR. Both language outputs are asserted (TS/Luau parity).
+    #[test]
+    fn widget_props_narrow_per_kind_in_both_outputs() {
+        use crate::scripting::ctx::ScriptCtx;
+        use crate::scripting::primitives::register_all;
+
+        let mut r = PrimitiveRegistry::new();
+        register_all(&mut r, ScriptCtx::new());
+        let ts = generate_typescript(&r);
+        let luau = generate_luau(&r);
+
+        // `content` is a Text-only prop. The TextProps type declares it; the
+        // Button/Slider/Bar prop types must NOT — that absence is exactly what
+        // makes `Button({ content: "x" })` a type error (an unknown-prop excess).
+        assert!(
+            ts.contains("export type TextProps = { content: LocalizedText"),
+            "ts TextProps must carry `content`"
+        );
+        assert!(
+            luau.contains("export type TextProps = { content: LocalizedText"),
+            "luau TextProps must carry `content`"
+        );
+        // The interactive + passive widget prop types must be content-free.
+        for props in ["ButtonProps", "SliderProps", "BarProps"] {
+            let ts_line = extract_decl_line(&ts, &format!("export type {props} = "));
+            assert!(
+                !ts_line.contains("content"),
+                "ts {props} must NOT carry a `content` prop (Text-only), got: {ts_line}"
+            );
+            let luau_line = extract_decl_line(&luau, &format!("export type {props} = "));
+            assert!(
+                !luau_line.contains("content"),
+                "luau {props} must NOT carry a `content` prop (Text-only), got: {luau_line}"
+            );
+        }
+
+        // A passive widget (`Bar`) needs no accessible name — its prop type ends
+        // at the plain object, with no `label`/`labelledBy` name-XOR appended.
+        let bar_ts = extract_decl_line(&ts, "export type BarProps = ");
+        assert!(
+            !bar_ts.contains("label") && !bar_ts.contains("labelledBy"),
+            "ts BarProps must require no name (no label/labelledBy XOR), got: {bar_ts}"
+        );
+        let bar_luau = extract_decl_line(&luau, "export type BarProps = ");
+        assert!(
+            !bar_luau.contains("label") && !bar_luau.contains("labelledBy"),
+            "luau BarProps must require no name, got: {bar_luau}"
+        );
+
+        // The interactive widgets DO carry the `label` xor `labelledBy` name
+        // requirement (the union tail). TS spells the XOR with `?: never`; Luau
+        // with a two-arm intersection.
+        for props in ["ButtonProps", "SliderProps"] {
+            let ts_line = extract_decl_line(&ts, &format!("export type {props} = "));
+            assert!(
+                ts_line.contains("{ label: LocalizedText; labelledBy?: never }")
+                    && ts_line.contains("{ labelledBy: string; label?: never }"),
+                "ts {props} must carry the label-xor-labelledBy union, got: {ts_line}"
+            );
+            let luau_line = extract_decl_line(&luau, &format!("export type {props} = "));
+            assert!(
+                luau_line.contains("({ label: LocalizedText } | { labelledBy: string })"),
+                "luau {props} must carry the label-xor-labelledBy union, got: {luau_line}"
+            );
+        }
+
+        // `Image` narrows to `label` xor `decorative: true` (the alt-vs-decorative
+        // contract): neither/both is a type error.
+        let img_ts = extract_decl_line(&ts, "export type ImageProps = ");
+        assert!(
+            img_ts.contains("{ label: string; decorative?: never }")
+                && img_ts.contains("{ decorative: true; label?: never }"),
+            "ts ImageProps must narrow label xor decorative, got: {img_ts}"
+        );
+        let img_luau = extract_decl_line(&luau, "export type ImageProps = ");
+        assert!(
+            img_luau.contains("({ label: string } | { decorative: true })"),
+            "luau ImageProps must narrow label xor decorative, got: {img_luau}"
+        );
+    }
+
+    /// M13 G2 Task 5: `LocalStateHandle.is(v)` / `StoreHandle.is(v)` must be typed
+    /// so the comparand `v` is the cell/slot value type `T` — a mismatched
+    /// comparand (`cells.tab.is(3)` where `tab` is a string cell) is a compile
+    /// error. The handle types thread `T` through `.is()`; the
+    /// `@ts-expect-error`-fixture pins the negative case for the IDE/reviewer.
+    #[test]
+    fn is_predicate_helper_is_typed_to_the_value_type_in_both_outputs() {
+        use crate::scripting::ctx::ScriptCtx;
+        use crate::scripting::primitives::register_all;
+
+        let mut r = PrimitiveRegistry::new();
+        register_all(&mut r, ScriptCtx::new());
+        let ts = generate_typescript(&r);
+        let luau = generate_luau(&r);
+
+        // TS: both handle types carry `is(value: T): Predicate`.
+        assert!(
+            ts.contains("export type StoreHandle<T> = { get(): SliderBindProp; set(value: T): PrimitiveReactionDescriptor; is(value: T): Predicate };"),
+            "ts StoreHandle.is must be typed `is(value: T): Predicate`"
+        );
+        assert!(
+            ts.contains("export type LocalStateHandle<T extends CellInit> = { get(): LocalBindRef; set(value: T): PrimitiveReactionDescriptor; is(value: T): Predicate };"),
+            "ts LocalStateHandle.is must be typed `is(value: T): Predicate`"
+        );
+
+        // Luau: the method signature threads the handle's `T` through the
+        // comparand (`value: T`) and returns a `Predicate`.
+        assert!(
+            luau.contains("is: (self: StoreHandle<T>, value: T) -> Predicate,"),
+            "luau StoreHandle:is must be typed `(self, value: T) -> Predicate`"
+        );
+        assert!(
+            luau.contains("is: (self: LocalStateHandle<T>, value: T) -> Predicate,"),
+            "luau LocalStateHandle:is must be typed `(self, value: T) -> Predicate`"
+        );
+    }
+
+    /// Return the single emitted line that begins with `prefix` (trimmed). The
+    /// per-kind UI prop types are emitted one-per-line, so this isolates a single
+    /// type alias for `contains`/`!contains` assertions without matching a
+    /// neighboring declaration.
+    fn extract_decl_line(out: &str, prefix: &str) -> String {
+        out.lines()
+            .map(str::trim_start)
+            .find(|line| line.starts_with(prefix))
+            .unwrap_or_else(|| panic!("no emitted line starting with `{prefix}`"))
+            .to_string()
     }
 }

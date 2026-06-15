@@ -3031,6 +3031,12 @@ impl App {
             .rects
             .iter()
             .find(|r| r.id == focused_id)
+            // A disabled focused node is non-interactive (M13 G2-T3): block its
+            // activation regardless of how the focus arrived (a pre-existing focus
+            // that became disabled, or a click that fell through). The focus engine
+            // already keeps disabled nodes unreachable; this is the App-side gate on
+            // the activation path itself.
+            .filter(|r| !r.disabled)
             .and_then(|r| match &r.interaction {
                 Some(NodeInteraction::Button { on_press, .. }) => Some(on_press.clone()),
                 _ => None,

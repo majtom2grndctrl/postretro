@@ -429,7 +429,7 @@ mod tests {
     #[test]
     fn new_registers_engine_player_namespace() {
         let table = SlotTable::new();
-        for name in ["player.health", "player.ammo"] {
+        for name in ["player.health", "player.maxHealth", "player.ammo"] {
             let slot = table.get(name).expect("engine slot should exist");
             assert_eq!(slot.schema.slot_type, SlotType::Number);
             assert_eq!(slot.schema.ownership, SlotOwnership::Engine);

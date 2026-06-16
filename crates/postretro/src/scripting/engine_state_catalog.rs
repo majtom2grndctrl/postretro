@@ -274,6 +274,10 @@ fn validate_sdk_path(entry: &EngineStateCatalogEntry<'_>) -> Result<(), EngineSt
 }
 
 fn is_valid_sdk_segment(segment: &str) -> bool {
+    if matches!(segment, "__proto__" | "prototype" | "constructor") {
+        return false;
+    }
+
     let mut chars = segment.chars();
     let Some(first) = chars.next() else {
         return false;
@@ -341,6 +345,18 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         value_type: EngineStateValueType::Number,
         default: EngineStateDefault::None,
         range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "player.maxHealth",
+        sdk_path: &["player", "maxHealth"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::None,
+        range: Some(NumericRange {
+            min: 1.0,
+            max: f32::INFINITY,
+        }),
         persist: false,
         capability: EngineStateCapability::Readonly,
     },
@@ -534,6 +550,27 @@ mod tests {
     }
 
     #[test]
+    fn catalog_rejects_js_magic_sdk_path_segments() {
+        const CASES: &[(&str, &[&str])] = &[
+            ("__proto__", &["alpha", "__proto__"]),
+            ("prototype", &["alpha", "prototype"]),
+            ("constructor", &["alpha", "constructor"]),
+        ];
+
+        for (segment, path) in CASES {
+            let err = EngineStateCatalog::from_entries(&[entry("alpha.value", path)]).unwrap_err();
+
+            assert_eq!(
+                err,
+                EngineStateCatalogError::InvalidSdkPathSegment {
+                    wire_name: "alpha.value".to_string(),
+                    segment: (*segment).to_string()
+                }
+            );
+        }
+    }
+
+    #[test]
     fn built_in_catalog_preserves_wire_names_and_capabilities() {
         let catalog = engine_state_catalog().unwrap();
         let entries = catalog.entries();
@@ -548,6 +585,7 @@ mod tests {
                 "input.mode",
                 "player.ammo",
                 "player.health",
+                "player.maxHealth",
                 "screen.flash",
                 "screen.shake",
                 "screen.vignette",
@@ -561,5 +599,24 @@ mod tests {
             .unwrap();
         assert_eq!(ui_text_entry.sdk_path, &["ui", "textEntry"]);
         assert_eq!(ui_text_entry.capability, EngineStateCapability::Writable);
+
+        let player_max_health = entries
+            .iter()
+            .find(|entry| entry.wire_name == "player.maxHealth")
+            .unwrap();
+        assert_eq!(player_max_health.sdk_path, &["player", "maxHealth"]);
+        assert_eq!(player_max_health.value_type, EngineStateValueType::Number);
+        assert_eq!(player_max_health.default, EngineStateDefault::None);
+        assert_eq!(
+            player_max_health.range,
+            Some(NumericRange {
+                min: 1.0,
+                max: f32::INFINITY,
+            })
+        );
+        assert_eq!(
+            player_max_health.capability,
+            EngineStateCapability::Readonly
+        );
     }
 }

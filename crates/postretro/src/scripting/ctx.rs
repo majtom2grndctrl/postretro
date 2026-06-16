@@ -133,6 +133,7 @@ mod tests {
     #[test]
     fn data_registry_clear_leaves_slot_table_untouched() {
         let ctx = ScriptCtx::new();
+        let builtin_slot_count = ctx.slot_table.borrow().len();
         ctx.slot_table
             .borrow_mut()
             .insert("test.health".to_string(), health_slot())
@@ -141,9 +142,7 @@ mod tests {
         ctx.data_registry.borrow_mut().clear();
 
         let slots = ctx.slot_table.borrow();
-        // player.health, player.ammo, screen.flash, screen.vignette, screen.shake,
-        // input.mode, ui.textEntry, test.health
-        assert_eq!(slots.len(), 8);
+        assert_eq!(slots.len(), builtin_slot_count + 1);
         assert!(slots.get("test.health").is_some());
     }
 }

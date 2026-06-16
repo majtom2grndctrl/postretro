@@ -516,6 +516,7 @@ export type GameStateRefs = {
   player: {
     ammo: ReadonlyStateRef<number>,
     health: ReadonlyStateRef<number>,
+    maxHealth: ReadonlyStateRef<number>,
   },
   screen: {
     flash: ReadonlyStateRef<{number}>,
@@ -732,7 +733,9 @@ export type NamedReactionDescriptor = ProgressNamedReactionDescriptor | Primitiv
 --- one direction. Exactly one of `below`/`above` is given. `max` is the
 --- denominator the threshold is a fraction of; omit it for a raw-value
 --- comparison (`max` defaults to `1.0`).
-export type CrossingCondition = { below: number?, above: number?, max: number? }
+export type CrossingCondition =
+  { below: number, above: nil?, max: number? }
+  | { below: nil?, above: number, max: number? }
 
 --- A state-crossing watcher entry as it appears in `setupLevel`'s manifest
 --- `crossings` array. The condition fields are flattened in beside `slot` and
@@ -858,9 +861,10 @@ declare function updateState(ref: WritableStateRef<any>, value: any): PrimitiveR
 --- is valid. Pure: returns a `PrimitiveReactionDescriptor`, no FFI.
 declare function appendText(ref: WritableStateRef<string>, text: string): PrimitiveReactionDescriptor
 
---- System-reaction body (M13 Text Entry): remove the last grapheme cluster
---- (char-pop floor -- never splits a UTF-8 sequence) from the writable String
---- slot `slot` at the game-logic stage. Empty is a no-op with no warning.
+--- System-reaction body (M13 Text Entry): remove the last character -- one
+--- Unicode scalar value (char-pop floor: never splits a UTF-8 sequence, but does
+--- not segment grapheme clusters) -- from the writable String slot `slot` at the
+--- game-logic stage. Empty is a no-op with no warning.
 --- Readonly-gated like `setState`. Pure: returns a `PrimitiveReactionDescriptor`, no FFI.
 declare function backspaceText(ref: WritableStateRef<string>): PrimitiveReactionDescriptor
 

@@ -173,6 +173,30 @@ export function defineEntity(
   return descriptor;
 }
 
+function cloneAndFreeze<T>(value: T, seen = new WeakMap<object, unknown>()): T {
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+  const existing = seen.get(value as object);
+  if (existing !== undefined) {
+    return existing as T;
+  }
+  if (Array.isArray(value)) {
+    const clone: unknown[] = [];
+    seen.set(value, clone);
+    for (const item of value) {
+      clone.push(cloneAndFreeze(item, seen));
+    }
+    return Object.freeze(clone) as T;
+  }
+  const clone: Record<string, unknown> = {};
+  seen.set(value as object, clone);
+  for (const key of Object.keys(value as Record<string, unknown>)) {
+    clone[key] = cloneAndFreeze((value as Record<string, unknown>)[key], seen);
+  }
+  return Object.freeze(clone) as T;
+}
+
 /** Pure state-store builder. The engine consumes `declaration` only when it is
  * returned from `setupMod().stores`; unreturned declarations are discarded with
  * the setup VM. */
@@ -180,12 +204,13 @@ export function defineStore<const S extends Record<string, StoreSlotSchema>>(
   namespace: string,
   schema: S,
 ): StoreDefinition<S> {
+  const frozenSchema = cloneAndFreeze(schema);
   const state: Record<string, StateRef> = {};
-  for (const slot of Object.keys(schema)) {
+  for (const slot of Object.keys(frozenSchema)) {
     state[slot] = Object.freeze({ slot: `${namespace}.${slot}` }) as StateRef;
   }
   return Object.freeze({
-    declaration: Object.freeze({ namespace, schema }),
+    declaration: Object.freeze({ namespace, schema: frozenSchema }),
     state: Object.freeze(state) as { readonly [K in keyof S]: StateValueForSlot<S[K]> },
   });
 }

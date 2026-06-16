@@ -837,10 +837,9 @@ fn resolve_require_path(mod_root: &Path, path: &str) -> Result<PathBuf, String> 
     if joined.extension().is_none() {
         joined.set_extension("luau");
     }
-    // TODO: symlink traversal is not checked — a symlink planted at the mod
-    // root (e.g. `<mod_root>/link -> /etc`) would still pass the checks above
-    // and resolve to an arbitrary path. Add `canonicalize` + `starts_with(mod_root)`
-    // after canonicalization when symlink-safe require is needed.
+    // This resolver is lexical: it rejects direct `..`/absolute traversal but
+    // leaves symlink containment to the dependency tracker path, where
+    // canonicalization is available for hot-reload dependency validation.
     Ok(joined)
 }
 

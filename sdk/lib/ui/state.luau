@@ -34,6 +34,12 @@ function UiStateSdk.bindState(ref: any, options: { [string]: any }?): any
   local out: { [string]: any } = { slot = stateSlot(ref, "bindState") }
   if options ~= nil then
     for key, value in options do
+      if key == "slot" then
+        error("bindState: `options.slot` is reserved")
+      end
+      if key == "local" then
+        error("bindState: `options.local` is reserved")
+      end
       out[key] = value
     end
   end

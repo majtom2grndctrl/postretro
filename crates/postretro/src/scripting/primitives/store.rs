@@ -1,7 +1,7 @@
 // State-store declaration, read/write primitives, and engine accessors.
 // See: context/lib/scripting.md §5 "Durable State Store"
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use mlua::{FromLua, IntoLua, Lua, Table as LuaTable, Value as LuaValue};
 use rquickjs::{Array, Ctx, FromJs, IntoJs, Object as JsObject, Value as JsValue};
@@ -751,8 +751,9 @@ pub(crate) fn drain_store_declarations_lua(
         });
     };
 
-    let mut values = Vec::with_capacity(arr.raw_len());
-    for i in 1..=(arr.raw_len() as i64) {
+    let len = validate_dense_lua_array(&arr, "stores")?;
+    let mut values = Vec::with_capacity(len);
+    for i in 1..=(len as i64) {
         let value: LuaValue = arr.get(i).map_err(|e| ScriptError::InvalidArgument {
             reason: format!("`stores[{i}]` could not be read: {e}"),
         })?;
@@ -763,6 +764,42 @@ pub(crate) fn drain_store_declarations_lua(
         );
     }
     store_declaration_set_from_values(values)
+}
+
+fn validate_dense_lua_array(table: &LuaTable, field_name: &str) -> Result<usize, ScriptError> {
+    let mut keys = BTreeSet::new();
+    let mut max_index = 0_i64;
+
+    for pair in table.clone().pairs::<LuaValue, LuaValue>() {
+        let (key, _) = pair.map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("`{field_name}` keys could not be read: {e}"),
+        })?;
+        let LuaValue::Integer(index) = key else {
+            return Err(ScriptError::InvalidArgument {
+                reason: format!(
+                    "`{field_name}` field must be a dense array; found {} key",
+                    key.type_name()
+                ),
+            });
+        };
+        if index < 1 {
+            return Err(ScriptError::InvalidArgument {
+                reason: format!(
+                    "`{field_name}` field must be a dense array; index {index} is out of range"
+                ),
+            });
+        }
+        keys.insert(index);
+        max_index = max_index.max(index);
+    }
+
+    if keys.len() != max_index as usize {
+        return Err(ScriptError::InvalidArgument {
+            reason: format!("`{field_name}` field must be a dense array; holes are not allowed"),
+        });
+    }
+
+    Ok(max_index as usize)
 }
 
 fn store_declaration(namespace: &str, schema: Value) -> Result<StoreDeclaration, ScriptError> {
@@ -1255,6 +1292,101 @@ mod tests {
                     .borrow()
                     .get(&format!("bad{index}.value"))
                     .is_none()
+            );
+        }
+    }
+
+    fn drain_luau_store_manifest(source: &str) -> Result<StoreDeclarationSet, ScriptError> {
+        let lua = mlua::Lua::new();
+        let manifest: LuaTable = lua.load(source).eval().unwrap();
+        drain_store_declarations_lua(&manifest)
+    }
+
+    #[test]
+    fn luau_setup_mod_stores_accepts_dense_arrays() {
+        let declarations = drain_luau_store_manifest(
+            r#"
+            local first = {
+                namespace = "audio",
+                schema = { master = { type = "number", default = 1 } },
+            }
+            local second = {
+                namespace = "video",
+                schema = { brightness = { type = "number", default = 0.5 } },
+            }
+            return { stores = { first, second } }
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(declarations.len(), 2);
+    }
+
+    #[test]
+    fn luau_setup_mod_stores_rejects_non_dense_tables() {
+        // Regression: raw_len iteration treated map-shaped and sparse `stores`
+        // tables as empty or partial arrays, silently dropping declarations.
+        let cases = [
+            (
+                r#"
+                local declaration = {
+                    namespace = "audio",
+                    schema = { master = { type = "number", default = 1 } },
+                }
+                return { stores = { audio = declaration } }
+                "#,
+                "map-shaped table",
+            ),
+            (
+                r#"
+                local declaration = {
+                    namespace = "audio",
+                    schema = { master = { type = "number", default = 1 } },
+                }
+                return { stores = { declaration, extra = declaration } }
+                "#,
+                "extra string key",
+            ),
+            (
+                r#"
+                local declaration = {
+                    namespace = "audio",
+                    schema = { master = { type = "number", default = 1 } },
+                }
+                return { stores = { [2] = declaration } }
+                "#,
+                "hole",
+            ),
+            (
+                r#"
+                local declaration = {
+                    namespace = "audio",
+                    schema = { master = { type = "number", default = 1 } },
+                }
+                return { stores = { [0] = declaration } }
+                "#,
+                "zero index",
+            ),
+            (
+                r#"
+                local declaration = {
+                    namespace = "audio",
+                    schema = { master = { type = "number", default = 1 } },
+                }
+                return { stores = { [1.5] = declaration } }
+                "#,
+                "non-integer index",
+            ),
+        ];
+
+        for (source, label) in cases {
+            let err = match drain_luau_store_manifest(source) {
+                Ok(_) => panic!("{label} should be rejected"),
+                Err(err) => err,
+            };
+            assert!(
+                err.to_string().contains("dense array"),
+                "{label} produced unexpected error: {err}"
             );
         }
     }

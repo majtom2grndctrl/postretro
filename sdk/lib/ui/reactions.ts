@@ -13,8 +13,8 @@ import type { ReadonlyStateRef, WritableStateRef } from "./widgets";
  * for a raw-value comparison (`max` defaults to `1.0`).
  */
 export type CrossingCondition =
-  | { below: number; max?: number }
-  | { above: number; max?: number };
+  | { below: number; above?: never; max?: number }
+  | { above: number; below?: never; max?: number };
 
 /**
  * A state-crossing watcher entry as it appears in `setupLevel`'s manifest
@@ -36,6 +36,36 @@ function stateSlot(ref: ReadonlyStateRef<unknown>, helper: string): string {
   return ref.slot;
 }
 
+function reactionName(entry: import("../data_script").NamedReactionDescriptor | string): string {
+  if (typeof entry === "string") {
+    return entry;
+  }
+  if (entry !== null && typeof entry === "object" && typeof entry.name === "string" && entry.name.length > 0) {
+    return entry.name;
+  }
+  throw new Error("onStateCrossing: `fire` entries must be reaction handles or strings");
+}
+
+function crossingThreshold(condition: CrossingCondition): { key: "below" | "above"; value: number; max?: number } {
+  if (condition === null || typeof condition !== "object") {
+    throw new Error("onStateCrossing: `condition` must be an object");
+  }
+  const hasBelow = Object.prototype.hasOwnProperty.call(condition, "below");
+  const hasAbove = Object.prototype.hasOwnProperty.call(condition, "above");
+  if (hasBelow === hasAbove) {
+    throw new Error("onStateCrossing: `condition` must declare exactly one of `below` or `above`");
+  }
+  const key = hasBelow ? "below" : "above";
+  const value = condition[key];
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`onStateCrossing: \`${key}\` must be a finite number`);
+  }
+  if (condition.max !== undefined && (typeof condition.max !== "number" || !Number.isFinite(condition.max))) {
+    throw new Error("onStateCrossing: `max` must be a finite number when provided");
+  }
+  return condition.max === undefined ? { key, value } : { key, value, max: condition.max };
+}
+
 /**
  * Build a state-crossing watcher. Pure — returns a plain object, no engine side
  * effect. Place the result in `setupLevel`'s returned `crossings` array. The
@@ -49,11 +79,19 @@ export function onStateCrossing(
   condition: CrossingCondition,
   fire: (import("../data_script").NamedReactionDescriptor | string)[],
 ): CrossingDescriptor {
-  return {
+  if (!Array.isArray(fire)) {
+    throw new Error("onStateCrossing: `fire` must be an array of reaction handles or strings");
+  }
+  const threshold = crossingThreshold(condition);
+  const descriptor: CrossingDescriptor = {
     slot: stateSlot(ref, "onStateCrossing"),
-    ...condition,
-    fire: fire.map((entry) => (typeof entry === "string" ? entry : entry.name)),
+    fire: fire.map(reactionName),
+    [threshold.key]: threshold.value,
   } as CrossingDescriptor;
+  if (threshold.max !== undefined) {
+    descriptor.max = threshold.max;
+  }
+  return descriptor;
 }
 
 /**

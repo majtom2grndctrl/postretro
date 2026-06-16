@@ -16,9 +16,9 @@ import type {
 } from "./widgets";
 
 export type StateBindOptionsFor<T> =
-  T extends number ? { format?: string; tween?: NumberTween } :
-  T extends NumericArrayStateValue ? { tween?: ColorTween } :
-  T extends ScalarStateValue ? { format?: string } :
+  T extends number ? { format?: string; tween?: NumberTween; slot?: never; local?: never } :
+  T extends NumericArrayStateValue ? { tween?: ColorTween; slot?: never; local?: never } :
+  T extends ScalarStateValue ? { format?: string; slot?: never; local?: never } :
   never;
 
 function stateSlot(ref: ReadonlyStateRef<unknown>, helper: string): string {
@@ -35,11 +35,19 @@ function stateSlot(ref: ReadonlyStateRef<unknown>, helper: string): string {
 export function bindState<T>(
   ref: ReadonlyStateRef<T>,
   options?: StateBindOptionsFor<T>,
-): ReadonlyStateRef<T> & StateBindOptionsFor<T> {
+): ReadonlyStateRef<T> & Omit<StateBindOptionsFor<T>, "slot" | "local"> {
   const slot = stateSlot(ref, "bindState");
+  if (options !== undefined) {
+    if (Object.prototype.hasOwnProperty.call(options, "slot")) {
+      throw new Error("bindState: `options.slot` is reserved");
+    }
+    if (Object.prototype.hasOwnProperty.call(options, "local")) {
+      throw new Error("bindState: `options.local` is reserved");
+    }
+  }
   return options === undefined
-    ? ({ slot } as ReadonlyStateRef<T> & StateBindOptionsFor<T>)
-    : ({ slot, ...options } as ReadonlyStateRef<T> & StateBindOptionsFor<T>);
+    ? ({ slot } as ReadonlyStateRef<T> & Omit<StateBindOptionsFor<T>, "slot" | "local">)
+    : ({ slot, ...options } as ReadonlyStateRef<T> & Omit<StateBindOptionsFor<T>, "slot" | "local">);
 }
 
 /** Build an equality predicate against a readable scalar state reference. */

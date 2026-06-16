@@ -17,65 +17,81 @@ If neither exists: in debug builds, the engine boots normally with no mod-declar
 
 ```typescript
 // start-script.ts
-import { registerEntity } from "postretro";
+import { defineEntity } from "postretro";
 import { playerDescriptor } from "./actors/player";
 
-registerEntity(playerDescriptor);
-
 export function setupMod() {
-  return { name: "MyMod" };
+  return {
+    name: "MyMod",
+    entities: [defineEntity(playerDescriptor)],
+  };
 }
 ```
 
 ```lua
 -- start-script.luau
 local player = require("./actors/player")
-registerEntity(player.descriptor)
 
 function setupMod()
-  return { name = "MyMod" }
+  return {
+    name = "MyMod",
+    entities = { defineEntity(player.descriptor) },
+  }
 end
 ```
 
-`ModManifest` requires a `name` field (string). Additional fields will be added as the mod system grows. The engine errors at init if `setupMod` is missing, throws, returns a non-object, or returns an object without `name`.
+`ModManifest` requires a `name` field (string). Entity types belong in the
+optional `entities` array. The engine errors at init if `setupMod` is missing,
+throws, returns a non-object, or returns an object without `name`.
 
 **Imports and `require`.**
 
 - TypeScript: standard ES module `import` of relative paths. The script compiler bundles all relative imports into `start-script.js` at build time. Bare-specifier imports of `"postretro"` symbols are stripped (the symbols arrive as runtime globals).
 - Luau: `require("./path")` resolves relative to the mod root. `require("./actors/player")` reads `<mod_root>/actors/player.luau` (the `.luau` extension is appended automatically). `..` traversal and absolute paths are rejected. Module caching, init-file conventions, and upward search are not implemented.
 
-**Lifecycle.** Entity types registered from `start-script` (and any domain scripts it imports) survive level loads — they live in the engine-global type registry. Reactions are not registered here; those belong in per-level data scripts via `setupLevel(ctx)`. The mod-init VM is dropped after `setupMod` returns; no script state persists past that point.
+**Lifecycle.** Entity types returned from `setupMod().entities` survive level
+loads — they live in the engine-global type registry. Reactions are not
+registered here; those belong in per-level data scripts via `setupLevel(ctx)`.
+The mod-init VM is dropped after `setupMod` returns; no script state persists
+past that point.
 
 ---
 
-## registerEntity
+## `defineEntity` and entity descriptors
 
-`registerEntity(descriptor)` registers a script-defined entity archetype for use across all levels. Call this from a `start-script` (mod scope), before level load.
+`defineEntity(descriptor)` is a typed identity helper for entity archetypes.
+Return its result from `setupMod().entities` to register the archetype for use
+across all levels.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `classname` | `string` | The `.map` classname this archetype matches. Must not conflict with a built-in classname (e.g. `billboard_emitter`) — built-ins take precedence and a warning is logged. |
+| `canonicalName` | `string` (optional) | The `.map` classname this archetype matches. Omit it for descriptors that are not directly map-placeable. Built-in classnames (e.g. `billboard_emitter`) take precedence. |
 | `components.emitter` | `ComponentValue` (optional) | Emitter component attached at spawn. Use `smokeEmitter`, `sparkEmitter`, or `emitter()`. |
 | `components.light` | `{ color: [r, g, b], range: number, intensity: number, is_dynamic: boolean }` (optional) | Light component attached at spawn. Descriptor-spawned lights are always treated as dynamic regardless of `is_dynamic`. |
 
-**Idempotency:** calling `registerEntity` again with the same classname and descriptor is a silent no-op. If the descriptor differs, the new one wins and a debug log is emitted.
+**Manifest commit:** returned descriptors validate as a group after
+`setupMod()` succeeds. A failed mod init changes neither the entity registry nor
+the state-store registry.
 
-**Archetype spawn order:** after built-in classname dispatch runs at level load, the engine sweeps `world.map_entities` a second time and spawns script-registered archetypes for any entity whose classname matched a `registerEntity` call and was not handled as a built-in.
+**Archetype spawn order:** after built-in classname dispatch runs at level load,
+the engine sweeps `world.map_entities` a second time and spawns script-declared
+archetypes for any entity whose classname matched a descriptor `canonicalName`
+and was not handled as a built-in.
 
 **KVP overrides with `initial_` prefix:** any `initial_`-prefixed key on a `.map` placement (e.g. `initial_rate`, `initial_range`, `initial_is_dynamic`) overrides the matching descriptor field at spawn time. On parse failure the descriptor default is kept and a warning is logged. The key is `initial_` followed by the descriptor's field name (e.g. `initial_range` overrides `LightDescriptor.range`).
 
 > **Naming note:** `BillboardEmitterComponent.initial_velocity` already starts with `initial_`, so the mechanical override key would be `initial_initial_velocity` (prefix doubled). Both `initial_initial_velocity` and the friendlier alias `initial_velocity` are accepted; either writes to `BillboardEmitterComponent.initial_velocity` at spawn. The shortest alias `velocity` is also accepted and writes the same field.
 
 ```typescript
-registerEntity({
-  classname: "exhaustPort",
+defineEntity({
+  canonicalName: "exhaustPort",
   components: {
     emitter: smokeEmitter({ rate: 8, spread: 0.3, lifetime: 2.0 }),
   },
 });
 
-registerEntity({
-  classname: "campfire",
+defineEntity({
+  canonicalName: "campfire",
   components: {
     light: { color: [1.0, 0.5, 0.1], range: 256, intensity: 1.2, is_dynamic: true },
     emitter: sparkEmitter({ rate: 4, spread: 0.5, lifetime: 0.8 }),
@@ -1124,7 +1140,8 @@ reference) plus an optional `equals` comparand. It resolves to `1.0` (true) or
   equal). Comparands are **number / boolean / string** only (strings/enums match by
   name); an array/color comparand is a load-time error.
 
-Construct one with a handle's `.is(v)`:
+Construct one with a local-state handle's `.is(v)`, or with `stateEquals(ref, v)`
+for authoritative state refs:
 
 ```typescript
 const sel = ui.createLocalState({ tab: "loadout" });
@@ -1152,8 +1169,9 @@ Button({
 });
 ```
 
-The `.is(v)` comparand is **typed to the cell/slot's value type** — a string cell's
-`.is(3)` is a compile error (see `content/dev/scripts/reactive-ui-fixture.ts`).
+The `.is(v)` comparand is **typed to the local cell's value type** — a string
+cell's `.is(3)` is a compile error. For state refs, `stateEquals(ref, v)` carries
+the ref's value type instead.
 
 ### `selected` / `checked` (a11y state)
 
@@ -1277,7 +1295,8 @@ The repo has no `tsc` CI; per-kind narrowing is proven two ways, both committed:
   the emitted `.d.ts` / `.d.luau` narrows per kind — `content` is a `Text`-only
   prop (so a `Button({ content })` is a type error), `Bar` requires no name, the
   interactive widgets carry the `label` xor `labelledBy` union, `Image` narrows
-  to `label` xor `decorative`, and `.is(v)` is typed to the cell/slot value type.
+  to `label` xor `decorative`, local-cell `.is(v)` is typed to the cell value
+  type, and `stateEquals(ref, v)` is typed to the state-ref value type.
 - **`@ts-expect-error` fixtures** (`content/dev/scripts/reactive-ui-fixture.ts`)
   are a documented review gate: each marked line MUST be a type error in an IDE;
   if a future change makes one compile cleanly, `tsc --noEmit` flags the now-unused

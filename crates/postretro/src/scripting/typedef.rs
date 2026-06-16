@@ -832,8 +832,8 @@ const TS_SDK_LIB_BLOCK: &str = r#"
 
   /** Crossing condition: fires when the watched slot crosses the threshold in one direction. Exactly one of `below`/`above` is given. `max` is the denominator the threshold is a fraction of; omit it for a raw-value comparison (`max` defaults to `1.0`). */
   export type CrossingCondition =
-    | { below: number; max?: number }
-    | { above: number; max?: number };
+    | { below: number; above?: never; max?: number }
+    | { above: number; below?: never; max?: number };
 
   /** A state-crossing watcher entry as it appears in `setupLevel`'s manifest `crossings` array. The condition fields are flattened in beside `slot` and `fire`; `fire` lists the named reactions dispatched (through the shared named-reaction vocabulary) when the crossing occurs. */
   export type CrossingDescriptor = {
@@ -914,7 +914,7 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   /** System-reaction body (M13 Text Entry): append `text` to a writable String state ref at the game-logic stage. Emits the existing dotted-slot wire. */
   export function appendText(ref: WritableStateRef<string>, text: string): PrimitiveReactionDescriptor;
 
-  /** System-reaction body (M13 Text Entry): remove the last grapheme cluster from a writable String state ref. Emits the existing dotted-slot wire. */
+  /** System-reaction body (M13 Text Entry): remove the last character (one Unicode scalar value) from a writable String state ref. Emits the existing dotted-slot wire. */
   export function backspaceText(ref: WritableStateRef<string>): PrimitiveReactionDescriptor;
 
   /** System-reaction body (M13 Text Entry): empty a writable String state ref. Emits the existing dotted-slot wire. */
@@ -1099,12 +1099,12 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   export function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDescriptor;
 
   export type StateBindOptionsFor<T> =
-    T extends number ? { format?: string; tween?: NumberTween } :
-    T extends NumericArrayStateValue ? { tween?: ColorTween } :
-    T extends ScalarStateValue ? { format?: string } :
+    T extends number ? { format?: string; tween?: NumberTween; slot?: never; local?: never } :
+    T extends NumericArrayStateValue ? { tween?: ColorTween; slot?: never; local?: never } :
+    T extends ScalarStateValue ? { format?: string; slot?: never; local?: never } :
     never;
   /** Compose bind-only options onto a state ref, emitting `{ slot, ...options }`. */
-  export function bindState<T>(ref: ReadonlyStateRef<T>, options?: StateBindOptionsFor<T>): ReadonlyStateRef<T> & StateBindOptionsFor<T>;
+  export function bindState<T>(ref: ReadonlyStateRef<T>, options?: StateBindOptionsFor<T>): ReadonlyStateRef<T> & Omit<StateBindOptionsFor<T>, "slot" | "local">;
   /** Build `{ slot, equals }` for scalar state refs. */
   export function stateEquals<T extends PredicateValue>(ref: ReadonlyStateRef<T>, value: T): Predicate;
 
@@ -1668,7 +1668,9 @@ export type NamedReactionDescriptor = ProgressNamedReactionDescriptor | Primitiv
 --- one direction. Exactly one of `below`/`above` is given. `max` is the
 --- denominator the threshold is a fraction of; omit it for a raw-value
 --- comparison (`max` defaults to `1.0`).
-export type CrossingCondition = { below: number?, above: number?, max: number? }
+export type CrossingCondition =
+  { below: number, above: nil?, max: number? }
+  | { below: nil?, above: number, max: number? }
 
 --- A state-crossing watcher entry as it appears in `setupLevel`'s manifest
 --- `crossings` array. The condition fields are flattened in beside `slot` and
@@ -1794,9 +1796,10 @@ declare function updateState(ref: WritableStateRef<any>, value: any): PrimitiveR
 --- is valid. Pure: returns a `PrimitiveReactionDescriptor`, no FFI.
 declare function appendText(ref: WritableStateRef<string>, text: string): PrimitiveReactionDescriptor
 
---- System-reaction body (M13 Text Entry): remove the last grapheme cluster
---- (char-pop floor -- never splits a UTF-8 sequence) from the writable String
---- slot `slot` at the game-logic stage. Empty is a no-op with no warning.
+--- System-reaction body (M13 Text Entry): remove the last character -- one
+--- Unicode scalar value (char-pop floor: never splits a UTF-8 sequence, but does
+--- not segment grapheme clusters) -- from the writable String slot `slot` at the
+--- game-logic stage. Empty is a no-op with no warning.
 --- Readonly-gated like `setState`. Pure: returns a `PrimitiveReactionDescriptor`, no FFI.
 declare function backspaceText(ref: WritableStateRef<string>): PrimitiveReactionDescriptor
 
@@ -3619,7 +3622,7 @@ export type Event = {
             );
         }
         assert!(
-            ts.contains("export function bindState<T>(ref: ReadonlyStateRef<T>, options?: StateBindOptionsFor<T>): ReadonlyStateRef<T> & StateBindOptionsFor<T>;")
+            ts.contains("export function bindState<T>(ref: ReadonlyStateRef<T>, options?: StateBindOptionsFor<T>): ReadonlyStateRef<T> & Omit<StateBindOptionsFor<T>, \"slot\" | \"local\">;")
                 && ts.contains("export function stateEquals<"),
             "ts d.ts missing state reference helper declarations"
         );

@@ -10,11 +10,9 @@
 --- direction. Exactly one of `below`/`above` is given. `max` is the denominator
 --- the threshold is a fraction of; omit it for a raw-value comparison (`max`
 --- defaults to `1.0`).
-export type CrossingCondition = {
-  below: number?,
-  above: number?,
-  max: number?,
-}
+export type CrossingCondition =
+  { below: number, above: nil?, max: number? }
+  | { below: nil?, above: number, max: number? }
 
 --- A state-crossing watcher entry as it appears in `setupLevel`'s manifest
 --- `crossings` array. The condition fields are flattened in beside `slot` and
@@ -47,6 +45,30 @@ local function stateSlot(ref: any, helper: string): string
   return ref.slot
 end
 
+local function isFiniteNumber(value: any): boolean
+  return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
+end
+
+local function crossingThreshold(condition: any): (string, number, number?)
+  if type(condition) ~= "table" then
+    error("onStateCrossing: `condition` must be a table")
+  end
+  local hasBelow = condition.below ~= nil
+  local hasAbove = condition.above ~= nil
+  if hasBelow == hasAbove then
+    error("onStateCrossing: `condition` must declare exactly one of `below` or `above`")
+  end
+  local key = if hasBelow then "below" else "above"
+  local value = if hasBelow then condition.below else condition.above
+  if not isFiniteNumber(value) then
+    error(`onStateCrossing: \`{key}\` must be a finite number`)
+  end
+  if condition.max ~= nil and not isFiniteNumber(condition.max) then
+    error("onStateCrossing: `max` must be a finite number when provided")
+  end
+  return key, value, condition.max
+end
+
 --- Build a state-crossing watcher. Pure: returns a plain table, does not
 --- register anything in the engine. The engine consumes the table when
 --- `setupLevel` returns its `crossings` array. On a crossing in the condition's
@@ -58,23 +80,29 @@ function UiReactionsSdk.onStateCrossing(
   condition: CrossingCondition,
   fire: {any}
 ): CrossingDescriptor
+  if type(fire) ~= "table" then
+    error("onStateCrossing: `fire` must be an array of reaction handles or strings")
+  end
   local fireNames: { string } = {}
   for i, entry in ipairs(fire) do
     if type(entry) == "string" then
       fireNames[i] = entry
-    elseif type(entry) == "table" and type(entry.name) == "string" then
+    elseif type(entry) == "table" and type(entry.name) == "string" and #entry.name > 0 then
       fireNames[i] = entry.name
     else
       error("onStateCrossing: `fire` entries must be reaction handles or strings")
     end
   end
-  return {
+  local key, value, max = crossingThreshold(condition)
+  local descriptor: CrossingDescriptor = {
     slot = stateSlot(ref, "onStateCrossing"),
-    below = condition.below,
-    above = condition.above,
-    max = condition.max,
     fire = fireNames,
   }
+  descriptor[key] = value
+  if max ~= nil then
+    descriptor.max = max
+  end
+  return descriptor
 end
 
 --- Play a sound through the M12 audio module. Pure: returns a primitive
@@ -207,9 +235,10 @@ function UiReactionsSdk.appendText(ref: any, text: string): PrimitiveReactionDes
   return { primitive = "appendText", args = { slot = stateSlot(ref, "appendText"), text = text } }
 end
 
---- Remove the last grapheme cluster (char-pop floor: never splits a UTF-8
---- sequence) from the writable String slot `slot` at the game-logic stage (M13
---- Text Entry). Pure: returns a primitive reaction body, no engine side effect.
+--- Remove the last character -- one Unicode scalar value (the char-pop floor:
+--- never splits a UTF-8 sequence, but does not segment grapheme clusters) --
+--- from the writable String slot `slot` at the game-logic stage (M13 Text
+--- Entry). Pure: returns a primitive reaction body, no engine side effect.
 --- Empty is a no-op with no warning. Readonly-gated like `setState`.
 function UiReactionsSdk.backspaceText(ref: any): PrimitiveReactionDescriptor
   return { primitive = "backspaceText", args = { slot = stateSlot(ref, "backspaceText") } }

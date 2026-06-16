@@ -270,18 +270,36 @@ function DataScriptSdk.defineEntity(descriptor: EntityTypeDescriptor): EntityTyp
   return descriptor
 end
 
+local function cloneAndFreeze(value: any, seenOrNil: any?): any
+  if type(value) ~= "table" then
+    return value
+  end
+  local seen = seenOrNil or {}
+  local cached = seen[value]
+  if cached ~= nil then
+    return cached
+  end
+  local clone = {}
+  seen[value] = clone
+  for key, child in pairs(value) do
+    clone[key] = cloneAndFreeze(child, seen)
+  end
+  return table.freeze(clone)
+end
+
 --- Pure state-store builder. The engine consumes `declaration` only when it is
 --- returned from `setupMod().stores`; unreturned declarations disappear with
 --- the setup VM.
 function DataScriptSdk.defineStore(namespace: string, schema: { [string]: StoreSlotSchema }): StoreDefinition
+  local frozenSchema = cloneAndFreeze(schema)
   local state = {}
-  for slotName in pairs(schema) do
+  for slotName in pairs(frozenSchema) do
     state[slotName] = table.freeze({ slot = namespace .. "." .. slotName })
   end
   return table.freeze({
     declaration = table.freeze({
       namespace = namespace,
-      schema = schema,
+      schema = frozenSchema,
     }),
     state = table.freeze(state),
   })

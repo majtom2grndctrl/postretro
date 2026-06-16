@@ -218,7 +218,7 @@ impl EngineStateCatalog {
         let mut sorted = entries.to_vec();
         sorted.sort_by(|left, right| {
             left.sdk_path
-                .cmp(&right.sdk_path)
+                .cmp(right.sdk_path)
                 .then_with(|| left.wire_name.cmp(right.wire_name))
         });
         let tree = validate_entries(&sorted)?;

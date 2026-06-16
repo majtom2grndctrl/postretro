@@ -80,13 +80,8 @@ fn resolve_predicate(
     };
     match equals {
         None => match value {
-            SlotValue::Boolean(b) => {
-                if *b {
-                    1.0
-                } else {
-                    0.0
-                }
-            }
+            SlotValue::Boolean(true) => 1.0,
+            SlotValue::Boolean(false) => 0.0,
             // A bare (no-`equals`) predicate over a non-boolean source has no
             // defined truthiness — it resolves false.
             _ => 0.0,

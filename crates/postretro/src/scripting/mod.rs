@@ -15,6 +15,7 @@ pub(crate) mod conv;
 pub(crate) mod ctx;
 pub(crate) mod data_descriptors;
 pub(crate) mod data_registry;
+pub(crate) mod engine_state_catalog;
 pub(crate) mod error;
 pub(crate) mod ir;
 pub(crate) mod luau;

@@ -1,17 +1,19 @@
 // TypeScript / Luau type-definition generator for registered types and primitive signatures.
 // See: context/lib/scripting.md
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::io;
 use std::path::Path;
 use std::sync::Mutex;
 
+use super::engine_state_catalog::{
+    EngineStateCapability, EngineStateValueType, engine_state_catalog,
+};
 use super::primitives_registry::{
     ParamInfo, PrimitiveRegistry, RegisteredType, ScriptPrimitive, TaggedVariant, TypeShape,
 };
-use super::slot_table::{SlotOwnership, SlotTable, SlotType};
 
 /// Strip `module::path::` qualification from a type name, returning just the
 /// final identifier. `type_name::<Foo>()` yields fully-qualified paths and we
@@ -455,97 +457,42 @@ fn emit_ts_type(ty: &RegisteredType, out: &mut String) {
 }
 
 /// An engine-owned, read-only state slot grouped under its namespace, as the
-/// `postretro/game-state` module exposes it. Built from `SlotTable` so the
-/// handle group is generated from the engine slot registry, never hand-written.
+/// `postretro/game-state` module exposes it. Built from the engine-state catalog
+/// so the typedef surface follows the same metadata as slot registration and
+/// future runtime installers.
 struct EngineSlotGroup {
     namespace: String,
     /// `(slot_name, value-type spelling)` pairs, sorted by slot name.
     slots: Vec<(String, EngineSlotType)>,
 }
 
-/// The declared value type of an engine slot, language-agnostic so each
-/// generator renders its own spelling (TS string-literal unions vs. Luau).
-enum EngineSlotType {
-    Number,
-    Boolean,
-    String,
-    /// Enum value set; rendered as a string-literal union.
-    Enum(Vec<String>),
-    /// Numeric array (e.g. `screen.flash` RGBA).
-    Array,
-}
+type EngineSlotType = EngineStateValueType<'static>;
 
 /// Collect engine-owned, read-only slots grouped by namespace, sorted
-/// deterministically. `ui.textEntry` and any other writable engine slot is
-/// excluded — `game-state` is the read-only engine surface mods bind against;
-/// writable engine slots are reached through the `setState`/text-edit reactions.
+/// deterministically by explicit SDK path. `ui.textEntry` and any other
+/// writable engine slot is excluded from this legacy read-only module; the
+/// catalog still carries its writable capability for the `getGameState()` surface
+/// and runtime installers in the follow-up tasks.
 fn engine_slot_groups() -> Vec<EngineSlotGroup> {
-    let table = SlotTable::new();
-    let mut by_namespace: BTreeSet<String> = BTreeSet::new();
-    for (full_name, record) in table.iter() {
-        if record.schema.ownership == SlotOwnership::Engine && record.schema.readonly {
-            if let Some((namespace, _)) = full_name.split_once('.') {
-                by_namespace.insert(namespace.to_string());
-            }
+    let catalog = engine_state_catalog().expect("built-in engine-state catalog must be valid");
+    let mut by_namespace: BTreeMap<String, Vec<(String, EngineSlotType)>> = BTreeMap::new();
+    for entry in catalog.entries() {
+        if entry.capability != EngineStateCapability::Readonly || entry.sdk_path.len() != 2 {
+            continue;
         }
+        by_namespace
+            .entry(entry.sdk_path[0].to_string())
+            .or_default()
+            .push((entry.sdk_path[1].to_string(), entry.value_type));
     }
 
     by_namespace
         .into_iter()
-        .map(|namespace| {
-            let prefix = format!("{namespace}.");
-            let mut slots: Vec<(String, EngineSlotType)> = table
-                .iter()
-                .filter(|(_, record)| {
-                    record.schema.ownership == SlotOwnership::Engine && record.schema.readonly
-                })
-                .filter_map(|(full_name, record)| {
-                    full_name.strip_prefix(&prefix).map(|slot_name| {
-                        let ty = match &record.schema.slot_type {
-                            SlotType::Number => EngineSlotType::Number,
-                            SlotType::Boolean => EngineSlotType::Boolean,
-                            SlotType::String => EngineSlotType::String,
-                            SlotType::Enum { values } => EngineSlotType::Enum(values.clone()),
-                            SlotType::Array => EngineSlotType::Array,
-                        };
-                        (slot_name.to_string(), ty)
-                    })
-                })
-                .collect();
+        .map(|(namespace, mut slots)| {
             slots.sort_by(|(a, _), (b, _)| a.cmp(b));
             EngineSlotGroup { namespace, slots }
         })
         .collect()
-}
-
-impl EngineSlotType {
-    fn to_ts(&self) -> String {
-        match self {
-            EngineSlotType::Number => "number".to_string(),
-            EngineSlotType::Boolean => "boolean".to_string(),
-            EngineSlotType::String => "string".to_string(),
-            EngineSlotType::Enum(values) => values
-                .iter()
-                .map(|v| format!("\"{v}\""))
-                .collect::<Vec<_>>()
-                .join(" | "),
-            EngineSlotType::Array => "ReadonlyArray<number>".to_string(),
-        }
-    }
-
-    fn to_luau(&self) -> String {
-        match self {
-            EngineSlotType::Number => "number".to_string(),
-            EngineSlotType::Boolean => "boolean".to_string(),
-            EngineSlotType::String => "string".to_string(),
-            EngineSlotType::Enum(values) => values
-                .iter()
-                .map(|v| format!("\"{v}\""))
-                .collect::<Vec<_>>()
-                .join(" | "),
-            EngineSlotType::Array => "{number}".to_string(),
-        }
-    }
 }
 
 /// Emit the `postretro/game-state` module: a read-only typed handle group for

@@ -3,6 +3,8 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use super::engine_state_catalog::engine_state_catalog;
+
 /// Runtime value stored in a state slot.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum SlotValue {
@@ -139,18 +141,12 @@ impl Default for SlotTable {
             slots: HashMap::new(),
             namespaces: HashSet::new(),
         };
-        table
-            .insert_namespace("player", engine_player_slots())
-            .expect("built-in player store schema must be valid");
-        table
-            .insert_namespace("screen", engine_screen_slots())
-            .expect("built-in screen store schema must be valid");
-        table
-            .insert_namespace("input", engine_input_slots())
-            .expect("built-in input store schema must be valid");
-        table
-            .insert_namespace("ui", engine_ui_slots())
-            .expect("built-in ui store schema must be valid");
+        let catalog = engine_state_catalog().expect("built-in engine-state catalog must be valid");
+        for (namespace, records) in catalog.store_declarations() {
+            table
+                .insert_namespace(&namespace, records)
+                .expect("built-in engine-state store schema must be valid");
+        }
         table
     }
 }
@@ -383,126 +379,6 @@ fn namespaces_overlap(left: &str, right: &str) -> bool {
         || right
             .strip_prefix(left)
             .is_some_and(|suffix| suffix.starts_with('.'))
-}
-
-/// Engine-owned UI surface slots — the post-scene screen-space effects (SE).
-/// Each is an engine-decayed surface written by an App-side decay driver via the
-/// engine write path (bypassing readonly), and readonly to scripts: scripts read
-/// the published slot, while the engine is the sole writer.
-///
-/// - `screen.flash` — full-screen flash (linear RGBA `[r, g, b, a]`): the
-///   flash-decay state writes it from `FlashScreen` commands, decaying to
-///   transparent; a full-screen panel binds it. Default transparent so the panel
-///   renders nothing until a flash fires.
-/// - `screen.vignette` — vignette tint (linear RGBA `[r, g, b, a]`, `a` =
-///   strength): the vignette-decay driver writes an envelope (rise/peak/decay).
-///   Default `[0,0,0,0]` so the later GPU consumer collapses to identity at rest.
-/// - `screen.shake` — current-frame screen-shake offset `[dx, dy]` in
-///   logical-reference px: the shake-decay driver writes a decaying oscillation.
-///   Default `[0,0]` (exact zero offset) so at rest there is no displacement.
-///
-/// See: context/lib/ui.md §3.
-fn engine_screen_slots() -> Vec<(String, SlotRecord)> {
-    vec![
-        (
-            "flash".to_string(),
-            SlotRecord::new(SlotSchema {
-                slot_type: SlotType::Array,
-                default: Some(SlotValue::Array(vec![0.0, 0.0, 0.0, 0.0])),
-                range: None,
-                persist: false,
-                readonly: true,
-                ownership: SlotOwnership::Engine,
-            }),
-        ),
-        (
-            "vignette".to_string(),
-            SlotRecord::new(SlotSchema {
-                slot_type: SlotType::Array,
-                default: Some(SlotValue::Array(vec![0.0, 0.0, 0.0, 0.0])),
-                range: None,
-                persist: false,
-                readonly: true,
-                ownership: SlotOwnership::Engine,
-            }),
-        ),
-        (
-            "shake".to_string(),
-            SlotRecord::new(SlotSchema {
-                slot_type: SlotType::Array,
-                default: Some(SlotValue::Array(vec![0.0, 0.0])),
-                range: None,
-                persist: false,
-                readonly: true,
-                ownership: SlotOwnership::Engine,
-            }),
-        ),
-    ]
-}
-
-/// Engine-owned input-observation slots. `input.mode` is the pointer-vs-focus
-/// interaction mode (enum `"pointer"` / `"focus"`), written each frame by
-/// App-side composition during the input phase (mouse motion → `pointer`;
-/// stick/D-pad/nav input → `focus`) — the input subsystem's contract output
-/// stays the action snapshot, so the slot write is app composition, not a
-/// subsystem output (input.md §7). Readonly to scripts: the engine is the sole
-/// producer; a `text` widget binds it to display the current mode. Defaults to
-/// `"focus"` (the focus-engine default before the first transition).
-/// See: context/lib/input.md §5, §7.
-fn engine_input_slots() -> Vec<(String, SlotRecord)> {
-    vec![(
-        "mode".to_string(),
-        SlotRecord::new(SlotSchema {
-            slot_type: SlotType::Enum {
-                values: vec!["pointer".to_string(), "focus".to_string()],
-            },
-            default: Some(SlotValue::Enum("focus".to_string())),
-            range: None,
-            persist: false,
-            readonly: true,
-            ownership: SlotOwnership::Engine,
-        }),
-    )]
-}
-
-/// Engine-owned UI text-entry surface. `ui.textEntry` is the writable target the
-/// text-edit reactions (`appendText` / `backspaceText` / `clearText`, M13 Text
-/// Entry Task 1) mutate at the game-logic stage, and a valid `setState` target.
-/// Unlike the readonly engine slots (`player.*`, `screen.flash`, `input.mode`),
-/// it is WRITABLE: both the hardware-keyboard path and the on-screen-keyboard
-/// asset drive one shared edit surface over this String slot. Defaults to empty.
-/// See: context/lib/scripting.md §10.4.
-fn engine_ui_slots() -> Vec<(String, SlotRecord)> {
-    vec![(
-        "textEntry".to_string(),
-        SlotRecord::new(SlotSchema {
-            slot_type: SlotType::String,
-            default: Some(SlotValue::String(String::new())),
-            range: None,
-            persist: false,
-            readonly: false,
-            ownership: SlotOwnership::Engine,
-        }),
-    )]
-}
-
-fn engine_player_slots() -> Vec<(String, SlotRecord)> {
-    ["health", "ammo"]
-        .into_iter()
-        .map(|name| {
-            (
-                name.to_string(),
-                SlotRecord::new(SlotSchema {
-                    slot_type: SlotType::Number,
-                    default: None,
-                    range: None,
-                    persist: false,
-                    readonly: true,
-                    ownership: SlotOwnership::Engine,
-                }),
-            )
-        })
-        .collect()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]

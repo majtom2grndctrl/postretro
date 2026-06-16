@@ -10,7 +10,7 @@
 // `root` widget's own concern; this factory only places the whole tree once.
 // See: context/lib/ui.md · context/lib/scripting.md §7
 
-import type { WidgetDescriptor, WidgetRole } from "./widgets";
+import type { WidgetDescriptor, WidgetRole, WritableStateRef } from "./widgets";
 
 /**
  * The nine placement anchors a tree may be pinned to. Mirrors `descriptor.rs`
@@ -50,7 +50,7 @@ export type TreeProps = {
   offset: [number, number];
   captureMode?: WidgetCaptureMode;
   initialFocus?: string;
-  textEntryTarget?: string;
+  textEntryTarget?: WritableStateRef<string>;
   accessibleName?: string;
   role?: WidgetRole;
 };
@@ -163,8 +163,15 @@ export function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDesc
     out.initialFocus = props.initialFocus;
   }
   if (props.textEntryTarget !== undefined) {
-    requireNonemptyString(props.textEntryTarget, "textEntryTarget", "Tree");
-    out.textEntryTarget = props.textEntryTarget;
+    if (
+      props.textEntryTarget === null ||
+      typeof props.textEntryTarget !== "object" ||
+      typeof props.textEntryTarget.slot !== "string"
+    ) {
+      throw new Error("Tree: `textEntryTarget` must be a writable string state reference");
+    }
+    requireNonemptyString(props.textEntryTarget.slot, "textEntryTarget.slot", "Tree");
+    out.textEntryTarget = props.textEntryTarget.slot;
   }
   if (props.accessibleName !== undefined) {
     requireNonemptyString(props.accessibleName, "accessibleName", "Tree");

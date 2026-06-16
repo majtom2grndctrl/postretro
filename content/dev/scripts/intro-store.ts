@@ -12,11 +12,9 @@ import { defineStore } from "postretro";
 // (`flashColor`, `type`, `default`, `persist`); see the Luau parity reference in
 // `intro-store.luau`.
 //
-// `defineStore` is a `DefinitionOnly` primitive callable during mod init; this
-// helper is invoked for its side effect (namespace registration) from
-// `setupMod`, not for a return value. See: context/lib/scripting.md §3.
-export function registerIntroStore(): void {
-  defineStore("intro", {
-    flashColor: { type: "array", default: [0.0, 0.65, 0.75, 1.0], persist: false },
-  });
-}
+// `defineStore` is a pure builder. `setupMod` returns `introStore.declaration`
+// through `stores`; importing this module alone does not register anything.
+// See: context/lib/scripting.md §5.
+export const introStore = defineStore("intro", {
+  flashColor: { type: "array", default: [0.0, 0.65, 0.75, 1.0], persist: false },
+});

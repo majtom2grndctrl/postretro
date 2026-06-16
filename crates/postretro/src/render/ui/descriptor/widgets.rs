@@ -523,7 +523,7 @@ pub struct SliderBind {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BarWidget {
     pub bind: SliderBind,
-    pub max: f32,
+    pub max: BarMax,
     pub fill: ColorValue,
     pub background: ColorValue,
     /// Authored stable id (M13 Goal F, Task 3). See `TextWidget::id`.
@@ -540,6 +540,22 @@ pub struct BarWidget {
     /// Optional a11y role override (M13 G2). See `TextWidget::role`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<Role>,
+}
+
+/// Denominator for a `bar` fill fraction. A literal number keeps the original
+/// wire shape; a state reference uses the same dotted slot object shape as
+/// widget binds (`{ "slot": "player.maxHealth" }`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum BarMax {
+    Literal(f32),
+    State(BarMaxStateRef),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BarMaxStateRef {
+    pub slot: String,
 }
 
 /// Non-visual a11y announcement (M13 G2). Lays out as nothing; its `text` is a

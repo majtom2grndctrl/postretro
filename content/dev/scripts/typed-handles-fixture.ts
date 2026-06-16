@@ -12,12 +12,13 @@
 import {
   defineStore,
   defineReaction,
+  getGameState,
   Text,
   Button,
+  Slider,
   type StateValue,
   type LocalizedText,
 } from "postretro";
-import { player } from "postretro/game-state";
 
 // --- (1) Value-typed slot handles -------------------------------------------
 // `defineStore` infers each slot's value type from its `type` discriminant.
@@ -27,27 +28,28 @@ const opts = defineStore("fixtureOpts", {
   preset: { type: "string", default: "default" },
 });
 
-// Correct types: a `number` slot is `StateValue<number>`, a `boolean` slot is
-// `StateValue<boolean>`, a `string` slot is `StateValue<string>`.
-const _volume: StateValue<number> = opts.volume;
-const _muted: StateValue<boolean> = opts.muted;
-const _preset: StateValue<string> = opts.preset;
+// Correct shape: declarations are returned from `setupMod().stores`, while
+// state references are stable `{ slot }` objects keyed by schema field.
+const _fixtureStoreDeclaration = opts.declaration;
+const _volume: StateValue<number> = opts.state.volume;
+const _muted: StateValue<boolean> = opts.state.muted;
+const _preset: StateValue<string> = opts.state.preset;
 
 // The documented mismatch: a `boolean` slot handle is NOT assignable to a
 // numeric-typed binding. This is the `@ts-expect-error` fixture the AC requires.
 // @ts-expect-error — `muted` is StateValue<boolean>, not StateValue<number>.
-const _wrong: StateValue<number> = opts.muted;
+const _wrong: StateValue<number> = opts.state.muted;
 
-// --- (2) Read-only engine-slot handles --------------------------------------
-// `player.health.get()` yields a directly-bindable `{ slot }` bind ref —
-// symmetric with `storeHandle(s).get()` for a mod slot. Binding an engine slot
-// reads the same as a mod slot: `Text({ bind: player.health.get() })`.
-const _health = player.health.get();
-const _healthText = Text({ content: "HP", bind: player.health.get() });
+// --- (2) Read-only engine-slot refs -----------------------------------------
+// `getGameState().player.health` is directly bindable as `{ slot }`; there is no
+// `.get()` wrapper or `postretro/game-state` side module.
+const gameState = getGameState();
+const _health = gameState.player.health;
+const _healthText = Text({ content: "HP", bind: gameState.player.health });
 
-// Engine slots are read-only to mods: `.set(...)` is absent from the handle.
-// @ts-expect-error — engine slots have no `.set()`; they are read-only to mods.
-player.health.set(100);
+// Slider writes require a writable number ref; engine health is readonly.
+// @ts-expect-error — readonly health cannot feed an interactive Slider.
+Slider({ id: "hp", label: "HP", bind: gameState.player.health, min: 0, max: 100, step: 1 });
 
 // --- (3) Typed reaction handles ---------------------------------------------
 // `defineReaction` accepts an optional `name`; omitted → deterministic auto-id.

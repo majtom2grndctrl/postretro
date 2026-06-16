@@ -16,9 +16,7 @@ use super::data_descriptors::{
 };
 use super::error::ScriptError;
 use super::luau::{LuauConfig, LuauRequireTracker};
-use super::primitives::store::{
-    SharedStoreDeclarationAttempt, StoreDeclarationAttempt, store_declaration_primitive,
-};
+use super::primitives::store::{drain_store_declarations_js, drain_store_declarations_lua};
 use super::quickjs::{QuickJsConfig, run_script};
 use super::runtime::ModManifestResult;
 use super::slot_table::StoreDeclarationSet;
@@ -384,22 +382,11 @@ fn run_staged_mod_init_quickjs(
     let ctx = JsContext::full(&runtime).map_err(|e| ScriptError::InvalidArgument {
         reason: format!("mod-init: failed to create context: {e}"),
     })?;
-    let declaration_attempt: SharedStoreDeclarationAttempt =
-        std::rc::Rc::new(std::cell::RefCell::new(StoreDeclarationAttempt::default()));
-    let declaration_primitive = store_declaration_primitive(declaration_attempt.clone());
-
     let mut out: Result<ModManifestResult, ScriptError> = Err(ScriptError::InvalidArgument {
         reason: "mod-init: setupMod did not produce a manifest".to_string(),
     });
 
     ctx.with(|ctx| {
-        if let Err(e) = (declaration_primitive.quickjs_installer)(&ctx) {
-            out = Err(ScriptError::InvalidArgument {
-                reason: format!("mod-init: failed to install primitive `defineStore`: {e}"),
-            });
-            return;
-        }
-
         if let Err(e) = super::quickjs::evaluate_prelude(&ctx) {
             out = Err(e);
             return;
@@ -440,9 +427,7 @@ fn run_staged_mod_init_quickjs(
         out = manifest_from_js_value(&ctx, source_path, returned);
     });
 
-    let mut manifest = out?;
-    manifest.store_declarations = declaration_attempt.borrow().clone().finish()?;
-    Ok(manifest)
+    out
 }
 
 fn manifest_from_js_value<'js>(
@@ -509,6 +494,10 @@ fn manifest_from_js_value<'js>(
     let fonts = drain_fonts_js(&obj, "setupMod").map_err(|e| ScriptError::InvalidArgument {
         reason: format!("mod-init: `{source_path}` setupMod `fonts` invalid: {e}"),
     })?;
+    let store_declarations =
+        drain_store_declarations_js(ctx, &obj).map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` setupMod `stores` invalid: {e}"),
+        })?;
 
     Ok(ModManifestResult {
         name,
@@ -516,7 +505,7 @@ fn manifest_from_js_value<'js>(
         ui_trees,
         theme,
         fonts,
-        store_declarations: StoreDeclarationSet::default(),
+        store_declarations,
     })
 }
 
@@ -527,11 +516,8 @@ fn run_staged_mod_init_luau(
     _cfg: &LuauConfig,
     require_tracker: Option<&LuauRequireTracker>,
 ) -> Result<ModManifestResult, ScriptError> {
-    let declaration_attempt: SharedStoreDeclarationAttempt =
-        std::rc::Rc::new(std::cell::RefCell::new(StoreDeclarationAttempt::default()));
-    let declaration_primitive = store_declaration_primitive(declaration_attempt.clone());
     let lua = super::luau::build_lua_state_with_require_tracking(
-        &[declaration_primitive],
+        &[],
         None,
         Some(mod_root),
         require_tracker,
@@ -643,6 +629,10 @@ fn run_staged_mod_init_luau(
     let fonts = drain_fonts_lua(&table, "setupMod").map_err(|e| ScriptError::InvalidArgument {
         reason: format!("mod-init: `{source_path}` setupMod `fonts` invalid: {e}"),
     })?;
+    let store_declarations =
+        drain_store_declarations_lua(&table).map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` setupMod `stores` invalid: {e}"),
+        })?;
 
     Ok(ModManifestResult {
         name,
@@ -650,7 +640,7 @@ fn run_staged_mod_init_luau(
         ui_trees,
         theme,
         fonts,
-        store_declarations: declaration_attempt.borrow().clone().finish()?,
+        store_declarations,
     })
 }
 
@@ -702,14 +692,15 @@ mod tests {
         fs::write(
             dir.join("start-script.js"),
             r#"
-            const handles = defineStore("staged", {
+            const staged = defineStore("staged", {
                 count: { type: "number", default: 1 },
             });
-            if (handles.count !== "staged.count") throw new Error("bad store handle");
+            if (staged.state.count.slot !== "staged.count") throw new Error("bad store handle");
             globalThis.setupMod = function() {
                 return {
                     name: "StagedMod",
                     entities: [{ canonicalName: "smoke_pillar" }],
+                    stores: [staged.declaration],
                 };
             };
             "#,
@@ -803,13 +794,14 @@ mod tests {
             local player = require("./actors/player")
             local player_again = require("./actors/player.luau")
             local weapons = require("actors/weapons")
-            local handles = defineStore("staged", {
+            local staged = defineStore("staged", {
                 count = { type = "number", default = 1 },
             })
-            assert(handles.count == "staged.count")
+            assert(staged.state.count.slot == "staged.count")
             function setupMod()
                 return {
                     name = "LuauDeps",
+                    stores = { staged.declaration },
                     entities = {
                         player.descriptor,
                         player_again.descriptor,

@@ -50,7 +50,7 @@ const EMITTERS_LUAU_SRC: &str = include_str!("../../../../sdk/lib/entities/emitt
 const FOG_VOLUMES_LUAU_SRC: &str = include_str!("../../../../sdk/lib/entities/fog_volumes.luau");
 
 /// SDK library prelude — `data_script.luau` returns a table whose fields
-/// (`defineReaction`, `defineEntity`) are destructured into globals so
+/// (`defineReaction`, `defineEntity`, `defineStore`) are destructured into globals so
 /// data-script authors call them by bare name. Pure descriptor builders;
 /// no FFI happens until `setupMod` or `setupLevel` returns.
 const DATA_SCRIPT_LUAU_SRC: &str = include_str!("../../../../sdk/lib/data_script.luau");
@@ -81,10 +81,9 @@ const UI_LAYOUT_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/layout.lua
 /// is destructured into a global. Pure placement-envelope builder.
 const UI_TREE_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/tree.luau");
 
-/// SDK library prelude — `ui/state.luau` returns a table whose only field
-/// (`storeHandle`) is destructured into a global. Pure `.get()/.set()` wrapper
-/// over a value-typed store-slot handle; `:set(...)` returns a `setState`
-/// descriptor and never writes the store.
+/// SDK library prelude — `ui/state.luau` returns state-reference helpers plus
+/// the presentation-local state namespace. Authoritative helpers are pure
+/// descriptor composers; local cell handles remain presentation-only.
 const UI_STATE_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/state.luau");
 
 /// Lights SDK fields lifted to globals after evaluating
@@ -111,7 +110,7 @@ const FOG_VOLUMES_LUAU_FIELDS: &[&str] = &[];
 
 /// Data-script SDK fields lifted to globals after evaluating
 /// `data_script.luau`.
-const DATA_SCRIPT_FIELDS: &[&str] = &["defineReaction", "defineEntity"];
+const DATA_SCRIPT_FIELDS: &[&str] = &["defineReaction", "defineEntity", "defineStore"];
 
 /// UI-reactions SDK fields lifted to globals after evaluating
 /// `ui/reactions.luau`. `onStateCrossing` builds a state-crossing watcher; the
@@ -155,11 +154,10 @@ const UI_LAYOUT_FIELDS: &[&str] = &["VStack", "HStack", "Grid"];
 /// UI tree-factory SDK fields lifted to globals after evaluating `ui/tree.luau`.
 const UI_TREE_FIELDS: &[&str] = &["Tree"];
 
-/// UI state-handle SDK fields lifted to globals after evaluating
-/// `ui/state.luau`. `storeHandle` wraps writable store-slot handles; `ui` is
-/// the namespaced object exposing `ui.createLocalState` (G1b). Both must be
-/// promoted to bare globals so Luau authors can call them directly.
-const UI_STATE_FIELDS: &[&str] = &["storeHandle", "ui", "Switch"];
+/// UI state-helper SDK fields lifted to globals after evaluating
+/// `ui/state.luau`. `bindState`/`stateEquals` compose authoritative state refs;
+/// `ui` exposes presentation-local `ui.createLocalState` (G1b).
+const UI_STATE_FIELDS: &[&str] = &["bindState", "stateEquals", "ui", "Switch"];
 
 /// Evaluate the Luau SDK prelude in `lua` and promote the return values to
 /// globals. Must be called after primitives are installed and before
@@ -1482,15 +1480,15 @@ mod tests {
               isfn("Text"), isfn("Panel"), isfn("Image"), isfn("Spacer"),
               isfn("Button"), isfn("Slider"), isfn("Bar"),
               isfn("VStack"), isfn("HStack"), isfn("Grid"),
-              isfn("Tree"), isfn("storeHandle"),
+              isfn("Tree"), isfn("bindState"), isfn("stateEquals"),
               type(validateBorder), type(resolveReactionName)
         "#;
         let results: mlua::MultiValue = subsys
             .run_source(Which::Definition, src, "ui_prelude.luau")
             .unwrap();
         let vals: Vec<mlua::Value> = results.into_iter().collect();
-        // First 12 are the factory globals: must all be functions (true).
-        for (i, v) in vals.iter().take(12).enumerate() {
+        // First 13 are the factory/helper globals: must all be functions (true).
+        for (i, v) in vals.iter().take(13).enumerate() {
             assert_eq!(
                 v.as_boolean(),
                 Some(true),
@@ -1499,12 +1497,12 @@ mod tests {
         }
         // Last 2 are the internal helpers: must be `nil` (not leaked).
         assert_eq!(
-            vals[12].as_str().as_deref(),
+            vals[13].as_str().as_deref(),
             Some("nil"),
             "validateBorder must NOT be a bare global"
         );
         assert_eq!(
-            vals[13].as_str().as_deref(),
+            vals[14].as_str().as_deref(),
             Some("nil"),
             "resolveReactionName must NOT be a bare global"
         );

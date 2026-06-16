@@ -4,6 +4,8 @@
 // back into Rust; the FFI boundary is the `return` statement.
 // See: context/lib/scripting.md §10.4
 
+import type { ReadonlyStateRef, WritableStateRef } from "./widgets";
+
 /**
  * Crossing condition: fires when the watched slot crosses the threshold in one
  * direction. Exactly one of `below`/`above` is given. `max` is the denominator
@@ -27,6 +29,13 @@ export type CrossingDescriptor = {
   fire: string[];
 } & ({ below: number } | { above: number });
 
+function stateSlot(ref: ReadonlyStateRef<unknown>, helper: string): string {
+  if (ref === null || typeof ref !== "object" || typeof ref.slot !== "string" || ref.slot.length === 0) {
+    throw new Error(`${helper}: expected a state reference with a nonempty \`slot\``);
+  }
+  return ref.slot;
+}
+
 /**
  * Build a state-crossing watcher. Pure — returns a plain object, no engine side
  * effect. Place the result in `setupLevel`'s returned `crossings` array. The
@@ -36,11 +45,15 @@ export type CrossingDescriptor = {
  * A registration against a non-Number slot warns and is skipped at load.
  */
 export function onStateCrossing(
-  slot: string,
+  ref: ReadonlyStateRef<number>,
   condition: CrossingCondition,
-  fire: string[],
+  fire: (import("../data_script").NamedReactionDescriptor | string)[],
 ): CrossingDescriptor {
-  return { slot, ...condition, fire } as CrossingDescriptor;
+  return {
+    slot: stateSlot(ref, "onStateCrossing"),
+    ...condition,
+    fire: fire.map((entry) => (typeof entry === "string" ? entry : entry.name)),
+  } as CrossingDescriptor;
 }
 
 /**
@@ -221,10 +234,10 @@ export function setState(
  * writable slot (e.g. `ui.textEntry`) is a valid target.
  */
 export function appendText(
-  slot: string,
+  ref: WritableStateRef<string>,
   text: string,
 ): import("../data_script").PrimitiveReactionDescriptor {
-  return { primitive: "appendText", args: { slot, text } };
+  return { primitive: "appendText", args: { slot: stateSlot(ref, "appendText"), text } };
 }
 
 /**
@@ -236,9 +249,9 @@ export function appendText(
  * Empty is a no-op with no warning. Readonly-gated like `setState`.
  */
 export function backspaceText(
-  slot: string,
+  ref: WritableStateRef<string>,
 ): import("../data_script").PrimitiveReactionDescriptor {
-  return { primitive: "backspaceText", args: { slot } };
+  return { primitive: "backspaceText", args: { slot: stateSlot(ref, "backspaceText") } };
 }
 
 /**
@@ -247,7 +260,7 @@ export function backspaceText(
  * Readonly-gated like `setState`.
  */
 export function clearText(
-  slot: string,
+  ref: WritableStateRef<string>,
 ): import("../data_script").PrimitiveReactionDescriptor {
-  return { primitive: "clearText", args: { slot } };
+  return { primitive: "clearText", args: { slot: stateSlot(ref, "clearText") } };
 }

@@ -24,9 +24,7 @@ use super::data_descriptors::{
 };
 use super::error::ScriptError;
 use super::luau::{LuauConfig, LuauSubsystem, Which as LuauWhich};
-use super::primitives::store::{
-    SharedStoreDeclarationAttempt, StoreDeclarationAttempt, store_declaration_primitive,
-};
+use super::primitives::store::{drain_store_declarations_js, drain_store_declarations_lua};
 use super::primitives_registry::{PrimitiveRegistry, ScriptPrimitive};
 use super::quickjs::{QuickJsConfig, QuickJsSubsystem, run_script};
 #[cfg(debug_assertions)]
@@ -1454,9 +1452,6 @@ fn run_mod_init_quickjs(
     })?;
 
     let primitives = subsys.primitives();
-    let declaration_attempt: SharedStoreDeclarationAttempt =
-        std::rc::Rc::new(std::cell::RefCell::new(StoreDeclarationAttempt::default()));
-    let declaration_primitive = store_declaration_primitive(declaration_attempt.clone());
     let mut out: Result<ModManifestResult, ScriptError> = Err(ScriptError::InvalidArgument {
         reason: "mod-init: setupMod did not produce a manifest".to_string(),
     });
@@ -1469,12 +1464,6 @@ fn run_mod_init_quickjs(
                 });
                 return;
             }
-        }
-        if let Err(e) = (declaration_primitive.quickjs_installer)(&ctx) {
-            out = Err(ScriptError::InvalidArgument {
-                reason: format!("mod-init: failed to install primitive `defineStore`: {e}"),
-            });
-            return;
         }
 
         if let Err(e) = super::quickjs::evaluate_prelude(&ctx) {
@@ -1624,6 +1613,15 @@ fn run_mod_init_quickjs(
                 return;
             }
         };
+        let store_declarations = match drain_store_declarations_js(&ctx, &obj) {
+            Ok(stores) => stores,
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!("mod-init: `{source_path}` setupMod `stores` invalid: {e}"),
+                });
+                return;
+            }
+        };
 
         out = Ok(ModManifestResult {
             name,
@@ -1631,13 +1629,11 @@ fn run_mod_init_quickjs(
             ui_trees,
             theme,
             fonts,
-            store_declarations: StoreDeclarationSet::default(),
+            store_declarations,
         });
     });
 
-    let mut manifest = out?;
-    manifest.store_declarations = declaration_attempt.borrow().clone().finish()?;
-    Ok(manifest)
+    out
 }
 
 fn run_mod_init_luau(
@@ -1648,12 +1644,7 @@ fn run_mod_init_luau(
 ) -> Result<ModManifestResult, ScriptError> {
     // The mod-init Luau VM gets a working `require` resolver rooted at the
     // mod root so start-script can pull in domain scripts.
-    let declaration_attempt: SharedStoreDeclarationAttempt =
-        std::rc::Rc::new(std::cell::RefCell::new(StoreDeclarationAttempt::default()));
-    let declaration_primitive = store_declaration_primitive(declaration_attempt.clone());
-    let mut mod_init_primitives = primitives.to_vec();
-    mod_init_primitives.push(declaration_primitive);
-    let lua = super::luau::build_lua_state(&mod_init_primitives, None, Some(mod_root))?;
+    let lua = super::luau::build_lua_state(primitives, None, Some(mod_root))?;
 
     let bytecode = mlua::Compiler::new()
         .compile(source)
@@ -1765,6 +1756,10 @@ fn run_mod_init_luau(
     let fonts = drain_fonts_lua(&table, "setupMod").map_err(|e| ScriptError::InvalidArgument {
         reason: format!("mod-init: `{source_path}` setupMod `fonts` invalid: {e}"),
     })?;
+    let store_declarations =
+        drain_store_declarations_lua(&table).map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` setupMod `stores` invalid: {e}"),
+        })?;
 
     Ok(ModManifestResult {
         name,
@@ -1772,7 +1767,7 @@ fn run_mod_init_luau(
         ui_trees,
         theme,
         fonts,
-        store_declarations: declaration_attempt.borrow().clone().finish()?,
+        store_declarations,
     })
 }
 
@@ -2871,20 +2866,20 @@ mod tests {
                 "js",
                 "start-script.js",
                 r#"
-                defineStore("attempt", {
+                const attempt = defineStore("attempt", {
                     value: { type: "number", default: 1 },
                 });
-                globalThis.setupMod = function() { return {}; };
+                globalThis.setupMod = function() { return { stores: [attempt.declaration] }; };
                 "#,
             ),
             (
                 "luau",
                 "start-script.luau",
                 r#"
-                defineStore("attempt", {
+                local attempt = defineStore("attempt", {
                     value = { type = "number", default = 1 },
                 })
-                function setupMod() return {} end
+                function setupMod() return { stores = { attempt.declaration } } end
                 "#,
             ),
         ] {
@@ -2902,27 +2897,21 @@ mod tests {
     }
 
     #[test]
-    fn caught_duplicate_store_declaration_still_rejects_whole_attempt() {
+    fn unreturned_store_declaration_does_not_commit() {
         let (mut rt, ctx) = runtime();
-        let dir = temp_mod_root("caught_duplicate_store");
+        let dir = temp_mod_root("unreturned_store");
         fs::write(
             dir.join("start-script.js"),
             r#"
-            defineStore("attempt", {
+            const attempt = defineStore("attempt", {
                 value: { type: "number", default: 1 },
             });
-            try {
-                defineStore("attempt", {
-                    value: { type: "number", default: 1 },
-                });
-            } catch (_) {}
-            globalThis.setupMod = function() { return { name: "CaughtDuplicate" }; };
+            globalThis.setupMod = function() { return { name: "Unreturned" }; };
             "#,
         )
         .unwrap();
 
-        rt.run_mod_init(&dir)
-            .expect_err("caught duplicate must poison the declaration attempt");
+        rt.run_mod_init(&dir).unwrap();
         assert!(ctx.slot_table.borrow().get("attempt.value").is_none());
     }
 
@@ -2933,10 +2922,12 @@ mod tests {
         fs::write(
             dir.join("start-script.js"),
             r#"
-            defineStore("session", {
+            const session = defineStore("session", {
                 volume: { type: "number", default: 1, persist: true },
             });
-            globalThis.setupMod = function() { return { name: "RepeatStore" }; };
+            globalThis.setupMod = function() {
+                return { name: "RepeatStore", stores: [session.declaration] };
+            };
             "#,
         )
         .unwrap();

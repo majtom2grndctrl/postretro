@@ -121,8 +121,11 @@ function UiTreeSdk.Tree(props: any, root: any): WidgetDescriptor
     out.initialFocus = props.initialFocus
   end
   if props.textEntryTarget ~= nil then
-    requireNonemptyString(props.textEntryTarget, "textEntryTarget", "Tree")
-    out.textEntryTarget = props.textEntryTarget
+    if type(props.textEntryTarget) ~= "table" or type(props.textEntryTarget.slot) ~= "string" then
+      error("Tree: `textEntryTarget` must be a writable string state reference")
+    end
+    requireNonemptyString(props.textEntryTarget.slot, "textEntryTarget.slot", "Tree")
+    out.textEntryTarget = props.textEntryTarget.slot
   end
   if props.accessibleName ~= nil then
     requireNonemptyString(props.accessibleName, "accessibleName", "Tree")

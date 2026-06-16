@@ -23,9 +23,9 @@ pub use values::{
     SpacingValue,
 };
 pub use widgets::{
-    AnnounceWidget, BarWidget, ButtonWidget, ContainerWidget, GridWidget, ImageWidget, PanelBind,
-    PanelTween, PanelWidget, Priority, SliderBind, SliderWidget, SpacerWidget, TextBind, TextTween,
-    TextWidget, Widget,
+    AnnounceWidget, BarMax, BarMaxStateRef, BarWidget, ButtonWidget, ContainerWidget, GridWidget,
+    ImageWidget, PanelBind, PanelTween, PanelWidget, Priority, SliderBind, SliderWidget,
+    SpacerWidget, TextBind, TextTween, TextWidget, Widget,
 };
 
 #[cfg(test)]

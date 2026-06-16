@@ -13,11 +13,9 @@ import { defineStore } from "postretro";
 // namespace is registered before the slider's first `setState` write — an absent
 // slot would make the write log-and-skip and leave the volume at unity.
 //
-// `defineStore` is a `DefinitionOnly` primitive callable during mod init; this
-// helper is invoked for its side effect (namespace registration) from
-// `setupMod`, not for a return value. See: context/lib/scripting.md §3.
-export function registerPauseMenuStore(): void {
-  defineStore("audio", {
-    master: { type: "number", default: 1.0, range: [0.0, 1.0], persist: false },
-  });
-}
+// `defineStore` is a pure builder. `setupMod` returns
+// `pauseMenuStore.declaration` through `stores`; importing this module alone
+// does not register anything. See: context/lib/scripting.md §5.
+export const pauseMenuStore = defineStore("audio", {
+  master: { type: "number", default: 1.0, range: [0.0, 1.0], persist: false },
+});

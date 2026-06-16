@@ -1,19 +1,17 @@
 // State-store declaration, read/write primitives, and engine accessors.
 // See: context/lib/scripting.md §5 "Durable State Store"
 
-use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::rc::Rc;
 
 use mlua::{FromLua, IntoLua, Lua, Table as LuaTable, Value as LuaValue};
 use rquickjs::{Array, Ctx, FromJs, IntoJs, Object as JsObject, Value as JsValue};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::scripting::conv::{js_to_json, lua_to_json};
+use crate::scripting::conv::{js_to_json, json_to_js, json_to_lua, lua_to_json};
 use crate::scripting::ctx::ScriptCtx;
 use crate::scripting::error::ScriptError;
-use crate::scripting::primitives_registry::{ContextScope, PrimitiveRegistry, ScriptPrimitive};
+use crate::scripting::primitives_registry::{ContextScope, PrimitiveRegistry};
 use crate::scripting::slot_table::{
     NumericRange, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue, StoreDeclaration,
     StoreDeclarationSet,
@@ -131,70 +129,84 @@ impl<'js> IntoJs<'js> for Any {
     }
 }
 
-/// Script-facing handles returned by `defineStore`.
+/// Script-facing state references returned by `defineStore`.
 ///
-/// Each property value is the stable dotted slot name. The brand exists only
-/// in generated types; the runtime identity is an ordinary string.
+/// Each property value is the stable `{ slot }` reference object. Type brands
+/// exist only in generated types.
 #[derive(Debug)]
-pub(crate) struct StoreHandles(BTreeMap<String, String>);
+pub(crate) struct StoreStateRefs(BTreeMap<String, String>);
 
-impl<'js> IntoJs<'js> for StoreHandles {
+impl<'js> IntoJs<'js> for StoreStateRefs {
     fn into_js(self, ctx: &Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
         let object = JsObject::new(ctx.clone())?;
         for (slot_name, dotted_name) in self.0 {
-            object.set(slot_name, dotted_name)?;
+            let reference = JsObject::new(ctx.clone())?;
+            reference.set("slot", dotted_name)?;
+            object.set(slot_name, reference)?;
         }
         Ok(object.into_value())
     }
 }
 
-impl IntoLua for StoreHandles {
+impl IntoLua for StoreStateRefs {
     fn into_lua(self, lua: &Lua) -> mlua::Result<LuaValue> {
         let table: LuaTable = lua.create_table()?;
         for (slot_name, dotted_name) in self.0 {
-            table.set(slot_name, dotted_name)?;
+            let reference = lua.create_table()?;
+            reference.set("slot", dotted_name)?;
+            table.set(slot_name, reference)?;
         }
         Ok(LuaValue::Table(table))
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub(crate) struct StoreDeclarationAttempt {
-    declarations: StoreDeclarationSet,
-    failure: Option<String>,
+#[derive(Debug)]
+pub(crate) struct StoreDefinition {
+    declaration: StoreDeclarationManifest,
+    state: StoreStateRefs,
 }
 
-impl StoreDeclarationAttempt {
-    fn collect(&mut self, namespace: &str, schema: Value) -> Result<StoreHandles, ScriptError> {
-        let result = store_declaration(namespace, schema).and_then(|declaration| {
-            let handles = handles_for(&declaration);
-            self.declarations
-                .add(declaration)
-                .map_err(|error| ScriptError::InvalidArgument {
-                    reason: format!("defineStore: {error}"),
-                })?;
-            Ok(handles)
-        });
-
-        if let Err(error) = &result {
-            self.failure.get_or_insert_with(|| error.to_string());
-        }
-        result
-    }
-
-    pub(crate) fn finish(self) -> Result<StoreDeclarationSet, ScriptError> {
-        if let Some(reason) = self.failure {
-            return Err(ScriptError::InvalidArgument {
-                reason: format!(
-                    "mod-init: store declaration attempt failed before commit: {reason}"
-                ),
-            });
-        }
-        Ok(self.declarations)
+impl<'js> IntoJs<'js> for StoreDefinition {
+    fn into_js(self, ctx: &Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        let object = JsObject::new(ctx.clone())?;
+        object.set("declaration", self.declaration)?;
+        object.set("state", self.state)?;
+        Ok(object.into_value())
     }
 }
 
-pub(crate) type SharedStoreDeclarationAttempt = Rc<RefCell<StoreDeclarationAttempt>>;
+impl IntoLua for StoreDefinition {
+    fn into_lua(self, lua: &Lua) -> mlua::Result<LuaValue> {
+        let table = lua.create_table()?;
+        table.set("declaration", self.declaration)?;
+        table.set("state", self.state)?;
+        Ok(LuaValue::Table(table))
+    }
+}
+
+#[derive(Debug)]
+struct StoreDeclarationManifest {
+    namespace: String,
+    schema: Value,
+}
+
+impl<'js> IntoJs<'js> for StoreDeclarationManifest {
+    fn into_js(self, ctx: &Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        let object = JsObject::new(ctx.clone())?;
+        object.set("namespace", self.namespace)?;
+        object.set("schema", json_to_js(ctx, &self.schema)?)?;
+        Ok(object.into_value())
+    }
+}
+
+impl IntoLua for StoreDeclarationManifest {
+    fn into_lua(self, lua: &Lua) -> mlua::Result<LuaValue> {
+        let table = lua.create_table()?;
+        table.set("namespace", self.namespace)?;
+        table.set("schema", json_to_lua(lua, &self.schema)?)?;
+        Ok(LuaValue::Table(table))
+    }
+}
 
 impl IntoLua for Any {
     fn into_lua(self, lua: &Lua) -> mlua::Result<LuaValue> {
@@ -224,11 +236,10 @@ struct SlotSchemaInput {
     values: Option<Value>,
 }
 
-const DEFINE_STORE_DOC: &str = "Declare an engine-global typed state-store namespace during mod init. \
+const DEFINE_STORE_DOC: &str = "Build a typed state-store declaration for setupMod().stores. \
      Every mod-owned slot requires a default. Supported types are number, boolean, string, enum, and array. \
-     Namespace registration is atomic and rejects existing or dotted-prefix-colliding namespaces. \
-     Returns an object keyed by slot name whose branded string values are stable dotted-name handles. \
-     Definition context.";
+     Calling this builder does not mutate engine state. Returned declarations commit atomically after setupMod succeeds. \
+     Returns { declaration, state }, where state leaves are stable { slot } references. Definition context.";
 
 const STORE_READ_DOC: &str = "Read the current value of an engine-global state slot by stable dotted name. \
      Available in definition and data contexts.";
@@ -240,9 +251,10 @@ const STORE_WRITE_DOC: &str = "Write an engine-global state slot by stable dotte
 pub(crate) fn register_store_primitives(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
     registry
         .register("defineStore", {
-            let ctx = ctx.clone();
-            move |namespace: String, schema: StoreSchemaJson| -> Result<StoreHandles, ScriptError> {
-                define_store(&ctx, &namespace, schema.0)
+            move |namespace: String,
+                  schema: StoreSchemaJson|
+                  -> Result<StoreDefinition, ScriptError> {
+                define_store(&namespace, schema.0)
             }
         })
         .scope(ContextScope::DefinitionOnly)
@@ -275,35 +287,6 @@ pub(crate) fn register_store_primitives(registry: &mut PrimitiveRegistry, ctx: S
         .param("name", "String")
         .param("value", "Any")
         .finish();
-}
-
-/// Build an attempt-local `defineStore` primitive for mod-init contexts.
-///
-/// Installing this after the normal primitive snapshot replaces only
-/// `defineStore`; reads and writes still target the live table.
-pub(crate) fn store_declaration_primitive(
-    attempt: SharedStoreDeclarationAttempt,
-) -> ScriptPrimitive {
-    let mut registry = PrimitiveRegistry::new();
-    registry
-        .register(
-            "defineStore",
-            move |namespace: String,
-                  schema: StoreSchemaJson|
-                  -> Result<StoreHandles, ScriptError> {
-                attempt.borrow_mut().collect(&namespace, schema.0)
-            },
-        )
-        .scope(ContextScope::DefinitionOnly)
-        .doc(DEFINE_STORE_DOC)
-        .param("namespace", "String")
-        .param("schema", "Any")
-        .finish();
-    registry
-        .iter()
-        .next()
-        .expect("collector registry contains defineStore")
-        .clone()
 }
 
 pub(crate) fn read_store_slot(ctx: &ScriptCtx, name: &str) -> Result<SlotValue, ScriptError> {
@@ -664,20 +647,122 @@ fn slot_value_kind(value: &SlotValue) -> &'static str {
     }
 }
 
-fn define_store(
-    ctx: &ScriptCtx,
-    namespace: &str,
-    schema: Value,
-) -> Result<StoreHandles, ScriptError> {
-    let declaration = store_declaration(namespace, schema)?;
-    let handles = handles_for(&declaration);
-    ctx.slot_table
-        .borrow_mut()
-        .insert_namespace(&declaration.namespace, declaration.records)
-        .map_err(|error| ScriptError::InvalidArgument {
-            reason: format!("defineStore: {error}"),
+fn define_store(namespace: &str, schema: Value) -> Result<StoreDefinition, ScriptError> {
+    let declaration = store_declaration(namespace, schema.clone())?;
+    let state = state_refs_for(&declaration);
+    Ok(StoreDefinition {
+        declaration: StoreDeclarationManifest {
+            namespace: namespace.to_string(),
+            schema,
+        },
+        state,
+    })
+}
+
+pub(crate) fn store_declaration_from_manifest_value(
+    value: Value,
+) -> Result<StoreDeclaration, ScriptError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| ScriptError::InvalidArgument {
+            reason: "defineStore: returned store declaration must be an object".to_string(),
         })?;
-    Ok(handles)
+    let namespace = object
+        .get("namespace")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ScriptError::InvalidArgument {
+            reason: "defineStore: returned store declaration requires `namespace`".to_string(),
+        })?;
+    let schema = object
+        .get("schema")
+        .cloned()
+        .ok_or_else(|| ScriptError::InvalidArgument {
+            reason: "defineStore: returned store declaration requires `schema`".to_string(),
+        })?;
+    store_declaration(namespace, schema)
+}
+
+pub(crate) fn store_declaration_set_from_values(
+    values: impl IntoIterator<Item = Value>,
+) -> Result<StoreDeclarationSet, ScriptError> {
+    let mut declarations = StoreDeclarationSet::default();
+    for value in values {
+        let declaration = store_declaration_from_manifest_value(value)?;
+        declarations
+            .add(declaration)
+            .map_err(|error| ScriptError::InvalidArgument {
+                reason: format!("defineStore: {error}"),
+            })?;
+    }
+    Ok(declarations)
+}
+
+pub(crate) fn drain_store_declarations_js<'js>(
+    ctx: &Ctx<'js>,
+    obj: &JsObject<'js>,
+) -> Result<StoreDeclarationSet, ScriptError> {
+    match obj.contains_key("stores") {
+        Ok(false) => Ok(StoreDeclarationSet::default()),
+        Ok(true) => {
+            let arr: Array = obj
+                .get("stores")
+                .map_err(|e| ScriptError::InvalidArgument {
+                    reason: format!("`stores` field must be an array: {e}"),
+                })?;
+            let mut values = Vec::with_capacity(arr.len());
+            for i in 0..arr.len() {
+                let value: JsValue = arr.get(i).map_err(|e| ScriptError::InvalidArgument {
+                    reason: format!("`stores[{i}]` could not be read: {e}"),
+                })?;
+                values.push(
+                    js_to_json(ctx, value).map_err(|e| ScriptError::InvalidArgument {
+                        reason: format!("`stores[{i}]` could not be lowered: {e}"),
+                    })?,
+                );
+            }
+            store_declaration_set_from_values(values)
+        }
+        Err(e) => Err(ScriptError::InvalidArgument {
+            reason: format!("`stores` lookup failed: {e}"),
+        }),
+    }
+}
+
+pub(crate) fn drain_store_declarations_lua(
+    table: &LuaTable,
+) -> Result<StoreDeclarationSet, ScriptError> {
+    if !table
+        .contains_key("stores")
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("`stores` lookup failed: {e}"),
+        })?
+    {
+        return Ok(StoreDeclarationSet::default());
+    }
+
+    let raw: LuaValue = table
+        .get("stores")
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("`stores` field could not be read: {e}"),
+        })?;
+    let LuaValue::Table(arr) = raw else {
+        return Err(ScriptError::InvalidArgument {
+            reason: format!("`stores` field must be an array, got {}", raw.type_name()),
+        });
+    };
+
+    let mut values = Vec::with_capacity(arr.raw_len());
+    for i in 1..=(arr.raw_len() as i64) {
+        let value: LuaValue = arr.get(i).map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("`stores[{i}]` could not be read: {e}"),
+        })?;
+        values.push(
+            lua_to_json(value).map_err(|e| ScriptError::InvalidArgument {
+                reason: format!("`stores[{i}]` could not be lowered: {e}"),
+            })?,
+        );
+    }
+    store_declaration_set_from_values(values)
 }
 
 fn store_declaration(namespace: &str, schema: Value) -> Result<StoreDeclaration, ScriptError> {
@@ -696,8 +781,8 @@ fn store_declaration(namespace: &str, schema: Value) -> Result<StoreDeclaration,
     })
 }
 
-fn handles_for(declaration: &StoreDeclaration) -> StoreHandles {
-    StoreHandles(
+fn state_refs_for(declaration: &StoreDeclaration) -> StoreStateRefs {
+    StoreStateRefs(
         declaration
             .records
             .iter()
@@ -884,8 +969,22 @@ mod tests {
         registry
     }
 
+    fn commit_store_for_test(
+        ctx: &ScriptCtx,
+        namespace: &str,
+        schema: Value,
+    ) -> Result<(), ScriptError> {
+        let declaration = store_declaration(namespace, schema)?;
+        ctx.slot_table
+            .borrow_mut()
+            .insert_namespace(&declaration.namespace, declaration.records)
+            .map_err(|error| ScriptError::InvalidArgument {
+                reason: format!("defineStore: {error}"),
+            })
+    }
+
     fn define_runtime_test_store(ctx: &ScriptCtx) {
-        define_store(
+        commit_store_for_test(
             ctx,
             "test",
             serde_json::json!({
@@ -927,7 +1026,7 @@ mod tests {
     }
 
     #[test]
-    fn define_store_quickjs_and_luau_produce_equivalent_slots() {
+    fn define_store_quickjs_and_luau_return_equivalent_declarations() {
         let js_ctx = ScriptCtx::new();
         let js_registry = registry_for(js_ctx.clone());
         let quickjs = QuickJsSubsystem::new(&js_registry, &QuickJsConfig::default()).unwrap();
@@ -935,13 +1034,15 @@ mod tests {
             run_script::<()>(
                 &qjs,
                 r#"
-                defineStore("audio", {
+                const store = defineStore("audio", {
                     master: { type: "number", default: 0.8, range: [0, 1], persist: true },
                     muted: { type: "boolean", default: false },
                     label: { type: "string", default: "" },
                     mode: { type: "enum", values: ["quiet", "loud"], default: "quiet" },
                     curve: { type: "array", default: [0, 0.5, 1] },
                 });
+                if (store.declaration.namespace !== "audio") throw new Error("namespace");
+                if (store.state.master.slot !== "audio.master") throw new Error("state ref");
                 "#,
                 "store.js",
             )
@@ -954,13 +1055,15 @@ mod tests {
         luau.run_source::<()>(
             Which::Definition,
             r#"
-            defineStore("audio", {
+            local store = defineStore("audio", {
                 master = { type = "number", default = 0.8, range = {0, 1}, persist = true },
                 muted = { type = "boolean", default = false },
                 label = { type = "string", default = "" },
                 mode = { type = "enum", values = {"quiet", "loud"}, default = "quiet" },
                 curve = { type = "array", default = {0, 0.5, 1} },
             })
+            assert(store.declaration.namespace == "audio")
+            assert(store.state.master.slot == "audio.master")
             "#,
             "store.luau",
         )
@@ -975,45 +1078,37 @@ mod tests {
             "audio.mode",
             "audio.curve",
         ] {
-            assert_eq!(js_slots.get(name), luau_slots.get(name), "slot {name}");
+            assert!(js_slots.get(name).is_none(), "js slot {name}");
+            assert!(luau_slots.get(name).is_none(), "luau slot {name}");
         }
     }
 
     #[test]
     fn malformed_schemas_return_errors_without_partial_insertion() {
         let cases = [
-            r#"({ value: { type: "number" } })"#,
-            r#"({ value: { type: "number", default: "one" } })"#,
-            r#"({ value: { type: "number", default: 2, range: [0, 1] } })"#,
-            r#"({ value: { type: "number", default: 1, range: [2, 1] } })"#,
-            r#"({ value: { type: "boolean", default: 1 } })"#,
-            r#"({ value: { type: "string", default: false } })"#,
-            r#"({ value: { type: "enum", values: [], default: "a" } })"#,
-            r#"({ value: { type: "enum", values: ["a"], default: "b" } })"#,
-            r#"({ value: { type: "array", default: [1, NaN] } })"#,
-            r#"({ value: { type: "vector", default: 1 } })"#,
+            serde_json::json!({ "value": { "type": "number" } }),
+            serde_json::json!({ "value": { "type": "number", "default": "one" } }),
+            serde_json::json!({ "value": { "type": "number", "default": 2, "range": [0, 1] } }),
+            serde_json::json!({ "value": { "type": "number", "default": 1, "range": [2, 1] } }),
+            serde_json::json!({ "value": { "type": "boolean", "default": 1 } }),
+            serde_json::json!({ "value": { "type": "string", "default": false } }),
+            serde_json::json!({ "value": { "type": "enum", "values": [], "default": "a" } }),
+            serde_json::json!({ "value": { "type": "enum", "values": ["a"], "default": "b" } }),
+            serde_json::json!({ "value": { "type": "array", "default": [1, null] } }),
+            serde_json::json!({ "value": { "type": "vector", "default": 1 } }),
         ];
 
         for (index, schema) in cases.into_iter().enumerate() {
-            let ctx = ScriptCtx::new();
-            let registry = registry_for(ctx.clone());
-            let quickjs = QuickJsSubsystem::new(&registry, &QuickJsConfig::default()).unwrap();
-            quickjs.definition_ctx().with(|qjs| {
-                let source = format!("defineStore(\"bad{index}\", {schema});");
-                let err = run_script::<()>(&qjs, &source, "bad-store.js")
-                    .expect_err("malformed schema should throw");
-                assert!(matches!(err, ScriptError::ScriptThrew { .. }));
-            });
-            assert!(
-                ctx.slot_table
-                    .borrow()
-                    .get(&format!("bad{index}.value"))
-                    .is_none()
-            );
+            let err = store_declaration_from_manifest_value(serde_json::json!({
+                "namespace": format!("bad{index}"),
+                "schema": schema,
+            }))
+            .expect_err("malformed returned declaration should fail validation");
+            assert!(matches!(err, ScriptError::InvalidArgument { .. }));
         }
 
         let ctx = ScriptCtx::new();
-        let err = define_store(
+        let err = commit_store_for_test(
             &ctx,
             "mixed",
             serde_json::json!({
@@ -1033,9 +1128,29 @@ mod tests {
             "shield": { "type": "number", "default": 100 }
         });
 
-        for namespace in ["player", "player.stats"] {
-            let err = define_store(&ctx, namespace, schema.clone()).unwrap_err();
-            assert!(matches!(err, ScriptError::InvalidArgument { .. }));
+        for (namespace, expected) in [
+            ("player", "incompatible schema"),
+            ("player.stats", "namespace collision"),
+        ] {
+            let declaration = store_declaration(namespace, schema.clone()).unwrap();
+            let mut declarations = StoreDeclarationSet::default();
+            declarations.add(declaration).unwrap();
+            let err = ctx
+                .slot_table
+                .borrow()
+                .plan_reconcile(&declarations)
+                .unwrap_err();
+            match expected {
+                "incompatible schema" => assert!(matches!(
+                    err,
+                    NamespaceInsertError::IncompatibleSchema { .. }
+                )),
+                "namespace collision" => assert!(matches!(
+                    err,
+                    NamespaceInsertError::NamespaceCollision { .. }
+                )),
+                _ => unreachable!("test expectation covers every case"),
+            }
         }
         assert!(ctx.slot_table.borrow().get("player.shield").is_none());
         assert!(ctx.slot_table.borrow().get("player.stats.shield").is_none());
@@ -1044,7 +1159,7 @@ mod tests {
     #[test]
     fn duplicate_mod_namespace_is_rejected_without_mutation() {
         let ctx = ScriptCtx::new();
-        define_store(
+        commit_store_for_test(
             &ctx,
             "audio",
             serde_json::json!({
@@ -1054,7 +1169,7 @@ mod tests {
         .unwrap();
         let before = ctx.slot_table.borrow().len();
 
-        let err = define_store(
+        let err = commit_store_for_test(
             &ctx,
             "audio",
             serde_json::json!({
@@ -1078,7 +1193,7 @@ mod tests {
     }
 
     #[test]
-    fn define_store_returns_stable_dotted_handles_in_both_runtimes() {
+    fn define_store_returns_stable_state_refs_in_both_runtimes() {
         let js_ctx = ScriptCtx::new();
         let js_registry = registry_for(js_ctx);
         let quickjs = QuickJsSubsystem::new(&js_registry, &QuickJsConfig::default()).unwrap();
@@ -1086,12 +1201,12 @@ mod tests {
             run_script::<()>(
                 &qjs,
                 r#"
-                const handles = defineStore("audio", {
+                const store = defineStore("audio", {
                     master: { type: "number", default: 1 },
                     muted: { type: "boolean", default: false },
                 });
-                if (handles.master !== "audio.master") throw new Error("master handle");
-                if (handles.muted !== "audio.muted") throw new Error("muted handle");
+                if (store.state.master.slot !== "audio.master") throw new Error("master handle");
+                if (store.state.muted.slot !== "audio.muted") throw new Error("muted handle");
                 "#,
                 "store-handles.js",
             )
@@ -1104,12 +1219,12 @@ mod tests {
         luau.run_source::<()>(
             Which::Definition,
             r#"
-            local handles = defineStore("audio", {
+            local store = defineStore("audio", {
                 master = { type = "number", default = 1 },
                 muted = { type = "boolean", default = false },
             })
-            assert(handles.master == "audio.master")
-            assert(handles.muted == "audio.muted")
+            assert(store.state.master.slot == "audio.master")
+            assert(store.state.muted.slot == "audio.muted")
             "#,
             "store-handles.luau",
         )
@@ -1117,7 +1232,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_schemas_have_luau_parity_without_partial_insertion() {
+    fn malformed_luau_builders_do_not_insert_before_manifest_validation() {
         let cases = [
             r#"{ value = { type = "number" } }"#,
             r#"{ value = { type = "number", default = "one" } }"#,
@@ -1133,10 +1248,8 @@ mod tests {
             let registry = registry_for(ctx.clone());
             let luau = LuauSubsystem::new(&registry, &LuauConfig::default()).unwrap();
             let source = format!(r#"defineStore("bad{index}", {schema})"#);
-            let err = luau
-                .run_source::<()>(Which::Definition, &source, "bad-store.luau")
-                .expect_err("malformed schema should throw");
-            assert!(matches!(err, ScriptError::ScriptThrew { .. }));
+            luau.run_source::<()>(Which::Definition, &source, "bad-store.luau")
+                .expect("pure builder does not validate until manifest drain");
             assert!(
                 ctx.slot_table
                     .borrow()

@@ -7,7 +7,7 @@
 //
 // Pure builders: constructing a widget has no engine side effect — the FFI
 // boundary is the eventual `return` of the authored tree. Bound props accept
-// store handles (a branded slot-name string) or an explicit bind object;
+// state-reference descriptors (`{ slot }`) or presentation-local bind objects;
 // `Button.onPress` accepts a reaction handle or a bare name string.
 // See: context/lib/ui.md · context/lib/scripting.md §7
 
@@ -34,15 +34,22 @@ export type WidgetAlign = "start" | "center" | "end" | "stretch";
 /** Easing curve for a value tween. Mirrors `descriptor.rs` `Easing`. */
 export type WidgetEasing = "linear" | "easeIn" | "easeOut" | "easeInOut";
 
-/**
- * A branded store-handle value (`StateValue<T>`): a branded `string` carrying
- * the dotted slot name, used as the `slot` field of a bind object. A handle's
- * `.get()` returns that bind object (a `SliderBindProp`), not this type.
- * Declared structurally here (the SDK lib has no cyclic import to the global
- * typedef) as "a string the engine brands"; an explicit bind object is the
- * alternative.
- */
-export type StoreHandleRef = string & { readonly __brand?: "StateValue" };
+declare const stateRefValueBrand: unique symbol;
+declare const writableStateRefBrand: unique symbol;
+
+export type ScalarStateValue = number | boolean | string;
+export type NumericArrayStateValue = ReadonlyArray<number>;
+
+/** Readable authoritative state reference. Runtime shape is exactly `{ slot }`. */
+export type ReadonlyStateRef<T> = {
+  readonly slot: string;
+  readonly [stateRefValueBrand]: T;
+};
+
+/** Writable authoritative state reference. The writable marker is type-only. */
+export type WritableStateRef<T> = ReadonlyStateRef<T> & {
+  readonly [writableStateRefBrand]: T;
+};
 
 /**
  * Value-tween config for a text/slider/bar bind (number shape). Mirrors
@@ -80,11 +87,11 @@ export type PredicateValue = number | boolean | string;
 /**
  * A reactive predicate (M13 G2): a `{ slot }` store source or `{ local }` cell
  * source read against an optional `equals` comparand. Mirrors `descriptor.rs`
- * `Predicate`. Constructed by `LocalStateHandle.is(v)` / `StoreHandle.is(v)`; the
- * comparand there is typed to the cell/slot value type.
+ * `Predicate`. Constructed by `LocalStateHandle.is(v)` / `stateEquals(ref, v)`;
+ * the comparand there is typed to the cell/slot value type.
  */
 export type Predicate = (
-  | { slot: StoreHandleRef; local?: never }
+  | (ReadonlyStateRef<PredicateValue> & { local?: never })
   | LocalBindRef
 ) & {
   equals?: PredicateValue;
@@ -108,13 +115,13 @@ export type WidgetRole =
 export type AnnouncePriority = "polite" | "assertive";
 
 /**
- * State binding for a `text` widget. The source is either a `{ slot }` store
- * binding (a dotted slot name or a store handle) or a `{ local }`
- * presentation-cell binding; `format` is an optional one-`{}` template; `tween`
- * eases the resolved numeric value. Mirrors `descriptor.rs` `TextBind`.
+ * State binding for a `text` widget. The source is either a `{ slot }`
+ * authoritative state reference or a `{ local }` presentation-cell binding;
+ * `format` is an optional one-`{}` template; `tween` eases the resolved numeric
+ * value. Mirrors `descriptor.rs` `TextBind`.
  */
 export type TextBindProp = (
-  | { slot: StoreHandleRef; local?: never }
+  | (ReadonlyStateRef<ScalarStateValue> & { local?: never })
   | LocalBindRef
 ) & {
   format?: string;
@@ -127,22 +134,31 @@ export type TextBindProp = (
  * resolved color. Mirrors `descriptor.rs` `PanelBind`.
  */
 export type PanelBindProp = (
-  | { slot: StoreHandleRef; local?: never }
+  | (ReadonlyStateRef<NumericArrayStateValue> & { local?: never; format?: never })
   | LocalBindRef
 ) & {
   tween?: ColorTween;
 };
 
 /**
- * State binding shared by `slider`/`bar` (a `{ slot }` or `{ local }` numeric
+ * State binding for a `slider` (a writable numeric `{ slot }` or `{ local }`
  * source + optional number-shape tween). Mirrors `descriptor.rs` `SliderBind`.
  */
 export type SliderBindProp = (
-  | { slot: StoreHandleRef; local?: never }
+  | (WritableStateRef<number> & { local?: never; format?: never })
   | LocalBindRef
 ) & {
   tween?: NumberTween;
 };
+
+export type BarBindProp = (
+  | (ReadonlyStateRef<number> & { local?: never; format?: never })
+  | LocalBindRef
+) & {
+  tween?: NumberTween;
+};
+
+export type BarMaxProp = number | ReadonlyStateRef<number>;
 
 /** One band in a `styleRanges` map. Mirrors `descriptor.rs` `StyleEntry`. */
 export type StyleRangeEntry = {
@@ -262,11 +278,11 @@ function validateEasing(value: unknown, field: string, factory: string): void {
 }
 
 /**
- * Resolve a bind prop to its wire `{ slot, ... }` form. `slot` may be a store
- * handle (a branded slot-name string) or a plain string; both read as the dotted
- * slot name. Validates the optional `tween`; the panel path expects a color-shape
- * `from`, the number path a numeric `from`. Returns `undefined` when no bind was
- * authored so the factory omits the `bind` key (wire identity).
+ * Resolve a bind prop to its wire `{ slot, ... }` form. `slot` comes from an
+ * authoritative state reference; `{ local }` comes from a presentation cell.
+ * Validates the optional `tween`; the panel path expects a color-shape `from`,
+ * the number path a numeric `from`. Returns `undefined` when no bind was authored
+ * so the factory omits the `bind` key (wire identity).
  */
 function buildBind(
   bind: unknown,
@@ -446,6 +462,19 @@ function buildPredicate(value: unknown, field: string, factory: string): Predica
     out.equals = e;
   }
   return out;
+}
+
+function buildBarMax(value: unknown, factory: string): number | { slot: string } {
+  if (typeof value === "number") {
+    requireFiniteNumber(value, "max", factory);
+    return value;
+  }
+  if (value === null || typeof value !== "object") {
+    throw new Error(`${factory}: \`max\` must be a finite number or a state reference`);
+  }
+  const ref = value as Record<string, unknown>;
+  requireNonemptyString(ref.slot, "max.slot", factory);
+  return { slot: ref.slot as string };
 }
 
 /** Append an optional `visibleWhen` predicate + `role` shared by every widget. */
@@ -833,8 +862,8 @@ export function Slider(props: SliderProps): WidgetDescriptor {
 
 /** Props for `Bar`. `bind` is a `SliderBindProp` (numeric slot). */
 export type BarProps = {
-  bind: SliderBindProp;
-  max: number;
+  bind: BarBindProp;
+  max: BarMaxProp;
   fill: WidgetColor;
   background: WidgetColor;
   styleRanges?: StyleRangesProp;
@@ -853,14 +882,14 @@ export function Bar(props: BarProps): WidgetDescriptor {
   if (bind === undefined) {
     throw new Error("Bar: `bind` is required");
   }
-  requireFiniteNumber(props.max, "max", "Bar");
+  const max = buildBarMax(props.max, "Bar");
   requireColor(props.fill, "fill", "Bar");
   requireColor(props.background, "background", "Bar");
 
   const out: WidgetDescriptor = {
     kind: "bar",
     bind,
-    max: props.max,
+    max,
     fill: props.fill,
     background: props.background,
   };

@@ -1,78 +1,53 @@
-// Store-slot handle ergonomics: `.get()`/`.set()` accessor wrappers over
-// value-typed store-slot handles (`StateValue<T>`). The runtime representation
-// of a `defineStore` slot handle is a plain branded string carrying the dotted
-// slot name — it carries no methods, so these namespaced wrappers add `.get()`
-// / `.set()` over it.
-//
-// `.set(v)` delegates to the shipped `setState` reaction builder so the produced
-// descriptor is byte-identical to calling `setState(slot, v)` directly. `.get()`
-// yields the typed bind reference a widget binds to (`{ slot }`), accepted by
-// `Text` (TextBind), `Panel` (PanelBind), and `Slider`/`Bar` (SliderBind).
-//
-// Engine-owned slots (`postretro/game-state`) are read-only to mods and expose
-// `.get()` ONLY — their handle type (`ReadonlyStateValue<T>`) omits `.set()`,
-// so a `.set(...)` on an engine slot is a type error. This module is the
-// WRITABLE store-handle wrapper; do NOT confuse it with the distinct
-// `ui.createLocalState()` presentation handle (which never writes the store).
-// See: context/lib/scripting.md §6.9 · context/lib/ui.md
+// Authoritative state-reference helpers. State refs are immutable descriptors
+// with runtime shape `{ slot }`; readonly/writable and value type are type-level
+// capabilities. Presentation-local cells below remain separate and keep their
+// `.get()`/`.set()` handle behavior.
 
-import type { StateValue } from "postretro";
 import type { PrimitiveReactionDescriptor } from "../data_script";
-import type { LocalBindRef, Predicate, SliderBindProp } from "./widgets";
-import { setState } from "./reactions";
+import type {
+  ColorTween,
+  LocalBindRef,
+  NumberTween,
+  NumericArrayStateValue,
+  Predicate,
+  PredicateValue,
+  ReadonlyStateRef,
+  ScalarStateValue,
+} from "./widgets";
+
+export type StateBindOptionsFor<T> =
+  T extends number ? { format?: string; tween?: NumberTween } :
+  T extends NumericArrayStateValue ? { tween?: ColorTween } :
+  T extends ScalarStateValue ? { format?: string } :
+  never;
+
+function stateSlot(ref: ReadonlyStateRef<unknown>, helper: string): string {
+  if (ref === null || typeof ref !== "object" || typeof ref.slot !== "string" || ref.slot.length === 0) {
+    throw new Error(`${helper}: expected a state reference with a nonempty \`slot\``);
+  }
+  return ref.slot;
+}
 
 /**
- * A `.get()`/`.set()` accessor wrapper over a writable, value-typed store-slot
- * handle (`StateValue<T>`). `T` is the slot's declared value type, so `.set(v)`
- * is typed to it and the bind reference carries it through.
- *
- * - `.get()` yields the typed bind reference a widget binds to — the `{ slot }`
- *   wire shape (`SliderBindProp`) that `Text`/`Panel`/`Slider`/`Bar` accept as
- *   their `bind` prop. Adding a `format`/`tween` is the widget's concern.
- * - `.set(v)` produces a `setState` reaction descriptor (typed to the slot's
- *   `T`), byte-identical to calling `setState(slot, v)` directly.
- *
- * Read-only engine slots use `ReadonlyStateValue<T>` instead — `.get()` only,
- * no `.set()`.
+ * Compose bind-only options onto a state reference. Pure: returns the existing
+ * retained bind wire shape `{ slot, ...options }`.
  */
-export type StoreHandle<T> = {
-  /** The typed bind reference a widget's `bind` prop accepts (`{ slot }`). */
-  get(): SliderBindProp;
-  /** A `setState` reaction descriptor writing `value` to this slot. */
-  set(value: T): PrimitiveReactionDescriptor;
-  /**
-   * An equality `Predicate` against this slot (`{ slot, equals: value }`).
-   * `value` is typed to the slot's `T`, so a mismatched comparand is a TS error.
-   */
-  is(value: T): Predicate;
-};
+export function bindState<T>(
+  ref: ReadonlyStateRef<T>,
+  options?: StateBindOptionsFor<T>,
+): ReadonlyStateRef<T> & StateBindOptionsFor<T> {
+  const slot = stateSlot(ref, "bindState");
+  return options === undefined
+    ? ({ slot } as ReadonlyStateRef<T> & StateBindOptionsFor<T>)
+    : ({ slot, ...options } as ReadonlyStateRef<T> & StateBindOptionsFor<T>);
+}
 
-/**
- * Wrap a value-typed store-slot handle (`defineStore`'s `StateValue<T>` return)
- * in a `.get()`/`.set()` accessor. Pure: no engine side effect — `.set(...)`
- * returns a descriptor, it does not write. `slot` is the branded dotted-name
- * handle; its runtime form is the slot-name string read straight through to the
- * bind reference and the `setState` descriptor.
- */
-export function storeHandle<T extends number | boolean | string | number[]>(
-  slot: StateValue<T>,
-): StoreHandle<T> {
-  // `StateValue<T>` is a branded value carrying the dotted slot name; its runtime
-  // form is the slot-name string. Read it through unchanged.
-  const name = slot as unknown as string;
-  return {
-    get(): SliderBindProp {
-      return { slot: name };
-    },
-    set(value: T): PrimitiveReactionDescriptor {
-      // Delegate to the shipped builder so the descriptor is byte-identical to a
-      // direct `setState(slot, value)` call.
-      return setState(name, value as number | boolean | string | number[]);
-    },
-    is(value: T): Predicate {
-      return { slot: name, equals: value as number | boolean | string };
-    },
-  };
+/** Build an equality predicate against a readable scalar state reference. */
+export function stateEquals<T extends PredicateValue>(
+  ref: ReadonlyStateRef<T>,
+  value: T,
+): Predicate {
+  return { slot: stateSlot(ref, "stateEquals"), equals: value };
 }
 
 // --- ui.createLocalState() --------------------------------------------------
@@ -82,8 +57,7 @@ type CellInit = number | boolean | string | [number, number, number, number];
 
 /**
  * A presentation-cell handle returned by `ui.createLocalState()` for ONE cell.
- * Distinct from `StoreHandle` (which writes the authoritative store): this handle
- * is presentation-only.
+ * Distinct from authoritative state references: this handle is presentation-only.
  *
  * - `.get()` yields the `{ local: name }` bind reference a descendant widget's
  *   `bind` prop accepts — resolved app-side against the cell store, scoped to the

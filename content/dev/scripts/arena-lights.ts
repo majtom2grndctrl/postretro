@@ -1,5 +1,7 @@
 import {
   type NamedReactionDescriptor,
+  type ReadonlyStateRef,
+  type WritableStateRef,
   appendText,
   backspaceText,
   closeDialog,
@@ -193,16 +195,17 @@ export function setupLevel(_ctx: unknown) {
   // needs no Rust change, only matching reaction names here. The `done` key does
   // NOT appear here: its `onPress` is the reserved `ui.commitTextEntry` sentinel
   // the engine intercepts to reach the shared commit seam (Task 3).
-  const TEXT_ENTRY_SLOT = "ui.textEntry";
+  const TEXT_ENTRY_REF = { slot: "ui.textEntry" } as WritableStateRef<string>;
   const keyChars = "abcdefghijklmnopqrstuvwxyz0123456789".split("");
   for (const ch of keyChars) {
-    reactions.push(defineReaction(`kbAppend_${ch}`, appendText(TEXT_ENTRY_SLOT, ch)));
+    reactions.push(defineReaction(`kbAppend_${ch}`, appendText(TEXT_ENTRY_REF, ch)));
   }
-  reactions.push(defineReaction("kbAppend_space", appendText(TEXT_ENTRY_SLOT, " ")));
-  reactions.push(defineReaction("kbBackspace", backspaceText(TEXT_ENTRY_SLOT)));
+  reactions.push(defineReaction("kbAppend_space", appendText(TEXT_ENTRY_REF, " ")));
+  reactions.push(defineReaction("kbBackspace", backspaceText(TEXT_ENTRY_REF)));
 
+  const PLAYER_HEALTH_REF = { slot: "player.health" } as ReadonlyStateRef<number>;
   const crossings = [
-    onStateCrossing("player.health", { below: 20, max: 100 }, [
+    onStateCrossing(PLAYER_HEALTH_REF, { below: 20, max: 100 }, [
       "lowHealthFlash",
       "lowHealthVignette",
       "lowHealthShake",

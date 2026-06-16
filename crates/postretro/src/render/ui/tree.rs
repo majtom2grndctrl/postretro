@@ -13,9 +13,10 @@ use taffy::prelude::{
 };
 
 use super::descriptor::{
-    Align, AnchoredTree, BarWidget, BindSource, Border, ButtonWidget, ColorValue, ContainerWidget,
-    Easing, GridWidget, ImageWidget, LocalState, PanelBind, PanelWidget, Predicate, PredicateValue,
-    SliderBind, SliderWidget, SpacingValue, TextBind, TextWidget, Widget,
+    Align, AnchoredTree, BarMax, BarWidget, BindSource, Border, ButtonWidget, ColorValue,
+    ContainerWidget, Easing, GridWidget, ImageWidget, LocalState, PanelBind, PanelWidget,
+    Predicate, PredicateValue, SliderBind, SliderWidget, SpacingValue, TextBind, TextWidget,
+    Widget,
 };
 use super::layout::{Anchor, REFERENCE_HEIGHT, REFERENCE_WIDTH};
 use super::style_ranges::{StyleEffectState, StyleRanges, evaluate};
@@ -438,7 +439,7 @@ enum NodeContext {
     /// (never focusable activation); `bind`'s tween eases the displayed fraction.
     Bar {
         bind: SliderBind,
-        max: f32,
+        max: BarMax,
         fill: [f32; 4],
         background: [f32; 4],
         /// Nearest declaring `localState` scope id for a `{ local }` bind (see
@@ -1359,8 +1360,9 @@ impl UiTree {
                     (Some(_), Some(displayed)) => *displayed,
                     _ => bar_slot_value(bind, bind_scope.as_deref(), slot_values, cell_values),
                 };
-                let fraction = if *max > 0.0 {
-                    (value / *max).clamp(0.0, 1.0)
+                let max_value = bar_max_value(max, slot_values);
+                let fraction = if max_value > 0.0 {
+                    (value / max_value).clamp(0.0, 1.0)
                 } else {
                     0.0
                 };
@@ -2358,7 +2360,7 @@ fn build_bar(
             NodeContext::Bar {
                 bind_scope,
                 bind: bar.bind.clone(),
-                max: bar.max,
+                max: bar.max.clone(),
                 fill: resolve_color(&bar.fill, theme),
                 background: resolve_color(&bar.background, theme),
                 last_resolved: None,
@@ -2909,6 +2911,16 @@ fn bar_slot_value(
     match lookup_bound(&bind.source, bind_scope, slot_values, cell_values) {
         Some(SlotValue::Number(n)) => *n,
         _ => 0.0,
+    }
+}
+
+fn bar_max_value(max: &BarMax, slot_values: &HashMap<String, SlotValue>) -> f32 {
+    match max {
+        BarMax::Literal(value) => *value,
+        BarMax::State(reference) => match slot_values.get(&reference.slot) {
+            Some(SlotValue::Number(value)) => *value,
+            _ => 0.0,
+        },
     }
 }
 
@@ -5637,7 +5649,7 @@ mod tests {
 
     // --- Interactive widgets ---
 
-    use super::super::descriptor::{BarWidget, ButtonWidget, SliderBind, SliderWidget};
+    use super::super::descriptor::{BarMax, BarWidget, ButtonWidget, SliderBind, SliderWidget};
 
     fn button(id: &str, on_press: &str) -> Widget {
         Widget::Button(ButtonWidget {
@@ -6084,7 +6096,7 @@ mod tests {
                 source: BindSource::Slot { slot: slot.into() },
                 tween: None,
             },
-            max,
+            max: BarMax::Literal(max),
             fill: ColorValue::Literal([0.0, 1.0, 0.0, 1.0]),
             background: ColorValue::Literal([0.1, 0.1, 0.1, 1.0]),
             id: None,
@@ -6188,7 +6200,7 @@ mod tests {
                     from: None,
                 }),
             },
-            max: 100.0,
+            max: BarMax::Literal(100.0),
             fill: ColorValue::Literal([0.0, 1.0, 0.0, 1.0]),
             background: ColorValue::Literal([0.1, 0.1, 0.1, 1.0]),
             id: None,

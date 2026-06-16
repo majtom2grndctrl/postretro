@@ -2,6 +2,8 @@
 // FFI boundary is the `return` statement — these functions never call back into Rust.
 // See: context/lib/scripting.md §2 (Data context lifecycle)
 
+import type { WritableStateRef } from "./ui/widgets";
+
 /** Fires `fire` when entities tagged `tag` cross kill ratio `at` (0.0–1.0). */
 export type ProgressReactionDescriptor = {
   progress: { tag: string; at: number; fire: string };
@@ -77,6 +79,26 @@ export type LevelManifest = {
   uiTrees?: import("postretro").ModUiTree[];
 };
 
+export type StoreSlotSchema = { type: "number" | "boolean" | "string" | "enum" | "array" } & Record<string, unknown>;
+
+export type StoreDeclaration = {
+  namespace: string;
+  schema: Record<string, StoreSlotSchema>;
+};
+
+export type StateRef<T = unknown> = WritableStateRef<T>;
+
+export type StateValueForSlot<Slot> =
+  Slot extends { type: "number" } ? StateRef<number> :
+  Slot extends { type: "boolean" } ? StateRef<boolean> :
+  Slot extends { type: "array" } ? StateRef<ReadonlyArray<number>> :
+  StateRef<string>;
+
+export type StoreDefinition<S extends Record<string, StoreSlotSchema>> = {
+  readonly declaration: StoreDeclaration;
+  readonly state: { readonly [K in keyof S]: StateValueForSlot<S[K]> };
+};
+
 type ReactionBody =
   | ProgressReactionDescriptor
   | PrimitiveReactionDescriptor
@@ -149,4 +171,21 @@ export function defineEntity(
   descriptor: import("postretro").EntityTypeDescriptor,
 ): import("postretro").EntityTypeDescriptor {
   return descriptor;
+}
+
+/** Pure state-store builder. The engine consumes `declaration` only when it is
+ * returned from `setupMod().stores`; unreturned declarations are discarded with
+ * the setup VM. */
+export function defineStore<const S extends Record<string, StoreSlotSchema>>(
+  namespace: string,
+  schema: S,
+): StoreDefinition<S> {
+  const state: Record<string, StateRef> = {};
+  for (const slot of Object.keys(schema)) {
+    state[slot] = Object.freeze({ slot: `${namespace}.${slot}` }) as StateRef;
+  }
+  return Object.freeze({
+    declaration: Object.freeze({ namespace, schema }),
+    state: Object.freeze(state) as { readonly [K in keyof S]: StateValueForSlot<S[K]> },
+  });
 }

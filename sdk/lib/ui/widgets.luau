@@ -9,9 +9,9 @@
 -- / `reactions.luau` precedent) so a future loader installs them as globals.
 --
 -- Pure builders: constructing a widget has no engine side effect. Bound props
--- accept a Task 1 store handle (a slot-name string) or an explicit bind table;
--- `Button.onPress` accepts a reaction handle (a table with `.name`) or a bare
--- name string. Self-contained: the Luau prelude has no module loader, so the
+-- accept state-reference descriptors (`{ slot = "..." }`) or presentation-local
+-- bind tables; `Button.onPress` accepts a reaction handle (a table with `.name`)
+-- or a bare name string. Self-contained: the Luau prelude has no module loader, so the
 -- validation helpers and shared types are redeclared here (not required across).
 -- See: context/lib/ui.md · context/lib/scripting.md §7
 
@@ -282,6 +282,18 @@ local function buildPredicate(value: any, field: string, factory: string): any?
     out.equals = e
   end
   return out
+end
+
+local function buildBarMax(value: any, factory: string): any
+  if type(value) == "number" then
+    requireFiniteNumber(value, "max", factory)
+    return value
+  end
+  if type(value) ~= "table" then
+    error(`{factory}: \`max\` must be a finite number or a state reference`)
+  end
+  requireNonemptyString(value.slot, "max.slot", factory)
+  return { slot = value.slot }
 end
 
 -- Append an optional `visibleWhen` predicate + `role` shared by every widget.
@@ -588,14 +600,14 @@ function UiWidgetsSdk.Bar(props: any): WidgetDescriptor
   if bind == nil then
     error("Bar: `bind` is required")
   end
-  requireFiniteNumber(props.max, "max", "Bar")
+  local max = buildBarMax(props.max, "Bar")
   requireColor(props.fill, "fill", "Bar")
   requireColor(props.background, "background", "Bar")
 
   local out: { [string]: any } = {
     kind = "bar",
     bind = bind,
-    max = props.max,
+    max = max,
     fill = props.fill,
     background = props.background,
   }

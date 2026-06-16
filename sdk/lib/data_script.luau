@@ -150,6 +150,17 @@ export type LevelManifest = {
   uiTrees: {ModUiTree}?,
 }
 
+export type StoreSlotSchema = { type: string, [string]: any }
+export type StoreDeclaration = {
+  namespace: string,
+  schema: { [string]: StoreSlotSchema },
+}
+export type StateRef = { slot: string }
+export type StoreDefinition = {
+  declaration: StoreDeclaration,
+  state: { [string]: StateRef },
+}
+
 local DataScriptSdk = {}
 
 -- Order-stable serialization of a reaction body: table keys are emitted sorted
@@ -257,6 +268,23 @@ end
 --- a typed construction site at the FFI boundary.
 function DataScriptSdk.defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor
   return descriptor
+end
+
+--- Pure state-store builder. The engine consumes `declaration` only when it is
+--- returned from `setupMod().stores`; unreturned declarations disappear with
+--- the setup VM.
+function DataScriptSdk.defineStore(namespace: string, schema: { [string]: StoreSlotSchema }): StoreDefinition
+  local state = {}
+  for slotName in pairs(schema) do
+    state[slotName] = table.freeze({ slot = namespace .. "." .. slotName })
+  end
+  return table.freeze({
+    declaration = table.freeze({
+      namespace = namespace,
+      schema = schema,
+    }),
+    state = table.freeze(state),
+  })
 end
 
 return DataScriptSdk

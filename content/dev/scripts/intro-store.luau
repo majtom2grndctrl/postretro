@@ -10,18 +10,15 @@
 -- keeps it out of the save file — a transient level-load animation slot, not
 -- durable player state. Wire casing is camelCase across TS/JS/Luau (`flashColor`,
 -- `type`, `default`, `persist`); the schema crosses the bridge to the same serde
--- shape as the TS form. `defineStore` is a `DefinitionOnly` primitive called for
--- its side effect (namespace registration) during mod init.
+-- shape as the TS form. `defineStore` is a pure builder; the active entry would
+-- return `introStore.declaration` from `setupMod().stores`.
 --
 -- See: context/lib/scripting.md §3
 
 local M = {}
 
---- Register the `intro` namespace so `intro.flashColor` resolves at mod init.
-function M.registerIntroStore()
-	defineStore("intro", {
-		flashColor = { type = "array", default = { 0.0, 0.65, 0.75, 1.0 }, persist = false },
-	})
-end
+M.introStore = defineStore("intro", {
+	flashColor = { type = "array", default = { 0.0, 0.65, 0.75, 1.0 }, persist = false },
+})
 
 return M

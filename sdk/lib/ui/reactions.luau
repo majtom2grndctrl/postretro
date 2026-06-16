@@ -40,6 +40,13 @@ export type PrimitiveReactionDescriptor = {
 
 local UiReactionsSdk = {}
 
+local function stateSlot(ref: any, helper: string): string
+  if type(ref) ~= "table" or type(ref.slot) ~= "string" or #ref.slot == 0 then
+    error(`{helper}: expected a state reference with a nonempty \`slot\``)
+  end
+  return ref.slot
+end
+
 --- Build a state-crossing watcher. Pure: returns a plain table, does not
 --- register anything in the engine. The engine consumes the table when
 --- `setupLevel` returns its `crossings` array. On a crossing in the condition's
@@ -47,16 +54,26 @@ local UiReactionsSdk = {}
 --- only after a crossing back. A registration against a non-Number slot warns
 --- and is skipped at load.
 function UiReactionsSdk.onStateCrossing(
-  slot: string,
+  ref: any,
   condition: CrossingCondition,
-  fire: {string}
+  fire: {any}
 ): CrossingDescriptor
+  local fireNames: { string } = {}
+  for i, entry in ipairs(fire) do
+    if type(entry) == "string" then
+      fireNames[i] = entry
+    elseif type(entry) == "table" and type(entry.name) == "string" then
+      fireNames[i] = entry.name
+    else
+      error("onStateCrossing: `fire` entries must be reaction handles or strings")
+    end
+  end
   return {
-    slot = slot,
+    slot = stateSlot(ref, "onStateCrossing"),
     below = condition.below,
     above = condition.above,
     max = condition.max,
-    fire = fire,
+    fire = fireNames,
   }
 end
 
@@ -190,23 +207,23 @@ end
 --- body, no engine side effect. Readonly-gated through the same writable-slot gate
 --- as `setState`: a readonly slot warns and is left unchanged; an engine-owned
 --- writable slot (e.g. `ui.textEntry`) is a valid target.
-function UiReactionsSdk.appendText(slot: string, text: string): PrimitiveReactionDescriptor
-  return { primitive = "appendText", args = { slot = slot, text = text } }
+function UiReactionsSdk.appendText(ref: any, text: string): PrimitiveReactionDescriptor
+  return { primitive = "appendText", args = { slot = stateSlot(ref, "appendText"), text = text } }
 end
 
 --- Remove the last grapheme cluster (char-pop floor: never splits a UTF-8
 --- sequence) from the writable String slot `slot` at the game-logic stage (M13
 --- Text Entry). Pure: returns a primitive reaction body, no engine side effect.
 --- Empty is a no-op with no warning. Readonly-gated like `setState`.
-function UiReactionsSdk.backspaceText(slot: string): PrimitiveReactionDescriptor
-  return { primitive = "backspaceText", args = { slot = slot } }
+function UiReactionsSdk.backspaceText(ref: any): PrimitiveReactionDescriptor
+  return { primitive = "backspaceText", args = { slot = stateSlot(ref, "backspaceText") } }
 end
 
 --- Empty the writable String slot `slot` at the game-logic stage (M13 Text
 --- Entry). Pure: returns a primitive reaction body, no engine side effect.
 --- Readonly-gated like `setState`.
-function UiReactionsSdk.clearText(slot: string): PrimitiveReactionDescriptor
-  return { primitive = "clearText", args = { slot = slot } }
+function UiReactionsSdk.clearText(ref: any): PrimitiveReactionDescriptor
+  return { primitive = "clearText", args = { slot = stateSlot(ref, "clearText") } }
 end
 
 return UiReactionsSdk

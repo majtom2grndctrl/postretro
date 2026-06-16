@@ -34,8 +34,12 @@ export type {
   SetFogParamsStep,
   SetFogScatterStep,
   SetLightAnimationStep,
+  StateRef,
+  StoreDeclaration,
+  StoreDefinition,
+  StoreSlotSchema,
 } from "./data_script";
-export { defineReaction, defineEntity } from "./data_script";
+export { defineReaction, defineEntity, defineStore } from "./data_script";
 
 export type { LocalizedText } from "./ui/text";
 
@@ -44,12 +48,17 @@ export type {
   WidgetSpacing,
   WidgetAlign,
   WidgetEasing,
-  StoreHandleRef,
+  ScalarStateValue,
+  NumericArrayStateValue,
+  ReadonlyStateRef,
+  WritableStateRef,
   NumberTween,
   ColorTween,
   TextBindProp,
   PanelBindProp,
   SliderBindProp,
+  BarBindProp,
+  BarMaxProp,
   LocalBindRef,
   PredicateValue,
   Predicate,
@@ -90,11 +99,11 @@ export type {
 export { Tree } from "./ui/tree";
 
 export type {
-  StoreHandle,
   LocalStateHandle,
   LocalStateBundle,
+  StateBindOptionsFor,
 } from "./ui/state";
-export { storeHandle, createLocalState, ui, Switch } from "./ui/state";
+export { bindState, stateEquals, createLocalState, ui, Switch } from "./ui/state";
 
 export type { CrossingCondition, CrossingDescriptor } from "./ui/reactions";
 export {

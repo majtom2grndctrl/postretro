@@ -16,11 +16,11 @@ use super::components::mesh::{AnimationState, InterruptPolicy};
 use super::registry::EntityId;
 use crate::movement::MovementScope;
 use crate::render::ui::descriptor::{
-    Align, AnchoredTree, AnnounceWidget, BarWidget, BindSource, Border, ButtonWidget, CaptureMode,
-    CellInit, ColorValue, ContainerWidget, Easing, FocusKind, FocusNeighbors, FocusPolicy,
-    GridWidget, ImageWidget, LocalState, PanelBind, PanelTween, PanelWidget, Predicate,
-    PredicateValue, Priority, RepeatPolicy, Role, SliderBind, SliderWidget, SpacerWidget,
-    SpacingValue, TextBind, TextTween, TextWidget, Widget,
+    Align, AnchoredTree, AnnounceWidget, BarMax, BarMaxStateRef, BarWidget, BindSource, Border,
+    ButtonWidget, CaptureMode, CellInit, ColorValue, ContainerWidget, Easing, FocusKind,
+    FocusNeighbors, FocusPolicy, GridWidget, ImageWidget, LocalState, PanelBind, PanelTween,
+    PanelWidget, Predicate, PredicateValue, Priority, RepeatPolicy, Role, SliderBind, SliderWidget,
+    SpacerWidget, SpacingValue, TextBind, TextTween, TextWidget, Widget,
 };
 use crate::render::ui::layout::Anchor;
 use crate::render::ui::style_ranges::{Flash, Pulse, StyleEntry, StyleRanges};
@@ -3671,7 +3671,7 @@ fn bar_widget_from_js<'js>(
     Ok(BarWidget {
         bind: slider_bind_from_js(ctx, obj, "bind")?
             .ok_or(DescriptorError::MissingField { field: "bind" })?,
-        max: get_required_f32_js(obj, "max")?,
+        max: bar_max_from_js(obj)?,
         fill: color_value_from_js(obj, "fill")?,
         background: color_value_from_js(obj, "background")?,
         id: get_optional_string_js(obj, "id")?,
@@ -4016,6 +4016,31 @@ fn bind_source_from_js<'js>(bind_obj: &Object<'js>) -> Result<BindSource, Descri
     Err(DescriptorError::InvalidShape {
         reason: "a widget `bind` must carry either `slot` or `local`".to_string(),
     })
+}
+
+fn bar_max_from_js<'js>(obj: &Object<'js>) -> Result<BarMax, DescriptorError> {
+    if !obj.contains_key("max").map_err(js_err)? {
+        return Err(DescriptorError::MissingField { field: "max" });
+    }
+    let raw: JsValue = obj.get("max").map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Err(DescriptorError::MissingField { field: "max" });
+    }
+    if let Some(i) = raw.as_int() {
+        return Ok(BarMax::Literal(i as f32));
+    }
+    if let Some(f) = raw.as_float() {
+        return Ok(BarMax::Literal(f as f32));
+    }
+    let reference = Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
+        reason: "`bar.max` must be a number or a `{ slot }` state reference".to_string(),
+    })?;
+    let slot = get_optional_string_js(&reference, "slot")?.ok_or_else(|| {
+        DescriptorError::InvalidShape {
+            reason: "`bar.max` state reference must carry `slot`".to_string(),
+        }
+    })?;
+    Ok(BarMax::State(BarMaxStateRef { slot }))
 }
 
 /// Read an optional [`Predicate`] field (M13 G2). Absent/null yields `None`. The
@@ -4400,7 +4425,7 @@ fn bar_widget_from_lua(table: &Table) -> Result<BarWidget, DescriptorError> {
     Ok(BarWidget {
         bind: slider_bind_from_lua(table, "bind")?
             .ok_or(DescriptorError::MissingField { field: "bind" })?,
-        max: get_required_f32_lua(table, "max")?,
+        max: bar_max_from_lua(table)?,
         fill: color_value_from_lua(table, "fill")?,
         background: color_value_from_lua(table, "background")?,
         id: get_optional_string_lua(table, "id")?,
@@ -5177,6 +5202,28 @@ fn bind_source_from_lua(bind: &Table) -> Result<BindSource, DescriptorError> {
     Err(DescriptorError::InvalidShape {
         reason: "a widget `bind` must carry either `slot` or `local`".to_string(),
     })
+}
+
+fn bar_max_from_lua(table: &Table) -> Result<BarMax, DescriptorError> {
+    if !table.contains_key("max").map_err(lua_err)? {
+        return Err(DescriptorError::MissingField { field: "max" });
+    }
+    let raw: LuaValue = table.get("max").map_err(lua_err)?;
+    match raw {
+        LuaValue::Integer(value) => Ok(BarMax::Literal(value as f32)),
+        LuaValue::Number(value) => Ok(BarMax::Literal(value as f32)),
+        LuaValue::Table(reference) => {
+            let slot = get_optional_string_lua(&reference, "slot")?.ok_or_else(|| {
+                DescriptorError::InvalidShape {
+                    reason: "`bar.max` state reference must carry `slot`".to_string(),
+                }
+            })?;
+            Ok(BarMax::State(BarMaxStateRef { slot }))
+        }
+        _ => Err(DescriptorError::InvalidShape {
+            reason: "`bar.max` must be a number or a `{ slot }` state reference".to_string(),
+        }),
+    }
 }
 
 /// Lua twin of [`predicate_opt_from_js`]: read an optional [`Predicate`] field.

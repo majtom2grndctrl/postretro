@@ -32,10 +32,15 @@ function stateSlot(ref: ReadonlyStateRef<unknown>, helper: string): string {
  * Compose bind-only options onto a state reference. Pure: returns the existing
  * retained bind wire shape `{ slot, ...options }`.
  */
+export function bindState<T>(ref: ReadonlyStateRef<T>): ReadonlyStateRef<T>;
+export function bindState<T, Options extends StateBindOptionsFor<T>>(
+  ref: ReadonlyStateRef<T>,
+  options: Options,
+): ReadonlyStateRef<T> & Omit<Options, "slot" | "local">;
 export function bindState<T>(
   ref: ReadonlyStateRef<T>,
   options?: StateBindOptionsFor<T>,
-): ReadonlyStateRef<T> & Omit<StateBindOptionsFor<T>, "slot" | "local"> {
+): ReadonlyStateRef<T> & Omit<NonNullable<StateBindOptionsFor<T>>, "slot" | "local"> {
   const slot = stateSlot(ref, "bindState");
   if (options !== undefined) {
     if (Object.prototype.hasOwnProperty.call(options, "slot")) {
@@ -46,8 +51,8 @@ export function bindState<T>(
     }
   }
   return options === undefined
-    ? ({ slot } as ReadonlyStateRef<T> & Omit<StateBindOptionsFor<T>, "slot" | "local">)
-    : ({ slot, ...options } as ReadonlyStateRef<T> & Omit<StateBindOptionsFor<T>, "slot" | "local">);
+    ? ({ slot } as ReadonlyStateRef<T> & Omit<NonNullable<StateBindOptionsFor<T>>, "slot" | "local">)
+    : ({ slot, ...options } as ReadonlyStateRef<T> & Omit<NonNullable<StateBindOptionsFor<T>>, "slot" | "local">);
 }
 
 /** Build an equality predicate against a readable scalar state reference. */

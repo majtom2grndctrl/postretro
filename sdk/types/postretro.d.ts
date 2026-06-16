@@ -984,7 +984,8 @@ declare module "postretro" {
     T extends ScalarStateValue ? { format?: string; slot?: never; local?: never } :
     never;
   /** Compose bind-only options onto a state ref, emitting `{ slot, ...options }`. */
-  export function bindState<T>(ref: ReadonlyStateRef<T>, options?: StateBindOptionsFor<T>): ReadonlyStateRef<T> & Omit<StateBindOptionsFor<T>, "slot" | "local">;
+  export function bindState<T>(ref: ReadonlyStateRef<T>): ReadonlyStateRef<T>;
+  export function bindState<T, Options extends StateBindOptionsFor<T>>(ref: ReadonlyStateRef<T>, options: Options): ReadonlyStateRef<T> & Omit<Options, "slot" | "local">;
   /** Build `{ slot, equals }` for scalar state refs. */
   export function stateEquals<T extends PredicateValue>(ref: ReadonlyStateRef<T>, value: T): Predicate;
 

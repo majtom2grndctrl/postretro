@@ -13,6 +13,7 @@ import {
   defineStore,
   defineReaction,
   getGameState,
+  updateState,
   Text,
   Button,
   Slider,
@@ -51,6 +52,13 @@ const _healthText = Text({ content: "HP", bind: gameState.player.health });
 // @ts-expect-error — readonly health cannot feed an interactive Slider.
 Slider({ id: "hp", label: "HP", bind: gameState.player.health, min: 0, max: 100, step: 1 });
 
+// Reaction state writes go through `updateState(ref, value)`: writable mod state
+// is accepted and emits the existing `setState` wire descriptor.
+const _volumeReset = defineReaction("fixtureResetVolume", updateState(opts.state.volume, 0.5));
+
+// @ts-expect-error — readonly health cannot feed a state-write reaction.
+const _badHealthWrite = updateState(gameState.player.health, 1);
+
 // --- (3) Typed reaction handles ---------------------------------------------
 // `defineReaction` accepts an optional `name`; omitted → deterministic auto-id.
 // The returned handle is the typed reaction reference (go-to-definition, no
@@ -88,6 +96,8 @@ void _health;
 void _healthText;
 void _named;
 void _auto;
+void _volumeReset;
+void _badHealthWrite;
 void _greeting;
 void _text;
 void _resume;

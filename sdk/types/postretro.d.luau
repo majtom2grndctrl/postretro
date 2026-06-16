@@ -844,11 +844,12 @@ declare function openMenu(tree: string): PrimitiveReactionDescriptor
 --- `PrimitiveReactionDescriptor`, no FFI.
 declare function closeDialog(): PrimitiveReactionDescriptor
 
---- System-reaction body (M13 Goal F): write `value` to the writable store slot
---- `slot` at the game-logic stage. Readonly-gated -- a readonly slot warns and
---- stays unchanged; an engine-owned writable slot is valid. `value` is coerced to
---- the slot's declared type. Pure: returns a `PrimitiveReactionDescriptor`, no FFI.
-declare function setState(slot: string, value: number | boolean | string | {number}): PrimitiveReactionDescriptor
+--- System-reaction body (M13 Goal F): write `value` to a writable state ref at
+--- the game-logic stage. Emits the existing `setState` wire descriptor.
+--- Readonly-gated at runtime -- a readonly slot warns and stays unchanged; an
+--- engine-owned writable slot is valid. `value` is coerced to the slot's
+--- declared type. Pure: returns a `PrimitiveReactionDescriptor`, no FFI.
+declare function updateState(ref: WritableStateRef<any>, value: any): PrimitiveReactionDescriptor
 
 --- System-reaction body (M13 Text Entry): append `text` to the current string
 --- value of the writable String slot `slot` at the game-logic stage. Readonly-

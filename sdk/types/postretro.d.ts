@@ -784,8 +784,8 @@ declare module "postretro" {
   /** System-reaction body: pop the top UI tree off the modal stack. Warn-once "no stack" until Goal F's modal stack lands. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
   export function closeDialog(): PrimitiveReactionDescriptor;
 
-  /** System-reaction body (M13 Goal F): write `value` to the writable store slot `slot` at the game-logic stage. Readonly-gated — a readonly slot warns and stays unchanged; an engine-owned writable slot is valid. `value` is coerced to the slot's declared type. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
-  export function setState(slot: string, value: number | boolean | string | number[]): PrimitiveReactionDescriptor;
+  /** System-reaction body (M13 Goal F): write `value` to a writable state ref at the game-logic stage. Emits the existing `setState` wire descriptor. Readonly-gated at runtime — a readonly slot warns and stays unchanged; an engine-owned writable slot is valid. `value` is coerced to the slot's declared type. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
+  export function updateState<T extends number | boolean | string | ReadonlyArray<number>>(ref: WritableStateRef<T>, value: T): PrimitiveReactionDescriptor;
 
   /** System-reaction body (M13 Text Entry): append `text` to a writable String state ref at the game-logic stage. Emits the existing dotted-slot wire. */
   export function appendText(ref: WritableStateRef<string>, text: string): PrimitiveReactionDescriptor;

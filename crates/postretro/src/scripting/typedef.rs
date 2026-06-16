@@ -908,8 +908,8 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   /** System-reaction body: pop the top UI tree off the modal stack. Warn-once "no stack" until Goal F's modal stack lands. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
   export function closeDialog(): PrimitiveReactionDescriptor;
 
-  /** System-reaction body (M13 Goal F): write `value` to the writable store slot `slot` at the game-logic stage. Readonly-gated — a readonly slot warns and stays unchanged; an engine-owned writable slot is valid. `value` is coerced to the slot's declared type. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
-  export function setState(slot: string, value: number | boolean | string | number[]): PrimitiveReactionDescriptor;
+  /** System-reaction body (M13 Goal F): write `value` to a writable state ref at the game-logic stage. Emits the existing `setState` wire descriptor. Readonly-gated at runtime — a readonly slot warns and stays unchanged; an engine-owned writable slot is valid. `value` is coerced to the slot's declared type. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
+  export function updateState<T extends number | boolean | string | ReadonlyArray<number>>(ref: WritableStateRef<T>, value: T): PrimitiveReactionDescriptor;
 
   /** System-reaction body (M13 Text Entry): append `text` to a writable String state ref at the game-logic stage. Emits the existing dotted-slot wire. */
   export function appendText(ref: WritableStateRef<string>, text: string): PrimitiveReactionDescriptor;
@@ -1780,11 +1780,12 @@ declare function openMenu(tree: string): PrimitiveReactionDescriptor
 --- `PrimitiveReactionDescriptor`, no FFI.
 declare function closeDialog(): PrimitiveReactionDescriptor
 
---- System-reaction body (M13 Goal F): write `value` to the writable store slot
---- `slot` at the game-logic stage. Readonly-gated -- a readonly slot warns and
---- stays unchanged; an engine-owned writable slot is valid. `value` is coerced to
---- the slot's declared type. Pure: returns a `PrimitiveReactionDescriptor`, no FFI.
-declare function setState(slot: string, value: number | boolean | string | {number}): PrimitiveReactionDescriptor
+--- System-reaction body (M13 Goal F): write `value` to a writable state ref at
+--- the game-logic stage. Emits the existing `setState` wire descriptor.
+--- Readonly-gated at runtime -- a readonly slot warns and stays unchanged; an
+--- engine-owned writable slot is valid. `value` is coerced to the slot's
+--- declared type. Pure: returns a `PrimitiveReactionDescriptor`, no FFI.
+declare function updateState(ref: WritableStateRef<any>, value: any): PrimitiveReactionDescriptor
 
 --- System-reaction body (M13 Text Entry): append `text` to the current string
 --- value of the writable String slot `slot` at the game-logic stage. Readonly-
@@ -3569,6 +3570,22 @@ export type Event = {
                 && luau.contains("ScalarStateBindOptions")
                 && luau.contains("declare function stateEquals("),
             "luau d.luau missing state reference helper declarations"
+        );
+        assert!(
+            ts.contains("export function updateState<T extends number | boolean | string | ReadonlyArray<number>>(ref: WritableStateRef<T>, value: T): PrimitiveReactionDescriptor;"),
+            "ts d.ts missing typed updateState declaration"
+        );
+        assert!(
+            luau.contains("declare function updateState(ref: WritableStateRef<any>, value: any): PrimitiveReactionDescriptor"),
+            "luau d.luau missing updateState declaration"
+        );
+        assert!(
+            !ts.contains("export function setState("),
+            "ts must not expose raw-string setState as an author-facing helper"
+        );
+        assert!(
+            !luau.contains("declare function setState("),
+            "luau must not expose raw-string setState as an author-facing helper"
         );
         assert!(
             !ts.contains("storeHandle"),

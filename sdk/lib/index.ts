@@ -118,7 +118,7 @@ export {
   KEYBOARD_TREE,
   openMenu,
   closeDialog,
-  setState,
+  updateState,
   appendText,
   backspaceText,
   clearText,

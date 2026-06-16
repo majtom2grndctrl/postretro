@@ -117,7 +117,7 @@ const DATA_SCRIPT_FIELDS: &[&str] = &["defineReaction", "defineEntity", "defineS
 /// rest are system-reaction body constructors that pair with `defineReaction` to
 /// emit `playSound` / `rumble` / `flashScreen` / `vignette` / `screenShake`,
 /// the UI-stack (`showDialog` /
-/// `openMenu` / `closeDialog`) primitives, the `setState` slot write (Goal F),
+/// `openMenu` / `closeDialog`) primitives, the `updateState` slot write (Goal F),
 /// the text-entry helpers (`openTextEntry` wraps `showDialog` for the engine
 /// keyboard; `KEYBOARD_TREE` is its registry name constant), and the text-edit
 /// reactions (`appendText` / `backspaceText` / `clearText`, M13 Text Entry).
@@ -133,7 +133,7 @@ const UI_REACTIONS_FIELDS: &[&str] = &[
     "closeDialog",
     "openTextEntry",
     "KEYBOARD_TREE",
-    "setState",
+    "updateState",
     "appendText",
     "backspaceText",
     "clearText",
@@ -1447,7 +1447,7 @@ mod tests {
             "closeDialog",
             "openTextEntry",
             "KEYBOARD_TREE",
-            "setState",
+            "updateState",
             "appendText",
             "backspaceText",
             "clearText",
@@ -1651,6 +1651,34 @@ mod tests {
             .run_source(Which::Definition, src, "ui_create_local_state.luau")
             .unwrap();
         assert!(ok, "ui.createLocalState round-trip failed");
+    }
+
+    #[test]
+    fn luau_update_state_emits_existing_set_state_wire_descriptor() {
+        const REACTIONS_SRC: &str = include_str!("../../../../sdk/lib/ui/reactions.luau");
+
+        let lua = mlua::Lua::new();
+        let reactions: mlua::Table = lua
+            .load(REACTIONS_SRC)
+            .set_name("reactions.luau")
+            .eval()
+            .unwrap();
+        lua.globals().set("R", reactions).unwrap();
+
+        let value: mlua::Value = lua
+            .load(r#"return R.updateState({ slot = "audio.master" }, 0.5)"#)
+            .set_name("update_state")
+            .eval()
+            .unwrap_or_else(|e| panic!("updateState call failed:\n{e}"));
+        let got = super::super::conv::lua_to_json(value).expect("lua_to_json");
+        let expected = serde_json::json!({
+            "primitive": "setState",
+            "args": {
+                "slot": "audio.master",
+                "value": 0.5,
+            },
+        });
+        assert_eq!(got, expected);
     }
 
     // --- M13 G1a, Task 3: TS/Luau widget-factory JSON parity ---

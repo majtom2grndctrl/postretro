@@ -31,7 +31,7 @@ export const playerEntity = defineEntity({
       },
       fall: { terminalVelocity: 40.0 },
       dash: {
-        boostSpeed: 22.0,
+        boostSpeed: 42.0,
         // Runtime expression (entry-moment): keep less ground momentum than air
         // momentum. Grounded dashes feel snappier/more committed; airborne dashes
         // preserve more of the incoming arc. `grounded` is a boolean input, so
@@ -48,10 +48,10 @@ export const playerEntity = defineEntity({
           0.0,
           1.0,
         ),
-        dashDrag: 0,
+        dashDrag: 0.1,
         cooldownMs: 600,
         airDashes: 1,
-        preserveVertical: false,
+        preserveVertical: true,
       },
       crouch: {
         halfHeight: 0.4,

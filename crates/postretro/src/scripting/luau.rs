@@ -86,6 +86,11 @@ const UI_TREE_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/tree.luau");
 /// descriptor composers; local cell handles remain presentation-only.
 const UI_STATE_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/state.luau");
 
+/// SDK library prelude — `ui/theme.luau` returns `defineTheme`, a pure authoring
+/// helper that preserves the flat runtime theme shape while adding token
+/// accessors for clearer call sites.
+const UI_THEME_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/theme.luau");
+
 /// SDK library prelude — `game_state.luau` captures the temporary frozen
 /// engine-state reference tree bridge and returns `getGameState`.
 const GAME_STATE_LUAU_SRC: &str = include_str!("../../../../sdk/lib/game_state.luau");
@@ -162,6 +167,10 @@ const UI_TREE_FIELDS: &[&str] = &["Tree"];
 /// `ui/state.luau`. `bindState`/`stateEquals` compose authoritative state refs;
 /// `ui` exposes presentation-local `ui.createLocalState` (G1b).
 const UI_STATE_FIELDS: &[&str] = &["bindState", "stateEquals", "ui", "Switch"];
+
+/// UI theme-helper SDK fields lifted to globals after evaluating
+/// `ui/theme.luau`.
+const UI_THEME_FIELDS: &[&str] = &["defineTheme"];
 
 /// Engine-state SDK fields lifted to globals after evaluating
 /// `game_state.luau`.
@@ -421,6 +430,7 @@ pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
         (UI_LAYOUT_LUAU_SRC, "ui/layout.luau", UI_LAYOUT_FIELDS),
         (UI_TREE_LUAU_SRC, "ui/tree.luau", UI_TREE_FIELDS),
         (UI_STATE_LUAU_SRC, "ui/state.luau", UI_STATE_FIELDS),
+        (UI_THEME_LUAU_SRC, "ui/theme.luau", UI_THEME_FIELDS),
     ] {
         let module: Table = lua
             .load(src)
@@ -963,8 +973,9 @@ mod tests {
     use crate::scripting::primitives_registry::ContextScope;
     use std::fs;
 
-    // 15 `type(...)` strings returned by `sdk_prelude_installs_globals`.
+    // 16 `type(...)` strings returned by `sdk_prelude_installs_globals`.
     type PreludeTypeNames = (
+        String,
         String,
         String,
         String,
@@ -1214,6 +1225,7 @@ mod tests {
                 smoke_ty,
                 spark_ty,
                 dust_ty,
+                define_theme_ty,
                 wrap_light_ty,
                 wrap_fog_ty,
             ): PreludeTypeNames = subsys
@@ -1234,6 +1246,7 @@ mod tests {
                       type(smokeEmitter),
                       type(sparkEmitter),
                       type(dustEmitter),
+                      type(defineTheme),
                       type(wrapLightEntity),
                       type(wrapFogVolumeEntity)
                     "#,
@@ -1254,6 +1267,7 @@ mod tests {
             assert_eq!(smoke_ty, "function", "{which:?}: smokeEmitter");
             assert_eq!(spark_ty, "function", "{which:?}: sparkEmitter");
             assert_eq!(dust_ty, "function", "{which:?}: dustEmitter");
+            assert_eq!(define_theme_ty, "function", "{which:?}: defineTheme");
             // Temporary bridges nil'd out before author scripts run.
             assert_eq!(wrap_light_ty, "nil", "{which:?}: wrapLightEntity");
             assert_eq!(wrap_fog_ty, "nil", "{which:?}: wrapFogVolumeEntity");
@@ -1575,14 +1589,15 @@ mod tests {
               isfn("Button"), isfn("Slider"), isfn("Bar"),
               isfn("VStack"), isfn("HStack"), isfn("Grid"),
               isfn("Tree"), isfn("bindState"), isfn("stateEquals"),
+              isfn("defineTheme"),
               type(validateBorder), type(resolveReactionName)
         "#;
         let results: mlua::MultiValue = subsys
             .run_source(Which::Definition, src, "ui_prelude.luau")
             .unwrap();
         let vals: Vec<mlua::Value> = results.into_iter().collect();
-        // First 13 are the factory/helper globals: must all be functions (true).
-        for (i, v) in vals.iter().take(13).enumerate() {
+        // First 14 are the factory/helper globals: must all be functions (true).
+        for (i, v) in vals.iter().take(14).enumerate() {
             assert_eq!(
                 v.as_boolean(),
                 Some(true),
@@ -1590,13 +1605,19 @@ mod tests {
             );
         }
         // Last 2 are the internal helpers: must be `nil` (not leaked).
+        let validate_border_ty = vals[14]
+            .as_string()
+            .and_then(|s| s.to_str().ok().map(|s| s.to_string()));
         assert_eq!(
-            vals[13].as_str().as_deref(),
+            validate_border_ty.as_deref(),
             Some("nil"),
             "validateBorder must NOT be a bare global"
         );
+        let resolve_reaction_name_ty = vals[15]
+            .as_string()
+            .and_then(|s| s.to_str().ok().map(|s| s.to_string()));
         assert_eq!(
-            vals[14].as_str().as_deref(),
+            resolve_reaction_name_ty.as_deref(),
             Some("nil"),
             "resolveReactionName must NOT be a bare global"
         );
@@ -1813,6 +1834,41 @@ mod tests {
                 "Luau bindState output differs from TS for `{expr}`:\nluau: {got}\nts:   {expected}"
             );
         }
+    }
+
+    #[test]
+    fn luau_define_theme_returns_token_strings() {
+        const THEME_SRC: &str = include_str!("../../../../sdk/lib/ui/theme.luau");
+
+        let lua = mlua::Lua::new();
+        let theme_sdk: mlua::Table = lua
+            .load(THEME_SRC)
+            .set_name("theme.luau")
+            .eval()
+            .expect("theme.luau must evaluate to a module table");
+        lua.globals().set("T", theme_sdk).unwrap();
+
+        let (color, font, spacing): (String, String, String) = lua
+            .load(
+                r#"
+                local theme = T.defineTheme({
+                  colors = { ["hud.text"] = {1, 1, 1, 1} },
+                  fonts = { ["hud.status"] = "JetBrains Mono" },
+                  spacing = { ["hud.gap"] = 8 },
+                })
+                return
+                  theme.tokens.color("hud.text"),
+                  theme.tokens.font("hud.status"),
+                  theme.tokens.spacing("hud.gap")
+                "#,
+            )
+            .set_name("define_theme_case")
+            .eval()
+            .expect("defineTheme should return token strings");
+
+        assert_eq!(color, "hud.text");
+        assert_eq!(font, "hud.status");
+        assert_eq!(spacing, "hud.gap");
     }
 
     // --- M13 G1a, Task 3: TS/Luau widget-factory JSON parity ---

@@ -50,6 +50,8 @@ Theme is three category-scoped maps — colors (linear RGBA), fonts (registered 
 
 Theme registration arrives through returned manifest data. Custom font asset replacement/removal is not hot-reloadable until the font system has an explicit replacement contract. Staged reload may replace the theme token override, but changing custom font declarations, replacing custom font assets, or removing them requires an engine restart.
 
+The TypeScript/Luau SDK ships `defineTheme(theme)` as authoring sugar for custom themes. It returns the same flat `colors` / `fonts` / `spacing` object that `setupMod().theme` already accepts, plus a `tokens` helper table whose `color(...)`, `font(...)`, and `spacing(...)` functions return the token string after checking it exists in the corresponding map. In TypeScript, those helpers are keyed from the concrete theme object, so editors autocomplete valid dotted token names at widget call sites. `defineTheme` is not a new runtime theme format; descriptors still carry plain strings, and the Rust theme drain still consumes only the three category maps.
+
 ## 3. Display vs. Authoritative Values
 
 Widgets bind authoritative store slots by state reference at the SDK layer and by dotted slot name on the retained wire. The renderer may hold a per-node **display value** that eases toward the authoritative target over a declared duration and curve (tweening). Contract:

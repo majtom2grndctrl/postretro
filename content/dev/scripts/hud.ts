@@ -5,10 +5,11 @@ import {
   Tree,
   VStack,
   bindState,
+  defineTheme,
   getGameState,
 } from "postretro";
 
-export const hudTheme = {
+export const hudTheme = defineTheme({
   colors: {
     "hud.panel": [0.018, 0.026, 0.039, 0.82],
     "hud.health.background": [0.035, 0.045, 0.060, 1.0],
@@ -26,15 +27,16 @@ export const hudTheme = {
     "hud.padding": 14.0,
     "hud.rowGap": 6.0,
   },
-};
+});
 
 export function buildHud() {
   const { player } = getGameState();
+  const { color, font, spacing } = hudTheme.tokens;
 
   const status = Text({
     content: "HP --",
-    color: "hud.text",
-    font: "hud.status",
+    color: color("hud.text"),
+    font: font("hud.status"),
     fontSize: 24.0,
     bind: bindState(player.health, { format: "HP {}" }),
   });
@@ -47,14 +49,14 @@ export function buildHud() {
       },
     }),
     max: player.maxHealth,
-    fill: "ok",
-    background: "hud.health.background",
+    fill: color("ok"),
+    background: color("hud.health.background"),
     styleRanges: {
       max: 1.0,
       entries: [
-        { upTo: 0.25, color: "critical" },
-        { upTo: 0.5, color: "warning" },
-        { color: "ok" },
+        { upTo: 0.25, color: color("critical") },
+        { upTo: 0.5, color: color("warning") },
+        { color: color("ok") },
       ],
     },
   });
@@ -63,13 +65,13 @@ export function buildHud() {
     { anchor: "bottomLeft", offset: [24.0, -24.0] },
     VStack(
       {
-        gap: "hud.rowGap",
-        padding: "hud.padding",
+        gap: spacing("hud.rowGap"),
+        padding: spacing("hud.padding"),
         align: "stretch",
-        fill: "hud.panel",
+        fill: color("hud.panel"),
       },
       [
-        HStack({ gap: "hud.gap", align: "center" }, [status]),
+        HStack({ gap: spacing("hud.gap"), align: "center" }, [status]),
         bar,
       ],
     ),
@@ -77,7 +79,7 @@ export function buildHud() {
 
   const reticleTree = Tree(
     { anchor: "center", offset: [0.0, 0.0] },
-    Text({ content: "+", font: "mono" }),
+    Text({ content: "+", font: font("mono") }),
   );
 
   return {

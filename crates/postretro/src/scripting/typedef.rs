@@ -13,6 +13,7 @@ use super::engine_state_catalog::{
 };
 use super::primitives_registry::{
     ParamInfo, PrimitiveRegistry, RegisteredType, ScriptPrimitive, TaggedVariant, TypeShape,
+    VariantInfo,
 };
 
 /// Strip `module::path::` qualification from a type name, returning just the
@@ -349,8 +350,23 @@ fn ts_doc_block(doc: &str, indent: &str, out: &mut String) {
     writeln!(out, "{indent}/** {doc} */").unwrap();
 }
 
+fn string_enum_doc(doc: &str, variants: &[VariantInfo]) -> String {
+    let valid_values = variants
+        .iter()
+        .map(|v| format!("`{}`", v.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if doc.is_empty() {
+        format!("Valid values: {valid_values}.")
+    } else {
+        format!("{doc} Valid values: {valid_values}.")
+    }
+}
+
 fn emit_ts_type(ty: &RegisteredType, out: &mut String) {
-    ts_doc_block(ty.doc, TS_INDENT, out);
+    if !matches!(&ty.shape, TypeShape::StringEnum { .. }) {
+        ts_doc_block(ty.doc, TS_INDENT, out);
+    }
     match &ty.shape {
         TypeShape::Brand { underlying } => {
             writeln!(
@@ -404,6 +420,8 @@ fn emit_ts_type(ty: &RegisteredType, out: &mut String) {
             }
         }
         TypeShape::StringEnum { variants } => {
+            let doc = string_enum_doc(ty.doc, variants);
+            ts_doc_block(&doc, TS_INDENT, out);
             let any_doc = variants.iter().any(|v| !v.doc.is_empty());
             if !any_doc {
                 let body = variants
@@ -934,7 +952,7 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   export type ReadonlyStateRef<T> = { readonly slot: string; readonly [stateRefValueBrand]: T };
   export type WritableStateRef<T> = ReadonlyStateRef<T> & { readonly [writableStateRefBrand]: T };
 
-  /** One slot's declaration inside the `defineStore` `schema` argument. The `type` discriminant selects the slot's value type; type-specific keys (`default`, `range`, `values`, …) are accepted alongside it. */
+  /** One slot inside a `defineStore` schema. `type` selects the stored value kind: `"number"`, `"boolean"`, `"string"`, `"enum"`, or `"array"`. Numeric slots may declare `default` and `range`; enum slots declare their valid `values`; `readonly: true` makes the returned state ref display-only for script writes. */
   export type StoreSlotSchema = { type: "number" | "boolean" | "string" | "enum" | "array"; readonly?: boolean } & Record<string, unknown>;
 
   /** Plain declaration data returned through `setupMod().stores`. */
@@ -967,19 +985,53 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   ): StoreDefinition<S>;
 
   // -------------------------------------------------------------------------
+  // UI theme helpers. `defineTheme` preserves the runtime wire shape (flat
+  // colors/fonts/spacing maps) and adds typed token accessors for authoring
+  // sites. Accessors return the token string, so widget descriptors stay
+  // byte-identical to hand-authored strings while editors autocomplete keys
+  // from the concrete theme object.
+
+  /** Linear RGBA color token value. Components are in display-linear 0-1 space; alpha is the fourth element. */
+  export type ThemeColorValue = readonly [number, number, number, number];
+  /** Theme override returned from `setupMod().theme`. Keys are flat token strings, including dotted names such as `"hud.panel"`; categories stay separate so a color token and spacing token may share a name. */
+  export type ThemeDefinition = {
+    readonly colors?: Readonly<Record<string, ThemeColorValue>>;
+    readonly fonts?: Readonly<Record<string, string>>;
+    readonly spacing?: Readonly<Record<string, number>>;
+  };
+  /** Internal helper that extracts the concrete map for one theme category. Usually reached through `DefinedTheme["tokens"]`, not named directly. */
+  export type ThemeTokenMap<T extends ThemeDefinition, K extends keyof ThemeDefinition> =
+    Extract<NonNullable<T[K]>, Readonly<Record<string, unknown>>>;
+  /** String-literal keys available in one concrete theme category. */
+  export type ThemeTokenKeys<T extends ThemeDefinition, K extends keyof ThemeDefinition> =
+    [ThemeTokenMap<T, K>] extends [never] ? never : Extract<keyof ThemeTokenMap<T, K>, string>;
+  /** Typed token accessors added by `defineTheme`. Each function returns the token string after checking it exists in the matching theme category, giving editor autocomplete without changing descriptor wire data. */
+  export type ThemeTokenAccessors<T extends ThemeDefinition> = {
+    color<K extends ThemeTokenKeys<T, "colors">>(token: K): K;
+    font<K extends ThemeTokenKeys<T, "fonts">>(token: K): K;
+    spacing<K extends ThemeTokenKeys<T, "spacing">>(token: K): K;
+  };
+  /** A theme returned by `defineTheme`: the original flat theme object plus non-enumerable TypeScript `tokens` accessors for authoring. Pass this object directly as `setupMod().theme`. */
+  export type DefinedTheme<T extends ThemeDefinition> = T & {
+    readonly tokens: ThemeTokenAccessors<T>;
+  };
+  /** Define a custom theme while preserving the runtime theme shape. Use `hudTheme.tokens.color("hud.text")` / `.font(...)` / `.spacing(...)` at widget call sites for autocomplete and setup-time unknown-token checks. */
+  export function defineTheme<const T extends ThemeDefinition>(theme: T): DefinedTheme<T>;
+
+  // -------------------------------------------------------------------------
   // Shared UI widget value slots (M13 Goal F). Type-only aliases for the slot
   // and value types the widget factory props compose (camelCase wire shape).
 
   /** The type of every user-facing text string a widget displays. A single alias (`= string` today) so a future localization scheme — message keys, ICU handles — is one edit, not a sweep across every text prop. */
   export type LocalizedText = string;
 
-  /** A widget color slot: an inline linear-RGBA tuple or a theme token name. */
+  /** A widget color slot: either an inline linear-RGBA tuple `[r, g, b, a]` or a color theme-token string. Prefer `defineTheme(...).tokens.color("token")` for custom tokens so editors autocomplete valid names. */
   export type WidgetColor = [number, number, number, number] | string;
 
-  /** A slot binding shared by `slider`/`bar`: a dotted slot name plus optional value-tween (number shape). */
+  /** A numeric state bind descriptor shared by low-level `slider`/`bar` wire shapes: a dotted slot name plus an optional number tween. Most authors should call `bindState(ref, options)` instead of constructing this manually. */
   export type SliderBind = { slot: string; tween?: { durationMs: number; easing: "linear" | "easeIn" | "easeOut" | "easeInOut"; from?: number } };
 
-  /** Continuous value→style map (M13 Goal E): text/panel normalize rendered value by `max`; bar normalizes its displayed fill fraction. A trailing no-`upTo` band is the default. */
+  /** Continuous value-to-style map. Text and panel widgets normalize their rendered numeric value by `max`; bars evaluate their displayed fill fraction, so health bands usually use `max: 1.0`. Entries are checked in order; the first `upTo` threshold that contains the normalized value wins, and a trailing entry without `upTo` is the default band. */
   export type WidgetStyleRanges = { max: number; entries: { upTo?: number; color?: WidgetColor; pulse?: { periodMs: number }; flash?: { durationMs: number } }[] };
 
   // -------------------------------------------------------------------------
@@ -990,49 +1042,49 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   // state}.ts. Containers and `Tree` take `children`/`root` as a POSITIONAL
   // second argument (Compose/SwiftUI lineage), not a prop.
 
-  /** A spacing slot (gap/padding): an inline logical-px number or a theme token. */
+  /** A spacing slot for gaps and padding: either an inline logical-pixel number or a spacing theme-token string. Theme spacing affects styling/layout rhythm, not anchored tree placement. */
   export type WidgetSpacing = number | string;
-  /** Cross-axis alignment of a container's children. */
+  /** Cross-axis alignment inside a stack/grid. Valid values: `"start"`, `"center"`, `"end"`, `"stretch"`. */
   export type WidgetAlign = "start" | "center" | "end" | "stretch";
-  /** Easing curve for a value tween. */
+  /** Easing curve for a UI presentation tween. Valid values: `"linear"`, `"easeIn"`, `"easeOut"`, `"easeInOut"`. Tweens change renderer-local display state only. */
   export type WidgetEasing = "linear" | "easeIn" | "easeOut" | "easeInOut";
-  /** Number-shape value tween (text/slider/bar bind). */
+  /** Number-shape value tween for text, slider, and bar binds. `durationMs` is milliseconds; optional `from` seeds the first displayed value before normal retargeting takes over. */
   export type NumberTween = { durationMs: number; easing: WidgetEasing; from?: number };
-  /** Color-shape value tween (panel bind). */
+  /** Color-shape value tween for panel binds. `from` is an optional initial RGBA tuple; later target changes retween from the current displayed color. */
   export type ColorTween = { durationMs: number; easing: WidgetEasing; from?: [number, number, number, number] };
-  /** A `{ local }` presentation-cell bind reference (`ui.createLocalState`). */
+  /** A presentation-local bind reference produced by `ui.createLocalState(...).cells.<name>.get()`. It resolves inside the nearest declaring `localState` scope, not the engine state store. */
   export type LocalBindRef = { local: string };
-  /** A scalar comparand for a `Predicate` (M13 G2): number, boolean, or string. */
+  /** A scalar comparand for UI visibility/selection predicates: number, boolean, or string. Arrays are intentionally excluded from equality predicates. */
   export type PredicateValue = number | boolean | string;
-  /** A reactive predicate (M13 G2): a readable scalar state ref or `{ local }` cell source against an optional `equals` comparand. */
+  /** A reactive condition used by `visibleWhen`, `selected`, and `checked`: read either an engine state ref or presentation-local cell and compare it to `equals` when provided. */
   export type Predicate = ((ReadonlyStateRef<PredicateValue> & { local?: never }) | LocalBindRef) & { equals?: PredicateValue };
-  /** A11y role override (M13 G2). Absent leaves the widget at its implicit role. */
+  /** Accessibility role override. Valid values: `"tab"`, `"tablist"`, `"checkbox"`, `"radio"`, `"listitem"`, `"button"`, `"slider"`, `"progressbar"`, `"image"`, `"group"`, `"none"`. Omit to use the widget's implicit role. */
   export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none";
-  /** Live-region announcement urgency (M13 G2). `"polite"` is the default and round-trips to omission. */
+  /** Live-region announcement urgency. Valid values: `"polite"` (default, interrupt less) and `"assertive"` (interrupt sooner). */
   export type AnnouncePriority = "polite" | "assertive";
-  /** State binding for a `text` widget (`{ slot }` store or `{ local }` cell). */
+  /** State binding for a `Text` widget. The source is a readable engine state ref or presentation-local cell; `format` is a one-placeholder string such as `"HP {}"`; numeric sources may also tween. */
   export type TextBindProp = ((ReadonlyStateRef<ScalarStateValue> & { local?: never }) | LocalBindRef) & { format?: string; tween?: NumberTween };
-  /** State binding for a `panel` widget (color slot or `{ local }` cell). */
+  /** State binding for a `Panel` fill color. The source resolves to a numeric RGBA array; `tween` eases the displayed color and never writes back to state. */
   export type PanelBindProp = ((ReadonlyStateRef<NumericArrayStateValue> & { local?: never; format?: never }) | LocalBindRef) & { tween?: ColorTween };
-  /** State binding for a writable numeric slider (`{ slot }` or `{ local }` cell). */
+  /** State binding for a writable numeric `Slider`. Engine refs must be writable; local cells are valid. The optional number tween controls displayed thumb movement only. */
   export type SliderBindProp = ((WritableStateRef<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
-  /** State binding for a readonly numeric bar (`{ slot }` or `{ local }` cell). */
+  /** State binding for a readonly numeric `Bar`. The value is displayed against `max`; it is not interactive and never writes state. */
   export type BarBindProp = ((ReadonlyStateRef<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
-  /** Bar max denominator: a literal number or a readonly numeric state ref. */
+  /** Bar denominator: either a literal number or a readonly numeric state ref such as `getGameState().player.maxHealth`. */
   export type BarMaxProp = number | ReadonlyStateRef<number>;
-  /** One band in a `styleRanges` map. */
+  /** One band in a `styleRanges` map. `upTo` is an inclusive normalized threshold; omit it on the final entry to make that entry the default band. `color`, `pulse`, and `flash` affect the rendered style, not authoritative state. */
   export type StyleRangeEntry = { upTo?: number; color?: WidgetColor; pulse?: { periodMs: number }; flash?: { durationMs: number } };
-  /** Continuous value→style map (text/panel/bar). */
+  /** Continuous value-to-style map for text, panel, and bar widgets. Values are normalized by `max`; entries are evaluated in order, and bars commonly use `max: 1.0` because they style their displayed fill fraction. */
   export type StyleRangesProp = { max: number; entries: StyleRangeEntry[] };
-  /** 9-slice border descriptor. */
+  /** 9-slice border descriptor. `texture` names a UI texture asset; `slice` is `[left, top, right, bottom]` in source pixels; `tint` is an inline color or theme token. */
   export type BorderProp = { texture: string; slice: [number, number, number, number]; tint: WidgetColor };
-  /** Per-direction focus-neighbor overrides; each direction names the node id focus jumps to. */
+  /** Per-direction focus-neighbor overrides. Each set direction names the widget id focus should jump to, bypassing automatic spatial/linear focus search for that direction. */
   export type FocusNeighborsProp = { up?: string; down?: string; left?: string; right?: string };
-  /** Hold-to-repeat timing. */
+  /** Hold-to-repeat timing in milliseconds. Used by repeatable buttons and container nav-repeat policies: wait `initialDelayMs`, then fire every `intervalMs` while held. */
   export type RepeatPolicyProp = { initialDelayMs: number; intervalMs: number };
-  /** A typed reaction handle (`defineReaction` result) — anything carrying a `.name` string. */
+  /** A typed reaction handle returned by `defineReaction`; passing the handle lets the SDK read `.name` and emit the same wire string without duplicating names manually. */
   export type ReactionHandleRef = { name: string };
-  /** The flat `kind`-tagged descriptor a widget factory produces. */
+  /** The flat `kind`-tagged descriptor produced by widget factories. It is retained by Rust after setup; author scripts do not hold live widget instances. */
   export type WidgetDescriptor = { kind: string; [field: string]: unknown };
 
   /** Props for `Text`. `content` is `LocalizedText`. `fontSize` defaults to 12; `color` to opaque white. */
@@ -1075,13 +1127,13 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   /** A non-visual `announce` widget (M13 G2): a live-region message routed to the platform a11y layer at the declared `priority`. `text` is a POSITIONAL second argument. */
   export function Announce(props: AnnounceProps, text: LocalizedText): WidgetDescriptor;
 
-  /** Container focus traversal kind. */
+  /** Container focus traversal kind. `"linear"` follows child order; `"spatial"` chooses by geometry in the requested nav direction. */
   export type FocusKind = "linear" | "spatial";
-  /** A container focus policy: a bare-string shorthand or a detailed object. */
+  /** A container focus policy. Use a bare `"linear"`/`"spatial"` shorthand or an object with `wrap` and `repeat` options; `repeat` controls held navigation events inside the container. */
   export type FocusPolicyProp = FocusKind | { policy: FocusKind; wrap?: boolean; repeat?: RepeatPolicyProp };
-  /** Props for `VStack`/`HStack`. `gap`/`padding` default to 0, `align` to `"start"`. May carry a backdrop `fill`/`border`. */
+  /** Props for `VStack`/`HStack`. `gap` and `padding` default to 0; `align` defaults to `"start"`; optional `fill`/`border` draw a backdrop behind the arranged children. */
   export type StackProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; restoreOnReturn?: boolean; fill?: WidgetColor; border?: BorderProp };
-  /** Props for `Grid`. Adds the required `cols` (integer >= 1); no backdrop fill/border. */
+  /** Props for `Grid`. `cols` is required and must be an integer >= 1. Children flow row-major across columns; grid currently has no backdrop fill/border. */
   export type GridProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; restoreOnReturn?: boolean; cols: number };
 
   /** A vertical stack (`vstack`): `children` is a POSITIONAL second argument. */
@@ -1091,17 +1143,18 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   /** A `grid` container: flows `children` across `cols` columns. `children` is a POSITIONAL second argument. */
   export function Grid(props: GridProps, children?: WidgetDescriptor[]): WidgetDescriptor;
 
-  /** The nine placement anchors a tree may be pinned to. */
+  /** Tree viewport anchor. Valid values: `"topLeft"`, `"top"`, `"topRight"`, `"left"`, `"center"`, `"right"`, `"bottomLeft"`, `"bottom"`, `"bottomRight"`. */
   export type WidgetAnchor = "topLeft" | "top" | "topRight" | "left" | "center" | "right" | "bottomLeft" | "bottom" | "bottomRight";
-  /** Whether a tree captures input or passes it through (HUD). `"passthrough"` is the default and round-trips to omission. */
+  /** Tree input behavior. `"capture"` makes this tree consume UI input and freeze lower modal layers; `"passthrough"` is the HUD/default mode and lets game input continue. */
   export type WidgetCaptureMode = "capture" | "passthrough";
-  /** Placement-envelope props for `Tree`. `textEntryTarget` is a writable string state ref serialized to the existing dotted target field. */
+  /** Placement envelope props for `Tree`. `anchor` + `offset` position the root in 1280x720 logical UI space; `captureMode`, `initialFocus`, and `textEntryTarget` control modal/input behavior. */
   export type TreeProps = { anchor: WidgetAnchor; offset: [number, number]; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: WritableStateRef<string>; accessibleName?: string; role?: WidgetRole };
-  /** The flat `AnchoredTree` envelope `Tree` produces. */
+  /** The flat `AnchoredTree` envelope produced by `Tree(...)` and stored in UI registries. `textEntryTarget` is serialized to its dotted state-slot name. */
   export type AnchoredTreeDescriptor = { anchor: WidgetAnchor; offset: [number, number]; root: WidgetDescriptor; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: string; accessibleName?: string; role?: WidgetRole };
   /** Wrap a root widget descriptor in the `AnchoredTree` placement envelope. `root` is a POSITIONAL second argument. */
   export function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDescriptor;
 
+  /** Options accepted by `bindState` for each state value type. Numbers may format and tween, numeric arrays may color-tween, and scalar strings/booleans may format. */
   export type StateBindOptionsFor<T> =
     T extends number ? { format?: string; tween?: NumberTween; slot?: never; local?: never } :
     T extends NumericArrayStateValue ? { tween?: ColorTween; slot?: never; local?: never } :
@@ -1274,7 +1327,9 @@ fn luau_doc_line(doc: &str, indent: &str, out: &mut String) {
 }
 
 fn emit_luau_type(ty: &RegisteredType, out: &mut String) {
-    luau_doc_line(ty.doc, "", out);
+    if !matches!(&ty.shape, TypeShape::StringEnum { .. }) {
+        luau_doc_line(ty.doc, "", out);
+    }
     match &ty.shape {
         TypeShape::Brand { underlying } => {
             writeln!(out, "export type {} = {underlying}", ty.name).unwrap();
@@ -1321,6 +1376,8 @@ fn emit_luau_type(ty: &RegisteredType, out: &mut String) {
             }
         }
         TypeShape::StringEnum { variants } => {
+            let doc = string_enum_doc(ty.doc, variants);
+            luau_doc_line(&doc, "", out);
             let any_doc = variants.iter().any(|v| !v.doc.is_empty());
             if !any_doc {
                 let body = variants
@@ -1825,9 +1882,10 @@ export type NumericArrayStateValue = {number}
 export type ReadonlyStateRef<T> = { slot: string, __stateRefValueBrand: T? }
 export type WritableStateRef<T> = ReadonlyStateRef<T> & { __writableStateRefBrand: T }
 
---- One slot's declaration inside the `defineStore` `schema` argument. The `type`
---- discriminant selects the slot's value type; type-specific keys (`default`,
---- `range`, `values`, …) are accepted alongside it.
+--- One slot inside a `defineStore` schema. `type` selects the stored value kind:
+--- `"number"`, `"boolean"`, `"string"`, `"enum"`, or `"array"`. Numeric slots may
+--- declare `default` and `range`; enum slots declare their valid `values`;
+--- `readonly = true` makes the returned state ref display-only for script writes.
 export type StoreSlotSchema = { type: string, readonly: boolean?, [string]: any }
 
 --- Plain declaration data returned through `setupMod().stores`.
@@ -1847,6 +1905,39 @@ export type StoreDefinition = {
 declare function defineStore(namespace: string, schema: { [string]: StoreSlotSchema }): StoreDefinition
 
 -- ---------------------------------------------------------------------------
+-- UI theme helpers. `defineTheme` preserves the runtime wire shape (flat
+-- colors/fonts/spacing maps) and adds token accessors for authoring sites.
+-- Accessors return the token string, so widget descriptors stay byte-identical
+-- to hand-authored strings.
+
+--- Linear RGBA color token value. Components are in display-linear 0-1 space;
+--- alpha is the fourth element.
+export type ThemeColorValue = {number}
+--- Theme override returned from `setupMod().theme`. Keys are flat token strings,
+--- including dotted names such as `"hud.panel"`; categories stay separate so a
+--- color token and spacing token may share a name.
+export type ThemeDefinition = {
+  colors: { [string]: ThemeColorValue }?,
+  fonts: { [string]: string }?,
+  spacing: { [string]: number }?,
+}
+--- Token accessors added by `defineTheme`. Each function returns the token
+--- string after checking it exists in the matching theme category.
+export type ThemeTokenAccessors = {
+  color: (string) -> string,
+  font: (string) -> string,
+  spacing: (string) -> string,
+}
+--- A theme returned by `defineTheme`: the original flat theme object plus
+--- `tokens` accessors for authoring. Pass this object directly as
+--- `setupMod().theme`.
+export type DefinedTheme = ThemeDefinition & { tokens: ThemeTokenAccessors }
+--- Define a custom theme while preserving the runtime theme shape. Use
+--- `theme.tokens.color("hud.text")` / `.font(...)` / `.spacing(...)` at widget
+--- call sites for setup-time unknown-token checks.
+declare function defineTheme(theme: ThemeDefinition): DefinedTheme
+
+-- ---------------------------------------------------------------------------
 -- Interactive UI widget descriptors (M13 Goal F, Task 4). Authored as data in a
 -- UI tree descriptor; the engine builds the retained tree from them. These
 -- type-only aliases pin the wire shape (camelCase, internally tagged on `kind`).
@@ -1856,16 +1947,20 @@ declare function defineStore(namespace: string, schema: { [string]: StoreSlotSch
 --- handles -- is one edit, not a sweep across every text prop.
 export type LocalizedText = string
 
---- A widget color slot: an inline linear-RGBA tuple or a theme token name.
+--- A widget color slot: either an inline linear-RGBA tuple `{r, g, b, a}` or a
+--- color theme-token string.
 export type WidgetColor = {number} | string
 
---- A slot binding shared by `slider`/`bar`: a dotted slot name plus optional
---- value-tween (number shape).
+--- A numeric state bind descriptor shared by low-level `slider`/`bar` wire
+--- shapes: a dotted slot name plus an optional number tween. Most authors should
+--- call `bindState(ref, options)` instead of constructing this manually.
 export type SliderBind = { slot: string, tween: { durationMs: number, easing: string, from: number? }? }
 
---- Continuous value→style map (M13 Goal E): text/panel normalize rendered value
---- by `max`; bar normalizes its displayed fill fraction. A trailing no-`upTo`
---- band is the default.
+--- Continuous value-to-style map. Text and panel widgets normalize their rendered
+--- numeric value by `max`; bars evaluate their displayed fill fraction, so health
+--- bands usually use `max = 1.0`. Entries are checked in order; the first `upTo`
+--- threshold that contains the normalized value wins, and a trailing entry
+--- without `upTo` is the default band.
 export type WidgetStyleRanges = { max: number, entries: { upTo: number?, color: WidgetColor?, pulse: { periodMs: number }?, flash: { durationMs: number }? } }
 
 -- ---------------------------------------------------------------------------
@@ -1876,45 +1971,80 @@ export type WidgetStyleRanges = { max: number, entries: { upTo: number?, color: 
 -- layout,tree,state}.luau. Containers and `Tree` take `children`/`root` as a
 -- POSITIONAL second argument (Compose/SwiftUI lineage), not a prop.
 
---- A spacing slot (gap/padding): an inline logical-px number or a theme token.
+--- A spacing slot for gaps and padding: either an inline logical-pixel number or
+--- a spacing theme-token string. Theme spacing affects styling/layout rhythm,
+--- not anchored tree placement.
 export type WidgetSpacing = number | string
---- Cross-axis alignment of a container's children.
+--- Cross-axis alignment inside a stack/grid. Valid values: `"start"`, `"center"`,
+--- `"end"`, `"stretch"`.
 export type WidgetAlign = "start" | "center" | "end" | "stretch"
---- Easing curve for a value tween.
+--- Easing curve for a UI presentation tween. Valid values: `"linear"`,
+--- `"easeIn"`, `"easeOut"`, `"easeInOut"`. Tweens change renderer-local display
+--- state only.
 export type WidgetEasing = "linear" | "easeIn" | "easeOut" | "easeInOut"
---- Number-shape value tween (text/slider/bar bind).
+--- Number-shape value tween for text, slider, and bar binds. `durationMs` is
+--- milliseconds; optional `from` seeds the first displayed value before normal
+--- retargeting takes over.
 export type NumberTween = { durationMs: number, easing: WidgetEasing, from: number? }
---- Color-shape value tween (panel bind).
+--- Color-shape value tween for panel binds. `from` is an optional initial RGBA
+--- tuple; later target changes retween from the current displayed color.
 export type ColorTween = { durationMs: number, easing: WidgetEasing, from: {number}? }
---- A `{ ["local"] = name }` presentation-cell bind reference (`ui.createLocalState`).
+--- A presentation-local bind reference produced by
+--- `ui.createLocalState(...).cells.<name>:get()`. It resolves inside the nearest
+--- declaring `localState` scope, not the engine state store.
 export type LocalBindRef = { ["local"]: string }
---- A scalar comparand for a `Predicate` (M13 G2): number, boolean, or string.
+--- A scalar comparand for UI visibility/selection predicates: number, boolean,
+--- or string. Arrays are intentionally excluded from equality predicates.
 export type PredicateValue = number | boolean | string
---- A reactive predicate (M13 G2): a readable scalar state ref or `["local"]` cell source against an optional `equals` comparand.
+--- A reactive condition used by `visibleWhen`, `selected`, and `checked`: read
+--- either an engine state ref or presentation-local cell and compare it to
+--- `equals` when provided.
 export type Predicate = (ReadonlyStateRef<PredicateValue> | LocalBindRef) & { equals: PredicateValue? }
---- A11y role override (M13 G2). Absent leaves the widget at its implicit role.
+--- Accessibility role override. Valid values: `"tab"`, `"tablist"`,
+--- `"checkbox"`, `"radio"`, `"listitem"`, `"button"`, `"slider"`,
+--- `"progressbar"`, `"image"`, `"group"`, `"none"`. Omit to use the widget's
+--- implicit role.
 export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none"
---- Live-region announcement urgency (M13 G2). `"polite"` is the default and round-trips to omission.
+--- Live-region announcement urgency. Valid values: `"polite"` (default,
+--- interrupt less) and `"assertive"` (interrupt sooner).
 export type AnnouncePriority = "polite" | "assertive"
---- State binding for a `text` widget (readable scalar state ref or `["local"]` cell).
+--- State binding for a `Text` widget. The source is a readable engine state ref
+--- or presentation-local cell; `format` is a one-placeholder string such as
+--- `"HP {}"`; numeric sources may also tween.
 export type TextBindProp = (ReadonlyStateRef<ScalarStateValue> | LocalBindRef) & { format: string?, tween: NumberTween? }
---- State binding for a `panel` widget (readable numeric-array state ref or `["local"]` cell).
+--- State binding for a `Panel` fill color. The source resolves to a numeric RGBA
+--- array; `tween` eases the displayed color and never writes back to state.
 export type PanelBindProp = (ReadonlyStateRef<NumericArrayStateValue> | LocalBindRef) & { tween: ColorTween? }
---- State binding for a writable numeric slider (writable state ref or `["local"]` cell).
+--- State binding for a writable numeric `Slider`. Engine refs must be writable;
+--- local cells are valid. The optional number tween controls displayed thumb
+--- movement only.
 export type SliderBindProp = (WritableStateRef<number> | LocalBindRef) & { tween: NumberTween? }
---- One band in a `styleRanges` map.
+--- One band in a `styleRanges` map. `upTo` is an inclusive normalized threshold;
+--- omit it on the final entry to make that entry the default band. `color`,
+--- `pulse`, and `flash` affect the rendered style, not authoritative state.
 export type StyleRangeEntry = { upTo: number?, color: WidgetColor?, pulse: { periodMs: number }?, flash: { durationMs: number }? }
---- Continuous value→style map (text/panel/bar).
+--- Continuous value-to-style map for text, panel, and bar widgets. Values are
+--- normalized by `max`; entries are evaluated in order, and bars commonly use
+--- `max = 1.0` because they style their displayed fill fraction.
 export type StyleRangesProp = { max: number, entries: {StyleRangeEntry} }
---- 9-slice border descriptor.
+--- 9-slice border descriptor. `texture` names a UI texture asset; `slice` is
+--- `{left, top, right, bottom}` in source pixels; `tint` is an inline color or
+--- theme token.
 export type BorderProp = { texture: string, slice: {number}, tint: WidgetColor }
---- Per-direction focus-neighbor overrides; each direction names the node id focus jumps to.
+--- Per-direction focus-neighbor overrides. Each set direction names the widget id
+--- focus should jump to, bypassing automatic spatial/linear focus search for
+--- that direction.
 export type FocusNeighborsProp = { up: string?, down: string?, left: string?, right: string? }
---- Hold-to-repeat timing.
+--- Hold-to-repeat timing in milliseconds. Used by repeatable buttons and
+--- container nav-repeat policies: wait `initialDelayMs`, then fire every
+--- `intervalMs` while held.
 export type RepeatPolicyProp = { initialDelayMs: number, intervalMs: number }
---- A typed reaction handle (`defineReaction` result) — anything carrying a `.name` string.
+--- A typed reaction handle returned by `defineReaction`; passing the handle lets
+--- the SDK read `.name` and emit the same wire string without duplicating names
+--- manually.
 export type ReactionHandleRef = { name: string }
---- The flat `kind`-tagged descriptor a widget factory produces.
+--- The flat `kind`-tagged descriptor produced by widget factories. It is retained
+--- by Rust after setup; author scripts do not hold live widget instances.
 export type WidgetDescriptor = { [string]: any }
 
 --- Props for `Text`. `content` is `LocalizedText`. `fontSize` defaults to 12; `color` to opaque white.
@@ -1947,9 +2077,11 @@ export type SliderProps = { id: string, bind: SliderBindProp, min: number, max: 
 --- An interactive `slider`. Nav wires in `capturesNav` step the bound value by `step` within `[min, max]`. Exactly one of `label` / `labelledBy` is required.
 declare function Slider(props: SliderProps): WidgetDescriptor
 
---- State binding for a readonly numeric bar (readable state ref or `["local"]` cell).
+--- State binding for a readonly numeric `Bar`. The value is displayed against
+--- `max`; it is not interactive and never writes state.
 export type BarBindProp = (ReadonlyStateRef<number> | LocalBindRef) & { tween: NumberTween? }
---- Bar max denominator: a literal number or a readonly numeric state ref.
+--- Bar denominator: either a literal number or a readonly numeric state ref such
+--- as `getGameState().player.maxHealth`.
 export type BarMaxProp = number | ReadonlyStateRef<number>
 --- Props for `Bar`. `bind` is a readonly numeric bind; `max` is a number or readonly numeric ref.
 export type BarProps = { bind: BarBindProp, max: BarMaxProp, fill: WidgetColor, background: WidgetColor, styleRanges: StyleRangesProp?, id: string?, visibleWhen: Predicate?, role: WidgetRole? }
@@ -1961,13 +2093,19 @@ export type AnnounceProps = { priority: AnnouncePriority?, visibleWhen: Predicat
 --- A non-visual `announce` widget (M13 G2): a live-region message routed to the platform a11y layer at the declared `priority`. `text` is a POSITIONAL second argument.
 declare function Announce(props: AnnounceProps, text: LocalizedText): WidgetDescriptor
 
---- Container focus traversal kind.
+--- Container focus traversal kind. `"linear"` follows child order; `"spatial"`
+--- chooses by geometry in the requested nav direction.
 export type FocusKind = "linear" | "spatial"
---- A container focus policy: a bare-string shorthand or a detailed table.
+--- A container focus policy. Use a bare `"linear"`/`"spatial"` shorthand or a
+--- table with `wrap` and `repeat` options; `repeat` controls held navigation
+--- events inside the container.
 export type FocusPolicyProp = FocusKind | { policy: FocusKind, wrap: boolean?, ["repeat"]: RepeatPolicyProp? }
---- Props for `VStack`/`HStack`. `gap`/`padding` default to 0, `align` to `"start"`. May carry a backdrop `fill`/`border`.
+--- Props for `VStack`/`HStack`. `gap` and `padding` default to 0; `align`
+--- defaults to `"start"`; optional `fill`/`border` draw a backdrop behind the
+--- arranged children.
 export type StackProps = { gap: WidgetSpacing?, padding: WidgetSpacing?, align: WidgetAlign?, id: string?, focusNeighbors: FocusNeighborsProp?, focus: FocusPolicyProp?, restoreOnReturn: boolean?, fill: WidgetColor?, border: BorderProp? }
---- Props for `Grid`. Adds the required `cols` (integer >= 1); no backdrop fill/border.
+--- Props for `Grid`. `cols` is required and must be an integer >= 1. Children
+--- flow row-major across columns; grid currently has no backdrop fill/border.
 export type GridProps = { gap: WidgetSpacing?, padding: WidgetSpacing?, align: WidgetAlign?, id: string?, focusNeighbors: FocusNeighborsProp?, focus: FocusPolicyProp?, restoreOnReturn: boolean?, cols: number }
 
 --- A vertical stack (`vstack`): `children` is a POSITIONAL second argument.
@@ -1977,13 +2115,20 @@ declare function HStack(props: StackProps?, children: {WidgetDescriptor}?): Widg
 --- A `grid` container: flows `children` across `cols` columns. `children` is a POSITIONAL second argument.
 declare function Grid(props: GridProps, children: {WidgetDescriptor}?): WidgetDescriptor
 
---- The nine placement anchors a tree may be pinned to.
+--- Tree viewport anchor. Valid values: `"topLeft"`, `"top"`, `"topRight"`,
+--- `"left"`, `"center"`, `"right"`, `"bottomLeft"`, `"bottom"`,
+--- `"bottomRight"`.
 export type WidgetAnchor = "topLeft" | "top" | "topRight" | "left" | "center" | "right" | "bottomLeft" | "bottom" | "bottomRight"
---- Whether a tree captures input or passes it through (HUD). `"passthrough"` is the default and round-trips to omission.
+--- Tree input behavior. `"capture"` makes this tree consume UI input and freeze
+--- lower modal layers; `"passthrough"` is the HUD/default mode and lets game
+--- input continue.
 export type WidgetCaptureMode = "capture" | "passthrough"
---- Placement-envelope props for `Tree`. `textEntryTarget` is a writable string state ref serialized to the existing dotted target field.
+--- Placement envelope props for `Tree`. `anchor` + `offset` position the root in
+--- 1280x720 logical UI space; `captureMode`, `initialFocus`, and
+--- `textEntryTarget` control modal/input behavior.
 export type TreeProps = { anchor: WidgetAnchor, offset: {number}, captureMode: WidgetCaptureMode?, initialFocus: string?, textEntryTarget: WritableStateRef<string>?, accessibleName: string?, role: WidgetRole? }
---- The flat `AnchoredTree` envelope `Tree` produces.
+--- The flat `AnchoredTree` envelope produced by `Tree(...)` and stored in UI
+--- registries. `textEntryTarget` is serialized to its dotted state-slot name.
 export type AnchoredTreeDescriptor = { anchor: WidgetAnchor, offset: {number}, root: WidgetDescriptor, captureMode: WidgetCaptureMode?, initialFocus: string?, textEntryTarget: string?, accessibleName: string?, role: WidgetRole? }
 --- Wrap a root widget descriptor in the `AnchoredTree` placement envelope. `root` is a POSITIONAL second argument.
 declare function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDescriptor
@@ -3084,6 +3229,7 @@ declare module \"postretro\" {
     count: number;
   };
 
+  /** Valid values: `Alpha`, `Beta`. */
   export type Kind =
     /** The first kind. */
     | \"Alpha\"
@@ -3119,6 +3265,7 @@ export type Widget = {
   count: number,
 }
 
+--- Valid values: `Alpha`, `Beta`.
 export type Kind =
   --- The first kind.
   \"Alpha\"
@@ -3662,6 +3809,13 @@ export type Event = {
                 && luau.contains("ScalarStateBindOptions")
                 && luau.contains("declare function stateEquals<T>("),
             "luau d.luau missing state reference helper declarations"
+        );
+        assert!(
+            ts.contains("export function defineTheme<const T extends ThemeDefinition>(theme: T): DefinedTheme<T>;")
+                && ts.contains("export type ThemeTokenAccessors<T extends ThemeDefinition>")
+                && luau.contains("declare function defineTheme(theme: ThemeDefinition): DefinedTheme")
+                && luau.contains("export type ThemeTokenAccessors"),
+            "generated type outputs missing theme helper declarations"
         );
         assert!(
             ts.contains("export function updateState<T extends number | boolean | string | ReadonlyArray<number>>(ref: WritableStateRef<T>, value: T): PrimitiveReactionDescriptor;"),

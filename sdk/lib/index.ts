@@ -107,6 +107,14 @@ export type {
 } from "./ui/state";
 export { bindState, stateEquals, createLocalState, ui, Switch } from "./ui/state";
 
+export type {
+  ThemeColorValue,
+  ThemeDefinition,
+  ThemeTokenAccessors,
+  DefinedTheme,
+} from "./ui/theme";
+export { defineTheme } from "./ui/theme";
+
 export type { CrossingCondition, CrossingDescriptor } from "./ui/reactions";
 export {
   onStateCrossing,

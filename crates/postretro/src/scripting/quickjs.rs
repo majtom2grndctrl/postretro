@@ -507,7 +507,7 @@ mod tests {
         subsys.definition_ctx().with(|ctx| {
             let typeof_world: String = ctx.eval("typeof world").unwrap();
             assert_eq!(typeof_world, "object", "world missing");
-            for fn_name in ["timeline", "sequence", "getGameState"] {
+            for fn_name in ["timeline", "sequence", "getGameState", "defineTheme"] {
                 let kind: String = ctx
                     .eval(format!("typeof {fn_name}").as_str())
                     .unwrap_or_else(|e| panic!("{fn_name}: {e}"));
@@ -529,6 +529,43 @@ mod tests {
                     "{absent} must NOT be a bare global after the capability-handle refactor"
                 );
             }
+        });
+    }
+
+    #[test]
+    fn define_theme_returns_token_strings_without_enumerating_helpers() {
+        let (subsys, _ctx) = setup();
+        subsys.definition_ctx().with(|ctx| {
+            let result: String = ctx
+                .eval(
+                    r#"
+                    const theme = defineTheme({
+                      colors: { "hud.text": [1, 1, 1, 1] },
+                      fonts: { "hud.status": "JetBrains Mono" },
+                      spacing: { "hud.gap": 8 },
+                    });
+                    JSON.stringify({
+                      color: theme.tokens.color("hud.text"),
+                      font: theme.tokens.font("hud.status"),
+                      spacing: theme.tokens.spacing("hud.gap"),
+                      keys: Object.keys(theme),
+                      json: JSON.stringify(theme),
+                    })
+                    "#,
+                )
+                .unwrap();
+            let got: serde_json::Value = serde_json::from_str(&result).unwrap();
+            assert_eq!(got["color"], "hud.text");
+            assert_eq!(got["font"], "hud.status");
+            assert_eq!(got["spacing"], "hud.gap");
+            assert_eq!(
+                got["keys"],
+                serde_json::json!(["colors", "fonts", "spacing"])
+            );
+            assert!(
+                !got["json"].as_str().unwrap().contains("tokens"),
+                "defineTheme helper metadata must not enter JSON theme data"
+            );
         });
     }
 

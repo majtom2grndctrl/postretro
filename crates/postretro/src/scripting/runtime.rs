@@ -3530,6 +3530,157 @@ mod tests {
         assert_eq!(manifest.fonts.families["body"], "fonts/inter.ttf");
     }
 
+    #[test]
+    fn mod_init_quickjs_drains_returned_production_hud_contract() {
+        use crate::render::ui::descriptor::{BarMax, Widget};
+
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("js_production_hud_contract");
+        std::fs::write(
+            dir.join("start-script.js"),
+            r#"
+            globalThis.setupMod = function() {
+                const pauseMenuStore = defineStore("audio", {
+                    master: { type: "number", default: 1.0, range: [0.0, 1.0], persist: false },
+                });
+                const player = getGameState().player;
+                const healthTree = Tree(
+                    { anchor: "bottomLeft", offset: [24.0, -24.0] },
+                    VStack({ gap: "hud.rowGap", padding: "hud.padding", align: "stretch", fill: "hud.panel" }, [
+                        HStack({ gap: "hud.gap", align: "center" }, [
+                            Text({
+                                content: "HP --",
+                                color: "hud.text",
+                                font: "hud.status",
+                                fontSize: 24.0,
+                                bind: bindState(player.health, { format: "HP {}" }),
+                            }),
+                        ]),
+                        Bar({
+                            bind: bindState(player.health, {
+                                tween: { durationMs: 180.0, easing: "easeOut" },
+                            }),
+                            max: player.maxHealth,
+                            fill: "ok",
+                            background: "hud.health.background",
+                            styleRanges: {
+                                max: 1.0,
+                                entries: [
+                                    { upTo: 0.25, color: "critical" },
+                                    { upTo: 0.5, color: "warning" },
+                                    { color: "ok" },
+                                ],
+                            },
+                        }),
+                    ]),
+                );
+                const reticleTree = Tree(
+                    { anchor: "center", offset: [0.0, 0.0] },
+                    Text({ content: "+", font: "mono" }),
+                );
+                return {
+                    name: "HudMod",
+                    stores: [pauseMenuStore.declaration],
+                    uiTrees: [
+                        { name: "hud", tree: healthTree, alwaysOn: true },
+                        { name: "hud.reticle", tree: reticleTree, alwaysOn: true },
+                    ],
+                    theme: {
+                        colors: {
+                            "hud.panel": [0.018, 0.026, 0.039, 0.82],
+                            "hud.health.background": [0.035, 0.045, 0.060, 1.0],
+                            "hud.text": [0.82, 0.95, 0.98, 1.0],
+                        },
+                        fonts: { "hud.status": "JetBrains Mono" },
+                        spacing: { "hud.gap": 8.0, "hud.padding": 14.0, "hud.rowGap": 6.0 },
+                    },
+                };
+            };
+            "#,
+        )
+        .unwrap();
+
+        rt.run_mod_init(&dir).unwrap();
+        let manifest = rt.mod_manifest().expect("Some manifest");
+        assert_eq!(manifest.store_declarations.len(), 1);
+        assert_eq!(
+            manifest
+                .store_declarations
+                .iter()
+                .next()
+                .map(|declaration| declaration.namespace.as_str()),
+            Some("audio"),
+            "remaining development stores return through setupMod().stores",
+        );
+
+        assert_eq!(manifest.ui_trees.len(), 2);
+        let hud = manifest
+            .ui_trees
+            .iter()
+            .find(|tree| tree.name == "hud")
+            .expect("hud tree returned");
+        assert!(
+            hud.always_on,
+            "alwaysOn belongs to the registration envelope"
+        );
+        let reticle = manifest
+            .ui_trees
+            .iter()
+            .find(|tree| tree.name == "hud.reticle")
+            .expect("reticle tree returned");
+        assert!(reticle.always_on);
+        let Widget::Text(reticle_text) = &reticle.tree.root else {
+            panic!("reticle root is text");
+        };
+        assert_eq!(reticle_text.content, "+");
+        assert_eq!(reticle_text.font.as_deref(), Some("mono"));
+
+        let Widget::VStack(root) = &hud.tree.root else {
+            panic!("hud root is a vstack");
+        };
+        let Widget::HStack(row) = &root.children[0] else {
+            panic!("hud first child is a row");
+        };
+        let Widget::Text(status) = &row.children[0] else {
+            panic!("hud status row contains text");
+        };
+        assert_eq!(
+            status.bind.as_ref().and_then(|bind| bind.source.slot()),
+            Some("player.health"),
+        );
+        assert_eq!(
+            status.bind.as_ref().and_then(|bind| bind.format.as_deref()),
+            Some("HP {}"),
+        );
+
+        let Widget::Bar(bar) = &root.children[1] else {
+            panic!("hud second child is a bar");
+        };
+        assert_eq!(bar.bind.source.slot(), Some("player.health"));
+        assert_eq!(
+            bar.bind.tween.as_ref().map(|tween| tween.duration_ms),
+            Some(180.0),
+        );
+        match &bar.max {
+            BarMax::State(reference) => assert_eq!(reference.slot, "player.maxHealth"),
+            other => panic!("bar max must be direct player.maxHealth ref, got {other:?}"),
+        }
+        let ranges = bar
+            .style_ranges
+            .as_ref()
+            .expect("health bar declares normalized ranges");
+        assert_eq!(ranges.max, 1.0);
+        assert_eq!(ranges.entries[0].up_to, Some(0.25));
+        assert_eq!(ranges.entries[1].up_to, Some(0.5));
+
+        assert_eq!(
+            manifest.theme.colors["hud.health.background"],
+            [0.035, 0.045, 0.060, 1.0]
+        );
+        assert_eq!(manifest.theme.fonts["hud.status"], "JetBrains Mono");
+        assert_eq!(manifest.theme.spacing["hud.padding"], 14.0);
+    }
+
     /// Cold-boot JS: a malformed `uiTrees` entry (unknown widget kind) is logged
     /// and skipped — mod-init still succeeds and other trees survive.
     #[test]

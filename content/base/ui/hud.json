@@ -1,146 +1,25 @@
 {
   "anchor": "bottomLeft",
   "offset": [
-    0.0,
-    0.0
+    16.0,
+    -16.0
   ],
   "root": {
     "kind": "vstack",
-    "gap": 10.0,
-    "padding": 16.0,
+    "gap": 4.0,
+    "padding": 8.0,
     "align": "start",
     "children": [
       {
         "kind": "text",
-        "content": "HP --",
-        "fontSize": 28.0,
+        "content": "FALLBACK HUD HP --",
+        "fontSize": 18.0,
         "color": "ok",
+        "font": "mono",
         "bind": {
           "slot": "player.health",
-          "format": "HP {}",
-          "tween": {
-            "durationMs": 1200.0,
-            "easing": "easeOut",
-            "from": 0.0
-          }
+          "format": "FALLBACK HUD HP {}"
         }
-      },
-      {
-        "kind": "text",
-        "content": "AMMO --",
-        "fontSize": 28.0,
-        "color": "ok",
-        "bind": {
-          "slot": "player.ammo",
-          "format": "AMMO {}"
-        }
-      },
-      {
-        "kind": "grid",
-        "gap": 8.0,
-        "padding": 0.0,
-        "align": "stretch",
-        "cols": 2,
-        "children": [
-          {
-            "kind": "panel",
-            "fill": [
-              0.0,
-              0.65,
-              0.75,
-              1.0
-            ],
-            "border": null,
-            "bind": {
-              "slot": "intro.flashColor",
-              "tween": {
-                "durationMs": 150.0,
-                "easing": "easeInOut"
-              }
-            }
-          },
-          {
-            "kind": "text",
-            "content": "FLASH",
-            "fontSize": 28.0,
-            "color": "ok",
-            "font": "mono"
-          }
-        ]
-      },
-      {
-        "kind": "grid",
-        "gap": 8.0,
-        "padding": 0.0,
-        "align": "stretch",
-        "cols": 2,
-        "children": [
-          {
-            "kind": "panel",
-            "fill": [
-              0.0,
-              0.85,
-              0.35,
-              1.0
-            ],
-            "border": null,
-            "bind": {
-              "slot": "player.health"
-            },
-            "styleRanges": {
-              "max": 100.0,
-              "entries": [
-                {
-                  "upTo": 0.2,
-                  "color": "critical"
-                },
-                {
-                  "upTo": 0.5,
-                  "color": "warning"
-                },
-                {
-                  "color": "ok"
-                }
-              ]
-            }
-          },
-          {
-            "kind": "text",
-            "content": "HEALTH",
-            "fontSize": 28.0,
-            "color": "ok",
-            "font": "mono"
-          }
-        ]
-      },
-      {
-        "kind": "grid",
-        "gap": 8.0,
-        "padding": 0.0,
-        "align": "stretch",
-        "cols": 2,
-        "children": [
-          {
-            "kind": "panel",
-            "fill": [
-              0.0,
-              0.0,
-              0.0,
-              0.0
-            ],
-            "border": null,
-            "bind": {
-              "slot": "screen.flash"
-            }
-          },
-          {
-            "kind": "text",
-            "content": "SCREEN.FLASH",
-            "fontSize": 28.0,
-            "color": "ok",
-            "font": "mono"
-          }
-        ]
       }
     ]
   }

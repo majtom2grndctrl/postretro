@@ -100,3 +100,60 @@ fn dep_json_stdout_is_single_dependency_report() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn dev_start_script_bundles_sdk_authored_hud_without_generated_sibling() {
+    let dir = unique_tempdir("dev-hud");
+    let output = dir.join("start-script.js");
+    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let entry = workspace_root.join("content/dev/start-script.ts");
+    let generated_sibling = workspace_root.join("content/dev/start-script.js");
+    let sibling_before = fs::metadata(&generated_sibling).ok().and_then(|metadata| {
+        metadata
+            .modified()
+            .ok()
+            .map(|modified| (metadata.len(), modified))
+    });
+
+    let result = Command::new(env!("CARGO_BIN_EXE_scripts-build"))
+        .arg("--in")
+        .arg(&entry)
+        .arg("--out")
+        .arg(&output)
+        .output()
+        .expect("run scripts-build");
+
+    assert!(
+        result.status.success(),
+        "scripts-build failed: stderr={}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+
+    let bundled = fs::read_to_string(&output).expect("bundled output exists");
+    assert!(
+        bundled.contains("getGameState"),
+        "HUD builder obtains engine refs through getGameState: {bundled}",
+    );
+    assert!(
+        bundled.contains("hud.reticle"),
+        "reticle registration is bundled from hud.ts: {bundled}",
+    );
+    for removed in ["postretro/game-state", "player.ammo", "intro.flashColor"] {
+        assert!(
+            !bundled.contains(removed),
+            "dev HUD bundle must not reference removed surface {removed:?}: {bundled}",
+        );
+    }
+    let sibling_after = fs::metadata(&generated_sibling).ok().and_then(|metadata| {
+        metadata
+            .modified()
+            .ok()
+            .map(|modified| (metadata.len(), modified))
+    });
+    assert_eq!(
+        sibling_after, sibling_before,
+        "compiler fixture writes only to the temp output, not content/dev/start-script.js",
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}

@@ -1362,13 +1362,14 @@ impl UiTree {
                     0.0
                 };
 
-                // styleRanges recolors the fill the same widget-agnostic way bound
-                // text/panel do: the evaluator maps the value against its own `max`.
+                // styleRanges recolors the fill from the normalized displayed
+                // fraction. Text/panel pass their displayed scalar directly; a
+                // bar's rendered scalar is its fill fraction.
                 let mut fill_color = *fill;
                 if let Some(ranges) = style_ranges {
                     fill_color = evaluate(
                         ranges,
-                        value,
+                        fraction,
                         fill_color,
                         inert_theme,
                         &mut style_state.borrow_mut(),
@@ -6146,10 +6147,12 @@ mod tests {
 
     #[test]
     fn bar_style_ranges_recolor_the_fill() {
-        // A health bar with a red ≤ 0.25 band: at 10/100 the fill quad is red, not
-        // the base green. styleRanges recolors the fill widget-agnostically.
+        // A health bar with a red ≤ 0.25 normalized band: at 10/100 the fill quad
+        // is red, not the base green. Bar styleRanges evaluate the displayed fill
+        // fraction so authored bands can stay normalized even when max is a state
+        // reference.
         let ranges = StyleRanges {
-            max: 100.0,
+            max: 1.0,
             entries: vec![
                 StyleEntry {
                     up_to: Some(0.25),

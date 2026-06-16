@@ -3,18 +3,21 @@ import { referencePistolEntity } from "./scripts/reference-pistol";
 import { animDemoGruntEntity } from "./scripts/anim-demo-grunt";
 import { targetDummyEntity } from "./scripts/target-dummy";
 import { referenceEntities } from "../../sdk/behaviors/reference/entities";
-import { introStore } from "./scripts/intro-store";
+import { buildHud } from "./scripts/hud";
 import { pauseMenuStore } from "./scripts/pause-menu-store";
 
 export function setupMod() {
+  const hud = buildHud();
+
   return {
     name: "dev",
     // Store declarations commit only after this manifest validates. The shared
     // modules remain pure: importing them does not touch engine state.
     stores: [
-      introStore.declaration,
       pauseMenuStore.declaration,
     ],
+    uiTrees: hud.uiTrees,
+    theme: hud.theme,
     entities: [
       playerEntity,
       referencePistolEntity,

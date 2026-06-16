@@ -52,9 +52,7 @@ pub(crate) fn build_pause_menu_descriptor() -> super::descriptor::AnchoredTree {
 
 #[cfg(test)]
 mod tests {
-    use super::super::descriptor::{
-        CaptureMode, ColorValue, Easing, PanelTween, TextTween, Widget,
-    };
+    use super::super::descriptor::{CaptureMode, Widget};
     use super::{build_demo_descriptor, build_pause_menu_descriptor};
 
     /// Pause-menu widget ids the focus-chain tests assert against. These mirror the
@@ -68,140 +66,62 @@ mod tests {
     const PAUSE_TEXT_ENTRY_REACTION: &str = "openTextEntry";
     const PAUSE_RESUME_REACTION: &str = "resumePauseMenu";
 
-    /// Authored values the HUD JSON pins; asserted to stay in sync with the source.
-    const HEALTH_TWEEN_MS: f32 = 1200.0;
-    const FLASH_TWEEN_MS: f32 = 150.0;
-    const FLASH_FALLBACK_FILL: [f32; 4] = [0.0, 0.65, 0.75, 1.0];
-    const SCREEN_FLASH_FALLBACK_FILL: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
-    const HEALTH_BAR_MAX: f32 = 100.0;
-    const HEALTH_CRITICAL_UP_TO: f32 = 0.2;
-    const HEALTH_WARNING_UP_TO: f32 = 0.5;
-    /// The theme color tokens the three health-bar bands carry in `hud.json`.
-    const HEALTH_CRITICAL_COLOR: &str = "critical";
-    const HEALTH_WARNING_COLOR: &str = "warning";
-    const HEALTH_OK_COLOR: &str = "ok";
+    const FALLBACK_HUD_MARKER: &str = "FALLBACK HUD HP --";
+    const FALLBACK_HUD_FORMAT: &str = "FALLBACK HUD HP {}";
 
     /// The slider's authored range/step in `pauseMenu.json`.
     const VOLUME_MIN: f32 = 0.0;
     const VOLUME_MAX: f32 = 1.0;
     const VOLUME_STEP: f32 = 0.1;
 
-    /// The demo descriptor binds the three expected slots: `player.health` and
-    /// `player.ammo` on text nodes, `intro.flashColor` on a panel fill. This pins
-    /// the wiring at the descriptor level; the gate test drives it through layout.
+    /// The engine HUD asset is now a minimal fallback. The production HUD is
+    /// registered by mod content; this marker must stay fallback-only so shadowing
+    /// tests can prove the mod `hud` replaced it.
     #[test]
-    fn demo_descriptor_binds_the_three_slots() {
+    fn fallback_hud_descriptor_carries_the_fallback_only_marker() {
         let tree = build_demo_descriptor();
         let Widget::VStack(col) = &tree.root else {
-            panic!("demo root is a vstack column");
+            panic!("fallback HUD root is a vstack column");
         };
-        // health, ammo, flash swatch, health bar (styleRanges), screen.flash swatch
-        assert_eq!(col.children.len(), 5, "five HUD rows");
+        assert_eq!(col.children.len(), 1, "fallback HUD has one health row");
 
         let Widget::Text(health) = &col.children[0] else {
-            panic!("first row is the health text");
+            panic!("fallback row is the health text");
         };
+        assert_eq!(health.content, FALLBACK_HUD_MARKER);
         assert_eq!(
             health.bind.as_ref().and_then(|b| b.source.slot()),
             Some("player.health"),
         );
         assert_eq!(
             health.bind.as_ref().and_then(|b| b.format.as_deref()),
-            Some("HP {}"),
-        );
-        // The health bind tweens the first-resolve count-up: from 0 over 1.2s,
-        // easeOut.
-        assert_eq!(
-            health.bind.as_ref().and_then(|b| b.tween.clone()),
-            Some(TextTween {
-                duration_ms: HEALTH_TWEEN_MS,
-                easing: Easing::EaseOut,
-                from: Some(0.0),
-            }),
-            "health bind carries the 0→100 first-resolve count-up tween",
-        );
-
-        let Widget::Text(ammo) = &col.children[1] else {
-            panic!("second row is the ammo text");
-        };
-        assert_eq!(
-            ammo.bind.as_ref().and_then(|b| b.source.slot()),
-            Some("player.ammo"),
-        );
-        assert_eq!(
-            ammo.bind.as_ref().and_then(|b| b.format.as_deref()),
-            Some("AMMO {}"),
-        );
-
-        let Widget::Grid(swatch) = &col.children[2] else {
-            panic!("third row is the swatch grid");
-        };
-        let Widget::Panel(panel) = &swatch.children[0] else {
-            panic!("swatch grid's first cell is the bound flash panel");
-        };
-        assert_eq!(
-            panel.bind.as_ref().and_then(|b| b.source.slot()),
-            Some("intro.flashColor"),
-        );
-        assert_eq!(
-            panel.fill,
-            ColorValue::Literal(FLASH_FALLBACK_FILL),
-            "panel keeps a literal fallback fill",
-        );
-        // The swatch panel eases each proxy toggle (150ms easeInOut, no `from`).
-        assert_eq!(
-            panel.bind.as_ref().and_then(|b| b.tween.clone()),
-            Some(PanelTween {
-                duration_ms: FLASH_TWEEN_MS,
-                easing: Easing::EaseInOut,
-                from: None,
-            }),
-            "swatch panel carries the toggle-smoothing tween (no `from`)",
+            Some(FALLBACK_HUD_FORMAT),
         );
     }
 
-    /// The styleRanges health bar (the M13 Goal E demo bar): a `panel` bound to
-    /// the numeric `player.health` slot carrying a three-band styleRanges map.
-    /// This is the fourth HUD row (after the flash swatch) so the swatch stays
-    /// the first-emitted quad for the gate tests.
+    /// The fallback stays intentionally smaller than the production HUD: no ammo,
+    /// intro flash store, screen-flash swatches, or bar. That keeps it useful only
+    /// when no mod HUD is registered.
     #[test]
-    fn demo_descriptor_carries_a_styleranges_health_bar() {
+    fn fallback_hud_descriptor_omits_demo_only_surfaces() {
         let tree = build_demo_descriptor();
-        let Widget::VStack(col) = &tree.root else {
-            panic!("demo root is a vstack column");
-        };
-        let Widget::Grid(bar) = &col.children[3] else {
-            panic!("fourth row is the health-bar grid");
-        };
-        let Widget::Panel(bar_panel) = &bar.children[0] else {
-            panic!("health-bar grid's first cell is the bound bar panel");
-        };
-        assert_eq!(
-            bar_panel.bind.as_ref().and_then(|b| b.source.slot()),
-            Some("player.health"),
-            "health bar binds the numeric player.health slot",
+        let json = serde_json::to_string(&tree).expect("fallback HUD serializes");
+        for removed in [
+            "player.ammo",
+            "AMMO",
+            "intro.flashColor",
+            "SCREEN.FLASH",
+            "screen.flash",
+        ] {
+            assert!(
+                !json.contains(removed),
+                "fallback HUD must not carry removed demo surface {removed:?}: {json}",
+            );
+        }
+        assert!(
+            !json.contains(r#""kind":"bar""#),
+            "fallback HUD is text-only; the production mod HUD owns the bar"
         );
-        let ranges = bar_panel
-            .style_ranges
-            .as_ref()
-            .expect("health bar carries a styleRanges map");
-        assert_eq!(ranges.max, HEALTH_BAR_MAX);
-        assert_eq!(ranges.entries.len(), 3, "critical / warning / ok bands");
-        assert_eq!(ranges.entries[0].up_to, Some(HEALTH_CRITICAL_UP_TO));
-        assert_eq!(ranges.entries[1].up_to, Some(HEALTH_WARNING_UP_TO));
-        assert_eq!(ranges.entries[2].up_to, None, "ok is the trailing default");
-
-        // Pin the band color tokens too: the thresholds alone are not enough — a
-        // typo in a band's color token (e.g. `"critcal"`) still parses, so the
-        // bands must resolve to the exact theme tokens the HUD intends. Below 20%
-        // is `critical`, below 50% is `warning`, above is `ok`.
-        let band_token = |i: usize| match ranges.entries[i].color.as_ref() {
-            Some(ColorValue::Token(t)) => t.as_str(),
-            other => panic!("band {i} carries a color token, got {other:?}"),
-        };
-        assert_eq!(band_token(0), HEALTH_CRITICAL_COLOR, "critical band token");
-        assert_eq!(band_token(1), HEALTH_WARNING_COLOR, "warning band token");
-        assert_eq!(band_token(2), HEALTH_OK_COLOR, "ok default band token");
     }
 
     /// The pause menu (M13 Goal F, Task 5): a centered capturing modal with a
@@ -463,32 +383,6 @@ mod tests {
         stack.pop();
         assert_ne!(stack.active_name(), Some(super::PAUSE_MENU_NAME));
         assert_eq!(stack.top_capture_mode(), UiCaptureMode::Passthrough);
-    }
-
-    /// The `screen.flash` swatch (fifth HUD row): a panel bound to the engine-
-    /// owned `screen.flash` surface, rendering the flash-decay state's output.
-    #[test]
-    fn demo_descriptor_binds_screen_flash_surface() {
-        let tree = build_demo_descriptor();
-        let Widget::VStack(col) = &tree.root else {
-            panic!("demo root is a vstack column");
-        };
-        let Widget::Grid(grid) = &col.children[4] else {
-            panic!("fifth row is the screen.flash grid");
-        };
-        let Widget::Panel(panel) = &grid.children[0] else {
-            panic!("screen.flash grid's first cell is the bound panel");
-        };
-        assert_eq!(
-            panel.bind.as_ref().and_then(|b| b.source.slot()),
-            Some("screen.flash"),
-            "the panel binds the engine-owned screen.flash surface",
-        );
-        assert_eq!(
-            panel.fill,
-            ColorValue::Literal(SCREEN_FLASH_FALLBACK_FILL),
-            "screen.flash swatch falls back to transparent at rest",
-        );
     }
 
     /// End-to-end gamepad navigability of the pause menu (regression fix for the

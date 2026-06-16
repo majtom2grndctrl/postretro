@@ -106,37 +106,7 @@ Engine state paths are generated from an explicit catalog. The catalog owns stab
 
 The runtime installs the generated tree before SDK prelude evaluation, captures it into a language-native `getGameState()` closure, and hides the bridge global before author code runs. Calling `getGameState()` invokes no host callback or FFI.
 
-`player.health` and `player.maxHealth` are direct readonly refs for HUD authors. `player.health` is current HP. `player.maxHealth` is maximum HP. The engine does not publish `player.healthFraction`; consumers derive fractions from the two direct refs. The production HUD pattern is:
-
-```ts
-import { Bar, Text, bindState, getGameState } from "postretro";
-
-const { player } = getGameState();
-
-Text({
-  content: "HP --",
-  bind: bindState(player.health, { format: "HP {}" }),
-});
-
-Bar({
-  bind: bindState(player.health, {
-    tween: { durationMs: 180, easing: "easeOut" },
-  }),
-  max: player.maxHealth,
-  fill: "ok",
-  background: "hud.health.background",
-  styleRanges: {
-    max: 1.0,
-    entries: [
-      { upTo: 0.25, color: "critical" },
-      { upTo: 0.5, color: "warning" },
-      { color: "ok" },
-    ],
-  },
-});
-```
-
-The same contract applies in Luau. Use `bindState(ref, options)` for bind-only options. Do not import `"postretro/game-state"` and do not call `.get()` on state refs.
+`player.health` and `player.maxHealth` are direct readonly refs for HUD authors. `player.health` is current HP. `player.maxHealth` is maximum HP. The engine does not publish `player.healthFraction`; consumers derive fractions from the two direct refs. Use `bindState(ref, options)` for bind-only options such as text formatting or bar tweening, and use `player.maxHealth` directly as the health bar denominator. The same contract applies in Luau. Do not import `"postretro/game-state"` and do not call `.get()` on state refs.
 
 ---
 

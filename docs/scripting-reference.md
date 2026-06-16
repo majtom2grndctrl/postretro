@@ -874,8 +874,9 @@ repeat clock), so a held stick or arrow steps focus/value steadily.
   `bind` is `{ slot, tween? }`.
 - **`bar`** — `{ kind: "bar", bind, max, fill, background, id?, styleRanges? }`.
   Passive (not focusable). Renders a `background` quad with a `fill` quad whose
-  width is `value/max` clamped to `[0, 1]`. `styleRanges` recolors the
-  fill band by `value/max`. Horizontal only in v1.
+  width is `value/max` clamped to `[0, 1]`. On a bar, `styleRanges` recolors the
+  fill from the displayed fill fraction, so normalized health bands use
+  `styleRanges.max = 1.0`. Horizontal only in v1.
 
 ### `updateState`
 
@@ -1047,7 +1048,7 @@ function StatRow(props: { label: string; ref: ReadonlyStateRef<number | string |
 const { player } = getGameState();
 const panel = VStack({ gap: "s", padding: "m" }, [
   StatRow({ label: "HP", ref: player.health }), // nests like any factory
-  StatRow({ label: "AMMO", ref: player.ammo }),
+  StatRow({ label: "MAX", ref: player.maxHealth }),
 ]);
 ```
 

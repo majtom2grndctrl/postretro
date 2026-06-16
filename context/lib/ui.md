@@ -24,62 +24,16 @@ Scripts author UI as the same descriptor trees, built by SDK factory functions (
 
 **Staged replacement.** Staged mod init commits UI trees and theme with the same successful-generation boundary as returned stores. A successful current staged result replaces returned stores, the complete mod tree tier, and the complete mod theme override together. Omitted mod trees are removed from the mod tier, revealing engine fallbacks with the same name. Omitted theme tokens revert to engine defaults. Failed or stale staged results preserve the current stores, registry, and theme. Always-on layers resolve the updated registry on the next frame. Already-pushed modal instances keep their cloned descriptor until closed. Reopened modals resolve the updated registry entry.
 
-### 1.2 Production HUD Pattern
+### 1.2 HUD Authoring Contract
 
-The production HUD is authored through the SDK, returned from `setupMod()`, and retained by Rust after mod init drops. HUD authors import from `"postretro"` and obtain engine-state refs inside the HUD builder:
+The production HUD is authored through the SDK, returned from `setupMod()`, and retained by Rust after mod init drops. The concrete development HUD lives in `content/dev/scripts/hud.ts`; durable contract points are:
 
-```ts
-import { Bar, Text, Tree, VStack, bindState, getGameState } from "postretro";
-
-export function buildHud() {
-  const { player } = getGameState();
-
-  const status = Text({
-    content: "HP --",
-    bind: bindState(player.health, { format: "HP {}" }),
-  });
-
-  const bar = Bar({
-    bind: bindState(player.health, {
-      tween: { durationMs: 180, easing: "easeOut" },
-    }),
-    max: player.maxHealth,
-    fill: "ok",
-    background: "hud.health.background",
-    styleRanges: {
-      max: 1.0,
-      entries: [
-        { upTo: 0.25, color: "critical" },
-        { upTo: 0.5, color: "warning" },
-        { color: "ok" },
-      ],
-    },
-  });
-
-  return {
-    uiTrees: [
-      {
-        name: "hud",
-        tree: Tree(
-          { anchor: "bottomLeft", offset: [24, -24] },
-          VStack({}, [status, bar]),
-        ),
-        alwaysOn: true,
-      },
-      {
-        name: "hud.reticle",
-        tree: Tree(
-          { anchor: "center", offset: [0, 0] },
-          Text({ content: "+", font: "mono" }),
-        ),
-        alwaysOn: true,
-      },
-    ],
-  };
-}
-```
-
-`bindState(player.health, options)` decorates the readonly ref for display. It does not read HP during authoring. The bar uses `player.maxHealth` as a direct readonly max reference. There is no `player.healthFraction` slot; UI derives the displayed fill from `player.health / player.maxHealth`.
+- HUD authors import SDK factories, `bindState`, and `getGameState` from `"postretro"`.
+- A HUD builder obtains `const { player } = getGameState()` internally.
+- `bindState(player.health, options)` decorates the readonly ref for display. It does not read HP during authoring.
+- The health bar uses `player.maxHealth` as a direct readonly max reference. There is no `player.healthFraction` slot; UI derives the displayed fill from `player.health / player.maxHealth`.
+- Bar `styleRanges` evaluate the normalized displayed fill, so health bands use thresholds in `[0, 1]` with `styleRanges.max = 1.0`.
+- The reticle is a separate always-on tree from the status HUD because one anchored tree has one viewport anchor.
 
 Tree anchors and offsets are literal placement data. Theme tokens drive styling only: colors, fonts, spacing. Do not route placement through theme tokens.
 

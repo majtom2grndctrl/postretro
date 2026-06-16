@@ -1,3 +1,6 @@
+// CLI integration tests for script dependency reporting and dev HUD bundling.
+// See: context/lib/scripting.md
+
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;

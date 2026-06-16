@@ -169,9 +169,9 @@ export type StyleRangeEntry = {
 };
 
 /**
- * Continuous value→style map (text/panel/bar). `value/max` matches the first
- * covering band; a trailing no-`upTo` band is the default. Mirrors
- * `descriptor.rs` `StyleRanges`.
+ * Continuous value→style map. Text/panel normalize rendered value by `max`;
+ * bar normalizes its displayed fill fraction, so bar bands usually use
+ * `max: 1.0`. A trailing no-`upTo` band is the default. Mirrors descriptor.rs.
  */
 export type StyleRangesProp = { max: number; entries: StyleRangeEntry[] };
 
@@ -874,7 +874,7 @@ export type BarProps = {
 
 /**
  * A passive `bar`: fill fraction is `value/max` clamped to `[0, 1]`.
- * `styleRanges` recolors the fill.
+ * `styleRanges` recolors the fill from that displayed fraction.
  */
 export function Bar(props: BarProps): WidgetDescriptor {
   requireObject(props, "Bar");

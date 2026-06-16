@@ -1,8 +1,4 @@
-// CPU gate for the engine fallback HUD.
-//
-// The production gameplay HUD is authored by content/dev/scripts/hud.ts and
-// registered through setupMod(). The engine-shipped content/base/ui/hud.json is
-// now only the minimal fallback loaded when no mod HUD shadows it.
+// CPU gate for the engine fallback HUD descriptor.
 // See: context/lib/ui.md
 
 use std::collections::HashMap;

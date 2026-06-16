@@ -530,8 +530,9 @@ pub struct BarWidget {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     /// Optional continuous value→style map (M13 Goal E): recolors the `fill` band
-    /// by `value/max`. Calls the widget-agnostic `style_ranges::evaluate`. Absent
-    /// on a plain bar (skip-serialized), so a styleRange-less bar omits the key.
+    /// from the displayed fill fraction. Calls the widget-agnostic
+    /// `style_ranges::evaluate`. Absent on a plain bar (skip-serialized), so a
+    /// styleRange-less bar omits the key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style_ranges: Option<StyleRanges>,
     /// Optional reactive visibility predicate (M13 G2). See `TextWidget::visible_when`.

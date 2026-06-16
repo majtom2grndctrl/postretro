@@ -979,7 +979,7 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   /** A slot binding shared by `slider`/`bar`: a dotted slot name plus optional value-tween (number shape). */
   export type SliderBind = { slot: string; tween?: { durationMs: number; easing: "linear" | "easeIn" | "easeOut" | "easeInOut"; from?: number } };
 
-  /** Continuous value→style map (M13 Goal E): fill fraction `value/max` maps to the first covering band; a trailing no-`upTo` band is the default. */
+  /** Continuous value→style map (M13 Goal E): text/panel normalize rendered value by `max`; bar normalizes its displayed fill fraction. A trailing no-`upTo` band is the default. */
   export type WidgetStyleRanges = { max: number; entries: { upTo?: number; color?: WidgetColor; pulse?: { periodMs: number }; flash?: { durationMs: number } }[] };
 
   // -------------------------------------------------------------------------
@@ -1067,7 +1067,7 @@ const TS_SDK_LIB_BLOCK: &str = r#"
 
   /** Props for `Bar`. `bind` is a readonly numeric bind; `max` is a number or readonly numeric ref. */
   export type BarProps = { bind: BarBindProp; max: BarMaxProp; fill: WidgetColor; background: WidgetColor; styleRanges?: StyleRangesProp; id?: string; visibleWhen?: Predicate; role?: WidgetRole };
-  /** A passive `bar`: fill fraction is `value/max` clamped to `[0, 1]`. `styleRanges` recolors the fill. */
+  /** A passive `bar`: fill fraction is `value/max` clamped to `[0, 1]`. `styleRanges` recolors the fill from that displayed fraction. */
   export function Bar(props: BarProps): WidgetDescriptor;
 
   /** Props for `Announce`. `text` is the POSITIONAL second argument; `priority` defaults to `"polite"` (round-trips to omission). */
@@ -1862,8 +1862,9 @@ export type WidgetColor = {number} | string
 --- value-tween (number shape).
 export type SliderBind = { slot: string, tween: { durationMs: number, easing: string, from: number? }? }
 
---- Continuous value→style map (M13 Goal E): fill fraction `value/max` maps to the
---- first covering band; a trailing no-`upTo` band is the default.
+--- Continuous value→style map (M13 Goal E): text/panel normalize rendered value
+--- by `max`; bar normalizes its displayed fill fraction. A trailing no-`upTo`
+--- band is the default.
 export type WidgetStyleRanges = { max: number, entries: { upTo: number?, color: WidgetColor?, pulse: { periodMs: number }?, flash: { durationMs: number }? } }
 
 -- ---------------------------------------------------------------------------
@@ -1951,7 +1952,7 @@ export type BarBindProp = (ReadonlyStateRef<number> | LocalBindRef) & { tween: N
 export type BarMaxProp = number | ReadonlyStateRef<number>
 --- Props for `Bar`. `bind` is a readonly numeric bind; `max` is a number or readonly numeric ref.
 export type BarProps = { bind: BarBindProp, max: BarMaxProp, fill: WidgetColor, background: WidgetColor, styleRanges: StyleRangesProp?, id: string?, visibleWhen: Predicate?, role: WidgetRole? }
---- A passive `bar`: fill fraction is `value/max` clamped to `[0, 1]`. `styleRanges` recolors the fill.
+--- A passive `bar`: fill fraction is `value/max` clamped to `[0, 1]`. `styleRanges` recolors the fill from that displayed fraction.
 declare function Bar(props: BarProps): WidgetDescriptor
 
 --- Props for `Announce`. `text` is the POSITIONAL second argument; `priority` defaults to `"polite"` (round-trips to omission).

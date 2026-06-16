@@ -593,7 +593,7 @@ end
 -- --- Bar --------------------------------------------------------------------
 
 --- A passive `bar`: fill fraction is `value/max` clamped to `[0, 1]`.
---- `styleRanges` recolors the fill. `bind` is required.
+--- `styleRanges` recolors the fill from that displayed fraction. `bind` is required.
 function UiWidgetsSdk.Bar(props: any): WidgetDescriptor
   requireObject(props, "Bar")
   local bind = buildBind(props.bind, "Bar", "slider")

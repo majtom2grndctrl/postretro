@@ -2401,7 +2401,7 @@ declare module "postretro" {
 
   /** Authored health component preset attached to `EntityTypeDescriptor.components.health`. `max` is the entity's hit-point ceiling; the optional `hitbox` makes the entity hitscan-targetable (one world-aligned AABB, fixed per archetype). Materializes into a Health component with `current == max` at spawn. */
   export type HealthDescriptor = {
-    /** Maximum hit points. Must be finite and > 0; `current` initializes to this value at spawn. */
+    /** Maximum hit points. Must be finite and >= 1.0; `current` initializes to this value at spawn. */
     max: number;
     /** Optional hitscan hitbox. Present ⇒ the entity can be ray-targeted by weapons; absent ⇒ it cannot. */
     hitbox?: HitboxDescriptor;
@@ -2819,7 +2819,7 @@ export type HitboxDescriptor = {
 
 --- Authored health component preset attached to `EntityTypeDescriptor.components.health`. `max` is the entity's hit-point ceiling; the optional `hitbox` makes the entity hitscan-targetable (one world-aligned AABB, fixed per archetype). Materializes into a Health component with `current == max` at spawn.
 export type HealthDescriptor = {
-  --- Maximum hit points. Must be finite and > 0; `current` initializes to this value at spawn.
+  --- Maximum hit points. Must be finite and >= 1.0; `current` initializes to this value at spawn.
   max: number,
   --- Optional hitscan hitbox. Present ⇒ the entity can be ray-targeted by weapons; absent ⇒ it cannot.
   hitbox: HitboxDescriptor?,

@@ -22,6 +22,97 @@ fn unique_tempdir(label: &str) -> PathBuf {
     dir
 }
 
+fn write_sdk_hud_fixture(dir: &std::path::Path) -> PathBuf {
+    let entry = dir.join("start-script.ts");
+    fs::write(
+        &entry,
+        r#"
+import {
+  Bar,
+  Text,
+  Tree,
+  VStack,
+  bindState,
+  getGameState,
+} from "postretro";
+
+function buildHud() {
+  const { player } = getGameState();
+  return {
+    uiTrees: [
+      {
+        name: "hud",
+        tree: Tree(
+          { anchor: "bottomLeft", offset: [24.0, -24.0] },
+          VStack(
+            { gap: 6.0, padding: 14.0, align: "stretch", fill: "hud.panel" },
+            [
+              Text({
+                content: "HP --",
+                color: "hud.text",
+                fontSize: 24.0,
+                bind: bindState(player.health, { format: "HP {}" }),
+              }),
+              Bar({
+                bind: bindState(player.health, {
+                  tween: { durationMs: 180.0, easing: "easeOut" },
+                }),
+                max: player.maxHealth,
+                fill: "ok",
+                background: "hud.health.background",
+                styleRanges: {
+                  max: 1.0,
+                  entries: [
+                    { upTo: 0.25, color: "critical" },
+                    { upTo: 0.5, color: "warning" },
+                    { color: "ok" },
+                  ],
+                },
+              }),
+            ],
+          ),
+        ),
+        alwaysOn: true,
+      },
+      {
+        name: "hud.reticle",
+        tree: Tree(
+          { anchor: "center", offset: [0.0, 0.0] },
+          Text({ content: "+", font: "mono" }),
+        ),
+        alwaysOn: true,
+      },
+    ],
+    theme: {
+      colors: {
+        "hud.panel": [0.018, 0.026, 0.039, 0.82],
+        "hud.health.background": [0.035, 0.045, 0.060, 1.0],
+        "hud.text": [0.82, 0.95, 0.98, 1.0],
+        critical: [0.86, 0.06, 0.12, 1.0],
+        warning: [0.95, 0.62, 0.12, 1.0],
+        ok: [0.12, 0.72, 0.40, 1.0],
+      },
+      fonts: { mono: "JetBrains Mono" },
+      spacing: {},
+    },
+  };
+}
+
+export function setupMod() {
+  const hud = buildHud();
+  return {
+    name: "hud-fixture",
+    uiTrees: hud.uiTrees,
+    theme: hud.theme,
+    entities: [],
+  };
+}
+"#,
+    )
+    .expect("write SDK HUD fixture");
+    entry
+}
+
 #[test]
 fn dep_json_stdout_is_single_dependency_report() {
     let dir = unique_tempdir("dep-json");
@@ -105,18 +196,11 @@ fn dep_json_stdout_is_single_dependency_report() {
 }
 
 #[test]
-fn dev_start_script_bundles_sdk_authored_hud_without_generated_sibling() {
-    let dir = unique_tempdir("dev-hud");
+fn sdk_hud_fixture_bundles_without_generated_sibling() {
+    let dir = unique_tempdir("sdk-hud");
     let output = dir.join("start-script.js");
-    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let entry = workspace_root.join("content/dev/start-script.ts");
-    let generated_sibling = workspace_root.join("content/dev/start-script.js");
-    let sibling_before = fs::metadata(&generated_sibling).ok().and_then(|metadata| {
-        metadata
-            .modified()
-            .ok()
-            .map(|modified| (metadata.len(), modified))
-    });
+    let entry = write_sdk_hud_fixture(&dir);
+    let generated_sibling = dir.join("start-script.generated.js");
 
     let result = Command::new(env!("CARGO_BIN_EXE_scripts-build"))
         .arg("--in")
@@ -139,23 +223,17 @@ fn dev_start_script_bundles_sdk_authored_hud_without_generated_sibling() {
     );
     assert!(
         bundled.contains("hud.reticle"),
-        "reticle registration is bundled from hud.ts: {bundled}",
+        "reticle registration is bundled from the HUD fixture: {bundled}",
     );
     for removed in ["postretro/game-state", "player.ammo", "intro.flashColor"] {
         assert!(
             !bundled.contains(removed),
-            "dev HUD bundle must not reference removed surface {removed:?}: {bundled}",
+            "HUD bundle must not reference legacy surface {removed:?}: {bundled}",
         );
     }
-    let sibling_after = fs::metadata(&generated_sibling).ok().and_then(|metadata| {
-        metadata
-            .modified()
-            .ok()
-            .map(|modified| (metadata.len(), modified))
-    });
-    assert_eq!(
-        sibling_after, sibling_before,
-        "compiler fixture writes only to the temp output, not content/dev/start-script.js",
+    assert!(
+        !generated_sibling.exists(),
+        "compiler fixture writes only to the requested temp output",
     );
 
     let _ = fs::remove_dir_all(&dir);

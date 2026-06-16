@@ -125,7 +125,7 @@ defineEntity({
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `max` | `number` | Hit-point ceiling. Must be finite and `> 0` — otherwise the descriptor is rejected at load with a descriptive error. The component materializes with `current == max` at spawn. |
+| `max` | `number` | Hit-point ceiling. Must be finite and `>= 1.0` — otherwise the descriptor is rejected at load with a descriptive error. The component materializes with `current == max` at spawn. |
 | `hitbox` | `{ halfExtents, offset? }` (optional) | One world-aligned AABB. **Present ⇒ the entity is hitscan-targetable** (a weapon ray can hit it and route damage through the chokepoint). **Absent ⇒ it cannot be ray-targeted at all.** Fixed per archetype. |
 | `hitbox.halfExtents` | `[x, y, z]` | Box half-size on each axis, in meters. The engine is Y-up, so the middle component is the vertical half-height. Each element must be finite and `> 0`. |
 | `hitbox.offset` | `[x, y, z]` (optional) | Shifts the box center from the entity's transform origin. Each element must be finite. A common use is lifting the box up by its half-height (e.g. `offset: [0, 0.9, 0]` for a `0.9` vertical half-extent) so it rises from a foot-level origin to span the body. |
@@ -1011,7 +1011,7 @@ const hud = Tree(
   { anchor: "topLeft", offset: [16, 16] },
   VStack({ gap: "s", padding: "m" }, [
     Text({ content: "HP", fontSize: 18, color: "ok" }),
-    Bar({ bind: player.health, max: 100, fill: "ok", background: [0.1, 0.1, 0.1, 1] }),
+    Bar({ bind: player.health, max: player.maxHealth, fill: "ok", background: [0.1, 0.1, 0.1, 1] }),
   ]),
 );
 ```

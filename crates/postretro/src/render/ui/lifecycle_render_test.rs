@@ -177,6 +177,110 @@ fn bundle_ts_entry_to_mod_root(entry: &Path, mod_root: &Path) {
     );
 }
 
+fn write_sdk_hud_fixture(dir: &Path) -> PathBuf {
+    let entry = dir.join("start-script.ts");
+    std::fs::write(
+        &entry,
+        r#"
+import {
+  Bar,
+  HStack,
+  Text,
+  Tree,
+  VStack,
+  bindState,
+  getGameState,
+} from "postretro";
+
+function buildHud() {
+  const { player } = getGameState();
+  const status = Text({
+    content: "HP --",
+    color: "hud.text",
+    font: "hud.status",
+    fontSize: 24.0,
+    bind: bindState(player.health, { format: "HP {}" }),
+  });
+  const bar = Bar({
+    bind: bindState(player.health, {
+      tween: { durationMs: 180.0, easing: "easeOut" },
+    }),
+    max: player.maxHealth,
+    fill: "ok",
+    background: "hud.health.background",
+    styleRanges: {
+      max: 1.0,
+      entries: [
+        { upTo: 0.25, color: "critical" },
+        { upTo: 0.5, color: "warning" },
+        { color: "ok" },
+      ],
+    },
+  });
+  return {
+    uiTrees: [
+      {
+        name: "hud",
+        tree: Tree(
+          { anchor: "bottomLeft", offset: [24.0, -24.0] },
+          VStack(
+            {
+              gap: "hud.rowGap",
+              padding: "hud.padding",
+              align: "stretch",
+              fill: "hud.panel",
+            },
+            [HStack({ gap: "hud.gap", align: "center" }, [status]), bar],
+          ),
+        ),
+        alwaysOn: true,
+      },
+      {
+        name: "hud.reticle",
+        tree: Tree(
+          { anchor: "center", offset: [0.0, 0.0] },
+          Text({ content: "+", font: "mono" }),
+        ),
+        alwaysOn: true,
+      },
+    ],
+    theme: {
+      colors: {
+        "hud.panel": [0.018, 0.026, 0.039, 0.82],
+        "hud.health.background": [0.035, 0.045, 0.060, 1.0],
+        "hud.text": [0.82, 0.95, 0.98, 1.0],
+        critical: [0.86, 0.06, 0.12, 1.0],
+        warning: [0.95, 0.62, 0.12, 1.0],
+        ok: [0.12, 0.72, 0.40, 1.0],
+      },
+      fonts: {
+        "hud.status": "JetBrains Mono",
+        mono: "JetBrains Mono",
+      },
+      spacing: {
+        "hud.gap": 8.0,
+        "hud.padding": 14.0,
+        "hud.rowGap": 6.0,
+      },
+    },
+  };
+}
+
+export function setupMod() {
+  const hud = buildHud();
+  return {
+    name: "hud-fixture",
+    uiTrees: hud.uiTrees,
+    theme: hud.theme,
+    entities: [],
+  };
+}
+"#,
+    )
+    .expect("write SDK HUD fixture");
+    entry
+}
+
 fn script_runtime(ctx: &ScriptCtx) -> ScriptRuntime {
     let mut registry = PrimitiveRegistry::new();
     register_all(&mut registry, ctx.clone());
@@ -186,7 +290,7 @@ fn script_runtime(ctx: &ScriptCtx) -> ScriptRuntime {
 
 fn run_dev_mod_init_from_bundled_entry(ctx: &ScriptCtx) -> ModManifestResult {
     let dir = TempModRoot::new("cold_launch");
-    let entry = workspace_root().join("content/dev/start-script.ts");
+    let entry = write_sdk_hud_fixture(&dir);
     bundle_ts_entry_to_mod_root(&entry, &dir);
 
     let manifest = {
@@ -537,7 +641,7 @@ fn development_hud_cold_launch_and_staged_snapshots_build_retained_draw_data() {
     for absent in ["AMMO", "FLASH", "SCREEN.FLASH"] {
         assert!(
             full_texts.iter().all(|text| !text.contains(absent)),
-            "removed demo surface {absent:?} must not appear: {full_texts:?}",
+            "legacy HUD surface {absent:?} must not appear: {full_texts:?}",
         );
     }
     let hp_full = find_text(&full_draws[0], "HP 100");

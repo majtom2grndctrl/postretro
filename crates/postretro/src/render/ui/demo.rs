@@ -1,17 +1,5 @@
-// M13 demo gameplay HUD + pause-menu descriptors, now JSON-authored. The HUD
-// (`content/base/ui/hud.json`) and pause menu (`content/base/ui/pauseMenu.json`)
-// ship as on-disk `AnchoredTree` descriptors loaded through the shared
-// `tree_asset` load-and-register path at boot — there is no hand-assembled tree in
-// engine Rust for either screen. `main.rs` resolves the HUD by name from the
-// registry as the always-on bottom passthrough layer; the pause menu pushes/pops
-// by `PAUSE_MENU_NAME`.
-//
-// What remains here is the `PAUSE_MENU_NAME` registry constant the App pushes
-// under, plus the demo's behavioral tests, which load the shipped JSON and assert
-// the wiring (bound slots, focus chain, capture mode) against the source of truth.
-//
-// See: context/lib/scripting.md §3 (defineStore / DefinitionOnly) ·
-//      context/lib/ui.md
+// UI registry constants and shipped fallback descriptor tests.
+// See: context/lib/ui.md
 
 /// Registry name the pause menu is registered + pushed under (M13 Goal F, Task
 /// 5). The App registers the descriptor at boot (from `pauseMenu.json` via
@@ -99,9 +87,8 @@ mod tests {
         );
     }
 
-    /// The fallback stays intentionally smaller than the production HUD: no ammo,
-    /// intro flash store, screen-flash swatches, or bar. That keeps it useful only
-    /// when no mod HUD is registered.
+    /// The fallback stays intentionally smaller than the production HUD: it only
+    /// carries the health text needed when no mod HUD is registered.
     #[test]
     fn fallback_hud_descriptor_omits_demo_only_surfaces() {
         let tree = build_demo_descriptor();
@@ -115,7 +102,7 @@ mod tests {
         ] {
             assert!(
                 !json.contains(removed),
-                "fallback HUD must not carry removed demo surface {removed:?}: {json}",
+                "fallback HUD must not carry legacy HUD surface {removed:?}: {json}",
             );
         }
         assert!(

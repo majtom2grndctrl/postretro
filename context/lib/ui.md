@@ -26,7 +26,7 @@ Scripts author UI as the same descriptor trees, built by SDK factory functions (
 
 ### 1.2 HUD Authoring Contract
 
-The production HUD is authored through the SDK, returned from `setupMod()`, and retained by Rust after mod init drops. The concrete development HUD lives in `content/dev/scripts/hud.ts`; durable contract points are:
+The production HUD is authored through the SDK, returned from `setupMod()`, and retained by Rust after mod init drops. Durable contract points are:
 
 - HUD authors import SDK factories, `bindState`, and `getGameState` from `"postretro"`.
 - A HUD builder obtains `const { player } = getGameState()` internally.

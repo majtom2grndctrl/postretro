@@ -65,7 +65,7 @@ fn fallback_hud_marker_is_fallback_only_and_no_demo_surfaces_render() {
     for removed in ["AMMO", "FLASH", "SCREEN.FLASH"] {
         assert!(
             contents.iter().all(|content| !content.contains(removed)),
-            "removed demo surface {removed:?} must not render: {contents:?}",
+            "legacy HUD surface {removed:?} must not render: {contents:?}",
         );
     }
     assert_eq!(

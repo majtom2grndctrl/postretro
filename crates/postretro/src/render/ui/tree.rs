@@ -443,6 +443,10 @@ enum NodeContext {
         /// Last resolved (or eased) value the diff observed, for change detection
         /// and to feed the draw the eased display fraction. `None` until first diff.
         last_resolved: Option<f32>,
+        /// Last resolved denominator for `max`, including `BarMax::State`. A
+        /// state-backed max changes only the bar's fill width/style band, so it is
+        /// an appearance dependency just like the bound value.
+        last_max_resolved: Option<f32>,
         /// Live tween state when `bind`'s `tween` is `Some` and the slot has
         /// resolved to a `Number` at least once. While `Some`, the driver eases the
         /// displayed value toward the slot target; the draw reads `display`.
@@ -980,11 +984,13 @@ impl UiTree {
                 Some(NodeContext::Bar {
                     bind_scope,
                     bind,
+                    max,
                     last_resolved,
+                    last_max_resolved,
                     tween,
                     ..
                 }) => {
-                    if drive_bar_binding(
+                    let value_changed = drive_bar_binding(
                         bind,
                         bind_scope.as_deref(),
                         last_resolved,
@@ -992,7 +998,9 @@ impl UiTree {
                         slot_values,
                         cell_values,
                         time_seconds,
-                    ) {
+                    );
+                    let max_changed = drive_bar_max(max, last_max_resolved, slot_values);
+                    if value_changed || max_changed {
                         // A bar is fixed-size: a value change only recolors/resizes
                         // its fill quad — appearance-only, never a relayout.
                         diff.appearance_changed = true;
@@ -1338,6 +1346,7 @@ impl UiTree {
                 fill,
                 background,
                 last_resolved,
+                last_max_resolved: _,
                 tween,
                 style_ranges,
                 style_state,
@@ -1743,6 +1752,22 @@ fn drive_bar_binding(
         },
         None => bar_slot_value(bind, bind_scope, slot_values, cell_values),
     };
+    let changed = last_resolved.is_none_or(|prev| (prev - resolved).abs() > f32::EPSILON);
+    if changed {
+        *last_resolved = Some(resolved);
+    }
+    changed
+}
+
+/// Drive a bar's denominator dependency. Literal max values settle after the
+/// first retained diff; state-backed max values subscribe to their slot and
+/// rebuild the draw list when only the denominator changes.
+fn drive_bar_max(
+    max: &BarMax,
+    last_resolved: &mut Option<f32>,
+    slot_values: &HashMap<String, SlotValue>,
+) -> bool {
+    let resolved = bar_max_value(max, slot_values);
     let changed = last_resolved.is_none_or(|prev| (prev - resolved).abs() > f32::EPSILON);
     if changed {
         *last_resolved = Some(resolved);
@@ -2360,6 +2385,7 @@ fn build_bar(
                 fill: resolve_color(&bar.fill, theme),
                 background: resolve_color(&bar.background, theme),
                 last_resolved: None,
+                last_max_resolved: None,
                 tween: None,
                 style_ranges,
                 style_state: RefCell::new(StyleEffectState::default()),
@@ -2943,7 +2969,7 @@ fn linear_rgba_to_srgb_u8(color: [f32; 4]) -> [u8; 4] {
 
 #[cfg(test)]
 mod tests {
-    use super::super::descriptor::{CaptureMode, ColorValue, SpacingValue};
+    use super::super::descriptor::{BarMaxStateRef, CaptureMode, ColorValue, SpacingValue};
     use super::*;
 
     /// Device-pixel comparison tolerance; rects snap to whole pixels but float
@@ -6086,13 +6112,13 @@ mod tests {
         );
     }
 
-    fn bar(slot: &str, max: f32, style_ranges: Option<StyleRanges>) -> Widget {
+    fn bar_with_max(slot: &str, max: BarMax, style_ranges: Option<StyleRanges>) -> Widget {
         Widget::Bar(BarWidget {
             bind: SliderBind {
                 source: BindSource::Slot { slot: slot.into() },
                 tween: None,
             },
-            max: BarMax::Literal(max),
+            max,
             fill: ColorValue::Literal([0.0, 1.0, 0.0, 1.0]),
             background: ColorValue::Literal([0.1, 0.1, 0.1, 1.0]),
             id: None,
@@ -6102,10 +6128,20 @@ mod tests {
         })
     }
 
+    fn bar(slot: &str, max: f32, style_ranges: Option<StyleRanges>) -> Widget {
+        bar_with_max(slot, BarMax::Literal(max), style_ranges)
+    }
+
     /// A slot map binding `player.health` to a Number value.
     fn health_slots(value: f32) -> HashMap<String, SlotValue> {
         let mut m = HashMap::new();
         m.insert("player.health".to_string(), SlotValue::Number(value));
+        m
+    }
+
+    fn health_slots_with_max(value: f32, max: f32) -> HashMap<String, SlotValue> {
+        let mut m = health_slots(value);
+        m.insert("player.maxHealth".to_string(), SlotValue::Number(max));
         m
     }
 
@@ -6177,6 +6213,93 @@ mod tests {
             approx(fill.color[0], 1.0) && approx(fill.color[1], 0.0),
             "low health recolors the fill red, got {:?}",
             fill.color
+        );
+    }
+
+    #[test]
+    fn retained_bar_state_max_change_rebuilds_fill_and_style_without_relayout() {
+        let ranges = StyleRanges {
+            max: 1.0,
+            entries: vec![
+                StyleEntry {
+                    up_to: Some(0.25),
+                    color: Some(ColorValue::Literal([1.0, 0.0, 0.0, 1.0])),
+                    pulse: None,
+                    flash: None,
+                },
+                StyleEntry {
+                    up_to: None,
+                    color: Some(ColorValue::Literal([0.0, 1.0, 0.0, 1.0])),
+                    pulse: None,
+                    flash: None,
+                },
+            ],
+        };
+        let tree = anchored(bar_with_max(
+            "player.health",
+            BarMax::State(BarMaxStateRef {
+                slot: "player.maxHealth".into(),
+            }),
+            Some(ranges),
+        ));
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+
+        let first = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &health_slots_with_max(50.0, 100.0),
+            &no_cells(),
+            0.0,
+        );
+        assert_eq!(ui.recompute_count(), 1, "first frame computes layout");
+        assert_eq!(ui.draw_rebuild_count(), 1, "first frame builds draw data");
+        let first_background = &first.quads.instances[0];
+        let first_fill = &first.quads.instances[1];
+        assert!(
+            approx(first_fill.rect[2], (first_background.rect[2] * 0.5).round()),
+            "50/100 draws a half-width fill",
+        );
+        assert!(
+            approx(first_fill.color[0], 0.0) && approx(first_fill.color[1], 1.0),
+            "50/100 uses the healthy band, got {:?}",
+            first_fill.color,
+        );
+
+        let second = ui.build_draw_data_retained(
+            [1280, 720],
+            &mut fs,
+            &no_images(),
+            &health_slots_with_max(50.0, 200.0),
+            &no_cells(),
+            0.0,
+        );
+        assert_eq!(
+            ui.recompute_count(),
+            1,
+            "max-only bar changes are appearance-only",
+        );
+        assert_eq!(
+            ui.draw_rebuild_count(),
+            2,
+            "state-backed max changes must invalidate cached bar draw data",
+        );
+        let second_background = &second.quads.instances[0];
+        let second_fill = &second.quads.instances[1];
+        assert!(
+            approx(
+                second_fill.rect[2],
+                (second_background.rect[2] * 0.25).round()
+            ),
+            "50/200 redraws at quarter width, got {} of {}",
+            second_fill.rect[2],
+            second_background.rect[2],
+        );
+        assert!(
+            approx(second_fill.color[0], 1.0) && approx(second_fill.color[1], 0.0),
+            "50/200 crosses into the critical band, got {:?}",
+            second_fill.color,
         );
     }
 

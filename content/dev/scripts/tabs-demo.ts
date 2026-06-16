@@ -24,8 +24,10 @@ import {
   Tree,
   VStack,
   Switch,
+  defineUiTree,
   defineReaction,
   ui,
+  type ModUiTree,
 } from "postretro";
 
 // Each tab's (key, label). Lexicographic key order is what `Switch` expands in,
@@ -50,7 +52,7 @@ function panel(title: string, body: string) {
  */
 export function tabsDemo(): {
   reactions: NamedReactionDescriptor[];
-  uiTrees: { name: string; tree: ReturnType<typeof Tree>; alwaysOn: boolean }[];
+  uiTrees: ModUiTree[];
 } {
   // One string-valued presentation cell selects the active tab.
   const sel = ui.createLocalState({ tab: "loadout" });
@@ -81,26 +83,30 @@ export function tabsDemo(): {
       onPress: `tabsDemo_select_${key}`,
     });
 
-  const tree = Tree(
-    { anchor: "topRight", offset: [-16, 16], role: "group", accessibleName: "Tabs demo" },
-    // `localState` is declared on the vstack (NOT the tablist strip / Grid) so
-    // the cell scope covers both the tab strip and the content `Switch`.
-    VStack({ localState: sel.scope, gap: "m", padding: "m", fill: [0.05, 0.05, 0.08, 0.85] }, [
-      HStack({ role: "tablist", gap: "s", focus: "linear" }, TABS.map(tab)),
-      // `Switch` expands to each panel with `visibleWhen: cell.is(key)` injected
-      // in sorted key order — exactly the active tab's panel is visible.
-      VStack(
-        { gap: "s" },
-        Switch(sel.cells.tab, {
-          loadout: panel("Loadout", "Pistol · Shotgun · Plasma"),
-          stats: panel("Stats", "Kills 0 · Accuracy --"),
-        }),
-      ),
-    ]),
-  );
+  const tabsDemoTree = defineUiTree({
+    name: "tabsDemo",
+    alwaysOn: true,
+    tree: Tree(
+      { anchor: "topRight", offset: [-16, 16], role: "group", accessibleName: "Tabs demo" },
+      // `localState` is declared on the vstack (NOT the tablist strip / Grid) so
+      // the cell scope covers both the tab strip and the content `Switch`.
+      VStack({ localState: sel.scope, gap: "m", padding: "m", fill: [0.05, 0.05, 0.08, 0.85] }, [
+        HStack({ role: "tablist", gap: "s", focus: "linear" }, TABS.map(tab)),
+        // `Switch` expands to each panel with `visibleWhen: cell.is(key)` injected
+        // in sorted key order — exactly the active tab's panel is visible.
+        VStack(
+          { gap: "s" },
+          Switch(sel.cells.tab, {
+            loadout: panel("Loadout", "Pistol · Shotgun · Plasma"),
+            stats: panel("Stats", "Kills 0 · Accuracy --"),
+          }),
+        ),
+      ]),
+    ),
+  });
 
   return {
     reactions,
-    uiTrees: [{ name: "tabsDemo", tree, alwaysOn: true }],
+    uiTrees: [tabsDemoTree],
   };
 }

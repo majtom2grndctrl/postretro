@@ -57,7 +57,7 @@ const _health = gameState.player.health;
 const _healthText = Text({ content: "HP", bind: gameState.player.health });
 const _healthBar = Bar({
   bind: gameState.player.health,
-  max: gameState.player.health,
+  max: gameState.player.maxHealth,
   fill: "ok",
   background: [0.1, 0.1, 0.1, 1],
 });

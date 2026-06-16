@@ -150,15 +150,17 @@ export type LevelManifest = {
   uiTrees: {ModUiTree}?,
 }
 
-export type StoreSlotSchema = { type: string, [string]: any }
+export type StoreSlotSchema = { type: string, readonly: boolean?, [string]: any }
 export type StoreDeclaration = {
   namespace: string,
   schema: { [string]: StoreSlotSchema },
 }
-export type StateRef = { slot: string }
+export type ReadonlyStateRef<T> = { slot: string, __stateRefValueBrand: T? }
+export type WritableStateRef<T> = ReadonlyStateRef<T> & { __writableStateRefBrand: T }
+export type StateRef<T> = ReadonlyStateRef<T> | WritableStateRef<T>
 export type StoreDefinition = {
   declaration: StoreDeclaration,
-  state: { [string]: StateRef },
+  state: { [string]: StateRef<any> },
 }
 
 local DataScriptSdk = {}
@@ -270,20 +272,50 @@ function DataScriptSdk.defineEntity(descriptor: EntityTypeDescriptor): EntityTyp
   return descriptor
 end
 
-local function cloneAndFreeze(value: any, seenOrNil: any?): any
+local MAGIC_SCHEMA_KEYS = {
+  __proto__ = true,
+  constructor = true,
+  prototype = true,
+}
+
+local function schemaPath(parent: string, key: any): string
+  if type(key) == "string" then
+    if string.match(key, "^[%a_][%w_]*$") ~= nil then
+      return parent .. "." .. key
+    end
+    return parent .. "[" .. string.format("%q", key) .. "]"
+  end
+  return parent .. "[" .. tostring(key) .. "]"
+end
+
+local function rejectMagicSchemaKey(key: any, path: string)
+  if type(key) == "string" and MAGIC_SCHEMA_KEYS[key] then
+    error("defineStore schema key " .. schemaPath(path, key) .. " is reserved", 3)
+  end
+end
+
+local function cloneAndFreeze(value: any, seenOrNil: any?, visitingOrNil: any?, pathOrNil: string?): any
   if type(value) ~= "table" then
     return value
   end
   local seen = seenOrNil or {}
+  local visiting = visitingOrNil or {}
+  local path = pathOrNil or "schema"
+  if visiting[value] then
+    error("defineStore schema contains a cycle at " .. path, 2)
+  end
   local cached = seen[value]
   if cached ~= nil then
     return cached
   end
+  visiting[value] = true
   local clone = {}
   seen[value] = clone
   for key, child in pairs(value) do
-    clone[key] = cloneAndFreeze(child, seen)
+    rejectMagicSchemaKey(key, path)
+    clone[key] = cloneAndFreeze(child, seen, visiting, schemaPath(path, key))
   end
+  visiting[value] = nil
   return table.freeze(clone)
 end
 

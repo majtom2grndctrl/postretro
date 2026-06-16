@@ -770,7 +770,7 @@ declare module "postretro" {
   /** System-reaction body: shake the screen by writing the engine-owned `screen.shake` offset slot, a decaying oscillation that fades to rest. `amplitude` is the peak displacement in logical-reference px; `durationMs` is the total decay time. Optional `frequency` is the oscillation rate in Hz (omitted when undefined → the engine applies its default frequency). Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
   export function screenShake(amplitude: number, durationMs: number, frequency?: number): PrimitiveReactionDescriptor;
 
-  /** System-reaction body: push the dialog UI tree `tree` onto the modal stack, with an optional `onCommit` reaction (omitted when undefined). Warn-once "no stack" until Goal F's modal stack lands. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
+  /** System-reaction body: push the dialog UI tree `tree` onto the modal stack, with an optional `onCommit` reaction (omitted when undefined). An unknown tree name warns and no-ops at dispatch time. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
   export function showDialog(tree: string, onCommit?: string): PrimitiveReactionDescriptor;
 
   /** The engine-shipped on-screen keyboard's registry name (M13 Text Entry). `openTextEntry` opens this tree; the engine loads its descriptor from `content/base/ui/keyboard.json` at boot. The keyboard edits the `ui.textEntry` writable String slot. */
@@ -779,10 +779,10 @@ declare module "postretro" {
   /** System-reaction body (M13 Text Entry): open the engine-shipped on-screen keyboard, a capturing modal that edits the `ui.textEntry` slot. Optional `onCommit` names a reaction fired on commit (the on-screen `done` key or hardware Enter); `nav.cancel` closes without firing it. The same `ui.textEntry` slot also receives the hardware-keyboard path's edits. Wraps `showDialog("keyboard", onCommit)`. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
   export function openTextEntry(onCommit?: string): PrimitiveReactionDescriptor;
 
-  /** System-reaction body: push the menu UI tree `tree` onto the modal stack. A v1 alias of `showDialog` (identical push behavior) without `onCommit`. Warn-once "no stack" until Goal F's modal stack lands. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
+  /** System-reaction body: push the menu UI tree `tree` onto the modal stack. A v1 alias of `showDialog` (identical push behavior) without `onCommit`. An unknown tree name warns and no-ops at dispatch time. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
   export function openMenu(tree: string): PrimitiveReactionDescriptor;
 
-  /** System-reaction body: pop the top UI tree off the modal stack. Warn-once "no stack" until Goal F's modal stack lands. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
+  /** System-reaction body: pop the top UI tree off the modal stack. An empty stack warns and no-ops at dispatch time. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
   export function closeDialog(): PrimitiveReactionDescriptor;
 
   /** System-reaction body (M13 Goal F): write `value` to a writable state ref at the game-logic stage. Emits the existing `setState` wire descriptor. Readonly-gated at runtime — a readonly slot warns and stays unchanged; an engine-owned writable slot is valid. `value` is coerced to the slot's declared type. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
@@ -812,20 +812,24 @@ declare module "postretro" {
   export type WritableStateRef<T> = ReadonlyStateRef<T> & { readonly [writableStateRefBrand]: T };
 
   /** One slot's declaration inside the `defineStore` `schema` argument. The `type` discriminant selects the slot's value type; type-specific keys (`default`, `range`, `values`, …) are accepted alongside it. */
-  export type StoreSlotSchema = { type: "number" | "boolean" | "string" | "enum" | "array" } & Record<string, unknown>;
+  export type StoreSlotSchema = { type: "number" | "boolean" | "string" | "enum" | "array"; readonly?: boolean } & Record<string, unknown>;
 
   /** Plain declaration data returned through `setupMod().stores`. */
   export type StoreDeclaration = { namespace: string; schema: Record<string, StoreSlotSchema> };
 
   /** Maps one schema slot's `type` discriminant to its handle value type:
-   * `{type:"number"}` → writable number ref, `{type:"boolean"}` →
-   * writable boolean ref, `array` → writable numeric-array ref, and
-   * `string`/`enum` → writable string ref. */
+   * `{type:"number"}` → number ref, `{type:"boolean"}` →
+   * boolean ref, `array` → numeric-array ref, and `string`/`enum` →
+   * string ref. Slots with `readonly: true` produce `ReadonlyStateRef<T>`;
+   * all other slots produce `WritableStateRef<T>`. */
+  export type StoreStateRefForSlot<Slot, T> =
+    Slot extends { readonly: true } ? ReadonlyStateRef<T> : WritableStateRef<T>;
+
   export type StateValueForSlot<Slot> =
-    Slot extends { type: "number" } ? StateValue<number> :
-    Slot extends { type: "boolean" } ? StateValue<boolean> :
-    Slot extends { type: "array" } ? StateValue<ReadonlyArray<number>> :
-    StateValue<string>;
+    Slot extends { type: "number" } ? StoreStateRefForSlot<Slot, number> :
+    Slot extends { type: "boolean" } ? StoreStateRefForSlot<Slot, boolean> :
+    Slot extends { type: "array" } ? StoreStateRefForSlot<Slot, ReadonlyArray<number>> :
+    StoreStateRefForSlot<Slot, string>;
 
   /** Result of a pure `defineStore` call. Return `declaration` from `setupMod().stores`; use `state` references in descriptors. */
   export type StoreDefinition<S extends Record<string, StoreSlotSchema>> = {

@@ -153,7 +153,8 @@ fn tier_order(tier: ScopeTier) -> u8 {
 
 /// One tree currently on the modal stack: its registry name, the descriptor
 /// instance pushed, and the optional `onCommit` reaction carried from the
-/// `PushTree` that opened it. `on_commit` is carried only — fired by a later goal.
+/// `PushTree` that opened it. `on_commit` is carried on the stack entry; the App
+/// fires it from the text-entry commit path.
 #[derive(Debug, Clone, PartialEq)]
 struct StackedTree {
     name: String,
@@ -242,7 +243,8 @@ impl ModalStack {
 
     /// Resolve a registered tree by `name` and push it (script `PushTree` path).
     /// An unknown name warns and is a no-op — never a panic. `on_commit` is
-    /// carried onto the entry for a later goal to fire on commit.
+    /// carried onto the entry so the App can fire it from the text-entry commit
+    /// path.
     pub(crate) fn push_named(&mut self, name: &str, on_commit: Option<String>) {
         let Some(descriptor) = self.registry.resolve(name).cloned() else {
             log::warn!(

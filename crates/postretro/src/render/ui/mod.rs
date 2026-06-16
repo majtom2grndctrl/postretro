@@ -264,8 +264,8 @@ impl UiDrawList {
 /// a named descriptor tree plus its resolved input behavior and the optional
 /// `onCommit` reaction carried from the `PushTree` that opened it. The renderer
 /// draws the stack bottom→top; the app reads the TOP entry's `capture_mode` to
-/// drive the input seam and focus. `on_commit` is CARRIED only — the text-entry
-/// plan fires it later; the renderer never reads it.
+/// drive the input seam and focus. The App fires `on_commit` from the text-entry
+/// commit seam; the renderer never reads it.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct UiTreeEntry {
     /// Registry name the tree was registered/pushed under. Identifies the entry
@@ -277,8 +277,8 @@ pub(crate) struct UiTreeEntry {
     /// Resolved capture behavior (from the descriptor's `capture_mode` envelope).
     /// Only the TOP entry's mode is acted on by the app's input seam.
     pub capture_mode: crate::input::UiCaptureMode,
-    /// Optional named reaction fired when this tree commits (carried from
-    /// `PushTree { on_commit }`). Carried through only — fired by a later goal.
+    /// Optional named reaction fired by the App when this tree commits (carried
+    /// from `PushTree { on_commit }`).
     pub on_commit: Option<String>,
 }
 

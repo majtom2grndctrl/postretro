@@ -2,7 +2,7 @@
 // FFI boundary is the `return` statement — these functions never call back into Rust.
 // See: context/lib/scripting.md §2 (Data context lifecycle)
 
-import type { WritableStateRef } from "./ui/widgets";
+import type { ReadonlyStateRef, WritableStateRef } from "./ui/widgets";
 
 /** Fires `fire` when entities tagged `tag` cross kill ratio `at` (0.0–1.0). */
 export type ProgressReactionDescriptor = {
@@ -79,20 +79,23 @@ export type LevelManifest = {
   uiTrees?: import("postretro").ModUiTree[];
 };
 
-export type StoreSlotSchema = { type: "number" | "boolean" | "string" | "enum" | "array" } & Record<string, unknown>;
+export type StoreSlotSchema = { type: "number" | "boolean" | "string" | "enum" | "array"; readonly?: boolean } & Record<string, unknown>;
 
 export type StoreDeclaration = {
   namespace: string;
   schema: Record<string, StoreSlotSchema>;
 };
 
-export type StateRef<T = unknown> = WritableStateRef<T>;
+export type StateRef<T = unknown> = ReadonlyStateRef<T> | WritableStateRef<T>;
+
+export type StoreStateRefForSlot<Slot, T> =
+  Slot extends { readonly: true } ? ReadonlyStateRef<T> : WritableStateRef<T>;
 
 export type StateValueForSlot<Slot> =
-  Slot extends { type: "number" } ? StateRef<number> :
-  Slot extends { type: "boolean" } ? StateRef<boolean> :
-  Slot extends { type: "array" } ? StateRef<ReadonlyArray<number>> :
-  StateRef<string>;
+  Slot extends { type: "number" } ? StoreStateRefForSlot<Slot, number> :
+  Slot extends { type: "boolean" } ? StoreStateRefForSlot<Slot, boolean> :
+  Slot extends { type: "array" } ? StoreStateRefForSlot<Slot, ReadonlyArray<number>> :
+  StoreStateRefForSlot<Slot, string>;
 
 export type StoreDefinition<S extends Record<string, StoreSlotSchema>> = {
   readonly declaration: StoreDeclaration;
@@ -173,27 +176,57 @@ export function defineEntity(
   return descriptor;
 }
 
-function cloneAndFreeze<T>(value: T, seen = new WeakMap<object, unknown>()): T {
+const MAGIC_SCHEMA_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+function schemaPath(parent: string, key: string): string {
+  return /^[A-Za-z_$][\w$]*$/.test(key) ? `${parent}.${key}` : `${parent}[${JSON.stringify(key)}]`;
+}
+
+function rejectMagicSchemaKey(key: string, path: string): void {
+  if (MAGIC_SCHEMA_KEYS.has(key)) {
+    throw new Error(`defineStore schema key ${schemaPath(path, key)} is reserved`);
+  }
+}
+
+function cloneAndFreeze<T>(
+  value: T,
+  path = "schema",
+  seen = new WeakMap<object, unknown>(),
+  visiting = new WeakSet<object>(),
+): T {
   if (value === null || typeof value !== "object") {
     return value;
+  }
+  if (!Array.isArray(value)) {
+    const proto = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) {
+      throw new Error(`defineStore schema object at ${path} must be a plain object`);
+    }
+  }
+  if (visiting.has(value as object)) {
+    throw new Error(`defineStore schema contains a cycle at ${path}`);
   }
   const existing = seen.get(value as object);
   if (existing !== undefined) {
     return existing as T;
   }
+  visiting.add(value as object);
   if (Array.isArray(value)) {
     const clone: unknown[] = [];
     seen.set(value, clone);
     for (const item of value) {
-      clone.push(cloneAndFreeze(item, seen));
+      clone.push(cloneAndFreeze(item, `${path}[]`, seen, visiting));
     }
+    visiting.delete(value);
     return Object.freeze(clone) as T;
   }
-  const clone: Record<string, unknown> = {};
+  const clone: Record<string, unknown> = Object.create(null);
   seen.set(value as object, clone);
   for (const key of Object.keys(value as Record<string, unknown>)) {
-    clone[key] = cloneAndFreeze((value as Record<string, unknown>)[key], seen);
+    rejectMagicSchemaKey(key, path);
+    clone[key] = cloneAndFreeze((value as Record<string, unknown>)[key], schemaPath(path, key), seen, visiting);
   }
+  visiting.delete(value as object);
   return Object.freeze(clone) as T;
 }
 
@@ -205,7 +238,7 @@ export function defineStore<const S extends Record<string, StoreSlotSchema>>(
   schema: S,
 ): StoreDefinition<S> {
   const frozenSchema = cloneAndFreeze(schema);
-  const state: Record<string, StateRef> = {};
+  const state: Record<string, StateRef> = Object.create(null);
   for (const slot of Object.keys(frozenSchema)) {
     state[slot] = Object.freeze({ slot: `${namespace}.${slot}` }) as StateRef;
   }

@@ -107,7 +107,7 @@ pub fn nav_intent_for_key(key: KeyCode, capturing_tree_present: bool) -> Option<
 pub enum TextEntryKey {
     /// Append the captured printable text to the bound slot.
     Append(String),
-    /// Delete the last grapheme (logical Backspace).
+    /// Request a logical Backspace; the edit path defines deletion granularity.
     Backspace,
     /// Commit the entry (logical Enter / numpad Enter).
     Commit,

@@ -706,10 +706,11 @@ omitted from the emitted `args` entirely when not supplied — they are never se
 | `backspaceText(ref)` | `{ primitive: "backspaceText", args: { slot: ref.slot } }` | Removes the last character (one Unicode scalar value — never splits a UTF-8 sequence, but does not segment grapheme clusters). Empty is a silent no-op. |
 | `clearText(ref)` | `{ primitive: "clearText", args: { slot: ref.slot } }` | Empties a writable String state reference. |
 
-The three UI-stack helpers (`showDialog` / `openMenu` / `closeDialog`) are v1
-placeholders: `showDialog` and `openMenu` perform the identical `PushTree`
+The three UI-stack helpers (`showDialog` / `openMenu` / `closeDialog`) route to
+the modal stack: `showDialog` and `openMenu` perform the identical `PushTree`
 operation (only `showDialog` carries the optional `onCommit`), and `closeDialog`
-pops. Until the modal stack lands they **warn once ("no stack") and no-op**.
+pops. An unknown tree name warns and no-ops. A pop on an empty stack warns and
+no-ops.
 
 ### Firing system reactions on a state crossing
 

@@ -1193,9 +1193,9 @@ impl ApplicationHandler for App {
                     // escape / tab); the kinded payload rides the queue. Held
                     // repeats and non-nav keys carry no intent (the seam still
                     // suppresses the gameplay forward). Escape's menu-vs-cancel
-                    // split needs the "is a capturing tree on the stack?" flag —
-                    // owned by Task 2's modal stack; passed `false` here until
-                    // that wiring lands. See: context/lib/input.md
+                    // split needs the "is a capturing tree on the stack?" flag,
+                    // sourced from the modal stack's top capture mode.
+                    // See: context/lib/input.md
                     // A directional key RELEASE stops the focus engine's
                     // hold-to-repeat (the press-edge queue carries no release, so
                     // the focus ring's repeat clock is cleared here). Cancel never
@@ -1514,9 +1514,8 @@ impl ApplicationHandler for App {
                 // first become visible at the next frame's `take_ready`, never
                 // this frame. This holds regardless of winit's event/redraw
                 // ordering because both calls run here at game-logic time. The
-                // modal stack (Task 2/Task 3) consumes the drained intents; until
-                // then they are dropped, and the drain marks the seam where game
-                // logic reads them. See: context/lib/input.md
+                // modal stack consumes the drained intents; the drain marks the
+                // seam where game logic reads them. See: context/lib/input.md
                 let ui_intents = self.ui_dispatch.take_ready();
                 self.ui_dispatch.advance_frame();
 
@@ -3258,9 +3257,9 @@ impl App {
                 SystemReactionCommand::PushTree { tree, on_commit } => {
                     // Resolve the registered tree by name onto the modal stack.
                     // An unknown name warns and is a no-op (no panic). The carried
-                    // `on_commit` rides the stack entry for a later goal to fire on
-                    // commit; the stack does not fire it. The capture mode lives on
-                    // the registered tree's envelope (read after the drain by
+                    // `on_commit` rides the stack entry; the App fires it from the
+                    // text-entry commit path, then pops the entry. The capture mode
+                    // lives on the registered tree's envelope (read after the drain by
                     // `reconcile_ui_focus`), not on the command.
                     self.modal_stack.push_named(&tree, on_commit);
                 }

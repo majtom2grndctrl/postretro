@@ -893,7 +893,7 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   /** System-reaction body: shake the screen by writing the engine-owned `screen.shake` offset slot, a decaying oscillation that fades to rest. `amplitude` is the peak displacement in logical-reference px; `durationMs` is the total decay time. Optional `frequency` is the oscillation rate in Hz (omitted when undefined → the engine applies its default frequency). Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
   export function screenShake(amplitude: number, durationMs: number, frequency?: number): PrimitiveReactionDescriptor;
 
-  /** System-reaction body: push the dialog UI tree `tree` onto the modal stack, with an optional `onCommit` reaction (omitted when undefined). Warn-once "no stack" until Goal F's modal stack lands. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
+  /** System-reaction body: push the dialog UI tree `tree` onto the modal stack, with an optional `onCommit` reaction (omitted when undefined). An unknown tree name warns and no-ops at dispatch time. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
   export function showDialog(tree: string, onCommit?: string): PrimitiveReactionDescriptor;
 
   /** The engine-shipped on-screen keyboard's registry name (M13 Text Entry). `openTextEntry` opens this tree; the engine loads its descriptor from `content/base/ui/keyboard.json` at boot. The keyboard edits the `ui.textEntry` writable String slot. */
@@ -902,10 +902,10 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   /** System-reaction body (M13 Text Entry): open the engine-shipped on-screen keyboard, a capturing modal that edits the `ui.textEntry` slot. Optional `onCommit` names a reaction fired on commit (the on-screen `done` key or hardware Enter); `nav.cancel` closes without firing it. The same `ui.textEntry` slot also receives the hardware-keyboard path's edits. Wraps `showDialog("keyboard", onCommit)`. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
   export function openTextEntry(onCommit?: string): PrimitiveReactionDescriptor;
 
-  /** System-reaction body: push the menu UI tree `tree` onto the modal stack. A v1 alias of `showDialog` (identical push behavior) without `onCommit`. Warn-once "no stack" until Goal F's modal stack lands. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
+  /** System-reaction body: push the menu UI tree `tree` onto the modal stack. A v1 alias of `showDialog` (identical push behavior) without `onCommit`. An unknown tree name warns and no-ops at dispatch time. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
   export function openMenu(tree: string): PrimitiveReactionDescriptor;
 
-  /** System-reaction body: pop the top UI tree off the modal stack. Warn-once "no stack" until Goal F's modal stack lands. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
+  /** System-reaction body: pop the top UI tree off the modal stack. An empty stack warns and no-ops at dispatch time. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
   export function closeDialog(): PrimitiveReactionDescriptor;
 
   /** System-reaction body (M13 Goal F): write `value` to a writable state ref at the game-logic stage. Emits the existing `setState` wire descriptor. Readonly-gated at runtime — a readonly slot warns and stays unchanged; an engine-owned writable slot is valid. `value` is coerced to the slot's declared type. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
@@ -935,20 +935,24 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   export type WritableStateRef<T> = ReadonlyStateRef<T> & { readonly [writableStateRefBrand]: T };
 
   /** One slot's declaration inside the `defineStore` `schema` argument. The `type` discriminant selects the slot's value type; type-specific keys (`default`, `range`, `values`, …) are accepted alongside it. */
-  export type StoreSlotSchema = { type: "number" | "boolean" | "string" | "enum" | "array" } & Record<string, unknown>;
+  export type StoreSlotSchema = { type: "number" | "boolean" | "string" | "enum" | "array"; readonly?: boolean } & Record<string, unknown>;
 
   /** Plain declaration data returned through `setupMod().stores`. */
   export type StoreDeclaration = { namespace: string; schema: Record<string, StoreSlotSchema> };
 
   /** Maps one schema slot's `type` discriminant to its handle value type:
-   * `{type:"number"}` → writable number ref, `{type:"boolean"}` →
-   * writable boolean ref, `array` → writable numeric-array ref, and
-   * `string`/`enum` → writable string ref. */
+   * `{type:"number"}` → number ref, `{type:"boolean"}` →
+   * boolean ref, `array` → numeric-array ref, and `string`/`enum` →
+   * string ref. Slots with `readonly: true` produce `ReadonlyStateRef<T>`;
+   * all other slots produce `WritableStateRef<T>`. */
+  export type StoreStateRefForSlot<Slot, T> =
+    Slot extends { readonly: true } ? ReadonlyStateRef<T> : WritableStateRef<T>;
+
   export type StateValueForSlot<Slot> =
-    Slot extends { type: "number" } ? StateValue<number> :
-    Slot extends { type: "boolean" } ? StateValue<boolean> :
-    Slot extends { type: "array" } ? StateValue<ReadonlyArray<number>> :
-    StateValue<string>;
+    Slot extends { type: "number" } ? StoreStateRefForSlot<Slot, number> :
+    Slot extends { type: "boolean" } ? StoreStateRefForSlot<Slot, boolean> :
+    Slot extends { type: "array" } ? StoreStateRefForSlot<Slot, ReadonlyArray<number>> :
+    StoreStateRefForSlot<Slot, string>;
 
   /** Result of a pure `defineStore` call. Return `declaration` from `setupMod().stores`; use `state` references in descriptors. */
   export type StoreDefinition<S extends Record<string, StoreSlotSchema>> = {
@@ -1753,9 +1757,9 @@ declare function vignette(strength: number, durationMs: number, color: {number}?
 declare function screenShake(amplitude: number, durationMs: number, frequency: number?): PrimitiveReactionDescriptor
 
 --- System-reaction body: push the dialog UI tree `tree` onto the modal stack,
---- with an optional `onCommit` reaction (omitted when nil). Warn-once
---- "no stack" until Goal F's modal stack lands. Pure: returns a
---- `PrimitiveReactionDescriptor`, no FFI.
+--- with an optional `onCommit` reaction (omitted when nil). An unknown tree name
+--- warns and no-ops at dispatch time. Pure: returns a `PrimitiveReactionDescriptor`,
+--- no FFI.
 declare function showDialog(tree: string, onCommit: string?): PrimitiveReactionDescriptor
 
 --- The engine-shipped on-screen keyboard's registry name (M13 Text Entry).
@@ -1773,13 +1777,13 @@ declare function openTextEntry(onCommit: string?): PrimitiveReactionDescriptor
 
 --- System-reaction body: push the menu UI tree `tree` onto the modal stack. A
 --- v1 alias of `showDialog` (identical push behavior) without `onCommit`.
---- Warn-once "no stack" until Goal F's modal stack lands. Pure: returns a
+--- An unknown tree name warns and no-ops at dispatch time. Pure: returns a
 --- `PrimitiveReactionDescriptor`, no FFI.
 declare function openMenu(tree: string): PrimitiveReactionDescriptor
 
---- System-reaction body: pop the top UI tree off the modal stack. Warn-once
---- "no stack" until Goal F's modal stack lands. Pure: returns a
---- `PrimitiveReactionDescriptor`, no FFI.
+--- System-reaction body: pop the top UI tree off the modal stack. An empty stack
+--- warns and no-ops at dispatch time. Pure: returns a `PrimitiveReactionDescriptor`,
+--- no FFI.
 declare function closeDialog(): PrimitiveReactionDescriptor
 
 --- System-reaction body (M13 Goal F): write `value` to a writable state ref at
@@ -1787,7 +1791,7 @@ declare function closeDialog(): PrimitiveReactionDescriptor
 --- Readonly-gated at runtime -- a readonly slot warns and stays unchanged; an
 --- engine-owned writable slot is valid. `value` is coerced to the slot's
 --- declared type. Pure: returns a `PrimitiveReactionDescriptor`, no FFI.
-declare function updateState(ref: WritableStateRef<any>, value: any): PrimitiveReactionDescriptor
+declare function updateState<T>(ref: WritableStateRef<T>, value: T): PrimitiveReactionDescriptor
 
 --- System-reaction body (M13 Text Entry): append `text` to the current string
 --- value of the writable String slot `slot` at the game-logic stage. Readonly-
@@ -1811,8 +1815,9 @@ declare function clearText(ref: WritableStateRef<string>): PrimitiveReactionDesc
 -- ---------------------------------------------------------------------------
 -- State-store declarations. `defineStore` is special-cased in the typedef
 -- generator (mirroring `worldQuery`): per-slot value types live only in the
--- runtime `schema` argument, absent at typedef emission. The returned `state`
--- map is a uniform table of `{ slot = string }` references.
+-- runtime `schema` argument, absent at typedef emission. Luau cannot map schema
+-- keys through conditional types, so the returned `state` map preserves readable
+-- vs writable capability as a union instead of treating every slot as writable.
 
 export type ScalarStateValue = number | boolean | string
 export type NumericArrayStateValue = {number}
@@ -1822,16 +1827,17 @@ export type WritableStateRef<T> = ReadonlyStateRef<T> & { __writableStateRefBran
 --- One slot's declaration inside the `defineStore` `schema` argument. The `type`
 --- discriminant selects the slot's value type; type-specific keys (`default`,
 --- `range`, `values`, …) are accepted alongside it.
-export type StoreSlotSchema = { type: string, [string]: any }
+export type StoreSlotSchema = { type: string, readonly: boolean?, [string]: any }
 
 --- Plain declaration data returned through `setupMod().stores`.
 export type StoreDeclaration = { namespace: string, schema: { [string]: StoreSlotSchema } }
+export type StoreStateRef<T> = ReadonlyStateRef<T> | WritableStateRef<T>
 
 --- Result of a pure `defineStore` call. Return `declaration` from
 --- `setupMod().stores`; use `state` references in descriptors.
 export type StoreDefinition = {
   declaration: StoreDeclaration,
-  state: { [string]: WritableStateRef<any> },
+  state: { [string]: StoreStateRef<any> },
 }
 
 --- Build a state-store declaration. Pure: calling it performs no FFI and changes
@@ -1992,7 +1998,7 @@ declare bindState: ((ReadonlyStateRef<number>, NumberStateBindOptions?) -> Reado
   & ((ReadonlyStateRef<string>, ScalarStateBindOptions?) -> ReadonlyStateRef<string> & ScalarStateBindOptions)
   & ((ReadonlyStateRef<boolean>, ScalarStateBindOptions?) -> ReadonlyStateRef<boolean> & ScalarStateBindOptions)
 --- Build `{ slot, equals }` for scalar state refs.
-declare function stateEquals(ref: ReadonlyStateRef<any>, value: any): Predicate
+declare function stateEquals<T>(ref: ReadonlyStateRef<T>, value: T): Predicate
 
 --- A presentation-cell handle (`ui.createLocalState`): `:get()` yields a `{ ["local"] }`
 --- bind ref; `:set(v)` emits a `cellWrite` reaction (NEVER `setState`); `:is(v)` produces
@@ -3431,6 +3437,16 @@ export type Event = {
             ts.contains("readonly state: { readonly [K in keyof S]: StateValueForSlot<S[K]> };"),
             "ts StoreDefinition missing schema-keyed state refs"
         );
+        assert!(
+            ts.contains(
+                "Slot extends { readonly: true } ? ReadonlyStateRef<T> : WritableStateRef<T>;"
+            ),
+            "ts StoreStateRefForSlot must preserve readonly schema capability"
+        );
+        assert!(
+            ts.contains("Slot extends { type: \"number\" } ? StoreStateRefForSlot<Slot, number>"),
+            "ts StateValueForSlot must route through readonly-aware ref selection"
+        );
         // The old uniform registry-driven handle map must be gone.
         assert!(
             !ts.contains("export function defineStore(namespace: string, schema: unknown)"),
@@ -3445,6 +3461,12 @@ export type Event = {
         assert!(
             luau.contains("declare function defineStore(namespace: string, schema: { [string]: StoreSlotSchema }): StoreDefinition"),
             "luau missing StoreDefinition defineStore declaration:\n{luau}"
+        );
+        assert!(
+            luau.contains(
+                "export type StoreStateRef<T> = ReadonlyStateRef<T> | WritableStateRef<T>"
+            ) && luau.contains("state: { [string]: StoreStateRef<any> },"),
+            "luau StoreDefinition must not type every store slot as writable:\n{luau}"
         );
     }
 
@@ -3631,7 +3653,7 @@ export type Event = {
                 && luau.contains("NumberStateBindOptions")
                 && luau.contains("NumericArrayStateBindOptions")
                 && luau.contains("ScalarStateBindOptions")
-                && luau.contains("declare function stateEquals("),
+                && luau.contains("declare function stateEquals<T>("),
             "luau d.luau missing state reference helper declarations"
         );
         assert!(
@@ -3639,7 +3661,7 @@ export type Event = {
             "ts d.ts missing typed updateState declaration"
         );
         assert!(
-            luau.contains("declare function updateState(ref: WritableStateRef<any>, value: any): PrimitiveReactionDescriptor"),
+            luau.contains("declare function updateState<T>(ref: WritableStateRef<T>, value: T): PrimitiveReactionDescriptor"),
             "luau d.luau missing updateState declaration"
         );
         assert!(
@@ -3899,9 +3921,9 @@ export type Event = {
 
         assert!(
             luau.contains(
-                "declare function stateEquals(ref: ReadonlyStateRef<any>, value: any): Predicate"
+                "declare function stateEquals<T>(ref: ReadonlyStateRef<T>, value: T): Predicate"
             ),
-            "luau stateEquals declaration missing"
+            "luau stateEquals declaration must type the comparand to the ref value type"
         );
         assert!(
             luau.contains("is: (self: LocalStateHandle<T>, value: T) -> Predicate,"),

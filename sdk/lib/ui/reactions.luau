@@ -177,7 +177,7 @@ end
 --- Push a dialog UI tree onto the modal stack. Pure: returns a primitive
 --- reaction body, no engine side effect. `tree` names the UI tree to show; the
 --- optional `onCommit` (omitted when nil) names a reaction fired when the
---- dialog commits. Warn-once "no stack" until Goal F's modal stack lands.
+--- dialog commits. An unknown tree name warns and no-ops at dispatch time.
 function UiReactionsSdk.showDialog(tree: string, onCommit: string?): PrimitiveReactionDescriptor
   local args: { [string]: any } = { tree = tree }
   if onCommit ~= nil then
@@ -204,15 +204,14 @@ end
 
 --- Push a menu UI tree onto the modal stack. Pure: returns a primitive
 --- reaction body, no engine side effect. A v1 alias of `showDialog` (identical
---- push behavior) without the `onCommit` hook. Warn-once "no stack" until
---- Goal F's modal stack lands.
+--- push behavior) without the `onCommit` hook. An unknown tree name warns and
+--- no-ops at dispatch time.
 function UiReactionsSdk.openMenu(tree: string): PrimitiveReactionDescriptor
   return { primitive = "openMenu", args = { tree = tree } }
 end
 
 --- Pop the top UI tree off the modal stack. Pure: returns a primitive reaction
---- body, no engine side effect. Warn-once "no stack" until Goal F's modal
---- stack lands.
+--- body, no engine side effect. An empty stack warns and no-ops at dispatch time.
 function UiReactionsSdk.closeDialog(): PrimitiveReactionDescriptor
   return { primitive = "closeDialog", args = {} }
 end

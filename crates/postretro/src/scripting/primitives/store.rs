@@ -1302,6 +1302,16 @@ mod tests {
         drain_store_declarations_lua(&manifest)
     }
 
+    fn drain_quickjs_store_manifest(source: &str) -> Result<StoreDeclarationSet, ScriptError> {
+        let rt = rquickjs::Runtime::new().unwrap();
+        let ctx = rquickjs::Context::full(&rt).unwrap();
+        ctx.with(|qjs| {
+            let value: JsValue = qjs.eval(source).unwrap();
+            let manifest = JsObject::from_value(value).unwrap();
+            drain_store_declarations_js(&qjs, &manifest)
+        })
+    }
+
     #[test]
     fn luau_setup_mod_stores_accepts_dense_arrays() {
         let declarations = drain_luau_store_manifest(
@@ -1389,6 +1399,35 @@ mod tests {
                 "{label} produced unexpected error: {err}"
             );
         }
+    }
+
+    #[test]
+    fn returned_store_declaration_rejects_cyclic_schema_before_commit() {
+        let quickjs_err = drain_quickjs_store_manifest(
+            r#"
+            const schema = { value: { type: "number", default: 1 } };
+            schema.value.self = schema;
+            ({ stores: [{ namespace: "cyclic", schema }] })
+            "#,
+        )
+        .unwrap_err();
+        assert!(
+            quickjs_err.to_string().contains("maximum conversion depth"),
+            "unexpected QuickJS error: {quickjs_err}"
+        );
+
+        let luau_err = drain_luau_store_manifest(
+            r#"
+            local schema = { value = { type = "number", default = 1 } }
+            schema.value.self = schema
+            return { stores = { { namespace = "cyclic", schema = schema } } }
+            "#,
+        )
+        .unwrap_err();
+        assert!(
+            luau_err.to_string().contains("maximum conversion depth"),
+            "unexpected Luau error: {luau_err}"
+        );
     }
 
     #[test]

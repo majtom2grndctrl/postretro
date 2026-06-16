@@ -1,6 +1,7 @@
 // Runtime installation for the generated engine-owned state reference tree.
 // The tree is built from the shared catalog, exposed through a temporary bridge
 // before the SDK prelude, then captured by SDK-side `getGameState()`.
+// See: context/lib/scripting.md §5
 
 use rquickjs::{Ctx, Function as JsFunction, Object as JsObject, Value as JsValue};
 

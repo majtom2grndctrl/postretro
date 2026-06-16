@@ -818,9 +818,9 @@ declare function vignette(strength: number, durationMs: number, color: {number}?
 declare function screenShake(amplitude: number, durationMs: number, frequency: number?): PrimitiveReactionDescriptor
 
 --- System-reaction body: push the dialog UI tree `tree` onto the modal stack,
---- with an optional `onCommit` reaction (omitted when nil). Warn-once
---- "no stack" until Goal F's modal stack lands. Pure: returns a
---- `PrimitiveReactionDescriptor`, no FFI.
+--- with an optional `onCommit` reaction (omitted when nil). An unknown tree name
+--- warns and no-ops at dispatch time. Pure: returns a `PrimitiveReactionDescriptor`,
+--- no FFI.
 declare function showDialog(tree: string, onCommit: string?): PrimitiveReactionDescriptor
 
 --- The engine-shipped on-screen keyboard's registry name (M13 Text Entry).
@@ -838,13 +838,13 @@ declare function openTextEntry(onCommit: string?): PrimitiveReactionDescriptor
 
 --- System-reaction body: push the menu UI tree `tree` onto the modal stack. A
 --- v1 alias of `showDialog` (identical push behavior) without `onCommit`.
---- Warn-once "no stack" until Goal F's modal stack lands. Pure: returns a
+--- An unknown tree name warns and no-ops at dispatch time. Pure: returns a
 --- `PrimitiveReactionDescriptor`, no FFI.
 declare function openMenu(tree: string): PrimitiveReactionDescriptor
 
---- System-reaction body: pop the top UI tree off the modal stack. Warn-once
---- "no stack" until Goal F's modal stack lands. Pure: returns a
---- `PrimitiveReactionDescriptor`, no FFI.
+--- System-reaction body: pop the top UI tree off the modal stack. An empty stack
+--- warns and no-ops at dispatch time. Pure: returns a `PrimitiveReactionDescriptor`,
+--- no FFI.
 declare function closeDialog(): PrimitiveReactionDescriptor
 
 --- System-reaction body (M13 Goal F): write `value` to a writable state ref at
@@ -852,7 +852,7 @@ declare function closeDialog(): PrimitiveReactionDescriptor
 --- Readonly-gated at runtime -- a readonly slot warns and stays unchanged; an
 --- engine-owned writable slot is valid. `value` is coerced to the slot's
 --- declared type. Pure: returns a `PrimitiveReactionDescriptor`, no FFI.
-declare function updateState(ref: WritableStateRef<any>, value: any): PrimitiveReactionDescriptor
+declare function updateState<T>(ref: WritableStateRef<T>, value: T): PrimitiveReactionDescriptor
 
 --- System-reaction body (M13 Text Entry): append `text` to the current string
 --- value of the writable String slot `slot` at the game-logic stage. Readonly-
@@ -876,8 +876,9 @@ declare function clearText(ref: WritableStateRef<string>): PrimitiveReactionDesc
 -- ---------------------------------------------------------------------------
 -- State-store declarations. `defineStore` is special-cased in the typedef
 -- generator (mirroring `worldQuery`): per-slot value types live only in the
--- runtime `schema` argument, absent at typedef emission. The returned `state`
--- map is a uniform table of `{ slot = string }` references.
+-- runtime `schema` argument, absent at typedef emission. Luau cannot map schema
+-- keys through conditional types, so the returned `state` map preserves readable
+-- vs writable capability as a union instead of treating every slot as writable.
 
 export type ScalarStateValue = number | boolean | string
 export type NumericArrayStateValue = {number}
@@ -887,16 +888,17 @@ export type WritableStateRef<T> = ReadonlyStateRef<T> & { __writableStateRefBran
 --- One slot's declaration inside the `defineStore` `schema` argument. The `type`
 --- discriminant selects the slot's value type; type-specific keys (`default`,
 --- `range`, `values`, …) are accepted alongside it.
-export type StoreSlotSchema = { type: string, [string]: any }
+export type StoreSlotSchema = { type: string, readonly: boolean?, [string]: any }
 
 --- Plain declaration data returned through `setupMod().stores`.
 export type StoreDeclaration = { namespace: string, schema: { [string]: StoreSlotSchema } }
+export type StoreStateRef<T> = ReadonlyStateRef<T> | WritableStateRef<T>
 
 --- Result of a pure `defineStore` call. Return `declaration` from
 --- `setupMod().stores`; use `state` references in descriptors.
 export type StoreDefinition = {
   declaration: StoreDeclaration,
-  state: { [string]: WritableStateRef<any> },
+  state: { [string]: StoreStateRef<any> },
 }
 
 --- Build a state-store declaration. Pure: calling it performs no FFI and changes
@@ -1057,7 +1059,7 @@ declare bindState: ((ReadonlyStateRef<number>, NumberStateBindOptions?) -> Reado
   & ((ReadonlyStateRef<string>, ScalarStateBindOptions?) -> ReadonlyStateRef<string> & ScalarStateBindOptions)
   & ((ReadonlyStateRef<boolean>, ScalarStateBindOptions?) -> ReadonlyStateRef<boolean> & ScalarStateBindOptions)
 --- Build `{ slot, equals }` for scalar state refs.
-declare function stateEquals(ref: ReadonlyStateRef<any>, value: any): Predicate
+declare function stateEquals<T>(ref: ReadonlyStateRef<T>, value: T): Predicate
 
 --- A presentation-cell handle (`ui.createLocalState`): `:get()` yields a `{ ["local"] }`
 --- bind ref; `:set(v)` emits a `cellWrite` reaction (NEVER `setState`); `:is(v)` produces

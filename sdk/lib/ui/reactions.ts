@@ -190,7 +190,7 @@ export function screenShake(
  * Push a dialog UI tree onto the modal stack. Pure — returns a primitive
  * reaction body, no engine side effect. `tree` names the UI tree to show; the
  * optional `onCommit` (omitted when undefined) names a reaction fired when the
- * dialog commits. Warn-once "no stack" until Goal F's modal stack lands.
+ * dialog commits. An unknown tree name warns and no-ops at dispatch time.
  */
 export function showDialog(
   tree: string,
@@ -231,8 +231,8 @@ export function openTextEntry(
 /**
  * Push a menu UI tree onto the modal stack. Pure — returns a primitive
  * reaction body, no engine side effect. A v1 alias of `showDialog` (identical
- * push behavior) without the `onCommit` hook. Warn-once "no stack" until
- * Goal F's modal stack lands.
+ * push behavior) without the `onCommit` hook. An unknown tree name warns and
+ * no-ops at dispatch time.
  */
 export function openMenu(
   tree: string,
@@ -242,8 +242,7 @@ export function openMenu(
 
 /**
  * Pop the top UI tree off the modal stack. Pure — returns a primitive reaction
- * body, no engine side effect. Warn-once "no stack" until Goal F's modal stack
- * lands.
+ * body, no engine side effect. An empty stack warns and no-ops at dispatch time.
  */
 export function closeDialog(): import("../data_script").PrimitiveReactionDescriptor {
   return { primitive: "closeDialog", args: {} };

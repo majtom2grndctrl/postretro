@@ -15,6 +15,8 @@ use super::data_descriptors::{
 };
 use super::registry::{ComponentKind, ComponentValue, EntityId, FogVolumeComponent, Transform};
 
+const JSON_CONVERSION_MAX_DEPTH: usize = 64;
+
 /// Three-component float vector with a permissive Deserialize accepting
 /// either a JSON array of 3 numbers or an object with `x`/`y`/`z` keys.
 /// Accepts both forms because the SDK emits `{x,y,z}` objects while some
@@ -777,6 +779,22 @@ pub(super) fn js_to_json<'js>(
     ctx: &Ctx<'js>,
     v: JsValue<'js>,
 ) -> rquickjs::Result<serde_json::Value> {
+    js_to_json_inner(ctx, v, 0)
+}
+
+#[allow(clippy::only_used_in_recursion)]
+fn js_to_json_inner<'js>(
+    ctx: &Ctx<'js>,
+    v: JsValue<'js>,
+    depth: usize,
+) -> rquickjs::Result<serde_json::Value> {
+    if depth >= JSON_CONVERSION_MAX_DEPTH {
+        return Err(rquickjs::Error::new_from_js_message(
+            "value",
+            "JSON-compatible value",
+            format!("maximum conversion depth of {JSON_CONVERSION_MAX_DEPTH} exceeded"),
+        ));
+    }
     if v.is_null() || v.is_undefined() {
         return Ok(serde_json::Value::Null);
     }
@@ -798,7 +816,7 @@ pub(super) fn js_to_json<'js>(
         let mut out = Vec::with_capacity(arr.len());
         for i in 0..arr.len() {
             let item: JsValue = arr.get(i)?;
-            out.push(js_to_json(ctx, item)?);
+            out.push(js_to_json_inner(ctx, item, depth + 1)?);
         }
         return Ok(serde_json::Value::Array(out));
     }
@@ -806,7 +824,7 @@ pub(super) fn js_to_json<'js>(
         let mut map = serde_json::Map::new();
         for entry in obj.props::<String, JsValue>() {
             let (k, val) = entry?;
-            map.insert(k, js_to_json(ctx, val)?);
+            map.insert(k, js_to_json_inner(ctx, val, depth + 1)?);
         }
         return Ok(serde_json::Value::Object(map));
     }
@@ -846,6 +864,15 @@ pub(crate) fn json_to_lua(lua: &Lua, v: &serde_json::Value) -> mlua::Result<LuaV
 }
 
 pub(super) fn lua_to_json(value: LuaValue) -> mlua::Result<serde_json::Value> {
+    lua_to_json_inner(value, 0)
+}
+
+fn lua_to_json_inner(value: LuaValue, depth: usize) -> mlua::Result<serde_json::Value> {
+    if depth >= JSON_CONVERSION_MAX_DEPTH {
+        return Err(mlua::Error::RuntimeError(format!(
+            "maximum conversion depth of {JSON_CONVERSION_MAX_DEPTH} exceeded"
+        )));
+    }
     match value {
         LuaValue::Nil => Ok(serde_json::Value::Null),
         LuaValue::Boolean(b) => Ok(serde_json::Value::Bool(b)),
@@ -894,7 +921,7 @@ pub(super) fn lua_to_json(value: LuaValue) -> mlua::Result<serde_json::Value> {
                 let mut out = Vec::with_capacity(len);
                 for i in 1..=len {
                     let v: LuaValue = t.get(i)?;
-                    out.push(lua_to_json(v)?);
+                    out.push(lua_to_json_inner(v, depth + 1)?);
                 }
                 Ok(serde_json::Value::Array(out))
             } else {
@@ -907,7 +934,7 @@ pub(super) fn lua_to_json(value: LuaValue) -> mlua::Result<serde_json::Value> {
                         LuaValue::Number(f) => f.to_string(),
                         _ => continue,
                     };
-                    map.insert(key_str, lua_to_json(v)?);
+                    map.insert(key_str, lua_to_json_inner(v, depth + 1)?);
                 }
                 Ok(serde_json::Value::Object(map))
             }
@@ -1071,6 +1098,36 @@ mod tests {
                 "unexpected error for `{source}`: {error}"
             );
         }
+    }
+
+    #[test]
+    fn js_to_json_rejects_cyclic_objects_before_stack_overflow() {
+        let rt = rquickjs::Runtime::new().unwrap();
+        let ctx = rquickjs::Context::full(&rt).unwrap();
+        ctx.with(|jsctx| {
+            let value: JsValue = jsctx
+                .eval("const schema = {}; schema.self = schema; schema")
+                .unwrap();
+            let error = js_to_json(&jsctx, value).unwrap_err();
+            assert!(
+                error.to_string().contains("maximum conversion depth"),
+                "unexpected error: {error}"
+            );
+        });
+    }
+
+    #[test]
+    fn lua_to_json_rejects_cyclic_tables_before_stack_overflow() {
+        let lua = Lua::new();
+        let value = lua
+            .load("local schema = {}; schema.self = schema; return schema")
+            .eval()
+            .unwrap();
+        let error = lua_to_json(value).unwrap_err();
+        assert!(
+            error.to_string().contains("maximum conversion depth"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

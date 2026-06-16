@@ -7,7 +7,7 @@ use rquickjs::{Array, Ctx, Object, Value as JsValue};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use super::components::billboard_emitter::{
     BillboardEmitterComponent, BillboardEmitterComponentLit,
@@ -913,6 +913,40 @@ fn validate_primitive_name(name: String) -> Result<String, DescriptorError> {
     Ok(name)
 }
 
+fn validate_dense_lua_array(table: &Table, field_name: &str) -> Result<usize, DescriptorError> {
+    let mut keys = BTreeSet::new();
+    let mut max_index = 0_i64;
+
+    for pair in table.clone().pairs::<LuaValue, LuaValue>() {
+        let (key, _) = pair.map_err(lua_err)?;
+        let LuaValue::Integer(index) = key else {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "{field_name} must be a dense array; found {} key",
+                    key.type_name()
+                ),
+            });
+        };
+        if index < 1 {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "{field_name} must be a dense array; index {index} is out of range"
+                ),
+            });
+        }
+        keys.insert(index);
+        max_index = max_index.max(index);
+    }
+
+    if keys.len() != max_index as usize {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("{field_name} must be a dense array; holes are not allowed"),
+        });
+    }
+
+    Ok(max_index as usize)
+}
+
 /// Build a [`CrossingDescriptor`] from the raw fields gathered by either FFI
 /// path. Shared so JS and Luau enforce identical rules: a non-empty `slot`,
 /// exactly one of `below`/`above` (the threshold value, raw), a finite default
@@ -1043,7 +1077,7 @@ impl LevelManifest {
 
         let crossings = if table.contains_key("crossings").map_err(lua_err)? {
             let arr: Table = table.get("crossings").map_err(lua_err)?;
-            let len = arr.raw_len();
+            let len = validate_dense_lua_array(&arr, "`crossings` field")?;
             let mut out = Vec::with_capacity(len);
             for i in 1..=(len as i64) {
                 let item: LuaValue = arr.get(i).map_err(lua_err)?;
@@ -2272,7 +2306,7 @@ fn crossing_descriptor_from_lua(value: LuaValue) -> Result<CrossingDescriptor, D
         .map_err(|_| DescriptorError::InvalidShape {
             reason: "crossing entry `fire` must be an array of event names".to_string(),
         })?;
-    let len = fire_arr.raw_len();
+    let len = validate_dense_lua_array(&fire_arr, "crossing entry `fire`")?;
     let mut fire = Vec::with_capacity(len);
     for i in 1..=(len as i64) {
         let item: LuaValue = fire_arr.get(i).map_err(lua_err)?;
@@ -4027,10 +4061,10 @@ fn bar_max_from_js<'js>(obj: &Object<'js>) -> Result<BarMax, DescriptorError> {
         return Err(DescriptorError::MissingField { field: "max" });
     }
     if let Some(i) = raw.as_int() {
-        return Ok(BarMax::Literal(i as f32));
+        return finite_bar_max_literal(f64::from(i));
     }
     if let Some(f) = raw.as_float() {
-        return Ok(BarMax::Literal(f as f32));
+        return finite_bar_max_literal(f);
     }
     let reference = Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
         reason: "`bar.max` must be a number or a `{ slot }` state reference".to_string(),
@@ -4040,7 +4074,28 @@ fn bar_max_from_js<'js>(obj: &Object<'js>) -> Result<BarMax, DescriptorError> {
             reason: "`bar.max` state reference must carry `slot`".to_string(),
         }
     })?;
-    Ok(BarMax::State(BarMaxStateRef { slot }))
+    Ok(BarMax::State(BarMaxStateRef {
+        slot: validate_bar_max_slot(slot)?,
+    }))
+}
+
+fn finite_bar_max_literal(value: f64) -> Result<BarMax, DescriptorError> {
+    let narrowed = value as f32;
+    if !value.is_finite() || !narrowed.is_finite() {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("`bar.max` must be a finite number, got {value}"),
+        });
+    }
+    Ok(BarMax::Literal(narrowed))
+}
+
+fn validate_bar_max_slot(slot: String) -> Result<String, DescriptorError> {
+    if slot.is_empty() {
+        return Err(DescriptorError::InvalidShape {
+            reason: "`bar.max` state reference must carry a non-empty `slot`".to_string(),
+        });
+    }
+    Ok(slot)
 }
 
 /// Read an optional [`Predicate`] field (M13 G2). Absent/null yields `None`. The
@@ -5210,15 +5265,17 @@ fn bar_max_from_lua(table: &Table) -> Result<BarMax, DescriptorError> {
     }
     let raw: LuaValue = table.get("max").map_err(lua_err)?;
     match raw {
-        LuaValue::Integer(value) => Ok(BarMax::Literal(value as f32)),
-        LuaValue::Number(value) => Ok(BarMax::Literal(value as f32)),
+        LuaValue::Integer(value) => finite_bar_max_literal(value as f64),
+        LuaValue::Number(value) => finite_bar_max_literal(value),
         LuaValue::Table(reference) => {
             let slot = get_optional_string_lua(&reference, "slot")?.ok_or_else(|| {
                 DescriptorError::InvalidShape {
                     reason: "`bar.max` state reference must carry `slot`".to_string(),
                 }
             })?;
-            Ok(BarMax::State(BarMaxStateRef { slot }))
+            Ok(BarMax::State(BarMaxStateRef {
+                slot: validate_bar_max_slot(slot)?,
+            }))
         }
         _ => Err(DescriptorError::InvalidShape {
             reason: "`bar.max` must be a number or a `{ slot }` state reference".to_string(),
@@ -5716,6 +5773,92 @@ mod tests {
         let src = "return { reactions = {} }";
         let m = eval_lua(src, |v| LevelManifest::from_lua_value(v).unwrap());
         assert!(m.reactions.is_empty());
+    }
+
+    #[test]
+    fn lua_crossings_accept_dense_arrays() {
+        let src = r#"return {
+            crossings = {
+                { slot = "player.health", below = 25.0, max = 100.0, fire = { "lowHealth" } },
+                { slot = "player.health", above = 80.0, max = 100.0, fire = {} },
+            }
+        }"#;
+        let m = eval_lua(src, |v| LevelManifest::from_lua_value(v).unwrap());
+
+        assert_eq!(m.crossings.len(), 2);
+        assert_eq!(m.crossings[0].slot, "player.health");
+        assert_eq!(m.crossings[0].fire, vec!["lowHealth".to_string()]);
+    }
+
+    #[test]
+    fn lua_crossings_reject_non_dense_tables() {
+        // Regression: raw_len iteration silently dropped map-shaped and sparse
+        // crossing watcher declarations.
+        let cases = [
+            (
+                "return { crossings = { named = { slot = \"s\", below = 1, fire = {} } } }",
+                "map",
+            ),
+            (
+                "return { crossings = { { slot = \"s\", below = 1, fire = {} }, extra = {} } }",
+                "extra",
+            ),
+            (
+                "return { crossings = { [2] = { slot = \"s\", below = 1, fire = {} } } }",
+                "hole",
+            ),
+            (
+                "return { crossings = { [0] = { slot = \"s\", below = 1, fire = {} } } }",
+                "zero",
+            ),
+            (
+                "return { crossings = { [1.5] = { slot = \"s\", below = 1, fire = {} } } }",
+                "float",
+            ),
+        ];
+
+        for (source, label) in cases {
+            let err = eval_lua(source, |v| LevelManifest::from_lua_value(v).unwrap_err());
+            assert!(
+                err.to_string().contains("dense array"),
+                "{label} produced unexpected error: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn lua_crossing_fire_rejects_non_dense_tables() {
+        // Regression: raw_len iteration silently dropped malformed fire entries.
+        let cases = [
+            (
+                "return { crossings = { { slot = \"s\", below = 1, fire = { named = \"event\" } } } }",
+                "map",
+            ),
+            (
+                "return { crossings = { { slot = \"s\", below = 1, fire = { \"event\", extra = \"other\" } } } }",
+                "extra",
+            ),
+            (
+                "return { crossings = { { slot = \"s\", below = 1, fire = { [2] = \"event\" } } } }",
+                "hole",
+            ),
+            (
+                "return { crossings = { { slot = \"s\", below = 1, fire = { [0] = \"event\" } } } }",
+                "zero",
+            ),
+            (
+                "return { crossings = { { slot = \"s\", below = 1, fire = { [1.5] = \"event\" } } } }",
+                "float",
+            ),
+        ];
+
+        for (source, label) in cases {
+            let err = eval_lua(source, |v| LevelManifest::from_lua_value(v).unwrap_err());
+            assert!(
+                err.to_string().contains("dense array"),
+                "{label} produced unexpected error: {err}"
+            );
+        }
     }
 
     // --- EntityTypeDescriptor (passed as ModManifest.entities) ---------------
@@ -8914,6 +9057,46 @@ mod tests {
                 ),
                 "precondition must be a named load-time error (no panic), got {err:?} for {src}"
             );
+        }
+    }
+
+    #[test]
+    fn js_bar_max_rejects_non_finite_literal_and_empty_state_ref() {
+        let cases = [
+            r#"({
+                anchor:"center", offset:[0.0,0.0],
+                root:{ kind:"bar", bind:{ slot:"player.health" }, max: 1/0 }
+            })"#,
+            r#"({
+                anchor:"center", offset:[0.0,0.0],
+                root:{ kind:"bar", bind:{ slot:"player.health" }, max: { slot:"" } }
+            })"#,
+        ];
+
+        for src in cases {
+            let err = eval_js(src, |ctx, v| {
+                anchored_tree_from_js_value(ctx, v).unwrap_err()
+            });
+            assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+        }
+    }
+
+    #[test]
+    fn lua_bar_max_rejects_non_finite_literal_and_empty_state_ref() {
+        let cases = [
+            r#"return {
+                anchor = "center", offset = {0.0, 0.0},
+                root = { kind = "bar", bind = { slot = "player.health" }, max = 1/0 }
+            }"#,
+            r#"return {
+                anchor = "center", offset = {0.0, 0.0},
+                root = { kind = "bar", bind = { slot = "player.health" }, max = { slot = "" } }
+            }"#,
+        ];
+
+        for src in cases {
+            let err = eval_lua(src, |v| anchored_tree_from_lua_value(v).unwrap_err());
+            assert!(matches!(err, DescriptorError::InvalidShape { .. }));
         }
     }
 

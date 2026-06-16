@@ -24,6 +24,8 @@
 // See: context/lib/ui.md · context/lib/scripting.md §11
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use super::descriptor::{
     Align, AnchoredTree, BindSource, CaptureMode, ColorValue, ContainerWidget, LocalState,
@@ -32,9 +34,20 @@ use super::descriptor::{
 use super::layout::Anchor;
 use super::modal_stack::{ModalStack, ScopeTier};
 use super::theme::{ThemeDescriptor, UiTheme};
-use super::tree::{CellValues, ImageSizes, UiTree};
+use super::tree::{CellValues, ImageSizes, UiDrawData, UiTree};
+use crate::scripting::ctx::ScriptCtx;
 use crate::scripting::data_descriptors::{ModThemeTokens, RegisteredUiTree};
+use crate::scripting::primitives::register_all;
+use crate::scripting::primitives::store::write_store_slot;
+use crate::scripting::primitives_registry::PrimitiveRegistry;
+use crate::scripting::runtime::{
+    ModManifestResult, ScriptRuntime, ScriptRuntimeConfig, StagedManifestCommitOutcome,
+};
 use crate::scripting::slot_table::SlotValue;
+use crate::scripting::staged_manifest::{
+    StagedManifestBuildConfig, StagedManifestBuildResult, StagedManifestBuildStatus,
+    build_staged_manifest,
+};
 
 fn fs() -> glyphon::FontSystem {
     super::text::build_font_system()
@@ -95,6 +108,292 @@ fn registered(name: &str, tree: AnchoredTree, always_on: bool) -> RegisteredUiTr
         tree,
         always_on,
     }
+}
+
+struct TempModRoot(PathBuf);
+
+impl TempModRoot {
+    fn new(name: &str) -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "postretro_hud_lifecycle_{}_{}_{name}",
+            std::process::id(),
+            n,
+        ));
+        std::fs::create_dir_all(&path).expect("create temp mod root");
+        Self(path)
+    }
+}
+
+impl std::ops::Deref for TempModRoot {
+    type Target = Path;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Drop for TempModRoot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("workspace root canonicalizes")
+}
+
+fn bundle_ts_entry_to_mod_root(entry: &Path, mod_root: &Path) {
+    let output = mod_root.join("start-script.js");
+    let status = Command::new(env!("CARGO"))
+        .current_dir(workspace_root())
+        .args([
+            "run",
+            "-q",
+            "-p",
+            "postretro-script-compiler",
+            "--bin",
+            "scripts-build",
+            "--",
+            "--in",
+        ])
+        .arg(entry)
+        .arg("--out")
+        .arg(&output)
+        .status()
+        .expect("run scripts-build");
+    assert!(
+        status.success(),
+        "scripts-build must bundle {} to {}",
+        entry.display(),
+        output.display(),
+    );
+}
+
+fn script_runtime(ctx: &ScriptCtx) -> ScriptRuntime {
+    let mut registry = PrimitiveRegistry::new();
+    register_all(&mut registry, ctx.clone());
+    ScriptRuntime::new(&registry, &ScriptRuntimeConfig::default(), ctx)
+        .expect("script runtime constructs")
+}
+
+fn run_dev_mod_init_from_bundled_entry(ctx: &ScriptCtx) -> ModManifestResult {
+    let dir = TempModRoot::new("cold_launch");
+    let entry = workspace_root().join("content/dev/start-script.ts");
+    bundle_ts_entry_to_mod_root(&entry, &dir);
+
+    let manifest = {
+        let mut runtime = script_runtime(ctx);
+        runtime
+            .run_mod_init(&dir)
+            .expect("bundled development setupMod runs");
+        runtime
+            .mod_manifest()
+            .expect("setupMod returns a manifest")
+            .clone()
+    };
+
+    // `runtime` and its short-lived mod-init context have both dropped here.
+    manifest
+}
+
+fn merge_theme(tokens: &ModThemeTokens) -> UiTheme {
+    UiTheme::engine_default().with_override(&ThemeDescriptor {
+        colors: tokens.colors.clone(),
+        fonts: tokens.fonts.clone(),
+        spacing: tokens.spacing.clone(),
+    })
+}
+
+fn publish_health_snapshot(
+    ctx: &ScriptCtx,
+    health: f32,
+    max_health: f32,
+) -> HashMap<String, SlotValue> {
+    write_store_slot(ctx, "player.health", SlotValue::Number(health))
+        .expect("engine writes player.health");
+    write_store_slot(ctx, "player.maxHealth", SlotValue::Number(max_health))
+        .expect("engine writes player.maxHealth");
+    ctx.slot_table
+        .borrow()
+        .iter()
+        .filter_map(|(name, record)| record.value.clone().map(|value| (name.to_string(), value)))
+        .collect()
+}
+
+struct RetainedLayerHarness {
+    trees: Vec<UiTree>,
+    font_system: glyphon::FontSystem,
+}
+
+impl RetainedLayerHarness {
+    fn new() -> Self {
+        Self {
+            trees: Vec::new(),
+            font_system: fs(),
+        }
+    }
+
+    fn draw_layers(
+        &mut self,
+        layers: &[super::UiTreeEntry],
+        theme: &UiTheme,
+        slots: &HashMap<String, SlotValue>,
+        time_seconds: f64,
+    ) -> Vec<UiDrawData> {
+        if self.trees.len() != layers.len() {
+            self.trees = layers
+                .iter()
+                .map(|layer| UiTree::from_descriptor(&layer.descriptor, theme))
+                .collect();
+        }
+        layers
+            .iter()
+            .enumerate()
+            .map(|(index, _layer)| {
+                self.trees[index].build_draw_data_retained(
+                    [1280, 720],
+                    &mut self.font_system,
+                    &no_images(),
+                    slots,
+                    &CellValues::new(),
+                    time_seconds,
+                )
+            })
+            .collect()
+    }
+}
+
+fn layer_texts<'a>(layers: &'a [UiDrawData]) -> Vec<&'a str> {
+    layers
+        .iter()
+        .flat_map(|data| data.texts.iter().map(|text| text.content.as_str()))
+        .collect()
+}
+
+fn find_text<'a>(data: &'a UiDrawData, content: &str) -> &'a super::UiText {
+    data.texts
+        .iter()
+        .find(|text| text.content == content)
+        .unwrap_or_else(|| panic!("expected text {content:?}, got {:?}", data.texts))
+}
+
+fn approx_color(got: [f32; 4], want: [f32; 4]) -> bool {
+    got.iter()
+        .zip(want.iter())
+        .all(|(got, want)| (*got - *want).abs() < 1e-5)
+}
+
+fn bar_fraction(data: &UiDrawData) -> f32 {
+    let background = data
+        .quads
+        .instances
+        .iter()
+        .find(|quad| approx_color(quad.color, [0.035, 0.045, 0.060, 1.0]))
+        .expect("HUD health bar background quad renders");
+    let fill = data
+        .quads
+        .instances
+        .iter()
+        .find(|quad| {
+            approx_color(quad.color, [0.12, 0.72, 0.40, 1.0])
+                || approx_color(quad.color, [0.95, 0.62, 0.12, 1.0])
+                || approx_color(quad.color, [0.86, 0.06, 0.12, 1.0])
+        })
+        .expect("HUD health bar fill quad renders");
+    fill.rect[2] / background.rect[2]
+}
+
+fn bar_fill_color(data: &UiDrawData) -> [f32; 4] {
+    data.quads
+        .instances
+        .iter()
+        .find(|quad| {
+            approx_color(quad.color, [0.12, 0.72, 0.40, 1.0])
+                || approx_color(quad.color, [0.95, 0.62, 0.12, 1.0])
+                || approx_color(quad.color, [0.86, 0.06, 0.12, 1.0])
+        })
+        .expect("HUD health bar fill quad renders")
+        .color
+}
+
+fn write_staged_start_script(dir: &Path, body: &str) {
+    std::fs::write(dir.join("start-script.js"), body).expect("write staged start script");
+}
+
+fn built_staged_manifest(dir: &Path, generation: u64) -> StagedManifestBuildResult {
+    let result = build_staged_manifest(dir, generation, &StagedManifestBuildConfig::default());
+    assert!(
+        matches!(result.status, StagedManifestBuildStatus::Built(_)),
+        "staged manifest must build: {:?}",
+        result.diagnostics,
+    );
+    result
+}
+
+fn apply_successful_staged_result(
+    stack: &mut ModalStack,
+    theme: &mut UiTheme,
+    result: &StagedManifestBuildResult,
+) {
+    let StagedManifestBuildStatus::Built(manifest) = &result.status else {
+        panic!("expected a built staged manifest");
+    };
+    stack.replace_script_tree_tier(manifest.ui_trees.clone(), ScopeTier::Mod);
+    *theme = merge_theme(&manifest.theme);
+}
+
+fn apply_staged_result_with_outcome(
+    stack: &mut ModalStack,
+    theme: &mut UiTheme,
+    result: &StagedManifestBuildResult,
+    outcome: &StagedManifestCommitOutcome,
+) {
+    if !matches!(outcome, StagedManifestCommitOutcome::Committed { .. }) {
+        return;
+    }
+    apply_successful_staged_result(stack, theme, result);
+}
+
+fn staged_text_tree_script(text: &str, critical: [f32; 4], include_hud: bool) -> String {
+    let hud_entry = if include_hud {
+        format!(
+            r#"{{
+                name: "hud",
+                alwaysOn: true,
+                tree: {{
+                    anchor: "bottomLeft",
+                    offset: [24.0, -24.0],
+                    root: {{ kind: "text", content: "{text}", fontSize: 18.0, color: "critical" }}
+                }}
+            }}"#
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        r#"
+        globalThis.setupMod = function() {{
+            return {{
+                name: "Stage",
+                uiTrees: [{hud_entry}],
+                theme: {{
+                    colors: {{
+                        critical: [{}, {}, {}, {}]
+                    }}
+                }}
+            }};
+        }};
+        "#,
+        critical[0], critical[1], critical[2], critical[3],
+    )
 }
 
 // --- Cold-launch: drain -> resolve by name -> render -------------------------
@@ -169,6 +468,216 @@ fn mod_hud_shadow_renders_the_mod_tree_not_the_engine_hud() {
     assert!(
         !data.texts.iter().any(|t| t.content == "ENGINE HUD"),
         "the shadowed engine HUD must not render",
+    );
+}
+
+#[test]
+fn development_hud_cold_launch_and_staged_snapshots_build_retained_draw_data() {
+    let ctx = ScriptCtx::new();
+    let manifest = run_dev_mod_init_from_bundled_entry(&ctx);
+
+    let hud = manifest
+        .ui_trees
+        .iter()
+        .find(|tree| tree.name == "hud")
+        .expect("setupMod returns the production HUD tree");
+    let reticle = manifest
+        .ui_trees
+        .iter()
+        .find(|tree| tree.name == "hud.reticle")
+        .expect("setupMod returns the reticle tree");
+    assert!(hud.always_on, "hud envelope is always-on");
+    assert!(reticle.always_on, "reticle envelope is always-on");
+    assert_eq!(hud.tree.anchor, Anchor::BottomLeft);
+    assert_eq!(hud.tree.offset, [24.0, -24.0]);
+    assert_eq!(reticle.tree.anchor, Anchor::Center);
+    assert_eq!(reticle.tree.offset, [0.0, 0.0]);
+
+    let mut stack = ModalStack::new();
+    assert!(
+        stack.always_on_layers().is_empty(),
+        "setupMod return data does not import-time-register UI layers",
+    );
+    stack.registry_mut().register(
+        "hud",
+        super::demo::build_demo_descriptor(),
+        ScopeTier::Engine,
+        true,
+    );
+    stack.register_script_trees(manifest.ui_trees.clone(), ScopeTier::Mod);
+    let theme = merge_theme(&manifest.theme);
+    assert_eq!(theme.spacing("hud.gap"), Some(8.0));
+    assert_eq!(theme.spacing("hud.padding"), Some(14.0));
+    assert_eq!(theme.color("critical"), Some([0.86, 0.06, 0.12, 1.0]));
+    assert_eq!(theme.font("mono"), Some("JetBrains Mono"));
+
+    let layers = stack.always_on_layers();
+    assert_eq!(
+        layers
+            .iter()
+            .map(|layer| layer.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["hud", "hud.reticle"],
+        "mod hud shadows the engine fallback and reticle composes separately",
+    );
+
+    let mut retained = RetainedLayerHarness::new();
+    let full_slots = publish_health_snapshot(&ctx, 100.0, 100.0);
+    let full_draws = retained.draw_layers(&layers, &theme, &full_slots, 0.0);
+    let full_texts = layer_texts(&full_draws);
+    assert!(
+        full_texts.contains(&"HP 100"),
+        "health text resolves from player.health at full health: {full_texts:?}",
+    );
+    assert!(full_texts.contains(&"+"), "reticle text renders");
+    assert!(
+        !full_texts.iter().any(|text| text.contains("FALLBACK HUD")),
+        "mod hud shadows the fallback-only marker: {full_texts:?}",
+    );
+    for absent in ["AMMO", "FLASH", "SCREEN.FLASH"] {
+        assert!(
+            full_texts.iter().all(|text| !text.contains(absent)),
+            "removed demo surface {absent:?} must not appear: {full_texts:?}",
+        );
+    }
+    let hp_full = find_text(&full_draws[0], "HP 100");
+    assert!(
+        hp_full.position[0] < 200.0 && hp_full.position[1] > 600.0,
+        "bottom-left anchor and offset resolve to a lower-left draw position, got {:?}",
+        hp_full.position,
+    );
+    assert!(
+        approx_color(
+            full_draws[0].quads.instances[0].color,
+            [0.018, 0.026, 0.039, 0.82]
+        ),
+        "HUD panel fill resolves the mod theme token, got {:?}",
+        full_draws[0].quads.instances[0].color,
+    );
+    assert!(
+        (bar_fraction(&full_draws[0]) - 1.0).abs() < 0.01,
+        "full health bar fills completely",
+    );
+
+    let low_slots = publish_health_snapshot(&ctx, 20.0, 100.0);
+    retained.draw_layers(&layers, &theme, &low_slots, 0.0);
+    let mid_draws = retained.draw_layers(&layers, &theme, &low_slots, 0.09);
+    let mid_fraction = bar_fraction(&mid_draws[0]);
+    assert!(
+        mid_fraction < 1.0 && mid_fraction > 0.2,
+        "90 ms into the 180 ms easeOut tween the displayed fraction is in-flight, got {mid_fraction}",
+    );
+    assert!(
+        !approx_color(bar_fill_color(&mid_draws[0]), [0.86, 0.06, 0.12, 1.0]),
+        "critical band must wait until the displayed value crosses its threshold",
+    );
+
+    let settled_draws = retained.draw_layers(&layers, &theme, &low_slots, 0.181);
+    let settled_texts = layer_texts(&settled_draws);
+    assert!(
+        settled_texts.contains(&"HP 20"),
+        "health text updates after the second snapshot: {settled_texts:?}",
+    );
+    assert!(
+        (bar_fraction(&settled_draws[0]) - 0.2).abs() < 0.015,
+        "settled bar reaches 20 / 100, got {}",
+        bar_fraction(&settled_draws[0]),
+    );
+    assert!(
+        approx_color(bar_fill_color(&settled_draws[0]), [0.86, 0.06, 0.12, 1.0]),
+        "settled low health reaches the critical style band",
+    );
+
+    let staged_dir = TempModRoot::new("staged");
+    write_staged_start_script(
+        &staged_dir,
+        &staged_text_tree_script("STAGED HUD", [0.2, 0.3, 0.4, 1.0], true),
+    );
+    let staged_update = built_staged_manifest(&staged_dir, 1);
+    let mut staged_theme = theme.clone();
+    apply_successful_staged_result(&mut stack, &mut staged_theme, &staged_update);
+    let staged_layers = stack.always_on_layers();
+    let mut staged_retained = RetainedLayerHarness::new();
+    let staged_draws = staged_retained.draw_layers(&staged_layers, &staged_theme, &low_slots, 0.2);
+    let staged_texts = layer_texts(&staged_draws);
+    assert!(
+        staged_texts.contains(&"STAGED HUD"),
+        "successful staged UI snapshot is visible on the next compose read: {staged_texts:?}",
+    );
+    assert!(
+        staged_draws[0]
+            .texts
+            .iter()
+            .any(|text| text.content == "STAGED HUD"),
+        "successful staged UI draw data renders on the next frame",
+    );
+    assert_eq!(
+        staged_theme.color("critical"),
+        Some([0.2, 0.3, 0.4, 1.0]),
+        "successful staged theme snapshot resolves on the next frame",
+    );
+
+    write_staged_start_script(
+        &staged_dir,
+        &staged_text_tree_script("OMITTED HUD", [0.7, 0.1, 0.2, 1.0], false),
+    );
+    let omitted_hud = built_staged_manifest(&staged_dir, 2);
+    apply_successful_staged_result(&mut stack, &mut staged_theme, &omitted_hud);
+    let fallback_layers = stack.always_on_layers();
+    assert_eq!(
+        fallback_layers
+            .iter()
+            .map(|layer| layer.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["hud"],
+        "omitting mod hud removes the reticle and reveals the engine fallback layer",
+    );
+    let mut fallback_retained = RetainedLayerHarness::new();
+    let fallback_draws =
+        fallback_retained.draw_layers(&fallback_layers, &staged_theme, &low_slots, 0.3);
+    let fallback_texts = layer_texts(&fallback_draws);
+    assert!(
+        fallback_texts.contains(&"FALLBACK HUD HP 20"),
+        "engine fallback marker is revealed after mod hud omission: {fallback_texts:?}",
+    );
+    assert_eq!(
+        staged_theme.color("critical"),
+        Some([0.7, 0.1, 0.2, 1.0]),
+        "successful staged theme replacement committed",
+    );
+
+    let preserved_layers = stack.always_on_layers();
+    let preserved_theme = staged_theme.clone();
+    let failed = StagedManifestBuildResult {
+        generation: 3,
+        mod_root: staged_dir.0.clone(),
+        status: StagedManifestBuildStatus::Failed,
+        diagnostics: Vec::new(),
+    };
+    apply_staged_result_with_outcome(
+        &mut stack,
+        &mut staged_theme,
+        &failed,
+        &StagedManifestCommitOutcome::FailedBuild { generation: 3 },
+    );
+    let stale = built_staged_manifest(&staged_dir, 1);
+    apply_staged_result_with_outcome(
+        &mut stack,
+        &mut staged_theme,
+        &stale,
+        &StagedManifestCommitOutcome::DiscardedStale {
+            generation: 1,
+            latest_requested: Some(2),
+        },
+    );
+    assert_eq!(
+        stack.always_on_layers(),
+        preserved_layers,
+        "failed and stale staged results preserve the committed UI-tree snapshot",
+    );
+    assert_eq!(
+        staged_theme, preserved_theme,
+        "failed and stale staged results preserve the committed theme snapshot",
     );
 }
 

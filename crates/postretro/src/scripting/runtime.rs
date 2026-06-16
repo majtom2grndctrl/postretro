@@ -1997,6 +1997,52 @@ mod tests {
     }
 
     #[test]
+    fn data_contexts_install_get_game_state_in_quickjs_and_luau() {
+        for (source_path, body) in [
+            (
+                "/maps/game-state-data.js",
+                r#"
+                globalThis.setupLevel = function(ctx) {
+                    const first = getGameState();
+                    const second = getGameState();
+                    if (first !== second) throw new Error("getGameState must be idempotent");
+                    if (typeof globalThis.__postretroGameStateRefs !== "undefined")
+                        throw new Error("bridge global leaked");
+                    if (first.player.health.slot !== "player.health")
+                        throw new Error("bad health slot");
+                    try { first.player.health.slot = "mutated"; } catch (_) {}
+                    if (first.player.health.slot !== "player.health")
+                        throw new Error("state reference mutated");
+                    return { reactions: [] };
+                };
+                "#,
+            ),
+            (
+                "/maps/game-state-data.luau",
+                r#"
+                function setupLevel(ctx)
+                    local first = getGameState()
+                    local second = getGameState()
+                    assert(first == second, "getGameState must be idempotent")
+                    assert(type(__postretroGameStateRefs) == "nil", "bridge global leaked")
+                    assert(first.player.health.slot == "player.health", "bad health slot")
+                    local ok = pcall(function()
+                        first.player.health.slot = "mutated"
+                    end)
+                    assert(not ok, "state reference mutation must fail")
+                    return { reactions = {} }
+                end
+                "#,
+            ),
+        ] {
+            let (rt, _ctx) = runtime();
+            let manifest =
+                rt.run_data_script(&data_section(source_path, body), &std::env::temp_dir());
+            assert_eq!(manifest.reactions.len(), 0, "{source_path}");
+        }
+    }
+
+    #[test]
     fn ephemeral_data_contexts_read_and_write_store_in_both_runtimes() {
         for (source_path, body) in [
             (
@@ -2856,6 +2902,95 @@ mod tests {
                 .iter()
                 .any(|e| e.canonical_name.as_deref() == Some("smoke_pillar")),
             "setupMod's `entities` field must carry the descriptor on the manifest"
+        );
+    }
+
+    #[test]
+    fn mod_init_quickjs_get_game_state_executes_and_hides_bridge() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("js_game_state");
+        fs::write(
+            dir.join("start-script.js"),
+            r#"
+            const refs = getGameState();
+            if (getGameState() !== refs) throw new Error("getGameState must be idempotent");
+            if (refs.player.health.slot !== "player.health") throw new Error("bad health slot");
+            if (typeof globalThis.__postretroGameStateRefs !== "undefined")
+                throw new Error("bridge global leaked");
+            globalThis.setupMod = function() {
+                return { name: "GameStateMod" };
+            };
+            "#,
+        )
+        .unwrap();
+
+        rt.run_mod_init(&dir).unwrap();
+        assert_eq!(rt.mod_manifest().unwrap().name, "GameStateMod");
+    }
+
+    #[test]
+    fn mod_init_luau_get_game_state_executes_and_hides_bridge() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("luau_game_state");
+        fs::write(
+            dir.join("start-script.luau"),
+            r#"
+            local refs = getGameState()
+            assert(getGameState() == refs, "getGameState must be idempotent")
+            assert(refs.player.health.slot == "player.health", "bad health slot")
+            assert(type(__postretroGameStateRefs) == "nil", "bridge global leaked")
+            function setupMod()
+                return { name = "GameStateMod" }
+            end
+            "#,
+        )
+        .unwrap();
+
+        rt.run_mod_init(&dir).unwrap();
+        assert_eq!(rt.mod_manifest().unwrap().name, "GameStateMod");
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn mod_init_typescript_import_get_game_state_bundles_and_executes() {
+        if !install_scripts_build_next_to_current_exe() {
+            eprintln!("skipping: could not install scripts-build next to test binary");
+            return;
+        }
+
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("ts_game_state");
+        fs::write(
+            dir.join("start-script.ts"),
+            r#"
+            import { getGameState } from "postretro";
+
+            const refs = getGameState();
+            if (refs.player.health.slot !== "player.health") {
+              throw new Error("bad health slot");
+            }
+            if ((globalThis as any).__postretroGameStateRefs !== undefined) {
+              throw new Error("bridge global leaked");
+            }
+
+            (globalThis as any).setupMod = function() {
+              return { name: "TypeScriptGameStateMod" };
+            };
+            "#,
+        )
+        .unwrap();
+
+        rt.run_mod_init(&dir).unwrap();
+        assert_eq!(rt.mod_manifest().unwrap().name, "TypeScriptGameStateMod");
+
+        let bundled = fs::read_to_string(dir.join("start-script.js")).unwrap();
+        assert!(
+            !bundled.contains("from \"postretro\"") && !bundled.contains("from 'postretro'"),
+            "bundled output must strip the postretro import: {bundled}"
+        );
+        assert!(
+            bundled.contains("getGameState"),
+            "bundled output must preserve the getGameState call site: {bundled}"
         );
     }
 

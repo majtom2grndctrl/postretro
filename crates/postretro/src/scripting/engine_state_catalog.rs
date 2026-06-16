@@ -212,7 +212,7 @@ pub(crate) fn engine_state_catalog() -> Result<EngineStateCatalog, EngineStateCa
 }
 
 impl EngineStateCatalog {
-    fn from_entries(
+    pub(crate) fn from_entries(
         entries: &[EngineStateCatalogEntry<'static>],
     ) -> Result<Self, EngineStateCatalogError> {
         let mut sorted = entries.to_vec();

@@ -86,6 +86,10 @@ const UI_TREE_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/tree.luau");
 /// descriptor composers; local cell handles remain presentation-only.
 const UI_STATE_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/state.luau");
 
+/// SDK library prelude — `game_state.luau` captures the temporary frozen
+/// engine-state reference tree bridge and returns `getGameState`.
+const GAME_STATE_LUAU_SRC: &str = include_str!("../../../../sdk/lib/game_state.luau");
+
 /// Lights SDK fields lifted to globals after evaluating
 /// `entities/lights.luau`. Empty: the public vocabulary lives on the handle
 /// returned from `wrapLightEntity`, which is itself installed as a
@@ -159,6 +163,10 @@ const UI_TREE_FIELDS: &[&str] = &["Tree"];
 /// `ui` exposes presentation-local `ui.createLocalState` (G1b).
 const UI_STATE_FIELDS: &[&str] = &["bindState", "stateEquals", "ui", "Switch"];
 
+/// Engine-state SDK fields lifted to globals after evaluating
+/// `game_state.luau`.
+const GAME_STATE_FIELDS: &[&str] = &["getGameState"];
+
 /// Evaluate the Luau SDK prelude in `lua` and promote the return values to
 /// globals. Must be called after primitives are installed and before
 /// `sandbox(true)` (which freezes `_G`). The primitive dependency applies
@@ -169,6 +177,34 @@ const UI_STATE_FIELDS: &[&str] = &["bindState", "stateEquals", "ui", "Switch"];
 /// `defineEntity`).
 /// The prelude source uses type annotations declared in postretro.d.luau (luau-lsp only); the runtime evaluates the .luau source without loading the declaration file.
 pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
+    super::game_state_refs::install_luau_bridge(lua)?;
+
+    // Step 0: capture the engine-owned state reference tree into the pure
+    // `getGameState` closure, then hide the temporary bridge before any author
+    // code runs or `_G` is frozen.
+    let game_state_sdk: Table = lua
+        .load(GAME_STATE_LUAU_SRC)
+        .set_name("postretro/sdk/game_state.luau")
+        .eval()
+        .map_err(|e| ScriptError::ScriptThrew {
+            msg: format!("failed to evaluate SDK prelude `game_state.luau`: {e}"),
+            source_name: "sdk/lib/game_state.luau".to_string(),
+        })?;
+    let globals = lua.globals();
+    for field in GAME_STATE_FIELDS {
+        let value: mlua::Value =
+            game_state_sdk
+                .get(*field)
+                .map_err(|e| ScriptError::InvalidArgument {
+                    reason: format!("game_state.luau missing `{field}`: {e}"),
+                })?;
+        globals
+            .set(*field, value)
+            .map_err(|e| ScriptError::InvalidArgument {
+                reason: format!("failed to install global `{field}`: {e}"),
+            })?;
+    }
+
     // Step 1: evaluate `entities/lights.luau`. The only exported field is
     // the `wrapLightEntity` bridge — capability methods (`pulse`, `fade`,
     // `flicker`, `colorShift`, `sweep`) live on the handle it produces,
@@ -183,7 +219,6 @@ pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
             msg: format!("failed to evaluate SDK prelude `entities/lights.luau`: {e}"),
             source_name: "sdk/lib/entities/lights.luau".to_string(),
         })?;
-    let globals = lua.globals();
     let wrap_light_entity: mlua::Value =
         lights_sdk
             .get("wrapLightEntity")
@@ -1223,7 +1258,61 @@ mod tests {
             // Temporary bridges nil'd out before author scripts run.
             assert_eq!(wrap_light_ty, "nil", "{which:?}: wrapLightEntity");
             assert_eq!(wrap_fog_ty, "nil", "{which:?}: wrapFogVolumeEntity");
+            let (get_game_state_ty, game_state_bridge_ty): (String, String) = subsys
+                .run_source(
+                    which,
+                    "return type(getGameState), type(__postretroGameStateRefs)",
+                    "game_state_prelude.luau",
+                )
+                .unwrap();
+            assert_eq!(get_game_state_ty, "function", "{which:?}: getGameState");
+            assert_eq!(
+                game_state_bridge_ty, "nil",
+                "{which:?}: __postretroGameStateRefs"
+            );
         }
+    }
+
+    #[test]
+    fn get_game_state_returns_same_frozen_hidden_reference_tree() {
+        let (subsys, _ctx) = setup();
+        let (slot, same_root, same_leaf, bridge_ty, root_mutates, leaf_mutates): (
+            String,
+            bool,
+            bool,
+            String,
+            bool,
+            bool,
+        ) = subsys
+            .run_source(
+                Which::Definition,
+                r#"
+                local first = getGameState()
+                local second = getGameState()
+                local rootOk = pcall(function()
+                    first.player = {}
+                end)
+                local leafOk = pcall(function()
+                    first.player.health.slot = "mutated"
+                end)
+                return
+                  first.player.health.slot,
+                  first == second,
+                  first.player.health == second.player.health,
+                  type(__postretroGameStateRefs),
+                  rootOk,
+                  leafOk
+                "#,
+                "game_state_refs.luau",
+            )
+            .unwrap();
+
+        assert_eq!(slot, "player.health");
+        assert!(same_root, "getGameState must return the captured singleton");
+        assert!(same_leaf, "leaf identity must be stable across calls");
+        assert_eq!(bridge_ty, "nil", "bridge global must be hidden");
+        assert!(!root_mutates, "nested object mutation must fail");
+        assert!(!leaf_mutates, "leaf mutation must fail");
     }
 
     /// Re-evaluate `entities/fog_volumes.luau` against the live definition

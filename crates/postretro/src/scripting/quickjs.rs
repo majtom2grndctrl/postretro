@@ -40,6 +40,7 @@ const SDK_PRELUDE_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/prelude.js"
 /// — its `globalThis.x = expr` tail leaves the symbols available to scripts
 /// loaded into the same context later.
 pub(crate) fn evaluate_prelude(ctx: &Ctx<'_>) -> Result<(), ScriptError> {
+    super::game_state_refs::install_quickjs_bridge(ctx)?;
     ctx.eval::<(), _>(SDK_PRELUDE_JS)
         .map_err(|e| ScriptError::ScriptThrew {
             msg: format!("failed to evaluate SDK prelude: {e}"),
@@ -506,7 +507,7 @@ mod tests {
         subsys.definition_ctx().with(|ctx| {
             let typeof_world: String = ctx.eval("typeof world").unwrap();
             assert_eq!(typeof_world, "object", "world missing");
-            for fn_name in ["timeline", "sequence"] {
+            for fn_name in ["timeline", "sequence", "getGameState"] {
                 let kind: String = ctx
                     .eval(format!("typeof {fn_name}").as_str())
                     .unwrap_or_else(|e| panic!("{fn_name}: {e}"));
@@ -528,6 +529,36 @@ mod tests {
                     "{absent} must NOT be a bare global after the capability-handle refactor"
                 );
             }
+        });
+    }
+
+    #[test]
+    fn get_game_state_returns_same_frozen_hidden_reference_tree() {
+        let (subsys, _ctx) = setup();
+        subsys.definition_ctx().with(|ctx| {
+            let result: String = ctx
+                .eval(
+                    r#"
+                    const first = getGameState();
+                    const second = getGameState();
+                    if (first !== second) throw new Error("getGameState must return the captured singleton");
+                    if (typeof globalThis.__postretroGameStateRefs !== "undefined")
+                        throw new Error("bridge global leaked");
+                    if (first.player.health.slot !== "player.health")
+                        throw new Error("bad player.health slot: " + first.player.health.slot);
+                    if (!Object.isFrozen(first) || !Object.isFrozen(first.player) || !Object.isFrozen(first.player.health))
+                        throw new Error("state tree must be deeply frozen");
+                    try { first.player.health.slot = "mutated"; } catch (_) {}
+                    try { first.player = {}; } catch (_) {}
+                    if (first.player.health.slot !== "player.health")
+                        throw new Error("leaf mutation changed slot");
+                    if (first.player.health !== second.player.health)
+                        throw new Error("leaf identity changed across calls");
+                    JSON.stringify(first.player.health)
+                    "#,
+                )
+                .unwrap();
+            assert_eq!(result, r#"{"slot":"player.health"}"#);
         });
     }
 }

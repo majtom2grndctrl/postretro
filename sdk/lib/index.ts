@@ -13,6 +13,8 @@ export { runtime } from "./runtime";
 
 export type { AnimatableScalar, AnimatableVec3 } from "./animation";
 
+export { getGameState } from "./game_state";
+
 export type { LightEntityHandle } from "./entities/lights";
 
 export type { FogVolumeHandle } from "./entities/fog_volumes";

@@ -17,6 +17,7 @@ pub(crate) mod data_descriptors;
 pub(crate) mod data_registry;
 pub(crate) mod engine_state_catalog;
 pub(crate) mod error;
+pub(crate) mod game_state_refs;
 pub(crate) mod ir;
 pub(crate) mod luau;
 pub(crate) mod map_entity;

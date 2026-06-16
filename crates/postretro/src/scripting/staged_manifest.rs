@@ -11,8 +11,9 @@ use rquickjs::{
 };
 
 use super::data_descriptors::{
-    EntityTypeDescriptor, drain_fonts_js, drain_fonts_lua, drain_theme_js, drain_theme_lua,
-    drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js,
+    EntityTypeDescriptor, ModThemeTokens, RegisteredUiTree, drain_fonts_js, drain_fonts_lua,
+    drain_theme_js, drain_theme_lua, drain_ui_trees_js, drain_ui_trees_lua,
+    entity_descriptor_from_js,
 };
 use super::error::ScriptError;
 use super::luau::{LuauConfig, LuauRequireTracker};
@@ -53,6 +54,8 @@ impl StagedManifestDiagnostic {
 pub(crate) struct StagedManifest {
     pub(crate) name: String,
     pub(crate) entities: Vec<EntityTypeDescriptor>,
+    pub(crate) ui_trees: Vec<RegisteredUiTree>,
+    pub(crate) theme: ModThemeTokens,
     pub(crate) store_declarations: StoreDeclarationSet,
     /// Canonical mod-init source dependencies carried across the worker→main
     /// thread boundary. The descriptor registry write and watcher classifier
@@ -360,6 +363,8 @@ fn run_staged_manifest_build(
     Ok(Some(StagedManifest {
         name: manifest.name,
         entities: manifest.entities,
+        ui_trees: manifest.ui_trees,
+        theme: manifest.theme,
         store_declarations: manifest.store_declarations,
         dependency_paths,
     }))
@@ -714,6 +719,8 @@ mod tests {
         };
         assert_eq!(manifest.name, "StagedMod");
         assert_eq!(manifest.entities.len(), 1);
+        assert!(manifest.ui_trees.is_empty());
+        assert_eq!(manifest.theme, ModThemeTokens::default());
         assert_eq!(manifest.store_declarations.len(), 1);
         assert_eq!(
             manifest.entities[0].canonical_name.as_deref(),
@@ -832,6 +839,41 @@ mod tests {
                 .contains(&dir.join("data/level.luau").canonicalize().unwrap()),
             "data-script files must not enter mod-init dependency output"
         );
+    }
+
+    #[test]
+    fn staged_manifest_build_retains_ui_trees_and_theme_snapshot() {
+        let dir = temp_mod_root("js_ui_theme_snapshot");
+        fs::write(
+            dir.join("start-script.js"),
+            r#"
+            globalThis.setupMod = function() {
+                return {
+                    name: "UiSnapshot",
+                    uiTrees: [
+                        { name: "hud", alwaysOn: true,
+                          tree: { anchor: "topLeft", offset: [0.0, 0.0],
+                                  root: { kind: "spacer", flexGrow: 1.0 } } },
+                    ],
+                    theme: {
+                        colors: { critical: [0.2, 0.3, 0.4, 1.0] },
+                        spacing: { m: 12.0 },
+                    },
+                };
+            };
+            "#,
+        )
+        .unwrap();
+
+        let result = build_staged_manifest(&dir, 17, &StagedManifestBuildConfig::default());
+        let StagedManifestBuildStatus::Built(manifest) = result.status else {
+            panic!("expected built result, got {:?}", result.status);
+        };
+        assert_eq!(manifest.ui_trees.len(), 1);
+        assert_eq!(manifest.ui_trees[0].name, "hud");
+        assert!(manifest.ui_trees[0].always_on);
+        assert_eq!(manifest.theme.colors["critical"], [0.2, 0.3, 0.4, 1.0]);
+        assert_eq!(manifest.theme.spacing["m"], 12.0);
     }
 
     #[test]

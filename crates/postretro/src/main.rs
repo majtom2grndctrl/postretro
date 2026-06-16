@@ -72,6 +72,7 @@ use crate::scripting::builtins::{
 };
 use crate::scripting::components::health::apply_damage;
 use crate::scripting::ctx::ScriptCtx;
+use crate::scripting::data_descriptors::ModThemeTokens;
 use crate::scripting::primitives::light::register_sequenced_light_primitives;
 use crate::scripting::primitives::register_all;
 use crate::scripting::primitives_registry::PrimitiveRegistry;
@@ -86,8 +87,11 @@ use crate::scripting::reactions::registry::{
 use crate::scripting::reactions::system_commands::{
     SystemReactionCommand, SystemReactionRegistry, register_system_reaction_primitives,
 };
-use crate::scripting::runtime::{ReloadSummary, ScriptRuntime, ScriptRuntimeConfig};
+use crate::scripting::runtime::{
+    ReloadSummary, ScriptRuntime, ScriptRuntimeConfig, StagedManifestCommitOutcome,
+};
 use crate::scripting::sequence::SequencedPrimitiveRegistry;
+use crate::scripting::staged_manifest::{StagedManifestBuildResult, StagedManifestBuildStatus};
 use crate::scripting::state_crossings::CrossingDetector;
 use crate::scripting::state_persistence::{
     STATE_FILE_PATH, StateStoreLifecycle, collect_persisted_state, load_persisted_state,
@@ -103,6 +107,26 @@ const DEFAULT_MAP_PATH: &str = "content/dev/maps/campaign-test.prl";
 /// into a short rise so the vignette eases in rather than snapping to peak, with
 /// the remainder spent decaying back to rest. See `dispatch_system_commands`.
 const VIGNETTE_RISE_FRACTION: f32 = 0.2;
+
+fn staged_ui_commit_payload(
+    result: &StagedManifestBuildResult,
+    outcome: &StagedManifestCommitOutcome,
+) -> Option<(
+    Vec<crate::scripting::data_descriptors::RegisteredUiTree>,
+    ModThemeTokens,
+)> {
+    if !matches!(outcome, StagedManifestCommitOutcome::Committed { .. }) {
+        return None;
+    }
+
+    match &result.status {
+        StagedManifestBuildStatus::Built(manifest) => {
+            Some((manifest.ui_trees.clone(), manifest.theme.clone()))
+        }
+        StagedManifestBuildStatus::NoStartScript => Some((Vec::new(), ModThemeTokens::default())),
+        StagedManifestBuildStatus::Failed => None,
+    }
+}
 
 fn resolve_map_path(args: &[String]) -> String {
     args.iter()
@@ -467,6 +491,7 @@ fn main() -> Result<()> {
             );
             stack
         },
+        mod_theme_override: ModThemeTokens::default(),
         ui_focus: input::UiFocusEngine::new(),
         ui_focus_rects: None,
         ui_input_mode: input::InputMode::default(),
@@ -713,6 +738,11 @@ struct App {
     /// frame; the top tree's capture mode drives the input seam + `InputFocus`.
     /// Engine built-in trees register at boot. See: context/lib/ui.md §1.
     modal_stack: render::ui::modal_stack::ModalStack,
+
+    /// The currently committed mod theme override. Successful staged mod-init
+    /// commits replace this complete snapshot before a fresh merge over engine
+    /// defaults reaches the renderer.
+    mod_theme_override: ModThemeTokens,
 
     /// App-side UI focus engine (M13 Goal F, Task 3). Runs in the game-logic
     /// phase: consumes the drained nav intents + tracked cursor, moves focus
@@ -995,6 +1025,7 @@ impl ApplicationHandler for App {
 
         self.renderer = Some(renderer);
         self.window_state = Some(WindowState { window });
+        self.apply_mod_ui_theme_to_renderer();
 
         // Fault-tolerant audio init: on failure log and run silent, never
         // crash. See: context/lib/audio.md §1.
@@ -2420,9 +2451,10 @@ impl ApplicationHandler for App {
                 }
 
                 for result in self.script_runtime.poll_staged_manifest_builds() {
-                    let _ = self
+                    let outcome = self
                         .script_runtime
                         .commit_staged_manifest_result(&result, &self.script_ctx);
+                    self.commit_staged_ui_manifest(&result, &outcome);
                 }
 
                 if let VisibleCells::Culled(mut cells) = visible_cells {
@@ -2831,47 +2863,67 @@ impl App {
         }
     }
 
-    /// Paint a single splash-phase frame via `UiPass::encode`. Always clears
-    /// to black. When a splash descriptor is installed, the pass also records
-    /// a fullscreen background fill, a framed 9-slice panel, the centered logo
-    /// image, and a shaped-text line as instanced quads plus glyphon text. The
-    /// first frame has no descriptor installed yet and renders only the clear.
+    /// Commit staged UI trees and theme only after the matching staged script
+    /// manifest has already passed descriptor/store reconciliation.
+    fn commit_staged_ui_manifest(
+        &mut self,
+        result: &StagedManifestBuildResult,
+        outcome: &StagedManifestCommitOutcome,
+    ) {
+        let Some((ui_trees, theme)) = staged_ui_commit_payload(result, outcome) else {
+            return;
+        };
+        let tree_count = ui_trees.len();
+        self.modal_stack
+            .replace_script_tree_tier(ui_trees, render::ui::modal_stack::ScopeTier::Mod);
+        self.commit_mod_ui_theme(theme);
+        log::info!(
+            "[UI] committed staged mod-init generation {} UI snapshot: {} tree(s)",
+            result.generation,
+            tree_count,
+        );
+    }
+
+    fn commit_mod_ui_theme(&mut self, theme: ModThemeTokens) {
+        self.mod_theme_override = theme;
+        self.apply_mod_ui_theme_to_renderer();
+    }
+
+    fn apply_mod_ui_theme_to_renderer(&mut self) {
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+        let descriptor = render::ui::theme::ThemeDescriptor {
+            colors: self.mod_theme_override.colors.clone(),
+            fonts: self.mod_theme_override.fonts.clone(),
+            spacing: self.mod_theme_override.spacing.clone(),
+        };
+        let merged = render::ui::theme::UiTheme::engine_default().with_override(&descriptor);
+        renderer.set_ui_theme(merged);
+    }
+
     /// Install a mod's `setupMod()` theme tokens and font assets into the live UI
     /// runtime, at the mod-init drain (before the authoring VM context drops). G1b
     /// Task 4. Both halves degrade per `ui.md` §5: a missing/unreadable font file
     /// or a non-registering face produces a named load-time diagnostic and is
     /// skipped; the theme merge tolerates unknown tokens (they degrade visibly at
     /// widget-resolution time — magenta/`body`/zero, warn-once — never here).
-    /// No-op when the renderer is absent (headless / pre-resume).
+    /// Theme commit is snapshot-style: an empty override resets to engine default.
     fn install_mod_ui_theme_and_fonts(
         &mut self,
-        theme: crate::scripting::data_descriptors::ModThemeTokens,
+        theme: ModThemeTokens,
         fonts: crate::scripting::data_descriptors::ModFontAssets,
     ) {
-        let Some(renderer) = self.renderer.as_mut() else {
-            return;
-        };
-
-        // Theme: convert the mod-scope tokens into a `ThemeDescriptor`, merge over
-        // the engine default per-token, and install the merged theme. `set_ui_theme`
-        // bumps the theme generation so already-built retained trees rebuild against
-        // the new tokens. An override naming nothing leaves the default untouched.
-        if !theme.colors.is_empty() || !theme.fonts.is_empty() || !theme.spacing.is_empty() {
-            let descriptor = render::ui::theme::ThemeDescriptor {
-                colors: theme.colors,
-                fonts: theme.fonts,
-                spacing: theme.spacing,
-            };
-            let merged = render::ui::theme::UiTheme::engine_default().with_override(&descriptor);
-            renderer.set_ui_theme(merged);
-            log::info!("[UI] installed mod theme override");
-        }
+        self.commit_mod_ui_theme(theme);
 
         // Fonts: family → TTF path. Resolve each path against the mod content root
         // (itself cwd-relative at runtime per ui.md §5), read the bytes, and
         // register the face. A missing/unreadable file or a non-registering face is
         // logged and skipped — the `font` token then degrades to a system fallback
         // at shape time, but boot never aborts.
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
         for (family, rel_path) in fonts.families {
             let path = self.content_root.join(&rel_path);
             let bytes = match render::ui::text::read_font_file(&path) {
@@ -2900,6 +2952,11 @@ impl App {
         }
     }
 
+    /// Paint a single splash-phase frame via `UiPass::encode`. Always clears
+    /// to black. When a splash descriptor is installed, the pass also records
+    /// a fullscreen background fill, a framed 9-slice panel, the centered logo
+    /// image, and a shaped-text line as instanced quads plus glyphon text. The
+    /// first frame has no descriptor installed yet and renders only the clear.
     fn paint_splash(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(renderer) = self.renderer.as_mut() {
             if !renderer.is_ready() {
@@ -4376,6 +4433,119 @@ mod tests {
             mod_init: true,
         }));
         assert!(!reload_summary_requires_mod_init(ReloadSummary::default()));
+    }
+
+    fn staged_tree(name: &str) -> crate::scripting::data_descriptors::RegisteredUiTree {
+        use crate::render::ui::descriptor::{
+            Align, AnchoredTree, CaptureMode, ContainerWidget, SpacingValue, Widget,
+        };
+        use crate::render::ui::layout::Anchor;
+
+        crate::scripting::data_descriptors::RegisteredUiTree {
+            name: name.to_string(),
+            tree: AnchoredTree {
+                anchor: Anchor::TopLeft,
+                offset: [0.0, 0.0],
+                root: Widget::VStack(ContainerWidget {
+                    gap: SpacingValue::Literal(0.0),
+                    padding: SpacingValue::Literal(0.0),
+                    align: Align::Start,
+                    fill: None,
+                    border: None,
+                    id: None,
+                    focus_neighbors: Default::default(),
+                    focus: None,
+                    restore_on_return: false,
+                    local_state: None,
+                    visible_when: None,
+                    role: None,
+                    children: Vec::new(),
+                }),
+                capture_mode: CaptureMode::Passthrough,
+                initial_focus: None,
+                text_entry_target: None,
+                accessible_name: None,
+                role: None,
+            },
+            always_on: true,
+        }
+    }
+
+    fn staged_built_ui_result(generation: u64) -> StagedManifestBuildResult {
+        use std::collections::HashMap;
+
+        StagedManifestBuildResult {
+            generation,
+            mod_root: PathBuf::from("content/dev"),
+            status: StagedManifestBuildStatus::Built(
+                crate::scripting::staged_manifest::StagedManifest {
+                    name: "UiCommit".to_string(),
+                    entities: Vec::new(),
+                    ui_trees: vec![staged_tree("hud")],
+                    theme: ModThemeTokens {
+                        colors: HashMap::from([("critical".to_string(), [0.25, 0.5, 0.75, 1.0])]),
+                        ..Default::default()
+                    },
+                    store_declarations: Default::default(),
+                    dependency_paths: Vec::new(),
+                },
+            ),
+            diagnostics: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn staged_ui_payload_exists_only_for_successful_current_commit() {
+        let result = staged_built_ui_result(9);
+        let committed = StagedManifestCommitOutcome::Committed {
+            generation: 9,
+            descriptor_count: 0,
+            applied_actions: 0,
+            dropped_missing_targets: 0,
+        };
+        let (trees, theme) = staged_ui_commit_payload(&result, &committed)
+            .expect("successful current staged result commits UI/theme");
+        assert_eq!(trees.len(), 1);
+        assert_eq!(trees[0].name, "hud");
+        assert_eq!(theme.colors["critical"], [0.25, 0.5, 0.75, 1.0]);
+
+        for outcome in [
+            StagedManifestCommitOutcome::DiscardedStale {
+                generation: 8,
+                latest_requested: Some(9),
+            },
+            StagedManifestCommitOutcome::FailedBuild { generation: 9 },
+            StagedManifestCommitOutcome::Rejected {
+                generation: 9,
+                reason: "schema rejected".to_string(),
+            },
+        ] {
+            assert!(
+                staged_ui_commit_payload(&result, &outcome).is_none(),
+                "non-committed staged outcomes must preserve current UI/theme"
+            );
+        }
+    }
+
+    #[test]
+    fn no_start_script_staged_commit_clears_mod_ui_and_theme_snapshot() {
+        let result = StagedManifestBuildResult {
+            generation: 10,
+            mod_root: PathBuf::from("content/dev"),
+            status: StagedManifestBuildStatus::NoStartScript,
+            diagnostics: Vec::new(),
+        };
+        let outcome = StagedManifestCommitOutcome::Committed {
+            generation: 10,
+            descriptor_count: 0,
+            applied_actions: 0,
+            dropped_missing_targets: 0,
+        };
+
+        let (trees, theme) =
+            staged_ui_commit_payload(&result, &outcome).expect("no-start commit is a snapshot");
+        assert!(trees.is_empty());
+        assert_eq!(theme, ModThemeTokens::default());
     }
 
     // --- G1b drain-before-drop lifecycle invariant (Task 6) -----------------

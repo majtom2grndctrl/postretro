@@ -29,13 +29,12 @@ pub(crate) enum ScopeTier {
     Mod,
 }
 
-/// One registered tree plus its registration attributes: which scope tier owns it
-/// and whether it composes as an always-on base layer every frame (the HUD case)
-/// rather than only when pushed onto the modal stack.
+/// One registered tree plus its registration attributes: whether it composes as
+/// an always-on base layer every frame (the HUD case) rather than only when
+/// pushed onto the modal stack.
 #[derive(Debug, Clone)]
 struct RegisteredTree {
     descriptor: AnchoredTree,
-    tier: ScopeTier,
     /// `true` when this tree composes as a base layer on every gameplay frame
     /// (resolved through the always-on read seam), independent of the modal stack.
     /// A base/always-on layer NEVER captures input or takes focus — that derives
@@ -43,15 +42,57 @@ struct RegisteredTree {
     always_on: bool,
 }
 
-/// Named registry of UI trees: `name → RegisteredTree`. `PushTree` resolves a tree
-/// by name through this map; the per-frame compose step resolves the HUD and every
-/// always-on tree through it too. Tiered by scope (`engine < mod`): a mod
-/// registration under an existing engine name shadows it (last-wins + warn).
-/// Engine built-ins register at boot; script-side registration arrives with the UI
-/// SDK. An unknown name is a no-op-with-warning at push time, never a panic.
+#[derive(Debug, Default)]
+struct TieredRegisteredTree {
+    engine: Option<RegisteredTree>,
+    mod_scope: Option<RegisteredTree>,
+}
+
+impl TieredRegisteredTree {
+    #[cfg(test)]
+    fn get(&self, tier: ScopeTier) -> Option<&RegisteredTree> {
+        match tier {
+            ScopeTier::Engine => self.engine.as_ref(),
+            ScopeTier::Mod => self.mod_scope.as_ref(),
+        }
+    }
+
+    fn set(&mut self, tier: ScopeTier, tree: RegisteredTree) {
+        match tier {
+            ScopeTier::Engine => self.engine = Some(tree),
+            ScopeTier::Mod => self.mod_scope = Some(tree),
+        }
+    }
+
+    fn remove(&mut self, tier: ScopeTier) {
+        match tier {
+            ScopeTier::Engine => self.engine = None,
+            ScopeTier::Mod => self.mod_scope = None,
+        }
+    }
+
+    fn resolved(&self) -> Option<(ScopeTier, &RegisteredTree)> {
+        self.mod_scope
+            .as_ref()
+            .map(|tree| (ScopeTier::Mod, tree))
+            .or_else(|| self.engine.as_ref().map(|tree| (ScopeTier::Engine, tree)))
+    }
+
+    fn is_empty(&self) -> bool {
+        self.engine.is_none() && self.mod_scope.is_none()
+    }
+}
+
+/// Named registry of UI trees: `name → tiered entries`. `PushTree` resolves a
+/// tree by name through this map; the per-frame compose step resolves the HUD
+/// and every always-on tree through it too. Tiered by scope (`engine < mod`): a
+/// mod registration under an existing engine name shadows it without destroying
+/// the engine fallback. Engine built-ins register at boot; script-side
+/// registration arrives with the UI SDK. An unknown name is a no-op-with-warning
+/// at push time, never a panic.
 #[derive(Debug, Default)]
 pub(crate) struct UiTreeRegistry {
-    trees: std::collections::HashMap<String, RegisteredTree>,
+    trees: std::collections::HashMap<String, TieredRegisteredTree>,
 }
 
 impl UiTreeRegistry {
@@ -69,31 +110,50 @@ impl UiTreeRegistry {
         always_on: bool,
     ) {
         let name = name.into();
+        let entry = self.trees.entry(name.clone()).or_default();
         if tier == ScopeTier::Mod {
-            if let Some(existing) = self.trees.get(&name) {
-                if existing.tier == ScopeTier::Engine {
-                    log::warn!(
-                        "[UI] mod tree '{name}' shadows the engine built-in of the same name (reskin path)"
-                    );
-                }
+            if entry.mod_scope.is_none() && entry.engine.is_some() {
+                log::warn!(
+                    "[UI] mod tree '{name}' shadows the engine built-in of the same name (reskin path)"
+                );
             }
         }
-        self.trees.insert(
-            name,
+        entry.set(
+            tier,
             RegisteredTree {
                 descriptor: tree,
-                tier,
                 always_on,
             },
         );
     }
 
+    pub(crate) fn replace_tier(
+        &mut self,
+        tier: ScopeTier,
+        trees: impl IntoIterator<Item = RegisteredUiTree>,
+    ) {
+        for entry in self.trees.values_mut() {
+            entry.remove(tier);
+        }
+        self.trees.retain(|_, entry| !entry.is_empty());
+        for RegisteredUiTree {
+            name,
+            tree,
+            always_on,
+        } in trees
+        {
+            self.register(name, tree, tier, always_on);
+        }
+    }
+
     /// Resolve a registered tree by name, or `None` if no such name is registered.
-    /// The HashMap holds at most one entry per name (a mod registration replaced
-    /// any engine entry of the same name at registration time), so this read is the
-    /// tiered-resolved descriptor directly.
+    /// Tiered resolution picks the mod entry when present and falls back to the
+    /// engine entry otherwise.
     fn resolve(&self, name: &str) -> Option<&AnchoredTree> {
-        self.trees.get(name).map(|t| &t.descriptor)
+        self.trees
+            .get(name)
+            .and_then(TieredRegisteredTree::resolved)
+            .map(|(_, t)| &t.descriptor)
     }
 
     /// The always-on trees, each as a base-layer snapshot entry. The compose step
@@ -111,8 +171,10 @@ impl UiTreeRegistry {
         let mut entries: Vec<(ScopeTier, &String, &RegisteredTree)> = self
             .trees
             .iter()
-            .filter(|(_, t)| t.always_on)
-            .map(|(name, t)| (t.tier, name, t))
+            .filter_map(|(name, t)| {
+                let (tier, tree) = t.resolved()?;
+                tree.always_on.then_some((tier, name, tree))
+            })
             .collect();
         // Engine tier first (base), then mod tier (overlays on top); within a tier,
         // sort by name for a deterministic painter order across frames.
@@ -133,13 +195,16 @@ impl UiTreeRegistry {
     }
 
     #[cfg(test)]
-    pub(crate) fn contains(&self, name: &str) -> bool {
-        self.trees.contains_key(name)
+    fn tier_of(&self, name: &str) -> Option<ScopeTier> {
+        self.trees
+            .get(name)
+            .and_then(TieredRegisteredTree::resolved)
+            .map(|(tier, _)| tier)
     }
 
     #[cfg(test)]
-    fn tier_of(&self, name: &str) -> Option<ScopeTier> {
-        self.trees.get(name).map(|t| t.tier)
+    fn has_tier(&self, name: &str, tier: ScopeTier) -> bool {
+        self.trees.get(name).and_then(|t| t.get(tier)).is_some()
     }
 }
 
@@ -214,6 +279,14 @@ impl ModalStack {
         {
             self.registry.register(name, tree, tier, always_on);
         }
+    }
+
+    pub(crate) fn replace_script_tree_tier(
+        &mut self,
+        trees: impl IntoIterator<Item = RegisteredUiTree>,
+        tier: ScopeTier,
+    ) {
+        self.registry.replace_tier(tier, trees);
     }
 
     /// Read a registered tree by `name`, or `None` if no such name is registered.
@@ -629,7 +702,9 @@ mod tests {
             true,
         );
 
-        // The map holds exactly one "hud" entry: the mod descriptor, at the mod tier.
+        // The resolved entry is mod tier, but the engine fallback remains stored.
+        assert!(stack.registry.has_tier("hud", ScopeTier::Engine));
+        assert!(stack.registry.has_tier("hud", ScopeTier::Mod));
         assert_eq!(stack.registry.tier_of("hud"), Some(ScopeTier::Mod));
         assert_eq!(
             stack.tree("hud").and_then(root_id),
@@ -859,6 +934,80 @@ mod tests {
             stack.tree("other").and_then(root_id),
             Some("kept"),
             "entries after a duplicate still register — the drain never aborts",
+        );
+    }
+
+    #[test]
+    fn replacing_mod_tier_omits_hud_and_reveals_engine_fallback() {
+        let mut stack = ModalStack::new();
+        stack.registry_mut().register(
+            "hud",
+            identified(CaptureMode::Passthrough, "engineHud"),
+            ScopeTier::Engine,
+            true,
+        );
+        stack.register_script_trees(
+            vec![
+                registered("hud", "modHud", true),
+                registered("hud.reticle", "reticle", true),
+            ],
+            ScopeTier::Mod,
+        );
+
+        stack.replace_script_tree_tier(
+            vec![registered("hud.reticle", "reticleV2", true)],
+            ScopeTier::Mod,
+        );
+
+        assert!(stack.registry.has_tier("hud", ScopeTier::Engine));
+        assert!(!stack.registry.has_tier("hud", ScopeTier::Mod));
+        assert_eq!(
+            stack.tree("hud").and_then(root_id),
+            Some("engineHud"),
+            "omitting hud from the staged mod snapshot reveals the engine fallback",
+        );
+        assert_eq!(
+            stack.tree("hud.reticle").and_then(root_id),
+            Some("reticleV2"),
+            "the new mod tier snapshot replaces previous mod entries",
+        );
+    }
+
+    #[test]
+    fn replacing_mod_tier_updates_always_on_next_read_but_keeps_pushed_modal_stable() {
+        let mut stack = ModalStack::new();
+        stack.register_script_trees(
+            vec![
+                registered("hud", "modHudV1", true),
+                registered("dialog", "dialogV1", false),
+            ],
+            ScopeTier::Mod,
+        );
+        stack.push_named("dialog", None);
+
+        stack.replace_script_tree_tier(
+            vec![
+                registered("hud", "modHudV2", true),
+                registered("dialog", "dialogV2", false),
+            ],
+            ScopeTier::Mod,
+        );
+
+        let always_on = stack.always_on_layers();
+        assert_eq!(always_on.len(), 1);
+        assert_eq!(root_id(&always_on[0].descriptor), Some("modHudV2"));
+        assert_eq!(
+            stack.entries()[0].descriptor.root,
+            identified(CaptureMode::Passthrough, "dialogV1").root,
+            "already-pushed modal instances keep their cloned descriptor",
+        );
+
+        stack.pop();
+        stack.push_named("dialog", None);
+        assert_eq!(
+            stack.entries()[0].descriptor.root,
+            identified(CaptureMode::Passthrough, "dialogV2").root,
+            "reopening resolves the updated registry entry",
         );
     }
 }

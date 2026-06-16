@@ -1874,6 +1874,8 @@ mod tests {
             status: StagedManifestBuildStatus::Built(StagedManifest {
                 name: name.to_string(),
                 entities,
+                ui_trees: Vec::new(),
+                theme: ModThemeTokens::default(),
                 store_declarations: StoreDeclarationSet::default(),
                 dependency_paths,
             }),

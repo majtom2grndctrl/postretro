@@ -278,6 +278,46 @@ mod tests {
     }
 
     #[test]
+    fn fresh_override_snapshot_omits_token_and_reverts_to_engine_default() {
+        let default = UiTheme::engine_default();
+        let first = ThemeDescriptor {
+            colors: HashMap::from([
+                ("critical".to_string(), [1.0, 0.0, 0.0, 1.0]),
+                ("hud.extra".to_string(), [0.0, 1.0, 0.0, 1.0]),
+            ]),
+            spacing: HashMap::from([("m".to_string(), 24.0)]),
+            ..Default::default()
+        };
+        let first_merged = default.with_override(&first);
+        assert!(colors_close(
+            first_merged.color("critical").unwrap(),
+            [1.0, 0.0, 0.0, 1.0],
+        ));
+        assert_eq!(first_merged.spacing("m"), Some(24.0));
+        assert!(first_merged.color("hud.extra").is_some());
+
+        let second = ThemeDescriptor {
+            colors: HashMap::from([("warning".to_string(), [0.0, 0.0, 1.0, 1.0])]),
+            ..Default::default()
+        };
+        let second_merged = UiTheme::engine_default().with_override(&second);
+        assert!(colors_close(
+            second_merged.color("critical").unwrap(),
+            default.color("critical").unwrap(),
+        ));
+        assert_eq!(second_merged.spacing("m"), default.spacing("m"));
+        assert_eq!(
+            second_merged.color("hud.extra"),
+            None,
+            "tokens omitted from the replacement override do not survive",
+        );
+        assert!(colors_close(
+            second_merged.color("warning").unwrap(),
+            [0.0, 0.0, 1.0, 1.0],
+        ));
+    }
+
+    #[test]
     fn unknown_token_resolves_to_none() {
         // A name not in any map resolves to None — resolution sites own the
         // fallback-and-warn, so the table itself never invents a value.

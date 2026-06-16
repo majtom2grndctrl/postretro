@@ -128,8 +128,9 @@ const DATA_SCRIPT_FIELDS: &[&str] = &["defineReaction", "defineEntity", "defineS
 /// the UI-stack (`showDialog` /
 /// `openMenu` / `closeDialog`) primitives, the `updateState` slot write (Goal F),
 /// the text-entry helpers (`openTextEntry` wraps `showDialog` for the engine
-/// keyboard; `KEYBOARD_TREE` is its registry name constant), and the text-edit
-/// reactions (`appendText` / `backspaceText` / `clearText`, M13 Text Entry).
+/// keyboard; `KEYBOARD_TREE` is its registry name constant), reserved button
+/// actions (`CLOSE_DIALOG_ACTION`), and the text-edit reactions (`appendText` /
+/// `backspaceText` / `clearText`, M13 Text Entry).
 const UI_REACTIONS_FIELDS: &[&str] = &[
     "onStateCrossing",
     "playSound",
@@ -142,6 +143,7 @@ const UI_REACTIONS_FIELDS: &[&str] = &[
     "closeDialog",
     "openTextEntry",
     "KEYBOARD_TREE",
+    "CLOSE_DIALOG_ACTION",
     "updateState",
     "appendText",
     "backspaceText",
@@ -1555,6 +1557,7 @@ mod tests {
             "closeDialog",
             "openTextEntry",
             "KEYBOARD_TREE",
+            "CLOSE_DIALOG_ACTION",
             "updateState",
             "appendText",
             "backspaceText",
@@ -1570,6 +1573,16 @@ mod tests {
                 to a bare global, so Luau callers hit nil at runtime",
             );
         }
+    }
+
+    #[test]
+    fn close_dialog_action_global_emits_reserved_wire_name() {
+        let lua = build_lua_state(&[], None, None).expect("lua state");
+        let value: String = lua
+            .load("return CLOSE_DIALOG_ACTION")
+            .eval()
+            .expect("CLOSE_DIALOG_ACTION global");
+        assert_eq!(value, "ui.closeDialog");
     }
 
     #[test]

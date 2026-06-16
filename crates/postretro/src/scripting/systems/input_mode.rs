@@ -2,8 +2,8 @@
 // Observes the input phase's mode signals — mouse motion (→ `pointer`) and
 // stick/D-pad/nav-key input (→ `focus`) — debounces them so jitter doesn't flap
 // the mode, and writes the resolved `input.mode` enum slot. The store write is
-// app composition (like the `audio.master` bus consumer), NOT a subsystem
-// output: the input subsystem's contract output stays the action snapshot.
+// app composition, NOT a subsystem output: the input subsystem's contract output
+// stays the action snapshot.
 // See: context/lib/input.md §5, §7 · context/lib/scripting.md §5
 
 use crate::input::InputMode;

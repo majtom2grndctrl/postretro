@@ -712,6 +712,11 @@ operation (only `showDialog` carries the optional `onCommit`), and `closeDialog`
 pops. An unknown tree name warns and no-ops. A pop on an empty stack warns and
 no-ops.
 
+Button `onPress` values have two paths. Ordinary strings are named reactions.
+Reserved `ui.*` strings are engine actions intercepted before named-reaction
+dispatch. Use `CLOSE_DIALOG_ACTION` for the reserved `"ui.closeDialog"` value
+instead of spelling it by hand.
+
 ### Firing system reactions on a state crossing
 
 `onStateCrossing(ref, condition, fire)` is the watcher that drives system
@@ -862,10 +867,11 @@ repeat clock), so a held stick or arrow steps focus/value steadily.
 ### Interactive widgets
 
 - **`button`** — `{ kind: "button", id, label, onPress, focusNeighbors? }`.
-  Focusable. Activation (a focus-engine confirm **or** a pointer click) fires the
-  `onPress` **named reaction** through the same reaction registry entity/system
-  reactions use, so a click and a gamepad confirm have an identical effect. `id`
-  is required (activation resolves the focused node id back to `onPress`).
+  Focusable. Activation (a focus-engine confirm **or** a pointer click) resolves
+  `onPress` the same way. Ordinary names fire through the named-reaction registry.
+  Reserved `ui.*` actions, such as `CLOSE_DIALOG_ACTION`, are handled by the
+  engine before named-reaction dispatch. `id` is required (activation resolves
+  the focused node id back to `onPress`).
 - **`slider`** — `{ kind: "slider", id, label, bind, min, max, step, capturesNav?, focusNeighbors? }`.
   Focusable. `capturesNav` is an **array** of nav wire names (e.g.
   `["nav.left", "nav.right"]`, not a bool) the slider claims first refusal on:
@@ -930,8 +936,8 @@ path.
 
 `openTextEntry(onCommit?)` is the canonical opener — it wraps
 `showDialog("keyboard", onCommit)`. Wire it to a `button`'s `onPress`. The
-keyboard is a capturing modal: while open, gameplay input freezes and the opener
-screen's focus restores on close.
+keyboard is a capturing modal: while open, player controls are suppressed and the
+opener screen's focus restores on close.
 
 - The keyboard's letter / digit / space keys fire `appendText(getGameState().ui.textEntry, …)`
   named reactions; its backspace key fires `backspaceText(getGameState().ui.textEntry)` and
@@ -977,6 +983,81 @@ to reach the shared commit seam.
 
 > **Keyboard asset is layout-only.** `content/base/ui/keyboard.json` ships the key grid but no reactions — it is inert until a mod declares the matching named `appendText` / `backspaceText` reactions each key's `onPress` references (see `content/dev/scripts/arena-lights.ts` for the registration loop).
 
+### Pause menu
+
+Register a mod pause menu by returning a pushed-only tree named `pauseMenu` from
+`setupMod().uiTrees`. The engine keeps a minimal fallback with the same name, so
+Escape / gamepad Start still opens and closes a menu when a mod omits it. A mod
+tree shadows that fallback; removing the mod tree reveals the fallback on the next
+open.
+
+```typescript
+import {
+  Button,
+  CLOSE_DIALOG_ACTION,
+  Text,
+  Tree,
+  VStack,
+} from "postretro";
+
+export const PAUSE_MENU_TREE = "pauseMenu";
+
+export function buildPauseMenu() {
+  return Tree(
+    {
+      anchor: "center",
+      offset: [0, 0],
+      captureMode: "capture",
+      initialFocus: "pauseResume",
+      accessibleName: "Pause menu",
+      role: "group",
+    },
+    VStack(
+      {
+        gap: "m",
+        padding: "l",
+        align: "stretch",
+        focus: { policy: "linear", wrap: true },
+        fill: "panel.default",
+      },
+      [
+        Text({ content: "PAUSED", font: "mono", color: "ok" }),
+        Button({
+          id: "pauseResume",
+          label: "RESUME",
+          onPress: CLOSE_DIALOG_ACTION,
+        }),
+      ],
+    ),
+  );
+}
+
+export function setupMod() {
+  return {
+    name: "MyMod",
+    uiTrees: [
+      { name: PAUSE_MENU_TREE, tree: buildPauseMenu(), alwaysOn: false },
+    ],
+  };
+}
+```
+
+`CLOSE_DIALOG_ACTION` is the reserved `"ui.closeDialog"` button action. Pointer
+click, keyboard confirm, and gamepad confirm all activate the focused/targeted
+button and close the active modal through the same engine path.
+
+Pause-menu input policy is fixed: Escape from gameplay or gamepad Start opens
+`pauseMenu` only when no other modal is active; the same inputs close it when it
+is active. Escape or gamepad B inside the menu cancel it. Those inputs are ignored
+for pause-menu toggling while another modal is active.
+
+The pause menu captures input, releases the cursor, and suppresses player
+controls. It is not a true simulation pause: world simulation, particles, audio,
+and UI animation continue. Hot reload replaces the mod UI-tree tier only after a
+successful current staged result. Failed or stale results preserve the current
+tree/theme, and an already-open pause menu keeps its cloned descriptor until it
+closes.
+
 ### The readonly `input.mode` slot
 
 `input.mode` is a readonly, engine-owned enum slot (`"pointer"` | `"focus"`)
@@ -1021,8 +1102,8 @@ const hud = Tree(
   `Button` / `Slider` (see *Operable UI* above) — `(props)`.
 - **Envelope:** `Tree({ anchor, offset, captureMode?, initialFocus?, textEntryTarget? }, root)`
   places the whole tree once on the 1280×720 logical canvas. `captureMode`
-  defaults to `"passthrough"` (a HUD never captures input); `"capture"` freezes
-  gameplay and lower trees (a menu/dialog).
+  defaults to `"passthrough"` (a HUD never captures input); `"capture"` routes
+  UI input to the tree, suppresses player controls, and freezes lower UI trees.
 
 Color and spacing props accept either a **theme token** (a bare string like
 `"ok"` or `"m"`) or an inline literal (`[r, g, b, a]` / a number).
@@ -1100,7 +1181,8 @@ export function setupMod() {
   it). `alwaysOn: true` composes the tree as a base layer every frame (the HUD
   case); the default (`false`) means the tree only shows when pushed onto the
   modal stack. A mod tree registered under an engine built-in's name **shadows**
-  it (the reskin path — last-wins, with a one-line warning in the log).
+  it. Omitting the mod tree later reveals the engine fallback with the same name.
+  Already-pushed modals keep their cloned descriptor until closed.
 - **`theme`** — per-token overrides merged over the engine default: only the
   tokens you name change; everything else keeps its default. Unknown tokens
   referenced by a widget degrade visibly (unknown color → magenta, unknown font →

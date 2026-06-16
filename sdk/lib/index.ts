@@ -126,6 +126,7 @@ export {
   showDialog,
   openTextEntry,
   KEYBOARD_TREE,
+  CLOSE_DIALOG_ACTION,
   openMenu,
   closeDialog,
   updateState,

@@ -832,6 +832,10 @@ declare function showDialog(tree: string, onCommit: string?): PrimitiveReactionD
 --- `content/base/ui/keyboard.json` at boot. Edits the `ui.textEntry` slot.
 declare KEYBOARD_TREE: "keyboard"
 
+--- Reserved button `onPress` action that closes the active modal. The App
+--- intercepts this exact wire value before named-reaction dispatch.
+declare CLOSE_DIALOG_ACTION: "ui.closeDialog"
+
 --- System-reaction body (M13 Text Entry): open the engine-shipped on-screen
 --- keyboard, a capturing modal that edits the `ui.textEntry` slot. Optional
 --- `onCommit` (omitted when nil) names a reaction fired on commit (the on-screen

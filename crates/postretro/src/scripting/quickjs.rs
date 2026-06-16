@@ -513,6 +513,8 @@ mod tests {
                     .unwrap_or_else(|e| panic!("{fn_name}: {e}"));
                 assert_eq!(kind, "function", "{fn_name}");
             }
+            let close_action: String = ctx.eval("CLOSE_DIALOG_ACTION").unwrap();
+            assert_eq!(close_action, "ui.closeDialog");
             for absent in [
                 "flicker",
                 "pulse",

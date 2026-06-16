@@ -191,6 +191,10 @@ end
 --- at boot. The keyboard edits the `ui.textEntry` writable String slot.
 UiReactionsSdk.KEYBOARD_TREE = "keyboard"
 
+--- Reserved button `onPress` action that closes the active modal. The App
+--- intercepts this exact wire value before named-reaction dispatch.
+UiReactionsSdk.CLOSE_DIALOG_ACTION = "ui.closeDialog"
+
 --- Open the engine-shipped on-screen keyboard for text entry (M13 Text Entry).
 --- Pure: returns a primitive reaction body wrapping `showDialog`. The keyboard is
 --- a capturing modal that edits the `ui.textEntry` slot; bind a `text` widget to

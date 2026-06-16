@@ -109,6 +109,8 @@ Only `Gameplay` captures the cursor (`captures_cursor()` returns true for `Gamep
 
 **Event gating.** Mouse delta (`device_event`) is only processed when focus is `Gameplay`. Keyboard and mouse-button events honor egui's `consumed` flag when focus is `DevTools` or `Menu`; in `Gameplay` the flag is ignored. `ToggleDebugPanel` punches through the `consumed` gate regardless of focus — it is the chord that opens and closes the panel.
 
+**Pause-menu routing.** Escape from gameplay and gamepad Start emit `nav.menu`. `nav.menu` opens the registered `pauseMenu` only when the modal stack is empty, closes it when it is active, and is ignored while another modal is active. Escape or gamepad B inside a capturing UI tree emit `nav.cancel`; cancel closes only an active `pauseMenu`. Capture puts focus in `Menu`, releases the cursor, and gates player controls without stopping simulation.
+
 **Adding a new focus mode.** Add the variant to `input/focus.rs`, update the `captures_cursor` match and its exhaustive-match test, wire `set_input_focus` and `reapply_focus` in `main.rs`.
 
 ---

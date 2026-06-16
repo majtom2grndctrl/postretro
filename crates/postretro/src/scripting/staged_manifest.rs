@@ -67,7 +67,7 @@ pub(crate) struct StagedManifest {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum StagedManifestBuildStatus {
-    Built(StagedManifest),
+    Built(Box<StagedManifest>),
     NoStartScript,
     Failed,
 }
@@ -202,7 +202,7 @@ pub(crate) fn build_staged_manifest(
         Ok(Some(manifest)) => StagedManifestBuildResult {
             generation,
             mod_root: mod_root.to_path_buf(),
-            status: StagedManifestBuildStatus::Built(manifest),
+            status: StagedManifestBuildStatus::Built(Box::new(manifest)),
             diagnostics,
         },
         Ok(None) => StagedManifestBuildResult {

@@ -4477,7 +4477,7 @@ mod tests {
         StagedManifestBuildResult {
             generation,
             mod_root: PathBuf::from("content/dev"),
-            status: StagedManifestBuildStatus::Built(
+            status: StagedManifestBuildStatus::Built(Box::new(
                 crate::scripting::staged_manifest::StagedManifest {
                     name: "UiCommit".to_string(),
                     entities: Vec::new(),
@@ -4489,7 +4489,7 @@ mod tests {
                     store_declarations: Default::default(),
                     dependency_paths: Vec::new(),
                 },
-            ),
+            )),
             diagnostics: Vec::new(),
         }
     }

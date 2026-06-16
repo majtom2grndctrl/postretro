@@ -111,12 +111,10 @@ impl UiTreeRegistry {
     ) {
         let name = name.into();
         let entry = self.trees.entry(name.clone()).or_default();
-        if tier == ScopeTier::Mod {
-            if entry.mod_scope.is_none() && entry.engine.is_some() {
-                log::warn!(
-                    "[UI] mod tree '{name}' shadows the engine built-in of the same name (reskin path)"
-                );
-            }
+        if tier == ScopeTier::Mod && entry.mod_scope.is_none() && entry.engine.is_some() {
+            log::warn!(
+                "[UI] mod tree '{name}' shadows the engine built-in of the same name (reskin path)"
+            );
         }
         entry.set(
             tier,

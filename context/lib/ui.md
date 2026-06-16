@@ -20,9 +20,68 @@ Scripts author UI as the same descriptor trees, built by SDK factory functions (
 
 **Modder components are plain functions.** A reusable component is a function returning a descriptor subtree — no component registry, decorator, or inheritance. It takes the same props-first(-then-children) shape as a factory and nests inside SDK containers; the bridge sees no difference between a factory call and a component call. A component that uses presentation cells (via `ui.createLocalState`) declares its scope on the container it returns, since cell scope resolves to the nearest declaring ancestor — so each component instance owns an independent scope.
 
-**Registration lifecycle.** `setupMod` / `setupLevel` returns carry UI registrations (named trees, theme tokens, font assets) alongside their other fields. The engine drains them into the registry, the live theme, and the font system **before** the short-lived authoring VM context drops — no new lifecycle stage, the same return→VM-drop boundary entity types use. A registered tree marked always-on composes as a per-frame base layer (the HUD case); otherwise it shows only when pushed. Tree precedence is **engine < mod** (per-level tier deferred until runtime level unload exists): a mod registration under an engine built-in's name shadows it. The registry retains tiers rather than overwriting lower-tier entries, so removing a mod tree reveals the engine fallback. Malformed registrations are contained: a single malformed tree is logged and skipped; a structurally broken theme/font field surfaces a named load-time diagnostic the caller logs before continuing — a bad UI registration never aborts boot or level load.
+**Registration lifecycle.** `setupMod` / `setupLevel` returns carry UI registrations (named trees, theme tokens, font assets) alongside their other fields. The engine drains them into the registry, the live theme, and the font system **before** the short-lived authoring VM context drops — no new lifecycle stage, the same return→VM-drop boundary entity types use. A registered tree marked always-on composes as a per-frame base layer (the HUD case); otherwise it shows only when pushed. Tree precedence is **engine < mod** (per-level tier deferred until runtime level unload exists): a mod registration under an engine built-in's name shadows it. The engine `hud` is a minimal fallback. A mod `hud` shadows that fallback, and `hud.reticle` is a separate always-on mod tree for the centered reticle. The registry retains tiers rather than overwriting lower-tier entries, so removing a mod tree reveals the engine fallback with the same name. Malformed registrations are contained: a single malformed tree is logged and skipped; a structurally broken theme/font field surfaces a named load-time diagnostic the caller logs before continuing — a bad UI registration never aborts boot or level load.
 
-**Staged replacement.** Staged mod init commits UI trees and theme with the same successful-generation boundary as returned stores. A successful current staged result replaces the complete mod tree tier and the complete mod theme override. Omitted mod trees are removed from the mod tier, revealing engine fallbacks. Omitted theme tokens revert to engine defaults. Failed or stale staged results preserve the current registry and theme. Always-on layers resolve the updated registry on the next frame. Already-pushed modal instances keep their cloned descriptor until closed and pushed again.
+**Staged replacement.** Staged mod init commits UI trees and theme with the same successful-generation boundary as returned stores. A successful current staged result replaces returned stores, the complete mod tree tier, and the complete mod theme override together. Omitted mod trees are removed from the mod tier, revealing engine fallbacks with the same name. Omitted theme tokens revert to engine defaults. Failed or stale staged results preserve the current stores, registry, and theme. Always-on layers resolve the updated registry on the next frame. Already-pushed modal instances keep their cloned descriptor until closed. Reopened modals resolve the updated registry entry.
+
+### 1.2 Production HUD Pattern
+
+The production HUD is authored through the SDK, returned from `setupMod()`, and retained by Rust after mod init drops. HUD authors import from `"postretro"` and obtain engine-state refs inside the HUD builder:
+
+```ts
+import { Bar, Text, Tree, VStack, bindState, getGameState } from "postretro";
+
+export function buildHud() {
+  const { player } = getGameState();
+
+  const status = Text({
+    content: "HP --",
+    bind: bindState(player.health, { format: "HP {}" }),
+  });
+
+  const bar = Bar({
+    bind: bindState(player.health, {
+      tween: { durationMs: 180, easing: "easeOut" },
+    }),
+    max: player.maxHealth,
+    fill: "ok",
+    background: "hud.health.background",
+    styleRanges: {
+      max: 1.0,
+      entries: [
+        { upTo: 0.25, color: "critical" },
+        { upTo: 0.5, color: "warning" },
+        { color: "ok" },
+      ],
+    },
+  });
+
+  return {
+    uiTrees: [
+      {
+        name: "hud",
+        tree: Tree(
+          { anchor: "bottomLeft", offset: [24, -24] },
+          VStack({}, [status, bar]),
+        ),
+        alwaysOn: true,
+      },
+      {
+        name: "hud.reticle",
+        tree: Tree(
+          { anchor: "center", offset: [0, 0] },
+          Text({ content: "+", font: "mono" }),
+        ),
+        alwaysOn: true,
+      },
+    ],
+  };
+}
+```
+
+`bindState(player.health, options)` decorates the readonly ref for display. It does not read HP during authoring. The bar uses `player.maxHealth` as a direct readonly max reference. There is no `player.healthFraction` slot; UI derives the displayed fill from `player.health / player.maxHealth`.
+
+Tree anchors and offsets are literal placement data. Theme tokens drive styling only: colors, fonts, spacing. Do not route placement through theme tokens.
 
 ## 2. Theme Tokens
 
@@ -31,11 +90,11 @@ Theme is three category-scoped maps — colors (linear RGBA), fonts (registered 
 - **Semantic required set — the engine contract.** Colors `critical` / `warning` / `ok` / `panel.default` (a literal flat key, dot and all), fonts `body` / `mono`, spacing `xs` / `s` / `m` / `l`. Built-in screens and `styleRanges` resolve these names; a mod rethemes built-ins by overriding them.
 - **Open key space — the primitive tier.** Maps accept arbitrary additional keys and widgets may reference them; a mod-defined primitive palette (`cyan.500`) is supported, not just tolerated.
 - **Literal escape hatch.** Every token-capable field is an untagged union: a token name or an inline literal value. One-off treatments need no theme entry.
-- **Override merge** is per-token: an override replaces only the names it ships; everything else resolves from the engine default.
+- **Override merge** is per-token after the complete mod theme override is chosen: the current override replaces only the names it ships; everything else resolves from the engine default.
 - **Unknown tokens degrade visibly, never panic:** unknown color → opaque magenta, unknown font → `body`, unknown spacing → zero, each with a warning per tree build.
 - **Token aliasing** (semantic → primitive references) is deferred; it widens theme entries additively when a consumer justifies it.
 
-Theme registration arrives through returned manifest data. Custom font asset replacement/removal is not hot-reloadable until the font system has an explicit replacement contract; changing custom font declarations requires restart.
+Theme registration arrives through returned manifest data. Custom font asset replacement/removal is not hot-reloadable until the font system has an explicit replacement contract. Staged reload may replace the theme token override, but changing custom font declarations, replacing custom font assets, or removing them requires an engine restart.
 
 ## 3. Display vs. Authoritative Values
 
@@ -44,7 +103,7 @@ Widgets bind authoritative store slots by state reference at the SDK layer and b
 - The authoritative slot is always the target; the widget renders the display value, never the slot directly.
 - Display state is presentation-only and renderer-local — no store write ever originates in the UI module.
 - Retargeting is continuous: a target change mid-flight eases from the current display value, never snaps.
-- Bar widgets may resolve `max` from either a literal number or a readonly numeric state reference. The bar fill and style range thresholds normalize the displayed value against that resolved max.
+- Bar widgets may resolve `max` from either a literal number or a readonly numeric state reference. The bar fill normalizes the displayed value against that resolved max. `styleRanges` on a bar evaluate the normalized displayed fill; health bars use thresholds in `[0, 1]` and `styleRanges.max = 1.0`.
 - UI time is dt-accumulated game time, never wall clock — pausing game logic pauses presentation.
 - Structural tree rebuilds discard display state (in-flight values snap to target); rebuilds are rare, authored events.
 - `styleRanges` (continuous value→style) evaluate the value the widget renders — the display value mid-tween; state crossings (`onStateCrossing`) watch the **authoritative** slot, engine-side, after game-logic writes. The two may diverge mid-tween by design.

@@ -1871,14 +1871,14 @@ mod tests {
         StagedManifestBuildResult {
             generation,
             mod_root: mod_root.to_path_buf(),
-            status: StagedManifestBuildStatus::Built(StagedManifest {
+            status: StagedManifestBuildStatus::Built(Box::new(StagedManifest {
                 name: name.to_string(),
                 entities,
                 ui_trees: Vec::new(),
                 theme: ModThemeTokens::default(),
                 store_declarations: StoreDeclarationSet::default(),
                 dependency_paths,
-            }),
+            })),
             diagnostics: Vec::new(),
         }
     }

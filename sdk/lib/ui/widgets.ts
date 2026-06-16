@@ -240,9 +240,6 @@ function requireFiniteNumber(value: unknown, field: string, factory: string): vo
 
 function requireColor(value: unknown, field: string, factory: string): void {
   if (typeof value === "string") {
-    if (value.length === 0) {
-      throw new Error(`${factory}: \`${field}\` color token must be a nonempty string`);
-    }
     return;
   }
   if (!Array.isArray(value) || value.length !== 4) {
@@ -260,9 +257,6 @@ function requireColor(value: unknown, field: string, factory: string): void {
 
 function requireSpacing(value: unknown, field: string, factory: string): void {
   if (typeof value === "string") {
-    if (value.length === 0) {
-      throw new Error(`${factory}: \`${field}\` spacing token must be a nonempty string`);
-    }
     return;
   }
   requireFiniteNumber(value, field, factory);
@@ -535,7 +529,7 @@ export function Text(props: TextProps): WidgetDescriptor {
   const out: WidgetDescriptor = { kind: "text", content: props.content, fontSize, color };
   applyFocusFields(out, props, "Text");
   if (props.font !== undefined) {
-    requireNonemptyString(props.font, "font", "Text");
+    requireString(props.font, "font", "Text");
     out.font = props.font;
   }
   const bind = buildBind(props.bind, "Text", "text");

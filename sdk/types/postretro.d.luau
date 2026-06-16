@@ -929,7 +929,7 @@ export type ThemeDefinition = {
   spacing: { [string]: number }?,
 }
 --- Token accessors added by `defineTheme`. Each function returns the token
---- string after checking it exists in the matching theme category.
+--- string and warns when it was not present in the matching theme category.
 export type ThemeTokenAccessors = {
   color: (string) -> string,
   font: (string) -> string,
@@ -941,7 +941,7 @@ export type ThemeTokenAccessors = {
 export type DefinedTheme = ThemeDefinition & { tokens: ThemeTokenAccessors }
 --- Define a custom theme while preserving the runtime theme shape. Use
 --- `theme.tokens.color("hud.text")` / `.font(...)` / `.spacing(...)` at widget
---- call sites for setup-time unknown-token checks.
+--- call sites for warn-and-degrade unknown-token feedback.
 declare function defineTheme(theme: ThemeDefinition): DefinedTheme
 
 -- ---------------------------------------------------------------------------

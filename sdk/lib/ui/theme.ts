@@ -37,12 +37,25 @@ function buildTokenAccessor(
   tokens: Readonly<Record<string, unknown>> | undefined,
   category: "color" | "font" | "spacing",
 ): (token: string) => string {
-  return (token: string) => {
-    if (tokens === undefined || !Object.prototype.hasOwnProperty.call(tokens, token)) {
-      throw new Error(`defineTheme: unknown ${category} token \`${token}\``);
+  const names = new Set(tokens === undefined ? [] : Object.keys(tokens));
+  return (token: unknown) => {
+    const name = typeof token === "string" ? token : String(token);
+    if (typeof token !== "string" || name.length === 0 || !names.has(name)) {
+      warnInvalidToken(category, name);
     }
-    return token;
+    return name;
   };
+}
+
+function warnInvalidToken(category: "color" | "font" | "spacing", token: string): void {
+  const message =
+    token.length === 0
+      ? `defineTheme: empty ${category} token will degrade at UI resolution`
+      : `defineTheme: unknown ${category} token \`${token}\` will degrade at UI resolution`;
+  const maybeConsole = (globalThis as { console?: { warn?: (message: string) => void } }).console;
+  if (typeof maybeConsole?.warn === "function") {
+    maybeConsole.warn(message);
+  }
 }
 
 export function defineTheme<const T extends ThemeDefinition>(theme: T): DefinedTheme<T> {

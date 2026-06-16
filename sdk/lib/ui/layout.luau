@@ -52,9 +52,6 @@ end
 
 local function validateSpacing(value: any, field: string, factory: string): WidgetSpacing
   if type(value) == "string" then
-    if #value == 0 then
-      error(`{factory}: \`{field}\` spacing token must be a nonempty string`)
-    end
     return value
   end
   requireFiniteNumber(value, field, factory)
@@ -70,9 +67,6 @@ end
 
 local function validateColor(value: any, field: string, factory: string): WidgetColor
   if type(value) == "string" then
-    if #value == 0 then
-      error(`{factory}: \`{field}\` color token must be a nonempty string`)
-    end
     return value
   end
   if type(value) ~= "table" or #value ~= 4 then

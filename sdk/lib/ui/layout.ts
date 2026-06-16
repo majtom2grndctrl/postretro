@@ -80,9 +80,6 @@ function requireNonemptyString(value: unknown, field: string, factory: string): 
 
 function validateSpacing(value: unknown, field: string, factory: string): WidgetSpacing {
   if (typeof value === "string") {
-    if (value.length === 0) {
-      throw new Error(`${factory}: \`${field}\` spacing token must be a nonempty string`);
-    }
     return value;
   }
   requireFiniteNumber(value, field, factory);
@@ -99,9 +96,6 @@ function validateAlign(value: unknown, factory: string): WidgetAlign {
 
 function validateColor(value: unknown, field: string, factory: string): WidgetColor {
   if (typeof value === "string") {
-    if (value.length === 0) {
-      throw new Error(`${factory}: \`${field}\` color token must be a nonempty string`);
-    }
     return value;
   }
   if (!Array.isArray(value) || value.length !== 4) {

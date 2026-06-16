@@ -544,11 +544,30 @@ mod tests {
                       fonts: { "hud.status": "JetBrains Mono" },
                       spacing: { "hud.gap": 8 },
                     });
+                    theme.colors["late.color"] = [0, 1, 0, 1];
+                    delete theme.colors["hud.text"];
+                    const text = Text({
+                      content: "empty token",
+                      color: theme.tokens.color(""),
+                      font: theme.tokens.font(""),
+                    });
+                    const stack = VStack({
+                      gap: theme.tokens.spacing(""),
+                      padding: theme.tokens.spacing(""),
+                    }, [text]);
                     JSON.stringify({
                       color: theme.tokens.color("hud.text"),
                       font: theme.tokens.font("hud.status"),
                       spacing: theme.tokens.spacing("hud.gap"),
+                      unknown: theme.tokens.color("late.color"),
+                      empty: theme.tokens.spacing(""),
+                      invalid: theme.tokens.font(42),
+                      textColor: text.color,
+                      textFont: text.font,
+                      stackGap: stack.gap,
+                      stackPadding: stack.padding,
                       keys: Object.keys(theme),
+                      assigned: Object.keys(Object.assign({}, theme)),
                       json: JSON.stringify(theme),
                     })
                     "#,
@@ -558,8 +577,19 @@ mod tests {
             assert_eq!(got["color"], "hud.text");
             assert_eq!(got["font"], "hud.status");
             assert_eq!(got["spacing"], "hud.gap");
+            assert_eq!(got["unknown"], "late.color");
+            assert_eq!(got["empty"], "");
+            assert_eq!(got["invalid"], "42");
+            assert_eq!(got["textColor"], "");
+            assert_eq!(got["textFont"], "");
+            assert_eq!(got["stackGap"], "");
+            assert_eq!(got["stackPadding"], "");
             assert_eq!(
                 got["keys"],
+                serde_json::json!(["colors", "fonts", "spacing"])
+            );
+            assert_eq!(
+                got["assigned"],
                 serde_json::json!(["colors", "fonts", "spacing"])
             );
             assert!(

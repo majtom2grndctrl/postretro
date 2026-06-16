@@ -868,7 +868,7 @@ declare module "postretro" {
   /** String-literal keys available in one concrete theme category. */
   export type ThemeTokenKeys<T extends ThemeDefinition, K extends keyof ThemeDefinition> =
     [ThemeTokenMap<T, K>] extends [never] ? never : Extract<keyof ThemeTokenMap<T, K>, string>;
-  /** Typed token accessors added by `defineTheme`. Each function returns the token string after checking it exists in the matching theme category, giving editor autocomplete without changing descriptor wire data. */
+  /** Typed token accessors added by `defineTheme`. Each function returns the token string and warns when it was not present in the matching theme category, giving editor autocomplete without changing descriptor wire data or aborting mod init. */
   export type ThemeTokenAccessors<T extends ThemeDefinition> = {
     color<K extends ThemeTokenKeys<T, "colors">>(token: K): K;
     font<K extends ThemeTokenKeys<T, "fonts">>(token: K): K;
@@ -878,7 +878,7 @@ declare module "postretro" {
   export type DefinedTheme<T extends ThemeDefinition> = T & {
     readonly tokens: ThemeTokenAccessors<T>;
   };
-  /** Define a custom theme while preserving the runtime theme shape. Use `hudTheme.tokens.color("hud.text")` / `.font(...)` / `.spacing(...)` at widget call sites for autocomplete and setup-time unknown-token checks. */
+  /** Define a custom theme while preserving the runtime theme shape. Use `hudTheme.tokens.color("hud.text")` / `.font(...)` / `.spacing(...)` at widget call sites for autocomplete and warn-and-degrade unknown-token feedback. */
   export function defineTheme<const T extends ThemeDefinition>(theme: T): DefinedTheme<T>;
 
   // -------------------------------------------------------------------------

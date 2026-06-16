@@ -1837,8 +1837,10 @@ mod tests {
     }
 
     #[test]
-    fn luau_define_theme_returns_token_strings() {
+    fn luau_define_theme_returns_token_strings_without_retaining_helper_metadata() {
         const THEME_SRC: &str = include_str!("../../../../sdk/lib/ui/theme.luau");
+        const WIDGETS_SRC: &str = include_str!("../../../../sdk/lib/ui/widgets.luau");
+        const LAYOUT_SRC: &str = include_str!("../../../../sdk/lib/ui/layout.luau");
 
         let lua = mlua::Lua::new();
         let theme_sdk: mlua::Table = lua
@@ -1847,8 +1849,48 @@ mod tests {
             .eval()
             .expect("theme.luau must evaluate to a module table");
         lua.globals().set("T", theme_sdk).unwrap();
+        let widgets_sdk: mlua::Table = lua
+            .load(WIDGETS_SRC)
+            .set_name("widgets.luau")
+            .eval()
+            .expect("widgets.luau must evaluate to a module table");
+        lua.globals().set("W", widgets_sdk).unwrap();
+        let layout_sdk: mlua::Table = lua
+            .load(LAYOUT_SRC)
+            .set_name("layout.luau")
+            .eval()
+            .expect("layout.luau must evaluate to a module table");
+        lua.globals().set("L", layout_sdk).unwrap();
 
-        let (color, font, spacing): (String, String, String) = lua
+        let (
+            color,
+            font,
+            spacing,
+            unknown,
+            empty,
+            invalid,
+            text_color,
+            text_font,
+            stack_gap,
+            stack_padding,
+            has_raw_tokens,
+            pair_count,
+            theme,
+        ): (
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            bool,
+            i64,
+            mlua::Value,
+        ) = lua
             .load(
                 r#"
                 local theme = T.defineTheme({
@@ -1856,10 +1898,35 @@ mod tests {
                   fonts = { ["hud.status"] = "JetBrains Mono" },
                   spacing = { ["hud.gap"] = 8 },
                 })
+                theme.colors["late.color"] = {0, 1, 0, 1}
+                theme.colors["hud.text"] = nil
+                local pairCount = 0
+                for _ in pairs(theme) do
+                  pairCount += 1
+                end
+                local text = W.Text({
+                  content = "empty token",
+                  color = theme.tokens.color(""),
+                  font = theme.tokens.font(""),
+                })
+                local stack = L.VStack({
+                  gap = theme.tokens.spacing(""),
+                  padding = theme.tokens.spacing(""),
+                }, { text })
                 return
                   theme.tokens.color("hud.text"),
                   theme.tokens.font("hud.status"),
-                  theme.tokens.spacing("hud.gap")
+                  theme.tokens.spacing("hud.gap"),
+                  theme.tokens.color("late.color"),
+                  theme.tokens.spacing(""),
+                  theme.tokens.font(42),
+                  text.color,
+                  text.font,
+                  stack.gap,
+                  stack.padding,
+                  rawget(theme, "tokens") ~= nil,
+                  pairCount,
+                  theme
                 "#,
             )
             .set_name("define_theme_case")
@@ -1869,6 +1936,32 @@ mod tests {
         assert_eq!(color, "hud.text");
         assert_eq!(font, "hud.status");
         assert_eq!(spacing, "hud.gap");
+        assert_eq!(unknown, "late.color");
+        assert_eq!(empty, "");
+        assert_eq!(invalid, "42");
+        assert_eq!(text_color, "");
+        assert_eq!(text_font, "");
+        assert_eq!(stack_gap, "");
+        assert_eq!(stack_padding, "");
+        assert!(
+            !has_raw_tokens,
+            "tokens helper must not be a retained table field"
+        );
+        assert_eq!(
+            pair_count, 3,
+            "pairs(theme) must see only theme category maps"
+        );
+        let json = super::super::conv::lua_to_json(theme).expect("theme converts to JSON");
+        assert_eq!(
+            json.get("tokens"),
+            None,
+            "defineTheme helper metadata must not enter generic theme data"
+        );
+        let object = json.as_object().expect("theme serializes as object");
+        assert_eq!(object.len(), 3);
+        for key in ["colors", "fonts", "spacing"] {
+            assert!(object.contains_key(key), "theme JSON missing {key}");
+        }
     }
 
     // --- M13 G1a, Task 3: TS/Luau widget-factory JSON parity ---

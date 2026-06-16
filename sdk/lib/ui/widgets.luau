@@ -58,9 +58,6 @@ end
 
 local function requireColor(value: any, field: string, factory: string)
   if type(value) == "string" then
-    if #value == 0 then
-      error(`{factory}: \`{field}\` color token must be a nonempty string`)
-    end
     return
   end
   if type(value) ~= "table" or #value ~= 4 then
@@ -73,9 +70,6 @@ end
 
 local function requireSpacing(value: any, field: string, factory: string)
   if type(value) == "string" then
-    if #value == 0 then
-      error(`{factory}: \`{field}\` spacing token must be a nonempty string`)
-    end
     return
   end
   requireFiniteNumber(value, field, factory)
@@ -358,7 +352,7 @@ function UiWidgetsSdk.Text(props: any): WidgetDescriptor
   local out: { [string]: any } = { kind = "text", content = props.content, fontSize = fontSize, color = color }
   applyFocusFields(out, props, "Text")
   if props.font ~= nil then
-    requireNonemptyString(props.font, "font", "Text")
+    requireString(props.font, "font", "Text")
     out.font = props.font
   end
   local bind = buildBind(props.bind, "Text", "text")

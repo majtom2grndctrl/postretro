@@ -1005,7 +1005,7 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   /** String-literal keys available in one concrete theme category. */
   export type ThemeTokenKeys<T extends ThemeDefinition, K extends keyof ThemeDefinition> =
     [ThemeTokenMap<T, K>] extends [never] ? never : Extract<keyof ThemeTokenMap<T, K>, string>;
-  /** Typed token accessors added by `defineTheme`. Each function returns the token string after checking it exists in the matching theme category, giving editor autocomplete without changing descriptor wire data. */
+  /** Typed token accessors added by `defineTheme`. Each function returns the token string and warns when it was not present in the matching theme category, giving editor autocomplete without changing descriptor wire data or aborting mod init. */
   export type ThemeTokenAccessors<T extends ThemeDefinition> = {
     color<K extends ThemeTokenKeys<T, "colors">>(token: K): K;
     font<K extends ThemeTokenKeys<T, "fonts">>(token: K): K;
@@ -1015,7 +1015,7 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   export type DefinedTheme<T extends ThemeDefinition> = T & {
     readonly tokens: ThemeTokenAccessors<T>;
   };
-  /** Define a custom theme while preserving the runtime theme shape. Use `hudTheme.tokens.color("hud.text")` / `.font(...)` / `.spacing(...)` at widget call sites for autocomplete and setup-time unknown-token checks. */
+  /** Define a custom theme while preserving the runtime theme shape. Use `hudTheme.tokens.color("hud.text")` / `.font(...)` / `.spacing(...)` at widget call sites for autocomplete and warn-and-degrade unknown-token feedback. */
   export function defineTheme<const T extends ThemeDefinition>(theme: T): DefinedTheme<T>;
 
   // -------------------------------------------------------------------------
@@ -1922,7 +1922,7 @@ export type ThemeDefinition = {
   spacing: { [string]: number }?,
 }
 --- Token accessors added by `defineTheme`. Each function returns the token
---- string after checking it exists in the matching theme category.
+--- string and warns when it was not present in the matching theme category.
 export type ThemeTokenAccessors = {
   color: (string) -> string,
   font: (string) -> string,
@@ -1934,7 +1934,7 @@ export type ThemeTokenAccessors = {
 export type DefinedTheme = ThemeDefinition & { tokens: ThemeTokenAccessors }
 --- Define a custom theme while preserving the runtime theme shape. Use
 --- `theme.tokens.color("hud.text")` / `.font(...)` / `.spacing(...)` at widget
---- call sites for setup-time unknown-token checks.
+--- call sites for warn-and-degrade unknown-token feedback.
 declare function defineTheme(theme: ThemeDefinition): DefinedTheme
 
 -- ---------------------------------------------------------------------------
@@ -2353,6 +2353,7 @@ declare module "postretro" {
 
   export type Transform = { position: Vec3; rotation: EulerDegrees; scale: Vec3 };
 
+  /** Valid values: `transform`, `light`, `billboard_emitter`, `particle_state`, `sprite_visual`, `fog_volume`. */
   export type ComponentKind = "transform" | "light" | "billboard_emitter" | "particle_state" | "sprite_visual" | "fog_volume";
 
   export type ComponentValue = ({ kind: "transform" } & Transform) | ({ kind: "light" } & LightComponent) | ({ kind: "billboard_emitter" } & BillboardEmitterComponent) | ({ kind: "particle_state" } & ParticleState) | ({ kind: "sprite_visual" } & SpriteVisual) | ({ kind: "fog_volume" } & FogVolumeComponent);
@@ -2369,7 +2370,7 @@ declare module "postretro" {
     is_dynamic: boolean;
   };
 
-  /** How a fade *into* an animation state takes over when another fade is already in flight. Absent in a descriptor defaults to `"smooth"`. */
+  /** How a fade *into* an animation state takes over when another fade is already in flight. Absent in a descriptor defaults to `"smooth"`. Valid values: `smooth`, `snap`. */
   export type InterruptPolicy =
     /** Capture the in-flight blended pose once and blend the new fade from it — no discontinuity. */
     | "smooth"
@@ -2513,12 +2514,14 @@ declare module "postretro" {
     health?: HealthDescriptor | null;
   };
 
+  /** Valid values: `semi`, `auto`. */
   export type FireMode =
     /** One shot per press. */
     | "semi"
     /** Continuous fire while held. */
     | "auto";
 
+  /** Valid values: `hitscan`. */
   export type ResolutionMode =
     /** Resolve instantly against the static-world collision ray. */
     | "hitscan";
@@ -2771,6 +2774,7 @@ export type EulerDegrees = { pitch: number, yaw: number, roll: number }
 
 export type Transform = { position: Vec3, rotation: EulerDegrees, scale: Vec3 }
 
+--- Valid values: `transform`, `light`, `billboard_emitter`, `particle_state`, `sprite_visual`, `fog_volume`.
 export type ComponentKind = "transform" | "light" | "billboard_emitter" | "particle_state" | "sprite_visual" | "fog_volume"
 
 export type ComponentValue = (Transform & { kind: "transform" }) | (LightComponent & { kind: "light" }) | (BillboardEmitterComponent & { kind: "billboard_emitter" }) | (ParticleState & { kind: "particle_state" }) | (SpriteVisual & { kind: "sprite_visual" }) | (FogVolumeComponent & { kind: "fog_volume" })
@@ -2787,7 +2791,7 @@ export type LightDescriptor = {
   is_dynamic: boolean,
 }
 
---- How a fade *into* an animation state takes over when another fade is already in flight. Absent in a descriptor defaults to `"smooth"`.
+--- How a fade *into* an animation state takes over when another fade is already in flight. Absent in a descriptor defaults to `"smooth"`. Valid values: `smooth`, `snap`.
 export type InterruptPolicy =
   --- Capture the in-flight blended pose once and blend the new fade from it — no discontinuity.
   "smooth"
@@ -2931,12 +2935,14 @@ export type EntityTypeComponents = {
   health: HealthDescriptor?,
 }
 
+--- Valid values: `semi`, `auto`.
 export type FireMode =
   --- One shot per press.
   "semi"
   --- Continuous fire while held.
   | "auto"
 
+--- Valid values: `hitscan`.
 export type ResolutionMode =
   --- Resolve instantly against the static-world collision ray.
   "hitscan"

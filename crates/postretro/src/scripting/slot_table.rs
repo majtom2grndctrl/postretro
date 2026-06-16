@@ -429,7 +429,7 @@ mod tests {
     #[test]
     fn new_registers_engine_player_namespace() {
         let table = SlotTable::new();
-        for name in ["player.health", "player.maxHealth", "player.ammo"] {
+        for name in ["player.health", "player.maxHealth"] {
             let slot = table.get(name).expect("engine slot should exist");
             assert_eq!(slot.schema.slot_type, SlotType::Number);
             assert_eq!(slot.schema.ownership, SlotOwnership::Engine);
@@ -437,6 +437,23 @@ mod tests {
             assert_eq!(slot.schema.default, None);
             assert_eq!(slot.value, None);
         }
+        assert_eq!(
+            table.get("player.health").unwrap().schema.range,
+            None,
+            "current health range is attached dynamically when the pawn materializes",
+        );
+        assert_eq!(
+            table.get("player.maxHealth").unwrap().schema.range,
+            Some(NumericRange {
+                min: 1.0,
+                max: f32::INFINITY,
+            }),
+            "max health carries static finite-number validation",
+        );
+        assert!(
+            table.get("player.ammo").is_none(),
+            "fake ammo is not an engine-owned HUD state slot"
+        );
     }
 
     #[test]

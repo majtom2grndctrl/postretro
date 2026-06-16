@@ -3488,12 +3488,14 @@ export type Event = {
             "ts missing getGameState declaration:\n{ts}"
         );
         assert!(
-            ts.contains("readonly player: {\n      readonly ammo: ReadonlyStateRef<number>;\n      readonly health: ReadonlyStateRef<number>;")
+            ts.contains("readonly player: {\n      readonly health: ReadonlyStateRef<number>;\n      readonly maxHealth: ReadonlyStateRef<number>;")
                 && ts.contains("readonly textEntry: WritableStateRef<string>;"),
             "ts GameStateRefs missing catalog path/capability refs:\n{ts}"
         );
         assert!(
-            !ts.contains("postretro/game-state") && !ts.contains("ReadonlyStateValue"),
+            !ts.contains("postretro/game-state")
+                && !ts.contains("ReadonlyStateValue")
+                && !ts.contains("readonly ammo:"),
             "legacy game-state module/value handles must be gone"
         );
 
@@ -3504,6 +3506,8 @@ export type Event = {
         );
         assert!(
             luau.contains("health: ReadonlyStateRef<number>,")
+                && luau.contains("maxHealth: ReadonlyStateRef<number>,")
+                && !luau.contains("ammo: ReadonlyStateRef<number>,")
                 && luau.contains("textEntry: WritableStateRef<string>,"),
             "luau GameStateRefs missing catalog path/capability refs"
         );

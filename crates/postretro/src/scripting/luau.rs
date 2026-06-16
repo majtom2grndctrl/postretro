@@ -1275,14 +1275,16 @@ mod tests {
     #[test]
     fn get_game_state_returns_same_frozen_hidden_reference_tree() {
         let (subsys, _ctx) = setup();
-        let (slot, same_root, same_leaf, bridge_ty, root_mutates, leaf_mutates): (
-            String,
-            bool,
-            bool,
-            String,
-            bool,
-            bool,
-        ) = subsys
+        let (
+            health_slot,
+            max_health_slot,
+            has_ammo,
+            same_root,
+            same_leaf,
+            bridge_ty,
+            root_mutates,
+            leaf_mutates,
+        ): (String, String, bool, bool, bool, String, bool, bool) = subsys
             .run_source(
                 Which::Definition,
                 r#"
@@ -1296,6 +1298,8 @@ mod tests {
                 end)
                 return
                   first.player.health.slot,
+                  first.player.maxHealth.slot,
+                  first.player.ammo ~= nil,
                   first == second,
                   first.player.health == second.player.health,
                   type(__postretroGameStateRefs),
@@ -1306,7 +1310,9 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(slot, "player.health");
+        assert_eq!(health_slot, "player.health");
+        assert_eq!(max_health_slot, "player.maxHealth");
+        assert!(!has_ammo, "removed player.ammo path must not be exposed");
         assert!(same_root, "getGameState must return the captured singleton");
         assert!(same_leaf, "leaf identity must be stable across calls");
         assert_eq!(bridge_ty, "nil", "bridge global must be hidden");

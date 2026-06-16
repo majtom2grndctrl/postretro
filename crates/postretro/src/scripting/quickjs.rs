@@ -546,6 +546,10 @@ mod tests {
                         throw new Error("bridge global leaked");
                     if (first.player.health.slot !== "player.health")
                         throw new Error("bad player.health slot: " + first.player.health.slot);
+                    if (first.player.maxHealth.slot !== "player.maxHealth")
+                        throw new Error("bad player.maxHealth slot: " + first.player.maxHealth.slot);
+                    if ("ammo" in first.player)
+                        throw new Error("removed player.ammo path is still exposed");
                     if (!Object.isFrozen(first) || !Object.isFrozen(first.player) || !Object.isFrozen(first.player.health))
                         throw new Error("state tree must be deeply frozen");
                     try { first.player.health.slot = "mutated"; } catch (_) {}
@@ -554,11 +558,14 @@ mod tests {
                         throw new Error("leaf mutation changed slot");
                     if (first.player.health !== second.player.health)
                         throw new Error("leaf identity changed across calls");
-                    JSON.stringify(first.player.health)
+                    JSON.stringify({ health: first.player.health, maxHealth: first.player.maxHealth })
                     "#,
                 )
                 .unwrap();
-            assert_eq!(result, r#"{"slot":"player.health"}"#);
+            assert_eq!(
+                result,
+                r#"{"health":{"slot":"player.health"},"maxHealth":{"slot":"player.maxHealth"}}"#
+            );
         });
     }
 }

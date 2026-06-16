@@ -420,7 +420,9 @@ fn main() -> Result<()> {
         title_buffer: String::with_capacity(256),
         last_title_update: Instant::now(),
         script_runtime,
-        ui_proxy: scripting_systems::ui_proxy::StaticUiProxy::new(script_ctx.clone()),
+        player_hud_state: scripting_systems::ui_proxy::PlayerHudStatePublisher::new(
+            script_ctx.clone(),
+        ),
         flash_decay: scripting_systems::flash_decay::FlashDecay::new(script_ctx.clone()),
         vignette_decay: scripting_systems::vignette_decay::VignetteDecay::new(script_ctx.clone()),
         shake_decay: scripting_systems::shake_decay::ShakeDecay::new(script_ctx.clone()),
@@ -671,17 +673,14 @@ struct App {
     /// light state. See: context/lib/scripting.md
     script_ctx: ScriptCtx,
 
-    /// Publishes live pawn HP into the `player.health` slot each frame.
-    /// `player.ammo` is a stand-in value until its real producer lands.
-    /// `intro.flashColor` is NOT a stand-in — this proxy's flash timer produces it
-    /// (and `screen.flash` is produced by `flash_decay`). Flash timer resets on
-    /// each level load. See: context/lib/scripting.md §5 for the store contract.
-    ui_proxy: scripting_systems::ui_proxy::StaticUiProxy,
+    /// Publishes live pawn HP and max HP into the player HUD slots each frame.
+    /// See: context/lib/scripting.md §5 for the store contract.
+    player_hud_state: scripting_systems::ui_proxy::PlayerHudStatePublisher,
 
     /// App-side flash-decay state for the engine-owned `screen.flash` surface.
     /// A drained `FlashScreen` system-reaction command starts a flash; this
-    /// writes the decaying RGBA into `screen.flash` each game-logic tick (beside
-    /// `ui_proxy.tick`). Reset on level load. See: context/lib/ui.md §3.
+    /// writes the decaying RGBA into `screen.flash` each game-logic tick. Reset
+    /// on level load. See: context/lib/ui.md §3.
     flash_decay: scripting_systems::flash_decay::FlashDecay,
 
     /// App-side vignette-decay state for the engine-owned `screen.vignette`
@@ -794,7 +793,8 @@ struct App {
 
     /// State-crossing watchers (M13 HUD dynamics). Built from the data
     /// registry's `crossings` at level load; checked each frame after
-    /// `ui_proxy.tick` (slot writes settled) and before the UI snapshot build.
+    /// the HUD publisher / other slot writes settle and before the UI snapshot
+    /// build.
     /// Cleared on level unload with the rest of the per-level state.
     /// See: context/lib/scripting.md §10.4
     crossing_detector: CrossingDetector,
@@ -1812,15 +1812,13 @@ impl ApplicationHandler for App {
                     self.dispatch_system_commands();
                 }
 
-                // Static UI proxy: republish the HUD store slots from
-                // the engine side. Runs AFTER game logic settles the store and
-                // BEFORE the UI read-snapshot build below, so the snapshot
-                // freezes the proxy's values this same frame. Delta-driven from
-                // `frame_dt` (not wall-clock) so the flash animation is
-                // deterministic. See: context/lib/scripting.md §5.
-                self.ui_proxy.tick(frame_dt);
+                // Player HUD state: republish the engine-owned health slots
+                // after game logic settles and before crossing detection / UI
+                // snapshot construction, so same-frame consumers see the
+                // settled pawn HP. See: context/lib/scripting.md §5.
+                self.player_hud_state.tick();
                 // Flash-decay state writes the engine-owned `screen.flash`
-                // surface at the same game-logic stage as `ui_proxy.tick`, so
+                // surface at the same game-logic stage as the HUD publisher, so
                 // the UI snapshot below freezes this frame's flash color. Runs
                 // after the first command drain so a flash started this frame
                 // publishes immediately; the crossing drain below may start
@@ -1835,7 +1833,7 @@ impl ApplicationHandler for App {
                 self.shake_decay.tick(frame_dt);
 
                 // State-crossing detection (M13 HUD dynamics). Runs AFTER the
-                // frame's slot writes (game logic + `ui_proxy.tick`) settle, so
+                // frame's slot writes (game logic + HUD publisher) settle, so
                 // it compares the authoritative slot value — distinct from the
                 // eased display value styleRanges read mid-tween. Each watched
                 // slot's threshold crossing fires its reaction list synchronously
@@ -3339,9 +3337,6 @@ impl App {
         // before the data script runs, so any `world.getGravity()` call
         // inside `setupLevel` / `levelLoad` reactions sees the new value.
         self.script_ctx.gravity.set(world.initial_gravity);
-        // Restart the static UI proxy's flash timer so `intro.flashColor`
-        // replays its level-load pulse from the start on this fresh level.
-        self.ui_proxy.reset_timer();
         // Clear any in-flight `screen.flash` decay so a flash never bleeds
         // across a level load.
         self.flash_decay.reset();
@@ -4822,11 +4817,8 @@ mod tests {
             Some(&SlotValue::Array(vec![0.0, 0.0])),
             "engine-owned screen.shake defaults to zero offset and is cloned",
         );
-        // `player.ammo` starts value-less and must be excluded, so only the slot
-        // we set plus the always-valued `screen.flash`, `screen.vignette`,
-        // `screen.shake`, `input.mode`, and `ui.textEntry` appear.
         assert!(
-            snapshot.get("player.ammo").is_none(),
+            snapshot.get("player.maxHealth").is_none(),
             "value-less slots are skipped",
         );
         assert_eq!(

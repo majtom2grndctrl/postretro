@@ -1,58 +1,12 @@
-// Slot producer for the HUD store slots. Publishes live pawn HP into the
-// readonly engine-owned `player.health` and `player.maxHealth` slots each frame.
-// `player.ammo` is a proxy stand-in; `intro.flashColor` is driven by a timer
-// animation this proxy owns — its real producer, not a placeholder.
+// Player HUD state publisher. Publishes live pawn HP into the readonly
+// engine-owned `player.health` and `player.maxHealth` slots each frame.
 // See: context/lib/scripting.md §5 "Durable State Store"
 
 use crate::scripting::components::health::pawn_with_health;
 use crate::scripting::ctx::ScriptCtx;
 use crate::scripting::primitives::store::write_store_slot;
-use crate::scripting::registry::EntityRegistry;
+use crate::scripting::registry::{EntityId, EntityRegistry};
 use crate::scripting::slot_table::SlotValue;
-
-/// Stand-in demo ammo published into `player.ammo` every frame. The ammo
-/// producer is a separate future task; this remains a proxy stand-in.
-const DEMO_AMMO: f32 = 50.0;
-
-/// Dotted name of the mod-declared flash slot. Absent until the demo mod
-/// (Task 5) declares the `intro` namespace; the proxy tolerates its absence.
-const FLASH_SLOT: &str = "intro.flashColor";
-
-/// Half-period of the flash toggle. The color alternates between the two
-/// endpoints every 500 ms.
-const FLASH_TOGGLE_MS: f32 = 500.0;
-
-/// How long after level load the flash animates. Past this the color holds the
-/// solid (non-flash) endpoint.
-const FLASH_DURATION_MS: f32 = 3000.0;
-
-/// Solid (non-flash) RGBA endpoint, held after the flash window ends and shown
-/// on even toggle intervals. Subtle cyberpunk cyan.
-const FLASH_SOLID: [f32; 4] = [0.0, 0.65, 0.75, 1.0];
-
-/// Flash RGBA endpoint, shown on odd toggle intervals. Same hue as the solid
-/// endpoint, only slightly brighter — a subtle pulse, not a strobe.
-const FLASH_PULSE: [f32; 4] = [0.0, 0.80, 0.90, 1.0];
-
-/// Compute the `intro.flashColor` RGBA for a given elapsed time since level
-/// load. Pure: no store, no GPU, no wall-clock — the toggle/hold logic is
-/// driven entirely by `elapsed_ms`, so it is deterministic and unit-testable.
-///
-/// For the first `FLASH_DURATION_MS` the color toggles between [`FLASH_SOLID`]
-/// and [`FLASH_PULSE`] every `FLASH_TOGGLE_MS`, starting on the solid endpoint.
-/// After the window it holds [`FLASH_SOLID`].
-fn flash_color_at(elapsed_ms: f32) -> [f32; 4] {
-    if elapsed_ms >= FLASH_DURATION_MS {
-        return FLASH_SOLID;
-    }
-    // Even interval (0, 2, …) → solid; odd interval (1, 3, …) → pulse.
-    let interval = (elapsed_ms / FLASH_TOGGLE_MS) as u32;
-    if interval % 2 == 0 {
-        FLASH_SOLID
-    } else {
-        FLASH_PULSE
-    }
-}
 
 /// Read the current and maximum HP of the player pawn — the first entity carrying
 /// `PlayerMovement` (entity_model.md: "a player by virtue of carrying
@@ -61,100 +15,64 @@ fn flash_color_at(elapsed_ms: f32) -> [f32; 4] {
 /// the slots keep their last values (accepted slot-staleness contract).
 ///
 /// Pure read against the registry: no slot table, no GPU, so it is unit-testable
-/// without the proxy's `ScriptCtx`.
-fn pawn_health_values(registry: &EntityRegistry) -> Option<(f32, f32)> {
-    pawn_with_health(registry).map(|(_, health)| (health.current, health.max))
+/// without the publisher's `ScriptCtx`.
+fn pawn_health_values(registry: &EntityRegistry) -> Option<(EntityId, f32, f32)> {
+    pawn_with_health(registry).map(|(id, health)| (id, health.current, health.max))
 }
 
 /// Engine-side producer for the HUD store slots.
-///
-/// Owns a clone of `App`'s `ScriptCtx` (cheap `Rc` bump) and an injected-dt
-/// timer. Constructed during `App` setup; its timer is reset on every level
-/// load via [`StaticUiProxy::reset_timer`].
-pub(crate) struct StaticUiProxy {
+pub(crate) struct PlayerHudStatePublisher {
     ctx: ScriptCtx,
-
-    /// Milliseconds since the current level loaded. Advanced from the injected
-    /// frame delta in [`StaticUiProxy::tick`], never wall-clock, so the flash
-    /// animation is deterministic and testable. Reset to zero on level load.
-    elapsed_ms: f32,
-
-    /// Latches once the `intro.flashColor` write has failed (slot absent) so the
-    /// warning is logged at most once, not every frame — the proxy runs in the
-    /// per-frame hot path. See: development_guide.md §6.1.
-    flash_warned: bool,
+    invalid_max_warned_for: Option<EntityId>,
 }
 
-impl StaticUiProxy {
-    /// Build a proxy holding a clone of the engine's `ScriptCtx`. The timer
-    /// starts at zero; the first level load resets it.
+impl PlayerHudStatePublisher {
+    /// Build a publisher holding a clone of the engine's `ScriptCtx`.
     pub(crate) fn new(ctx: ScriptCtx) -> Self {
         Self {
             ctx,
-            elapsed_ms: 0.0,
-            flash_warned: false,
+            invalid_max_warned_for: None,
         }
     }
 
-    /// Restart the level-load flash timer. Called from the level-load path so
-    /// the flash animation replays from the start each time a level loads.
-    pub(crate) fn reset_timer(&mut self) {
-        self.elapsed_ms = 0.0;
-    }
-
-    /// Advance the timer by the injected frame delta (seconds) and republish the
-    /// store slots for this frame.
+    /// Republish the player HUD store slots for this frame.
     ///
     /// Publishes the live pawn HP into `player.health` and max HP into
     /// `player.maxHealth` when a pawn with a `Health` component exists; with no
     /// pawn or no health component the writes are skipped and the slots keep
-    /// their last values (accepted slot-staleness contract). Always writes
-    /// `player.ammo` (engine-owned demo stand-in).
-    /// Writes `intro.flashColor` only when the slot exists; when the demo mod
-    /// has not declared it the write returns `Err` and is skipped with a single
-    /// warning.
+    /// their last values (accepted slot-staleness contract). If corrupt live
+    /// data carries an invalid max, current HP is still published but max HP is
+    /// skipped so the store's `[1, +∞)` range never silently repairs it.
     ///
     /// Runs in the frame loop after game logic and before the UI read-snapshot
     /// build, so the snapshot picks up these values the same frame.
-    pub(crate) fn tick(&mut self, dt: f32) {
-        self.elapsed_ms += dt * 1000.0;
-
+    pub(crate) fn tick(&mut self) {
         // `player.health`/`player.maxHealth` mirror the live pawn HP. No pawn /
         // no health component → skip; the readonly slots retain their previous
         // values. The registry borrow is scoped to the read so it drops before
         // the `write_store_slot` calls (which borrow the slot table, a separate
         // cell).
         let pawn_health = pawn_health_values(&self.ctx.registry.borrow());
-        if let Some((current, max)) = pawn_health {
+        if let Some((pawn, current, max)) = pawn_health {
             // Engine-owned and always declared, so this write succeeds; an error
             // here would be a real bug, hence no skip-with-warn.
             if let Err(err) =
                 write_store_slot(&self.ctx, "player.health", SlotValue::Number(current))
             {
-                log::warn!("[Proxy] failed to write player.health: {err}");
+                log::warn!("[HUD] failed to write player.health: {err}");
             }
-            if let Err(err) =
-                write_store_slot(&self.ctx, "player.maxHealth", SlotValue::Number(max))
-            {
-                log::warn!("[Proxy] failed to write player.maxHealth: {err}");
-            }
-        }
-        // `player.ammo` is engine-owned and always declared, so this write
-        // succeeds; an error here would be a real bug, hence no skip-with-warn.
-        if let Err(err) = write_store_slot(&self.ctx, "player.ammo", SlotValue::Number(DEMO_AMMO)) {
-            log::warn!("[Proxy] failed to write player.ammo: {err}");
-        }
 
-        let flash = flash_color_at(self.elapsed_ms);
-        if let Err(err) = write_store_slot(&self.ctx, FLASH_SLOT, SlotValue::Array(flash.to_vec()))
-        {
-            // Expected until the demo mod declares `intro` (Task 5). Warn once
-            // so the hot path does not spam the log every frame.
-            if !self.flash_warned {
+            if max.is_finite() && max >= 1.0 {
+                if let Err(err) =
+                    write_store_slot(&self.ctx, "player.maxHealth", SlotValue::Number(max))
+                {
+                    log::warn!("[HUD] failed to write player.maxHealth: {err}");
+                }
+            } else if self.invalid_max_warned_for != Some(pawn) {
                 log::warn!(
-                    "[Proxy] skipping `{FLASH_SLOT}` writes; slot not declared (demo mod absent): {err}"
+                    "[HUD] skipping player.maxHealth for pawn {pawn}: invalid max health {max}"
                 );
-                self.flash_warned = true;
+                self.invalid_max_warned_for = Some(pawn);
             }
         }
     }
@@ -234,84 +152,14 @@ mod tests {
     }
 
     #[test]
-    fn flash_starts_on_solid_endpoint() {
-        assert_eq!(flash_color_at(0.0), FLASH_SOLID);
-    }
-
-    #[test]
-    fn flash_toggles_every_500ms_within_window() {
-        // Sample the middle of each 500 ms interval across the 3000 ms window:
-        // even intervals hold solid, odd intervals hold the pulse endpoint.
-        for interval in 0..6 {
-            let mid = interval as f32 * FLASH_TOGGLE_MS + FLASH_TOGGLE_MS / 2.0;
-            let expected = if interval % 2 == 0 {
-                FLASH_SOLID
-            } else {
-                FLASH_PULSE
-            };
-            assert_eq!(
-                flash_color_at(mid),
-                expected,
-                "interval {interval} at {mid}ms"
-            );
-        }
-    }
-
-    #[test]
-    fn flash_switches_exactly_at_toggle_boundaries() {
-        // Just before 500 ms is still the solid (first) interval; at 500 ms the
-        // toggle crosses to the pulse endpoint.
-        assert_eq!(flash_color_at(FLASH_TOGGLE_MS - 1.0), FLASH_SOLID);
-        assert_eq!(flash_color_at(FLASH_TOGGLE_MS), FLASH_PULSE);
-        assert_eq!(flash_color_at(2.0 * FLASH_TOGGLE_MS), FLASH_SOLID);
-    }
-
-    #[test]
-    fn flash_holds_solid_after_window() {
-        // At and after 3000 ms the animation stops on the solid endpoint, even
-        // on what would have been an odd (pulse) interval.
-        assert_eq!(flash_color_at(FLASH_DURATION_MS), FLASH_SOLID);
-        assert_eq!(
-            flash_color_at(FLASH_DURATION_MS + FLASH_TOGGLE_MS),
-            FLASH_SOLID
-        );
-        assert_eq!(flash_color_at(10_000.0), FLASH_SOLID);
-    }
-
-    #[test]
-    fn endpoints_are_valid_linear_rgba() {
-        for endpoint in [FLASH_SOLID, FLASH_PULSE] {
-            assert_eq!(endpoint.len(), 4);
-            assert!(endpoint.iter().all(|c| (0.0..=1.0).contains(c)));
-        }
-    }
-
-    #[test]
-    fn endpoints_share_hue_and_differ_subtly() {
-        // Same-hue subtle flash: red and alpha match; green/blue differ only
-        // slightly between the two endpoints.
-        assert_eq!(FLASH_SOLID[0], FLASH_PULSE[0]);
-        assert_eq!(FLASH_SOLID[3], FLASH_PULSE[3]);
-        for channel in 1..=2 {
-            let delta = (FLASH_SOLID[channel] - FLASH_PULSE[channel]).abs();
-            assert!(
-                delta > 0.0 && delta <= 0.2,
-                "channel {channel} delta {delta}"
-            );
-        }
-    }
-
-    #[test]
-    fn tick_advances_timer_and_publishes_live_pawn_health() {
+    fn tick_publishes_live_pawn_health_and_max_health() {
         use crate::scripting::primitives::store::read_store_slot;
 
         let ctx = ScriptCtx::new();
         spawn_pawn_with_health(&ctx, 73.0);
-        let mut proxy = StaticUiProxy::new(ctx.clone());
+        let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
 
-        // player.* start with no value; one tick publishes the live pawn HP,
-        // max HP, and the demo ammo constant.
-        proxy.tick(0.016);
+        publisher.tick();
         assert_eq!(
             read_store_slot(&ctx, "player.health").unwrap(),
             SlotValue::Number(73.0)
@@ -320,13 +168,6 @@ mod tests {
             read_store_slot(&ctx, "player.maxHealth").unwrap(),
             SlotValue::Number(100.0)
         );
-        assert_eq!(
-            read_store_slot(&ctx, "player.ammo").unwrap(),
-            SlotValue::Number(DEMO_AMMO)
-        );
-
-        // dt is in seconds; the timer accumulates milliseconds.
-        assert!((proxy.elapsed_ms - 16.0).abs() < 1e-3);
     }
 
     #[test]
@@ -338,9 +179,9 @@ mod tests {
         // HUD readout would then show the new value).
         let ctx = ScriptCtx::new();
         let pawn = spawn_pawn_with_health(&ctx, 100.0);
-        let mut proxy = StaticUiProxy::new(ctx.clone());
+        let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
 
-        proxy.tick(0.016);
+        publisher.tick();
         assert_eq!(
             read_store_slot(&ctx, "player.health").unwrap(),
             SlotValue::Number(100.0)
@@ -356,10 +197,60 @@ mod tests {
             health.current = 40.0;
             registry.set_component(pawn, health).unwrap();
         }
-        proxy.tick(0.016);
+        publisher.tick();
         assert_eq!(
             read_store_slot(&ctx, "player.health").unwrap(),
             SlotValue::Number(40.0)
+        );
+    }
+
+    #[test]
+    fn publisher_write_is_visible_to_same_frame_crossing_detection() {
+        use crate::scripting::data_descriptors::{
+            CrossingCondition, CrossingDescriptor, LevelManifest,
+        };
+        use crate::scripting::primitives::store::read_store_slot;
+        use crate::scripting::state_crossings::CrossingDetector;
+
+        let ctx = ScriptCtx::new();
+        let pawn = spawn_pawn_with_health(&ctx, 100.0);
+        let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
+        publisher.tick();
+
+        ctx.data_registry
+            .borrow_mut()
+            .populate_from_manifest(LevelManifest {
+                reactions: Vec::new(),
+                ui_trees: Vec::new(),
+                crossings: vec![CrossingDescriptor {
+                    slot: "player.health".to_string(),
+                    condition: CrossingCondition::Below { threshold: 0.2 },
+                    max: 100.0,
+                    fire: vec!["lowHealth".to_string()],
+                }],
+            });
+        let mut detector = CrossingDetector::new();
+        detector.initialize(&ctx.data_registry.borrow(), &ctx.slot_table.borrow());
+
+        {
+            let mut registry = ctx.registry.borrow_mut();
+            let mut health = registry
+                .get_component::<HealthComponent>(pawn)
+                .unwrap()
+                .clone();
+            health.current = 10.0;
+            registry.set_component(pawn, health).unwrap();
+        }
+
+        publisher.tick();
+        assert_eq!(
+            read_store_slot(&ctx, "player.health").unwrap(),
+            SlotValue::Number(10.0)
+        );
+        assert_eq!(
+            detector.detect(&ctx.slot_table.borrow()),
+            vec!["lowHealth".to_string()],
+            "crossing detection must observe the publisher's same-frame write"
         );
     }
 
@@ -372,9 +263,9 @@ mod tests {
         // write entirely, so the slot keeps whatever value it last held.
         let ctx = ScriptCtx::new();
         write_store_slot(&ctx, "player.health", SlotValue::Number(55.0)).unwrap();
-        let mut proxy = StaticUiProxy::new(ctx.clone());
+        let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
 
-        proxy.tick(0.016);
+        publisher.tick();
         assert_eq!(
             read_store_slot(&ctx, "player.health").unwrap(),
             SlotValue::Number(55.0),
@@ -407,47 +298,86 @@ mod tests {
         spawn_pawn_with_health(&with_health, 88.0);
         assert_eq!(
             pawn_health_values(&with_health.registry.borrow()),
-            Some((88.0, 100.0))
+            Some((EntityId::from_raw(0), 88.0, 100.0))
         );
     }
 
     #[test]
-    fn reset_timer_replays_flash_from_start() {
-        let ctx = ScriptCtx::new();
-        let mut proxy = StaticUiProxy::new(ctx);
-        // Advance past the flash window.
-        proxy.tick(4.0);
-        assert!(proxy.elapsed_ms >= FLASH_DURATION_MS);
-        proxy.reset_timer();
-        assert_eq!(proxy.elapsed_ms, 0.0);
-    }
-
-    #[test]
-    fn missing_flash_slot_warns_once_and_keeps_writing_player_slots() {
+    fn invalid_live_max_publishes_current_and_skips_max_without_repairing() {
         use crate::scripting::primitives::store::read_store_slot;
 
-        // Default ScriptCtx has no `intro` namespace, so flashColor writes fail.
         let ctx = ScriptCtx::new();
-        spawn_pawn_with_health(&ctx, 64.0);
-        let mut proxy = StaticUiProxy::new(ctx.clone());
+        let pawn = spawn_pawn_with_health(&ctx, 64.0);
+        write_store_slot(&ctx, "player.maxHealth", SlotValue::Number(100.0)).unwrap();
+        {
+            let mut registry = ctx.registry.borrow_mut();
+            let mut health = registry
+                .get_component::<HealthComponent>(pawn)
+                .unwrap()
+                .clone();
+            health.max = 0.5;
+            registry.set_component(pawn, health).unwrap();
+        }
+        let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
 
-        proxy.tick(0.016);
-        assert!(
-            proxy.flash_warned,
-            "first failed flash write latches the warn"
-        );
+        publisher.tick();
 
-        // Subsequent ticks must not re-arm the latch, and player.* keep updating.
-        proxy.tick(0.016);
-        assert!(proxy.flash_warned);
         assert_eq!(
             read_store_slot(&ctx, "player.health").unwrap(),
             SlotValue::Number(64.0)
         );
         assert_eq!(
             read_store_slot(&ctx, "player.maxHealth").unwrap(),
-            SlotValue::Number(100.0)
+            SlotValue::Number(100.0),
+            "invalid max is skipped instead of clamped by the store range"
         );
-        assert!(read_store_slot(&ctx, "intro.flashColor").is_err());
+        assert_eq!(publisher.invalid_max_warned_for, Some(pawn));
+    }
+
+    #[test]
+    fn invalid_live_max_warning_latches_per_pawn_lifetime() {
+        let ctx = ScriptCtx::new();
+        let first = spawn_pawn_with_health(&ctx, 64.0);
+        let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
+        {
+            let mut registry = ctx.registry.borrow_mut();
+            let mut health = registry
+                .get_component::<HealthComponent>(first)
+                .unwrap()
+                .clone();
+            health.max = f32::NAN;
+            registry.set_component(first, health).unwrap();
+        }
+
+        publisher.tick();
+        assert_eq!(publisher.invalid_max_warned_for, Some(first));
+        publisher.tick();
+        assert_eq!(
+            publisher.invalid_max_warned_for,
+            Some(first),
+            "same pawn lifetime stays latched"
+        );
+
+        {
+            let mut registry = ctx.registry.borrow_mut();
+            registry.despawn(first).unwrap();
+        }
+        let second = spawn_pawn_with_health(&ctx, 32.0);
+        {
+            let mut registry = ctx.registry.borrow_mut();
+            let mut health = registry
+                .get_component::<HealthComponent>(second)
+                .unwrap()
+                .clone();
+            health.max = 0.0;
+            registry.set_component(second, health).unwrap();
+        }
+
+        publisher.tick();
+        assert_eq!(
+            publisher.invalid_max_warned_for,
+            Some(second),
+            "new pawn lifetime can emit one warning"
+        );
     }
 }

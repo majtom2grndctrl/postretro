@@ -361,15 +361,6 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         capability: EngineStateCapability::Readonly,
     },
     EngineStateCatalogEntry {
-        wire_name: "player.ammo",
-        sdk_path: &["player", "ammo"],
-        value_type: EngineStateValueType::Number,
-        default: EngineStateDefault::None,
-        range: None,
-        persist: false,
-        capability: EngineStateCapability::Readonly,
-    },
-    EngineStateCatalogEntry {
         wire_name: "screen.flash",
         sdk_path: &["screen", "flash"],
         value_type: EngineStateValueType::Array,
@@ -583,7 +574,6 @@ mod tests {
             wire_names,
             vec![
                 "input.mode",
-                "player.ammo",
                 "player.health",
                 "player.maxHealth",
                 "screen.flash",

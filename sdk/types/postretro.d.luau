@@ -514,7 +514,6 @@ export type GameStateRefs = {
     mode: ReadonlyStateRef<"pointer" | "focus">,
   },
   player: {
-    ammo: ReadonlyStateRef<number>,
     health: ReadonlyStateRef<number>,
     maxHealth: ReadonlyStateRef<number>,
   },

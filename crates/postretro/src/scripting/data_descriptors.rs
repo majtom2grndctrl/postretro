@@ -419,13 +419,13 @@ pub(crate) struct HitboxDescriptor {
 
 impl HealthDescriptor {
     /// Validate bounds serde cannot enforce (the `LightDescriptor::validate`
-    /// precedent): `max` finite and `> 0`; each `halfExtents` element finite and
+    /// precedent): `max` finite and `>= 1`; each `halfExtents` element finite and
     /// `> 0`; each `offset` element finite.
     pub(crate) fn validate(self) -> Result<Self, DescriptorError> {
-        if !self.max.is_finite() || self.max <= 0.0 {
+        if !self.max.is_finite() || self.max < 1.0 {
             return Err(DescriptorError::InvalidShape {
                 reason: format!(
-                    "`components.health.max` must be a finite value > 0.0, got {}",
+                    "`components.health.max` must be a finite value >= 1.0, got {}",
                     self.max
                 ),
             });
@@ -8173,8 +8173,8 @@ mod tests {
     }
 
     #[test]
-    fn js_health_non_positive_max_is_rejected() {
-        let src = r#"({ components: { health: { max: 0 } } })"#;
+    fn js_health_max_below_one_is_rejected() {
+        let src = r#"({ components: { health: { max: 0.5 } } })"#;
         let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
         assert!(matches!(err, DescriptorError::InvalidShape { .. }));
     }

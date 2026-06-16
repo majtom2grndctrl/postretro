@@ -77,8 +77,8 @@ const UI_WIDGETS_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/widgets.l
 /// fields (`VStack`/`HStack`/`Grid`) are destructured into globals. Pure builders.
 const UI_LAYOUT_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/layout.luau");
 
-/// SDK library prelude — `ui/tree.luau` returns a table whose only field (`Tree`)
-/// is destructured into a global. Pure placement-envelope builder.
+/// SDK library prelude — `ui/tree.luau` returns pure UI tree helpers that are
+/// destructured into globals.
 const UI_TREE_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/tree.luau");
 
 /// SDK library prelude — `ui/state.luau` returns state-reference helpers plus
@@ -128,8 +128,9 @@ const DATA_SCRIPT_FIELDS: &[&str] = &["defineReaction", "defineEntity", "defineS
 /// the UI-stack (`showDialog` /
 /// `openMenu` / `closeDialog`) primitives, the `updateState` slot write (Goal F),
 /// the text-entry helpers (`openTextEntry` wraps `showDialog` for the engine
-/// keyboard; `KEYBOARD_TREE` is its registry name constant), and the text-edit
-/// reactions (`appendText` / `backspaceText` / `clearText`, M13 Text Entry).
+/// keyboard; `KEYBOARD_TREE` is its registry name constant), reserved button
+/// actions (`CLOSE_DIALOG_ACTION`), and the text-edit reactions (`appendText` /
+/// `backspaceText` / `clearText`, M13 Text Entry).
 const UI_REACTIONS_FIELDS: &[&str] = &[
     "onStateCrossing",
     "playSound",
@@ -142,6 +143,7 @@ const UI_REACTIONS_FIELDS: &[&str] = &[
     "closeDialog",
     "openTextEntry",
     "KEYBOARD_TREE",
+    "CLOSE_DIALOG_ACTION",
     "updateState",
     "appendText",
     "backspaceText",
@@ -160,8 +162,8 @@ const UI_WIDGETS_FIELDS: &[&str] = &[
 /// `ui/layout.luau`.
 const UI_LAYOUT_FIELDS: &[&str] = &["VStack", "HStack", "Grid"];
 
-/// UI tree-factory SDK fields lifted to globals after evaluating `ui/tree.luau`.
-const UI_TREE_FIELDS: &[&str] = &["Tree"];
+/// UI tree SDK fields lifted to globals after evaluating `ui/tree.luau`.
+const UI_TREE_FIELDS: &[&str] = &["Tree", "defineUiTree"];
 
 /// UI state-helper SDK fields lifted to globals after evaluating
 /// `ui/state.luau`. `bindState`/`stateEquals` compose authoritative state refs;
@@ -1555,6 +1557,7 @@ mod tests {
             "closeDialog",
             "openTextEntry",
             "KEYBOARD_TREE",
+            "CLOSE_DIALOG_ACTION",
             "updateState",
             "appendText",
             "backspaceText",
@@ -1570,6 +1573,16 @@ mod tests {
                 to a bare global, so Luau callers hit nil at runtime",
             );
         }
+    }
+
+    #[test]
+    fn close_dialog_action_global_emits_reserved_wire_name() {
+        let lua = build_lua_state(&[], None, None).expect("lua state");
+        let value: String = lua
+            .load("return CLOSE_DIALOG_ACTION")
+            .eval()
+            .expect("CLOSE_DIALOG_ACTION global");
+        assert_eq!(value, "ui.closeDialog");
     }
 
     #[test]

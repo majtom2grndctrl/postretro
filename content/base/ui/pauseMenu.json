@@ -8,8 +8,7 @@
     "kind": "vstack",
     "gap": 10.0,
     "padding": 16.0,
-    "align": "stretch",
-    "focus": "linear",
+    "align": "center",
     "children": [
       {
         "kind": "text",
@@ -20,67 +19,12 @@
       },
       {
         "kind": "text",
-        "content": "MODE --",
-        "fontSize": 28.0,
+        "content": "PRESS ESC OR B TO RESUME",
+        "fontSize": 16.0,
         "color": "ok",
-        "font": "mono",
-        "bind": {
-          "slot": "input.mode",
-          "format": "MODE {}"
-        }
-      },
-      {
-        "kind": "button",
-        "id": "pauseResume",
-        "label": "RESUME",
-        "onPress": "resumePauseMenu",
-        "focusNeighbors": {
-          "up": "pauseOpenTextEntry",
-          "down": "pauseVolume"
-        }
-      },
-      {
-        "kind": "slider",
-        "id": "pauseVolume",
-        "label": "VOLUME",
-        "bind": {
-          "slot": "audio.master"
-        },
-        "min": 0.0,
-        "max": 1.0,
-        "step": 0.1,
-        "capturesNav": [
-          "nav.left",
-          "nav.right"
-        ],
-        "focusNeighbors": {
-          "up": "pauseResume",
-          "down": "pauseOpenTextEntry"
-        }
-      },
-      {
-        "kind": "text",
-        "content": "ENTRY --",
-        "fontSize": 28.0,
-        "color": "ok",
-        "font": "mono",
-        "bind": {
-          "slot": "ui.textEntry",
-          "format": "ENTRY {}"
-        }
-      },
-      {
-        "kind": "button",
-        "id": "pauseOpenTextEntry",
-        "label": "ENTER TEXT",
-        "onPress": "openTextEntry",
-        "focusNeighbors": {
-          "up": "pauseVolume",
-          "down": "pauseResume"
-        }
+        "font": "mono"
       }
     ]
   },
-  "captureMode": "capture",
-  "initialFocus": "pauseResume"
+  "captureMode": "capture"
 }

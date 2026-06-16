@@ -27,6 +27,14 @@ export type WidgetCaptureMode = "capture" | "passthrough"
 --- shape). Optional keys appear only when authored.
 export type WidgetDescriptor = { [string]: any }
 
+--- A UI-tree registration entry returned through `setupMod().uiTrees` or
+--- `setupLevel().uiTrees`. `defineUiTree` preserves this runtime manifest shape.
+export type UiTreeRegistration = {
+  name: string,
+  tree: WidgetDescriptor,
+  alwaysOn: boolean?,
+}
+
 local UiTreeSdk = {}
 
 local ANCHORS: { [string]: boolean } = {
@@ -138,6 +146,32 @@ function UiTreeSdk.Tree(props: any, root: any): WidgetDescriptor
       )
     end
     out.role = props.role
+  end
+  return out
+end
+
+--- Define a named UI-tree registration while preserving the manifest wire shape:
+--- `{ name, tree, alwaysOn? }`. Pure builder; registration still happens only
+--- when the returned table is included in `setupMod().uiTrees`.
+function UiTreeSdk.defineUiTree(registration: any): UiTreeRegistration
+  requireObject(registration, "defineUiTree")
+  requireNonemptyString(registration.name, "name", "defineUiTree")
+  if
+    type(registration.tree) ~= "table"
+    or type(registration.tree.root) ~= "table"
+  then
+    error("defineUiTree: `tree` must be an anchored tree descriptor")
+  end
+  if registration.alwaysOn ~= nil and type(registration.alwaysOn) ~= "boolean" then
+    error("defineUiTree: `alwaysOn` must be a boolean when present")
+  end
+
+  local out: UiTreeRegistration = {
+    name = registration.name,
+    tree = registration.tree,
+  }
+  if registration.alwaysOn ~= nil then
+    out.alwaysOn = registration.alwaysOn
   end
   return out
 end

@@ -18,14 +18,11 @@ use super::tree_asset::ui_asset_path;
 /// "keyboard", onCommit }` resolves this name through the modal stack.
 pub(crate) const KEYBOARD_TREE_NAME: &str = "keyboard";
 
-/// Reserved sentinel `onPress` name the keyboard's `done` key carries. The button
-/// activation path (`App::fire_focused_button_activation`) intercepts this exact
-/// string and routes to `App::commit_text_entry()` instead of resolving it as a
-/// named reaction — so on-screen `done` and the hardware Enter key share the one
-/// commit seam (Task 3). It is a reserved name in the `ui.*` namespace, never a
-/// registered reaction; the keyboard JSON references it as data, so editing the
-/// layout needs no Rust change.
-pub(crate) const COMMIT_TEXT_ENTRY_SENTINEL: &str = "ui.commitTextEntry";
+/// Reserved sentinel `onPress` name the keyboard's `done` key carries. The
+/// canonical value lives in `actions`; this alias keeps the keyboard asset tests
+/// and comments close to the JSON that references it.
+#[cfg(test)]
+pub(crate) const COMMIT_TEXT_ENTRY_SENTINEL: &str = super::actions::COMMIT_TEXT_ENTRY_ACTION;
 
 /// Engine-shipped keyboard descriptor path, relative to the working directory —
 /// the same `content/base/...` convention the splash PNG uses. The boot path

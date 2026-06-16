@@ -375,8 +375,8 @@ pub struct SpacerWidget {
 
 /// Interactive button (M13 Goal F, Task 4). Focusable; activation — a focus-engine
 /// `confirm` on the focused button, or a pointer click — fires the `on_press`
-/// named reaction through the same reaction registry every entity/system reaction
-/// uses. The button renders its accessible name as a centered text run.
+/// reserved UI action or named reaction through the same App seam. The button
+/// renders its accessible name as a centered text run.
 ///
 /// `id` is required (unlike the optional `id` on passive widgets): activation maps
 /// the focused node id back to this button's `on_press`, so the id must be stable.
@@ -398,8 +398,8 @@ pub struct ButtonWidget {
     /// this button. Skip-serialized when absent. Exactly-one-of with `label`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub labelled_by: Option<String>,
-    /// Named reaction fired on activation (confirm or click). Resolved against the
-    /// reaction registry by the app — the same vocabulary entity/system reactions use.
+    /// Activation target. Reserved `ui.*` actions are intercepted by the App;
+    /// other values resolve as named reactions.
     pub on_press: String,
     /// Directional focus-neighbor overrides (M13 Goal F, Task 3). See
     /// `TextWidget::focus_neighbors`.

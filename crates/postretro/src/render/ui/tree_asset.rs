@@ -112,11 +112,10 @@ mod tests {
         assert!(!col.children.is_empty(), "the HUD has at least one row");
     }
 
-    /// The shipped pause-menu asset deserializes to a well-formed capturing modal.
-    /// Like the HUD test, this is a structural load check now that JSON is the
-    /// source of truth — not a builder-equality oracle. The pause menu's load-
-    /// bearing wiring (captureMode, initialFocus, focus chain, slot binds) is pinned
-    /// by `demo`'s tests.
+    /// The shipped pause-menu fallback deserializes to a well-formed capturing
+    /// modal. Like the HUD test, this is a structural load check now that JSON is
+    /// the source of truth — not a builder-equality oracle. The production
+    /// mod-authored pause menu shadows this minimal no-control fallback.
     #[test]
     fn pause_menu_asset_loads_to_a_capturing_modal() {
         use crate::render::ui::descriptor::CaptureMode;
@@ -128,11 +127,11 @@ mod tests {
         assert_eq!(
             tree.capture_mode,
             CaptureMode::Capture,
-            "the pause menu captures input (freezes gameplay, releases cursor)",
+            "the pause menu captures input (gates player controls, releases cursor)",
         );
         assert!(
-            tree.initial_focus.is_some(),
-            "the pause menu declares an initial focus target",
+            tree.initial_focus.is_none(),
+            "the fallback has no focusable controls",
         );
     }
 }

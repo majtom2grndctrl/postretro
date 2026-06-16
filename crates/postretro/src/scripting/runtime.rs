@@ -3542,9 +3542,6 @@ mod tests {
             dir.join("start-script.js"),
             r#"
             globalThis.setupMod = function() {
-                const pauseMenuStore = defineStore("audio", {
-                    master: { type: "number", default: 1.0, range: [0.0, 1.0], persist: false },
-                });
                 const player = getGameState().player;
                 const healthTree = Tree(
                     { anchor: "bottomLeft", offset: [24.0, -24.0] },
@@ -3580,12 +3577,32 @@ mod tests {
                     { anchor: "center", offset: [0.0, 0.0] },
                     Text({ content: "+", font: "mono" }),
                 );
+                const pauseMenu = Tree(
+                    {
+                        anchor: "center",
+                        offset: [0.0, 0.0],
+                        captureMode: "capture",
+                        initialFocus: "pauseResume",
+                        accessibleName: "Pause menu",
+                        role: "group",
+                    },
+                    VStack({
+                        gap: "m",
+                        padding: "l",
+                        align: "stretch",
+                        focus: { policy: "linear", wrap: true },
+                        fill: "panel.default",
+                    }, [
+                        Text({ content: "PAUSED", font: "mono", color: "ok" }),
+                        Button({ id: "pauseResume", label: "RESUME", onPress: CLOSE_DIALOG_ACTION }),
+                    ]),
+                );
                 return {
                     name: "HudMod",
-                    stores: [pauseMenuStore.declaration],
                     uiTrees: [
-                        { name: "hud", tree: healthTree, alwaysOn: true },
-                        { name: "hud.reticle", tree: reticleTree, alwaysOn: true },
+                        defineUiTree({ name: "hud", tree: healthTree, alwaysOn: true }),
+                        defineUiTree({ name: "hud.reticle", tree: reticleTree, alwaysOn: true }),
+                        defineUiTree({ name: "pauseMenu", tree: pauseMenu }),
                     ],
                     theme: {
                         colors: {
@@ -3604,18 +3621,12 @@ mod tests {
 
         rt.run_mod_init(&dir).unwrap();
         let manifest = rt.mod_manifest().expect("Some manifest");
-        assert_eq!(manifest.store_declarations.len(), 1);
-        assert_eq!(
-            manifest
-                .store_declarations
-                .iter()
-                .next()
-                .map(|declaration| declaration.namespace.as_str()),
-            Some("audio"),
-            "remaining development stores return through setupMod().stores",
+        assert!(
+            manifest.store_declarations.is_empty(),
+            "production HUD/pause-menu contract no longer needs demo stores",
         );
 
-        assert_eq!(manifest.ui_trees.len(), 2);
+        assert_eq!(manifest.ui_trees.len(), 3);
         let hud = manifest
             .ui_trees
             .iter()
@@ -3636,6 +3647,48 @@ mod tests {
         };
         assert_eq!(reticle_text.content, "+");
         assert_eq!(reticle_text.font.as_deref(), Some("mono"));
+        let pause_menu = manifest
+            .ui_trees
+            .iter()
+            .find(|tree| tree.name == "pauseMenu")
+            .expect("pause menu tree returned");
+        assert!(
+            !pause_menu.always_on,
+            "pause menu is pushed-only, never an always-on layer"
+        );
+        assert_eq!(
+            pause_menu.tree.capture_mode,
+            crate::render::ui::descriptor::CaptureMode::Capture
+        );
+        assert_eq!(
+            pause_menu.tree.initial_focus.as_deref(),
+            Some("pauseResume")
+        );
+        assert_eq!(
+            pause_menu.tree.accessible_name.as_deref(),
+            Some("Pause menu")
+        );
+        assert_eq!(
+            pause_menu.tree.role,
+            Some(crate::render::ui::descriptor::Role::Group)
+        );
+        let Widget::VStack(pause_root) = &pause_menu.tree.root else {
+            panic!("pause menu root is a vstack");
+        };
+        assert_eq!(
+            pause_root.focus.as_ref().map(|focus| focus.kind()),
+            Some(crate::render::ui::descriptor::FocusKind::Linear)
+        );
+        assert_eq!(
+            pause_root.focus.as_ref().map(|focus| focus.wrap()),
+            Some(true)
+        );
+        assert_eq!(pause_root.children.len(), 2);
+        let Widget::Button(resume) = &pause_root.children[1] else {
+            panic!("pause menu second child is resume button");
+        };
+        assert_eq!(resume.id, "pauseResume");
+        assert_eq!(resume.on_press, "ui.closeDialog");
 
         let Widget::VStack(root) = &hud.tree.root else {
             panic!("hud root is a vstack");

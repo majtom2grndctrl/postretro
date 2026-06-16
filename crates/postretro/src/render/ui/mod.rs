@@ -44,6 +44,10 @@ pub(crate) mod theme;
 /// widget reuses the same evaluator. Pure data — no taffy, no GPU.
 pub(crate) mod style_ranges;
 
+/// Reserved UI button-action names in the `ui.*` namespace. The App intercepts
+/// these before ordinary named-reaction dispatch.
+pub(crate) mod actions;
+
 /// App-side gameplay-UI modal stack + named-tree registry: resolves Goal E's
 /// `PushTree`/`PopTree` system commands by name into a bottom→top stack of
 /// descriptor trees, exposes an engine push/pop API, and builds the per-frame

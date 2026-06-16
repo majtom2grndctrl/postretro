@@ -228,7 +228,8 @@ struct StackedTree {
 /// The gameplay-UI modal stack: a registry of named trees plus the live stack of
 /// pushed trees (bottom→top). The HUD, when present, is the bottom of the stack;
 /// modal trees (pause, dialog) stack above it. The top tree's capture mode is the
-/// one the App acts on — it freezes gameplay + lower trees and releases the cursor.
+/// one the App acts on: capture gates player controls, freezes lower UI, and
+/// releases the cursor.
 ///
 /// Push/pop sources:
 /// - script commands (`PushTree`/`PopTree`, drained from the system-command queue)
@@ -557,7 +558,7 @@ mod tests {
             "a passthrough HUD never captures",
         );
 
-        // A capturing modal on top => capture (cursor releases, gameplay freezes).
+        // A capturing modal on top => capture (cursor releases, player input is gated).
         stack.push_named("pause", None);
         assert_eq!(stack.top_capture_mode(), UiCaptureMode::Capture);
 

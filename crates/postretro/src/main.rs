@@ -498,7 +498,6 @@ fn main() -> Result<()> {
         input_mode_tracker: scripting_systems::input_mode::InputModeTracker::new(
             script_ctx.clone(),
         ),
-        audio_master: scripting_systems::audio_master::AudioMasterConsumer::new(script_ctx.clone()),
         pending_mode_signal: None,
         pending_menu_toggle: false,
         ui_focused_id: None,
@@ -770,13 +769,6 @@ struct App {
     /// stays the action snapshot. Reset on level load. See: context/lib/input.md §7.
     input_mode_tracker: scripting_systems::input_mode::InputModeTracker,
 
-    /// App-side `audio.master` consumer (M13 Goal F, Task 5). Reads the
-    /// mod-declared `audio.master` amplitude slot and applies it to the audio
-    /// main-track volume (amplitude → dB) on change, making the demo pause-menu
-    /// volume slider audible. No-op when no mod declares the slot. Reset on level
-    /// load. See: context/lib/audio.md §1.
-    audio_master: scripting_systems::audio_master::AudioMasterConsumer,
-
     /// The mode signal observed during THIS frame's input phase, resolved into
     /// `input_mode_tracker` at the head of the game-logic phase. Mouse motion
     /// (`CursorMoved`) votes `Pointer`; any nav input (stick edge / D-pad / nav
@@ -785,10 +777,10 @@ struct App {
     /// tracker consumes it. See: context/lib/input.md §7.
     pending_mode_signal: Option<scripting_systems::input_mode::ModeSignal>,
 
-    /// Punch-through `nav.menu` toggle (M13 Goal F, Task 5): set when a `nav.menu`
+    /// Punch-through `nav.menu` toggle: set when a `nav.menu`
     /// intent (gamepad Start, or keyboard Escape-from-gameplay) is produced in the
     /// input phase, then consumed in the game-logic phase to push (open) or pop
-    /// (close) the demo pause menu via the engine push/pop API. `nav.menu` opens
+    /// (close) the registered `pauseMenu` via the engine push/pop API. `nav.menu` opens
     /// the menu from gameplay where the UI-dispatch seam is `Passthrough` and so
     /// queues nothing — hence the dedicated punch-through, mirroring how
     /// `ToggleDebugPanel` bypasses the capture gate. See: context/lib/input.md §7.
@@ -981,6 +973,87 @@ struct App {
 
 struct WindowState {
     window: Arc<Window>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UiButtonAction {
+    CommitTextEntry,
+    CloseDialog,
+    NamedReaction,
+}
+
+fn classify_ui_button_action(on_press: &str) -> UiButtonAction {
+    match on_press {
+        render::ui::actions::COMMIT_TEXT_ENTRY_ACTION => UiButtonAction::CommitTextEntry,
+        render::ui::actions::CLOSE_DIALOG_ACTION => UiButtonAction::CloseDialog,
+        _ => UiButtonAction::NamedReaction,
+    }
+}
+
+fn focused_button_on_press(
+    rects: Option<&render::ui::tree::FocusRectList>,
+    focused_id: Option<&str>,
+) -> Option<String> {
+    use render::ui::tree::NodeInteraction;
+
+    let focused_id = focused_id?;
+    rects?
+        .rects
+        .iter()
+        .find(|r| r.id == focused_id)
+        // A disabled focused node is non-interactive (M13 G2-T3): block its
+        // activation regardless of how the focus arrived (a pre-existing focus
+        // that became disabled, or a click that fell through). The focus engine
+        // already keeps disabled nodes unreachable; this is the App-side gate on
+        // the activation path itself.
+        .filter(|r| !r.disabled)
+        .and_then(|r| match &r.interaction {
+            Some(NodeInteraction::Button { on_press, .. }) => Some(on_press.clone()),
+            _ => None,
+        })
+}
+
+fn route_ui_button_action(
+    on_press: &str,
+    modal_stack: &mut render::ui::modal_stack::ModalStack,
+) -> UiButtonAction {
+    match classify_ui_button_action(on_press) {
+        UiButtonAction::CloseDialog => {
+            modal_stack.pop();
+            UiButtonAction::CloseDialog
+        }
+        other => other,
+    }
+}
+
+fn apply_pause_menu_nav_policy(modal_stack: &mut render::ui::modal_stack::ModalStack) {
+    match modal_stack.active_name() {
+        Some(render::ui::demo::PAUSE_MENU_NAME) => modal_stack.pop(),
+        None => modal_stack.push_named(render::ui::demo::PAUSE_MENU_NAME, None),
+        Some(_) => {}
+    }
+}
+
+fn gameplay_snapshot_for_capture_state(
+    latch: &mut input::GameplayInputLatch,
+    frame_snapshot: &input::ActionSnapshot,
+    ticks: u32,
+    ui_captures_gameplay: bool,
+) -> Option<input::ActionSnapshot> {
+    if ui_captures_gameplay {
+        latch.clear();
+        return (ticks > 0).then(input::ActionSnapshot::neutral);
+    }
+
+    latch.snapshot_for_ticks(frame_snapshot, ticks)
+}
+
+fn gameplay_capture_gate_for_frame(
+    ui_captured_gameplay_at_frame_start: bool,
+    modal_stack: &render::ui::modal_stack::ModalStack,
+) -> bool {
+    ui_captured_gameplay_at_frame_start
+        || modal_stack.top_capture_mode() == input::UiCaptureMode::Capture
 }
 
 // --- ApplicationHandler ---
@@ -1549,6 +1622,8 @@ impl ApplicationHandler for App {
                 // seam where game logic reads them. See: context/lib/input.md
                 let ui_intents = self.ui_dispatch.take_ready();
                 self.ui_dispatch.advance_frame();
+                let ui_captured_gameplay_at_frame_start =
+                    self.ui_dispatch.mode() == input::UiCaptureMode::Capture;
 
                 // Text-entry resolution (M13 Text-Entry, Task 3): while a text-entry
                 // tree is the top of the modal stack, the drained intents drive the
@@ -1621,24 +1696,23 @@ impl ApplicationHandler for App {
                 );
                 self.ui_focused_id = focus_result.focused.clone();
 
-                // Button activation (M13 Goal F, Task 4): a `confirm` (gamepad
+                // Button activation: a `confirm` (gamepad
                 // confirm or pointer click — the focus engine reports both as
-                // `confirmed`) on a focused button fires its `onPress` named reaction
-                // through the same reaction path entity/system reactions use, so a
-                // click and a gamepad confirm have an identical observable effect.
+                // `confirmed`) on a focused button resolves its `onPress` as either
+                // a reserved UI action or an ordinary named reaction, so a click and
+                // a gamepad confirm have an identical observable effect.
                 if focus_result.confirmed {
                     self.fire_focused_button_activation(focus_result.focused.as_deref());
                 }
 
-                // Pause-menu toggle (M13 Goal F, Task 5): `nav.menu` (gamepad Start
-                // / Escape-from-gameplay) opens or closes the demo pause menu via
-                // the engine push/pop API. A `nav.cancel` (Escape / B inside the
-                // menu) also closes it. The capture-mode + cursor effect follows on
-                // this frame's `reconcile_ui_focus` below. The toggle flag is a
-                // punch-through (it works from gameplay, where the seam queues
-                // nothing); `cancelled` rides the captured-intent queue. Guard the
-                // cancel close to the pause menu so it never pops an unrelated
-                // top tree.
+                // Pause-menu toggle: `nav.menu` (gamepad Start /
+                // Escape-from-gameplay) opens the registered `pauseMenu` only from
+                // an empty modal stack, closes it when it is active, and is ignored
+                // while another modal is active. A `nav.cancel` (Escape / B inside
+                // the menu) also closes only the active pause menu. The capture-mode
+                // + cursor effect follows on this frame's `reconcile_ui_focus`
+                // below. The toggle flag is a punch-through from gameplay;
+                // `cancelled` rides the captured-intent queue.
                 if self.pending_menu_toggle {
                     self.pending_menu_toggle = false;
                     self.toggle_pause_menu();
@@ -1649,13 +1723,29 @@ impl ApplicationHandler for App {
                     self.modal_stack.pop();
                 }
 
+                let ui_captures_gameplay = gameplay_capture_gate_for_frame(
+                    ui_captured_gameplay_at_frame_start,
+                    &self.modal_stack,
+                );
+
                 // drain_look_inputs() must precede snapshot(); both touch
                 // mouse_axes and look state belongs to the render-rate path.
-                let look = self.input_system.drain_look_inputs();
+                // Capturing UI still drains raw input to prevent stale deltas from
+                // replaying later, but the consumed look is neutral so player aim
+                // cannot move while a modal owns input.
+                let drained_look = self.input_system.drain_look_inputs();
+                let look = if ui_captures_gameplay {
+                    input::LookInputs::default()
+                } else {
+                    drained_look
+                };
                 let frame_snapshot = self.input_system.snapshot();
-                let gameplay_snapshot = self
-                    .gameplay_input_latch
-                    .snapshot_for_ticks(&frame_snapshot, ticks);
+                let gameplay_snapshot = gameplay_snapshot_for_capture_state(
+                    &mut self.gameplay_input_latch,
+                    &frame_snapshot,
+                    ticks,
+                    ui_captures_gameplay,
+                );
 
                 // Apply look rotation once at render rate, not once per tick —
                 // so zero-tick frames still consume accumulated mouse motion.
@@ -1890,11 +1980,9 @@ impl ApplicationHandler for App {
 
                 // Reconcile the input seam + focus with the modal stack's top
                 // capture mode, now that every command drain this frame has
-                // settled the stack. A capturing top tree freezes gameplay input
-                // (UI-dispatch capture) and releases the cursor (`InputFocus::Menu`);
-                // an empty/passthrough top hands input back to gameplay. Runs in
-                // the game-logic phase so the capture decision is in force for the
-                // next frame's Input stage (the N→N+1 ordering the seam guarantees).
+                // settled the stack. A capturing top tree gates player controls,
+                // freezes lower UI layers, and releases the cursor (`InputFocus::Menu`);
+                // an empty/passthrough top hands input back to gameplay.
                 self.reconcile_ui_focus();
 
                 // Audio step — third in frame order (Input → Game logic →
@@ -1906,16 +1994,6 @@ impl ApplicationHandler for App {
                 // `forward()`, and `up` is world up per the `ListenerState`
                 // contract. Guarded for the silent (init-failed) case.
                 if let Some(audio) = &mut self.audio {
-                    // App-side `audio.master` consumer (M13 Goal F, Task 5): apply
-                    // the mod-declared master amplitude (set by the demo pause-menu
-                    // slider via `setState`) to the audio main-track volume on
-                    // change — amplitude → dB, `0` → mute floor. No-op when no mod
-                    // declares the slot or the value is unchanged. Runs in the audio
-                    // phase, after the frame's slot writes settle.
-                    if let Some(db) = self.audio_master.poll() {
-                        audio.set_main_volume(db);
-                    }
-
                     let listener = audio::ListenerState {
                         position: self.camera.position.to_array(),
                         forward: self.camera.aim_ray().1.to_array(),
@@ -3066,54 +3144,27 @@ impl App {
         }
     }
 
-    /// Fire a focused button's `onPress` named reaction on activation (M13 Goal F,
-    /// Task 4). `focused_id` is the focus engine's reported focused node this tick;
-    /// when it resolves to a `button` interaction on the exported rect list, the
-    /// `onPress` reaction fires through the shared named-reaction path — the same
-    /// vocabulary entity/system reactions use — so a gamepad confirm and a pointer
-    /// click produce an identical observable effect.
+    /// Fire a focused button's `onPress` on activation. Reserved `ui.*` actions
+    /// are handled App-side before ordinary names fall through to the shared
+    /// named-reaction path, so gamepad confirm and pointer click produce the same
+    /// observable effect.
     fn fire_focused_button_activation(&mut self, focused_id: Option<&str>) {
-        use render::ui::tree::NodeInteraction;
-
-        let Some(focused_id) = focused_id else {
-            return;
-        };
-        let Some(rects) = self.ui_focus_rects.as_ref() else {
-            return;
-        };
-        let on_press = rects
-            .rects
-            .iter()
-            .find(|r| r.id == focused_id)
-            // A disabled focused node is non-interactive (M13 G2-T3): block its
-            // activation regardless of how the focus arrived (a pre-existing focus
-            // that became disabled, or a click that fell through). The focus engine
-            // already keeps disabled nodes unreachable; this is the App-side gate on
-            // the activation path itself.
-            .filter(|r| !r.disabled)
-            .and_then(|r| match &r.interaction {
-                Some(NodeInteraction::Button { on_press, .. }) => Some(on_press.clone()),
-                _ => None,
-            });
+        let on_press = focused_button_on_press(self.ui_focus_rects.as_ref(), focused_id);
         if let Some(on_press) = on_press {
-            // The on-screen keyboard's `done` key carries a reserved sentinel
-            // `onPress` (never a registered reaction). Intercept it here and route
-            // to the shared commit seam — the same `commit_text_entry` the hardware
-            // Enter key reaches (Task 3) — so commit is not keyboard-only and the
-            // keyboard stays fully data-driven (the `done` key references the
-            // sentinel as data; no Rust change to edit the layout).
-            if on_press == render::ui::keyboard_asset::COMMIT_TEXT_ENTRY_SENTINEL {
-                self.commit_text_entry();
-                return;
+            match route_ui_button_action(&on_press, &mut self.modal_stack) {
+                UiButtonAction::CommitTextEntry => self.commit_text_entry(),
+                UiButtonAction::CloseDialog => {}
+                UiButtonAction::NamedReaction => {
+                    let _ = fire_named_event_with_sequences(
+                        &on_press,
+                        &self.script_ctx.data_registry.borrow(),
+                        &self.sequence_registry,
+                        &self.reaction_registry,
+                        &self.system_registry,
+                        &self.script_ctx,
+                    );
+                }
             }
-            let _ = fire_named_event_with_sequences(
-                &on_press,
-                &self.script_ctx.data_registry.borrow(),
-                &self.sequence_registry,
-                &self.reaction_registry,
-                &self.system_registry,
-                &self.script_ctx,
-            );
         }
     }
 
@@ -3401,11 +3452,9 @@ impl App {
         // level load — the slots reset to their identity rest values.
         self.vignette_decay.reset();
         self.shake_decay.reset();
-        // Reset the input-mode tracker (re-seeds `input.mode` to `focus`) and the
-        // `audio.master` consumer (re-applies the freshly-declared volume) so a
-        // mid-transition mode or a stale master volume never bleeds across levels.
+        // Reset the input-mode tracker so a mid-transition mode never bleeds
+        // across levels.
         self.input_mode_tracker.reset();
-        self.audio_master.reset();
         self.active_wieldable = None;
         self.active_wieldable_descriptor = None;
 
@@ -4074,18 +4123,13 @@ impl App {
         };
     }
 
-    /// Toggle the demo pause menu (M13 Goal F, Task 5): pop it if it is the top
-    /// tree, otherwise push it via the engine push/pop API (the registered
-    /// `pauseMenu` tree). Wired to `nav.menu` (gamepad Start / Escape-from-
-    /// gameplay) through `pending_menu_toggle`. The capture-mode + cursor effect
-    /// follows on the next `reconcile_ui_focus` (this game-logic phase).
+    /// Apply the `nav.menu` pause-menu policy: pop the pause menu if it is active,
+    /// open it when the modal stack is empty, and ignore the action while another
+    /// modal is active. Wired to gamepad Start / Escape-from-gameplay through
+    /// `pending_menu_toggle`. The capture-mode + cursor effect follows on the next
+    /// `reconcile_ui_focus` (this game-logic phase).
     fn toggle_pause_menu(&mut self) {
-        if self.modal_stack.active_name() == Some(render::ui::demo::PAUSE_MENU_NAME) {
-            self.modal_stack.pop();
-        } else {
-            self.modal_stack
-                .push_named(render::ui::demo::PAUSE_MENU_NAME, None);
-        }
+        apply_pause_menu_nav_policy(&mut self.modal_stack);
     }
 
     /// Reconcile the input-dispatch seam and coarse focus with the modal stack's
@@ -4097,7 +4141,7 @@ impl App {
     ///
     /// - A capturing top tree drives `UiCaptureMode::Capture` (the seam queues
     ///   events for next-frame game logic instead of forwarding to gameplay) and
-    ///   `InputFocus::Menu` (cursor released, gameplay input frozen).
+    ///   `InputFocus::Menu` (cursor released, player controls gated).
     /// - An empty or passthrough top hands input back: `Passthrough` at the seam,
     ///   and focus returns to `Gameplay` if it was `Menu`.
     ///
@@ -4246,6 +4290,610 @@ mod tests {
     use crate::frame_timing::TICK_DURATION;
     use crate::input::{InputSystem, default_bindings};
     use crate::options::CrouchMode;
+
+    #[test]
+    fn ui_button_action_classifier_reserves_close_before_named_reactions() {
+        assert_eq!(
+            classify_ui_button_action(render::ui::actions::COMMIT_TEXT_ENTRY_ACTION),
+            UiButtonAction::CommitTextEntry
+        );
+        assert_eq!(
+            classify_ui_button_action(render::ui::actions::CLOSE_DIALOG_ACTION),
+            UiButtonAction::CloseDialog
+        );
+        assert_eq!(
+            classify_ui_button_action("resumeGame"),
+            UiButtonAction::NamedReaction,
+            "ordinary button names must keep the named-reaction route",
+        );
+    }
+
+    #[test]
+    fn gameplay_snapshot_uses_neutral_input_while_ui_captures() {
+        let mut latch = input::GameplayInputLatch::new();
+
+        let mut keyboard = InputSystem::new(default_bindings());
+        keyboard.handle_keyboard_event(winit::keyboard::KeyCode::Space, true);
+        let pressed_before_capture = keyboard.snapshot();
+        assert!(
+            latch
+                .snapshot_for_ticks(&pressed_before_capture, 0)
+                .is_none(),
+            "zero-tick frame latches a jump press for the next gameplay tick",
+        );
+
+        let mut gamepad = InputSystem::new(default_bindings());
+        gamepad.set_gamepad_axis(gilrs::Axis::LeftStickY, -1.0);
+        gamepad.set_physical_input(
+            input::PhysicalInput::GamepadButton(gilrs::Button::South),
+            true,
+        );
+        let captured_raw_snapshot = gamepad.snapshot();
+
+        let captured_snapshot =
+            gameplay_snapshot_for_capture_state(&mut latch, &captured_raw_snapshot, 1, true)
+                .expect("simulation still ticks while UI captures");
+        assert_eq!(
+            captured_snapshot.axis_value(Action::MoveForward),
+            0.0,
+            "capturing UI gates gamepad movement from gameplay",
+        );
+        assert_eq!(
+            captured_snapshot.button(Action::Jump),
+            ButtonState::Inactive,
+            "capturing UI gates gamepad confirm from gameplay jump",
+        );
+
+        let after_capture = gameplay_snapshot_for_capture_state(
+            &mut latch,
+            &input::ActionSnapshot::neutral(),
+            1,
+            false,
+        )
+        .expect("gameplay resumes with a tick");
+        assert_eq!(
+            after_capture.button(Action::Jump),
+            ButtonState::Inactive,
+            "capture clears any previously latched button edge so it cannot replay after close",
+        );
+    }
+
+    #[test]
+    fn gameplay_snapshot_stays_neutral_on_gamepad_pause_close_frame() {
+        use crate::render::ui::descriptor::{
+            Align, AnchoredTree, CaptureMode, ContainerWidget, SpacingValue, Widget,
+        };
+        use crate::render::ui::layout::Anchor;
+        use crate::render::ui::modal_stack::{ModalStack, ScopeTier};
+
+        fn capturing_tree() -> AnchoredTree {
+            AnchoredTree {
+                anchor: Anchor::Center,
+                offset: [0.0, 0.0],
+                root: Widget::VStack(ContainerWidget {
+                    gap: SpacingValue::Literal(0.0),
+                    padding: SpacingValue::Literal(0.0),
+                    align: Align::Start,
+                    fill: None,
+                    border: None,
+                    id: None,
+                    focus_neighbors: Default::default(),
+                    focus: None,
+                    restore_on_return: false,
+                    local_state: None,
+                    visible_when: None,
+                    role: None,
+                    children: Vec::new(),
+                }),
+                capture_mode: CaptureMode::Capture,
+                initial_focus: Some("pauseResume".to_string()),
+                text_entry_target: None,
+                accessible_name: None,
+                role: None,
+            }
+        }
+
+        let mut stack = ModalStack::new();
+        stack.registry_mut().register(
+            render::ui::demo::PAUSE_MENU_NAME,
+            capturing_tree(),
+            ScopeTier::Engine,
+            false,
+        );
+        stack.push_named(render::ui::demo::PAUSE_MENU_NAME, None);
+        let ui_captured_gameplay_at_frame_start =
+            stack.top_capture_mode() == input::UiCaptureMode::Capture;
+
+        let routed = route_ui_button_action(render::ui::actions::CLOSE_DIALOG_ACTION, &mut stack);
+        assert_eq!(routed, UiButtonAction::CloseDialog);
+        assert!(
+            stack.is_empty(),
+            "Resume closes the pause menu before gameplay snapshots are selected",
+        );
+        assert_ne!(
+            stack.top_capture_mode(),
+            input::UiCaptureMode::Capture,
+            "the post-pop stack alone would no longer gate gameplay",
+        );
+
+        let mut input_system = InputSystem::new(default_bindings());
+        input_system.set_gamepad_axis(gilrs::Axis::LeftStickY, -1.0);
+        input_system.set_physical_input(
+            input::PhysicalInput::GamepadButton(gilrs::Button::South),
+            true,
+        );
+        input_system.set_physical_input(
+            input::PhysicalInput::GamepadButton(gilrs::Button::East),
+            true,
+        );
+
+        let mut latch = input::GameplayInputLatch::new();
+        let frame_snapshot = input_system.snapshot();
+        let gameplay_snapshot = gameplay_snapshot_for_capture_state(
+            &mut latch,
+            &frame_snapshot,
+            1,
+            gameplay_capture_gate_for_frame(ui_captured_gameplay_at_frame_start, &stack),
+        )
+        .expect("simulation still ticks on the pause-menu close frame");
+
+        // Regression: gamepad Resume/Cancel that closed a capturing pause menu
+        // leaked through as Jump/Dash on the same gameplay frame.
+        assert_eq!(gameplay_snapshot.axis_value(Action::MoveForward), 0.0);
+        assert_eq!(
+            gameplay_snapshot.button(Action::Jump),
+            ButtonState::Inactive
+        );
+        assert_eq!(
+            gameplay_snapshot.button(Action::Dash),
+            ButtonState::Inactive
+        );
+    }
+
+    fn widget_contains_text(widget: &render::ui::descriptor::Widget, needle: &str) -> bool {
+        use render::ui::descriptor::Widget;
+
+        match widget {
+            Widget::Text(text) => text.content == needle,
+            Widget::VStack(container) | Widget::HStack(container) => container
+                .children
+                .iter()
+                .any(|child| widget_contains_text(child, needle)),
+            Widget::Grid(grid) => grid
+                .children
+                .iter()
+                .any(|child| widget_contains_text(child, needle)),
+            _ => false,
+        }
+    }
+
+    fn button_action<'a>(widget: &'a render::ui::descriptor::Widget, id: &str) -> Option<&'a str> {
+        use render::ui::descriptor::Widget;
+
+        match widget {
+            Widget::Button(button) if button.id == id => Some(button.on_press.as_str()),
+            Widget::VStack(container) | Widget::HStack(container) => container
+                .children
+                .iter()
+                .find_map(|child| button_action(child, id)),
+            Widget::Grid(grid) => grid
+                .children
+                .iter()
+                .find_map(|child| button_action(child, id)),
+            _ => None,
+        }
+    }
+
+    fn workspace_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("workspace root exists")
+    }
+
+    fn focus_button_action(
+        rects: &render::ui::tree::FocusRectList,
+        result: &input::FocusTickResult,
+    ) -> String {
+        assert!(
+            result.confirmed,
+            "activation should confirm the focused button"
+        );
+        focused_button_on_press(Some(rects), result.focused.as_deref())
+            .expect("focused button exposes an onPress action")
+    }
+
+    #[cfg(debug_assertions)]
+    fn install_scripts_build_next_to_current_exe() -> bool {
+        let Ok(current_exe) = std::env::current_exe() else {
+            return false;
+        };
+        let Some(target_dir) = current_exe.parent() else {
+            return false;
+        };
+        let name = if cfg!(windows) {
+            "scripts-build.exe"
+        } else {
+            "scripts-build"
+        };
+        let dest = target_dir.join(name);
+        if dest.is_file() {
+            return true;
+        }
+        let source = ensure_scripts_build();
+        if let (Ok(cs), Ok(cd)) = (source.canonicalize(), dest.canonicalize()) {
+            if cs == cd {
+                return true;
+            }
+        }
+        std::fs::copy(&source, &dest).unwrap_or_else(|e| {
+            panic!(
+                "scripts-build found at {} but copy to {} failed: {e}",
+                source.display(),
+                dest.display()
+            )
+        });
+        true
+    }
+
+    fn ensure_scripts_build() -> PathBuf {
+        fn scripts_build_binary() -> Option<PathBuf> {
+            let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            let name = if cfg!(windows) {
+                "scripts-build.exe"
+            } else {
+                "scripts-build"
+            };
+            let mut dir: Option<&Path> = Some(manifest.as_path());
+            while let Some(d) = dir {
+                for profile in ["debug", "release"] {
+                    let candidate = d.join("target").join(profile).join(name);
+                    if candidate.is_file() {
+                        return Some(candidate);
+                    }
+                }
+                dir = d.parent();
+            }
+            None
+        }
+
+        if let Some(path) = scripts_build_binary() {
+            return path;
+        }
+        let status = std::process::Command::new(env!("CARGO"))
+            .args(["build", "-p", "postretro-script-compiler"])
+            .status()
+            .expect("cargo build scripts-build");
+        assert!(status.success(), "failed to build scripts-build");
+        scripts_build_binary().expect("scripts-build should exist after build")
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn production_pause_menu_sdk_tree_drives_cpu_interaction_end_to_end() {
+        use crate::input::{InputMode, NavIntent, PointerPos, UiFocusEngine};
+        use crate::render::ui::descriptor::CaptureMode;
+        use crate::render::ui::layout::Anchor;
+        use crate::render::ui::modal_stack::{ModalStack, ScopeTier};
+        use crate::render::ui::tree::CellValues;
+        use crate::scripting::data_descriptors::RegisteredUiTree;
+
+        if !install_scripts_build_next_to_current_exe() {
+            eprintln!("skipping: could not install scripts-build next to test binary");
+            return;
+        }
+
+        let mut rt = test_runtime();
+        let content_dev = workspace_root().join("content/dev");
+        rt.run_mod_init(&content_dev)
+            .expect("development TypeScript mod entry bundles and initializes");
+
+        let pause_entry = rt
+            .mod_manifest()
+            .expect("dev mod manifest exists")
+            .ui_trees
+            .iter()
+            .find(|tree| tree.name == render::ui::demo::PAUSE_MENU_NAME)
+            .expect("dev setupMod returns the pauseMenu tree")
+            .clone();
+        assert!(
+            !pause_entry.always_on,
+            "the mod pause menu is pushed-only, never always-on",
+        );
+
+        let mod_pause = pause_entry.tree.clone();
+        assert_eq!(mod_pause.anchor, Anchor::Center);
+        assert_eq!(mod_pause.offset, [0.0, 0.0]);
+        assert_eq!(mod_pause.capture_mode, CaptureMode::Capture);
+        assert_eq!(mod_pause.initial_focus.as_deref(), Some("pauseResume"));
+        assert_eq!(mod_pause.accessible_name.as_deref(), Some("Pause menu"));
+        assert_eq!(mod_pause.role, Some(render::ui::descriptor::Role::Group));
+        assert!(widget_contains_text(&mod_pause.root, "PAUSED"));
+        let render::ui::descriptor::Widget::VStack(pause_root) = &mod_pause.root else {
+            panic!("pause menu root is a vstack");
+        };
+        assert_eq!(
+            pause_root.focus.as_ref().map(|focus| focus.kind()),
+            Some(render::ui::descriptor::FocusKind::Linear)
+        );
+        assert_eq!(
+            pause_root.focus.as_ref().map(|focus| focus.wrap()),
+            Some(true)
+        );
+        assert_eq!(
+            button_action(&mod_pause.root, "pauseResume"),
+            Some(render::ui::actions::CLOSE_DIALOG_ACTION),
+            "Resume resolves to the reserved close action wire value",
+        );
+
+        let theme = render::ui::theme::UiTheme::engine_default();
+        let mut retained = render::ui::tree::UiTree::from_descriptor(&mod_pause, &theme);
+        let mut font_system = render::ui::text::build_font_system();
+        let empty_slots = std::collections::HashMap::new();
+        let empty_cells = CellValues::new();
+        let draw = retained.build_draw_data_retained(
+            [1280, 720],
+            &mut font_system,
+            &render::ui::tree::ImageSizes::new(),
+            &empty_slots,
+            &empty_cells,
+            0.0,
+        );
+        assert_eq!(
+            retained.recompute_count(),
+            1,
+            "retained descriptor builds layout after the mod-init context has dropped",
+        );
+        assert!(
+            draw.texts.iter().any(|text| text.content == "RESUME"),
+            "retained draw data includes the SDK-authored Resume label",
+        );
+        let focus_rects =
+            retained.export_focus_rects(&mod_pause, [1280, 720], &empty_slots, &empty_cells);
+        assert_eq!(focus_rects.initial_focus.as_deref(), Some("pauseResume"));
+        let resume_rect = focus_rects
+            .rects
+            .iter()
+            .find(|rect| rect.id == "pauseResume")
+            .expect("Resume button exports a focus rect");
+        assert!(
+            resume_rect.rect[2] > 0.0 && resume_rect.rect[3] > 0.0,
+            "focus rect proves layout produced usable hit geometry",
+        );
+
+        let fallback_path =
+            workspace_root().join(render::ui::tree_asset::ui_asset_path("pauseMenu.json"));
+        let fallback = render::ui::tree_asset::load_named_tree(&fallback_path)
+            .expect("engine pause fallback loads");
+        assert!(
+            widget_contains_text(&fallback.root, "PRESS ESC OR B TO RESUME"),
+            "fallback marker distinguishes the engine JSON fallback",
+        );
+
+        let mut stack = ModalStack::new();
+        stack.registry_mut().register(
+            render::ui::demo::PAUSE_MENU_NAME,
+            fallback.clone(),
+            ScopeTier::Engine,
+            false,
+        );
+        stack.register_script_trees(vec![pause_entry.clone()], ScopeTier::Mod);
+        let resolved = stack
+            .tree(render::ui::demo::PAUSE_MENU_NAME)
+            .expect("pauseMenu resolves through tiered registry");
+        assert_eq!(
+            button_action(&resolved.root, "pauseResume"),
+            Some(render::ui::actions::CLOSE_DIALOG_ACTION),
+            "the returned mod tree shadows the fallback marker",
+        );
+        assert!(
+            !widget_contains_text(&resolved.root, "PRESS ESC OR B TO RESUME"),
+            "shadowed mod tree does not expose the fallback marker",
+        );
+
+        stack.push_named(render::ui::demo::PAUSE_MENU_NAME, None);
+        assert_eq!(stack.active_name(), Some(render::ui::demo::PAUSE_MENU_NAME));
+        assert_eq!(stack.top_capture_mode(), input::UiCaptureMode::Capture);
+        assert_eq!(
+            stack.entries()[0].descriptor.initial_focus.as_deref(),
+            Some("pauseResume"),
+            "initial focus metadata reaches the modal-stack entry",
+        );
+
+        let mut keyboard_focus = UiFocusEngine::new();
+        let initial = keyboard_focus.tick(
+            Some(render::ui::demo::PAUSE_MENU_NAME),
+            Some(&focus_rects),
+            &[],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+        assert_eq!(initial.focused.as_deref(), Some("pauseResume"));
+        let keyboard_confirm = keyboard_focus.tick(
+            Some(render::ui::demo::PAUSE_MENU_NAME),
+            Some(&focus_rects),
+            &[NavIntent::Confirm],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+        let keyboard_action = focus_button_action(&focus_rects, &keyboard_confirm);
+
+        let mut gamepad_focus = UiFocusEngine::new();
+        gamepad_focus.tick(
+            Some(render::ui::demo::PAUSE_MENU_NAME),
+            Some(&focus_rects),
+            &[],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+        let gamepad_confirm = gamepad_focus.tick(
+            Some(render::ui::demo::PAUSE_MENU_NAME),
+            Some(&focus_rects),
+            &[NavIntent::Confirm],
+            None,
+            &[],
+            InputMode::Focus,
+            0.0,
+        );
+        let gamepad_action = focus_button_action(&focus_rects, &gamepad_confirm);
+
+        let click_pos = PointerPos {
+            x: resume_rect.rect[0] as f64 + resume_rect.rect[2] as f64 * 0.5,
+            y: resume_rect.rect[1] as f64 + resume_rect.rect[3] as f64 * 0.5,
+        };
+        let mut pointer_focus = UiFocusEngine::new();
+        let pointer_click = pointer_focus.tick(
+            Some(render::ui::demo::PAUSE_MENU_NAME),
+            Some(&focus_rects),
+            &[],
+            None,
+            &[click_pos],
+            InputMode::Pointer,
+            0.0,
+        );
+        let pointer_action = focus_button_action(&focus_rects, &pointer_click);
+
+        assert_eq!(
+            keyboard_action,
+            render::ui::actions::CLOSE_DIALOG_ACTION,
+            "keyboard confirm resolves the reserved Resume action",
+        );
+        assert_eq!(
+            gamepad_action, keyboard_action,
+            "gamepad confirm resolves the same Resume action",
+        );
+        assert_eq!(
+            pointer_action, keyboard_action,
+            "pointer click resolves the same Resume action",
+        );
+
+        let routed = route_ui_button_action(&keyboard_action, &mut stack);
+        assert_eq!(routed, UiButtonAction::CloseDialog);
+        assert!(
+            stack.is_empty(),
+            "ui.closeDialog pops the active pause menu before named-reaction dispatch",
+        );
+
+        stack.push_named(render::ui::demo::PAUSE_MENU_NAME, None);
+        let ordinary = route_ui_button_action("resumePauseMenu", &mut stack);
+        assert_eq!(
+            ordinary,
+            UiButtonAction::NamedReaction,
+            "ordinary button action names retain named-reaction dispatch",
+        );
+        assert_eq!(
+            stack.active_name(),
+            Some(render::ui::demo::PAUSE_MENU_NAME),
+            "ordinary names are not intercepted as reserved close actions",
+        );
+
+        stack.replace_script_tree_tier(Vec::<RegisteredUiTree>::new(), ScopeTier::Mod);
+        assert_eq!(
+            stack
+                .tree(render::ui::demo::PAUSE_MENU_NAME)
+                .and_then(|tree| button_action(&tree.root, "pauseResume")),
+            None,
+            "staged omission reveals the fallback in the registry",
+        );
+        assert!(
+            widget_contains_text(&stack.entries()[0].descriptor.root, "PAUSED"),
+            "already-open pause menu keeps its cloned descriptor",
+        );
+        assert_eq!(
+            button_action(&stack.entries()[0].descriptor.root, "pauseResume"),
+            Some(render::ui::actions::CLOSE_DIALOG_ACTION),
+            "already-open menu remains stable until closed",
+        );
+        stack.pop();
+        stack.push_named(render::ui::demo::PAUSE_MENU_NAME, None);
+        assert!(
+            widget_contains_text(
+                &stack.entries()[0].descriptor.root,
+                "PRESS ESC OR B TO RESUME"
+            ),
+            "reopening after staged omission resolves the engine fallback",
+        );
+        assert_eq!(
+            button_action(&stack.entries()[0].descriptor.root, "pauseResume"),
+            None,
+            "fallback has no Resume button or reserved-action dependency",
+        );
+    }
+
+    #[test]
+    fn nav_menu_policy_opens_closes_pause_and_ignores_other_modals() {
+        use crate::render::ui::descriptor::{
+            Align, AnchoredTree, CaptureMode, ContainerWidget, SpacingValue, Widget,
+        };
+        use crate::render::ui::layout::Anchor;
+        use crate::render::ui::modal_stack::{ModalStack, ScopeTier};
+
+        fn capturing_tree() -> AnchoredTree {
+            AnchoredTree {
+                anchor: Anchor::Center,
+                offset: [0.0, 0.0],
+                root: Widget::VStack(ContainerWidget {
+                    gap: SpacingValue::Literal(0.0),
+                    padding: SpacingValue::Literal(0.0),
+                    align: Align::Start,
+                    fill: None,
+                    border: None,
+                    id: None,
+                    focus_neighbors: Default::default(),
+                    focus: None,
+                    restore_on_return: false,
+                    local_state: None,
+                    visible_when: None,
+                    role: None,
+                    children: Vec::new(),
+                }),
+                capture_mode: CaptureMode::Capture,
+                initial_focus: None,
+                text_entry_target: None,
+                accessible_name: None,
+                role: None,
+            }
+        }
+
+        let mut stack = ModalStack::new();
+        stack.registry_mut().register(
+            render::ui::demo::PAUSE_MENU_NAME,
+            capturing_tree(),
+            ScopeTier::Engine,
+            false,
+        );
+        stack
+            .registry_mut()
+            .register("dialog", capturing_tree(), ScopeTier::Engine, false);
+
+        apply_pause_menu_nav_policy(&mut stack);
+        assert_eq!(
+            stack.active_name(),
+            Some(render::ui::demo::PAUSE_MENU_NAME),
+            "nav.menu opens pauseMenu on an empty modal stack",
+        );
+
+        apply_pause_menu_nav_policy(&mut stack);
+        assert!(
+            stack.is_empty(),
+            "nav.menu closes pauseMenu when it is the active modal",
+        );
+
+        stack.push_named("dialog", None);
+        apply_pause_menu_nav_policy(&mut stack);
+        assert_eq!(
+            stack.active_name(),
+            Some("dialog"),
+            "nav.menu is ignored while another modal is active",
+        );
+        assert_eq!(stack.len(), 1);
+    }
 
     // --- resolve_crouch_intent (input-layer toggle/hold derivation) ---
 

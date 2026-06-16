@@ -2,14 +2,12 @@ import {
   type NamedReactionDescriptor,
   appendText,
   backspaceText,
-  closeDialog,
   defineReaction,
   flashScreen,
   getGameState,
   onStateCrossing,
   playSound,
   screenShake,
-  showDialog,
   vignette,
   world,
 } from "postretro";
@@ -162,30 +160,6 @@ export function setupLevel(_ctx: unknown) {
     defineReaction("lowHealthVignette", vignette(0.7, 400, [0.6, 0.0, 0.0])),
     defineReaction("lowHealthShake", screenShake(12, 300)),
     defineReaction("lowHealthAlert", playSound("sfx/test_tone", "sfx")),
-  );
-
-  // M13 Goal F (Task 5) demo: the engine pause menu's RESUME button fires the
-  // `resumePauseMenu` reaction on activation (gamepad confirm / click), which
-  // `closeDialog` pops off the modal stack — the same pop the engine `nav.menu`
-  // toggle and `nav.cancel` perform. The button's `onPress` name must match this
-  // reaction name. (The menu tree itself and the volume slider are engine-owned
-  // demo descriptors; this reaction is the script half of the Resume button.)
-  reactions.push(defineReaction("resumePauseMenu", closeDialog()));
-
-  // M13 Text-Entry (Task 4) demo: the pause menu's "ENTER TEXT" button fires
-  // `openTextEntry`, which `showDialog`-pushes the engine-shipped on-screen
-  // keyboard (registered under the name "keyboard") carrying `onTextEntryCommit`
-  // as its commit reaction. On commit (the on-screen `done` key OR a hardware
-  // Enter), the engine fires `onTextEntryCommit` — an observable `playSound` — so
-  // commit is distinguishable from cancel (`nav.cancel` pops without firing it).
-  // The pause menu's `text` row binds `ui.textEntry` DIRECTLY, so the entered
-  // string shows there as it is typed on either input path.
-  reactions.push(
-    defineReaction(
-      "openTextEntry",
-      showDialog("keyboard", "onTextEntryCommit"),
-    ),
-    defineReaction("onTextEntryCommit", playSound("sfx/test_tone", "sfx")),
   );
 
   // Per-key named reactions the on-screen keyboard's letter/digit/space buttons

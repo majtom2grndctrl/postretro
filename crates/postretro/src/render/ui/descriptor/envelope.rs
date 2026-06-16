@@ -8,10 +8,10 @@ use serde::{Deserialize, Serialize};
 use super::super::layout::Anchor;
 use super::{Role, Widget};
 
-/// Whether a tree captures input (freezing gameplay + lower trees and releasing
-/// the cursor) or passes it through to gameplay. Declared on the `AnchoredTree`
-/// envelope so a JSON-authored tree states its own behavior. `Passthrough` is the
-/// default — a HUD never captures, and an omitted `captureMode` keeps the pre-F
+/// Whether a tree captures input (gating player controls, freezing lower UI, and
+/// releasing the cursor) or passes it through to gameplay. Declared on the
+/// `AnchoredTree` envelope so a JSON-authored tree states its own behavior.
+/// `Passthrough` is the default — a HUD never captures, and an omitted `captureMode` keeps the pre-F
 /// wire form byte-identical (`skip_serializing_if` below). The app-side modal
 /// stack reads the TOP tree's mode to drive the input-dispatch seam and focus.
 ///
@@ -21,7 +21,8 @@ use super::{Role, Widget};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum CaptureMode {
-    /// Tree consumes input; gameplay + lower trees freeze, cursor releases.
+    /// Tree consumes UI input; player controls are gated, lower UI freezes, and
+    /// the cursor releases.
     Capture,
     /// Tree ignores input; events flow through to gameplay (HUD behavior).
     #[default]

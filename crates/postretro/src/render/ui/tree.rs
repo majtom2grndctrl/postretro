@@ -2569,13 +2569,13 @@ pub(crate) struct FocusRect {
 }
 
 /// Per-node interaction metadata exported with an interactive focusable node.
-/// The app resolves the focused node's interaction to fire
-/// a button's named reaction on confirm/click, or to step a slider's bound value
-/// on a captured nav intent and emit the `setState` write.
+/// The app resolves the focused node's interaction to route a button's reserved
+/// UI action or named reaction on confirm/click, or to step a slider's bound
+/// value on a captured nav intent and emit the `setState` write.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum NodeInteraction {
-    /// A `button`: activation (confirm/click) fires `on_press` through the
-    /// reaction registry — the same vocabulary entity/system reactions use.
+    /// A `button`: activation (confirm/click) routes `on_press` through the App's
+    /// reserved-action-or-named-reaction seam.
     /// `repeat_on_hold`, when present, opts the button into activation-repeat: a
     /// HELD confirm re-fires `on_press` on the focus engine's hold-to-repeat clock
     /// (on-screen keyboard backspace pattern). Absent keeps the single-fire rule
@@ -3617,13 +3617,13 @@ mod tests {
         }
     }
 
-    /// Regression: the pause-menu `ui.textEntry` readout and the "ENTER TEXT"
-    /// opener button are DISTINCT retained nodes whose resolved drawn content can
-    /// never alias one another. Drives the real `build_pause_menu_descriptor`
-    /// through the retained tree with a live `ui.textEntry` value and asserts the
-    /// readout draws `"ENTRY <value>"` while the opener draws its immutable
-    /// "ENTER TEXT" label — each at its own position, with no per-node cache or
-    /// auto-id collision swapping one node's content/glyphs onto the other.
+    /// Regression: a bound `ui.textEntry` readout and an adjacent opener button
+    /// are DISTINCT retained nodes whose resolved drawn content can never alias
+    /// one another. Drives a focused fixture through the retained tree with a live
+    /// `ui.textEntry` value and asserts the readout draws `"ENTRY <value>"` while
+    /// the opener draws its immutable "ENTER TEXT" label — each at its own
+    /// position, with no per-node cache or auto-id collision swapping one node's
+    /// content/glyphs onto the other.
     ///
     /// This pins the CPU half of the readout-aliasing bug (the reported symptom was
     /// the readout rendering the opener's "ENTER TEXT" text): node identity is the
@@ -3633,10 +3633,40 @@ mod tests {
     /// per-stack-layer `encode` loop — is fixed in `render/mod.rs` and is not
     /// CPU-testable without a GPU adapter; see that fix's note.)
     #[test]
-    fn pause_menu_readout_and_opener_resolve_distinct_non_aliasing_text() {
-        use crate::render::ui::demo::build_pause_menu_descriptor;
-
-        let tree = build_pause_menu_descriptor();
+    fn text_entry_readout_and_opener_resolve_distinct_non_aliasing_text() {
+        let tree: AnchoredTree = serde_json::from_str(
+            r#"{
+                "anchor": "center",
+                "offset": [0.0, 0.0],
+                "root": {
+                    "kind": "vstack",
+                    "gap": 10.0,
+                    "padding": 16.0,
+                    "align": "stretch",
+                    "children": [
+                        {
+                            "kind": "text",
+                            "content": "ENTRY --",
+                            "fontSize": 28.0,
+                            "color": "ok",
+                            "font": "mono",
+                            "bind": {
+                                "slot": "ui.textEntry",
+                                "format": "ENTRY {}"
+                            }
+                        },
+                        {
+                            "kind": "button",
+                            "id": "textEntryOpen",
+                            "label": "ENTER TEXT",
+                            "onPress": "openTextEntry"
+                        }
+                    ]
+                },
+                "captureMode": "capture"
+            }"#,
+        )
+        .expect("focused text-entry fixture parses");
         let mut ui = UiTree::from_descriptor(&tree, &theme());
         let mut fs = font_system();
         let mut slots: HashMap<String, SlotValue> = HashMap::new();

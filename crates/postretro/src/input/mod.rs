@@ -65,6 +65,15 @@ pub struct ActionSnapshot {
 }
 
 impl ActionSnapshot {
+    /// Snapshot with every action inactive. Capturing UI uses this to keep fixed
+    /// simulation ticks running while player controls are gated.
+    pub fn neutral() -> Self {
+        Self {
+            button_states: HashMap::new(),
+            axis_values: HashMap::new(),
+        }
+    }
+
     /// Query the button state for an action. Returns Inactive if unbound.
     pub fn button(&self, action: Action) -> ButtonState {
         self.button_states

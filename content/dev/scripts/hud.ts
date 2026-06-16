@@ -6,6 +6,7 @@ import {
   VStack,
   bindState,
   defineTheme,
+  defineUiTree,
   getGameState,
 } from "postretro";
 
@@ -29,39 +30,41 @@ export const hudTheme = defineTheme({
   },
 });
 
-export function buildHud() {
-  const { player } = getGameState();
-  const { color, font, spacing } = hudTheme.tokens;
+const { player } = getGameState();
+const { color, font, spacing } = hudTheme.tokens;
 
-  const status = Text({
-    content: "HP --",
-    color: color("hud.text"),
-    font: font("hud.status"),
-    fontSize: 24.0,
-    bind: bindState(player.health, { format: "HP {}" }),
-  });
+const status = Text({
+  content: "HP --",
+  color: color("hud.text"),
+  font: font("hud.status"),
+  fontSize: 24.0,
+  bind: bindState(player.health, { format: "HP {}" }),
+});
 
-  const bar = Bar({
-    bind: bindState(player.health, {
-      tween: {
-        durationMs: 180.0,
-        easing: "easeOut",
-      },
-    }),
-    max: player.maxHealth,
-    fill: color("ok"),
-    background: color("hud.health.background"),
-    styleRanges: {
-      max: 1.0,
-      entries: [
-        { upTo: 0.25, color: color("critical") },
-        { upTo: 0.5, color: color("warning") },
-        { color: color("ok") },
-      ],
+const bar = Bar({
+  bind: bindState(player.health, {
+    tween: {
+      durationMs: 180.0,
+      easing: "easeOut",
     },
-  });
+  }),
+  max: player.maxHealth,
+  fill: color("ok"),
+  background: color("hud.health.background"),
+  styleRanges: {
+    max: 1.0,
+    entries: [
+      { upTo: 0.25, color: color("critical") },
+      { upTo: 0.5, color: color("warning") },
+      { color: color("ok") },
+    ],
+  },
+});
 
-  const healthTree = Tree(
+export const hud = defineUiTree({
+  name: "hud",
+  alwaysOn: true,
+  tree: Tree(
     { anchor: "bottomLeft", offset: [24.0, -24.0] },
     VStack(
       {
@@ -75,18 +78,14 @@ export function buildHud() {
         bar,
       ],
     ),
-  );
+  ),
+});
 
-  const reticleTree = Tree(
+export const reticle = defineUiTree({
+  name: "hud.reticle",
+  alwaysOn: true,
+  tree: Tree(
     { anchor: "center", offset: [0.0, 0.0] },
     Text({ content: "+", font: font("mono") }),
-  );
-
-  return {
-    uiTrees: [
-      { name: "hud", tree: healthTree, alwaysOn: true },
-      { name: "hud.reticle", tree: reticleTree, alwaysOn: true },
-    ],
-    theme: hudTheme,
-  };
-}
+  ),
+});

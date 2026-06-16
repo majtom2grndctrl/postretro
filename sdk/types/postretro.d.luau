@@ -832,6 +832,10 @@ declare function showDialog(tree: string, onCommit: string?): PrimitiveReactionD
 --- `content/base/ui/keyboard.json` at boot. Edits the `ui.textEntry` slot.
 declare KEYBOARD_TREE: "keyboard"
 
+--- Reserved button `onPress` action that closes the active modal. The App
+--- intercepts this exact wire value before named-reaction dispatch.
+declare CLOSE_DIALOG_ACTION: "ui.closeDialog"
+
 --- System-reaction body (M13 Text Entry): open the engine-shipped on-screen
 --- keyboard, a capturing modal that edits the `ui.textEntry` slot. Optional
 --- `onCommit` (omitted when nil) names a reaction fired on commit (the on-screen
@@ -1139,6 +1143,15 @@ export type TreeProps = { anchor: WidgetAnchor, offset: {number}, captureMode: W
 export type AnchoredTreeDescriptor = { anchor: WidgetAnchor, offset: {number}, root: WidgetDescriptor, captureMode: WidgetCaptureMode?, initialFocus: string?, textEntryTarget: string?, accessibleName: string?, role: WidgetRole? }
 --- Wrap a root widget descriptor in the `AnchoredTree` placement envelope. `root` is a POSITIONAL second argument.
 declare function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDescriptor
+--- Props accepted by `defineUiTree`. The returned object preserves the runtime
+--- manifest entry shape `{ name, tree, alwaysOn? }`.
+export type UiTreeRegistrationProps = { name: string, tree: AnchoredTreeDescriptor, alwaysOn: boolean? }
+--- A typed UI-tree registration entry for `setupMod().uiTrees` / `setupLevel().uiTrees`.
+export type UiTreeRegistration = ModUiTree
+--- Pure helper for defining a named UI-tree registration. Registration still
+--- happens only when the returned object is included in a manifest `uiTrees`
+--- array.
+declare function defineUiTree(registration: UiTreeRegistrationProps): UiTreeRegistration
 
 --- Bind-only options for number refs (text/bar/slider-compatible number shape).
 export type NumberStateBindOptions = { format: string?, tween: NumberTween? }

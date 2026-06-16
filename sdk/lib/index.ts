@@ -97,8 +97,10 @@ export type {
   WidgetCaptureMode,
   TreeProps,
   AnchoredTreeDescriptor,
+  UiTreeRegistrationProps,
+  UiTreeRegistration,
 } from "./ui/tree";
-export { Tree } from "./ui/tree";
+export { Tree, defineUiTree } from "./ui/tree";
 
 export type {
   LocalStateHandle,

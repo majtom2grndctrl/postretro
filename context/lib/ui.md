@@ -16,7 +16,7 @@ Gameplay UI is a **modal stack** of trees: top tree's capture mode decides captu
 
 ### 1.1 Script authoring model
 
-Scripts author UI as the same descriptor trees, built by SDK factory functions (one per widget kind; props-first, container children positional) and registered by name. The factory output is wire-identical to JSON — the bridge converts a VM value to the descriptor and the wire round-trips byte-identically, so factory-built and JSON-built trees are indistinguishable downstream. The same "scripts declare, Rust executes; the VM drops after load" contract holds (`scripting.md` §1): registration is the only crossing, and the VM drops after each registration pass.
+Scripts author UI as the same descriptor trees, built by SDK factory functions (one per widget kind; props-first, container children positional) and registered by name. `Tree(...)` builds the placement envelope; `defineUiTree({ name, tree, alwaysOn? })` builds the returned registration entry while preserving the manifest wire shape. The factory output is wire-identical to JSON — the bridge converts a VM value to the descriptor and the wire round-trips byte-identically, so factory-built and JSON-built trees are indistinguishable downstream. The same "scripts declare, Rust executes; the VM drops after load" contract holds (`scripting.md` §1): registration is the only crossing, and the VM drops after each registration pass.
 
 **Modder components are plain functions.** A reusable component is a function returning a descriptor subtree — no component registry, decorator, or inheritance. It takes the same props-first(-then-children) shape as a factory and nests inside SDK containers; the bridge sees no difference between a factory call and a component call. A component that uses presentation cells (via `ui.createLocalState`) declares its scope on the container it returns, since cell scope resolves to the nearest declaring ancestor — so each component instance owns an independent scope.
 
@@ -29,7 +29,7 @@ Scripts author UI as the same descriptor trees, built by SDK factory functions (
 The production HUD is authored through the SDK, returned from `setupMod()`, and retained by Rust after mod init drops. Durable contract points are:
 
 - HUD authors import SDK factories, `bindState`, and `getGameState` from `"postretro"`.
-- A HUD builder obtains `const { player } = getGameState()` internally.
+- A HUD module obtains `const { player } = getGameState()` when constructing its returned UI-tree registration.
 - `bindState(player.health, options)` decorates the readonly ref for display. It does not read HP during authoring.
 - The health bar uses `player.maxHealth` as a direct readonly max reference. There is no `player.healthFraction` slot; UI derives the displayed fill from `player.health / player.maxHealth`.
 - Bar `styleRanges` evaluate the normalized displayed fill, so health bands use thresholds in `[0, 1]` with `styleRanges.max = 1.0`.

@@ -998,12 +998,12 @@ import {
   Text,
   Tree,
   VStack,
+  defineUiTree,
 } from "postretro";
 
-export const PAUSE_MENU_TREE = "pauseMenu";
-
-export function buildPauseMenu() {
-  return Tree(
+export const pauseMenu = defineUiTree({
+  name: "pauseMenu",
+  tree: Tree(
     {
       anchor: "center",
       offset: [0, 0],
@@ -1029,15 +1029,13 @@ export function buildPauseMenu() {
         }),
       ],
     ),
-  );
-}
+  ),
+});
 
 export function setupMod() {
   return {
     name: "MyMod",
-    uiTrees: [
-      { name: PAUSE_MENU_TREE, tree: buildPauseMenu(), alwaysOn: false },
-    ],
+    uiTrees: [pauseMenu],
   };
 }
 ```
@@ -1165,7 +1163,7 @@ export function setupMod() {
   return {
     name: "MyMod",
     uiTrees: [
-      { name: "hud", alwaysOn: true, tree: hud },     // resolved by name; alwaysOn = base layer
+      defineUiTree({ name: "hud", alwaysOn: true, tree: hud }), // alwaysOn = base layer
     ],
     theme: {
       colors: { ok: [0.1, 0.9, 0.4, 1], "cyan.500": [0.1, 0.55, 0.62, 1] },
@@ -1181,8 +1179,10 @@ export function setupMod() {
   it). `alwaysOn: true` composes the tree as a base layer every frame (the HUD
   case); the default (`false`) means the tree only shows when pushed onto the
   modal stack. A mod tree registered under an engine built-in's name **shadows**
-  it. Omitting the mod tree later reveals the engine fallback with the same name.
-  Already-pushed modals keep their cloned descriptor until closed.
+  it. `defineUiTree({ name, tree, alwaysOn? })` is the SDK helper for building
+  this same manifest entry without changing the wire shape. Omitting the mod tree
+  later reveals the engine fallback with the same name. Already-pushed modals
+  keep their cloned descriptor until closed.
 - **`theme`** — per-token overrides merged over the engine default: only the
   tokens you name change; everything else keeps its default. Unknown tokens
   referenced by a widget degrade visibly (unknown color → magenta, unknown font →

@@ -1019,6 +1019,12 @@ declare module "postretro" {
   export type AnchoredTreeDescriptor = { anchor: WidgetAnchor; offset: [number, number]; root: WidgetDescriptor; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: string; accessibleName?: string; role?: WidgetRole };
   /** Wrap a root widget descriptor in the `AnchoredTree` placement envelope. `root` is a POSITIONAL second argument. */
   export function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDescriptor;
+  /** Props accepted by `defineUiTree`. The returned object preserves the runtime manifest entry shape `{ name, tree, alwaysOn? }`. */
+  export type UiTreeRegistrationProps<Name extends string = string> = { name: Name; tree: AnchoredTreeDescriptor; alwaysOn?: boolean };
+  /** A typed UI-tree registration entry for `setupMod().uiTrees` / `setupLevel().uiTrees`. */
+  export type UiTreeRegistration<Name extends string = string> = ModUiTree & { readonly name: Name };
+  /** Pure helper for defining a named UI-tree registration. Registration still happens only when the returned object is included in a manifest `uiTrees` array. */
+  export function defineUiTree<const Name extends string>(registration: UiTreeRegistrationProps<Name>): UiTreeRegistration<Name>;
 
   /** Options accepted by `bindState` for each state value type. Numbers may format and tween, numeric arrays may color-tween, and scalar strings/booleans may format. */
   export type StateBindOptionsFor<T> =

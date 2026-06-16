@@ -4,12 +4,12 @@ import {
   Text,
   Tree,
   VStack,
+  defineUiTree,
 } from "postretro";
 
-export const PAUSE_MENU_TREE = "pauseMenu";
-
-export function buildPauseMenu() {
-  return Tree(
+export const pauseMenu = defineUiTree({
+  name: "pauseMenu",
+  tree: Tree(
     {
       anchor: "center",
       offset: [0.0, 0.0],
@@ -39,5 +39,5 @@ export function buildPauseMenu() {
         }),
       ],
     ),
-  );
-}
+  ),
+});

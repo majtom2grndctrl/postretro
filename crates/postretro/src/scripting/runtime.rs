@@ -3600,9 +3600,9 @@ mod tests {
                 return {
                     name: "HudMod",
                     uiTrees: [
-                        { name: "hud", tree: healthTree, alwaysOn: true },
-                        { name: "hud.reticle", tree: reticleTree, alwaysOn: true },
-                        { name: "pauseMenu", tree: pauseMenu, alwaysOn: false },
+                        defineUiTree({ name: "hud", tree: healthTree, alwaysOn: true }),
+                        defineUiTree({ name: "hud.reticle", tree: reticleTree, alwaysOn: true }),
+                        defineUiTree({ name: "pauseMenu", tree: pauseMenu }),
                     ],
                     theme: {
                         colors: {

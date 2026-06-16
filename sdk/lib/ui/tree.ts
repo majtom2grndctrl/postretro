@@ -71,6 +71,18 @@ export type AnchoredTreeDescriptor = {
   role?: WidgetRole;
 };
 
+/** A UI-tree registration entry returned through `setupMod().uiTrees` or
+ * `setupLevel().uiTrees`. This helper preserves the runtime manifest shape
+ * while giving authors a typed construction site. */
+export type UiTreeRegistrationProps<Name extends string = string> = {
+  name: Name;
+  tree: AnchoredTreeDescriptor;
+  alwaysOn?: boolean;
+};
+
+export type UiTreeRegistration<Name extends string = string> =
+  import("postretro").ModUiTree & { readonly name: Name };
+
 const ANCHORS: ReadonlySet<string> = new Set([
   "topLeft",
   "top",
@@ -186,4 +198,36 @@ export function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDesc
     out.role = props.role;
   }
   return out;
+}
+
+/**
+ * Define a named UI-tree registration while preserving the manifest wire shape:
+ * `{ name, tree, alwaysOn? }`. Pure builder; registration still happens only
+ * when the returned object is included in `setupMod().uiTrees`.
+ */
+export function defineUiTree<const Name extends string>(
+  registration: UiTreeRegistrationProps<Name>,
+): UiTreeRegistration<Name> {
+  requireObject(registration, "defineUiTree");
+  requireNonemptyString(registration.name, "name", "defineUiTree");
+  if (
+    registration.tree === null ||
+    typeof registration.tree !== "object" ||
+    (registration.tree as { root?: unknown }).root === null ||
+    typeof (registration.tree as { root?: unknown }).root !== "object"
+  ) {
+    throw new Error("defineUiTree: `tree` must be an anchored tree descriptor");
+  }
+  if (registration.alwaysOn !== undefined && typeof registration.alwaysOn !== "boolean") {
+    throw new Error("defineUiTree: `alwaysOn` must be a boolean when present");
+  }
+
+  const out: import("postretro").ModUiTree = {
+    name: registration.name,
+    tree: registration.tree,
+  };
+  if (registration.alwaysOn !== undefined) {
+    out.alwaysOn = registration.alwaysOn;
+  }
+  return out as UiTreeRegistration<Name>;
 }

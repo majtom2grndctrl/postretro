@@ -77,8 +77,8 @@ const UI_WIDGETS_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/widgets.l
 /// fields (`VStack`/`HStack`/`Grid`) are destructured into globals. Pure builders.
 const UI_LAYOUT_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/layout.luau");
 
-/// SDK library prelude — `ui/tree.luau` returns a table whose only field (`Tree`)
-/// is destructured into a global. Pure placement-envelope builder.
+/// SDK library prelude — `ui/tree.luau` returns pure UI tree helpers that are
+/// destructured into globals.
 const UI_TREE_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/tree.luau");
 
 /// SDK library prelude — `ui/state.luau` returns state-reference helpers plus
@@ -162,8 +162,8 @@ const UI_WIDGETS_FIELDS: &[&str] = &[
 /// `ui/layout.luau`.
 const UI_LAYOUT_FIELDS: &[&str] = &["VStack", "HStack", "Grid"];
 
-/// UI tree-factory SDK fields lifted to globals after evaluating `ui/tree.luau`.
-const UI_TREE_FIELDS: &[&str] = &["Tree"];
+/// UI tree SDK fields lifted to globals after evaluating `ui/tree.luau`.
+const UI_TREE_FIELDS: &[&str] = &["Tree", "defineUiTree"];
 
 /// UI state-helper SDK fields lifted to globals after evaluating
 /// `ui/state.luau`. `bindState`/`stateEquals` compose authoritative state refs;

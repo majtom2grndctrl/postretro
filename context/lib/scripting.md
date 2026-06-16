@@ -140,6 +140,7 @@ Higher-level vocabulary (`world`, `timeline`, `sequence`, etc.) is provided by t
 - `sdk/lib/entities/transforms.{ts,luau}` — transform-only handle type (`TransformHandle`). Type-only; no runtime globals promoted.
 - `sdk/lib/util/keyframes.{ts,luau}` — structurally generic keyframe utilities: the `Keyframe` type alias, `timeline`, and `sequence`. Not light-specific; usable for any keyframed animation.
 - `sdk/lib/data_script.{ts,luau}` — definition-context vocabulary.
+- `sdk/lib/ui/tree.{ts,luau}` — pure UI tree helpers: `Tree(...)` builds the placement envelope and `defineUiTree(...)` builds the returned registration entry without changing the manifest wire shape.
 - `sdk/lib/ui/theme.{ts,luau}` — pure theme authoring helper (`defineTheme`) that preserves flat token maps while adding token accessors for editor completion, warning, and visible unknown-token degradation.
 
 ### Animation capabilities

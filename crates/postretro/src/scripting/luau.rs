@@ -1770,6 +1770,46 @@ mod tests {
         assert_eq!(got, expected);
     }
 
+    #[test]
+    fn luau_bind_state_emits_json_identical_to_typescript() {
+        const STATE_SRC: &str = include_str!("../../../../sdk/lib/ui/state.luau");
+
+        let lua = mlua::Lua::new();
+        let state: mlua::Table = lua
+            .load(STATE_SRC)
+            .set_name("state.luau")
+            .eval()
+            .expect("state.luau must evaluate to a module table");
+        lua.globals().set("S", state).unwrap();
+
+        let cases: &[(&str, &str)] = &[
+            (
+                r#"S.bindState({ slot = "player.health" }, { format = "HP {}", tween = { durationMs = 120, easing = "easeOut", from = 0 } })"#,
+                r#"{"slot":"player.health","format":"HP {}","tween":{"durationMs":120,"easing":"easeOut","from":0}}"#,
+            ),
+            (
+                r#"S.bindState({ slot = "screen.flash" }, { tween = { durationMs = 80, easing = "linear", from = {0, 0, 0, 0} } })"#,
+                r#"{"slot":"screen.flash","tween":{"durationMs":80,"easing":"linear","from":[0,0,0,0]}}"#,
+            ),
+        ];
+
+        for (expr, expected_ts) in cases {
+            let value: mlua::Value = lua
+                .load(&format!("return {expr}"))
+                .set_name("bind_state_case")
+                .eval()
+                .unwrap_or_else(|e| panic!("bindState call failed: {expr}\n{e}"));
+            let got = super::super::conv::lua_to_json(value)
+                .unwrap_or_else(|e| panic!("lua_to_json failed for {expr}: {e}"));
+            let expected: serde_json::Value =
+                serde_json::from_str(expected_ts).expect("TS expected JSON parses");
+            assert_eq!(
+                got, expected,
+                "Luau bindState output differs from TS for `{expr}`:\nluau: {got}\nts:   {expected}"
+            );
+        }
+    }
+
     // --- M13 G1a, Task 3: TS/Luau widget-factory JSON parity ---
     //
     // The AC requires the TS and Luau widget/layout factories to emit IDENTICAL

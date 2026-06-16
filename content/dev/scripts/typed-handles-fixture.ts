@@ -14,9 +14,17 @@ import {
   defineReaction,
   getGameState,
   updateState,
+  appendText,
+  backspaceText,
+  bindState,
+  stateEquals,
+  onStateCrossing,
   Text,
+  Bar,
   Button,
   Slider,
+  Tree,
+  Panel,
   type StateValue,
   type LocalizedText,
 } from "postretro";
@@ -27,6 +35,7 @@ const opts = defineStore("fixtureOpts", {
   volume: { type: "number", default: 0.8 },
   muted: { type: "boolean", default: false },
   preset: { type: "string", default: "default" },
+  curve: { type: "array", default: [0.0, 0.5, 1.0] },
 });
 
 // Correct shape: declarations are returned from `setupMod().stores`, while
@@ -42,15 +51,47 @@ const _preset: StateValue<string> = opts.state.preset;
 const _wrong: StateValue<number> = opts.state.muted;
 
 // --- (2) Read-only engine-slot refs -----------------------------------------
-// `getGameState().player.health` is directly bindable as `{ slot }`; there is no
-// `.get()` wrapper or `postretro/game-state` side module.
+// `getGameState().player.health` is directly bindable as a `{ slot }` ref.
 const gameState = getGameState();
 const _health = gameState.player.health;
 const _healthText = Text({ content: "HP", bind: gameState.player.health });
+const _healthBar = Bar({
+  bind: gameState.player.health,
+  max: gameState.player.health,
+  fill: "ok",
+  background: [0.1, 0.1, 0.1, 1],
+});
+const _formattedHealth = Text({
+  content: "HP",
+  bind: bindState(gameState.player.health, {
+    format: "HP {}",
+    tween: { durationMs: 120, easing: "easeOut" },
+  }),
+});
+const _flashPanel = Panel({
+  fill: "panel.default",
+  bind: bindState(gameState.screen.flash, {
+    tween: { durationMs: 80, easing: "linear", from: [0, 0, 0, 0] },
+  }),
+});
 
 // Slider writes require a writable number ref; engine health is readonly.
 // @ts-expect-error — readonly health cannot feed an interactive Slider.
 Slider({ id: "hp", label: "HP", bind: gameState.player.health, min: 0, max: 100, step: 1 });
+const _volumeSlider = Slider({
+  id: "vol",
+  label: "Volume",
+  bind: opts.state.volume,
+  min: 0,
+  max: 1,
+  step: 0.1,
+});
+
+// @ts-expect-error — sliders write numbers, not writable string refs.
+Slider({ id: "preset", label: "Preset", bind: opts.state.preset, min: 0, max: 1, step: 1 });
+
+// @ts-expect-error — array refs accept color tweens, not text `format`.
+const _badArrayBind = bindState(gameState.screen.flash, { format: "RGBA {}" });
 
 // Reaction state writes go through `updateState(ref, value)`: writable mod state
 // is accepted and emits the existing `setState` wire descriptor.
@@ -58,6 +99,40 @@ const _volumeReset = defineReaction("fixtureResetVolume", updateState(opts.state
 
 // @ts-expect-error — readonly health cannot feed a state-write reaction.
 const _badHealthWrite = updateState(gameState.player.health, 1);
+
+// Text-entry targets and text-edit reactions require writable string refs.
+const _entryTree = Tree(
+  { anchor: "center", offset: [0, 0], textEntryTarget: gameState.ui.textEntry },
+  Text({ content: "Name", bind: gameState.ui.textEntry }),
+);
+const _appendEntry = appendText(gameState.ui.textEntry, "a");
+const _backspaceEntry = backspaceText(gameState.ui.textEntry);
+
+const _badEntryTarget = Tree(
+  {
+    anchor: "center",
+    offset: [0, 0],
+    // @ts-expect-error — text-entry target must be a writable string ref.
+    textEntryTarget: opts.state.volume,
+  },
+  Text({ content: "Bad" }),
+);
+// @ts-expect-error — text edits require writable string refs.
+const _badAppend = appendText(opts.state.volume, "x");
+
+// Crossings require numeric refs; equality predicates require scalar refs and a
+// comparand matching the ref value type.
+const _lowHealthCrossing = onStateCrossing(gameState.player.health, { below: 20, max: 100 }, [
+  "lowHealth",
+]);
+const _modePredicate = stateEquals(gameState.input.mode, "focus");
+
+// @ts-expect-error — crossings watch number refs, not writable strings.
+const _badCrossing = onStateCrossing(gameState.ui.textEntry, { above: 1 }, ["bad"]);
+// @ts-expect-error — equality predicates are scalar-only; arrays are excluded.
+const _badArrayPredicate = stateEquals(gameState.screen.flash, [0, 0, 0, 0]);
+// @ts-expect-error — equality comparand is typed to the ref's value type.
+const _badHealthPredicate = stateEquals(gameState.player.health, "full");
 
 // --- (3) Typed reaction handles ---------------------------------------------
 // `defineReaction` accepts an optional `name`; omitted → deterministic auto-id.
@@ -94,10 +169,25 @@ void _preset;
 void _wrong;
 void _health;
 void _healthText;
+void _healthBar;
+void _formattedHealth;
+void _flashPanel;
+void _volumeSlider;
+void _badArrayBind;
 void _named;
 void _auto;
 void _volumeReset;
 void _badHealthWrite;
+void _entryTree;
+void _appendEntry;
+void _backspaceEntry;
+void _badEntryTarget;
+void _badAppend;
+void _lowHealthCrossing;
+void _modePredicate;
+void _badCrossing;
+void _badArrayPredicate;
+void _badHealthPredicate;
 void _greeting;
 void _text;
 void _resume;

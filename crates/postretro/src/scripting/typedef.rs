@@ -3451,6 +3451,7 @@ export type Event = {
     #[test]
     fn game_state_refs_emit_catalog_paths_and_capabilities() {
         use crate::scripting::ctx::ScriptCtx;
+        use crate::scripting::engine_state_catalog::engine_state_catalog;
         use crate::scripting::primitives::register_all;
 
         let mut r = PrimitiveRegistry::new();
@@ -3481,6 +3482,65 @@ export type Event = {
                 && luau.contains("textEntry: WritableStateRef<string>,"),
             "luau GameStateRefs missing catalog path/capability refs"
         );
+
+        let catalog = engine_state_catalog().unwrap();
+        for entry in catalog.entries() {
+            let leaf = entry
+                .sdk_path
+                .last()
+                .expect("catalog validation requires nonempty SDK paths");
+            let expected_ts = format!(
+                "readonly {leaf}: {};",
+                state_ref_ts(entry.capability, entry.value_type)
+            );
+            assert!(
+                ts.contains(&expected_ts),
+                "ts GameStateRefs missing catalog leaf `{}` as `{expected_ts}`",
+                entry.sdk_path.join(".")
+            );
+
+            let expected_luau = format!(
+                "{leaf}: {},",
+                state_ref_luau(entry.capability, entry.value_type)
+            );
+            assert!(
+                luau.contains(&expected_luau),
+                "luau GameStateRefs missing catalog leaf `{}` as `{expected_luau}`",
+                entry.sdk_path.join(".")
+            );
+        }
+
+        for forbidden in [
+            "postretro/game-state",
+            "declare const gameState",
+            "declare gameState",
+            "export const gameState",
+            "declare const playerState",
+            "declare playerState",
+            "export const playerState",
+            "ReadonlyStateValue",
+            "WritableStateValue",
+            "storeHandle",
+        ] {
+            for line in ts.lines() {
+                if line.trim_start().starts_with("//") || line.trim_start().starts_with("*") {
+                    continue;
+                }
+                assert!(
+                    !line.contains(forbidden),
+                    "ts must not declare legacy game-state surface `{forbidden}`; offending line: {line}"
+                );
+            }
+            for line in luau.lines() {
+                if line.trim_start().starts_with("--") {
+                    continue;
+                }
+                assert!(
+                    !line.contains(forbidden),
+                    "luau must not declare legacy game-state surface `{forbidden}`; offending line: {line}"
+                );
+            }
+        }
     }
 
     /// `defineReaction` (M13 G1a) widens to accept an optional `name`: both the

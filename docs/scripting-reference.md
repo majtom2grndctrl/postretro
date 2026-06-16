@@ -685,9 +685,10 @@ omitted from the emitted `args` entirely when not supplied — they are never se
 | `openTextEntry(onCommit?)` | `{ primitive: "showDialog", args: { tree: "keyboard", onCommit? } }` | Opens the engine-shipped on-screen keyboard (a capturing modal editing `ui.textEntry`). A `showDialog` wrapper targeting the `keyboard` tree. See the text-entry walkthrough below. |
 | `openMenu(tree)` | `{ primitive: "openMenu", args: { tree } }` | A v1 alias of `showDialog` (identical push behavior) without the `onCommit` hook. |
 | `closeDialog()` | `{ primitive: "closeDialog", args: {} }` | Pops the top UI tree off the modal stack. |
-| `appendText(slot, text)` | `{ primitive: "appendText", args: { slot, text } }` | Appends `text` to the current string value of the writable String slot `slot`. Readonly-gated like `setState`. |
-| `backspaceText(slot)` | `{ primitive: "backspaceText", args: { slot } }` | Removes the last character (one Unicode scalar value — never splits a UTF-8 sequence, but does not segment grapheme clusters) from `slot`. Empty is a silent no-op. Readonly-gated like `setState`. |
-| `clearText(slot)` | `{ primitive: "clearText", args: { slot } }` | Empties the writable String slot `slot`. Readonly-gated like `setState`. |
+| `updateState(ref, value)` | `{ primitive: "setState", args: { slot: ref.slot, value } }` | Writes `value` to a writable state reference at the game-logic stage. Readonly-gated at runtime. |
+| `appendText(ref, text)` | `{ primitive: "appendText", args: { slot: ref.slot, text } }` | Appends `text` to the current string value of a writable String state reference. |
+| `backspaceText(ref)` | `{ primitive: "backspaceText", args: { slot: ref.slot } }` | Removes the last character (one Unicode scalar value — never splits a UTF-8 sequence, but does not segment grapheme clusters). Empty is a silent no-op. |
+| `clearText(ref)` | `{ primitive: "clearText", args: { slot: ref.slot } }` | Empties a writable String state reference. |
 
 The three UI-stack helpers (`showDialog` / `openMenu` / `closeDialog`) are v1
 placeholders: `showDialog` and `openMenu` perform the identical `PushTree`
@@ -696,9 +697,9 @@ pops. Until the modal stack lands they **warn once ("no stack") and no-op**.
 
 ### Firing system reactions on a state crossing
 
-`onStateCrossing(slot, condition, fire)` is the watcher that drives system
+`onStateCrossing(ref, condition, fire)` is the watcher that drives system
 reactions from live state. It is a pure builder — place its result in
-`setupLevel`'s returned `crossings` array. The engine watches `slot` after each
+`setupLevel`'s returned `crossings` array. The engine watches `ref.slot` after each
 frame's slot writes and, on a crossing in the condition's direction (from
 at-or-past the threshold to across it), fires every named reaction in `fire`
 exactly once; it re-arms only after a crossing back. A registration against a
@@ -711,14 +712,18 @@ The condition is `{ below: number, max?: number }` or `{ above: number, max?: nu
 The canonical HUD-dynamics pattern — flash red when health drops below 20%:
 
 ```typescript
+import { defineReaction, flashScreen, getGameState, onStateCrossing } from "postretro";
+
 export function setupLevel(): LevelManifest {
+  const { player } = getGameState();
+
   return {
     reactions: [
       defineReaction("lowHealth", flashScreen([1, 0, 0, 0.5], 250)),
     ],
     crossings: [
       // health is 0–100; cross below 20% of `max` fires "lowHealth" once.
-      onStateCrossing("player.health", { below: 20, max: 100 }, ["lowHealth"]),
+      onStateCrossing(player.health, { below: 20, max: 100 }, ["lowHealth"]),
     ],
   };
 }
@@ -855,10 +860,11 @@ repeat clock), so a held stick or arrow steps focus/value steadily.
   width is `value/max` clamped to `[0, 1]`. `styleRanges` recolors the
   fill band by `value/max`. Horizontal only in v1.
 
-### `setState`
+### `updateState`
 
-`setState(slot, value)` is a system reaction that writes a value to a **writable**
-store slot. It is **readonly-gated**: a write to a readonly slot (e.g. the
+`updateState(ref, value)` is a pure SDK helper that emits the existing `setState`
+system reaction body for a **writable** state reference. It is **readonly-gated**
+at runtime: a write to a readonly slot (e.g. the
 engine-owned `player.health`, `input.mode`) logs a warning and no-ops; an
 engine-owned but writable slot, or any mod-declared writable slot, is a valid
 target. The value is coerced to the slot's declared type (number / boolean /
@@ -866,10 +872,24 @@ string / number array) with the same range/enum validation a script store write
 applies. This is the path a `slider`'s nav-capture step takes to publish its new
 value.
 
+```typescript
+import { defineReaction, defineStore, updateState } from "postretro";
+
+const options = defineStore("options", {
+  master: { type: "number", default: 1, range: [0, 1] },
+});
+
+export function setupMod() {
+  return { name: "MyMod", stores: [options.declaration] };
+}
+
+defineReaction("resetVolume", updateState(options.state.master, 1));
+```
+
 ### Text-edit reactions and the `ui.textEntry` slot
 
-`appendText(slot, text)`, `backspaceText(slot)`, and `clearText(slot)` are system
-reactions that edit the current **string** value of a **writable** store slot at
+`appendText(ref, text)`, `backspaceText(ref)`, and `clearText(ref)` are system
+reactions that edit the current **string** value of a **writable** state reference at
 the game-logic stage. They share `setState`'s **readonly gate**: a write to a
 readonly slot logs a warning and no-ops. `backspaceText` pops one `char` (one Unicode scalar value), so it never splits
 a UTF-8 sequence but does not segment grapheme clusters; an empty value is a
@@ -895,8 +915,8 @@ path.
 keyboard is a capturing modal: while open, gameplay input freezes and the opener
 screen's focus restores on close.
 
-- The keyboard's letter / digit / space keys fire `appendText("ui.textEntry", …)`
-  named reactions; its backspace key fires `backspaceText("ui.textEntry")` and
+- The keyboard's letter / digit / space keys fire `appendText(getGameState().ui.textEntry, …)`
+  named reactions; its backspace key fires `backspaceText(getGameState().ui.textEntry)` and
   opts into `repeatOnHold` (holding it repeats; holding a letter fires once).
 - The keyboard's **`done`** key and the **hardware Enter** key both **commit**:
   the engine fires the opener's `onCommit` reaction, then closes the keyboard.
@@ -966,13 +986,14 @@ first** and **children as a positional second argument** (the Compose / SwiftUI
 shape); leaf widgets take only props. All factories return a plain descriptor.
 
 ```typescript
-import { Tree, VStack, HStack, Grid, Text, Panel, Bar, Button, Slider, Image, Spacer } from "postretro";
+import { Tree, VStack, HStack, Grid, Text, Panel, Bar, Button, Slider, Image, Spacer, getGameState } from "postretro";
 
+const { player } = getGameState();
 const hud = Tree(
   { anchor: "topLeft", offset: [16, 16] },
   VStack({ gap: "s", padding: "m" }, [
     Text({ content: "HP", fontSize: 18, color: "ok" }),
-    Bar({ bind: { slot: "player.health" }, max: 100, fill: "ok", background: [0.1, 0.1, 0.1, 1] }),
+    Bar({ bind: player.health, max: 100, fill: "ok", background: [0.1, 0.1, 0.1, 1] }),
   ]),
 );
 ```
@@ -997,16 +1018,19 @@ SDK factory takes and nests inside SDK containers exactly like a factory call:
 
 ```typescript
 // A modder component: a plain function returning a subtree.
-function StatRow(props: { label: string; slot: string }) {
+import { type ReadonlyStateRef, HStack, Text, VStack, bindState, getGameState } from "postretro";
+
+function StatRow(props: { label: string; ref: ReadonlyStateRef<number | string | boolean> }) {
   return HStack({ gap: "s", align: "center" }, [
     Text({ content: props.label, fontSize: 16, color: "body" as never }),
-    Text({ content: "", fontSize: 16, color: "ok", bind: { slot: props.slot } }),
+    Text({ content: "", fontSize: 16, color: "ok", bind: bindState(props.ref, { format: "{}" }) }),
   ]);
 }
 
+const { player } = getGameState();
 const panel = VStack({ gap: "s", padding: "m" }, [
-  StatRow({ label: "HP", slot: "player.health" }), // nests like any factory
-  StatRow({ label: "AMMO", slot: "player.ammo" }),
+  StatRow({ label: "HP", ref: player.health }), // nests like any factory
+  StatRow({ label: "AMMO", ref: player.ammo }),
 ]);
 ```
 
@@ -1105,7 +1129,7 @@ Construct one with a handle's `.is(v)`:
 ```typescript
 const sel = ui.createLocalState({ tab: "loadout" });
 sel.cells.tab.is("loadout");        // { local: "tab", equals: "loadout" }
-storeHandle(opts.muted).is(true);   // { slot: "fixtureOpts.muted", equals: true }
+stateEquals(opts.state.muted, true); // { slot: "fixtureOpts.muted", equals: true }
 ```
 
 A `Predicate` is a valid **`bind` source for `styleRanges`-capable widgets**
@@ -1197,7 +1221,7 @@ canonical end-to-end example is the campaign-test tabs demo
 
 ```typescript
 Button({ id: "save", label: "Save", onPress: "save", disabled: true });
-Slider({ id: "vol", labelledBy: "volumeTitle", bind: storeHandle(master).get(),
+Slider({ id: "vol", labelledBy: "volumeTitle", bind: options.state.master,
          min: 0, max: 1, step: 0.05 });
 ```
 

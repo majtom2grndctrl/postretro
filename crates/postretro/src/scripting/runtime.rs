@@ -2127,6 +2127,61 @@ mod tests {
     }
 
     #[test]
+    fn run_data_script_luau_virtual_sdk_modules_bypass_shadow_files() {
+        let (rt, _ctx) = runtime();
+        let dir = temp_mod_root("data_virtual_sdk");
+        fs::create_dir_all(dir.join("postretro")).unwrap();
+        fs::write(
+            dir.join("postretro.luau"),
+            r#"error("shadow postretro.luau was read")"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("postretro/ui.luau"),
+            r#"error("shadow postretro/ui.luau was read")"#,
+        )
+        .unwrap();
+        let section = data_section(
+            &dir.join("data.luau").to_string_lossy(),
+            r#"
+            local root = require("postretro")
+            local rootAgain = require("postretro")
+            local UI = require("postretro/ui")
+            local UIAgain = require("postretro/ui")
+            assert(root == rootAgain, "postretro must be a singleton")
+            assert(UI == UIAgain, "postretro/ui must be a singleton")
+            assert(root.shadow == nil, "mod-root postretro.luau shadowed the engine module")
+            assert(UI.shadow == nil, "mod-root postretro/ui.luau shadowed the engine module")
+            assert(root.Text({ content = "data-root" }).kind == "text", "root Text must be the SDK factory")
+            assert(UI.Text({ content = "data" }).kind == "text", "UI.Text must be the SDK factory")
+            assert(UI.getGameState().player.health.slot == "player.health", "UI getGameState must expose refs")
+            assert(type(Text) == "function", "bare-global SDK Text must remain installed")
+            assert(not pcall(function()
+                root.Text = nil
+            end), "postretro must reject writes")
+            assert(not pcall(function()
+                UI.Text = nil
+            end), "postretro/ui must reject writes")
+            function setupLevel(ctx)
+                return {
+                    reactions = {
+                        { name = "uiVirtualOk", primitive = "moveGeometry", tag = "reactor" },
+                    },
+                }
+            end
+            "#,
+        );
+
+        let manifest = rt.run_data_script(&section, &dir);
+        assert_eq!(
+            manifest.reactions.len(),
+            1,
+            "data-context virtual SDK requires must run before file resolution",
+        );
+        assert_eq!(manifest.reactions[0].name, "uiVirtualOk");
+    }
+
+    #[test]
     fn run_data_script_luau_denylist_active_in_data_context() {
         // The data-context VM must apply the same deny-list as the mod-init
         // VM: `io`, `os.execute`, `dofile`, etc. must be nil.
@@ -3868,6 +3923,54 @@ mod tests {
                 .any(|e| e.canonical_name.as_deref() == Some("smoke_pillar")),
             "domain script imported via require must contribute its entity type to the manifest"
         );
+    }
+
+    #[test]
+    fn mod_init_luau_virtual_sdk_modules_bypass_shadow_files() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("luau_virtual_sdk");
+        fs::create_dir_all(dir.join("postretro")).unwrap();
+        fs::write(
+            dir.join("postretro.luau"),
+            r#"error("shadow postretro.luau was read")"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("postretro/ui.luau"),
+            r#"error("shadow postretro/ui.luau was read")"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("start-script.luau"),
+            r#"
+            local root = require("postretro")
+            local rootAgain = require("postretro")
+            local UI = require("postretro/ui")
+            local UIAgain = require("postretro/ui")
+            assert(root == rootAgain, "postretro must be a singleton")
+            assert(UI == UIAgain, "postretro/ui must be a singleton")
+            assert(root.shadow == nil, "mod-root postretro.luau shadowed the engine module")
+            assert(UI.shadow == nil, "mod-root postretro/ui.luau shadowed the engine module")
+            assert(root.Text({ content = "mod-root" }).kind == "text", "root Text must be the SDK factory")
+            assert(UI.Text({ content = "mod" }).kind == "text", "UI.Text must be the SDK factory")
+            assert(UI.getGameState().player.health.slot == "player.health", "UI getGameState must expose refs")
+            assert(type(Text) == "function", "bare-global SDK Text must remain installed")
+            assert(not pcall(function()
+                root.Text = nil
+            end), "postretro must reject writes")
+            assert(not pcall(function()
+                UI.Text = nil
+            end), "postretro/ui must reject writes")
+            function setupMod()
+                return { name = "VirtualUiMod" }
+            end
+            "#,
+        )
+        .unwrap();
+
+        rt.run_mod_init(&dir).unwrap();
+        let manifest = rt.mod_manifest().expect("Some manifest");
+        assert_eq!(manifest.name, "VirtualUiMod");
     }
 
     #[test]

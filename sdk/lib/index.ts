@@ -129,6 +129,7 @@ export {
   openTextEntry,
   KEYBOARD_TREE,
   CLOSE_DIALOG_ACTION,
+  EXIT_TO_DESKTOP_ACTION,
   openMenu,
   closeDialog,
   updateState,

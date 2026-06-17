@@ -836,6 +836,10 @@ declare KEYBOARD_TREE: "keyboard"
 --- intercepts this exact wire value before named-reaction dispatch.
 declare CLOSE_DIALOG_ACTION: "ui.closeDialog"
 
+--- Reserved button `onPress` action that requests a clean app shutdown. The App
+--- intercepts this exact wire value before named-reaction dispatch.
+declare EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop"
+
 --- System-reaction body (M13 Text Entry): open the engine-shipped on-screen
 --- keyboard, a capturing modal that edits the `ui.textEntry` slot. Optional
 --- `onCommit` (omitted when nil) names a reaction fired on commit (the on-screen

@@ -715,7 +715,8 @@ no-ops.
 Button `onPress` values have two paths. Ordinary strings are named reactions.
 Reserved `ui.*` strings are engine actions intercepted before named-reaction
 dispatch. Use `CLOSE_DIALOG_ACTION` for the reserved `"ui.closeDialog"` value
-instead of spelling it by hand.
+or `EXIT_TO_DESKTOP_ACTION` for the reserved `"ui.exitToDesktop"` value instead
+of spelling either by hand.
 
 ### Firing system reactions on a state crossing
 
@@ -995,6 +996,7 @@ open.
 import {
   Button,
   CLOSE_DIALOG_ACTION,
+  EXIT_TO_DESKTOP_ACTION,
   Text,
   Tree,
   VStack,
@@ -1027,6 +1029,11 @@ export const pauseMenu = defineUiTree({
           label: "RESUME",
           onPress: CLOSE_DIALOG_ACTION,
         }),
+        Button({
+          id: "pauseExitDesktop",
+          label: "EXIT TO DESKTOP",
+          onPress: EXIT_TO_DESKTOP_ACTION,
+        }),
       ],
     ),
   ),
@@ -1040,9 +1047,10 @@ export function setupMod() {
 }
 ```
 
-`CLOSE_DIALOG_ACTION` is the reserved `"ui.closeDialog"` button action. Pointer
-click, keyboard confirm, and gamepad confirm all activate the focused/targeted
-button and close the active modal through the same engine path.
+`CLOSE_DIALOG_ACTION` is the reserved `"ui.closeDialog"` button action.
+`EXIT_TO_DESKTOP_ACTION` is the reserved `"ui.exitToDesktop"` button action.
+Pointer click, keyboard confirm, and gamepad confirm all activate the
+focused/targeted button through the same engine path.
 
 Pause-menu input policy is fixed: Escape from gameplay or gamepad Start opens
 `pauseMenu` only when no other modal is active; the same inputs close it when it

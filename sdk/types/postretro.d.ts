@@ -783,6 +783,9 @@ declare module "postretro" {
   /** Reserved button `onPress` action that closes the active modal. The App intercepts this exact wire value before named-reaction dispatch. */
   export const CLOSE_DIALOG_ACTION: "ui.closeDialog";
 
+  /** Reserved button `onPress` action that requests a clean app shutdown. The App intercepts this exact wire value before named-reaction dispatch. */
+  export const EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop";
+
   /** System-reaction body (M13 Text Entry): open the engine-shipped on-screen keyboard, a capturing modal that edits the `ui.textEntry` slot. Optional `onCommit` names a reaction fired on commit (the on-screen `done` key or hardware Enter); `nav.cancel` closes without firing it. The same `ui.textEntry` slot also receives the hardware-keyboard path's edits. Wraps `showDialog("keyboard", onCommit)`. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
   export function openTextEntry(onCommit?: string): PrimitiveReactionDescriptor;
 

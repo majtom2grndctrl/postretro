@@ -1,6 +1,7 @@
 import {
   Button,
   CLOSE_DIALOG_ACTION,
+  EXIT_TO_DESKTOP_ACTION,
   Text,
   Tree,
   VStack,
@@ -36,6 +37,11 @@ export const pauseMenu = defineUiTree({
           id: "pauseResume",
           label: "RESUME",
           onPress: CLOSE_DIALOG_ACTION,
+        }),
+        Button({
+          id: "pauseExitDesktop",
+          label: "EXIT TO DESKTOP",
+          onPress: EXIT_TO_DESKTOP_ACTION,
         }),
       ],
     ),

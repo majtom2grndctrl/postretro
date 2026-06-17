@@ -500,6 +500,7 @@ fn main() -> Result<()> {
         ),
         pending_mode_signal: None,
         pending_menu_toggle: false,
+        pending_exit_to_desktop: false,
         ui_focused_id: None,
         script_ctx,
         state_store_lifecycle: StateStoreLifecycle::default(),
@@ -786,6 +787,12 @@ struct App {
     /// `ToggleDebugPanel` bypasses the capture gate. See: context/lib/input.md §7.
     pending_menu_toggle: bool,
 
+    /// App-local quit request raised by the reserved `ui.exitToDesktop` button
+    /// action. The UI action classifier is generic, but only the event-loop owner
+    /// actually exits, so this flag is drained in the redraw/game-logic phase
+    /// where `ActiveEventLoop` is available.
+    pending_exit_to_desktop: bool,
+
     /// The focused node id the focus engine resolved THIS frame's game-logic
     /// phase, published on this frame's snapshot so the UI pass draws the focus
     /// ring around it. `None` when nothing is focused.
@@ -979,6 +986,7 @@ struct WindowState {
 enum UiButtonAction {
     CommitTextEntry,
     CloseDialog,
+    ExitToDesktop,
     NamedReaction,
 }
 
@@ -986,6 +994,7 @@ fn classify_ui_button_action(on_press: &str) -> UiButtonAction {
     match on_press {
         render::ui::actions::COMMIT_TEXT_ENTRY_ACTION => UiButtonAction::CommitTextEntry,
         render::ui::actions::CLOSE_DIALOG_ACTION => UiButtonAction::CloseDialog,
+        render::ui::actions::EXIT_TO_DESKTOP_ACTION => UiButtonAction::ExitToDesktop,
         _ => UiButtonAction::NamedReaction,
     }
 }
@@ -1703,6 +1712,14 @@ impl ApplicationHandler for App {
                 // a gamepad confirm have an identical observable effect.
                 if focus_result.confirmed {
                     self.fire_focused_button_activation(focus_result.focused.as_deref());
+                }
+
+                if self.pending_exit_to_desktop {
+                    self.pending_exit_to_desktop = false;
+                    self.release_cursor_for_exit();
+                    log::info!("[Engine] Shutting down");
+                    event_loop.exit();
+                    return;
                 }
 
                 // Pause-menu toggle: `nav.menu` (gamepad Start /
@@ -3154,6 +3171,7 @@ impl App {
             match route_ui_button_action(&on_press, &mut self.modal_stack) {
                 UiButtonAction::CommitTextEntry => self.commit_text_entry(),
                 UiButtonAction::CloseDialog => {}
+                UiButtonAction::ExitToDesktop => self.pending_exit_to_desktop = true,
                 UiButtonAction::NamedReaction => {
                     let _ = fire_named_event_with_sequences(
                         &on_press,
@@ -4292,7 +4310,7 @@ mod tests {
     use crate::options::CrouchMode;
 
     #[test]
-    fn ui_button_action_classifier_reserves_close_before_named_reactions() {
+    fn ui_button_action_classifier_reserves_ui_actions_before_named_reactions() {
         assert_eq!(
             classify_ui_button_action(render::ui::actions::COMMIT_TEXT_ENTRY_ACTION),
             UiButtonAction::CommitTextEntry
@@ -4300,6 +4318,10 @@ mod tests {
         assert_eq!(
             classify_ui_button_action(render::ui::actions::CLOSE_DIALOG_ACTION),
             UiButtonAction::CloseDialog
+        );
+        assert_eq!(
+            classify_ui_button_action(render::ui::actions::EXIT_TO_DESKTOP_ACTION),
+            UiButtonAction::ExitToDesktop
         );
         assert_eq!(
             classify_ui_button_action("resumeGame"),
@@ -4624,6 +4646,11 @@ mod tests {
             button_action(&mod_pause.root, "pauseResume"),
             Some(render::ui::actions::CLOSE_DIALOG_ACTION),
             "Resume resolves to the reserved close action wire value",
+        );
+        assert_eq!(
+            button_action(&mod_pause.root, "pauseExitDesktop"),
+            Some(render::ui::actions::EXIT_TO_DESKTOP_ACTION),
+            "Exit to Desktop resolves to the generic reserved quit action wire value",
         );
 
         let theme = render::ui::theme::UiTheme::engine_default();

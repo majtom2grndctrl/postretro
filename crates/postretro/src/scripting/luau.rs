@@ -129,8 +129,8 @@ const DATA_SCRIPT_FIELDS: &[&str] = &["defineReaction", "defineEntity", "defineS
 /// `openMenu` / `closeDialog`) primitives, the `updateState` slot write (Goal F),
 /// the text-entry helpers (`openTextEntry` wraps `showDialog` for the engine
 /// keyboard; `KEYBOARD_TREE` is its registry name constant), reserved button
-/// actions (`CLOSE_DIALOG_ACTION`), and the text-edit reactions (`appendText` /
-/// `backspaceText` / `clearText`, M13 Text Entry).
+/// actions (`CLOSE_DIALOG_ACTION`, `EXIT_TO_DESKTOP_ACTION`), and the text-edit
+/// reactions (`appendText` / `backspaceText` / `clearText`, M13 Text Entry).
 const UI_REACTIONS_FIELDS: &[&str] = &[
     "onStateCrossing",
     "playSound",
@@ -144,6 +144,7 @@ const UI_REACTIONS_FIELDS: &[&str] = &[
     "openTextEntry",
     "KEYBOARD_TREE",
     "CLOSE_DIALOG_ACTION",
+    "EXIT_TO_DESKTOP_ACTION",
     "updateState",
     "appendText",
     "backspaceText",
@@ -1558,6 +1559,7 @@ mod tests {
             "openTextEntry",
             "KEYBOARD_TREE",
             "CLOSE_DIALOG_ACTION",
+            "EXIT_TO_DESKTOP_ACTION",
             "updateState",
             "appendText",
             "backspaceText",
@@ -1583,6 +1585,16 @@ mod tests {
             .eval()
             .expect("CLOSE_DIALOG_ACTION global");
         assert_eq!(value, "ui.closeDialog");
+    }
+
+    #[test]
+    fn exit_to_desktop_action_global_emits_reserved_wire_name() {
+        let lua = build_lua_state(&[], None, None).expect("lua state");
+        let value: String = lua
+            .load("return EXIT_TO_DESKTOP_ACTION")
+            .eval()
+            .expect("EXIT_TO_DESKTOP_ACTION global");
+        assert_eq!(value, "ui.exitToDesktop");
     }
 
     #[test]
